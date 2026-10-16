@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import threading
@@ -7,12 +8,28 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub import process_utils
+from local_ai_hub import process_utils, whisper_policy
 from local_ai_hub.services import LocalAIServices
 
 
 def _service() -> LocalAIServices:
-    return object.__new__(LocalAIServices)
+    service = object.__new__(LocalAIServices)
+    service.config = {"transcription": {"allow_model_downloads": False, "device": "cpu"}}
+    return service
+
+
+@pytest.fixture(autouse=True)
+def _verified_whisper_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Exercise real cache verification with task-owned bytes, never user models."""
+    cache_dir = tmp_path / "whisper-cache"
+    cache_dir.mkdir()
+    model_bytes = b"isolated transcription contract model fixture"
+    digest = hashlib.sha256(model_bytes).hexdigest()
+    for model, filename in whisper_policy.MODEL_FILENAMES.items():
+        (cache_dir / filename).write_bytes(model_bytes)
+        monkeypatch.setitem(whisper_policy.MODEL_SHA256, model, digest)
+    monkeypatch.setattr(whisper_policy, "default_cache_dir", lambda: cache_dir)
+    return cache_dir
 
 
 @pytest.mark.parametrize("payload", [None, [], "malformed"])
@@ -26,7 +43,7 @@ def test_transcribe_rejects_non_object_request_payload(payload: object) -> None:
 
 
 def test_transcribe_honors_requested_model_and_cleans_task_owned_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _verified_whisper_cache: Path
 ) -> None:
     audio = tmp_path / "sample.wav"
     audio.write_bytes(b"test audio")
@@ -49,7 +66,8 @@ def test_transcribe_honors_requested_model_and_cleans_task_owned_output(
 
     result = _service().transcribe({"audio": str(audio), "model": "base.en"}, "task-17")
 
-    assert command[command.index("--model") + 1] == "base.en"
+    assert command[command.index("--model") + 1] == str(_verified_whisper_cache / "base.en.pt")
+    assert command[command.index("--model_dir") + 1] == str(_verified_whisper_cache)
     assert output_directories[0] != audio.parent
     assert not output_directories[0].exists()
     assert not audio.with_suffix(".json").exists()
@@ -59,7 +77,7 @@ def test_transcribe_honors_requested_model_and_cleans_task_owned_output(
 
 
 def test_transcribe_defaults_to_base_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _verified_whisper_cache: Path
 ) -> None:
     audio = tmp_path / "sample.wav"
     audio.write_bytes(b"test audio")
@@ -79,7 +97,8 @@ def test_transcribe_defaults_to_base_model(
 
     result = _service().transcribe({"audio": str(audio)}, "task-17")
 
-    assert command[command.index("--model") + 1] == "base"
+    assert command[command.index("--model") + 1] == str(_verified_whisper_cache / "base.pt")
+    assert command[command.index("--model_dir") + 1] == str(_verified_whisper_cache)
     assert result["success"] is True
     assert result["model"] == "base"
 

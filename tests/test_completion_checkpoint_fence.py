@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint
+from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStore
 from local_ai_hub.agent_verification import CompletionResult
 from local_ai_hub.verification_rules import complete_task_with_project_rules
 
@@ -30,9 +30,12 @@ def test_completion_rejects_invalid_checkpoint_after_receipt_verification(tmp_pa
         current.checkpoint = TaskCheckpoint(state_data={**state_data, "mutation_generation": invalid})
 
     class Tasks:
+        preflight_completion_response_budget = TaskStore.preflight_completion_response_budget
+
         def __init__(self):
             self.task = task
             self.completed = False
+            self.receipts_checked = False
 
         def get(self, key):
             assert key == task_id
@@ -50,6 +53,7 @@ def test_completion_rejects_invalid_checkpoint_after_receipt_verification(tmp_pa
         def completion(self, key, **_kwargs):
             # The receipt boundary accepts the initial snapshot; the task
             # projection changes before the real completion fence rereads it.
+            tasks.receipts_checked = True
             tasks.task = current
             return CompletionResult(key, True, (), (), (), ())
 
@@ -59,4 +63,5 @@ def test_completion_rejects_invalid_checkpoint_after_receipt_verification(tmp_pa
             current_revision="rev-1", actor="owner",
         )
 
+    assert tasks.receipts_checked is True
     assert tasks.completed is False

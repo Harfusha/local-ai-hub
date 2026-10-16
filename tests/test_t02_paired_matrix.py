@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
+from local_ai_hub.process_utils import run_hidden
 
 from tools.run_t02_paired_matrix import (
     CASE_KEYS,
@@ -24,11 +24,57 @@ import tools.benchmark_surfaces as surface_benchmarks
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "handoff/T02-paired-matrix-20261002-v1/manifest.json"
 REQUIRED_GOLDENS = {
     "symbols", "graph", "affected_tests", "retrieval_relevance",
     "code_generation", "vision", "speech", "context_pack",
 }
+
+
+@pytest.fixture
+def matrix_manifest_path(tmp_path: Path) -> Path:
+    """Unit input only: no historical payloads or live measurement permission."""
+    deferred = {(100, 100_000), (10_000, 100_000), (100_000, 10_000), (100_000, 100_000)}
+    manifest = {
+        "schema_version": 1,
+        "cases": [
+            {"file_count": files, "rag_chunk_count": chunks,
+             "status": "deferred" if (files, chunks) in deferred else "historical_unpaired"}
+            for files, chunks in sorted(CASE_KEYS)
+        ],
+        "run_parameters": {
+            "light_repetitions": 1_000, "comparison_repetitions": 30,
+            "concurrency": [1, 4, 16, 32], "timeout_seconds": 3_600,
+        },
+        "input_generator": {
+            "name": "synthetic_repo_generator", "version": 1, "seed": 42,
+            "same_generator_version_seed_required": True, "input_fingerprint_required": True,
+        },
+        "source_pins": {"baseline": None, "candidate": None},
+        "cpu_slot": {"owner": "T20", "status": "reserved", "assignment_id": "unit-fixture-only"},
+        "acceptance_limits": {
+            "max_p95_regression_pct": 10.0, "max_p99_regression_pct": 10.0,
+            "plan_grade_requires_all_six_paired_receipts": True,
+        },
+        "quality_gates": {
+            "retrieval_minimums": {"recall_at_10": 0.9, "ndcg_at_10": 0.8, "file_line_evidence_accuracy": 1.0},
+            "critical_false_success_count_max": 0,
+            "golden_operations": ["symbols", "graph", "affected_tests", "retrieval_relevance",
+                                  "code_generation", "vision", "speech", "context_pack"],
+            "model_requirements": ["output_schema_pass", "test_pass", "evidence_grounded"],
+            "candidate_must_not_regress_from_baseline": True, "missing_evidence_status": "not_established",
+        },
+        "pairing": {
+            "isolated_state_and_scratch_per_side": True, "cold_and_warm_epochs_separate": True,
+            "cold_warm_sample_ids_disjoint": True, "side_execution_order": "baseline_then_candidate_no_overlap",
+        },
+        "measurement_policy": {
+            "require_immutable_source_pins": True, "require_t20_cpu_slot_assignment": True,
+            "measurements_started": False, "historical_unpaired_rows_count_as_paired_receipts": False,
+        },
+    }
+    path = tmp_path / "matrix-manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
 
 
 @pytest.mark.parametrize("include_baseline_record", [False, True])
@@ -36,8 +82,9 @@ def test_matrix_runner_wires_manifest_seed_through_surface_cli(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     include_baseline_record: bool,
+    matrix_manifest_path: Path,
 ) -> None:
-    manifest = load_manifest(MANIFEST)
+    manifest = load_manifest(matrix_manifest_path)
     seed = manifest["input_generator"]["seed"]
     command = build_matrix_command(
         ROOT,
@@ -88,17 +135,37 @@ def test_synthetic_input_provenance_emits_version_seed_and_fingerprint() -> None
     }
 
 
-def test_baseline_candidate_harness_pins_match_immutable_commit_blobs() -> None:
-    manifest = load_manifest(MANIFEST)
+def test_baseline_candidate_harness_pins_match_immutable_commit_blobs(matrix_manifest_path: Path) -> None:
+    manifest = load_manifest(matrix_manifest_path)
+    revision = run_hidden(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True, timeout=10,
+    ).stdout.strip()
     harness_path = "tools/benchmark_surfaces.py"
+    file_hashes = {
+        path: hashlib.sha256(run_hidden(
+            ["git", "show", f"{revision}:{path}"], cwd=ROOT, check=True,
+            capture_output=True, timeout=10,
+        ).stdout).hexdigest()
+        for path in SOURCE_PIN_PATHS
+    }
+    pin = {
+        "commit_sha": revision,
+        "snapshot_sha256": hashlib.sha256(json.dumps(file_hashes, sort_keys=True).encode()).hexdigest(),
+        "generator_sha256": file_hashes[harness_path], "file_sha256": file_hashes,
+    }
+    manifest["source_pins"] = {"baseline": pin, "candidate": dict(pin)}
+    matrix_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = load_manifest(matrix_manifest_path)
     pinned_hashes = []
     for side in ("baseline", "candidate"):
         pin = manifest["source_pins"][side]
-        result = subprocess.run(
+        assert validate_source_pin(pin) == []
+        result = run_hidden(
             ["git", "show", f"{pin['commit_sha']}:{harness_path}"],
             cwd=ROOT,
             check=True,
             capture_output=True,
+            timeout=10,
         )
         pinned_sha = hashlib.sha256(result.stdout).hexdigest()
         assert pin["file_sha256"][harness_path] == pinned_sha
@@ -107,19 +174,38 @@ def test_baseline_candidate_harness_pins_match_immutable_commit_blobs() -> None:
     assert pinned_hashes[0] == pinned_hashes[1]
 
 
-def test_preparation_receipt_hashes_bind_its_historical_artifacts() -> None:
-    receipt = json.loads(
-        (ROOT / "handoff/T02-paired-matrix-20261002-v1/preparation-receipt.json")
-        .read_text(encoding="utf-8")
-    )
+@pytest.mark.parametrize("tamper_manifest", [False, True])
+def test_preparation_receipt_hashes_bind_task_owned_artifacts(
+    tmp_path: Path, matrix_manifest_path: Path, tamper_manifest: bool,
+) -> None:
+    artifacts = {}
+    after_test = {}
+    for name, field in (("runner", "runner"), ("tests", "test"), ("benchmark_harness", "harness")):
+        artifact = tmp_path / f"{name}.txt"
+        artifact.write_bytes(f"synthetic {name} unit fixture".encode())
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        artifacts[name] = {"path": artifact.name, "sha256": digest}
+        after_test[f"{field}_sha256_after_test"] = digest
+    receipt_path = tmp_path / "preparation-receipt.json"
+    receipt_path.write_text(json.dumps({
+        "status": "terminal_contaminated_slot_released_no_valid_paired_receipt",
+        "artifacts": artifacts, "last_test_attempt": after_test,
+        "manifest_path": matrix_manifest_path.name,
+        "manifest_sha256": hashlib.sha256(matrix_manifest_path.read_bytes()).hexdigest().upper(),
+    }), encoding="utf-8")
+    if tamper_manifest:
+        matrix_manifest_path.write_bytes(matrix_manifest_path.read_bytes() + b"\n")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     last_attempt = receipt["last_test_attempt"]
-    pinned_manifest = ROOT / receipt["manifest_path"]
+    pinned_manifest = tmp_path / receipt["manifest_path"]
 
     assert receipt["status"] == "terminal_contaminated_slot_released_no_valid_paired_receipt"
     assert receipt["artifacts"]["runner"]["sha256"] == last_attempt["runner_sha256_after_test"]
     assert receipt["artifacts"]["tests"]["sha256"] == last_attempt["test_sha256_after_test"]
     assert receipt["artifacts"]["benchmark_harness"]["sha256"] == last_attempt["harness_sha256_after_test"]
-    assert receipt["manifest_sha256"] == hashlib.sha256(pinned_manifest.read_bytes()).hexdigest().upper()
+    for artifact in receipt["artifacts"].values():
+        assert artifact["sha256"] == hashlib.sha256((tmp_path / artifact["path"]).read_bytes()).hexdigest()
+    assert (receipt["manifest_sha256"] == hashlib.sha256(pinned_manifest.read_bytes()).hexdigest().upper()) is not tamper_manifest
 RETRIEVAL_METRICS = {
     "recall_at_10": 0.9,
     "ndcg_at_10": 0.8,
@@ -127,15 +213,15 @@ RETRIEVAL_METRICS = {
 }
 
 
-def _manifest_without_source_pins() -> dict[str, object]:
-    manifest = load_manifest(MANIFEST)
+def _manifest_without_source_pins(manifest_path: Path) -> dict[str, object]:
+    manifest = load_manifest(manifest_path)
     manifest["source_pins"] = {"baseline": None, "candidate": None}
     manifest["cpu_slot"]["status"] = "reserved"
     return manifest
 
 
-def test_manifest_defines_six_cases_and_four_missing_pairs() -> None:
-    manifest = load_manifest(MANIFEST)
+def test_manifest_defines_six_cases_and_four_missing_pairs(matrix_manifest_path: Path) -> None:
+    manifest = load_manifest(matrix_manifest_path)
     cases = {(item["file_count"], item["rag_chunk_count"]): item for item in manifest["cases"]}
 
     assert set(cases) == CASE_KEYS
@@ -153,16 +239,16 @@ def test_manifest_defines_six_cases_and_four_missing_pairs() -> None:
     }
 
 
-def test_prepare_summary_never_authorizes_measurement_without_pins_and_slot() -> None:
-    summary = prepare_summary(_manifest_without_source_pins())
+def test_prepare_summary_never_authorizes_measurement_without_pins_and_slot(matrix_manifest_path: Path) -> None:
+    summary = prepare_summary(_manifest_without_source_pins(matrix_manifest_path))
 
     assert summary["measurement_allowed"] is False
     assert summary["status"] == "prepared_waiting_for_pins"
     assert set(summary["pending"]) == {"baseline_pin", "candidate_pin"}
 
 
-def test_measurement_blockers_keep_reserved_slot_safe_until_both_pins_exist() -> None:
-    manifest = _manifest_without_source_pins()
+def test_measurement_blockers_keep_reserved_slot_safe_until_both_pins_exist(matrix_manifest_path: Path) -> None:
+    manifest = _manifest_without_source_pins(matrix_manifest_path)
 
     blockers = measurement_blockers(manifest)
 
@@ -273,8 +359,8 @@ def test_performance_gate_uses_paired_ten_percent_p95_p99_cap() -> None:
     assert over["regression_tolerance_pct"] == 10.0
 
 
-def test_plan_grade_requires_six_complete_paired_case_receipts() -> None:
-    manifest = load_manifest(MANIFEST)
+def test_plan_grade_requires_six_complete_paired_case_receipts(matrix_manifest_path: Path) -> None:
+    manifest = load_manifest(matrix_manifest_path)
     cases = [
         {
             "file_count": file_count,
@@ -298,8 +384,8 @@ def test_plan_grade_requires_six_complete_paired_case_receipts() -> None:
     assert complete["plan_grade"] is True
 
 
-def test_pair_grade_rejects_input_mismatch_or_cold_warm_overlap() -> None:
-    manifest = load_manifest(MANIFEST)
+def test_pair_grade_rejects_input_mismatch_or_cold_warm_overlap(matrix_manifest_path: Path) -> None:
+    manifest = load_manifest(matrix_manifest_path)
     cases = [
         {
             "file_count": file_count,

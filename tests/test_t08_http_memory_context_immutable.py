@@ -9,6 +9,7 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.token_accounting import json_tokens
+from task_memory_support import repository_memory_id
 
 
 def _public_task_client(tmp_path: Path, monkeypatch):
@@ -75,12 +76,12 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
         record = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, app.agent_state),
             key="verified fact",
             value="keep authoritative memory context",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, app.agent_state), "tenant": "tenant-a"},
         )
         app.agent_memory.record(record, actor="user", idempotency_key="seed-http-memory")
         monkeypatch.setattr(http_server, "APP", app)
@@ -219,10 +220,10 @@ def test_memory_delete_route_passes_verified_repository_identity(tmp_path: Path,
     record = app.agent_memory.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
+        scope_id=repository_memory_id(root, app.agent_state),
         key="http-delete-memory",
         value="delete through scoped route",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": repository_memory_id(root, app.agent_state), "tenant": "tenant-a"},
     ))
 
     try:
@@ -251,12 +252,12 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
         first = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, app.agent_state),
             key="first verified task fact",
             value="first verified task fact",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, app.agent_state), "tenant": "tenant-a"},
         )
         app.agent_memory.record(first, actor="user", idempotency_key="seed-first-fact")
 
@@ -265,12 +266,12 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
         wrong_root_fact = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(wrong_root),
+            scope_id=repository_memory_id(wrong_root, app.agent_state),
             key="fact from another repository",
             value="fact from another repository",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(wrong_root), "tenant": "tenant-a"},
+            provenance={"root": str(wrong_root), "repository_id": repository_memory_id(wrong_root, app.agent_state), "tenant": "tenant-a"},
         )
         app.agent_memory.record(
             wrong_root_fact, actor="user", idempotency_key="seed-wrong-root-fact"
@@ -278,12 +279,12 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
         wrong_tenant_fact = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, app.agent_state),
             key="fact from another tenant",
             value="fact from another tenant",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-b"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, app.agent_state), "tenant": "tenant-b"},
         )
         app.agent_memory.record(
             wrong_tenant_fact, actor="user", idempotency_key="seed-wrong-tenant-fact"
@@ -330,12 +331,12 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
         later = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, app.agent_state),
             key="later verified task fact",
             value="later verified task fact",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, app.agent_state), "tenant": "tenant-a"},
         )
         app.agent_memory.record(later, actor="user", idempotency_key="seed-later-fact")
         status, resumed = post(
@@ -392,12 +393,12 @@ def test_public_transition_checkpoint_is_guarded_and_completion_uses_supplied_ch
         record = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, app.agent_state),
             key="public transition memory fact",
             value="public transition memory fact",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, app.agent_state), "tenant": "tenant-a"},
         )
         app.agent_memory.record(record, actor="user", idempotency_key="seed-public-transition-fact")
         status, created = post(

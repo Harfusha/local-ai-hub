@@ -83,13 +83,13 @@ def test_call_graph_sql_is_ordered_and_bounded(tmp_path: Path, monkeypatch) -> N
     resolved = str(root.resolve())
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, f"caller_{i}", "target", "calls", path, 1)
+                (resolved, f"caller_{i}", "target", f"caller_{i}", "target", "calls", path, 1)
                 for i, path in [(0, "z.py"), (1, "a.py"), (2, "m.py")]
             ]
             + [
-                (resolved, "Pkg::caller", f"Pkg::target_{i}", "calls", path, 1)
+                (resolved, "Pkg::caller", f"Pkg::target_{i}", "caller", f"target_{i}", "calls", path, 1)
                 for i, path in [(0, "z.py"), (1, "a.py"), (2, "m.py")]
             ],
         )
@@ -112,7 +112,6 @@ def test_call_graph_sql_is_ordered_and_bounded(tmp_path: Path, monkeypatch) -> N
     graph_queries = [statement for statement in statements if "FROM edges" in statement]
     assert len(graph_queries) == 2
     assert all(
-        "ORDER BY path, line LIMIT 2" in statement
-        or "ORDER BY path, line LIMIT 3" in statement
+        "ORDER BY path, line, src, dst, kind LIMIT 3" in statement
         for statement in graph_queries
     ), graph_queries

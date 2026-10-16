@@ -11,6 +11,7 @@ from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
 from local_ai_hub.token_accounting import json_tokens
+from task_memory_support import repository_memory_id
 
 
 def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_path: Path):
@@ -22,7 +23,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
     record = MemoryRecord.create(
         kind=MemoryKind.FINDING,
         scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
+        scope_id=repository_memory_id(root, state),
         key="verified-finding",
         value="keep the scoped lookup",
         status=MemoryStatus.CONFIRMED,
@@ -30,7 +31,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
         evidence_ids=("ev-current-1",),
         repository_revision="rev-1",
         path_refs=("src/example.py",),
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-a"},
     )
     memory._save_record(record)
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
@@ -53,7 +54,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
     item = snapshot["items"][0]
     assert item["id"] == record.record_id
     assert item["scope"] == "repository"
-    assert item["scope_id"] == str(root)
+    assert item["scope_id"] == repository_memory_id(root, state)
     assert item["validity"]["updated_at"] == record.updated_at
     assert item["provenance"]["repository_revision"] == "rev-1"
     assert item["provenance"]["evidence_ids"] == ["ev-current-1"]
@@ -101,12 +102,12 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
+        scope_id=repository_memory_id(root, state),
         key="temporary-fact",
         value="valid before recheck",
         status=MemoryStatus.CONFIRMED,
         source="user",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-a"},
     )
     memory._save_record(record)
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
@@ -142,12 +143,12 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
         "repo": MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, state),
             key="repository-guidance",
             value="shared across worktrees",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-a"},
         ),
         "worktree_a": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -172,12 +173,12 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
         "foreign_tenant": MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_memory_id(root, state),
             key="foreign-guidance",
             value="must not cross tenants",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-b"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-b"},
         ),
     }
     for record in records.values():

@@ -26,6 +26,7 @@ from local_ai_hub.treesitter_parser import is_treesitter_available, parse_treesi
 
 class _SnapshotReader:
     ignore_dirs: set[str] = set()
+    max_file_bytes: int = 2_000_000
 
     @staticmethod
     def _read_snapshot(

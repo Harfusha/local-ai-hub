@@ -23,6 +23,22 @@ def _assert_advertised_actions_match_schema(tool: dict) -> None:
 
 
 @pytest.mark.parametrize("lean", [True, False])
+def test_status_description_names_the_canonical_detail_selector(monkeypatch, lean):
+    from local_ai_hub import mcp_server
+
+    monkeypatch.setattr(mcp_server, "LEAN_SCHEMAS", lean)
+    description = mcp_server._desc_status()
+
+    assert "detail: brief, cache, telemetry, full" in description
+    assert "Actions:" not in description
+    _assert_advertised_actions_match_schema({
+        "name": "local_ai_status",
+        "description": description,
+        "inputSchema": operation_tool_input_schema("local_ai_status", mcp_server.FEATURES),
+    })
+
+
+@pytest.mark.parametrize("lean", [True, False])
 @pytest.mark.parametrize("local_enabled", [True, False])
 @pytest.mark.parametrize("speculative_enabled", [True, False])
 @pytest.mark.parametrize("disabled_module", [None, "agent_os", "vision"])
