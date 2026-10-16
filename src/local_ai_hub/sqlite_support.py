@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import random
 import re
 import sqlite3
@@ -10,7 +9,7 @@ import stat
 import time
 import threading
 import weakref
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence, TypeVar
 

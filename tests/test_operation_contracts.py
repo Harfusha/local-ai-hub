@@ -898,7 +898,7 @@ def test_mcp_tools_list_scopes_artifact_list_arguments():
     input_schema = tool.inputSchema
     list_rule = next(
         rule for rule in input_schema["allOf"]
-        if rule["if"]["properties"]["action"]["const"] == "list"
+        if rule.get("if", {}).get("properties", {}).get("action", {}).get("const") == "list"
     )
 
     assert {"required": ["artifact_id"]} in list_rule["then"]["not"]["anyOf"]

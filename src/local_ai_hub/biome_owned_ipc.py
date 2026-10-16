@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import ctypes
 import json
-import math
 import os
 import queue
 import re

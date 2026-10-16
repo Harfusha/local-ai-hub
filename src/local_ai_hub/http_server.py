@@ -3,7 +3,6 @@ from __future__ import annotations
 from .http_identity import request_principal_tenant
 
 import hashlib
-import base64
 import hmac
 import ipaddress
 import inspect
@@ -75,8 +74,8 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeou
         return fallback, False
     return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError
-from .debug_traces import DebugTraceObserver, _normalize_trace_content
-from .trace_context import reset_context, reset_observer, set_context, set_observer
+from .debug_traces import _normalize_trace_content
+from .trace_context import reset_context, reset_observer, set_context
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .http_post_repository_analysis import handle_post_repository_analysis
 from .dashboard import DASHBOARD_HTML
@@ -85,13 +84,12 @@ from .delivery import decide_delivery
 from .resilience import RecoveryJournal
 from .sqlite_support import is_busy_error
 from .agent_identity import AgentScope, ScopeContext
-from .project_config import resolve_project_context, _git_common_dir as _real_git_common_dir
+from .project_config import resolve_project_context
 from .state_paths import configured_state_dir
 from .agent_tasks import (
     CheckpointResponseBudgetError,
     CompletionGateError,
     GoalContract,
-    InvalidTransitionError,
     TaskWorktreeError,
     TaskCheckpoint,
     TaskStatus,

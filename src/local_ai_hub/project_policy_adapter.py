@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import math
 from pathlib import Path
 from types import ModuleType
 from typing import Any

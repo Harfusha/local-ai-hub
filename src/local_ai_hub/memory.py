@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
-
 import hashlib
 import json
 import os
