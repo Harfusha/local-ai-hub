@@ -17,10 +17,13 @@ class CooperativePriorityGate:
     """
 
     def __init__(self, foreground_priority: int = 3):
-        try:
-            fp = int(foreground_priority)
-        except (TypeError, ValueError, OverflowError):
+        if isinstance(foreground_priority, bool):
             fp = 3
+        else:
+            try:
+                fp = int(foreground_priority)
+            except (TypeError, ValueError, OverflowError):
+                fp = 3
         self.foreground_priority = fp
         self._cond = threading.Condition()
         self._active = False
@@ -28,18 +31,24 @@ class CooperativePriorityGate:
 
     @contextmanager
     def slot(self, priority: int = 0, timeout: float = 120.0) -> Iterator[None]:
-        try:
-            p_val = int(priority)
-        except (TypeError, ValueError, OverflowError):
+        if isinstance(priority, bool) or priority is None:
             p_val = 0
+        else:
+            try:
+                p_val = int(priority)
+            except (TypeError, ValueError, OverflowError):
+                p_val = 0
         foreground = p_val >= self.foreground_priority
 
-        try:
-            val_timeout = float(timeout) if timeout is not None else None
-            if val_timeout is not None and (not math.isfinite(val_timeout) or val_timeout < 0):
-                val_timeout = 0.0
-        except (TypeError, ValueError):
+        if isinstance(timeout, bool):
             val_timeout = 120.0
+        else:
+            try:
+                val_timeout = float(timeout) if timeout is not None else None
+                if val_timeout is not None and (not math.isfinite(val_timeout) or val_timeout < 0):
+                    val_timeout = 0.0
+            except (TypeError, ValueError):
+                val_timeout = 120.0
 
         deadline = time.monotonic() + val_timeout if val_timeout is not None else None
         with self._cond:
@@ -64,10 +73,13 @@ class CooperativePriorityGate:
 
     def try_acquire(self, priority: int = 0) -> bool:
         """Attempt non-blocking acquire of the gate slot. Return True if acquired."""
-        try:
-            p_val = int(priority)
-        except (TypeError, ValueError, OverflowError):
+        if isinstance(priority, bool) or priority is None:
             p_val = 0
+        else:
+            try:
+                p_val = int(priority)
+            except (TypeError, ValueError, OverflowError):
+                p_val = 0
         foreground = p_val >= self.foreground_priority
         with self._cond:
             if self._active or (not foreground and self._foreground_waiters > 0):
