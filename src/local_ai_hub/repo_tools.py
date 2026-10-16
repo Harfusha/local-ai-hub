@@ -41,6 +41,49 @@ class GitFileInventory(list[Path]):
         self.complete = complete
 
 
+class _ReversePath:
+    __slots__ = ("value",)
+
+    def __init__(self, value: str):
+        self.value = value
+
+    def __lt__(self, other: _ReversePath) -> bool:
+        return self.value > other.value
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ReversePath) and self.value == other.value
+
+
+class _BoundedSortedPaths:
+    """Keep the lexically first unique paths with O(limit) retained entries."""
+
+    def __init__(self, limit: int):
+        self._limit = max(0, limit)
+        self._heap: list[tuple[_ReversePath, str]] = []
+        self._retained: set[str] = set()
+        self._complete = True
+
+    def add(self, path: str) -> None:
+        if path in self._retained:
+            return
+        if self._limit == 0:
+            self._complete = False
+            return
+        if len(self._heap) < self._limit:
+            heapq.heappush(self._heap, (_ReversePath(path), path))
+            self._retained.add(path)
+            return
+        self._complete = False
+        largest = self._heap[0][1]
+        if path < largest:
+            heapq.heapreplace(self._heap, (_ReversePath(path), path))
+            self._retained.remove(largest)
+            self._retained.add(path)
+
+    def finish(self) -> tuple[list[str], bool]:
+        return sorted(self._retained), self._complete
+
+
 class _IncompleteGitInventory(RuntimeError):
     pass
 
@@ -335,14 +378,21 @@ class RepositoryTools:
             timer = threading.Timer(self.git_files_timeout, kill_on_timeout)
             timer.daemon = True
             timer.start()
-            rels: list[str] = []
+            inventory_paths = _BoundedSortedPaths(limit)
             pending = bytearray()
-            truncated = False
+            scanned_paths = 0
+            scanned_bytes = 0
+            scan_capped = False
 
             def consider(raw: bytes) -> bool:
-                nonlocal truncated
+                nonlocal scanned_paths, scanned_bytes, scan_capped
                 if not raw:
                     return True
+                scanned_paths += 1
+                scanned_bytes += len(raw) + 1
+                if scanned_paths > MAX_EXACT_GIT_PATHS or scanned_bytes > MAX_EXACT_GIT_PATH_BYTES:
+                    scan_capped = True
+                    return False
                 rel = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
                 candidate = (root / rel).resolve(strict=False)
                 try:
@@ -362,10 +412,7 @@ class RepositoryTools:
                             return True
                     except OSError:
                         return True
-                if len(rels) >= limit:
-                    truncated = True
-                    return False
-                rels.append(rel)
+                inventory_paths.add(rel)
                 return True
 
             assert process.stdout is not None
@@ -384,23 +431,27 @@ class RepositoryTools:
                     del pending[:separator + 1]
                     if not consider(raw):
                         break
-                if truncated:
+                if scan_capped:
                     break
-            if pending and not truncated:
+            if pending and not scan_capped:
                 consider(bytes(pending))
-            if truncated:
-                terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+            rels, within_limit = inventory_paths.finish()
+            if scan_capped:
+                try:
+                    terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                except (OSError, ValueError):
+                    pass
             try:
                 return_code = process.wait(timeout=max(0.001, inventory_deadline - time.monotonic()))
             except TypeError:
-                return_code = process.wait()
-            if timed_out.is_set() or (return_code != 0 and not truncated):
+                return None
+            if timed_out.is_set() or (return_code != 0 and not scan_capped):
                 if timed_out.is_set():
                     with self._git_files_lock:
                         self._git_stats["file_list_timeouts"] += 1
                         self._git_files_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
                 return None
-            complete = not truncated
+            complete = within_limit and not scan_capped
             inventory = GitFileInventory(
                 [(root / rel).resolve(strict=False) for rel in rels], complete=complete,
             )
@@ -425,7 +476,7 @@ class RepositoryTools:
                 try:
                     terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
                     process.wait(timeout=1)
-                except (OSError, subprocess.TimeoutExpired):
+                except (OSError, subprocess.TimeoutExpired, TypeError):
                     pass
             if process is not None and process.stdout is not None:
                 try:
