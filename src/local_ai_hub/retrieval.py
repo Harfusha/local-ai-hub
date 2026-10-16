@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 import math
@@ -33,7 +34,7 @@ _MAX_FUSION_PATHS_PER_GROUP = 4096
 
 
 def _canonical_fusion_path(value: object) -> str | None:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or "\x00" in value:
         return None
     candidate = value.strip().replace("\\", "/")
     if not candidate:
@@ -108,6 +109,25 @@ def prioritize_source_context_paths(
             ranks[path],
         ),
     )
+
+
+def default_backend_weights() -> dict[str, float]:
+    """Return default backend weights for reciprocal-rank fusion."""
+    return {
+        "deterministic": 1.25,
+        "code_index": 1.20,
+        "serena": 1.15,
+        "preprocessor": 1.00,
+        "rag": 0.90,
+        "lexical": 0.80,
+    }
+
+
+def reciprocal_rank(rank: int, k: float = 60.0) -> float:
+    """Compute reciprocal rank score for rank and smoothing constant k."""
+    r = rank if isinstance(rank, int) and not isinstance(rank, bool) and rank >= 0 else 0
+    k_val = k if isinstance(k, (int, float)) and not isinstance(k, bool) and math.isfinite(k) and k >= 0 else 60.0
+    return 1.0 / (k_val + r + 1.0)
 
 
 def fuse_ranked_paths(
@@ -201,10 +221,10 @@ def fuse_ranked_paths(
     per_directory: dict[str, int] = defaultdict(int)
     for path, score in ranked:
         directory = path.rsplit("/", 1)[0] if "/" in path else ""
-        if per_directory[directory] >= max(1, max_per_path * 8):
+        if per_directory[directory] >= max_per_path * 8:
             continue
         per_directory[directory] += 1
         result.append((path, round(score, 6)))
-        if len(result) >= max(1, limit):
+        if len(result) >= limit:
             break
     return result
