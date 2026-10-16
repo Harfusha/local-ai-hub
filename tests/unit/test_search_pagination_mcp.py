@@ -12,7 +12,8 @@ def test_repo_pagination_contract_exposes_positive_defaults(action):
     assert contract["properties"]["offset"]["default"] == 0
     assert contract["properties"]["limit"]["maximum"] == MAX_PAGE_SIZE
     assert contract["properties"]["offset"]["maximum"] == MAX_PAGE_WINDOW - 1
-    assert contract["actions"][action]["allowed"] is None
+    assert "limit" in contract["actions"][action]["allowed"]
+    assert "offset" in contract["actions"][action]["allowed"]
     assert validate_operation_arguments(
         "local_ai_repo", action, {"limit": 20, "offset": 20}
     ) is None
