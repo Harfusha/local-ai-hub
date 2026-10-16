@@ -166,7 +166,17 @@ def test_completion_handler_does_not_mutate_task_when_receipts_fail(tmp_path: Pa
 def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_path: Path) -> None:
     root, state_dir = _project(tmp_path)
     state_dir.mkdir()
-    result = CompletionResult("task-1", True, ("check",), (), (), ())
+    receipt = VerificationReceipt.create(
+        "task-1",
+        "check",
+        evidence_id="evidence-check",
+        command_id="cmd-check",
+        owner="agent",
+        repository_revision="rev-1",
+        mutation_generation=0,
+        evidence_type="test",
+    )
+    result = CompletionResult("task-1", True, ("check",), (), (), (receipt,))
 
     class Verification:
         state_store = SimpleNamespace(db_path=state_dir / "agent.sqlite3")
@@ -427,7 +437,7 @@ def test_invalid_project_configuration_blocks_completion(tmp_path: Path) -> None
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".local-ai.toml").write_text("[verification_rules]\nbad = false\n", encoding="utf-8")
-    verification = _VerificationStore(CompletionResult("task-1", True, (), (), (), ()))
+    verification = _VerificationStore(CompletionResult("task-1", False, (), ("check",), (), ()))
     task = SimpleNamespace(
         task_id="task-1",
         owner="owner-1",
@@ -452,7 +462,7 @@ def test_project_completion_rejects_root_not_bound_to_task(tmp_path: Path) -> No
     trusted_root, state_dir = _project(tmp_path)
     foreign_root = tmp_path / "foreign"
     foreign_root.mkdir()
-    verification = _VerificationStore(CompletionResult("task-1", True, (), (), (), ()))
+    verification = _VerificationStore(CompletionResult("task-1", False, (), ("check",), (), ()))
     task = SimpleNamespace(
         task_id="task-1",
         owner="owner-1",
