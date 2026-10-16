@@ -90,7 +90,7 @@ Run: `python -m pytest tests/unit/test_mcp_negative_knowledge_projection.py -v`
 - Modify: `src/local_ai_hub/mcp_server.py:3294-3300`
 - Test: `tests/unit/test_mcp_skeletonize.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write regression tests for canonical root forwarding**
 
 ```python
 # tests/unit/test_mcp_skeletonize.py
@@ -135,7 +135,7 @@ Run: `python -m pytest tests/unit/test_mcp_skeletonize.py -v`
 - Modify: `src/local_ai_hub/rag.py:320-350`
 - Test: `tests/unit/test_rag_workspace_resolver.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write regression tests for inferred and explicit workspace identities**
 
 ```python
 # tests/unit/test_rag_workspace_resolver.py
@@ -147,38 +147,37 @@ def test_rag_auto_resolves_workspace_from_root(tmp_path):
     assert ws_id.startswith(".local-ai-hub-")
 ```
 
-- [ ] **Step 2: Run test to verify behavior**
-Run: `python -m pytest tests/unit/test_rag_workspace_resolver.py -v`
+- [ ] **Step 2: Defer test execution until integrated source package is complete**
+The operator requires all source changes across the package before any test execution. Do not run this task's test during implementation.
 
-- [ ] **Step 3: Implement fix**
-In `mcp_server.py` in `local_ai_rag`, if `workspace` is empty or not matching hash format, resolve workspace using `RAGStore.workspace_id(root)` before calling `/api/rag/search`.
+- [x] **Step 3: Implement fix**
+In `mcp_server.py`, require an explicit absolute root for repository RAG actions. Derive the canonical workspace from root when workspace is empty or contains a rooted path; preserve explicit opaque workspace identifiers.
 
-- [ ] **Step 4: Run test to verify pass**
-Run: `python -m pytest tests/unit/test_rag_workspace_resolver.py -v`
+- [ ] **Step 4: Run deferred regression tests at final package gate**
+Run: `python -m pytest tests/unit/test_rag_workspace_resolver.py -v` only after all six waves' source changes are complete.
 
 - [ ] **Step 5: Commit**
 `git commit -m "fix(rag): automatically resolve workspace hash ID from root path"`
 
 ---
 
-### Task 5: Parameter Normalizer & Alias Handler (#6)
+### Task 5: Enforce Canonical MCP Parameters (#6)
 
 **Files:**
 - Modify: `src/local_ai_hub/mcp_server.py:3560-3620`
 - Test: `tests/unit/test_mcp_parameter_normalization.py`
 
-- [ ] **Step 1: Write failing test**
-Verify `local_ai_command(action="run", root=".", command="echo 1")` maps `root` to `cwd` and does not reject with 400.
-Verify `local_ai_repo(action="context", changed_paths=["foo.py"])` maps to `paths`.
+- [x] **Step 1: Write regression tests for strict canonical parameters**
+Verify `local_ai_command` keeps `root` separate from `cwd`, requires nonempty `paths` for `format`, and rejects retired `changed_paths`, `files`, `input`, and positional compatibility forms.
 
-- [ ] **Step 2: Run test to verify failure**
-Run: `python -m pytest tests/unit/test_mcp_parameter_normalization.py -v`
+- [ ] **Step 2: Defer test execution until integrated source package is complete**
+The operator requires all source changes across the package before any test execution. Do not run this task's test during implementation.
 
-- [ ] **Step 3: Implement fix**
-In `mcp_server.py`, add alias resolution for `root`/`cwd`, `paths`/`changed_paths`/`files`, and `symbol`/`query` before dispatching to client endpoints.
+- [x] **Step 3: Implement fix**
+In `mcp_server.py` and `operation_contracts.py`, remove alias resolution and retired fields. Keep `root`/`cwd` independent, use `paths` as the sole path-list field, and use `stdin` as the sole command input field.
 
-- [ ] **Step 4: Run test to verify pass**
-Run: `python -m pytest tests/unit/test_mcp_parameter_normalization.py -v`
+- [ ] **Step 4: Run deferred regression test at final package gate**
+Run: `python -m pytest tests/unit/test_mcp_parameter_normalization.py -v` only after all six waves' source changes are complete.
 
 - [ ] **Step 5: Commit**
 `git commit -m "fix(mcp): normalize parameter aliases across repo and command tools"`
@@ -188,10 +187,10 @@ Run: `python -m pytest tests/unit/test_mcp_parameter_normalization.py -v`
 ### Task 6: Add `runs` Parameter to `flaky_detect` in Command Schema (#7)
 
 **Files:**
-- Modify: `mcp/local-ai/local_ai_command.json`
+- Modify: `src/local_ai_hub/operation_contracts.py`
 - Test: `tests/unit/test_flaky_detect_schema.py`
 
-- [ ] **Step 1: Write test verifying schema validation accepts `runs`**
+- [x] **Step 1: Write regression test verifying the public schema accepts `runs`**
 
 ```python
 # tests/unit/test_flaky_detect_schema.py
@@ -203,14 +202,14 @@ def test_command_schema_includes_runs():
     assert schema["properties"]["runs"]["type"] == "integer"
 ```
 
-- [ ] **Step 2: Run test to verify failure**
-Run: `python -m pytest tests/unit/test_flaky_detect_schema.py -v`
+- [ ] **Step 2: Defer test execution until integrated source package is complete**
+The operator requires all source changes across the package before any test execution. Do not run this task's test during implementation.
 
-- [ ] **Step 3: Implement fix**
-Add `"runs": {"type": "integer", "description": "Number of executions to run for flaky detection", "minimum": 1, "default": 5}` to `local_ai_command.json`.
+- [x] **Step 3: Implement fix**
+Publish `runs` as an integer with minimum `1` and default `5` in `operation_contracts.py`; the MCP tool signature forwards the selected count to the command endpoint.
 
-- [ ] **Step 4: Run test to verify pass**
-Run: `python -m pytest tests/unit/test_flaky_detect_schema.py -v`
+- [ ] **Step 4: Run deferred regression test at final package gate**
+Run: `python -m pytest tests/unit/test_flaky_detect_schema.py -v` only after all six waves' source changes are complete.
 
 - [ ] **Step 5: Commit**
 `git commit -m "fix(schema): expose runs parameter for flaky_detect in local_ai_command"`
@@ -224,12 +223,12 @@ Run: `python -m pytest tests/unit/test_flaky_detect_schema.py -v`
 - Modify: `src/local_ai_hub/worktrees.py:140-180`
 - Test: `tests/unit/test_worktree_lifecycle_prune.py`
 
-- [ ] **Step 1: Write test verifying dangling temporary worktrees are cleaned and pruned**
-- [ ] **Step 2: Implement fix**
-In `remove_git_worktree` and task completion hooks, run `git worktree remove --force <path>` followed by `git worktree prune`. Add an idle cleanup sweep that checks for worktrees in `Temp/lah_wt_*` whose owning process is no longer alive.
+- [x] **Step 1: Write regression tests for explicit removal, stale metadata pruning, and prune failure reporting**
+- [x] **Step 2: Implement safe owned-worktree cleanup**
+`remove_git_worktree` removes the explicitly owned worktree and prunes stale metadata under one bounded deadline. Do not add an idle sweep that deletes a `Temp/lah_wt_*` directory based only on a dead process; ownership, active checkout, and dirty content must be proven before cleanup.
 
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(worktrees): auto-prune worktrees on removal to prevent git locking"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_worktree_lifecycle_prune.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -239,22 +238,25 @@ In `remove_git_worktree` and task completion hooks, run `git worktree remove --f
 - Modify: `src/local_ai_hub/telemetry.py:200-260`
 - Test: `tests/unit/test_telemetry_label_allowlist.py`
 
-- [ ] **Step 1: Write test verifying operations log valid phase labels and durations**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression tests for bounded labels and measured phase durations**
+- [x] **Step 2: Implement fix**
 Replace obfuscated label `<path>` with actual tool action and root name. Retain error category and phase durations (`db_wait_ms`, `exec_ms`, `serialization_ms`) in metrics without omitting diagnostic failure details.
 
-- [ ] **Step 3: Run test and verify pass & Commit**
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run telemetry regression coverage only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 `git commit -m "feat(telemetry): add phase timing breakdown and clear action label allowlist"`
 
 ---
 
-### Task 9: Ignore `artifacts/` and `.validation/` in Code Indexing (#10)
+### Task 9: Exclude Generated Artifact and Validation Snapshots from Code Indexing (#10)
 
 **Files:**
 - Modify: `src/local_ai_hub/repo_tools.py:170-210`
-- Test: `tests/unit/test_repo_tools_ignore_dirs.py`
+- Test: `tests/test_code_index_ignored_paths.py`
 
-- [ ] **Step 1: Write test verifying files in `artifacts/` and `.validation/` are excluded from symbol scanning**
+**Contract:** Exclude generated artifact snapshots and `.validation/` contents from indexing, while preserving legitimate project content under `artifacts/` (including `artifacts/release/`) and similarly named source paths. Do not blanket-ignore the entire `artifacts/` directory.
+
+- [ ] **Step 1: Write test verifying generated artifact snapshots and `.validation/` are excluded while legitimate `artifacts/release/` content remains indexable**
 
 ```python
 # tests/unit/test_repo_tools_ignore_dirs.py
@@ -272,8 +274,8 @@ def test_repo_tools_ignores_artifacts_and_validation(tmp_path):
     assert "test.md" not in file_names
 ```
 
-- [ ] **Step 2: Implement fix in `repo_tools.py`**
-Add `"artifacts"`, `".validation"`, `".system_generated"` to default ignore directories set in `RepositoryTools`.
+- [ ] **Step 2: Implement scoped exclusions in `repo_tools.py`**
+Exclude known generated snapshot paths and `.validation/` without excluding legitimate project content beneath `artifacts/`.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(repo_tools): exclude artifacts and validation directories from indexing"`
@@ -286,8 +288,8 @@ Add `"artifacts"`, `".validation"`, `".system_generated"` to default ignore dire
 - Modify: `src/local_ai_hub/services.py:5010-5035`
 - Test: `tests/unit/test_adaptive_context_reranker_timeout.py`
 
-- [ ] **Step 1: Write failing test verifying RAG in adaptive context bypasses CPU reranker under deadline**
-- [ ] **Step 2: Implement fix in `services.py`**
+- [x] **Step 1: Write regression test verifying RAG in adaptive context bypasses CPU reranker under deadline**
+- [x] **Step 2: Implement fix in `services.py`**
 In `services.py:5020`:
 ```python
 rag_use_reranker = (
@@ -295,8 +297,8 @@ rag_use_reranker = (
     and not (self.reranker and self.reranker.active_device == "cpu")
 )
 ```
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "perf(context): bypass CPU cross-encoder under adaptive deadline to prevent RAG drop"`
+- [ ] **Step 3: Run deferred regression test at final package gate and commit integrated package**
+Run `tests/unit/test_adaptive_context_reranker_timeout.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -306,11 +308,11 @@ rag_use_reranker = (
 - Modify: `src/local_ai_hub/http_server.py:7690-7710`
 - Test: `tests/unit/test_guarded_context_inference.py`
 
-- [ ] **Step 1: Write test verifying `/api/repo/context` with `changed_paths` returns 200 without explicit `guarded=true`**
-- [ ] **Step 2: Implement fix in `http_server.py`**
+- [x] **Step 1: Write regression tests verifying context infers `guarded=true` from `changed_paths` or `focus`**
+- [x] **Step 2: Implement fix in `http_server.py`**
 At line 7698: If `changed_paths` or `focus` is present in payload, automatically set `guarded = True`, eliminating 400 error.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(api): automatically infer guarded=true when changed_paths provided"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_guarded_context_inference.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -321,11 +323,11 @@ At line 7698: If `changed_paths` or `focus` is present in payload, automatically
 - Modify: `src/local_ai_hub/mcp_server.py:3580-3620`
 - Test: `tests/unit/test_command_env_overrides.py`
 
-- [ ] **Step 1: Write test verifying custom environment variables are passed to subprocess**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression tests for environment schema and subprocess propagation**
+- [x] **Step 2: Implement fix**
 Expose `env` in MCP schema and wire it directly to `_environment_overrides` in `commands.py`.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "feat(commands): expose env variable overrides in local_ai_command MCP tool"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_command_env_overrides.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -336,11 +338,11 @@ Expose `env` in MCP schema and wire it directly to `_environment_overrides` in `
 - Modify: `src/local_ai_hub/commands.py:7300-7350`
 - Test: `tests/unit/test_subprocess_pipe_deadlock.py`
 
-- [ ] **Step 1: Write test with >128 KB output ensuring no pipe hang**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression tests with large stdout/stderr output and bounded capture**
+- [x] **Step 2: Implement fix**
 Use asynchronous stream drainers with non-blocking threads to continuously drain stdout and stderr into memory buffers up to `max_output_bytes`.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(process): prevent pipe buffer deadlock on large stdout/stderr streams"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_subprocess_pipe_deadlock.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -350,11 +352,11 @@ Use asynchronous stream drainers with non-blocking threads to continuously drain
 - Modify: `src/local_ai_hub/sqlite_support.py:110-150`
 - Test: `tests/unit/test_sqlite_degraded_fallback.py`
 
-- [ ] **Step 1: Write test simulating locked database returning degraded fallback instead of fatal 500**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression tests simulating locked database behavior and degraded HTTP response**
+- [x] **Step 2: Implement fix**
 Catch `sqlite3.OperationalError: database is locked` after exhausted retries. Return `{"success": False, "degraded": True, "error": "database_locked"}` instead of unhandled 500 crash.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(sqlite): return graceful degraded response on persistent database locks"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_sqlite_degraded_fallback.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -364,11 +366,11 @@ Catch `sqlite3.OperationalError: database is locked` after exhausted retries. Re
 - Modify: `src/local_ai_hub/process_utils.py:80-120`
 - Test: `tests/unit/test_windows_delete_retry.py`
 
-- [ ] **Step 1: Write test simulating transient file lock and verifying retry succeeds**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression tests for transient WinError 5 retry, exhaustion, and unrelated permission errors**
+- [x] **Step 2: Implement fix**
 Add `safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05)` that catches `PermissionError: [WinError 5] Access is denied` on Windows, retrying with exponential backoff before failing.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(io): add exponential backoff retry for transient Windows file deletion locks"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_windows_delete_retry.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -379,11 +381,11 @@ Add `safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05)` that c
 - Modify: `src/local_ai_hub/code_index.py:2800-2820`
 - Test: `tests/unit/test_max_indexable_file_guard.py`
 
-- [ ] **Step 1: Write test verifying files larger than `max_file_bytes` (default 2 MB) are skipped from AST parsing**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression tests for size-bound reads and AST indexing skips**
+- [x] **Step 2: Implement fix**
 Check `os.stat().st_size` before loading file into memory. Skip AST parsing for files > 2 MB, indexing only basic path metadata.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(code_index): guard AST parsers against OOM by skipping files over 2 MB"`
+- [ ] **Step 3: Run deferred regression tests at final package gate and commit integrated package**
+Run `tests/unit/test_max_indexable_file_guard.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -393,11 +395,11 @@ Check `os.stat().st_size` before loading file into memory. Skip AST parsing for 
 - Modify: `src/local_ai_hub/commands.py:8750-8775`
 - Test: `tests/unit/test_repair_loop_stub.py`
 
-- [ ] **Step 1: Write test verifying `repair_loop` fails fast when no patch generator is configured**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression test verifying `repair_loop` fails fast when no patch generator is configured**
+- [x] **Step 2: Implement fix**
 If `_synthesize_repair_patch` returns `None` and no incident fix exists, do not cycle through `max_attempts` doing nothing. Immediately return `repaired: False, reason: "no_candidate_synthesizer"`.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(commands): terminate repair_loop immediately when candidate synthesizer unavailable"`
+- [ ] **Step 3: Run deferred regression test at final package gate and commit integrated package**
+Run `tests/unit/test_repair_loop_stub.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.
 
 ---
 
@@ -407,8 +409,8 @@ If `_synthesize_repair_patch` returns `None` and no incident fix exists, do not 
 - Modify: `src/local_ai_hub/agent_events.py:115-130`
 - Test: `tests/unit/test_agent_events_busy_timeout.py`
 
-- [ ] **Step 1: Write test simulating burst of concurrent log appends**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression test verifying two-second SQLite busy timeout**
+- [x] **Step 2: Implement fix**
 Increase `timeout_seconds` in `agent_events.py` from 0.25 to 2.0 s with retry backoff in `BEGIN IMMEDIATE`.
-- [ ] **Step 3: Run test and verify pass & Commit**
-`git commit -m "fix(events): increase busy lock timeout to 2.0s to prevent dropping stream log events"`
+- [ ] **Step 3: Run deferred regression test at final package gate and commit integrated package**
+Run `tests/unit/test_agent_events_busy_timeout.py` only after all six waves' source changes are complete. Commit only after the integrated package review and final gate.

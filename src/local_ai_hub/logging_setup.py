@@ -33,7 +33,11 @@ class SafeWindowsRotatingFileHandler(logging.handlers.RotatingFileHandler):
         try:
             super().doRollover()
         except (PermissionError, OSError):
-            pass
+            if self.stream is None:
+                try:
+                    self.stream = self._open()
+                except OSError:
+                    pass
 
 def configure_logging(state_dir: Path, config: dict[str, Any]) -> logging.Logger:
     """Configure non-blocking rotating operational logs.

@@ -74,7 +74,7 @@ Local AI Hub has no remote-access or remote-control mode. HTTP binds only to `12
 
 `local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` telemetry, agent-state, and `traces` details avoid the live-status request; `traces` accepts bounded `min_duration_ms` and `trace_action` filters.
 
-MCP aliases normalize before endpoint dispatch: `local_ai_command` accepts `root` for `cwd` and `changed_paths` or `files` for `paths`; `local_ai_repo` accepts `cwd` for `root`, `paths` or `files` for `changed_paths`, and `symbol` for `query`. Explicit canonical parameters take precedence, including empty lists. On `/api/context/pack`, presence of `changed_paths` or `focus` requests guarded handling, including an empty list; explicit `guarded` values must be boolean.
+MCP parameters are strict and canonical. For `local_ai_command`, `root` scopes the repository independently from `cwd`, `paths` is the only path-list field, `stdin` is the only stdin field, and `format` requires nonempty `paths`; retired aliases and positional compatibility forms reject. For `local_ai_repo`, use `root`, `query`, and `changed_paths`; retired `cwd`, `paths`, `files`, and `symbol` aliases reject. On `/api/context/pack`, presence of `changed_paths` or `focus` requests guarded handling, including an empty list; explicit `guarded` values must be boolean.
 
 `local_ai_command` accepts optional `env` as a mapping from variable names to string values. MCP publishes string-valued entries, and the command broker applies overrides to the child process while preserving its existing name, count, and value validation. Keep values short and task-specific; do not put credentials in prompts or repository files.
 
@@ -571,7 +571,7 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - Success also returns `diagram_indexed` and the resolved image path.
 - `local_ai_repo(action="pipeline")` accepts closed step objects.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.
-- `local_ai_coord(action="pubsub_poll")` accepts `after_seq`.
+- `local_ai_coord(action="pubsub_poll")` accepts `after_seq`, `limit` (1–1000, default 50), and optional `after_ts`; `after_ts` is distinct from `after_seq`.
 - `local_ai_coord` bounds `max_tokens` to 0 through 100000.
 - Repository pipelines serialize preprocessing mutation actions with other mutating steps.
 - Optional repository-analysis tools are installed and configured separately; they are not part of the Hub.

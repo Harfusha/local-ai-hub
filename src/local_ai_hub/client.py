@@ -1704,14 +1704,14 @@ class HubClient:
                 "publisher": publisher,
             })
         if act == "pubsub_poll":
-            allowed = {"root", "topic", "after_seq", "limit", "since_timestamp"}
+            allowed = {"root", "topic", "after_seq", "limit", "after_ts"}
             if set(kwargs) - allowed:
                 return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                        "error": "pubsub_poll accepts only root, topic, after_seq, limit, and since_timestamp"}
+                        "error": "pubsub_poll accepts only root, topic, after_seq, limit, and after_ts"}
             topic = kwargs.get("topic", "default")
             limit = kwargs.get("limit")
             after_seq = kwargs.get("after_seq")
-            since_timestamp = kwargs.get("since_timestamp")
+            after_ts = kwargs.get("after_ts")
             if not isinstance(topic, str):
                 return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                         "error": "pubsub topic must be a string"}
@@ -1721,22 +1721,22 @@ class HubClient:
             if after_seq is not None and (type(after_seq) is not int or not 0 <= after_seq <= 2**63 - 1):
                 return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                         "error": "pubsub after_seq must be a nonnegative 64-bit integer"}
-            if since_timestamp is not None and (
-                isinstance(since_timestamp, bool)
-                or not isinstance(since_timestamp, (int, float))
-                or not 0 <= since_timestamp <= 1e12
-                or not math.isfinite(since_timestamp)
+            if after_ts is not None and (
+                isinstance(after_ts, bool)
+                or not isinstance(after_ts, (int, float))
+                or not 0 <= after_ts <= 1e12
+                or not math.isfinite(after_ts)
             ):
                 return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                        "error": "pubsub since_timestamp must be a finite number from 0 through 1e12"}
+                        "error": "pubsub after_ts must be a finite number from 0 through 1e12"}
             payload = {
                 "root": kwargs.get("root", "."),
                 "topic": topic,
                 "limit": limit if limit is not None else 50,
                 "after_seq": after_seq if after_seq is not None else 0,
             }
-            if since_timestamp is not None:
-                payload["since_timestamp"] = since_timestamp
+            if after_ts is not None:
+                payload["after_ts"] = after_ts
             return self.post("/api/coord/pubsub_poll", payload)
         if act == "simulate_merge":
             return self.post("/api/coord/simulate_merge", {

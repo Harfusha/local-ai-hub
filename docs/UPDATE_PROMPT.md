@@ -74,7 +74,7 @@ Local AI Hub has no remote-access or remote-control mode. HTTP binds only to `12
 
 `local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` telemetry, agent-state, and `traces` details avoid the live-status request; `traces` accepts bounded `min_duration_ms` and `trace_action` filters.
 
-MCP aliases normalize before endpoint dispatch: `local_ai_command` accepts `root` for `cwd` and `changed_paths` or `files` for `paths`; `local_ai_repo` accepts `cwd` for `root`, `paths` or `files` for `changed_paths`, and `symbol` for `query`. Explicit canonical parameters take precedence, including empty lists. On `/api/context/pack`, presence of `changed_paths` or `focus` requests guarded handling, including an empty list; explicit `guarded` values must be boolean.
+MCP parameters are strict and canonical. For `local_ai_command`, `root` scopes the repository independently from `cwd`, `paths` is the only path-list field, `stdin` is the only stdin field, and `format` requires nonempty `paths`; retired aliases and positional compatibility forms reject. For `local_ai_repo`, use `root`, `query`, and `changed_paths`; retired `cwd`, `paths`, `files`, and `symbol` aliases reject. On `/api/context/pack`, presence of `changed_paths` or `focus` requests guarded handling, including an empty list; explicit `guarded` values must be boolean.
 
 For `local_ai_command(action="flaky_detect")`, `runs` is an integer execution count with minimum `1` and default `5`; MCP clients validate the published schema, and the command endpoint receives the selected count.
 

@@ -20,14 +20,13 @@ class _RepoState:
         return {"fingerprint": "stable", "changed_paths": []}
 
 
-def _broker(tmp_path, *, policy_blocking: bool = False, coalesced_wait_seconds: float = 1.0):
+def _broker(tmp_path, *, coalesced_wait_seconds: float = 1.0):
     config = {
         "server": {"state_dir": str(tmp_path / "state")},
         "commands": {
             "enabled": True,
             "allow_read": True,
             "allow_validation": True,
-            "policy_blocking": policy_blocking,
             "coalesced_wait_seconds": coalesced_wait_seconds,
         },
     }
@@ -76,31 +75,24 @@ def test_bypass_cache_skips_reads_and_does_not_write_results(tmp_path, monkeypat
 def test_bypass_cache_does_not_write_suppression_results(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     monkeypatch.setattr(
-        broker, "_unavailable_executable", lambda _command, _cwd: "missing-tool"
+        broker, "_unavailable_executable", lambda _command, _cwd: "python"
     )
 
-    bypassed = broker.run("missing-tool", str(tmp_path), tenant="test", bypass_cache=True)
-    ordinary = broker.run("missing-tool", str(tmp_path), tenant="test")
+    command = "python -m pytest -q"
+    bypassed = broker.run(command, str(tmp_path), tenant="test", bypass_cache=True)
+    ordinary = broker.run(command, str(tmp_path), tenant="test")
 
     assert bypassed.get("preflight") is True
     assert ordinary.get("suppression_cache_hit") is not True
     assert ordinary.get("preflight") is True
 
 
-def test_suppression_cache_does_not_cross_policy_configuration(tmp_path, monkeypatch) -> None:
-    strict = _broker(tmp_path, policy_blocking=True)
-    first = strict.run("unknown-tool", str(tmp_path), tenant="test")
-    assert first["policy_blocked"] is True
+def test_unknown_command_is_denied_before_execution(tmp_path) -> None:
+    broker = _broker(tmp_path)
+    result = broker.run("unknown-tool", str(tmp_path), tenant="test")
 
-    permissive = _broker(tmp_path, policy_blocking=False)
-    monkeypatch.setattr(
-        permissive, "_unavailable_executable", lambda _command, _cwd: "unknown-tool"
-    )
-    second = permissive.run("unknown-tool", str(tmp_path), tenant="test")
-
-    assert second.get("suppression_cache_hit") is not True
-    assert second.get("policy_blocked") is not True
-    assert second.get("preflight") is True
+    assert result["policy_blocked"] is True
+    assert result["request_not_sent"] is True
 
 
 def test_singleflight_waiter_receives_escaped_owner_timeout(tmp_path, monkeypatch) -> None:
@@ -337,7 +329,6 @@ def test_configured_suppression_l1_ttl_does_not_outlive_l2(
             "server": {"state_dir": str(tmp_path / "state")},
             "commands": {
                 "enabled": True,
-                "policy_blocking": True,
                 "suppression_ttl_seconds": 2,
                 "l1_ttl_seconds": l1_ttl_seconds,
             },
@@ -351,11 +342,14 @@ def test_configured_suppression_l1_ttl_does_not_outlive_l2(
     )
     monkeypatch.setattr("local_ai_hub.cache.time.time", lambda: clock["wall"])
 
-    first = broker.run("unknown-tool", str(tmp_path), tenant="test")
-    warm = broker.run("unknown-tool", str(tmp_path), tenant="test")
+    command = "python -m pytest -q"
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: "python")
+    first = broker.run(command, str(tmp_path), tenant="test")
+    warm = broker.run(command, str(tmp_path), tenant="test")
     clock.update(monotonic=3.0, wall=3003.0)
-    expired = broker.run("unknown-tool", str(tmp_path), tenant="test")
+    expired = broker.run(command, str(tmp_path), tenant="test")
 
-    assert first["policy_blocked"] is True
+    assert first["preflight"] is True
     assert warm["suppression_cache_hit"] is True
     assert expired.get("suppression_cache_hit") is not True
+    assert expired["preflight"] is True

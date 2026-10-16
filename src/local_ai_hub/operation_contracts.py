@@ -673,6 +673,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "command": {"type": "string", "default": ""},
             "cwd": {"type": "string", "default": "."},
             "root": {"type": "string"},
+            "stdin": {"type": "string", "default": ""},
             "runs": {"type": "integer", "description": "Number of executions to run for flaky detection", "minimum": 1, "default": 5},
             "env": {
                 "type": "object",
@@ -687,8 +688,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "stream_id": {"type": "string", "default": ""},
             "execution_id": {"type": "string", "default": ""},
             "paths": {"type": "array", "items": {"type": "string"}},
-            "changed_paths": {"type": "array", "items": {"type": "string"}},
-            "files": {"type": "array", "items": {"type": "string"}},
             "patch": {"type": "string", "default": ""},
             "auto_rollback": {"type": "boolean", "default": True},
             "job_id": {"type": "string", "default": ""},
@@ -700,6 +699,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "rollback_on_failure": {"type": "boolean", "default": False},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
+        required={"format": ("paths",)},
+        non_empty={"format": ("paths",)},
     ),
     "local_ai_coord": _tool_contract(
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
