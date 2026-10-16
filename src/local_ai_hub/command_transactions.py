@@ -25,6 +25,29 @@ class _TreeEntry:
     target: str = ""
 
 
+def is_valid_transaction_write_path(path: str) -> bool:
+    """Return True if path is a valid relative, normalized, portable write path."""
+    if not isinstance(path, str) or not path or "\x00" in path:
+        return False
+    portable = path.replace("\\", "/")
+    drive, _ = ntpath.splitdrive(path)
+    parts = portable.split("/")
+    if drive or ntpath.isabs(path) or portable.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+        return False
+    reserved = {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)),
+        "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
+    }
+    if any(
+        ":" in part or part.endswith((".", " "))
+        or part.split(".", 1)[0].rstrip(" .").upper() in reserved
+        for part in parts
+    ):
+        return False
+    return True
+
+
 def _write_set(paths: Iterable[str]) -> dict[str, str]:
     if isinstance(paths, (str, bytes)):
         raise ValueError("transaction write set must be a collection of relative file paths")
@@ -417,6 +440,10 @@ class TransactionStashHook:
     """Hook to stash dirty working tree state and restore it upon abort or error."""
 
     def __init__(self, root: str | Path, message: str | None = None) -> None:
+        if not isinstance(root, (str, Path)) or not str(root).strip() or "\x00" in str(root):
+            raise ValueError("invalid transaction root path")
+        if message is not None and (not isinstance(message, str) or "\x00" in message):
+            raise ValueError("invalid transaction stash message")
         self.root = Path(root).expanduser().resolve(strict=True)
         self.message = message or "transaction_stash_guard"
         self._stashed = False
