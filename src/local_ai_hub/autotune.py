@@ -88,7 +88,7 @@ class RuntimeTuner:
         profile: dict[str, float] = {}
         for key in ("latency_ms", "load_ms", "tps", "samples"):
             raw_value = data.get(key)
-            if key not in data or isinstance(raw_value, bool):
+            if key not in data or isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
                 return None
             try:
                 value = float(raw_value)

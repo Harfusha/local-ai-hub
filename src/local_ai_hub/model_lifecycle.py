@@ -1,17 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from contextlib import contextmanager
 import gc
 import math
 import numbers
 import threading
 import time
-import weakref
-from contextlib import contextmanager
 from typing import Any, Callable
+import weakref
 
 
 _CUDA_MODEL_LOCK = threading.RLock()
 _CUDA_MODELS: weakref.WeakSet[Any] = weakref.WeakSet()
+_MAX_LOCK_TIMEOUT_SECONDS = 86_400.0
+
+
+def _safe_timeout(timeout_seconds: Any) -> float:
+    if timeout_seconds is None or isinstance(timeout_seconds, bool):
+        return 0.0
+    try:
+        parsed = float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if math.isnan(parsed) or parsed < 0.0:
+        return 0.0
+    if math.isinf(parsed):
+        return _MAX_LOCK_TIMEOUT_SECONDS
+    return min(parsed, _MAX_LOCK_TIMEOUT_SECONDS)
 
 
 @contextmanager
@@ -47,9 +63,26 @@ def acquire_locks(locks: tuple[Any, ...], timeout_seconds: float):
 
 
 def uses_torch_cuda(backend: str | None, device: str | None) -> bool:
-    normalized_backend = str(backend or "").strip().lower()
-    normalized_device = str(device or "").strip().lower()
+    if not isinstance(backend, str) or not isinstance(device, str) or "\x00" in backend or "\x00" in device:
+        return False
+    normalized_backend = backend.strip().lower()
+    normalized_device = device.strip().lower()
     return normalized_backend in {"torch", "sentence-transformers"} and normalized_device.startswith("cuda")
+
+
+def active_cuda_model_count() -> int:
+    with _CUDA_MODEL_LOCK:
+        return len(_CUDA_MODELS)
+
+
+def is_cuda_model_registered(owner: Any) -> bool:
+    if owner is None:
+        return False
+    with _CUDA_MODEL_LOCK:
+        try:
+            return owner in _CUDA_MODELS
+        except TypeError:
+            return False
 
 
 def load_model(owner: Any, *, uses_cuda: bool, factory: Callable[[], Any]) -> Any:
@@ -71,9 +104,12 @@ def release_model(owner: Any, *, used_cuda: bool) -> bool:
     if not used_cuda:
         return False
     with _CUDA_MODEL_LOCK:
-        if owner not in _CUDA_MODELS:
+        try:
+            if owner not in _CUDA_MODELS:
+                return False
+            _CUDA_MODELS.discard(owner)
+        except TypeError:
             return False
-        _CUDA_MODELS.discard(owner)
         if _CUDA_MODELS:
             return False
         gc.collect()

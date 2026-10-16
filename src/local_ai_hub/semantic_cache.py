@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -30,6 +31,38 @@ def _load_numpy() -> Any | None:
     return _NUMPY
 
 
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        res = float(val)
+        if not math.isfinite(res):
+            return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
 class SemanticGenerationCache:
     """Conservative semantic reuse for rephrased requests over identical context.
 
@@ -38,18 +71,30 @@ class SemanticGenerationCache:
     """
 
     def __init__(self, config: dict[str, Any], embeddings: Any):
-        cfg = config.get("semantic_cache", {})
+        if not isinstance(config, dict):
+            raise TypeError("config must be a dictionary")
+        cfg = config.get("semantic_cache", {}) if isinstance(config.get("semantic_cache"), dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
-        self.threshold = float(cfg.get("threshold", 0.935))
-        self.ttl_seconds = int(cfg.get("ttl_seconds", 7 * 86400))
-        self.max_entries = int(cfg.get("max_entries", 10000))
-        self.max_candidates = int(cfg.get("max_candidates", 128))
-        self.min_query_chars = int(cfg.get("min_query_chars", 8))
+        self.threshold = _safe_float(cfg.get("threshold"), 0.935, min_val=0.0, max_val=1.0)
+        self.ttl_seconds = _safe_int(cfg.get("ttl_seconds"), 7 * 86400, min_val=0)
+        self.max_entries = _safe_int(cfg.get("max_entries"), 10000, min_val=1)
+        self.max_candidates = _safe_int(cfg.get("max_candidates"), 128, min_val=1)
+        self.min_query_chars = _safe_int(cfg.get("min_query_chars"), 8, min_val=1)
         self.embeddings = embeddings
-        self.path = Path(config["server"]["state_dir"]) / "semantic-cache.sqlite3"
+        server_cfg = config.get("server")
+        if not isinstance(server_cfg, dict):
+            raise TypeError("config.server must be a dictionary")
+        state_dir = server_cfg.get("state_dir")
+        if not isinstance(state_dir, (str, Path)):
+            raise TypeError("server.state_dir must be a path string or Path")
+        if not str(state_dir).strip() or "\x00" in str(state_dir):
+            raise ValueError("server.state_dir must be nonempty and contain no NUL")
+        self.path = Path(state_dir) / "semantic-cache.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._recent = MemoryLRUCache(int(cfg.get("l1_entries", 512)), int(cfg.get("l1_ttl_seconds", 1800)))
+        l1_entries = _safe_int(cfg.get("l1_entries"), 512, min_val=1)
+        l1_ttl = _safe_int(cfg.get("l1_ttl_seconds"), 1800, min_val=0)
+        self._recent = MemoryLRUCache(l1_entries, l1_ttl)
         self.hits = 0
         self.misses = 0
         self.comparisons = 0
@@ -95,11 +140,24 @@ class SemanticGenerationCache:
             vectors = result.get("embeddings", [])
             if not vectors:
                 return None
-            return [float(value) for value in vectors[0]]
+            values = vectors[0]
+            if not isinstance(values, (list, tuple)) or not values:
+                return None
+            vector = []
+            for value in values:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    return None
+                number = float(value)
+                if not math.isfinite(number) or abs(number) > 3.4028234663852886e38:
+                    return None
+                vector.append(number)
+            return vector
         except Exception:
             return None
 
     def get(self, scope: str, query_text: str) -> tuple[dict[str, Any] | None, float]:
+        if not isinstance(scope, str) or "\x00" in scope:
+            return None, 0.0
         query_text = normalize_query(query_text)
         if not self.enabled or len(query_text) < self.min_query_chars:
             return None, 0.0
@@ -161,8 +219,10 @@ class SemanticGenerationCache:
             best: tuple[int, dict[str, Any], float] | None = None
             query_vector = numpy.asarray(vector, dtype=numpy.float32)
             query_norm = float(numpy.linalg.norm(query_vector))
-            if query_norm > 1e-9:
-                query_vector = query_vector / query_norm
+            if not math.isfinite(query_norm) or query_norm <= 1e-9:
+                self.misses += 1
+                return None, 0.0
+            query_vector = query_vector / query_norm
 
             vector_rows: list[Any] = []
             for row in rows:
@@ -179,8 +239,10 @@ class SemanticGenerationCache:
 
             matrix = numpy.vstack(vector_rows)
             norms = numpy.linalg.norm(matrix, axis=1, keepdims=True)
-            norms[norms < 1e-9] = 1.0
+            valid_rows = numpy.isfinite(matrix).all(axis=1) & numpy.isfinite(norms[:, 0]) & (norms[:, 0] > 1e-9)
+            norms[~valid_rows] = 1.0
             scores = numpy.dot(matrix / norms, query_vector)
+            scores[~valid_rows] = -numpy.inf
             self.comparisons += len(rows)
 
             best_index = int(numpy.argmax(scores))
@@ -218,6 +280,8 @@ class SemanticGenerationCache:
             return best[1], best[2]
 
     def set(self, scope: str, query_text: str, value: dict[str, Any]) -> None:
+        if not isinstance(scope, str) or "\x00" in scope or not isinstance(value, dict):
+            return
         query_text = normalize_query(query_text)
         if not self.enabled or len(query_text) < self.min_query_chars:
             return
@@ -255,6 +319,27 @@ class SemanticGenerationCache:
                     pass
                 return
         self._recent.set(stable_hash({"s": scope, "q": query_text}), value)
+
+    def is_enabled(self) -> bool:
+        return bool(self.enabled)
+
+    def entry_count(self) -> int:
+        with closing(self._connect()) as con:
+            row = con.execute("SELECT COUNT(*) FROM semantic_entries").fetchone()
+            return int(row[0]) if row else 0
+
+    def clear(self, scope: str | None = None) -> int:
+        if scope is not None and (not isinstance(scope, str) or "\x00" in scope):
+            raise ValueError("scope must be a string without NUL or None")
+        with self._lock, closing(self._connect()) as con:
+            if scope is not None:
+                count = con.execute("DELETE FROM semantic_entries WHERE scope_key=?", (scope,)).rowcount
+            else:
+                count = con.execute("DELETE FROM semantic_entries").rowcount
+            con.commit()
+        self._recent = MemoryLRUCache(self._recent.max_entries, self._recent.ttl_seconds)
+        self._touched_ids.clear()
+        return max(0, count)
 
     def stats(self) -> dict[str, Any]:
         with closing(self._connect()) as con:

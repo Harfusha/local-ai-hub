@@ -51,14 +51,14 @@ _IGNORE_DIRS_CASEFOLDED = {name.casefold() for name in IGNORE_DIRS}
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI color and control codes from output text."""
-    if not isinstance(text, str) or isinstance(text, bool):
+    if not isinstance(text, str):
         return ""
     return ANSI_REGEX.sub("", text).replace("\x00", "")
 
 
 def count_tokens_with_provenance(text: str) -> tuple[tuple[int, int, int, int, int], dict[str, Any]]:
-    if not isinstance(text, str) or isinstance(text, bool):
-        return (0, 0, 0, 0, 0), {"exact": False, "method": "invalid_input", "by_encoding": {}, "accuracy_bound_verified": False}
+    if not isinstance(text, str):
+        raise TypeError("token text must be a string")
     from local_ai_hub.code_tokens import count_code_tokens
     o200k = count_code_tokens(text, encoding="o200k_base")
     cl100k = count_code_tokens(text, encoding="cl100k_base")
@@ -72,8 +72,6 @@ def count_tokens_with_provenance(text: str) -> tuple[tuple[int, int, int, int, i
 
 def count_tokens(text: str) -> tuple[int, int, int, int, int]:
     """Count lines/words/chars and named-encoding tokens, with offline fallback."""
-    if not isinstance(text, str) or isinstance(text, bool):
-        return (0, 0, 0, 0, 0)
     return count_tokens_with_provenance(text)[0]
 
 
@@ -172,7 +170,9 @@ def tokcount_main(argv: list[str] | None = None) -> int:
 
 def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
     """Consume once, retaining at most the requested head/tail line count."""
-    limit = max(0, int(max_lines))
+    if isinstance(max_lines, bool) or not isinstance(max_lines, int) or max_lines < 0:
+        raise ValueError("max_lines must be a non-negative integer")
+    limit = max_lines
     head_limit, tail_limit = (limit + 1) // 2, limit // 2
     head: list[str] = []
     tail: deque[str] = deque(maxlen=tail_limit)
@@ -198,10 +198,12 @@ _TRIM_RUN_BUNDLED_COMMANDS = {"tokcount": "tokcount", "repo-map": "repo_map"}
 
 
 def is_allowed_trim_command(command: str) -> bool:
-    if not isinstance(command, str) or isinstance(command, bool) or not command or "\x00" in command:
+    if not isinstance(command, str) or not command or "\x00" in command:
         return False
     cmd = os.path.basename(command).lower()
     return cmd in _TRIM_RUN_ALLOWED_COMMANDS or cmd in _TRIM_RUN_BUNDLED_COMMANDS
+
+
 def trim_run_main(argv: list[str] | None = None) -> int:
     """CLI entry point for trim-run."""
     if hasattr(sys.stdout, "reconfigure"):
