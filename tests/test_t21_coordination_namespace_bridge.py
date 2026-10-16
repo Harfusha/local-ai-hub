@@ -25,6 +25,9 @@ def coordination_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     class LocalHandler(http_server.Handler):
         def _require_authorized(self) -> bool:
+            # Authentication is isolated in this namespace bridge fixture.
+            # Bind its test principal before production tenant checks run.
+            self._authenticated_principal_tenant = self.headers.get("X-LocalAI-Tenant", "owner-a")
             return True
 
         def _validate_payload(self, _path: str, _payload: dict) -> None:
@@ -152,7 +155,7 @@ def _record_repository_memory(
 def _find_repository_memory(env, context, *, owner: str, key: str) -> dict:
     return env.app.agent_memory.find(
         scope="repository",
-        root=_coordination_id(context),
+        repository_id=_coordination_id(context),
         tenant=owner,
         key=key,
         semantic=False,
