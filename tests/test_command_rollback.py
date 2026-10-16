@@ -2752,7 +2752,7 @@ def test_timeout_rollback_oserror_marks_outcome_unknown(tmp_path: Path, monkeypa
     assert receipts == []
 
 @pytest.mark.parametrize("script", ["custom_report.py", "custom_audit.py", "custom_check.py"])
-def test_untrusted_python_scripts_require_mutation_policy(script: str) -> None:
+def test_untrusted_python_scripts_require_mutation_policy_parametrized(script: str) -> None:
     broker = CommandBroker(
         {"commands": {"allow_mutating": False}}, artifacts=None, repo_state=None
     )
