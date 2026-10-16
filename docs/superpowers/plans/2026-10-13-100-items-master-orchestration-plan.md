@@ -1,5 +1,7 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
+**Scoped reaper source repair (2026-10-16, not runtime-validated):** MCP `task_zombie_reap` now requires a concrete task ID and forwards its resolved root. HTTP `reap_expired` validates the single task against authenticated repository/tenant identity and strict boolean recovery policy before invoking the existing store fence. The store restricts candidate SQL to that task and propagates unexpected persistence failures. Authored actual-store regressions cover sibling and foreign scope preservation, malformed inputs, fresh tasks, concurrent heartbeat renewal and persistence failure; no tests have run on this repair. Final integrated validation and installed activation remain open.
+
 > **For agentic workers:** Follow the governing simplified integration process below. Execute and review bounded tasks directly; optional independent implementation agents follow the same criteria. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Transform Local AI Hub into a rock-solid, ultra-fast, and deeply capable local engine for cloud and local coding agents by executing all 100 identified enhancements across 6 modular waves.

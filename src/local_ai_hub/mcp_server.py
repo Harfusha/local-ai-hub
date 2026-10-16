@@ -4554,6 +4554,7 @@ def local_ai_coord(
         },
         "answer": {"root": root, "tenant": tenant, "question_id": question_id, "answer": answer, "task_id": task_id},
         "task_cleanup_worktree": {"root": root, "task_id": task_id},
+        "task_zombie_reap": {"root": root, "task_id": task_id},
         "context_compile": {
             "root": root, "task_id": task_id, "since_hash": since_hash,
             "max_tokens": max_tokens or 4000, "include_diagnostics": include_diagnostics,
@@ -4618,6 +4619,7 @@ def local_ai_coord(
     if action == "task_zombie_reap":
         return _compact(CLIENT.post("/api/agent-state/tasks", {
             "action": "reap_expired", "auto_recover": True,
+            "root": root, "task_id": task_id,
         }, timeout=_timeout("quick")), "status")
     if action == "task_cleanup_worktree":
         return _compact(CLIENT.post("/api/agent-state/tasks", {

@@ -3242,13 +3242,15 @@ class TaskStore:
         current_time = float(time.time() if now is None else now)
         def _fetch_expired() -> list[str]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
+                task_filter = " AND task_id = ?" if task_id is not None else ""
+                parameters = (current_time, task_id) if task_id is not None else (current_time,)
                 cur = con.execute(
                     """
                     SELECT task_id FROM agent_tasks_projection
                     WHERE status IN ('planned', 'active', 'verifying', 'waiting', 'blocked')
                       AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ?
-                    """,
-                    (current_time,),
+                    """ + task_filter,
+                    parameters,
                 )
                 return [row[0] for row in cur.fetchall()]
 
@@ -3289,7 +3291,7 @@ class TaskStore:
                     ),
                 )
                 reaped.append(t_id)
-            except Exception:
+            except (ConcurrentTaskUpdateError, KeyError):
                 pass
         return reaped
 

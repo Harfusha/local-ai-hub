@@ -754,16 +754,26 @@ def test_local_ai_coord_task_sync_rejects_retired_fields_before_network(
     assert backend.calls == []
 
 
-def test_local_ai_coord_task_zombie_reap_forwards_recovery_flag(monkeypatch):
+def test_local_ai_coord_task_zombie_reap_forwards_recovery_flag(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='task_zombie_reap')
+    root = str(tmp_path.resolve())
+    result = mcp_server.local_ai_coord(action='task_zombie_reap', root=root, task_id="expired-task")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/tasks",
-        {"action": "reap_expired", "auto_recover": True},
+        {"action": "reap_expired", "auto_recover": True, "root": root, "task_id": "expired-task"},
         {"timeout": mcp_server._timeout("quick")},
     )]
+
+
+@pytest.mark.parametrize("task_id", ["", None, True, 3])
+def test_local_ai_coord_task_zombie_reap_rejects_missing_or_nonstring_identity(monkeypatch, task_id):
+    backend = _prepare_coord_api(monkeypatch)
+    result = mcp_server.local_ai_coord(action="task_zombie_reap", task_id=task_id)
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert backend.calls == []
 
 
 def test_local_ai_coord_verify_completion_forwards_task_revision(monkeypatch, tmp_path):
