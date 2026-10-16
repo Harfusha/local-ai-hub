@@ -657,7 +657,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic delegation is on-demand and optional: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in."
+            "\n- Semantic delegation is on-demand and optional: after deterministic/indexed evidence, actively use `local_ai_task` for bounded generation, code review (`review`), independent second opinions (`second_opinion`), test-log compression (`compress`), commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in."
         )
 
     model_default = ""
@@ -676,20 +676,23 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     if fs.repo:
         prep_call = ' On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once, then continue immediately; preprocessing is asynchronous, so never poll/wait/force-refresh it.' if fs.preprocessing else ""
         cmd_gate = ' `local_ai_command` alone is never sufficient for a repository task. After one-time preprocess, the first useful Hub operation must be `local_ai_repo(action="context", mode="adaptive")`; use the command broker only for commands after grounded repository evidence exists.' if fs.commands else ""
+        agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
+        task_review_hint = ' Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing.' if (fs.tasks and fs.has_any_model()) else ""
         repo_task_first = (
             "\nFor every non-trivial repository task, use Local AI Hub before broad native discovery or repeatable validation."
             f" Keep one stable absolute project root.{prep_call}\n"
             ' Then call `local_ai_repo(action="context", mode="adaptive")` as the first useful operation; it is the quality-first retrieval gate and accepts the task/context directly.\n'
-            f"\nAdoption gate:{cmd_gate}"
+            f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
             ' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence'
-            " and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
+            f" and before native edits.{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
         )
 
     cmd_route_hint = ""
     if fs.commands:
+        receipt_hint = " Pass `task_id` and `criterion` to auto-mint verification receipts." if fs.agent_os else ""
         cmd_route_hint = (
             "\nRoute test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively."
-            " If it returns `in_progress=true`, do not launch a duplicate command."
+            f"{receipt_hint} If it returns `in_progress=true`, do not launch a duplicate command."
         )
 
     coord_memo_hint = ""
