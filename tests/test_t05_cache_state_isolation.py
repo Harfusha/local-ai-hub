@@ -45,7 +45,7 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
     repository = tmp_path / "repository"
     repository.mkdir()
 
-    state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    state = AgentStateStore(state_dir / "agent_state.sqlite")
     tasks = TaskStore(state)
     task = tasks.create(
         GoalContract(goal="preserve durable state", acceptance_criteria=("receipt",)),
@@ -96,7 +96,7 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
     assert list(state_dir.glob(f"{derived_name}.corrupt-*"))
 
     # Reopen every durable store to model a Hub restart after derived DB recovery.
-    reopened_state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    reopened_state = AgentStateStore(state_dir / "agent_state.sqlite")
     reopened_tasks = TaskStore(reopened_state)
     reopened_memories = MemoryStore(reopened_state)
     reopened_verifications = VerificationStore(reopened_state, task_store=reopened_tasks)
@@ -105,18 +105,18 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
     assert reopened_tasks.get(task.task_id).contract.goal == "preserve durable state"
     assert reopened_state.events(task.task_id) == [event.with_seq(1)]
     _assert_task_memory_access(reopened_memories, memory, task.task_id)
-    with closing(sqlite3.connect(state_dir / "agent_state.sqlite3")) as connection:
+    with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as connection:
         assert connection.execute(
             "SELECT receipt_id FROM agent_verification_receipts WHERE receipt_id = ?",
             (receipt.receipt_id,),
         ).fetchone() == (receipt.receipt_id,)
     assert reopened_leases.list(str(repository))[0]["lease_id"] == lease["lease_id"]
-    assert (state_dir / "agent_state.sqlite3").is_file()
-    assert not list(state_dir.glob("agent_state.sqlite3.corrupt-*"))
+    assert (state_dir / "agent_state.sqlite").is_file()
+    assert not list(state_dir.glob("agent_state.sqlite.corrupt-*"))
 
 
 def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path):
-    state = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    state = AgentStateStore(tmp_path / "agent_state.sqlite")
     memories = MemoryStore(state)
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
@@ -202,7 +202,7 @@ def test_sqlite_cache_recovers_corruption_after_first_initialization(tmp_path):
 def test_cache_rebuild_failure_keeps_durable_state_intact_and_retries(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    durable_path = state_dir / "agent_state.sqlite3"
+    durable_path = state_dir / "agent_state.sqlite"
     state = AgentStateStore(durable_path)
     tasks = TaskStore(state)
     task = tasks.create(
@@ -247,7 +247,7 @@ def test_cache_rebuild_failure_keeps_durable_state_intact_and_retries(tmp_path, 
     assert create_attempts == 2
     quarantined = list(state_dir.glob("cache.sqlite3.corrupt-*"))
     assert len(quarantined) == 1
-    assert not list(state_dir.glob("agent_state.sqlite3.corrupt-*"))
+    assert not list(state_dir.glob("agent_state.sqlite.corrupt-*"))
     assert tuple(
         path.read_bytes() if path.is_file() else None
         for path in (durable_path, Path(f"{durable_path}-wal"), Path(f"{durable_path}-shm"))
@@ -269,7 +269,7 @@ def test_cache_rebuild_failure_keeps_durable_state_intact_and_retries(tmp_path, 
 def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    state = AgentStateStore(state_dir / "agent_state.sqlite")
     tasks = TaskStore(state)
     task = tasks.create(
         GoalContract(goal="survive cache rebuild crash", acceptance_criteria=("receipt",)),
@@ -315,7 +315,7 @@ def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_pat
     )
     assert child.returncode == 73, child.stderr.decode(errors="replace")
 
-    reopened_state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    reopened_state = AgentStateStore(state_dir / "agent_state.sqlite")
     reopened_tasks = TaskStore(reopened_state)
     reopened_memories = MemoryStore(reopened_state)
     reopened_verifications = VerificationStore(reopened_state, task_store=reopened_tasks)

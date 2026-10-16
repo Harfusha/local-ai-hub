@@ -210,11 +210,14 @@ def test_task_completion_http_receipt_and_memory_matrix(
     expected_success: bool,
     request: pytest.FixtureRequest,
 ) -> None:
-    tenant = "agent-t09"
+    principal = "agent-t09"
+    api_token = "t09-isolated-http-matrix-token-long"
+    derivation_key = "t09-isolated-tenant-derivation-key-long"
     task_id = f"task-t09-{case}"
     revision = "rev-t09-matrix-current"
     project_root = tmp_path / "repo"
     project_root.mkdir()
+    tenant = http_server._derive_root_tenant(principal, str(project_root.resolve()), derivation_key)
     (project_root / ".local-ai.toml").write_text(
         '[commands]\ntest = "python -m pytest -q tests/test_contract.py"\n'
         'lint = "python -m ruff check src"\n'
@@ -228,7 +231,9 @@ def test_task_completion_http_receipt_and_memory_matrix(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         "[prewarm]\nenabled = false\n"
-        "[preprocessing]\nenabled = false\n",
+        "[preprocessing]\nenabled = false\n"
+        f'[security]\napi_token = "{api_token}"\napi_token_principal = "{principal}"\n'
+        f'tenant_derivation_key = "{derivation_key}"\nallowed_roots = [{json.dumps(project_root.as_posix())}]\n',
         encoding="utf-8",
     )
     project_context = resolve_project_context(project_root, state_dir)
@@ -386,6 +391,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
             ).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
+                "X-LocalAI-Token": api_token,
                 "X-LocalAI-Agent": tenant,
                 "X-LocalAI-Tenant": tenant,
             },

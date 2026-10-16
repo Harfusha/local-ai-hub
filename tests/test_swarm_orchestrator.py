@@ -15,7 +15,7 @@ from local_ai_hub.swarm import SwarmCoordinator, SwarmState
 
 
 def test_swarm_lifecycle_success(tmp_path: Path) -> None:
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     agent_state = AgentStateStore(db_path)
     blackboard = BlackboardStore(db_path, state_store=agent_state)
     leases = ScopeLeaseStore(tmp_path)
@@ -85,7 +85,7 @@ def test_swarm_lifecycle_success(tmp_path: Path) -> None:
 
 
 def test_swarm_lifecycle_test_failure_triggers_rejection(tmp_path: Path) -> None:
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     agent_state = AgentStateStore(db_path)
     blackboard = BlackboardStore(db_path, state_store=agent_state)
     leases = ScopeLeaseStore(tmp_path)
@@ -124,7 +124,7 @@ def test_swarm_lifecycle_test_failure_triggers_rejection(tmp_path: Path) -> None
 
 
 def test_swarm_root_scope_hides_foreign_operations(tmp_path: Path) -> None:
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     agent_state = AgentStateStore(db_path)
     coordinator = SwarmCoordinator(db_path, state_store=agent_state)
     root_a = str((tmp_path / "repo-a").resolve())
@@ -161,7 +161,7 @@ def test_swarm_step_uses_blackboard_cas_with_one_concurrent_winner(
     payload: dict[str, object],
     board_section: str,
 ) -> None:
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     agent_state = AgentStateStore(db_path)
     blackboard = BlackboardStore(db_path, state_store=agent_state)
     coordinator = SwarmCoordinator(
@@ -231,7 +231,7 @@ def test_swarm_idempotent_replay_rejects_changed_expected_version(
     tmp_path: Path,
     operation: str,
 ) -> None:
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     agent_state = AgentStateStore(db_path)
     coordinator = SwarmCoordinator(db_path, state_store=agent_state)
     dispatched = coordinator.dispatch(
@@ -276,7 +276,7 @@ def test_legacy_swarm_replay_allows_unversioned_retry_only(
     tmp_path: Path,
     operation: str,
 ) -> None:
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     agent_state = AgentStateStore(db_path)
     coordinator = SwarmCoordinator(db_path, state_store=agent_state)
     dispatched = coordinator.dispatch("legacy replay contract", root=str(tmp_path))

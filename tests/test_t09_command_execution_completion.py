@@ -41,7 +41,7 @@ def _actual_broker_task(tmp_path: Path):
     revision = _git(repo, "rev-parse", "HEAD")
 
     state_dir = tmp_path / "state"
-    state = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
+    state = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     tasks = TaskStore(state)
     artifacts = ArtifactStore(state_dir / "artifacts")
     task_id = "broker-backed-completion"

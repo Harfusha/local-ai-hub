@@ -38,8 +38,7 @@ def test_scope_leases_reject_legacy_database_without_writes(tmp_path):
 
 def test_scope_leases_ignore_archived_legacy_database_when_canonical_exists(tmp_path):
     canonical = tmp_path / "agent_state.sqlite"
-    with closing(sqlite3.connect(canonical)):
-        pass
+    AgentStateStore(canonical)._ensure_schema()
     archived = tmp_path / "leases.sqlite3"
     archived.write_bytes(b"archived legacy lease database")
 
