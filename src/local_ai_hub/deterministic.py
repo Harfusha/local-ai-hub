@@ -6085,12 +6085,28 @@ def test_{sym}_regression_edge_cases():
                     "message": exc.strerror or str(exc),
                 })
 
+            ignored = {
+                ".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "tests", "tool-envs",
+                *getattr(self.repo_tools, "ignore_dirs", set()),
+            }
             for dirpath, dirnames, filenames in os.walk(resolved_root, onerror=record_scan_error):
                 # Repository-wide audits should cover shipped runtime code, not
                 # test setup commands or managed dependency environments. An
                 # explicit path remains available for fixture-level checks.
-                dirnames[:] = [d for d in dirnames if d not in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "tests", "tool-envs"}]
+                rel_dir = os.path.relpath(dirpath, resolved_root).replace("\\", "/")
+                if rel_dir != "." and (is_root_archive_path(rel_dir) or any(part.startswith(".") for part in rel_dir.split("/"))):
+                    dirnames[:] = []
+                    continue
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d not in ignored
+                    and not d.startswith(".")
+                    and not is_root_archive_path(d if rel_dir == "." else f"{rel_dir}/{d}")
+                ]
                 for f in filenames:
+                    rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
+                    if is_root_archive_path(rel_file) or any(part.startswith(".") for part in rel_file.split("/")[:-1]):
+                        continue
                     if f.endswith(".py"):
                         if len(target_paths) >= 150:
                             truncated = True
@@ -6098,6 +6114,7 @@ def test_{sym}_regression_edge_cases():
                         target_paths.append(Path(dirpath) / f)
                 if truncated:
                     break
+
         if path:
             truncated = False
 
