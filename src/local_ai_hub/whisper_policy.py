@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -58,7 +59,15 @@ def default_cache_dir() -> Path:
     return base / "whisper"
 
 
-def _file_signature(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+def _file_signature(info: os.stat_result) -> tuple[int, ...]:
+    if sys.platform == "win32":
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_size,
+            info.st_mtime_ns,
+        )
     return (
         info.st_dev,
         info.st_ino,

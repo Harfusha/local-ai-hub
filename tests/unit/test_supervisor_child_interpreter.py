@@ -35,13 +35,16 @@ def test_windows_supervisor_suppresses_child_crash_dialog_and_restores_mode(
     mode_calls: list[int] = []
 
     class Kernel32:
-        class SetErrorMode:
-            argtypes = None
-            restype = None
+        def __init__(self):
+            class _SetErrorMode:
+                argtypes = None
+                restype = None
 
-            def __call__(self, mode: int) -> int:
-                mode_calls.append(mode)
-                return 0x10
+                def __call__(self, mode: int) -> int:
+                    mode_calls.append(mode)
+                    return 0x10
+
+            self.SetErrorMode = _SetErrorMode()
 
     monkeypatch.setattr(
         supervisor.ctypes,

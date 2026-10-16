@@ -22,10 +22,10 @@ def test_two_thousand_index_paths_preserve_all_rows_without_variable_overflow(tm
     root = canonical_root(str(tmp_path))
     items = [(f'source_{i}.py', f'hash_{i}') for i in range(2000)]
     with closing(_connect(database)) as connection:
-        connection.execute('CREATE TABLE files(root TEXT,path TEXT,content_hash TEXT,analyzer_version TEXT,language TEXT)')
+        connection.execute('CREATE TABLE files(root TEXT,path TEXT,content_hash TEXT,analyzer_version TEXT,language TEXT,mtime_ns INTEGER,size_bytes INTEGER)')
         connection.execute('CREATE TABLE parse_blobs(content_hash TEXT,language TEXT,analyzer_version TEXT,payload_json TEXT)')
-        connection.executemany('INSERT INTO files VALUES(?,?,?,?,?)', [
-            (root, path, digest, _PARSER_ANALYZER_VERSION, 'python') for path, digest in items
+        connection.executemany('INSERT INTO files VALUES(?,?,?,?,?,?,?)', [
+            (root, path, digest, _PARSER_ANALYZER_VERSION, 'python', None, None) for path, digest in items
         ])
         connection.executemany('INSERT INTO parse_blobs VALUES(?,?,?,?)', [
             (digest, 'python', _PARSER_ANALYZER_VERSION, json.dumps({'parse_outcome': {'status': 'ok'}}))

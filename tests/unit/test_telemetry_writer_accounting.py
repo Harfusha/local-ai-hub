@@ -6,6 +6,7 @@ from local_ai_hub.telemetry import TelemetryStore
 
 def _store_without_writer(tmp_path: Path) -> TelemetryStore:
     store = TelemetryStore(tmp_path / "telemetry", enabled=False, queue_size=100)
+    store._init_db_with_recovery()
     store.enabled = True
     return store
 

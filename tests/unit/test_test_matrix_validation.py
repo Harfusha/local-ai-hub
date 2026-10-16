@@ -15,7 +15,7 @@ def _engine(tmp_path: Path) -> DeterministicEngine:
 def test_test_matrix_uses_only_current_regular_contained_test_files(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     test_dir = repo_root / "tests"
-    test_dir.mkdir()
+    test_dir.mkdir(parents=True)
     current = test_dir / "test_current.py"
     current.write_text("def test_current_case(): pass\n", encoding="utf-8")
     outside = tmp_path / "test_outside.py"

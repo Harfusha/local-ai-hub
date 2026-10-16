@@ -5743,8 +5743,9 @@ def test_{sym}_regression_edge_cases():
                         after_read = os.fstat(source.fileno())
                     target.resolve(strict=True).relative_to(resolved_root)
                     current = target.stat()
-                    signature = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    if signature(opened) != signature(after_read) or signature(after_read) != signature(current):
+                    opened_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                    after_state = (after_read.st_dev, after_read.st_ino, after_read.st_size, after_read.st_mtime_ns, after_read.st_ctime_ns)
+                    if opened_state != after_state or (opened.st_dev, opened.st_ino, opened.st_size) != (current.st_dev, current.st_ino, current.st_size):
                         raise ValueError("security source changed during read")
                 finally:
                     if descriptor >= 0:
@@ -7205,10 +7206,10 @@ def test_{sym}_regression_edge_cases():
                                 history_status = "scanned_bounded_history"
                             elif history_status == "time_budget_exhausted":
                                 limits_hit.append("time")
-                        if history_coverage["bytes_read"] + bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
-                            history_status = "aggregate_byte_limit_reached"
-                            limits_hit.append("aggregate_bytes")
-                            _record_error("git_history_exceeded_aggregate_byte_budget")
+                            if history_coverage["bytes_read"] + bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
+                                history_status = "aggregate_byte_limit_reached"
+                                limits_hit.append("aggregate_bytes")
+                                _record_error("git_history_exceeded_aggregate_byte_budget")
                     except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.SubprocessError, OSError, ValueError):
                         history_status = "process_failed_or_cleanup_unverified"
                         _record_error("git_history_process_or_cleanup_unverified")
