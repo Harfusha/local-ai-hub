@@ -36,10 +36,12 @@ def vision_feature_error(config: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def select_vision_model(args: dict[str, Any], config: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+def select_vision_model(args: dict[str, Any] | None, config: dict[str, Any] | None) -> tuple[str, dict[str, Any] | None]:
+    args = args if isinstance(args, dict) else {}
+    config = config if isinstance(config, dict) else {}
     models = config.get("models", {})
     configured_model = models.get("vision", "qwen3-vl:4b") if isinstance(models, dict) else "qwen3-vl:4b"
-    model = str(args.get("model") or configured_model or "").strip()
+    model = str(args.get("model") or configured_model or "").replace("\x00", "").strip()
     if bool(args.get("cloud_fallback", False)):
         vision_policy = config.get("vision", {})
         if not isinstance(vision_policy, dict) or not bool(vision_policy.get("cloud_fallback_enabled", False)):

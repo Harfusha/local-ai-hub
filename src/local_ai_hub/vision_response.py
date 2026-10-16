@@ -26,8 +26,8 @@ def _input_error(message: str, code: str = "vision_input_error") -> dict[str, An
         "success": False,
         "terminal": True,
         "retryable": False,
-        "error": message,
-        "error_code": code,
+        "error": str(message or "") if message is not None else "",
+        "error_code": str(code or "vision_input_error"),
     }
 
 
