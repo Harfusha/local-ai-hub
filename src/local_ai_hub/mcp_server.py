@@ -5153,22 +5153,22 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             # Preserve the existing context/evidence projection for other tools;
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
-            for structured in (True, False):
-                for compact_text in (False, True):
-                    for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-                        candidate = {
-                            "success": False,
-                            "error": error[:error_chars],
-                            **{
-                                key: value[key]
-                                for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
-                                            "mutation_applied", "operation_not_started")
-                                if key in value
-                            },
-                        }
-                        for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
-                            if key != "error" and key in value:
-                                candidate[key] = value[key]
+            for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
+                candidate = {
+                    "success": False,
+                    "error": error[:error_chars],
+                    **{
+                        key: value[key]
+                        for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+                                    "mutation_applied", "operation_not_started")
+                        if key in value
+                    },
+                }
+                for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                    if key != "error" and key in value:
+                        candidate[key] = value[key]
+                for structured in (True, False):
+                    for compact_text in (False, True):
                         for metadata in (
                             {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
                             {"requested_tokens": requested, "returned_tokens": 0},
@@ -5187,6 +5187,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                 "status", "status_code", "terminal", "retryable",
                                                 "mutation_applied", "operation_not_started",
                                                 "request_id", "execution_id",
+                                                "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
                                             )
                                             if key in trial
                                         },
