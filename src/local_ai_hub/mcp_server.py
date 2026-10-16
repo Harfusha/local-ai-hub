@@ -4723,7 +4723,7 @@ def local_ai_coord(
             action=action, fingerprint=fingerprint, state_revision=state_revision,
             root=root, tenant=tenant,
         ), "status")
-    if action in ("claim", "claim_batch"):
+    if action == "claim":
         claim_root = root
         if (not requested_root or requested_root == ".") and paths:
             first_abs = next((str(p) for p in paths if os.path.isabs(str(p)) or ":" in str(p)), None)
@@ -4741,7 +4741,7 @@ def local_ai_coord(
         }))
     if action == "release":
         return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}))
-    if action in ("renew", "lease_renew"):
+    if action == "renew":
         return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}))
     if action == "leases":
         return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
