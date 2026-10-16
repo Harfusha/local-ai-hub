@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from local_ai_hub.code_index import CodeIndex
 
 
-def test_exact_identifier_query_uses_name_index_without_python_score_udf(monkeypatch, tmp_path):
+def test_exact_identifier_keeps_fuzzy_matches_with_one_materialized_score_pass(monkeypatch, tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     index = CodeIndex(
@@ -44,7 +44,13 @@ def test_exact_identifier_query_uses_name_index_without_python_score_udf(monkeyp
             close()
 
     assert result["success"] is True
-    assert result["total_matches"] == 1
+    assert result["total_matches"] == 3
     assert result["symbols"][0]["name"] == "generate_tests"
-    assert any("lower(name)" in statement and "generate_tests" in statement for statement in statements)
-    assert not any("hub_code_index_score" in statement for statement in statements)
+    assert {item["name"] for item in result["symbols"]} == {
+        "generate_tests",
+        "generate_test_report",
+        "generate_tests_archive",
+    }
+    score_queries = [statement for statement in statements if "WITH scored AS MATERIALIZED" in statement]
+    assert len(score_queries) == 1
+    assert score_queries[0].count("hub_code_index_score") == 1

@@ -2490,34 +2490,27 @@ class CodeIndex:
             *([ignored_path_sql] if ignored_path_sql else []),
         ))
         base_args: list[Any] = [resolved_root, *(f"/{name}/" for name in ignored_paths)]
-        fuzzy_filters_sql = base_filters_sql + " AND " + score_sql + " > 0"
         with self._lock, closing(self._connect()) as con:
             con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
-            exact_total = 0
-            exact_filters_sql = ""
-            exact_args: list[Any] = []
-            if exact_identifier is not None:
-                exact_filters_sql = base_filters_sql + " AND lower(name)=?"
-                exact_args = [*base_args, exact_identifier.lower()]
-                exact_total = int(con.execute(
-                    "SELECT COUNT(*) FROM symbols WHERE " + exact_filters_sql,
-                    exact_args,
-                ).fetchone()[0])
-            exact_route = exact_total > 0
-            filters_sql = exact_filters_sql if exact_route else fuzzy_filters_sql
-            args = exact_args if exact_route else base_args
-            count_sql = "SELECT COUNT(*) FROM symbols WHERE " + filters_sql
-            total_matches = exact_total if exact_route else int(
-                con.execute(count_sql, args).fetchone()[0]
-            )
-            score_projection = "0.0" if exact_route else score_sql
-            order_by = "path ASC,line ASC,name_path ASC" if exact_route else "_score DESC,path ASC,line ASC,name_path ASC"
             sql = (
-                "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring,"
-                + score_projection + " AS _score FROM symbols WHERE " + filters_sql
-                + " ORDER BY " + order_by + " LIMIT ? OFFSET ?"
+                "WITH scored AS MATERIALIZED ("
+                "SELECT rowid AS _rowid," + score_sql + " AS _score "
+                "FROM symbols WHERE " + base_filters_sql
+                + "), matches AS MATERIALIZED ("
+                "SELECT * FROM scored WHERE _score > 0"
+                "), stats AS (SELECT COUNT(*) AS _total_matches FROM matches), "
+                "page AS (SELECT matches._rowid,matches._score,1 AS _present "
+                "FROM matches JOIN symbols AS ranked ON ranked.rowid=matches._rowid "
+                "ORDER BY matches._score DESC,ranked.path ASC,ranked.line ASC,ranked.name_path ASC "
+                "LIMIT ? OFFSET ?) "
+                "SELECT symbols.path,symbols.name,symbols.kind,symbols.line,symbols.end_line,"
+                "symbols.container,symbols.name_path,symbols.signature,symbols.access,symbols.docstring,"
+                "page._score,page._present,stats._total_matches FROM stats "
+                "LEFT JOIN page ON 1=1 LEFT JOIN symbols ON symbols.rowid=page._rowid"
             )
-            rows = con.execute(sql, [*args, limit, offset]).fetchall()
+            rows = con.execute(sql, [*base_args, limit, offset]).fetchall()
+        total_matches = int(rows[0]["_total_matches"]) if rows else 0
+        rows = [row for row in rows if row["_present"] is not None]
         candidate_truncated = False
         candidate_limit = None
 
