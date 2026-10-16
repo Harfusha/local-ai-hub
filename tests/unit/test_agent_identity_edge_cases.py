@@ -16,8 +16,8 @@ from local_ai_hub.agent_identity import (
 
 def test_repository_identity_local_path_canonicalization() -> None:
     # Case and slash differences on identical paths should produce identical family_id
-    ident_fwd = RepositoryIdentity.derive(root="C:/Users/Adam/Project")
-    ident_back = RepositoryIdentity.derive(root="c:\\users\\adam\\project")
+    ident_fwd = RepositoryIdentity.derive(root="C:/Users/Example/Project")
+    ident_back = RepositoryIdentity.derive(root="c:\\users\\example\\project")
     assert ident_fwd.family_id == ident_back.family_id
     assert ident_fwd.repo_id == ident_back.repo_id
 

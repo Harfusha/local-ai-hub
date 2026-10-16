@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -386,3 +387,93 @@ def test_client_cannot_override_namespace_or_tenant_for_memory_find(
     raw = env.clients[-1].last_coord_result
     assert result["success"] is True
     assert raw.get("records", []) == []
+
+
+def test_client_memory_requests_leave_repository_and_tenant_identity_to_server(
+    monkeypatch,
+):
+    client = HubClient.__new__(HubClient)
+    captured: dict[str, object] = {}
+
+    def capture_post(path: str, payload: dict) -> dict:
+        captured.update(path=path, payload=payload)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    record = {
+        "kind": "finding",
+        "scope": "repository",
+        "scope_id": "forged-scope",
+        "tenant": "tenant-victim",
+        "repository_id": "forged-repository",
+        "coordination_id": "forged-coordination",
+        "key": "identity-rule",
+        "value": "must use server identity",
+    }
+    original_record = deepcopy(record)
+
+    result = HubClient.coord(
+        client,
+        "memory_record",
+        root="C:/repo",
+        scope="repository",
+        scope_id="forged-scope",
+        tenant="tenant-victim",
+        repository_id="forged-repository",
+        coordination_id="forged-coordination",
+        record=record,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/agent-state/memory"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["root"] == "C:/repo"
+    assert payload["scope"] == "repository"
+    assert {"tenant", "repository_id", "coordination_id", "scope_id"}.isdisjoint(payload)
+    assert payload["record"] == {
+        "kind": "finding",
+        "scope": "repository",
+        "key": "identity-rule",
+        "value": "must use server identity",
+    }
+    assert record == original_record
+
+def test_client_memory_record_namespace_comes_from_nested_repository_scope(
+    monkeypatch,
+):
+    client = HubClient.__new__(HubClient)
+    captured: dict[str, object] = {}
+
+    def capture_post(path: str, payload: dict) -> dict:
+        captured.update(path=path, payload=payload)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    record = {
+        "kind": "finding",
+        "scope": "repository",
+        "scope_id": "forged-scope",
+        "key": "nested-identity-rule",
+        "value": "must use server identity",
+    }
+    original_record = deepcopy(record)
+
+    result = HubClient.coord(
+        client,
+        "memory_record",
+        root="C:/repo",
+        record=record,
+    )
+
+    assert result["success"] is True
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert "scope_id" not in payload
+    assert payload["record"] == {
+        "kind": "finding",
+        "scope": "repository",
+        "key": "nested-identity-rule",
+        "value": "must use server identity",
+    }
+    assert record == original_record

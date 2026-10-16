@@ -390,7 +390,7 @@ def test_audio_resolution_failure_has_invalid_path_reason(
 
 
 def test_whisper_binary_removed_after_lookup_reports_cli_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _verified_whisper_cache: Path
 ) -> None:
     audio = tmp_path / "race.wav"
     audio.write_bytes(b"audio")
@@ -416,6 +416,7 @@ def test_whisper_binary_removed_after_lookup_reports_cli_missing(
 def test_whisper_process_failure_never_returns_successful_transcript(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    _verified_whisper_cache: Path,
     outcome: str,
 ) -> None:
     audio = tmp_path / "broken.wav"
@@ -577,7 +578,7 @@ def test_malformed_whisper_json_is_not_a_successful_transcription(
 
 
 def test_cancellation_cleans_task_owned_whisper_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _verified_whisper_cache: Path
 ) -> None:
     audio = tmp_path / "cancelled.wav"
     audio.write_bytes(b"audio")
@@ -585,14 +586,16 @@ def test_cancellation_cleans_task_owned_whisper_output(
 
     def cancel(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         output_directories.append(Path(args[args.index("--output_dir") + 1]))
-        raise KeyboardInterrupt
+        raise process_utils.ProcessCancelledError(args)
 
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", cancel)
 
-    with pytest.raises(KeyboardInterrupt):
-        _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
+    assert result["success"] is False
+    assert result["reason"] == "cancelled"
+    assert result["cancelled"] is True
     assert output_directories
     assert not output_directories[0].exists()
 

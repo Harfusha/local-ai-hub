@@ -236,7 +236,7 @@ def test_python_repository_search_reports_unreadable_file(tmp_path: Path, monkey
             "use_git_grep_fallback": False,
         },
     })
-    monkeypatch.setattr(tools, "_read_snapshot", lambda _path: (_ for _ in ()).throw(PermissionError("private path detail")))
+    monkeypatch.setattr(tools, "_read_snapshot", lambda _path, **_kwargs: (_ for _ in ()).throw(PermissionError("private path detail")))
 
     result = tools.search(str(tmp_path), "needle")
 

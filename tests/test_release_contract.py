@@ -47,10 +47,6 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         forbidden.extend((f"Version {major}.", f"version {major}.", f"/v{major}/"))
     for path in files:
         text = path.read_text(encoding="utf-8")
-        if path == ROOT / "src" / "local_ai_hub" / "leases.py":
-            rebuild = 'ALTER TABLE lease_waits_new RENAME TO lease_waits'
-            assert text.count(rebuild) == 1
-            text = text.replace(rebuild, "")
         for token in forbidden:
             assert token not in text, f"historical contract token {token!r} in {path.relative_to(ROOT)}"
 
@@ -75,7 +71,7 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     assert source.count("@mcp.tool()") == 8
     assert "CALL THIS FIRST before broad repository reads" in source
-    assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
+    assert "context mode must be adaptive, full or fast" in source
     assert "CodeGraphContext" not in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")

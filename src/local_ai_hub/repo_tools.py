@@ -1937,9 +1937,9 @@ class RepositoryTools:
         python_fallback_scanned: int | None = None
         read_errors = 0
         truncation_reasons: list[str] = []
-        # Keep enough globally ranked candidates for the requested page. The
-        # multiplier remains the minimum working set for ranked search callers.
-        candidate_limit = max(1, self.max_hits * 4, offset + result_limit)
+        # Keep candidate scanning bounded independently of caller pagination.
+        # Pages beyond this ranked working set remain explicitly truncated.
+        candidate_limit = max(1, self.max_hits * 4)
         candidate_engine = "python"
         project_candidates = None
         if project_settings is not None:

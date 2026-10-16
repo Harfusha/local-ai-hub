@@ -90,6 +90,8 @@ def test_swarm_dag_failure_never_discards_preexisting_dirty_overlay(tmp_path: Pa
 
     assert result["success"] is False
     assert result["rolled_back"] is False
+    assert result["rollback_status"] == "not_performed"
+    assert result["work_preserved"] is True
     assert (tracked.read_bytes(), untracked.read_bytes()) == before
 
 

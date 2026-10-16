@@ -25,7 +25,6 @@ from local_ai_hub.cache import SQLiteCache
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.config import ConfigError, load_config
 from local_ai_hub.external_tools import ExternalCodeIntelligence
-from local_ai_hub.semantic_cache import SemanticGenerationCache
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -123,7 +122,7 @@ def test_command_policy_uses_enabled_default_capabilities(tmp_path: Path):
     broker = CommandBroker(cfg, _Artifacts(), _RepoState())
     assert broker.classify("npm test")["allowed"] is True
     assert broker.classify("npm run build")["class"] == "build"
-    assert broker.classify("npm run deploy")["allowed"] is True
+    assert broker.classify("npm run deploy")["allowed"] is False
     assert broker.classify("npm install")["class"] == "mutating"
     assert broker.classify("make test")["allowed"] is True
     assert broker.classify("make clean")["allowed"] is True
@@ -166,12 +165,6 @@ def test_external_sessions_are_bounded_lru(monkeypatch, tmp_path: Path):
     assert ext.status()["session_policy"]["max_per_backend"] == 1
     reset = ext.reset_sessions("all")
     assert reset["success"] is True and reset["removed"]["serena"] == 1
-
-
-def test_semantic_cache_blob_decode_has_stdlib_fallback():
-    import struct
-    raw = struct.pack("<3f", 1.25, -2.0, 3.5)
-    assert SemanticGenerationCache._decode_vector(raw) == pytest.approx([1.25, -2.0, 3.5])
 
 
 def test_code_index_query_and_multilanguage_import_resolution(tmp_path: Path):
@@ -316,7 +309,7 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "workState" in DASHBOARD_HTML
     assert "workVisible" in DASHBOARD_HTML
     assert "Agent trace history" in DASHBOARD_HTML
-    assert "dedicated authenticated trace page" in Path("docs/DASHBOARD.md").read_text(encoding="utf-8")
+    assert "Clicking a linked row opens a dedicated trace page" in Path("docs/DASHBOARD.md").read_text(encoding="utf-8")
     from local_ai_hub.preprocess import ProjectPreprocessor
     assert "batch in progress" in inspect.getsource(ProjectPreprocessor.status)
     assert 'id="controlMenu"' in DASHBOARD_HTML

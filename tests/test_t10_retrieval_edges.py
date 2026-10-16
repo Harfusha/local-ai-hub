@@ -740,6 +740,7 @@ def test_missing_tree_sitter_language_returns_none(monkeypatch) -> None:
 
     monkeypatch.setattr(parser, "_INIT_ATTEMPTED", True)
     monkeypatch.setattr(parser, "_PARSERS", {})
+    monkeypatch.setattr(parser, "_LAZY_LANGUAGE_PACKS", {})
     monkeypatch.setattr(parser, "_use_isolated_worker", lambda: False)
     monkeypatch.setattr(parser, "_worker_disabled_result", lambda: None)
     monkeypatch.setattr(parser, "_load_lazy_language_pack", lambda _language: None)
@@ -750,7 +751,7 @@ def test_code_index_falls_back_when_tree_sitter_is_unavailable(monkeypatch, tmp_
     import local_ai_hub.treesitter_parser as parser
 
     config = {"server": {"state_dir": str(tmp_path / "state")}}
-    index = CodeIndex(config, repo_tools=RepositoryTools(config))
+    index = CodeIndex(config, repo_tools=None)
     source = "def caller():\n    target()\n"
     parser_calls = []
 
@@ -776,7 +777,7 @@ def test_code_index_falls_back_when_tree_sitter_is_unavailable(monkeypatch, tmp_
 
 def test_call_edge_analyzer_version_rejects_stale_parse_blobs(tmp_path) -> None:
     index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
-    old_version = f"{code_index_module.__version__}:call-edges-v13-scoped-fallback"
+    old_version = f"{code_index_module.__version__}:call-edges-v15-native-point-tuples"
     with closing(index._connect()) as con:
         con.execute(
             "INSERT INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)",
