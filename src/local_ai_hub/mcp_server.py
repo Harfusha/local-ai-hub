@@ -1447,9 +1447,8 @@ def _telemetry_failure(value: Any) -> dict[str, Any]:
 def _preserve_contract_state(raw: Any, projected: Any) -> Any:
     """Restore bounded result-state fields after projection and compaction."""
     state_keys = {
-        *LIFECYCLE_PROTECTED_KEYS,
-        "success", "hub_online", "status_code", "error", "terminal", "retryable", "degraded",
-        "stale", "evidence", "evidence_ids", "cancel", "cancelled", "timed_out",
+        *_RELIABILITY_PROTECTED_KEYS,
+        "hub_online", "status_code", "error", "cancel", "timed_out",
     }
     if isinstance(raw, dict) and isinstance(projected, dict):
         for key in state_keys:
@@ -5132,44 +5131,54 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             # Preserve the existing context/evidence projection for other tools;
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
-            for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-                for compact_text in (False, True):
-                    candidate = {
-                        "success": False,
-                        "error": error[:error_chars],
-                        **{
-                            key: value[key]
-                            for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
-                                        "mutation_applied", "operation_not_started")
-                            if key in value
-                        },
-                    }
-                    for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
-                        if key != "error" and key in value:
-                            candidate[key] = value[key]
-                    for metadata in (
-                        {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
-                        {"requested_tokens": requested, "returned_tokens": 0},
-                    ):
-                        trial = dict(candidate)
-                        trial["response_budget"] = dict(metadata)
+            for structured in (True, False):
+                for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
+                    for compact_text in (False, True):
+                        candidate = {
+                            "success": False,
+                            "error": error[:error_chars],
+                            **{
+                                key: value[key]
+                                for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+                                            "mutation_applied", "operation_not_started")
+                                if key in value
+                            },
+                        }
+                        for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                            if key != "error" and key in value:
+                                candidate[key] = value[key]
+                        for metadata in (
+                            {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
+                            {"requested_tokens": requested, "returned_tokens": 0},
+                        ):
+                            trial = dict(candidate)
+                            trial["response_budget"] = dict(metadata)
 
-                        def wire_payload() -> dict[str, Any]:
-                            wire = _mcp_wire_view(trial, structured=True)
-                            if compact_text:
-                                wire["content"][0]["text"] = json_dumps({
-                                    "success": False, "error": trial["error"],
-                                })
-                            return wire
+                            def wire_payload() -> dict[str, Any]:
+                                wire = _mcp_wire_view(trial, structured=structured)
+                                if compact_text:
+                                    wire["content"][0]["text"] = json_dumps({
+                                        "success": False, "error": trial["error"],
+                                        **{
+                                            key: trial[key]
+                                            for key in (
+                                                "status", "status_code", "terminal", "retryable",
+                                                "mutation_applied", "operation_not_started",
+                                                "request_id", "execution_id",
+                                            )
+                                            if key in trial
+                                        },
+                                    })
+                                return wire
 
-                        for _ in range(16):
-                            returned = json_tokens(wire_payload())
-                            trial["response_budget"]["returned_tokens"] = returned
-                            if json_tokens(wire_payload()) == returned:
-                                break
-                        wire = wire_payload()
-                        if json_tokens(wire) <= requested:
-                            return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], trial
+                            for _ in range(16):
+                                returned = json_tokens(wire_payload())
+                                trial["response_budget"]["returned_tokens"] = returned
+                                if json_tokens(wire_payload()) == returned:
+                                    break
+                            wire = wire_payload()
+                            if json_tokens(wire) <= requested:
+                                return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], (trial if structured else None)
             return None
         error = str(value.get("error") or "")
         metadata_variants = (

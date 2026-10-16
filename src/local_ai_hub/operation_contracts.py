@@ -1135,8 +1135,10 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
                 },
                 "then": {"not": {"required": [field]}},
             })
-    if conditions:
-        schema["allOf"] = conditions
+    existing_all_of = list(schema.get("allOf", []))
+    combined_all_of = [*existing_all_of, *conditions]
+    if combined_all_of:
+        schema["allOf"] = combined_all_of
     else:
         schema.pop("allOf", None)
     return schema
