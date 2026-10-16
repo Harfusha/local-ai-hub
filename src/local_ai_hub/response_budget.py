@@ -86,6 +86,8 @@ _IDENTIFIER_KEYS = {
 
 
 def _bounded_string(value: str, max_chars: int) -> str:
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
+        return ""
     if len(value) <= max_chars:
         return value
     # syntax_aware_truncate may add a marker longer than a tiny character cap;
@@ -95,11 +97,11 @@ def _bounded_string(value: str, max_chars: int) -> str:
 
 def _safe_limit(value: Any, default: int) -> int:
     try:
-        def_val = max(64, int(default))
+        def_val = max(64, int(default)) if not isinstance(default, bool) else 1200
     except (TypeError, ValueError, OverflowError):
         def_val = 1200
     try:
-        if value is None:
+        if value is None or isinstance(value, bool):
             return def_val
         val_float = float(value)
         if not math.isfinite(val_float) or val_float <= 0:
@@ -107,6 +109,14 @@ def _safe_limit(value: Any, default: int) -> int:
         return max(64, int(val_float))
     except (TypeError, ValueError, OverflowError):
         return def_val
+
+
+def is_valid_evidence_id(value: Any) -> bool:
+    """Return True if value is a canonical E[0-9a-fA-F]{20} evidence identifier."""
+    if value is None or isinstance(value, bool) or not isinstance(value, str):
+        return False
+    clean = value.strip()
+    return bool(re.fullmatch(r"E[0-9a-fA-F]{20}", clean))
 
 
 def _bounded_pointer_item(value: Any, *, budget_chars: int, depth: int = 0) -> Any:

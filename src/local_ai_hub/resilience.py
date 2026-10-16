@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import json
 import hashlib
+import math
 import shutil
 import sqlite3
 import sys
@@ -27,6 +28,30 @@ class BreakerState:
     half_open_probe_since: float = 0.0
 
 
+def _safe_float(val: Any, default: float, min_val: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        if not math.isfinite(f):
+            return default
+        return max(min_val, f)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        i = int(val)
+        return max(min_val, i)
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 class CircuitBreakerRegistry:
     """Small per-resource circuit breaker used around fragile local runtimes.
 
@@ -36,16 +61,17 @@ class CircuitBreakerRegistry:
     """
 
     def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 20.0, probe_timeout_seconds: float = 30.0):
-        self.failure_threshold = max(1, int(failure_threshold))
-        self.cooldown_seconds = max(0.01, float(cooldown_seconds))
-        self.probe_timeout_seconds = max(0.01, float(probe_timeout_seconds))
+        self.failure_threshold = max(1, _safe_int(failure_threshold, 3))
+        self.cooldown_seconds = max(0.01, _safe_float(cooldown_seconds, 20.0))
+        self.probe_timeout_seconds = max(0.01, _safe_float(probe_timeout_seconds, 30.0))
         self._lock = threading.RLock()
         self._states: dict[str, BreakerState] = {}
 
     def allow(self, key: str) -> bool:
+        clean_key = str(key or "").replace("\x00", "").strip() or "default"
         now = time.monotonic()
         with self._lock:
-            state = self._states.setdefault(key, BreakerState())
+            state = self._states.setdefault(clean_key, BreakerState())
             if not state.opened_at:
                 return True
             if now - state.opened_at < self.cooldown_seconds:
@@ -60,13 +86,35 @@ class CircuitBreakerRegistry:
             state.half_open_probe_since = now
             return True
 
-    def success(self, key: str) -> None:
+    def is_allowed(self, key: str) -> bool:
+        return self.allow(key)
+
+    def is_open(self, key: str) -> bool:
+        clean_key = str(key or "").replace("\x00", "").strip() or "default"
+        now = time.monotonic()
         with self._lock:
-            self._states[key] = BreakerState()
+            state = self._states.get(clean_key)
+            if state is None or not state.opened_at:
+                return False
+            return now - state.opened_at < self.cooldown_seconds
+
+    def reset(self, key: str | None = None) -> None:
+        with self._lock:
+            if key is None:
+                self._states.clear()
+            else:
+                clean_key = str(key).replace("\x00", "").strip() or "default"
+                self._states.pop(clean_key, None)
+
+    def success(self, key: str) -> None:
+        clean_key = str(key or "").replace("\x00", "").strip() or "default"
+        with self._lock:
+            self._states[clean_key] = BreakerState()
 
     def failure(self, key: str) -> None:
+        clean_key = str(key or "").replace("\x00", "").strip() or "default"
         with self._lock:
-            state = self._states.setdefault(key, BreakerState())
+            state = self._states.setdefault(clean_key, BreakerState())
             state.failures += 1
             state.half_open_probe = False
             if state.failures >= self.failure_threshold:
