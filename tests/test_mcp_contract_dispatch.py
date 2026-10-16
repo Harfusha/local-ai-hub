@@ -580,7 +580,7 @@ def test_mcp_repo_search_passes_path_hints_to_client_keyword(monkeypatch) -> Non
                 "query": "auth",
                 "top_k": 12,
                 "enrich": False,
-                "limit": None,
+                "limit": 24,
                 "offset": 0,
             },
             expected_hints,

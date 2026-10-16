@@ -90,11 +90,11 @@ def test_improvement_candidate_validation_and_helpers() -> None:
     with pytest.raises(TypeError):
         ImprovementCandidate.from_dict("invalid")  # type: ignore
 
-    # from_dict invalid status fallback
+    # from_dict rejects noncanonical status values; no fallback is permitted.
     cand_dict = cand.to_dict()
     cand_dict["status"] = "unknown_status"
-    recovered = ImprovementCandidate.from_dict(cand_dict)
-    assert recovered.status == CandidateStatus.CANDIDATE
+    with pytest.raises(ValueError, match="canonical CandidateStatus value"):
+        ImprovementCandidate.from_dict(cand_dict)
 
 
 def test_learning_store_inspection_helpers(tmp_path: Path) -> None:
