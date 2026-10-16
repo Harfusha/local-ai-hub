@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -60,7 +61,9 @@ def test_malformed_config_fails_before_profile_read_or_persist(config, monkeypat
     def fail_if_called(*args, **kwargs):
         raise AssertionError("malformed config reached profile access")
 
-    monkeypatch.setattr(autotune.RuntimeTuner, "_load_state", fail_if_called)
+    monkeypatch.setattr(Path, "read_text", fail_if_called)
+    monkeypatch.setattr(Path, "mkdir", fail_if_called)
+    monkeypatch.setattr(Path, "write_text", fail_if_called)
 
     with pytest.raises((TypeError, ValueError)):
         autotune.RuntimeTuner(config)
