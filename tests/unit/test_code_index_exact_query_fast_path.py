@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from types import SimpleNamespace
 
@@ -13,7 +14,7 @@ def test_exact_identifier_query_uses_name_index_without_python_score_udf(monkeyp
         {"server": {"state_dir": str(tmp_path / "state")}},
         SimpleNamespace(ignore_dirs=set()),
     )
-    with sqlite3.connect(index.db_path) as con:
+    with closing(sqlite3.connect(index.db_path)) as con:
         con.executemany(
             """INSERT INTO symbols(
                    root,path,name,kind,line,end_line,container,name_path,signature,access,docstring
@@ -24,6 +25,7 @@ def test_exact_identifier_query_uses_name_index_without_python_score_udf(monkeyp
                 (str(root), "src/c.py", "generate_tests_archive", "function", 3, 6, "", "generate_tests_archive", "", "public", ""),
             ],
         )
+        con.commit()
 
     statements: list[str] = []
     connect = index._connect
