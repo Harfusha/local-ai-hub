@@ -1043,6 +1043,7 @@ def test_affected_test_selection_covers_transitive_dependency_graph(tmp_path) ->
     _init_patch_repo(
         tmp_path,
         {
+            "pytest.ini": "[pytest]\ntestpaths = tests\n",
             "src/__init__.py": "",
             "src/shared.py": "VALUE = 1\n",
             "src/core.py": "from src.shared import VALUE\n\ndef core():\n    return VALUE\n",
@@ -1685,11 +1686,11 @@ def test_early_preflight_does_not_acquire_rollback_guard(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(commands_module, "_snapshot_rollback_scope", forbidden_snapshot)
     result = broker.run(
-        "missing-tool --version",
+        "git status --short",
         str(tmp_path),
         "tenant",
         rollback_on_failure=True,
-        rollback_paths=["tracked.txt"],
+        paths=["tracked.txt"],
     )
 
     assert result["success"] is False
@@ -2270,6 +2271,9 @@ def test_posix_group_cleanup_does_not_escalate_after_leader_identity_changes(mon
 
 
 def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill(monkeypatch) -> None:
+    release_readers = threading.Event()
+    reader_threads: list[threading.Thread] = []
+
     class PosixOsProxy:
         name = "posix"
 
@@ -2279,9 +2283,18 @@ def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill
         class Pipe:
             def __init__(self) -> None:
                 self.closed = False
+                self.closed_event = threading.Event()
 
             def close(self) -> None:
                 self.closed = True
+                self.closed_event.set()
+
+            def read(self, size: int) -> bytes:
+                assert size > 0
+                reader_threads.append(threading.current_thread())
+                if not release_readers.wait(timeout=5):
+                    raise TimeoutError("test-owned pipe reader was not released")
+                return b""
 
         def __init__(self) -> None:
             self.stdout = self.Pipe()
@@ -2319,18 +2332,28 @@ def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill
     )
     monkeypatch.setattr(process_utils_module, "terminate_tree", refuse_numeric_group)
 
-    with pytest.raises(subprocess.TimeoutExpired) as raised:
-        process_utils_module.run_hidden(["fake"], timeout=0.01, capture_output=True)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as raised:
+            process_utils_module.run_hidden(["fake"], timeout=0.01, capture_output=True)
 
-    error = raised.value
-    assert process.kill_calls == 0
-    assert process.wait_calls == 0
-    assert process.stdout.closed is False
-    assert process.stderr.closed is False
-    assert len(termination_calls) == 2
-    assert error.cleanup_unconfirmed is True
-    assert error.cleanup_process is process
-    assert error.cleanup_process_group == process.pid
+        error = raised.value
+        assert process.kill_calls == 0
+        assert process.wait_calls == 0
+        assert process.communicate_calls == 0
+        assert process.stdout.closed is False
+        assert process.stderr.closed is False
+        assert len(termination_calls) == 2
+        assert error.cleanup_unconfirmed is True
+        assert error.cleanup_process is process
+        assert error.cleanup_process_group == process.pid
+    finally:
+        release_readers.set()
+        stdout_closed = process.stdout.closed_event.wait(timeout=2)
+        stderr_closed = process.stderr.closed_event.wait(timeout=2)
+        for reader in reader_threads:
+            reader.join(timeout=2)
+        assert stdout_closed and stderr_closed
+        assert all(not reader.is_alive() for reader in reader_threads)
 
 
 def test_posix_terminate_tree_refuses_unowned_numeric_pid_and_group(monkeypatch) -> None:
