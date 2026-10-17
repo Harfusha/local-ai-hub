@@ -37,18 +37,10 @@ _ARTIFACT_PAGING_SCHEMA_SQL = """CREATE TABLE artifact_paging_metadata (
     page_text TEXT,
     nul_mask BLOB
 )"""
-_PREVIOUS_ARTIFACT_PAGING_SCHEMA_SQL = """CREATE TABLE artifact_paging_metadata (
-    artifact_id TEXT PRIMARY KEY,
-    char_count INTEGER NOT NULL,
-    section_names TEXT NOT NULL,
-    page_text TEXT,
-    nul_mask BLOB
-)"""
 MAX_ARTIFACT_SLICES = 16
 MAX_ARTIFACT_SLICE_CHARS = 50_000
 MAX_ARTIFACT_TEXT_CHUNK_BYTES = 64 * 1024
 MAX_ARTIFACT_JSON_SOURCE_BYTES = 1_000_000
-MAX_ARTIFACT_METADATA_REBUILD_SECONDS = 30.0
 MAX_ARTIFACT_SECTION_JSON_CHARS = 250_000
 MAX_ARTIFACT_HEADING_CHARS = 512
 MAX_ARTIFACT_SECTION_NAMES = 50
@@ -306,45 +298,6 @@ class ArtifactStore:
                 nul_mask,
             ),
         )
-
-    def _rebuild_paging_metadata(self, con: sqlite3.Connection) -> None:
-        """Recreate disposable paging indexes from durable artifact text."""
-        deadline = time.monotonic() + MAX_ARTIFACT_METADATA_REBUILD_SECONDS
-        con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-        try:
-            con.execute(f"DROP TABLE {_ARTIFACT_PAGING_TABLE}")
-            con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
-            # The previous sidecar contract overloaded the core checksum with
-            # its derived JSON checksum. That value now belongs in the sidecar.
-            con.execute("UPDATE artifacts SET checksum=NULL WHERE mime_type IS NULL")
-            last_artifact_id: str | None = None
-            while True:
-                if time.monotonic() >= deadline:
-                    raise UnsupportedArtifactSchema("artifact paging metadata rebuild exceeded its time limit")
-                if last_artifact_id is None:
-                    rows = con.execute(
-                        """SELECT artifact_id, text FROM artifacts
-                           WHERE mime_type IS NULL ORDER BY artifact_id LIMIT 64""",
-                    ).fetchall()
-                else:
-                    rows = con.execute(
-                        """SELECT artifact_id, text FROM artifacts
-                           WHERE mime_type IS NULL AND artifact_id>? ORDER BY artifact_id LIMIT 64""",
-                        (last_artifact_id,),
-                    ).fetchall()
-                if not rows:
-                    break
-                for artifact_id, text in rows:
-                    if not isinstance(artifact_id, str) or not isinstance(text, str):
-                        raise UnsupportedArtifactSchema("invalid artifact text during paging metadata rebuild")
-                    section_map, sections_truncated = self._section_data(text)
-                    page_text, nul_mask = self._page_text_metadata(text)
-                    self._write_paging_metadata(
-                        con, artifact_id, text, list(section_map), page_text, nul_mask, sections_truncated,
-                    )
-                    last_artifact_id = artifact_id
-        finally:
-            con.set_progress_handler(None, 0)
 
     @staticmethod
     def _page_text_metadata(text: str) -> tuple[str | None, bytes | None]:
@@ -612,9 +565,7 @@ class ArtifactStore:
                 "artifact_schema_meta": _normalize_artifact_create_sql(_ARTIFACT_SCHEMA_META_SQL),
                 _ARTIFACT_PAGING_TABLE: _normalize_artifact_create_sql(_ARTIFACT_PAGING_SCHEMA_SQL),
             }
-            previous_paging_sql = _normalize_artifact_create_sql(_PREVIOUS_ARTIFACT_PAGING_SCHEMA_SQL)
-
-            def _validate_connection(con: sqlite3.Connection) -> bool:
+            def _validate_connection(con: sqlite3.Connection) -> None:
                 objects = {
                     str(row[0]): (str(row[1]), str(row[2] or ""))
                     for row in con.execute(
@@ -626,7 +577,6 @@ class ArtifactStore:
                 }
                 if set(objects) != {"artifacts", "artifact_schema_meta", _ARTIFACT_PAGING_TABLE}:
                     raise UnsupportedArtifactSchema("unsupported artifact database schema")
-                paging_schema_needs_rebuild = False
                 for name in objects:
                     object_type, statement = objects[name]
                     normalized = _normalize_artifact_create_sql(statement)
@@ -634,9 +584,7 @@ class ArtifactStore:
                             or normalized.startswith("CREATE VIRTUAL TABLE")):
                         raise UnsupportedArtifactSchema("unsupported artifact table storage")
                     if normalized != canonical_sql[name]:
-                        if name != _ARTIFACT_PAGING_TABLE or normalized != previous_paging_sql:
-                            raise UnsupportedArtifactSchema("unsupported artifact table definition")
-                        paging_schema_needs_rebuild = True
+                        raise UnsupportedArtifactSchema("unsupported artifact table definition")
                 if con.execute("SELECT 1 FROM sqlite_master WHERE name='artifacts_v2'").fetchone():
                     raise UnsupportedArtifactSchema("unsupported artifact database schema")
                 columns = list(con.execute("PRAGMA table_xinfo(artifacts)"))
@@ -670,18 +618,7 @@ class ArtifactStore:
                     "page_text": ("TEXT", 0, 0, None, 0),
                     "nul_mask": ("BLOB", 0, 0, None, 0),
                 }
-                previous_paging_columns = {
-                    "artifact_id": ("TEXT", 1, 0, None, 0),
-                    "char_count": ("INTEGER", 0, 1, None, 0),
-                    "section_names": ("TEXT", 0, 1, None, 0),
-                    "page_text": ("TEXT", 0, 0, None, 0),
-                    "nul_mask": ("BLOB", 0, 0, None, 0),
-                }
-                previous_paging_columns_detected = actual_paging == previous_paging_columns
-                if (
-                    actual_paging != canonical_paging_columns
-                    and not previous_paging_columns_detected
-                ) or previous_paging_columns_detected != paging_schema_needs_rebuild:
+                if actual_paging != canonical_paging_columns:
                     raise UnsupportedArtifactSchema("unsupported artifact paging metadata table")
                 marker = con.execute(
                     """SELECT 1 FROM artifact_schema_meta
@@ -705,24 +642,22 @@ class ArtifactStore:
                              THEN tenant GLOB '*[^0-9a-f]*' OR tenant_identity != tenant
                              ELSE 1 END LIMIT 1"""
                     ).fetchone()
-                    if not paging_schema_needs_rebuild:
-                        missing_paging = con.execute(
-                            f"""SELECT 1 FROM artifacts AS a
-                                 LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
-                                 WHERE a.mime_type IS NULL AND p.artifact_id IS NULL LIMIT 1"""
-                        ).fetchone()
+                    missing_paging = con.execute(
+                        f"""SELECT 1 FROM artifacts AS a
+                             LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
+                             WHERE a.mime_type IS NULL AND p.artifact_id IS NULL LIMIT 1"""
+                    ).fetchone()
                     invalid_mime_type = con.execute(
                         """SELECT 1 FROM artifacts
                              WHERE mime_type IS NOT NULL
                                AND (typeof(mime_type)!='text' OR length(CAST(mime_type AS BLOB))=0)
                              LIMIT 1"""
                     ).fetchone()
-                    if not paging_schema_needs_rebuild:
-                        stale_paging = con.execute(
-                            f"""SELECT 1 FROM {_ARTIFACT_PAGING_TABLE} AS p
-                                 LEFT JOIN artifacts AS a ON a.artifact_id=p.artifact_id
-                                 WHERE a.artifact_id IS NULL OR a.mime_type IS NOT NULL LIMIT 1"""
-                        ).fetchone()
+                    stale_paging = con.execute(
+                        f"""SELECT 1 FROM {_ARTIFACT_PAGING_TABLE} AS p
+                             LEFT JOIN artifacts AS a ON a.artifact_id=p.artifact_id
+                             WHERE a.artifact_id IS NULL OR a.mime_type IS NOT NULL LIMIT 1"""
+                    ).fetchone()
                 except sqlite3.OperationalError as exc:
                     if time.monotonic() >= deadline:
                         raise UnsupportedArtifactSchema("artifact schema validation exceeded its time limit") from exc
@@ -733,7 +668,6 @@ class ArtifactStore:
                     raise UnsupportedArtifactSchema("invalid artifact tenant identity")
                 if missing_paging is not None or invalid_mime_type is not None or stale_paging is not None:
                     raise UnsupportedArtifactSchema("incomplete artifact paging metadata")
-                return paging_schema_needs_rebuild
 
             def _validate_existing() -> None:
                 # SQLite may create -shm when a WAL-mode DB has no shared-memory file. With no
@@ -771,24 +705,21 @@ class ArtifactStore:
             def _setup() -> None:
                 nonlocal fresh_database
                 with closing(self._connect_for_initialization(fresh=fresh_database)) as con:
-                    paging_schema_needs_rebuild = False
                     if fresh_database:
                         objects_exist = con.execute(
                             "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"
                         ).fetchone()
                         if objects_exist is not None:
-                            paging_schema_needs_rebuild = _validate_connection(con)
+                            _validate_connection(con)
                             fresh_database = False
                     else:
                         # Recheck after opening the no-create writer handle, before persistent PRAGMAs.
-                        paging_schema_needs_rebuild = _validate_connection(con)
+                        _validate_connection(con)
                     initialize_wal(con)
                     con.execute("BEGIN IMMEDIATE")
                     if not fresh_database:
-                        # Recheck under the write lock before replacing derived paging state.
-                        paging_schema_needs_rebuild = _validate_connection(con)
-                        if paging_schema_needs_rebuild:
-                            self._rebuild_paging_metadata(con)
+                        # Recheck under the write lock before mutating artifact state.
+                        _validate_connection(con)
                     if fresh_database:
                         con.execute(_ARTIFACTS_SCHEMA_SQL)
                         con.execute(_ARTIFACT_SCHEMA_META_SQL)

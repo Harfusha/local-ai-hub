@@ -98,7 +98,7 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
         assert result["error_code"] == "artifact_paging_metadata_invalid"
 
 
-def test_rebuilds_derived_paging_metadata_and_preserves_artifact_text(tmp_path) -> None:
+def test_previous_paging_schema_is_rejected_without_mutation(tmp_path) -> None:
     text = "heading\n\nbody\x00tail"
     store = ArtifactStore(tmp_path)
     artifact_id = store.put(text, "owner", "text")
@@ -129,13 +129,8 @@ def test_rebuilds_derived_paging_metadata_and_preserves_artifact_text(tmp_path) 
         )
         connection.commit()
 
-    reopened = ArtifactStore(tmp_path)
-    result = reopened.get_slices(
-        artifact_id, [{"offset": 0, "max_chars": len(text)}], tenant="owner",
-    )
-
-    assert result["success"] is True
-    assert result["slices"] == [{"offset": 0, "text": text}]
+    with pytest.raises(UnsupportedArtifactSchema, match="unsupported artifact table definition"):
+        ArtifactStore(tmp_path)
     with closing(sqlite3.connect(db_path)) as connection:
         durable_after = connection.execute(
             "SELECT text, tenant, tenant_identity, checksum FROM artifacts WHERE artifact_id=?",
@@ -144,10 +139,14 @@ def test_rebuilds_derived_paging_metadata_and_preserves_artifact_text(tmp_path) 
         paging_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_xinfo(artifact_paging_metadata)")
         }
+        paging_after = connection.execute(
+            "SELECT artifact_id, char_count, section_names FROM artifact_paging_metadata"
+        ).fetchone()
     assert durable_before[:3] == durable_after[:3]
-    assert durable_before[3] == old_sidecar_checksum
-    assert durable_after[3] is None
-    assert {"section_json", "section_checksum"} <= paging_columns
+    assert durable_after[3] == old_sidecar_checksum
+    assert "section_names" in paging_columns
+    assert "section_json" not in paging_columns
+    assert paging_after == (artifact_id, len(text), "malformed derived data")
 
 
 def test_core_and_sidecar_write_roll_back_together_on_failed_batch(tmp_path) -> None:
