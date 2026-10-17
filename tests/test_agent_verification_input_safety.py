@@ -64,6 +64,20 @@ def test_receipt_from_dict_accepts_mapping_details_without_aliasing():
     assert receipt.details == {"count": 1}
 
 
+def test_receipt_details_snapshot_nested_values_and_serialization():
+    nested = {"items": [{"value": 1}]}
+    payload = receipt_payload()
+    payload["details"] = {"nested": nested}
+
+    receipt = VerificationReceipt.from_dict(payload)
+    nested["items"][0]["value"] = 2
+    assert receipt.details == {"nested": {"items": [{"value": 1}]}}
+
+    serialized = receipt.to_dict()
+    serialized["details"]["nested"]["items"][0]["value"] = 3
+    assert receipt.details == {"nested": {"items": [{"value": 1}]}}
+
+
 @pytest.mark.parametrize("value", [None, 0, 1, 0.0, "true", "false", [], {}])
 def test_receipt_from_dict_rejects_non_boolean_json_passed(value):
     payload = receipt_payload()
