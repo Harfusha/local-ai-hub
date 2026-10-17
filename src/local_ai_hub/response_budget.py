@@ -427,12 +427,16 @@ def _budget_rejection(
         "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
         "mutation_applied", "operation_not_started", "reused", "reuse_key",
     )
+    fast_path_keys = {*protocol_keys, "summary", "error"}
+    has_unhandled_protected = any(
+        key in preserved and key not in fast_path_keys for key in protected_keys
+    )
     error_limits: tuple[int | None, ...] = (None, 256, 128, 64, 32, 16)
     summary_limits: tuple[int | None, ...] = (None, 512, 256, 128, 96, 64, 48, 32, 24, 16, 8, 1)
     command_failure = preserved.get("success") is False and (
         "execution_id" in preserved or preserved.get("exit_code") not in (None, 0)
     )
-    for error_limit in error_limits if command_failure else ():
+    for error_limit in error_limits if command_failure and not has_unhandled_protected else ():
         if error_limit is not None and error_limit < min(64, len(error)):
             continue
         for summary_limit in summary_limits:

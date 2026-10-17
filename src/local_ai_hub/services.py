@@ -3891,7 +3891,7 @@ class LocalAIServices:
         ]
         hint_digest = stable_hash([asdict(hint) for hint in request_hints])
         params = {
-            "changed_paths": sorted(changed_paths or []),
+            "changed_paths": None if changed_paths is None else sorted(changed_paths),
             "base": base,
             "project_config_digest": context.config_digest,
             "path_hints_digest": hint_digest,

@@ -86,3 +86,25 @@ def test_failed_command_rejection_keeps_full_identity_at_compact_inner_budget() 
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert result["summary"].startswith("Command failed:")
+
+
+def test_failed_command_rejection_preserves_protected_context_and_evidence() -> None:
+    context_id = "ctx-0123456789abcdef"
+    evidence_id = "E0123456789abcdef"
+    result = _budget_rejection(
+        requested=512,
+        original=1800,
+        source={
+            "success": False,
+            "exit_code": 1,
+            "error": "command failed",
+            "execution_id": "e" * 32,
+            "context_id": context_id,
+            "evidence_ids": [evidence_id],
+        },
+        protected_keys=("context_id", "evidence_ids"),
+    )
+
+    assert result["context_id"] == context_id
+    assert result["evidence_ids"] == [evidence_id]
+    assert json_tokens(result) <= 512
