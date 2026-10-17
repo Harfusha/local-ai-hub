@@ -54,3 +54,19 @@ def test_semantic_services_translate_only_canonical_http_fields(
     assert calls[0][0]["context"] == expected_context
     assert "problem" not in calls[0][0]
     assert "code" not in calls[0][0]
+
+@pytest.mark.parametrize(
+    ("method", "payload", "alias"),
+    [
+        (LocalAIServices.delegate, {"task": "current", "prompt": "retired"}, "prompt"),
+        (LocalAIServices.speculative_draft, {"task": "current", "path": "retired"}, "path"),
+        (LocalAIServices.speculative_draft, {"task": "current", "cwd": "retired"}, "cwd"),
+        (LocalAIServices.task_scaffold, {"prompt": "current", "task": "retired"}, "task"),
+        (LocalAIServices.task_scaffold, {"prompt": "current", "spec": "retired"}, "spec"),
+    ],
+)
+def test_semantic_services_reject_retired_dispatch_aliases_before_work(method, payload, alias):
+    result = method(SimpleNamespace(), payload, "tenant")
+
+    assert result["success"] is False
+    assert alias in result["error"]
