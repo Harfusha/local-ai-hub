@@ -61,9 +61,9 @@ def _preflight_lease_schema(path: Path) -> None:
 
 
 def _norm_rel(value: str, root: str = "") -> str:
-    if value is None or isinstance(value, bool):
+    if not isinstance(value, str):
         raise ValueError(f"lease path must be repository-relative: {value}")
-    raw = str(value).strip()
+    raw = value.strip()
     if not raw or "\x00" in raw:
         raise ValueError(f"lease path must be repository-relative: {value}")
     wp = PureWindowsPath(raw)
@@ -102,8 +102,13 @@ def _norm_rel(value: str, root: str = "") -> str:
 
 
 def _overlap(a: str, b: str) -> bool:
-    na = a.replace("\\", "/").rstrip("/")
-    nb = b.replace("\\", "/").rstrip("/")
+    try:
+        na = _norm_rel(a)
+        nb = _norm_rel(b)
+    except (TypeError, ValueError):
+        return True
+    if na == "." or nb == ".":
+        return True
     if os.name == "nt":
         na = na.lower()
         nb = nb.lower()

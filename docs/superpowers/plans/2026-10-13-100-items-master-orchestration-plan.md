@@ -493,3 +493,5 @@ The model-free claim validator now takes explicit manifest and receipt paths rat
 **2026-10-17 lease identity validation:** Scope lease claim now rejects non-string tenant/root/purpose and non-string or whitespace-padded project coordination IDs before database work; tenant cleanup uses the same nonempty tenant rule. Regression cases are authored but remain unexecuted until the complete source bundle is assembled.
 
 **2026-10-17 lease query and renewal contracts:** Renew now rejects malformed tenant/lease identities; list/waits/check_path reject scalar coordination IDs and non-string paths instead of coercing them. Regression cases are authored; validation remains deferred until the complete source bundle is assembled.
+
+**2026-10-17 corrupt lease-scope handling:** Overlap checks now normalize both live and requested scopes; malformed persisted paths conservatively block claims/checks, and a repository-root scope overlaps every child. Temporary-database regression coverage uses explicit connection closing; tests remain deferred.
