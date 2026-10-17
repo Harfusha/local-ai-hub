@@ -1506,13 +1506,10 @@ class MemoryStore:
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
-        tenant_agnostic_global: bool = False,
     ) -> MemoryRecord | None:
         if tenant is not None and not isinstance(tenant, str):
             raise ValueError("tenant must be a string")
         requested_scope = AgentScope.parse(scope).value if scope is not None else ""
-        if tenant_agnostic_global and requested_scope != AgentScope.GLOBAL.value:
-            raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
         if (
@@ -1542,7 +1539,6 @@ class MemoryStore:
                 worktree_id=worktree_id,
                 branch=branch,
                 include_expired=include_expired,
-                tenant_agnostic_global=tenant_agnostic_global,
                 semantic=False,
                 limit=1,
             )
@@ -1550,7 +1546,7 @@ class MemoryStore:
             if requested_scope == AgentScope.GLOBAL.value and record is not None:
                 # Direct lookup must provide every stored owner identity. This
                 # does not constrain intentional cross-project GLOBAL context
-                # sharing; tenant opt-in above bypasses only the tenant filter.
+                # sharing; tenant filtering remains strict for every lookup.
                 if str(record.scope_id or "").strip():
                     return None
                 for identity_key, requested_identity in (
@@ -1756,7 +1752,6 @@ class MemoryStore:
         root: str | None = None,
         repository_id: str | None = None,
         tenant: str | None = None,
-        tenant_agnostic_global: bool = False,
         task_id: str | None = None,
         session_id: str | None = None,
         clone_id: str | None = None,
@@ -1893,19 +1888,8 @@ class MemoryStore:
             "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
             "'$.tenant')"
         )
-        if tenant_agnostic_global:
-            if scope_val != AgentScope.GLOBAL.value:
-                raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
-            # GLOBAL sharing deliberately ignores transport tenant; repository
-            # and root identity filters above still constrain root-bound reads.
-        elif tenant:
-            if scope_val == AgentScope.GLOBAL.value:
-                sql += (
-                    f" AND ({provenance_tenant} IS NULL OR "
-                    f"{provenance_tenant} = '' OR {provenance_tenant} = ?)"
-                )
-            else:
-                sql += f" AND {provenance_tenant} = ?"
+        if tenant:
+            sql += f" AND {provenance_tenant} = ?"
             params.append(tenant)
         else:
             sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"

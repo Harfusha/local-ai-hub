@@ -62,45 +62,34 @@ def test_context_scoped_identity_denies_foreign_owner(store, tmp_path, scope, id
 
 
 @pytest.mark.parametrize("owner_field", ["root", "repository_id", "session_id", "task_id", "clone_id", "worktree_id", "branch"])
-@pytest.mark.parametrize("opt_in", [False, True])
-def test_explicit_global_lookup_cannot_omit_provenance_owner(store, owner_field, opt_in):
+def test_explicit_global_lookup_cannot_omit_provenance_owner(store, owner_field):
     record = seed(store, AgentScope.GLOBAL, {owner_field: "owner-identity"})
-    assert store.get(record.record_id, scope=AgentScope.GLOBAL, tenant_agnostic_global=opt_in) is None
+    assert store.get(record.record_id, scope=AgentScope.GLOBAL) is None
 
 
 def test_explicit_global_lookup_rejects_nonempty_scope_id(store):
     record = seed(store, AgentScope.GLOBAL, {}, scope_id="owner-identity")
     assert store.get(record.record_id, scope=AgentScope.GLOBAL) is None
-    assert store.get(record.record_id, scope=AgentScope.GLOBAL, tenant_agnostic_global=True) is None
 
 
-@pytest.mark.parametrize("opt_in", [False, True])
-def test_global_owner_lookup_matches_root_and_repository(store, tmp_path, opt_in):
+def test_global_owner_lookup_matches_root_repository_and_tenant(store, tmp_path):
     root = str(tmp_path / "repo")
     record = seed(store, AgentScope.GLOBAL, {"root": root, "repository_id": "repo-a", "tenant": "tenant-a"})
-    request = {"scope": AgentScope.GLOBAL, "root": root, "repository_id": "repo-a", "tenant": "tenant-a", "tenant_agnostic_global": opt_in}
+    request = {"scope": AgentScope.GLOBAL, "root": root, "repository_id": "repo-a", "tenant": "tenant-a"}
     assert store.get(record.record_id, **request) == record
     assert store.get(record.record_id, **{**request, "root": str(tmp_path / "other")}) is None
     assert store.get(record.record_id, **{**request, "repository_id": "other"}) is None
     assert store.get(record.record_id, **{**request, "root": None}) is None
     assert store.get(record.record_id, **{**request, "repository_id": None}) is None
-    foreign_tenant = store.get(record.record_id, **{**request, "tenant": "tenant-b"})
-    assert foreign_tenant == (record if opt_in else None)
+    assert store.get(record.record_id, **{**request, "tenant": "tenant-b"}) is None
 
 
 def test_global_context_shares_across_projects_not_tenants(store, tmp_path):
     shared = seed(store, AgentScope.GLOBAL, {"root": str(tmp_path / "foreign-repo"), "repository_id": "foreign-repo", "tenant": "tenant-a"})
     unowned = seed(store, AgentScope.GLOBAL, {})
     seed(store, AgentScope.GLOBAL, {"tenant": "tenant-b"})
-    assert {item.record_id for item in store.find_for_context(root=str(tmp_path / "repo"), tenant="tenant-a")} == {shared.record_id, unowned.record_id}
+    assert {item.record_id for item in store.find_for_context(root=str(tmp_path / "repo"), tenant="tenant-a")} == {shared.record_id}
     assert store.find_for_context(root=str(tmp_path / "repo")) == [unowned]
-
-
-@pytest.mark.parametrize("scope", [AgentScope.TASK, AgentScope.REPOSITORY, AgentScope.SESSION])
-def test_tenant_agnostic_opt_in_is_global_only(store, scope):
-    record = seed(store, scope, {"root": "repo-a", "tenant": "tenant-a"}, scope_id="identity")
-    with pytest.raises(ValueError, match="only valid for GLOBAL"):
-        store.get(record.record_id, scope=scope, scope_id="identity", root="repo-a", tenant="tenant-a", tenant_agnostic_global=True)
 
 
 def test_global_delete_transport_tenant_does_not_override_root(store, tmp_path):
