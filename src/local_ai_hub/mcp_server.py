@@ -3158,6 +3158,7 @@ def _local_ai_repo_impl(
     since = "" if since is None else since
     until = "" if until is None else until
     days = 30 if days is None else days
+    explicit_limit = limit is not None
     limit = (20 if action == "hotspots" else 24) if limit is None else limit
     for numeric_name, numeric_value in (
         ("max_tokens", max_tokens),
@@ -3316,10 +3317,14 @@ def _local_ai_repo_impl(
                 "success": False, "error": hint_error, "status_code": 400,
                 "terminal": True, "retryable": False,
             }
-        return _compact(CLIENT.post("/api/search", {
+        search_payload: dict[str, Any] = {
             "root": root, "query": query, "top_k": 12, "enrich": enrich,
-            "limit": limit, "offset": offset,
-        }, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
+        }
+        if explicit_limit:
+            search_payload["limit"] = limit
+        if offset:
+            search_payload["offset"] = offset
+        return _compact(CLIENT.post("/api/search", search_payload, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":

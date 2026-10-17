@@ -139,7 +139,7 @@ _COORD_ACTIONS = (
     "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
-    "memory_promote", "context_compile",
+    "memory_promote", "memory_delete", "context_compile",
     "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease",

@@ -2983,19 +2983,28 @@ class LocalAIServices:
                     continue
                 if target.is_file():
                     candidates = (target,)
-                elif target.is_dir() and file_inventory is not None:
-                    def under_hint_directory():
-                        for raw_candidate in file_inventory:
-                            try:
-                                candidate = Path(raw_candidate).resolve(strict=False)
-                                candidate.relative_to(hint_root)
-                            except (OSError, RuntimeError, ValueError):
-                                continue
-                            if candidate == target or target in candidate.parents:
-                                yield candidate
-                    candidates = under_hint_directory()
-                else:
-                    continue
+                elif target.is_dir():
+                    if file_inventory is not None:
+                        def under_hint_directory():
+                            for raw_candidate in file_inventory:
+                                try:
+                                    candidate = Path(raw_candidate).resolve(strict=False)
+                                    candidate.relative_to(hint_root)
+                                except (OSError, RuntimeError, ValueError):
+                                    continue
+                                if candidate == target or target in candidate.parents:
+                                    yield candidate
+                        candidates = under_hint_directory()
+                    else:
+                        def walk_hint_directory():
+                            count = 0
+                            for item in target.rglob("*"):
+                                if item.is_file():
+                                    yield item
+                                    count += 1
+                                    if count >= 64:
+                                        break
+                        candidates = walk_hint_directory()
                 for candidate in candidates:
                     try:
                         relative_path = candidate.relative_to(hint_root)
@@ -3094,9 +3103,7 @@ class LocalAIServices:
                 limit=page_limit,
                 offset=offset,
                 exact_count=True,
-                force_include_paths=(
-                    list(force_include_patterns) if hinted_force_include else []
-                ),
+                force_include_paths=list(force_include_patterns),
                 path_priority=path_priority,
             )
             if not isinstance(full_result, dict) or not full_result.get("success", True):
