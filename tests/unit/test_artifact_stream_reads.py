@@ -72,7 +72,7 @@ def test_streaming_read_uses_one_snapshot_without_rewriting_sidecar(tmp_path, mo
     _insert_text(store, "art_snapshot", original)
     with closing(sqlite3.connect(store.path)) as connection:
         metadata_before = connection.execute(
-            "SELECT section_names FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
+            "SELECT section_json, section_checksum FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
         ).fetchone()
     stream = store._stream_text
     changed = False
@@ -98,7 +98,7 @@ def test_streaming_read_uses_one_snapshot_without_rewriting_sidecar(tmp_path, mo
             "SELECT text FROM artifacts WHERE artifact_id='art_snapshot'",
         ).fetchone() == ("new",)
         assert connection.execute(
-            "SELECT section_names FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
+            "SELECT section_json, section_checksum FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
         ).fetchone() == metadata_before
 
 
@@ -213,7 +213,7 @@ def test_oversized_sidecar_is_not_materialized_and_sections_recompute_from_text(
     oversized_sidecar = "x" * (128 * 1024 + 1)
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute(
-            "UPDATE artifact_paging_metadata SET section_names=? WHERE artifact_id=?",
+            "UPDATE artifact_paging_metadata SET section_json=? WHERE artifact_id=?",
             (oversized_sidecar, artifact_id),
         )
         connection.commit()
@@ -231,12 +231,12 @@ def test_oversized_sidecar_is_not_materialized_and_sections_recompute_from_text(
     assert result["success"] is True
     assert result["sections"] == ["alpha"]
     assert any(
-        "case when length(cast(p.section_names as blob)) <= 131072" in statement.lower()
+        "case when length(cast(p.section_json as blob)) <= 131072" in statement.lower()
         for statement in statements
     )
     with closing(sqlite3.connect(store.path)) as connection:
         assert connection.execute(
-            "SELECT length(section_names) FROM artifact_paging_metadata WHERE artifact_id=?",
+            "SELECT length(section_json) FROM artifact_paging_metadata WHERE artifact_id=?",
             (artifact_id,),
         ).fetchone() == (len(oversized_sidecar),)
 
