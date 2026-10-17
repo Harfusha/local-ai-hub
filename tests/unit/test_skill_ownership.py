@@ -130,6 +130,29 @@ class SkillOwnershipTests(unittest.TestCase):
         self.assertEqual((self.target / "SKILL.md").read_text(encoding="utf-8"), original)
 
 
+    def test_replaced_owned_tree_is_retained_in_tracked_quarantine(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
+        real_rmtree = skill_ownership.shutil.rmtree
+
+        def reject_backup_delete(path, *args, **kwargs):
+            if Path(path).name == "previous":
+                raise AssertionError("verified backup must be retained by identity")
+            return real_rmtree(path, *args, **kwargs)
+
+        with patch.object(skill_ownership.shutil, "rmtree", side_effect=reject_backup_delete):
+            result = install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertIn("previous version retained", result)
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        quarantine_records = [record for record in entries.values() if "quarantine_path" in record]
+        self.assertEqual(len(quarantine_records), 1)
+        quarantine = Path(quarantine_records[0]["quarantine_path"])
+        self.assertEqual(quarantine.parent, self.skills_root.parent / ".local-ai-hub-skill-quarantine")
+        self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), "Hub version\n")
+        self.assertEqual(quarantine_records[0]["status"], "unverified")
+
+
     def test_concurrent_installs_preserve_all_manifest_entries(self) -> None:
         skills = []
         for name in ("concurrent-a", "concurrent-b"):

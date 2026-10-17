@@ -102,6 +102,30 @@ def test_create_persists_when_full_memory_response_fits(tmp_path, monkeypatch):
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == 1
 
 
+def test_task_without_memory_context_still_preflights_full_response_budget(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    task = store.create(_contract(), ScopeContext(), task_id="no-memory-budget")
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+    measured = []
+
+    def over_budget(payload, requested):
+        measured.append((payload, requested))
+        return requested + 1
+
+    monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", over_budget)
+
+    with pytest.raises(CheckpointResponseBudgetError):
+        store.transition(
+            task.task_id, TaskStatus.ACTIVE, reason="activate", actor=task.owner,
+            idempotency_key="no-memory-budget-transition", response_budget_tokens=128,
+        )
+
+    assert len(measured) == 1
+    assert measured[0][0]["task"]["task_id"] == task.task_id
+    assert measured[0][1] == 128
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
+
+
 def test_malformed_memory_audit_still_rejects_checkpoint_before_persistence(tmp_path, monkeypatch):
     store = _store(tmp_path)
     monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())

@@ -25,8 +25,6 @@ from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
 from .task_memory_wire import (
     mcp_wire_tokens,
-    normalize_task_memory_response,
-    task_memory_projection,
     task_memory_wire_tokens,
 )
 from .token_accounting import json_tokens
@@ -2888,12 +2886,9 @@ class TaskStore:
         ):
             raise ValueError("response_budget_tokens must be a positive integer")
         raw_result = TaskStore._include_current_request_id({"success": True, "task": task.to_dict()})
-        projected = task_memory_projection(raw_result)
-        if projected is not None:
-            projected = normalize_task_memory_response(projected)
-            required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
-            if required_tokens > response_budget_tokens:
-                raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+        required_tokens = task_memory_wire_tokens(raw_result, response_budget_tokens)
+        if required_tokens > response_budget_tokens:
+            raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
 
     def fail(
         self,
@@ -3297,7 +3292,11 @@ class TaskStore:
             return {"success": False, "error": "cleanup actor does not own task"}
 
         try:
-            from .process_utils import get_git_worktree_ownership, remove_git_worktree
+            from .process_utils import (
+                get_git_worktree_ownership,
+                remove_git_worktree,
+                verify_git_worktree_cleanup_complete,
+            )
 
             task_id_value = str(wt.get("task_id", ""))
             owner_value = str(wt.get("owner", ""))
@@ -3333,6 +3332,7 @@ class TaskStore:
             cleaned_wt = {**wt, "cleanup_success": True, "cleaned_at": cleaned_at}
             cleaned_wt.pop("cleanup_pending", None)
             cleaned_wt.pop("cleanup_warning", None)
+            cleaned_wt.pop("cleanup_intent", None)
             projected_data = {**task.checkpoint.state_data, "worktree": cleaned_wt}
             projected_checkpoint = TaskCheckpoint(
                 phase=task.checkpoint.phase,
@@ -3377,6 +3377,49 @@ class TaskStore:
                 )
                 if required_tokens > response_budget_tokens:
                     raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+            cleanup_intent = wt.get("cleanup_intent")
+            expected_intent = {
+                "task_id": task_id_value,
+                "owner": owner_value,
+                "worktree_id": worktree_id,
+                "branch": branch,
+                "delete_branch": bool(delete_branch),
+                "repo_root": str(repo_value),
+                "worktree_path": str(worktree_path.resolve(strict=False)),
+            }
+            if cleanup_intent is not None and cleanup_intent != expected_intent:
+                return {"success": False, "error": "worktree cleanup intent does not match this request"}
+            if cleanup_intent == expected_intent and not worktree_path.exists():
+                reconciled = verify_git_worktree_cleanup_complete(
+                    repo_value,
+                    worktree_path,
+                    branch_name=branch,
+                    delete_branch=bool(delete_branch),
+                    timeout_seconds=_timeout_seconds,
+                    deadline_monotonic=_deadline_monotonic,
+                )
+                if not reconciled.get("success"):
+                    return {
+                        "success": False,
+                        "had_worktree": True,
+                        "cleanup": reconciled,
+                        "error": reconciled.get("error", "cleanup outcome could not be reconciled"),
+                    }
+                updated = self.checkpoint(
+                    task_id,
+                    projected_checkpoint,
+                    actor=actor_value,
+                    idempotency_key=f"cleanup_{task_id}_{worktree_id}",
+                    response_budget_tokens=response_budget_tokens,
+                )
+                return {
+                    "success": True,
+                    "had_worktree": True,
+                    "already_cleaned": True,
+                    "cleanup": reconciled,
+                    "cleaned_at": cleaned_at,
+                    "task": updated.to_dict(),
+                }
             ownership = get_git_worktree_ownership(
                 repo_value, worktree_path, deadline_monotonic=_deadline_monotonic
             )
@@ -3400,6 +3443,24 @@ class TaskStore:
             )
             if any(ownership.get(field) != wt.get(field) for field in expected_fields):
                 return {"success": False, "error": "worktree ownership metadata was tampered"}
+
+            if cleanup_intent is None:
+                intent_wt = {**wt, "cleanup_intent": expected_intent, "cleanup_pending": True}
+                intent_checkpoint = TaskCheckpoint(
+                    phase=task.checkpoint.phase,
+                    next_action=task.checkpoint.next_action,
+                    affected_paths=task.checkpoint.affected_paths,
+                    evidence_ids=task.checkpoint.evidence_ids,
+                    blockers=task.checkpoint.blockers,
+                    state_data={**task.checkpoint.state_data, "worktree": intent_wt},
+                )
+                self.checkpoint(
+                    task_id,
+                    intent_checkpoint,
+                    actor=actor_value,
+                    idempotency_key=f"cleanup_intent_{task_id}_{worktree_id}_{int(bool(delete_branch))}",
+                    response_budget_tokens=response_budget_tokens,
+                )
 
             rm_res = remove_git_worktree(
                 repo_value,
