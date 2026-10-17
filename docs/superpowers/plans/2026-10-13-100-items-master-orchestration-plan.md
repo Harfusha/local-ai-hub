@@ -497,3 +497,5 @@ The model-free claim validator now takes explicit manifest and receipt paths rat
 **2026-10-17 corrupt lease-scope handling:** Overlap checks now normalize both live and requested scopes; malformed persisted paths conservatively block claims/checks, and a repository-root scope overlaps every child. Temporary-database regression coverage uses explicit connection closing; tests remain deferred.
 
 **2026-10-17 lease TTL contract:** Claim and renew now reject booleans, floats, and nonpositive TTLs instead of silently substituting the default; positive integer TTLs retain the existing 30–7200 second effective bounds. Regression cases are authored but unexecuted.
+
+**2026-10-17 HTTP server startup cleanup:** `serve()` now protects every operation after binding and closes the server, partially initialized `LocalAIApp`, telemetry session, and owned PID file if startup or serving exits. A focused mocked regression covers telemetry startup failure without opening a port; tests remain deferred.
