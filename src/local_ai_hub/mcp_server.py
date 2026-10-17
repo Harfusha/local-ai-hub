@@ -3145,6 +3145,8 @@ def _local_ai_repo_impl(
     }
     for field in retired_input_fields.get(action, ()):
         if input_values[field] is not None:
+            if action == "generate_types" and field == "diff":
+                return contract_error("generate_types is read-only; diff is not allowed and not an alias")
             return contract_error(f"{action} accepts its canonical input field; {field} is not an alias")
     query = "" if query is None else query
     diff = "" if diff is None else diff
