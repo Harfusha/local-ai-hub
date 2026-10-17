@@ -3032,7 +3032,7 @@ def _local_ai_repo_impl(
     max_tokens: int | None = None,
     evidence: list[dict[str, Any]] | None = None,
     mode: str = "adaptive",
-    relation: str = "",
+    relation: str | None = None,
     language: str = "auto",
     profile: str = "",
     receipt: dict[str, Any] | None = None,
@@ -3119,6 +3119,7 @@ def _local_ai_repo_impl(
         )},
         "mutation_test": ("query", "task", "workspace"),
         "generate_tests_for_diff": ("query", "task"),
+        "dependency_slice": ("relation",),
         "cross_repo_contract": ("query", "workspace", "task", "diff"),
         "circular_dependencies": ("query", "task", "workspace", "diff", "path"),
         "skeletonize": ("diff", "task"),
@@ -3135,10 +3136,11 @@ def _local_ai_repo_impl(
         "generate_dataset": ("task", "diff", "workspace", "path"),
         "api_spec": ("task", "diff", "workspace", "path"),
         "git_history_search": ("task", "diff", "workspace", "max_tokens"),
+        "generate_types": ("diff",),
     }
     input_values = {
         "query": query, "diff": diff, "task": task, "workspace": workspace,
-        "path": path, "task_id": task_id, "max_tokens": max_tokens,
+        "path": path, "task_id": task_id, "max_tokens": max_tokens, "relation": relation,
     }
     for field in retired_input_fields.get(action, ()):
         if input_values[field] is not None:
@@ -3150,6 +3152,7 @@ def _local_ai_repo_impl(
     path = "" if path is None else path
     task_id = "" if task_id is None else task_id
     max_tokens = 0 if max_tokens is None else max_tokens
+    relation = "" if relation is None else relation
     max_commits = 50 if max_commits is None else max_commits
     author = "" if author is None else author
     since = "" if since is None else since
@@ -3197,16 +3200,12 @@ def _local_ai_repo_impl(
         not isinstance(task_id, str) or not task_id.strip()
     ):
         return contract_error("synthesize_commit task_id must be a non-empty string when supplied")
-    if action in {"migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes"} and diff:
-        return contract_error(f"{action} accepts path; diff is not an input alias")
     if action == "skeletonize" and not (isinstance(query, str) and query.strip()) and not (isinstance(path, str) and path.strip()):
         return contract_error("skeletonize requires query code or a path")
     if action == "circular_dependencies" and not isinstance(language, str):
         return contract_error("language must be a string")
     if action == "mutation_test" and not path and not diff:
         return contract_error("mutation_test requires path or diff")
-    if action == "dependency_slice" and relation:
-        return contract_error("dependency_slice accepts query; relation is not a symbol alias")
     if action in {
         "ast_outline", "affected_tests", "code_invariants", "profile_digest", "schema_inspect",
         "generate_types", "complexity", "declaration", "ast_refactor", "context_compile",
@@ -3244,8 +3243,6 @@ def _local_ai_repo_impl(
             operation_inputs["include_tests"] = include_tests
         if action == "ast_refactor" and diff:
             operation_inputs["diff"] = diff
-        if action == "generate_types" and diff:
-            return contract_error("generate_types is read-only; diff is not allowed")
         validation_error = validate_operation_arguments(
             "local_ai_repo", action, operation_inputs, features=FEATURES,
         )
@@ -3877,7 +3874,7 @@ def local_ai_repo(
     max_tokens: int | None = None,
     evidence: list[dict[str, Any]] | None = None,
     mode: str = "adaptive",
-    relation: str = "",
+    relation: str | None = None,
     language: str = "auto",
     profile: str = "",
     receipt: dict[str, Any] | None = None,
