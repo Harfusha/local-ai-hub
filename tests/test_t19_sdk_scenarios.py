@@ -342,7 +342,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     calls.clear()
     invalid = client.post(
         "/api/context/pack",
-        {"root": str(workspace), "query": "sample", "mode": "fast", "max_tokens": -1},
+        {"root": str(workspace), "query": "sample", "mode": "adaptive", "max_tokens": -1},
     )
     measurements["error clarity"] = {
         "success": invalid.get("success") is False,
@@ -358,7 +358,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert calls[0]["payload"] == {
         "root": str(workspace),
         "query": "sample",
-        "mode": "fast",
+        "mode": "adaptive",
         "max_tokens": -1,
     }
 

@@ -63,7 +63,7 @@ def test_sdk_docs_explain_resume_state_and_failure_recovery():
     sdk_doc = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
 
     assert "Sets task status to `ACTIVE` and preserves checkpoint metadata; does not restore workspace files." in sdk_doc
-    assert "context mode must be adaptive, full or fast" in sdk_doc
+    assert "context mode must be adaptive" in sdk_doc
     assert "conversation not found" in sdk_doc
     continuation_guidance = next(
         line.lower()

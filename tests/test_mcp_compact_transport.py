@@ -604,7 +604,7 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
         root="C:/repo",
         query="find route",
         workspace="ws",
-        mode="full",
+        mode="adaptive",
         task_id="task-1",
         phase="edit",
         focus=["reuse", "contract"],
@@ -634,7 +634,7 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
         "query": "find route",
         "workspace": "ws",
         "max_tokens": 777,
-        "mode": "full",
+        "mode": "adaptive",
         "guarded": True,
         "task_id": "task-1",
         "phase": "edit",
@@ -654,17 +654,17 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
         "repository_revision": "revision-1",
         "include_diagnostics": True,
     }
-def test_local_ai_repo_context_preserves_legacy_fast_full_payload(monkeypatch) -> None:
+def test_local_ai_repo_context_forwards_canonical_adaptive_payload(monkeypatch) -> None:
     calls = _capture_client(monkeypatch, {"success": True, "context": "legacy"}, capture_accounting=True)
 
     local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", query="legacy", mode="full", max_tokens=512,
+        action="context", root="C:/repo", query="legacy", mode="adaptive", max_tokens=512,
     )
 
     pack_calls = [call for call in calls if call[0] == "/api/context/pack"]
     assert pack_calls == [(
         "/api/context/pack",
-        {"root": str(Path("C:/repo")), "query": "legacy", "workspace": None, "max_tokens": 512, "mode": "full"},
+        {"root": str(Path("C:/repo")), "query": "legacy", "workspace": None, "max_tokens": 512, "mode": "adaptive"},
         600.0,
     )]
     for path, accounting_payload, accounting_timeout in calls:

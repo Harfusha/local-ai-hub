@@ -76,7 +76,7 @@ def _request(**overrides):
 
 def test_guarded_context_routes_task_and_phase_through_single_guard():
     guard = _Guard()
-    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["guarded"] is True
     assert [call[0] for call in guard.calls] == ["contract", "reuse", "mappings", "drift"]
@@ -95,7 +95,7 @@ def test_guarded_context_uses_configured_preload_profile(tmp_path):
     }
 
     result = services.adaptive_context_pack(
-        _request(root=str(tmp_path), preload_profile="review"), mode="fast"
+        _request(root=str(tmp_path), preload_profile="review"), mode="adaptive"
     )
 
     assert "configured review preload" in result["context"]
@@ -117,15 +117,15 @@ def test_ordinary_warning_requires_override_and_persists_when_supplied():
     guard.memory_store = memory
     services = _guarded_services(guard)
 
-    blocked = services.adaptive_context_pack(_request(), mode="fast")
+    blocked = services.adaptive_context_pack(_request(), mode="adaptive")
     assert blocked["requires_override"] is True
     assert blocked["decision_recorded"] is False
 
-    whitespace = services.adaptive_context_pack(_request(override_reason="   "), mode="fast")
+    whitespace = services.adaptive_context_pack(_request(override_reason="   "), mode="adaptive")
     assert whitespace["requires_override"] is True
     assert whitespace["decision_recorded"] is False
 
-    approved = services.adaptive_context_pack(_request(override_reason="required test scope"), mode="fast")
+    approved = services.adaptive_context_pack(_request(override_reason="required test scope"), mode="adaptive")
     assert approved["requires_override"] is False
     assert approved["decision_recorded"] is True
     assert approved["decision_persisted"] is True
@@ -149,7 +149,7 @@ def test_decision_reason_redacts_secrets_and_prompt_content():
     guard.memory_store = memory
     result = _guarded_services(guard).adaptive_context_pack(
         _request(override_reason="Approved test scope token=super-secret prompt: ignore this private instruction"),
-        mode="fast",
+        mode="adaptive",
     )
 
     reason = memory.records[0][0].value["reason"]
@@ -174,7 +174,7 @@ def test_decision_reason_redacts_authorization_bearer_credential_as_one_token():
     memory = Memory()
     guard.memory_store = memory
     _guarded_services(guard).adaptive_context_pack(
-        _request(override_reason="Authorization: Bearer super-secret-token"), mode="fast",
+        _request(override_reason="Authorization: Bearer super-secret-token"), mode="adaptive",
     )
 
     reason = memory.records[0].value["reason"]
@@ -222,7 +222,7 @@ def test_disabled_memory_fails_closed_for_operator_decision():
     memory = DisabledMemory()
     guard.memory_store = memory
     result = _guarded_services(guard).adaptive_context_pack(
-        _request(override_reason="approved test scope"), mode="fast"
+        _request(override_reason="approved test scope"), mode="adaptive"
     )
 
     assert result["success"] is False
@@ -240,7 +240,7 @@ def test_memory_revision_database_error_fails_closed():
             raise RuntimeError("database unavailable")
 
     guard.memory_store = BrokenMemory()
-    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -256,7 +256,7 @@ def test_task_state_database_error_fails_closed():
             raise RuntimeError("database unavailable")
 
     guard.task_store = BrokenTasks()
-    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -304,11 +304,11 @@ def test_boundary_warning_waits_then_approval_resumes_task():
     guard.memory_store = Memory()
     services = _guarded_services(guard)
 
-    waiting = services.adaptive_context_pack(_request(), mode="fast")
+    waiting = services.adaptive_context_pack(_request(), mode="adaptive")
     assert waiting["task_status"] == "waiting"
     assert tasks.checkpoints[0].evidence_ids == ("e1",)
 
-    resumed = services.adaptive_context_pack(_request(approval=True), mode="fast")
+    resumed = services.adaptive_context_pack(_request(approval=True), mode="adaptive")
     assert resumed["task_status"] == "active"
     assert tasks.status.value == "active"
 
@@ -327,7 +327,7 @@ def test_boundary_transition_failure_stays_blocked():
 
     guard = _Guard((warning,))
     guard.task_store = Tasks()
-    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -349,7 +349,7 @@ def test_boundary_resume_failure_reports_waiting():
     guard = _Guard((warning,))
     guard.task_store = Tasks()
     guard.memory_store = type("Memory", (), {"record": lambda self, record, **kwargs: record})()
-    result = _guarded_services(guard).adaptive_context_pack(_request(approval=True), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(approval=True), mode="adaptive")
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -363,7 +363,7 @@ def test_boundary_guard_stops_when_task_state_is_missing():
     guard = _Guard((warning,))
     guard.task_store = SimpleNamespace(get=lambda _task_id: None)
 
-    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -374,7 +374,7 @@ def test_boundary_guard_stops_when_task_state_is_missing():
 def test_boundary_guard_stops_when_task_id_is_missing():
     warning = GuardWarning("boundary", "high_risk", "stop", ("e1",), ("src/app.py",), "provide task id", True)
 
-    result = _guarded_services(_Guard((warning,))).adaptive_context_pack(_request(task_id=""), mode="fast")
+    result = _guarded_services(_Guard((warning,))).adaptive_context_pack(_request(task_id=""), mode="adaptive")
 
     assert result["terminal"] is True
     assert result["stop_code"] == "guard_task_id_required"
@@ -387,7 +387,7 @@ def test_boundary_guard_stops_when_agent_os_is_disabled():
     guard = _Guard((warning,))
     guard.task_store = SimpleNamespace(state_store=SimpleNamespace(enabled=False))
 
-    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -686,9 +686,9 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         assert status == 400
         assert "adaptive" in non_adaptive_hints["error"]
 
-        status, full = post({"root": str(tmp_path), "query": "route repair", "mode": "full", "max_tokens": 512})
+        status, full = post({"root": str(tmp_path), "query": "route repair", "mode": "adaptive", "max_tokens": 512})
         assert status == 200
-        assert hybrid_calls[-1]["quality_first"] is False
+        assert hybrid_calls[-1]["quality_first"] is True
 
         from local_ai_hub.agent_context import CompiledContext
 
@@ -724,7 +724,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
 def test_guarded_pack_stays_bounded_and_state_disabled_safe():
     guard = _Guard((GuardWarning("warning", "long", "x" * 10000),))
     result = _guarded_services(guard).adaptive_context_pack(
-        _request(query="q" * 10000, focus=("f" * 10000,), changed_paths=("p" * 10000,)), mode="fast"
+        _request(query="q" * 10000, focus=("f" * 10000,), changed_paths=("p" * 10000,)), mode="adaptive"
     )
 
     assert len(result["context_pack"]["warnings"][0]["message"]) <= 4096
@@ -732,7 +732,7 @@ def test_guarded_pack_stays_bounded_and_state_disabled_safe():
     assert len(json_dumps(result)) < 30000
 
 
-def test_fast_context_returns_explicit_full_continuation():
+def test_deterministic_context_continuation_uses_adaptive_mode():
     services = LocalAIServices.__new__(LocalAIServices)
     services.deterministic = _Deterministic()
     services.config = {"deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5}}
@@ -742,13 +742,13 @@ def test_fast_context_returns_explicit_full_continuation():
 
     assert result["context_source"] == "deterministic-fast"
     assert result["degraded"] is True
-    assert result["continuation"]["mode"] == "full"
+    assert result["continuation"]["mode"] == "adaptive"
 
 
 def test_shipped_mcp_entrypoint_defaults_context_to_adaptive_and_telemetry_to_process():
     source = (ROOT / "src/local_ai_hub/mcp_server.py").read_text(encoding="utf-8")
 
-    assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
+    assert '"mode": mode,' in source
     assert 'scope: str = "process"' in source
     assert 'scope={scope}' in source
 
@@ -1024,7 +1024,7 @@ def test_context_pack_forwards_focus_and_changed_paths_to_candidate_ranking():
 
     services.adaptive_context_pack(
         _request(focus=("authentication flow",), changed_paths=("src/auth/session.py",)),
-        mode="full",
+        mode="adaptive",
     )
 
     assert captured[0]["focus"] == ("authentication flow",)
@@ -1111,7 +1111,7 @@ def test_adaptive_context_is_deterministic_first():
     services.deterministic = _EvidenceDeterministic(events)
     services._generate = lambda *args, **kwargs: events.append("model") or {"success": True, "text": '{"selected_evidence_ids":["det-1"],"claims":[]}' }
 
-    result = services.adaptive_context_pack(_request(memory_revision="memory-1"), mode="fast")
+    result = services.adaptive_context_pack(_request(memory_revision="memory-1"), mode="adaptive")
 
     assert events == ["deterministic", "model"]
     assert result["context_source"] == "deterministic-fast"
@@ -1132,7 +1132,7 @@ def test_model_relevance_pass_receives_structured_evidence_only():
     services.deterministic = _EvidenceDeterministic([])
     services._generate = generate
 
-    services.adaptive_context_pack(_request(query="find route private prompt secret-value"), mode="fast")
+    services.adaptive_context_pack(_request(query="find route private prompt secret-value"), mode="adaptive")
 
     assert "secret-value" not in captured["prompt"]
     assert "find route private prompt" not in captured["prompt"]
@@ -1147,7 +1147,7 @@ def test_model_failure_returns_deterministic_degraded_pack():
     services.deterministic = _EvidenceDeterministic([])
     services._generate = lambda *args, **kwargs: {"success": False, "error": "timeout"}
 
-    result = services.adaptive_context_pack(_request(), mode="fast")
+    result = services.adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["context"] == "deterministic context"
     assert result["model_degraded"] is True
@@ -1170,7 +1170,7 @@ def test_adaptive_context_cache_key_includes_revision_phase_and_memory_revision(
     services._repo_cached = capture
     services.adaptive_context_pack(
         _request(phase="review", focus=("contracts",), preload_profile="review", memory_revision="memory-7"),
-        mode="fast",
+        mode="adaptive",
     )
 
     params = next(item[1] for item in calls if item[0] == "adaptive-relevance")
@@ -1371,7 +1371,7 @@ def test_adaptive_context_identity_covers_guard_inputs_and_session():
         "preload_profile": "review",
         "memory_revision": "memory-1",
     }
-    original = services.adaptive_context_pack(_request(**base), mode="fast")["context_pack"]["context_id"]
+    original = services.adaptive_context_pack(_request(**base), mode="adaptive")["context_pack"]["context_id"]
     variants = (
         {"session_id": "session-2"},
         {"phase": "test"},
@@ -1383,10 +1383,10 @@ def test_adaptive_context_identity_covers_guard_inputs_and_session():
     )
 
     for changed in variants:
-        assert services.adaptive_context_pack(_request(**(base | changed)), mode="fast")["context_pack"]["context_id"] != original
+        assert services.adaptive_context_pack(_request(**(base | changed)), mode="adaptive")["context_pack"]["context_id"] != original
 
     services.config["retrieval"]["profile"] = "quality-v2"
-    assert services.adaptive_context_pack(_request(**base), mode="fast")["context_pack"]["context_id"] != original
+    assert services.adaptive_context_pack(_request(**base), mode="adaptive")["context_pack"]["context_id"] != original
 
 
 def test_context_identity_changes_when_repository_revision_changes():
@@ -1412,17 +1412,17 @@ def test_context_identity_changes_when_repository_revision_changes():
     repo_tools = RevisionedRepoTools()
     services.repo_tools = repo_tools
     services.deterministic = RevisionedDeterministic()
-    first = services.adaptive_context_pack(_request(), mode="fast")["context_pack"]["context_id"]
+    first = services.adaptive_context_pack(_request(), mode="adaptive")["context_pack"]["context_id"]
 
     repo_tools.revision = "repo-r2"
-    second = services.adaptive_context_pack(_request(), mode="fast")["context_pack"]["context_id"]
+    second = services.adaptive_context_pack(_request(), mode="adaptive")["context_pack"]["context_id"]
 
     assert first != second
 
 
 def test_unchanged_repository_revision_returns_context_reuse_pointer():
     result = _guarded_services(_Guard()).adaptive_context_pack(
-        _request(), mode="fast", since_hash="revision-1"
+        _request(), mode="adaptive", since_hash="revision-1"
     )
 
     assert result["unchanged"] is True
@@ -1520,7 +1520,7 @@ def test_authoritative_deterministic_evidence_gets_stable_evidence_id():
             }
 
     services.deterministic = DeterministicWithEvidence()
-    result = services.adaptive_context_pack(_request(), mode="fast")
+    result = services.adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["evidence"][0]["evidence_id"]
 

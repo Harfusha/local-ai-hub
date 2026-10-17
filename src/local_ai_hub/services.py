@@ -4696,10 +4696,10 @@ class LocalAIServices:
         """Build deterministic context plus bounded, soft consistency findings."""
         if not isinstance(request, ConsistencyRequest):
             raise TypeError("guarded context request must be ConsistencyRequest")
-        if not isinstance(mode, str) or mode.strip().lower() not in {"adaptive", "fast", "full"}:
+        if mode != "adaptive":
             return {
                 "success": False, "terminal": True, "retryable": False,
-                "error": "context mode must be adaptive, full or fast",
+                "error": "context mode must be adaptive",
             }
         mode = mode.strip().lower()
         try:
@@ -4792,25 +4792,22 @@ class LocalAIServices:
             "approval": request.approval,
             "override_reason": request.override_reason,
         }
-        if mode in {"full", "adaptive"}:
-            base = self._hybrid_context(
-                request.root,
-                request.query,
-                request.tenant,
-                request.workspace or None,
-                request.token_budget,
-                quality_first=mode == "adaptive",
-                context_identity=context_cache_identity,
-                path_hints=effective_path_hints if mode == "adaptive" else (),
-                directory_hints=request_directory_hints if mode == "adaptive" else (),
-                exclude_paths=request_exclude_paths if mode == "adaptive" else (),
-                force_include_paths=request_force_include_paths if mode == "adaptive" else (),
-                focus=request.focus,
-                changed_paths=request.changed_paths,
-                retrieval_weights=retrieval_weights if mode == "adaptive" else None,
-            )
-        else:
-            base = self.fast_context(request.root, request.query, request.token_budget)
+        base = self._hybrid_context(
+            request.root,
+            request.query,
+            request.tenant,
+            request.workspace or None,
+            request.token_budget,
+            quality_first=True,
+            context_identity=context_cache_identity,
+            path_hints=effective_path_hints,
+            directory_hints=request_directory_hints,
+            exclude_paths=request_exclude_paths,
+            force_include_paths=request_force_include_paths,
+            focus=request.focus,
+            changed_paths=request.changed_paths,
+            retrieval_weights=retrieval_weights,
+        )
         if not isinstance(base, dict):
             base = {"success": False, "context": "", "evidence": []}
         else:
@@ -5045,8 +5042,8 @@ class LocalAIServices:
             packed["context_source"] = "deterministic-fast"
             packed["degraded"] = True
             packed["continuation"] = {
-                "available": True, "mode": "full",
-                "hint": "Request context mode=full only when deterministic-fast context is insufficient.",
+                "available": True, "mode": "adaptive",
+                "hint": "Retry the adaptive context pack when deterministic-only context is insufficient.",
             }
         return packed
 

@@ -10,9 +10,9 @@ from local_ai_hub.agent_consistency import ConsistencyRequest
 
 @pytest.mark.parametrize(
     ("mode", "expected_mode"),
-    ((None, "adaptive"), ("adaptive", "adaptive"), ("fast", "fast"), ("full", "full")),
+    ((None, "adaptive"), ("adaptive", "adaptive")),
 )
-def test_context_uses_adaptive_default_and_preserves_explicit_retrieval_modes(
+def test_context_uses_only_canonical_adaptive_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     mode: str | None,
@@ -44,9 +44,11 @@ def test_context_uses_adaptive_default_and_preserves_explicit_retrieval_modes(
     assert captured["payload"]["mode"] == expected_mode  # type: ignore[index]
 
 
-def test_context_rejects_unknown_retrieval_mode_before_request(
+@pytest.mark.parametrize("mode", ["fast", "full", "legacy-fast", "Adaptive"])
+def test_context_rejects_retired_or_noncanonical_mode_before_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    mode: str,
 ) -> None:
     calls: list[str] = []
 
@@ -63,21 +65,21 @@ def test_context_rejects_unknown_retrieval_mode_before_request(
         action="context",
         root=str(tmp_path),
         query="find the context contract",
-        mode="legacy-fast",
+        mode=mode,
     )
 
     assert result["success"] is False
     assert result["terminal"] is True
     assert result["retryable"] is False
-    assert result["error"] == "context mode must be adaptive, full or fast"
+    assert result["error"] == "context mode must be adaptive"
     assert calls == []
 
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
     (({}, "adaptive"), ({"mode": "adaptive"}, "adaptive"),
-     ({"mode": "fast"}, "fast"), ({"mode": "full"}, "full"),
-     ({"mode": "legacy-fast"}, None), ({"mode": None}, None)),
+     ({"mode": "fast"}, None), ({"mode": "full"}, None),
+     ({"mode": "legacy-fast"}, None), ({"mode": "Adaptive"}, None), ({"mode": None}, None)),
 )
 def test_http_context_mode_resolver_defaults_adaptive_and_rejects_invalid(
     payload: dict[str, object], expected: str | None
@@ -85,8 +87,10 @@ def test_http_context_mode_resolver_defaults_adaptive_and_rejects_invalid(
     assert http_server.Handler._context_retrieval_mode(payload) == expected
 
 
+@pytest.mark.parametrize("mode", ["fast", "full", "legacy-fast", "Adaptive"])
 def test_service_context_mode_defaults_adaptive_and_rejects_before_context_work(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     assert inspect.signature(services.LocalAIServices.adaptive_context_pack).parameters["mode"].default == "adaptive"
     service = object.__new__(services.LocalAIServices)
@@ -97,12 +101,12 @@ def test_service_context_mode_defaults_adaptive_and_rejects_before_context_work(
         lambda _request: pytest.fail("invalid mode must be rejected before context work"),
     )
 
-    result = service.adaptive_context_pack(request, mode="legacy-fast")
+    result = service.adaptive_context_pack(request, mode=mode)
 
     assert result["success"] is False
     assert result["terminal"] is True
     assert result["retryable"] is False
-    assert result["error"] == "context mode must be adaptive, full or fast"
+    assert result["error"] == "context mode must be adaptive"
 
 
 def test_client_context_pack_defaults_adaptive_and_rejects_before_post(
@@ -125,3 +129,4 @@ def test_client_context_pack_defaults_adaptive_and_rejects_before_post(
     assert invalid["success"] is False
     assert invalid["terminal"] is True
     assert invalid["retryable"] is False
+    assert invalid["error"] == "context mode must be adaptive"
