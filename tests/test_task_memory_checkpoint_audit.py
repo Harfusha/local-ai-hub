@@ -108,7 +108,7 @@ def test_resume_requires_fresh_next_checkpoint_declaration(make_task):
 
 def test_volatile_usage_requires_same_source_check_policy_as_completion(make_task):
     tasks, _, _, task, record = make_task(volatile=True)
-    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+    with pytest.raises(CompletionGateError, match=r"lacks (?:a )?current-source check"):
         tasks.checkpoint(task.task_id, TaskCheckpoint(state_data={"memory_audit": {"used_ids": [record.record_id]}}))
     audit = {"used_ids": [record.record_id], "source_checks": {record.record_id: {"source": "current repository source inspection"}}}
     updated = tasks.checkpoint(task.task_id, TaskCheckpoint(state_data={"memory_audit": audit}))
