@@ -99,15 +99,16 @@ def test_cold_warm_cache_preserves_both_engine_call_counts(tmp_path: Path) -> No
         "kind": "git",
     }
 
-    cold = services.test_matrix("repo")
-    warm = services.test_matrix("repo")
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    cold = services.test_matrix(str(root))
+    warm = services.test_matrix(str(root))
 
     assert cold["cache_hit"] is False
     assert warm["cache_hit"] is True
     assert cold["test_files"] == warm["test_files"]
 
-    root = tmp_path / "repo"
-    root.mkdir()
     affected_cold = services.affected_tests(str(root), ["src/math.py"], "HEAD")
     affected_warm = services.affected_tests(str(root), ["src/math.py"], "HEAD")
 
@@ -116,7 +117,7 @@ def test_cold_warm_cache_preserves_both_engine_call_counts(tmp_path: Path) -> No
     assert affected_cold["test_files"] == affected_warm["test_files"]
     assert affected_cold["suggested_command"] == affected_warm["suggested_command"]
     assert engine.calls == [
-        ("test_matrix", "repo"),
+        ("test_matrix", str(root)),
         ("affected_tests", str(root), ["src/math.py"], "HEAD"),
     ]
 
