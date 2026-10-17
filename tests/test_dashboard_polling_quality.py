@@ -519,9 +519,9 @@ def _run_dashboard_health_javascript(scenario: str) -> None:
     marker = "function dashboardHealthBadge("
     if marker not in DASHBOARD_HTML:
         pytest.fail("dashboard health badge helper is not implemented")
-    start = DASHBOARD_HTML.index(marker)
+    start = DASHBOARD_HTML.index("function dashboardPreprocessingHealth(")
     end = DASHBOARD_HTML.index("\nfunction dashboardHealth(", start)
-    health_source = DASHBOARD_HTML[start:end]
+    health_source = "const n=v=>String(v??0);\n" + DASHBOARD_HTML[start:end]
     runnable_source = (
         health_source
         + "\n(async () => {\n"
