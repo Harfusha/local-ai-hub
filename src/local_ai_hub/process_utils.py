@@ -2495,6 +2495,64 @@ def _worktree_ownership_path(
     return Path(git_dir).expanduser().resolve(strict=False) / _WORKTREE_OWNERSHIP_FILE
 
 
+def verify_git_worktree_cleanup_complete(
+    repo_root: str | Path,
+    worktree_path: str | Path,
+    *,
+    branch_name: str,
+    delete_branch: bool,
+    timeout_seconds: float = 10.0,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any]:
+    """Reconcile a durable cleanup intent against Git's current state."""
+    repo = Path(repo_root).expanduser().resolve(strict=False)
+    raw_target = Path(worktree_path).expanduser()
+    if raw_target.is_symlink():
+        return {"success": False, "error": "worktree path must not be a symlink"}
+    target = Path(os.path.abspath(raw_target))
+    if target.exists() or raw_target.is_symlink():
+        return {"success": False, "error": "worktree path still exists"}
+    if not branch_name or any(char in branch_name for char in "\r\n\0"):
+        return {"success": False, "error": "worktree branch identity is invalid"}
+    timeout = max(0.5, min(float(timeout_seconds), 30.0))
+    listed = _run_hidden_with_deadline(
+        ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True, check=False, timeout=timeout,
+        deadline_monotonic=deadline_monotonic, **hidden_run_kwargs(),
+    )
+    if listed.returncode != 0:
+        return {"success": False, "error": listed.stderr.strip() or "Git worktree list failed"}
+    target_key = os.path.normcase(str(target))
+    registered = {
+        os.path.normcase(os.path.abspath(line[len("worktree "):]))
+        for line in listed.stdout.splitlines()
+        if line.startswith("worktree ")
+    }
+    if target_key in registered:
+        return {"success": False, "error": "worktree remains registered"}
+    if delete_branch:
+        branch_ref = f"refs/heads/{branch_name}"
+        valid_ref = _run_hidden_with_deadline(
+            ["git", "-C", str(repo), "check-ref-format", branch_ref],
+            capture_output=True, text=True, check=False, timeout=timeout,
+            deadline_monotonic=deadline_monotonic, **hidden_run_kwargs(),
+        )
+        if valid_ref.returncode != 0:
+            return {"success": False, "error": "worktree branch identity is invalid"}
+        branch = _run_hidden_with_deadline(
+            ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", branch_ref],
+            capture_output=True, text=True, check=False, timeout=timeout,
+            deadline_monotonic=deadline_monotonic, **hidden_run_kwargs(),
+        )
+        if branch.returncode == 0:
+            return {"success": False, "error": "cleanup branch still exists"}
+        if branch.returncode != 1:
+            return {"success": False, "error": branch.stderr.strip() or "Git branch verification failed"}
+    if raw_target.is_symlink() or target.exists():
+        return {"success": False, "error": "worktree path changed during cleanup reconciliation"}
+    return {"success": True, "worktree_removed": True, "branch_deleted": bool(delete_branch)}
+
+
 def remove_git_worktree(
     *args: Any,
     repo_root: str | Path | None = None,
@@ -2688,6 +2746,16 @@ def remove_git_worktree(
             cmd_branch = ["git", "-C", str(repo), "branch", flag, recorded_branch]
             proc_b = _run_hidden_with_deadline(cmd_branch, capture_output=True, text=True, check=False, timeout=10, deadline_monotonic=deadline_monotonic, **hidden_run_kwargs())
             branch_deleted = (proc_b.returncode == 0)
+            if not branch_deleted:
+                return {
+                    "success": False,
+                    "error": proc_b.stderr.strip() or "worktree removed but Git refused to delete its branch",
+                    "worktree_removed": not target.exists(),
+                    "branch_deleted": False,
+                    "repo_root": str(repo),
+                    "worktree_path": str(target),
+                    "worktree_id": worktree_id,
+                }
         return {
             "success": True,
             "worktree_removed": not target.exists(),

@@ -957,6 +957,116 @@ def _validate_target(target: Path, skills_root: Path, skill_name: str) -> Path:
     return resolved_root / target.name
 
 
+def _retain_previous_install(
+    backup: Path,
+    *,
+    target: Path,
+    skills_root: Path,
+    manifest: Path,
+    skill_name: str,
+    original_hash: str,
+    entries: dict[str, dict[str, object]],
+) -> str:
+    source_pin: _PinnedSource | None = None
+    quarantine_directory: _PinnedQuarantine | None = None
+    quarantine_key = ""
+    pending_entries = dict(entries)
+
+    def mark_ambiguous(reason: str) -> str:
+        ambiguous_key = f"ambiguous:{_canonical(target)}:{uuid.uuid4().hex}"
+        ambiguous_record = {
+            "name": skill_name,
+            "recorded_sha256": original_hash,
+            "status": "ambiguous",
+            "hash_state": "unverified",
+            "location_state": "unknown",
+            "original_target": _canonical(target),
+            "quarantine_path": "unknown",
+        }
+        ambiguous_entries = dict(entries)
+        ambiguous_entries.pop(quarantine_key, None)
+        ambiguous_entries[ambiguous_key] = ambiguous_record
+        try:
+            _manifest_write(manifest, ambiguous_entries)
+        except (OSError, ValueError) as exc:
+            return f"installed Hub-owned skill: {target}; previous version location ambiguous: {reason}; manifest update failed: {exc}"
+        return f"installed Hub-owned skill: {target}; previous version location ambiguous: {reason}"
+
+    try:
+        source_pin = _pin_source(backup)
+        if not _source_is_current(source_pin) or _safe_tree_hash(backup) != original_hash or not _source_is_current(source_pin):
+            return f"installed Hub-owned skill: {target}; previous version retained at {backup}; backup identity changed"
+        quarantine_directory = _skill_quarantine_path(skills_root, skill_name)
+        quarantine_key = quarantine_directory.key
+        pending_record = {
+            "name": skill_name,
+            "recorded_sha256": original_hash,
+            "status": "pending",
+            "hash_state": "unverified",
+            "original_target": _canonical(target),
+            "quarantine_path": str(quarantine_directory.path),
+        }
+        pending_entries[quarantine_key] = pending_record
+        _manifest_write(manifest, pending_entries)
+        try:
+            _rename_noreplace(
+                backup,
+                quarantine_directory.path,
+                quarantine_directory=quarantine_directory,
+                source_pin=source_pin,
+            )
+        except (OSError, ValueError) as exc:
+            if not _source_is_current(source_pin):
+                return mark_ambiguous(str(exc))
+            try:
+                _manifest_write(manifest, entries)
+            except (OSError, ValueError) as restore_exc:
+                return (
+                    f"installed Hub-owned skill: {target}; previous version retained at {backup}; "
+                    f"quarantine record cleanup failed: {restore_exc}"
+                )
+            return f"installed Hub-owned skill: {target}; previous version retained at {backup}: {exc}"
+
+        if not quarantine_directory.is_current():
+            return mark_ambiguous("quarantine root changed after move")
+        try:
+            moved_pin = _pin_source(quarantine_directory.path)
+        except OSError as exc:
+            return mark_ambiguous(f"moved tree identity unavailable: {exc}")
+        try:
+            if moved_pin.identity != source_pin.identity:
+                return mark_ambiguous("moved tree identity changed")
+        finally:
+            moved_pin.close()
+        if not quarantine_directory.is_current():
+            return mark_ambiguous("quarantine root changed during identity verification")
+
+        retained_record = {**pending_record, "status": "unverified"}
+        retained_entries = dict(pending_entries)
+        retained_entries[quarantine_key] = retained_record
+        try:
+            _manifest_write(manifest, retained_entries)
+        except (OSError, ValueError) as exc:
+            return (
+                f"installed Hub-owned skill: {target}; previous version retained at {quarantine_directory.path}; "
+                f"pending recovery record remains: {exc}"
+            )
+        # The backup is now outside the staging tree. Remove only the empty
+        # parent; rmdir cannot recursively follow or delete a substituted tree.
+        try:
+            backup.parent.rmdir()
+        except OSError:
+            pass
+        return f"installed Hub-owned skill: {target}; previous version retained at {quarantine_directory.path}"
+    except (OSError, ValueError) as exc:
+        return f"installed Hub-owned skill: {target}; previous version retained at {backup}: {exc}"
+    finally:
+        if source_pin is not None:
+            source_pin.close()
+        if quarantine_directory is not None:
+            quarantine_directory.close()
+
+
 def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
     """Install only into an absent or unchanged Hub-owned skill tree."""
     _validate_manifest(manifest)
@@ -1030,10 +1140,15 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
         if not backup.exists():
             shutil.rmtree(stage_root, ignore_errors=True)
     if backup.exists():
-        try:
-            shutil.rmtree(backup)
-        except OSError as exc:
-            return f"installed Hub-owned skill: {target}; previous version retained at {backup}: {exc}"
+        return _retain_previous_install(
+            backup,
+            target=target,
+            skills_root=skills_root,
+            manifest=manifest,
+            skill_name=skill_name,
+            original_hash=current_hash,
+            entries=entries,
+        )
     try:
         shutil.rmtree(stage_root)
     except OSError:

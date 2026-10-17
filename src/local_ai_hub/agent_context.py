@@ -356,7 +356,7 @@ def _memory_record_matches_tenant(record: Any, tenant: str) -> bool:
     if scope is AgentScope.GLOBAL and not record_tenant:
         return True
     if not requested_tenant:
-        return not record_tenant
+        return scope is AgentScope.GLOBAL and not record_tenant
     return record_tenant != "" and record_tenant == requested_tenant
 
 
@@ -737,7 +737,7 @@ class ContextCompiler:
                             record = next(iterator)
                         except StopIteration:
                             break
-                        if not _memory_record_matches_tenant(record, request.tenant or request.session_id):
+                        if not _memory_record_matches_tenant(record, request.tenant):
                             continue
                         content = f"[{record.kind.value.upper()}] {record.key}: {record.value}"
                         evidence_ids = tuple(record.evidence_ids)
@@ -824,6 +824,7 @@ class ContextCompiler:
             "worktree_id": request.worktree_id,
             "branch": request.branch,
             "repository_id": request.repository_id,
+            "coordination_id": request.coordination_id,
             "session_id": request.session_id,
             "repo_revision": effective_revision,
             "phase": request.phase,
