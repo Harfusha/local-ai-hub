@@ -4689,6 +4689,44 @@ class CommandBroker:
             return []
 
     @staticmethod
+    def _is_python_interpreter_name(executable: str) -> bool:
+        executable_base = ntpath.basename(executable.strip('"').replace("/", "\\")).lower()
+        executable_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", executable_base)
+        return executable_base in {"python", "python3", "py"} or bool(
+            re.fullmatch(r"python\d+(?:\.\d+)+", executable_base)
+        )
+
+    @classmethod
+    def _well_formed_command_input(cls, command: Any) -> bool:
+        """Check command/argv structure before an unknown command can be opted in."""
+        if isinstance(command, str):
+            if not command.strip() or "\x00" in command:
+                return False
+            tokens = cls._tokens(cls._strip_null_redirections(command.strip()))
+        elif isinstance(command, Sequence) and not isinstance(command, (bytes, bytearray)):
+            tokens = list(command)
+            if not tokens or any(not isinstance(token, str) or "\x00" in token for token in tokens):
+                return False
+        else:
+            return False
+
+        if not tokens or not tokens[0].strip():
+            return False
+
+        if cls._is_python_interpreter_name(tokens[0]):
+            for index, token in enumerate(tokens[1:], start=1):
+                if token != "-c":
+                    continue
+                if index + 1 >= len(tokens) or not tokens[index + 1].strip():
+                    return False
+                try:
+                    ast.parse(tokens[index + 1])
+                except (SyntaxError, TypeError, ValueError):
+                    return False
+                break
+        return True
+
+    @staticmethod
     def _strip_null_redirections(cmd: str) -> str:
         c = re.sub(r"\s*(?:2>&1|2>\s*(?:/dev/null|nul|\$null)|>\s*(?:/dev/null|nul|\$null)|\|\s*Out-Null)\s*$", "", cmd, flags=re.IGNORECASE)
         return c.strip()
@@ -4785,7 +4823,7 @@ class CommandBroker:
         exe = ntpath.basename(tokens[0].strip('"').replace("/", "\\")).lower()
         exe_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", exe)
         command_class = result.get("class")
-        if exe_base in {"python", "python3", "py"}:
+        if self._is_python_interpreter_name(exe_base):
             for index, token in enumerate(tokens[1:], 1):
                 if token == "-m" and index + 1 < len(tokens):
                     module = tokens[index + 1].lower()
@@ -4997,7 +5035,7 @@ class CommandBroker:
                 return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "find execution flags are not allowed"}
             return {"class": "read", "cacheable": exe_base not in self.VOLATILE_READS, "allowed": bool(cfg.get("allow_read", True)), "reason": f"{exe_base} read command"}
 
-        if exe_base in {"python", "python3", "py"}:
+        if self._is_python_interpreter_name(exe_base):
             dash_m = None
             for idx, arg in enumerate(tokens[1:], 1):
                 if arg == "-m" and idx < len(tokens) - 1:
@@ -5041,7 +5079,7 @@ class CommandBroker:
                 )
                 dash_c_lower = dash_c.lower()
                 if any(pat in dash_c_lower for pat in _DANGEROUS_INLINE):
-                    return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains potentially dangerous call"}
+                    return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": "python -c inline code contains potentially dangerous call"}
 
                 is_validation = False
                 try:
@@ -5261,7 +5299,7 @@ class CommandBroker:
                             elif isinstance(node.func, ast.Attribute):
                                 func_name = node.func.attr
                             if func_name in {"exec", "eval", "compile"}:
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code contains dangerous call: {func_name}"}
+                                return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": f"python -c inline code contains dangerous call: {func_name}"}
                             if func_name in {"open", "remove", "unlink", "rmdir", "mkdir", "makedirs", "rename", "replace", "system", "popen", "spawn", "kill"}:
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate: {func_name}"}
                             if func_name in {"write_text", "write_bytes", "touch"}:
@@ -8241,13 +8279,19 @@ class CommandBroker:
         effective_timeout = max(1, int(timeout or self.timeout))
         phase_timings_ms: dict[str, float] = {}
         classification_started = time.perf_counter()
-        classification = self.classify(argv_override if argv_override is not None else original_command)
+        classified_command = argv_override if argv_override is not None else original_command
+        command_input_valid = self._well_formed_command_input(classified_command)
+        classification = self.classify(classified_command)
         phase_timings_ms["command_classification_ms"] = round((time.perf_counter() - classification_started) * 1000, 3)
         command_class = classification.get("class")
         classification_allowed = classification.get("allowed") is True
         unknown_authorized = command_class != "unknown" or bool(
             self.config.get("commands", {}).get("allow_mutating", False)
         )
+        if not command_input_valid:
+            classification_allowed = False
+        elif command_class == "unknown" and unknown_authorized:
+            classification_allowed = True
         if command_class == "dangerous" or not classification_allowed or not unknown_authorized:
             reason = str(classification.get("reason") or "command policy denied execution")[:120]
             if classification_allowed and not unknown_authorized:
