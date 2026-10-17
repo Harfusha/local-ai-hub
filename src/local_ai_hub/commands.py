@@ -5610,9 +5610,12 @@ class CommandBroker:
             try:
                 if cache.delete(key) is False:
                     invalidation_errors.append("cache delete reported failure")
-                cache.clear()
             except Exception as cache_exc:
                 invalidation_errors.append(str(cache_exc)[:160])
+            try:
+                cache.clear()
+            except Exception as cache_exc:
+                invalidation_errors.append(f"cache clear failed: {str(cache_exc)[:160]}")
         with self._lock:
             self._last.pop(command_key, None)
         if invalidation_errors:

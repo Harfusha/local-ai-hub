@@ -736,6 +736,46 @@ def test_rollback_reports_suppressed_sqlite_cache_delete_failure(
     assert result.get("cache_invalidation_errors")
 
 
+def test_rollback_cache_delete_exception_still_clears_shared_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    broker = CommandBroker(config, artifacts=None, repo_state=None)
+    reader = CommandBroker(config, artifacts=None, repo_state=None)
+    cache = broker.success_cache
+    reader_cache = reader.success_cache
+    command_key = "command-key"
+    cache.set(command_key, {"success": True, "value": "stale"})
+    assert reader_cache.get(command_key) == {"success": True, "value": "stale"}
+
+    clear_calls = 0
+    original_clear = cache.clear
+
+    def tracked_clear() -> int:
+        nonlocal clear_calls
+        clear_calls += 1
+        return original_clear()
+
+    def fail_delete(_key: str) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(cache, "clear", tracked_clear)
+    monkeypatch.setattr(cache.l2, "_delete_strict", fail_delete)
+    result: dict[str, object] = {}
+
+    broker._mark_rollback_outcome_unknown(
+        result,
+        command_key=command_key,
+        attempt_key="attempt-key",
+        error=OSError("rollback failed"),
+    )
+
+    assert result.get("outcome_unknown") is True
+    assert result.get("cache_invalidation_failed") is True
+    assert clear_calls == 1
+    assert reader_cache.get(command_key) is None
+
+
 def test_command_rollback_requires_explicit_scope(tmp_path: Path) -> None:
     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
 
