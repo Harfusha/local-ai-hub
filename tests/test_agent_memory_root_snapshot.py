@@ -325,7 +325,7 @@ def test_scoped_lookup_excludes_unscoped_task_and_session_records(store: MemoryS
     assert store.get(scoped_task.record_id, task_id="task-1", root="C:/repo", tenant="tenant-1").value == "task value"
 
 
-def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: MemoryStore):
+def test_global_memory_delete_requires_record_tenant(store: MemoryStore):
     global_record = store.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.GLOBAL,
@@ -334,7 +334,9 @@ def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: Me
         provenance={"tenant": "legacy-tenant"},
     ), actor="user")
 
-    assert store.delete(global_record.record_id, scope=AgentScope.GLOBAL, tenant="codex") is True
+    assert store.delete(global_record.record_id, scope=AgentScope.GLOBAL, tenant="codex") is False
+    assert store.get(global_record.record_id, scope=AgentScope.GLOBAL, tenant="legacy-tenant") == global_record
+    assert store.delete(global_record.record_id, scope=AgentScope.GLOBAL, tenant="legacy-tenant") is True
     assert store.get(global_record.record_id, scope=AgentScope.GLOBAL) is None
 
 

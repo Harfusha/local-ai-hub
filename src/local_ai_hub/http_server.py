@@ -2751,8 +2751,12 @@ class Handler(BaseHTTPRequestHandler):
             return None
         root_val, repository_id_val = project_identity or (None, None)
         explicit_tenant = self.headers.get("X-LocalAI-Tenant")
-        raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None) or self._tenant()
-        tenant_val = None if scope_val is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
+        raw_tenant = (
+            self._tenant()
+            if scope_val is AgentScope.GLOBAL
+            else payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None) or self._tenant()
+        )
+        tenant_val = str(raw_tenant).strip() if raw_tenant else None
         task_id_val = payload.get("task_id")
         session_id_val = payload.get("session_id")
         clone_id_val = payload.get("clone_id")
@@ -7118,8 +7122,12 @@ class Handler(BaseHTTPRequestHandler):
                     root_val, repository_id_val = project_identity or (None, None)
                     requested_scope = _parse_memory_scope(payload.get("scope"))
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant")
-                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None) or self._tenant()
-                    tenant_val = None if requested_scope is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
+                    raw_tenant = (
+                        self._tenant()
+                        if requested_scope is AgentScope.GLOBAL
+                        else payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None) or self._tenant()
+                    )
+                    tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
                         requested_scope,
                         scope_id=payload.get("scope_id"),

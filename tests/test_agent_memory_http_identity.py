@@ -67,6 +67,14 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
         provenance={"root": str(repo_a), "repository_id": "repo-a", "tenant": "owner-tenant"},
     )
     app.agent_memory.record(owned_global_record, actor="user")
+    authenticated_global_record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="authenticated-global-http-delete",
+        value="tenant-owned global value",
+        provenance={"root": str(repo_a), "repository_id": "repo-a", "tenant": "codex"},
+    )
+    app.agent_memory.record(authenticated_global_record, actor="user")
 
     previous_app = http_server.APP
     http_server.APP = app
@@ -133,6 +141,18 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
         status, found_owned_global = post({**owned_global_payload, "action": "get", "tenant": "owner-tenant"})
         assert status == 403
         assert found_owned_global["success"] is False
+
+        authenticated_delete = {
+            "action": "delete",
+            "record_id": authenticated_global_record.record_id,
+            "scope": "global",
+            "root": str(repo_a),
+            "repository_id": "repo-a",
+            "tenant": "codex",
+        }
+        status, deleted_authenticated_global = post(authenticated_delete)
+        assert status == 200
+        assert deleted_authenticated_global["deleted"] is True
 
         delete_payload = {
             "action": "delete",
