@@ -30,15 +30,22 @@ def test_generated_event_identifiers_use_full_uuid_entropy_and_keep_supplied_key
     assert restored_key.idempotency_key == "stored-key"
 
 
-def test_from_dict_rejects_missing_canonical_event_fields():
-    with pytest.raises(KeyError, match="event_id"):
-        AgentEvent.from_dict({"stream_id": "stream-1", "kind": "test.event"})
-
+def test_from_dict_rejects_missing_required_event_fields():
     canonical = AgentEvent.create("stream-1", "test.event").to_dict()
-    for field in ("correlation_id", "seq"):
+    for field in ("event_id", "stream_id", "kind", "payload", "idempotency_key", "actor", "created_at"):
         incomplete = {key: value for key, value in canonical.items() if key != field}
         with pytest.raises(KeyError, match=field):
             AgentEvent.from_dict(incomplete)
+
+
+def test_from_dict_defaults_optional_event_fields():
+    canonical = AgentEvent.create("stream-1", "test.event").to_dict()
+    incomplete = {key: value for key, value in canonical.items() if key not in {"correlation_id", "seq"}}
+
+    restored = AgentEvent.from_dict(incomplete)
+
+    assert restored.correlation_id == ""
+    assert restored.seq is None
 
 
 def test_from_dict_rejects_noncanonical_fields():

@@ -590,9 +590,23 @@ def _rename_noreplace_windows(
     get_info = kernel32.GetFileInformationByHandleEx
     get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
     get_info.restype = wintypes.BOOL
-    set_info = kernel32.SetFileInformationByHandle
-    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
-    set_info.restype = wintypes.BOOL
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [("status", ctypes.c_void_p), ("information", ctypes.c_size_t)]
+
+    set_info = ntdll.NtSetInformationFile
+    set_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        wintypes.LPVOID,
+        wintypes.ULONG,
+        ctypes.c_int,
+    ]
+    set_info.restype = ctypes.c_long
+    status_to_error = ntdll.RtlNtStatusToDosError
+    status_to_error.argtypes = [ctypes.c_long]
+    status_to_error.restype = wintypes.ULONG
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = [wintypes.HANDLE]
     close_handle.restype = wintypes.BOOL
@@ -653,7 +667,10 @@ def _rename_noreplace_windows(
             encoded_name,
             len(encoded_name),
         )
-        if not set_info(source_handle, 3, ctypes.byref(rename), info_size):  # FileRenameInfo
+        io_status = _IoStatusBlock()
+        status = int(set_info(source_handle, ctypes.byref(io_status), ctypes.byref(rename), info_size, 10))
+        if status < 0:  # NT_SUCCESS accepts success and informational statuses.
+            ctypes.set_last_error(int(status_to_error(status)))
             raise ctypes.WinError(ctypes.get_last_error())
     finally:
         try:
@@ -1029,12 +1046,14 @@ def _retain_previous_install(
 
         if not quarantine_directory.is_current():
             return mark_ambiguous("quarantine root changed after move")
+        source_identity = source_pin.identity
+        source_pin.close()
         try:
             moved_pin = _pin_source(quarantine_directory.path)
         except OSError as exc:
             return mark_ambiguous(f"moved tree identity unavailable: {exc}")
         try:
-            if moved_pin.identity != source_pin.identity:
+            if moved_pin.identity != source_identity:
                 return mark_ambiguous("moved tree identity changed")
         finally:
             moved_pin.close()
@@ -1085,6 +1104,8 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
             return f"preserved unmanaged or modified skill tree: {target}"
         if _is_link(target):
             return f"preserved conflicting skill tree: {target}"
+        if current_hash == source_hash:
+            return f"installed Hub-owned skill: {target}"
     target.parent.mkdir(parents=True, exist_ok=True)
     stage_root = Path(tempfile.mkdtemp(prefix=f".{skill_name}.lah-stage-", dir=target.parent))
     staged = stage_root / "replacement"
@@ -1465,7 +1486,8 @@ def _remove_skill_unlocked(target: Path, skills_root: Path, manifest: Path, skil
                 f"hash_state=unverified, presence={presence})"
                 for record, presence in tracked
             )
-            return f"skill inactive; tracked recovery paths: {locations}"
+            path_label = "tracked recovery path" if len(tracked) == 1 else "tracked recovery paths"
+            return f"skill inactive; {path_label}: {locations}"
         return f"skill already absent: {target}"
     previous = entries.get(key)
     if not previous or previous.get("name") != skill_name:

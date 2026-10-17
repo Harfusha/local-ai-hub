@@ -134,8 +134,8 @@ def test_registered_code_index_returns_bounded_symbol_instead_of_413(tmp_path, m
     raw = {
         "success": True,
         "request_id": "req-f12-wire",
-        "root": str(tmp_path),
-        "query": "generate_tests",
+        "root": str(tmp_path / "wrong-scope"),
+        "query": "wrong-query",
         "terms": ["generate", "tests"],
         "limit": 24,
         "offset": 0,

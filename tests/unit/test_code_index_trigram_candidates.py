@@ -20,7 +20,7 @@ def _index(tmp_path):
 
 
 def _insert_symbols(index, root, records):
-    paths = sorted({record[1] for record in records})
+    paths = sorted({record[0] for record in records})
     with closing(sqlite3.connect(index.db_path)) as con:
         con.executemany(
             """INSERT INTO symbols(
@@ -176,7 +176,8 @@ def test_batch_update_and_unindexable_path_replace_postings_atomically(tmp_path)
 
     source.write_text("def replacement_worker():\n    return 2\n", encoding="utf-8")
     assert index.update_files_batch(str(root), ["src/worker.py"])["success"] is True
-    assert index.query(str(root), "needle_worker")["total_matches"] == 0
+    old_name_matches = index.query(str(root), "needle_worker")
+    assert [symbol["name"] for symbol in old_name_matches["symbols"]] == ["replacement_worker"]
     assert index.query(str(root), "replacement_worker")["total_matches"] == 1
 
     index._mark_file_unindexable(str(root), "src/worker.py", "python")

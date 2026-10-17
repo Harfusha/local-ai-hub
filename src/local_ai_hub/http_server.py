@@ -5632,7 +5632,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=tenant, limit=limit)})
 
     def _handle_post_lease_claim(self, payload: dict[str, Any], tenant: str) -> None:
-        allowed_fields = {"root", "paths", "ttl_seconds", "purpose"}
+        allowed_fields = {"root", "paths", "ttl_seconds", "purpose", "coordination_id"}
         if not isinstance(payload, dict) or set(payload) - allowed_fields:
             self._send(400, {"success": False, "error": "lease claim contains unsupported fields", "terminal": True, "retryable": False})
             return
@@ -5652,12 +5652,15 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(purpose, str) or "\x00" in purpose:
             self._send(400, {"success": False, "error": "purpose must be a string", "terminal": True, "retryable": False})
             return
-        if not isinstance(tenant, str) or not tenant.strip():
+        principal_tenant = self._configured_principal_tenant()
+        explicit_tenant = self.headers.get("X-LocalAI-Tenant") if hasattr(self, "headers") and self.headers else None
+        effective_tenant = principal_tenant or (str(explicit_tenant).strip() if explicit_tenant and str(explicit_tenant).strip() else None) or tenant
+        if not isinstance(effective_tenant, str) or not effective_tenant.strip():
             self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
             return
         coordination_id = _lease_coordination_id(root)
         self._send(200, APP.leases.claim_batch(
-            tenant, root, paths, ttl_seconds, purpose, coordination_id=coordination_id,
+            effective_tenant, root, paths, ttl_seconds, purpose, coordination_id=coordination_id,
         ))
 
     def _handle_post_lease_release(self, payload: dict[str, Any], tenant: str) -> None:
@@ -5668,10 +5671,13 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(lease_id, str) or not lease_id.strip() or "\x00" in lease_id:
             self._send(400, {"success": False, "error": "lease_id must be a non-empty string", "terminal": True, "retryable": False})
             return
-        if not isinstance(tenant, str) or not tenant.strip():
+        principal_tenant = self._configured_principal_tenant()
+        explicit_tenant = self.headers.get("X-LocalAI-Tenant") if hasattr(self, "headers") and self.headers else None
+        effective_tenant = principal_tenant or (str(explicit_tenant).strip() if explicit_tenant and str(explicit_tenant).strip() else None) or tenant
+        if not isinstance(effective_tenant, str) or not effective_tenant.strip():
             self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
             return
-        self._send(200, APP.leases.release(tenant, lease_id))
+        self._send(200, APP.leases.release(effective_tenant, lease_id))
 
     def _handle_post_lease_renew(self, payload: dict[str, Any], tenant: str) -> None:
         if not isinstance(payload, dict) or set(payload) - {"lease_id", "ttl_seconds"}:
@@ -5685,10 +5691,13 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds < 1:
             self._send(400, {"success": False, "error": "ttl_seconds must be a positive integer", "terminal": True, "retryable": False})
             return
-        if not isinstance(tenant, str) or not tenant.strip():
+        principal_tenant = self._configured_principal_tenant()
+        explicit_tenant = self.headers.get("X-LocalAI-Tenant") if hasattr(self, "headers") and self.headers else None
+        effective_tenant = principal_tenant or (str(explicit_tenant).strip() if explicit_tenant and str(explicit_tenant).strip() else None) or tenant
+        if not isinstance(effective_tenant, str) or not effective_tenant.strip():
             self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
             return
-        self._send(200, APP.leases.renew(tenant, lease_id, ttl_seconds))
+        self._send(200, APP.leases.renew(effective_tenant, lease_id, ttl_seconds))
 
     @staticmethod
     def _context_retrieval_mode(payload: Mapping[str, Any]) -> str | None:

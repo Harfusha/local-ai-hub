@@ -155,7 +155,7 @@ _ADOPTION_TOOL_NAMES = (
 )
 
 _RESPONSE_BUDGET_PROPERTIES = {
-    "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
+    "max_response_tokens": {"type": ["integer", "null"], "minimum": 128, "default": None},
     "response_profile": {
         "type": "string",
         "enum": ["minimal", "compact", "standard", "debug", "delta"],

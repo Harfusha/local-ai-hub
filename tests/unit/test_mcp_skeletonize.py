@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+from local_ai_hub import mcp_server
 from local_ai_hub.mcp_server import mcp
 
 
@@ -11,6 +12,13 @@ def _call_repo_tool(arguments):
 def test_skeletonize_mcp_payload_forwards_canonical_query(
     monkeypatch, tmp_path
 ):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 1, None),
+    )
     captured = {}
 
     class DummyClient:

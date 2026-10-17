@@ -441,9 +441,9 @@ def test_command_broker_benchmarks_cpu_and_dual_stream_workloads(tmp_path: Path)
         "print('CPU_DIGEST:'+value.hex())\n"
     )
     streams_code = (
-        "import os; "
-        "[(os.write(1,b'O'*8192),os.write(2,b'E'*8192)) for _ in range(256)]; "
-        "os.write(1,b'OUT_TAIL_SENTINEL'); os.write(2,b'ERR_TAIL_SENTINEL')"
+        "import sys; "
+        "[(sys.stdout.buffer.write(b'O'*8192),sys.stderr.buffer.write(b'E'*8192)) for _ in range(256)]; "
+        "sys.stdout.buffer.write(b'OUT_TAIL_SENTINEL'); sys.stderr.buffer.write(b'ERR_TAIL_SENTINEL')"
     )
     workloads = {
         "cpu": CommandInvocation(argv=[sys.executable, "-c", cpu_code], cwd=str(worktree), shell=False),

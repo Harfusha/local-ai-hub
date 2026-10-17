@@ -890,6 +890,8 @@ def _explicit_budget_rejection(arguments: dict[str, Any]) -> dict[str, Any] | No
     if "max_response_tokens" not in arguments:
         return None
     requested = arguments["max_response_tokens"]
+    if requested is None or requested == 0:
+        return None
     if type(requested) is not int or requested < 128:
         return {
             "success": False,
@@ -908,6 +910,7 @@ def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str,
         profile = "compact"
     if not requested_profile:
         profile = CONTEXT_LEDGER.adaptive_profile(profile)
+    explicit_budget = type(options.get("max_response_tokens")) is int and options["max_response_tokens"] >= 128
     try:
         requested = int(options.get("max_response_tokens") or 0)
     except (TypeError, ValueError, OverflowError):
@@ -924,11 +927,11 @@ def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str,
     except (TypeError, ValueError, OverflowError):
         max_allowed = RESPONSE_DEFAULT_TOKENS * 2
     requested = min(requested, max_allowed)
-    if profile == "minimal":
+    if profile == "minimal" and not explicit_budget:
         requested = min(requested, max(256, RESPONSE_DEFAULT_TOKENS // 2))
-    elif profile == "standard":
+    elif profile == "standard" and not explicit_budget:
         requested = max(requested, RESPONSE_DEFAULT_TOKENS)
-    elif profile == "debug":
+    elif profile == "debug" and not explicit_budget:
         requested = max(requested, int(RESPONSE_DEFAULT_TOKENS * 2))
     return max(128, requested), profile, str(options.get("reuse_key") or "")[:160], RESPONSE_BUDGET_ENABLED
 
@@ -959,9 +962,15 @@ def _reuse_state(key: str, value: Any) -> tuple[bool, Any]:
 
 def _code_index_page_with_prefix(
     base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], count: int,
+    *, identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an honest code-index page containing a whole-symbol prefix."""
     candidate = copy.deepcopy(raw if raw.get("success") is True and base.get("success") is False else base)
+    for key in ("root", "query"):
+        candidate.pop(key, None)
+        value = identity.get(key) if isinstance(identity, dict) else None
+        if isinstance(value, str):
+            candidate[key] = value
     if raw.get("success") is True:
         for key in ("error", "status_code", "terminal", "retryable", "failure_kind"):
             candidate.pop(key, None)
@@ -1054,7 +1063,7 @@ def _code_index_page_with_prefix(
 
 def _code_index_prefix_fitting(
     base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], requested: int,
-    *, wire_budget: bool,
+    *, wire_budget: bool, identity: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Fit a whole-symbol prefix, reducing optional symbol detail only as needed."""
     minimal_keys = ("name", "kind", "path", "line", "end_line", "matched_terms")
@@ -1079,7 +1088,9 @@ def _code_index_prefix_fitting(
             continue
         min_count = 1 if source_symbols else 0
         for count in range(len(source_symbols), min_count - 1, -1):
-            candidate = _code_index_page_with_prefix(base, raw, source_symbols, count)
+            candidate = _code_index_page_with_prefix(
+                base, raw, source_symbols, count, identity=identity,
+            )
             if reduced:
                 omitted = sorted({
                     f"symbols.{key}"
@@ -1197,7 +1208,7 @@ def _relation_prefix_fitting(
 
 def _compact(
     value: Any, task_kind: str = "general", extra_fields: list[str] | None = None,
-    *, page_key: str | None = None,
+    *, page_key: str | None = None, identity: dict[str, Any] | None = None,
 ) -> Any:
     # Capture measured savings before the projector intentionally removes internal
     # token_saving/runtime fields. Private accounting metadata is stripped by the
@@ -1364,6 +1375,7 @@ def _compact(
                 raw_value["symbols"],
                 requested,
                 wire_budget=True,
+                identity=identity,
             )
             if fitted is None or (raw_value["symbols"] and not fitted.get("symbols")):
                 compacted = {
@@ -2192,6 +2204,7 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
         return contract_error(f"detail must be one of: {', '.join(STATUS_DETAILS)}")
     if not isinstance(scope, str) or scope.strip().lower() not in {"process", "window"}:
         return contract_error("scope must be process or window")
+    max_response_tokens = 0 if max_response_tokens is None else max_response_tokens
     if not isinstance(max_response_tokens, int) or isinstance(max_response_tokens, bool) or not 0 <= max_response_tokens <= 100000:
         return contract_error("max_response_tokens must be between 0 and 100000")
     if not isinstance(min_duration_ms, int) or isinstance(min_duration_ms, bool) or not 0 <= min_duration_ms <= 86_400_000:
@@ -3195,6 +3208,7 @@ def _local_ai_repo_impl(
     path = "" if path is None else path
     task_id = "" if task_id is None else task_id
     max_tokens = 0 if max_tokens is None else max_tokens
+    max_response_tokens = 0 if max_response_tokens is None else max_response_tokens
     relation = "" if relation is None else relation
     max_commits = 50 if max_commits is None else max_commits
     author = "" if author is None else author
@@ -3372,7 +3386,10 @@ def _local_ai_repo_impl(
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
-        return _compact(CLIENT.post("/api/repo/code-index", {"root": root, "query": query, "limit": limit, "offset": offset, "include_code": include_code}, timeout=_timeout("quick")), "code_index")
+        return _compact(
+            CLIENT.post("/api/repo/code-index", {"root": root, "query": query, "limit": limit, "offset": offset, "include_code": include_code}, timeout=_timeout("quick")),
+            "code_index", identity={"root": root, "query": query},
+        )
     if action in {"semantic", "intelligence"}:
         backend = "serena" if action == "semantic" else "auto"
         operation = relation or ("find_symbol" if backend == "serena" else "search")
@@ -5425,6 +5442,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 base["response_budget"] = dict(outer_metadata)
                 fitted = _code_index_prefix_fitting(
                     base, value, value["symbols"], requested, wire_budget=True,
+                    identity={"root": arguments.get("root"), "query": arguments.get("query")},
                 )
                 if fitted is None or (value["symbols"] and not fitted.get("symbols")):
                     failure = {

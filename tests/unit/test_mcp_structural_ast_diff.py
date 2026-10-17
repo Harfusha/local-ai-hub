@@ -9,6 +9,11 @@ from local_ai_hub import mcp_server
 
 
 def test_source_pair_reaches_shared_http_and_preserves_artifact(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        'load_operational_mode',
+        lambda _state_dir: mcp_server.OperationalModeSnapshot('active', 1, None),
+    )
     calls = []
     def post(path, payload, **kwargs):
         calls.append((path, payload))
