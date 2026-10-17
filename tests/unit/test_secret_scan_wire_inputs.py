@@ -172,3 +172,28 @@ def test_registered_mcp_secret_scan_does_not_treat_filename_substrings_as_contro
         ("digital.env", False), ("history.env", False), (None, True),
     ]
     assert whole_repo_history["success"] is True
+
+
+def test_registered_mcp_secret_scan_rejects_falsey_explicit_inputs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        mcp_server.CLIENT,
+        "post",
+        lambda url, payload, **kwargs: calls.append((url, payload)) or {"success": True},
+    )
+
+    for field, value in (
+        ("path", ""),
+        ("path", "   "),
+        ("path", False),
+        ("query", ""),
+        ("task", ""),
+    ):
+        result = mcp_server.local_ai_repo(
+            action="secret_scan", root="/repo", **{field: value}
+        )
+        assert result["status_code"] == 400
+        assert result["terminal"] is True
+        assert result["retryable"] is False
+
+    assert calls == []
