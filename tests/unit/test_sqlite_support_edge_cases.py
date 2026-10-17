@@ -82,3 +82,15 @@ def test_clean_quarantined_files_removes_sidecars(tmp_path: Path) -> None:
     assert not corrupt_db.exists()
     assert not corrupt_wal.exists()
     assert not corrupt_shm.exists()
+
+
+def test_validate_durable_schema_detects_object_type_reliably(tmp_path: Path) -> None:
+    db_path = tmp_path / "schema_test.sqlite"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE valid_table (id INTEGER PRIMARY KEY, name TEXT)")
+    con.commit()
+
+    expected = {"valid_table": (("id", "INTEGER", 0, 1), ("name", "TEXT", 0, 0))}
+    # Should validate cleanly without misclassifying object_type
+    sqlite_support.validate_durable_schema(con, db_path, expected)
+    con.close()
