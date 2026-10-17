@@ -520,7 +520,7 @@ def _desc_repo() -> str:
         )
     if LEAN_SCHEMAS:
         return (
-            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Context mode is adaptive-only; other values reject before retrieval. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
             " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
         )
@@ -538,7 +538,7 @@ def _desc_repo() -> str:
         " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
-        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Context mode is adaptive-only; other values reject before retrieval."
+        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
@@ -884,6 +884,21 @@ def _subminimum_budget_rejection(options: dict[str, Any]) -> dict[str, Any] | No
         "error": "max_response_tokens must be at least 128",
         "response_budget": {"requested_tokens": requested, "minimum_tokens": 128, "rejected": True},
     }
+
+
+def _explicit_budget_rejection(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    if "max_response_tokens" not in arguments:
+        return None
+    requested = arguments["max_response_tokens"]
+    if type(requested) is not int or requested < 128:
+        return {
+            "success": False,
+            "status_code": 400,
+            "terminal": True,
+            "retryable": False,
+            "error": "max_response_tokens must be an integer of at least 128",
+        }
+    return None
 
 
 def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str, str, bool]:
@@ -1983,6 +1998,9 @@ def _instrumented_tool():
                 arguments = dict(bound.arguments)
             except Exception:
                 arguments = dict(kwargs)
+            budget_rejection = _explicit_budget_rejection(arguments)
+            if budget_rejection is not None:
+                return budget_rejection
             try:
                 mode_state_dir = configured_state_dir(CFG, create=False)
                 mode_snapshot = load_operational_mode(mode_state_dir)
@@ -4692,12 +4710,6 @@ def local_ai_coord(
             "reuse_key": reuse_key,
             "tool": action,
         })
-        try:
-            explicit_limit = int(max_response_tokens or 0)
-        except (TypeError, ValueError, OverflowError):
-            explicit_limit = 0
-        if explicit_limit > 0:
-            requested = explicit_limit
         if budget_enabled:
             reap_payload["response_budget_tokens"] = requested
         return _compact(CLIENT.post(
@@ -4713,12 +4725,6 @@ def local_ai_coord(
             "reuse_key": reuse_key,
             "tool": action,
         })
-        try:
-            explicit_limit = int(max_response_tokens or 0)
-        except (TypeError, ValueError, OverflowError):
-            explicit_limit = 0
-        if explicit_limit > 0:
-            requested = explicit_limit
         if budget_enabled:
             cleanup_payload["response_budget_tokens"] = requested
         return _compact(CLIENT.post(
@@ -4739,12 +4745,6 @@ def local_ai_coord(
             "reuse_key": reuse_key,
             "tool": action,
         })
-        try:
-            explicit_limit = int(max_response_tokens or 0)
-        except (TypeError, ValueError, OverflowError):
-            explicit_limit = 0
-        if explicit_limit > 0:
-            requested = explicit_limit
         if budget_enabled:
             question_payload["response_budget_tokens"] = requested
         return _compact(CLIENT.coord(**question_payload), "status", extra_fields=["question"])
@@ -4768,12 +4768,6 @@ def local_ai_coord(
             if subminimum is not None:
                 return subminimum
             requested, _, _, budget_enabled = _response_budget(action, budget_options)
-            try:
-                explicit_limit = int(max_response_tokens or 0)
-            except (TypeError, ValueError, OverflowError):
-                explicit_limit = 0
-            if explicit_limit > 0:
-                requested = explicit_limit
             if budget_enabled:
                 task_kwargs["response_budget_tokens"] = requested
         if action == "task_list":
@@ -5265,9 +5259,14 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                 def wire_payload() -> dict[str, Any]:
                                     wire = _mcp_wire_view(trial, structured=True)
                                     if text_mode == "minimal":
-                                        if "mutation_applied" in trial:
+                                        if any(key in trial for key in ("mutation_applied", "operation_not_started")):
                                             wire["content"][0]["text"] = json_dumps({
                                                 "success": False, "error": trial["error"],
+                                                **{
+                                                    key: trial[key]
+                                                    for key in ("mutation_applied", "operation_not_started")
+                                                    if key in trial
+                                                },
                                             })
                                         else:
                                             wire["content"][0]["text"] = json_dumps({
@@ -5371,8 +5370,6 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             requested, profile, reuse_key, enabled = _response_budget(
                 str(arguments.get("action") or name), options
             )
-            if explicit_limit > 0:
-                requested = explicit_limit
         if not enabled:
             return ([mcp_types.TextContent(type="text", text=json_dumps(value))], value)
 
