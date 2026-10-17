@@ -971,7 +971,7 @@ def _code_index_page_with_prefix(
         candidate["next_offset"] = offset + count
     else:
         candidate.pop("next_offset", None)
-    if count < len(symbols):
+    if has_more or count < len(symbols):
         matched_terms = sorted({
             str(term)
             for symbol in symbols[:count]
@@ -1048,8 +1048,19 @@ def _code_index_prefix_fitting(
         if isinstance(symbol, dict) else symbol
         for symbol in symbols
     ]
-    for source_symbols, reduced in ((symbols, False), (minimal_symbols, True)):
-        if reduced and source_symbols == symbols:
+    essential_keys = ("name", "path", "line")
+    essential_symbols = [
+        {key: symbol[key] for key in essential_keys if key in symbol}
+        if isinstance(symbol, dict) else symbol
+        for symbol in symbols
+    ]
+    symbol_shapes = (
+        (symbols, False, False),
+        (minimal_symbols, True, False),
+        (essential_symbols, True, True),
+    )
+    for source_symbols, reduced, compact_metadata in symbol_shapes:
+        if reduced and source_symbols == symbols and not compact_metadata:
             continue
         min_count = 1 if source_symbols else 0
         for count in range(len(source_symbols), min_count - 1, -1):
@@ -1062,6 +1073,21 @@ def _code_index_prefix_fitting(
                     for key in original
                     if key not in projected
                 })
+                if omitted:
+                    candidate["omitted_fields"] = list(dict.fromkeys([
+                        *(candidate.get("omitted_fields") if isinstance(candidate.get("omitted_fields"), list) else []),
+                        *omitted,
+                    ]))
+            if compact_metadata:
+                omitted = [
+                    key for key in (
+                        "parse_outcomes", "confidence_basis", "confidence",
+                        "freshness", "coverage", "truncation",
+                    )
+                    if key in candidate
+                ]
+                for key in omitted:
+                    candidate.pop(key, None)
                 if omitted:
                     candidate["omitted_fields"] = list(dict.fromkeys([
                         *(candidate.get("omitted_fields") if isinstance(candidate.get("omitted_fields"), list) else []),
