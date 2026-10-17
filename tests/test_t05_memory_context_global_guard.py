@@ -24,14 +24,17 @@ def seed(store, scope, provenance, scope_id=""):
 
 
 @pytest.mark.parametrize("scope,identity", [
-    (AgentScope.REPOSITORY, {}),
+    (AgentScope.REPOSITORY, {"coordination_id": "shared-coord"}),
     (AgentScope.SESSION, {"session_id": "shared-session"}),
     (AgentScope.TASK, {"task_id": "shared-task"}),
 ])
 @pytest.mark.parametrize("tenant", ["", " \t "])
 def test_context_without_tenant_excludes_scoped_rows(store, tmp_path, scope, identity, tenant):
     root = str(tmp_path / "repo")
-    record = seed(store, scope, {"root": root}, "shared-session" if scope is AgentScope.SESSION else "shared-task")
+    prov = {"root": root}
+    if scope is AgentScope.REPOSITORY:
+        prov["repository_id"] = "shared-coord"
+    record = seed(store, scope, prov, "shared-session" if scope is AgentScope.SESSION else "shared-task")
     shared = seed(store, AgentScope.GLOBAL, {})
     found = store.find_for_context(root=root, tenant=tenant, **identity)
     assert record.record_id not in {item.record_id for item in found}
@@ -39,18 +42,21 @@ def test_context_without_tenant_excludes_scoped_rows(store, tmp_path, scope, ide
 
 
 @pytest.mark.parametrize("scope,identity", [
-    (AgentScope.REPOSITORY, {}),
+    (AgentScope.REPOSITORY, {"coordination_id": "repo-coord"}),
     (AgentScope.SESSION, {"session_id": "shared-session"}),
 ])
 def test_context_scoped_identity_denies_foreign_owner(store, tmp_path, scope, identity):
     root = str(tmp_path / "repo")
     scope_id = "shared-session" if scope is AgentScope.SESSION else root
-    valid = seed(store, scope, {"root": root, "tenant": "tenant-a"}, scope_id)
+    prov = {"root": root, "tenant": "tenant-a"}
+    if scope is AgentScope.REPOSITORY:
+        prov["repository_id"] = "repo-coord"
+    valid = seed(store, scope, prov, scope_id)
     seed(store, scope, {"root": str(tmp_path / "other"), "tenant": "tenant-a"}, scope_id)
     seed(store, scope, {"root": root, "tenant": "tenant-b"}, scope_id)
     seed(store, scope, {"root": root}, scope_id)
     assert store.find_for_context(root=root, tenant="tenant-a", **identity) == [valid]
-    assert store.find_for_context(root=root, tenant="tenant-a") == ([] if scope is AgentScope.SESSION else [valid])
+    assert store.find_for_context(root=root, tenant="tenant-a") == []
     if scope is AgentScope.REPOSITORY:
         assert store.find_for_context(tenant="tenant-a") == []
 
