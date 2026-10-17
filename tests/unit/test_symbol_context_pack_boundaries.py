@@ -66,3 +66,18 @@ def test_stale_index_bounds_are_not_presented_as_complete_symbol(tmp_path):
     evidence = engine._exact_evidence(str(tmp_path), [{'path': 'module.py', 'line': 1}])
     assert evidence[0]['symbol_complete'] is False
     assert evidence[0]['end_line'] == 3
+
+
+def test_context_pack_multi_term_query_symbol_fallback(tmp_path):
+    engine, _ = _engine(tmp_path)
+    engine.query = lambda *a, **kw: {"evidence": [], "facts": [], "code_index": {}}
+    engine.code_index = SimpleNamespace(
+        find_symbol=lambda root, pat, **kw: {
+            "symbols": [{"name": "calculate", "kind": "function", "name_path": "calculate", "path": "module.py", "line": 1, "signature": "def calculate()"}]
+        } if pat == "calculate" else {"symbols": []},
+        query=lambda root, q, **kw: {"symbols": []},
+    )
+    result = engine.context_pack(str(tmp_path), "calculate t02_cold_sample_0", max_chars=1024)
+    assert result["success"] is True
+    assert "calculate" in result["context"]
+    assert "HIERARCHICAL SYMBOLS & SIGNATURES:" in result["context"]
