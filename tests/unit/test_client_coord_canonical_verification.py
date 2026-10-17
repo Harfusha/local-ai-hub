@@ -136,3 +136,36 @@ def test_coord_verify_export_uses_canonical_default_format(client_and_calls):
     client.coord("verify_export", task_id="task-1")
 
     assert calls[0][1]["format"] == "markdown"
+
+
+@pytest.mark.parametrize(
+    "action",
+    ("memo_put", "memo_get", "memo_search", "memo_delete", "memo_future"),
+)
+def test_coord_rejects_retired_memo_actions_before_http_dispatch(client_and_calls, action):
+    client, calls = client_and_calls
+
+    result = client.coord(action, root="C:/repo", key="legacy")
+
+    assert result == {
+        "success": False,
+        "status_code": 400,
+        "terminal": True,
+        "retryable": False,
+        "error": f"retired coord action '{action}'",
+    }
+    assert calls == []
+
+
+def test_coord_memory_find_keeps_canonical_agent_state_route(client_and_calls):
+    client, calls = client_and_calls
+
+    result = client.coord(
+        "memory_find", root="C:/repo", query="known", tenant="caller-tenant",
+        repository_id="caller-repo", coordination_id="caller-coordination",
+    )
+
+    assert result["success"] is True
+    assert calls == [("/api/agent-state/memory", {
+        "root": "C:/repo", "query": "known", "action": "find",
+    }, {})]
