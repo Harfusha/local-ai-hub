@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Collection, Mapping
 
 from .agent_events import AgentStateStore
+from .agent_identity import AgentScope
 from .agent_memory import MemoryStatus, MemoryStore
 from .context_identity import (
     ContextPathHint,
@@ -335,20 +336,28 @@ def _estimate_tokens(text: str) -> int:
 
 def _memory_record_matches_tenant(record: Any, tenant: str) -> bool:
     """Enforce the memory store tenant contract at the context consumer boundary."""
-    provenance = getattr(record, "provenance", None)
-    record_tenant = (
-        str(provenance.get("tenant") or "").strip()
-        if isinstance(provenance, Mapping)
-        else ""
-    )
-    requested_tenant = str(tenant or "").strip()
     scope = getattr(record, "scope", None)
-    scope_value = str(getattr(scope, "value", scope) or "").strip().lower()
-    if scope_value == "global" and not record_tenant:
+    if not isinstance(scope, AgentScope):
+        return False
+    provenance = getattr(record, "provenance", None)
+    if provenance is None:
+        provenance = {}
+    if not isinstance(provenance, Mapping):
+        return False
+    record_tenant = provenance.get("tenant", "")
+    if not isinstance(record_tenant, str):
+        return False
+    if tenant is None:
+        requested_tenant = ""
+    elif isinstance(tenant, str):
+        requested_tenant = tenant
+    else:
+        return False
+    if scope is AgentScope.GLOBAL and not record_tenant:
         return True
     if not requested_tenant:
         return not record_tenant
-    return bool(record_tenant) and record_tenant == requested_tenant
+    return record_tenant != "" and record_tenant == requested_tenant
 
 
 def _rollback_after_failure(connection: Any, *, operation: str) -> None:
