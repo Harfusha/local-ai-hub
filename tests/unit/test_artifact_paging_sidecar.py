@@ -112,8 +112,13 @@ def test_rebuilds_derived_paging_metadata_and_preserves_artifact_text(tmp_path) 
     )"""
 
     with closing(sqlite3.connect(db_path)) as connection:
+        old_sidecar_checksum = "a" * 64
+        connection.execute(
+            "UPDATE artifacts SET checksum=? WHERE artifact_id=?",
+            (old_sidecar_checksum, artifact_id),
+        )
         durable_before = connection.execute(
-            "SELECT text, tenant, tenant_identity FROM artifacts WHERE artifact_id=?",
+            "SELECT text, tenant, tenant_identity, checksum FROM artifacts WHERE artifact_id=?",
             (artifact_id,),
         ).fetchone()
         connection.execute("DROP TABLE artifact_paging_metadata")
@@ -133,13 +138,15 @@ def test_rebuilds_derived_paging_metadata_and_preserves_artifact_text(tmp_path) 
     assert result["slices"] == [{"offset": 0, "text": text}]
     with closing(sqlite3.connect(db_path)) as connection:
         durable_after = connection.execute(
-            "SELECT text, tenant, tenant_identity FROM artifacts WHERE artifact_id=?",
+            "SELECT text, tenant, tenant_identity, checksum FROM artifacts WHERE artifact_id=?",
             (artifact_id,),
         ).fetchone()
         paging_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_xinfo(artifact_paging_metadata)")
         }
-    assert durable_after == durable_before
+    assert durable_before[:3] == durable_after[:3]
+    assert durable_before[3] == old_sidecar_checksum
+    assert durable_after[3] is None
     assert {"section_json", "section_checksum"} <= paging_columns
 
 
