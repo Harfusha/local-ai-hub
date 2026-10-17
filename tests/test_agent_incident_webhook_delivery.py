@@ -29,6 +29,38 @@ def test_webhook_delivery_failure_is_logged_without_request_details(monkeypatch,
     assert "private response detail" not in caplog.text
 
 
+def test_webhook_response_is_closed_without_reading_body(monkeypatch):
+    class Response:
+        def __init__(self):
+            self.closed = False
+            self.read_called = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.closed = True
+
+        def read(self, *args, **kwargs):
+            self.read_called = True
+            raise AssertionError("webhook response body must not be buffered")
+
+    response = Response()
+    timeouts = []
+
+    def open_response(request, timeout):
+        timeouts.append(timeout)
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", open_response)
+
+    _send_incident_webhooks(["https://hooks.example/incident"], b"{}")
+
+    assert timeouts == [3.0]
+    assert response.closed
+    assert not response.read_called
+
+
 def test_webhook_dispatcher_bounds_pending_jobs_and_uses_one_worker():
     started = threading.Event()
     release = threading.Event()
