@@ -995,59 +995,6 @@ def _bound_agent_event_page(status: int, page: dict[str, Any], after_seq: Any) -
     }
 
 
-def _event_page_supports_snapshot_bound(event_page: Any) -> bool:
-    try:
-        parameters = inspect.signature(event_page).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.name == "through_seq" or parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters
-    )
-
-
-def _apply_event_page_snapshot_bound(
-    page: dict[str, Any], *, through_seq: int, after_seq: Any
-) -> dict[str, Any]:
-    """Enforce the caller's snapshot when an older store lacks through_seq support."""
-    try:
-        cursor = max(0, int(after_seq))
-    except (TypeError, ValueError, OverflowError):
-        cursor = 0
-    try:
-        last_seq = max(0, int(page.get("last_seq") or 0))
-    except (TypeError, ValueError, OverflowError):
-        last_seq = 0
-    boundary = min(last_seq, max(0, int(through_seq)))
-    events = []
-    for event in page.get("events") or []:
-        try:
-            seq = int(event.get("seq") or 0)
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            continue
-        if 0 < seq <= boundary:
-            events.append(event)
-
-    bounded = dict(page)
-    bounded["events"] = events
-    bounded["last_seq"] = boundary
-    bounded["next_seq"] = max(0, int(events[-1].get("seq") or 0)) if events else cursor
-    bounded["has_more"] = bool(events) and bool(page.get("has_more")) and bounded["next_seq"] < boundary
-    gaps = []
-    for gap in page.get("gap_ranges") or []:
-        if not isinstance(gap, dict):
-            continue
-        try:
-            first = max(0, int(gap.get("from_seq") or 0))
-            last = int(gap.get("to_seq") or 0)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if first <= last and first <= boundary:
-            gaps.append({**gap, "from_seq": first, "to_seq": min(last, boundary)})
-    bounded["gap_ranges"] = gaps
-    return bounded
-
-
 def _resolve_memory_scope(
     scope: AgentScope | None,
     *,
@@ -4194,26 +4141,12 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         page_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS - replayed_events)
                         try:
-                            if replay_through_seq is not None:
-                                try:
-                                    page = APP.agent_state.event_page(
-                                        stream_id=stream_id,
-                                        after_seq=replay_cursor,
-                                        limit=page_limit,
-                                        through_seq=replay_through_seq,
-                                    )
-                                except TypeError:
-                                    page = APP.agent_state.event_page(
-                                        stream_id=stream_id,
-                                        after_seq=replay_cursor,
-                                        limit=page_limit,
-                                    )
-                            else:
-                                page = APP.agent_state.event_page(
-                                    stream_id=stream_id,
-                                    after_seq=replay_cursor,
-                                    limit=page_limit,
-                                )
+                            page = APP.agent_state.event_page(
+                                stream_id=stream_id,
+                                after_seq=replay_cursor,
+                                limit=page_limit,
+                                through_seq=replay_through_seq,
+                            )
                         except Exception as exc:
                             stream_success = False
                             stream_error = "event replay unavailable"
@@ -4902,15 +4835,12 @@ class Handler(BaseHTTPRequestHandler):
                             "gap_ranges": [], "cursor_reset": False,
                             "error": {"code": "invalid_through_seq", "message": "through_seq must be a non-negative integer"},
                         }); return
-                if hasattr(agent_state, "events") and not hasattr(agent_state, "event_page"):
-                    events = agent_state.events(stream_id=stream_id, after_seq=int(after_seq or 0), limit=max(1, min(requested_limit, AGENT_EVENT_PAGE_MAX_LIMIT)))
-                    self._send(200, {"success": True, "events": events}); return
                 page_kwargs = {
                     "stream_id": stream_id,
                     "after_seq": after_seq,
                     "limit": max(1, min(requested_limit, AGENT_EVENT_PAGE_MAX_LIMIT)),
                 }
-                if snapshot_bound is not None and _event_page_supports_snapshot_bound(agent_state.event_page):
+                if snapshot_bound is not None:
                     page_kwargs["through_seq"] = through_seq
                 try:
                     page = agent_state.event_page(**page_kwargs)
@@ -4935,10 +4865,6 @@ class Handler(BaseHTTPRequestHandler):
                         "retryable": True,
                         "terminal": False,
                     }); return
-                if snapshot_bound is not None:
-                    page = _apply_event_page_snapshot_bound(
-                        page, through_seq=snapshot_bound, after_seq=after_seq,
-                    )
                 status = 200 if page.get("success") is True else (
                     403 if (page.get("error") or {}).get("code") == "agent_state_disabled" else 503
                 )
