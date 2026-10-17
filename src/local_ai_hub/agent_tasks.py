@@ -1430,6 +1430,7 @@ class TaskStore:
         root_value, tenant_value, session_value = self._validate_question_scope(
             root, tenant, session_id
         )
+        self._validate_question_response_budget(response_budget_tokens)
         question_key = str(question_id or "").strip()
         if len(question_key) > 80:
             raise ValueError("question_id exceeds 80 characters")
@@ -1448,7 +1449,10 @@ class TaskStore:
                     ).fetchone()
                 return self._question_row_to_dict(row) if row else None
 
-            return retry_busy(_read, retries=5, base_delay_seconds=0.02)
+            result = retry_busy(_read, retries=5, base_delay_seconds=0.02)
+            if result is not None:
+                self._preflight_question_response(result, response_budget_tokens)
+            return result
 
         question_value = self._validate_question_text(question, "question")
         task_value = str(task_id or "").strip()
