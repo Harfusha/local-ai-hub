@@ -151,3 +151,11 @@ jobs:
           name: wheel-mcp-smoke-${{ github.sha }}
           path: ${{ runner.temp }}/wheel-mcp-smoke.json
           if-no-files-found: warn
+
+  release:
+    name: Publish verified release
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [test, package]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
