@@ -1364,6 +1364,7 @@ def _compact(
         and isinstance(raw_value, dict)
         and raw_value.get("success") is True
         and isinstance(raw_value.get("results"), list)
+        and not raw_value.get("artifact_id")
     ):
         page_key = "results"
         expected_count = len(raw_value[page_key])
