@@ -302,7 +302,6 @@ def _context_scope_sql(
         ]
         clauses.append("(" + " AND ".join(shared_repository) + ")")
         params.extend([AgentScope.REPOSITORY.value, tenant, coordination_id])
-    add_scoped_identity(AgentScope.REPOSITORY.value, root)
     add_scoped_identity(AgentScope.TASK.value, task_id)
     add_scoped_identity(AgentScope.SESSION.value, session_id)
     add_scoped_identity(AgentScope.CLONE.value, clone_id)

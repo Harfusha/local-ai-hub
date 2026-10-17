@@ -2087,7 +2087,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 canonical = _strict_root_path(root)
                 header_tenant = self.headers.get("X-LocalAI-Tenant")
-                principal = self._principal_identity_tenant()
+                principal = self._tenant()
                 effective = principal
                 if any(
                     value is not None and str(value).strip() != principal
@@ -2109,7 +2109,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("root is not allowed")
             if require_configured_principal and not self._configured_principal_tenant():
                 raise ValueError("configured principal tenant is unavailable")
-            principal = self._principal_identity_tenant()
+            principal = self._tenant()
             key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
             if not key:
                 raise ValueError("tenant derivation secret is unavailable")
@@ -2796,7 +2796,9 @@ class Handler(BaseHTTPRequestHandler):
         if requested_root and project_identity is None:
             return None
         root_val, repository_id_val = project_identity or (None, None)
-        tenant_val = payload.get("tenant")
+        explicit_tenant = self.headers.get("X-LocalAI-Tenant")
+        raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None) or self._tenant()
+        tenant_val = None if scope_val is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
         task_id_val = payload.get("task_id")
         session_id_val = payload.get("session_id")
         clone_id_val = payload.get("clone_id")
@@ -7028,7 +7030,7 @@ class Handler(BaseHTTPRequestHandler):
                     root_val, repository_id_val = project_identity or (None, None)
                     requested_scope = _parse_memory_scope(payload.get("scope"))
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant")
-                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
+                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None) or self._tenant()
                     tenant_val = None if requested_scope is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
                         requested_scope,
