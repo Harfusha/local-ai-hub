@@ -1,8 +1,11 @@
 import math
-import pytest
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
-from local_ai_hub.leases import ScopeLeaseStore, _norm_rel
+import pytest
+
+from local_ai_hub.leases import ScopeLeaseStore, _norm_rel, _overlap
 from local_ai_hub.process_utils import is_valid_pid, pid_alive, clean_git_env
 
 
@@ -30,6 +33,10 @@ def test_norm_rel_hardening():
 
     with pytest.raises(ValueError):
         _norm_rel("../escaping.py")
+
+    assert _overlap(".", "src/module.py") is True
+    assert _overlap("src/module.py", "../escape.py") is True
+    assert _overlap("src/module.py", 42) is True
 
 
 def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
@@ -107,6 +114,23 @@ def test_scope_lease_store_read_and_renew_inputs_fail_closed(tmp_path: Path):
     assert store.check_path(
         "file.py", root=str(tmp_path), coordination_id=42
     )["error"] == "invalid project coordination id"
+
+
+def test_corrupt_live_lease_path_blocks_claim_and_check(tmp_path: Path):
+    store = ScopeLeaseStore(tmp_path / "leases")
+    held = store.claim("tenant-a", str(tmp_path), ["owned/file.py"])
+    assert held["success"] is True
+    with closing(sqlite3.connect(store.path)) as con:
+        with con:
+            con.execute(
+                "UPDATE leases SET path=? WHERE lease_id=?",
+                ("../outside.py", held["lease_id"]),
+            )
+
+    claim = store.claim("tenant-b", str(tmp_path), ["unrelated.py"])
+    assert claim["success"] is False
+    assert "overlaps another active agent lease" in claim["error"]
+    assert store.check_path("unrelated.py", root=str(tmp_path))["leased"] is True
 
 
 def test_process_utils_pid_and_env_hardening():
