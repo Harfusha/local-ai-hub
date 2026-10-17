@@ -31,7 +31,6 @@ def test_reliability_keeps_live_health_and_historical_counts_separate():
     run_javascript(source, """
 const elements=Object.fromEntries(['reliabilityHeadline','reliabilityTrend','reliabilityAction','requestHistoryStatus','workState','workSearch','requestHistorySearch','requestHistoryAction','requestHistoryPeriod'].map(id=>[id,{}]));
 const $=id=>elements[id],n=v=>String(v??0),esc=v=>String(v);
-const telemetryPeriod=o=>o.scope==='window'?'Last 30 days':'Since restart';
 let tab='',last=null;const switchTab=value=>tab=value;
 renderReliabilitySummary({hub_online:true,ollama_online:true,headless:{state:'running',restarts:9},observability:{scope:'window',data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0},cohorts:{agent_http:{failures:2404}},sessions:[{status:'crashed'}]}});
 assert.match(elements.reliabilityHeadline.innerHTML,/Healthy/);
@@ -101,7 +100,7 @@ def test_live_freshness_is_independent_of_historical_sample_timestamp():
     source = extract('function dashboardTelemetryState(', 'function redactDiagnostic(')
     run_javascript(source, """
 const elements=Object.fromEntries(['overviewHealthLevel','overviewHealthEvidence','overviewFreshness','overviewHealthAction','overviewHealthSummary','overviewAnnouncement','overviewHistorySummary'].map(id=>[id,{style:{}}]));
-const $=id=>elements[id],age=String,switchTab=()=>{},telemetryPeriod=()=> 'Last 30 days';let lastOverviewAnnouncement='';
+const $=id=>elements[id],age=String,switchTab=()=>{};let lastOverviewAnnouncement='';
 const now=1900000000000,base={hub_online:true,ollama_online:true,headless:{state:'running'},observability:{updated_at:1,data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0},cohorts:{agent_http:{failures:2404}}}};
 renderOverviewHealth(base,now,now);
 assert.equal(elements.overviewHealthLevel.textContent,'Healthy');
