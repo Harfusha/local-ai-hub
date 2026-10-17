@@ -56,6 +56,8 @@ def test_history_search_uses_two_bounded_literal_searches_and_deduplicates(tmp_p
     assert all("--fixed-strings" in call[0] for call in calls)
     assert all(f"--author={literal_author}" in call[0] and "src/a.py" in call[0] for call in calls)
     assert all(any(arg.startswith("--since-as-filter=@") for arg in call[0]) for call in calls)
+    assert all(any(arg.startswith("--until=@") for arg in call[0]) for call in calls)
+    assert all(call[0][-4:] == ["--end-of-options", "HEAD", "--", "src/a.py"] for call in calls)
     assert result["complete"] is True
     assert result["count"] == 1
     assert result["commits"][0]["match_type"] == "message, diff_content"
