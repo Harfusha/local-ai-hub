@@ -272,3 +272,38 @@ def test_incident_record_constraints_are_action_scoped_and_windows_bounded():
 def test_global_coord_record_schema_does_not_restrict_other_action_objects():
     properties = operation_parameters_schema("local_ai_coord")["properties"]
     assert properties["record"] == {"type": "object"}
+
+
+def test_negative_knowledge_find_requires_nonempty_scope_and_query():
+    valid = {"root": ".", "tenant": "tenant-x", "query": "timeout", "limit": 100}
+    assert validate_operation_arguments("local_ai_coord", "negative_knowledge_find", valid) is None
+
+    for field, value in (
+        ("root", " "), ("tenant", ""), ("tenant", " tenant-x"),
+        ("query", "  "), ("query", "timeout\x00extra"),
+    ):
+        invalid = {**valid, field: value}
+        assert validate_operation_arguments("local_ai_coord", "negative_knowledge_find", invalid) is not None
+
+
+def test_http_incident_find_requires_exact_scope_and_bounded_inputs():
+    valid = {"action": "find", "root": ".", "tenant": "tenant-x", "query": "timeout", "limit": 100}
+    http_server.Handler._validate_payload("/api/agent-state/incidents", valid)
+    defaulted = {key: value for key, value in valid.items() if key != "limit"}
+    http_server.Handler._validate_payload("/api/agent-state/incidents", defaulted)
+
+    invalid_payloads = [
+        {**valid, "query": "  "},
+        {**valid, "query": "timeout\x00extra"},
+        {**valid, "limit": True},
+        {**valid, "limit": 101},
+        {**valid, "limit": 1.5},
+        {key: value for key, value in valid.items() if key != "root"},
+        {**valid, "tenant": " tenant-x"},
+    ]
+    for payload in invalid_payloads:
+        try:
+            http_server.Handler._validate_payload("/api/agent-state/incidents", payload)
+        except http_server.RequestBodyError:
+            continue
+        raise AssertionError(f"invalid incident find payload was accepted: {payload}")

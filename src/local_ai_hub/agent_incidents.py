@@ -1318,14 +1318,24 @@ class IncidentStore:
 
     def find_negative_knowledge(
         self,
-        query: str = "",
-        limit: int = 20,
+        query: str,
+        limit: int = 100,
         *,
         root: str | None = None,
         tenant: str | None = None,
     ) -> list[dict[str, Any]]:
-        if limit <= 0:
-            return []
+        if not isinstance(query, str) or not query.strip() or "\x00" in query:
+            raise ValueError("query must be a non-empty string without NUL bytes")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer from 1 to 100")
+        if root is not None and (
+            not isinstance(root, str) or not root or root != root.strip() or "\x00" in root
+        ):
+            raise ValueError("root must be a canonical non-empty string")
+        if tenant is not None and (
+            not isinstance(tenant, str) or not tenant or tenant != tenant.strip() or "\x00" in tenant
+        ):
+            raise ValueError("tenant must be a canonical non-empty string")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
@@ -1362,7 +1372,7 @@ class IncidentStore:
                 """,
                 (*scope_params, time.time()),
             )
-            q_norm = str(query or "").strip().lower()
+            q_norm = query.strip().lower()
             results: list[dict[str, Any]] = []
             for r in cur.fetchall():
                 rc = str(r[5] or "")

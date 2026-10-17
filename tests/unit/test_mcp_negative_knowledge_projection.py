@@ -48,6 +48,7 @@ def test_negative_knowledge_find_preserves_incidents_through_public_dispatch(
 
     wire_result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
         "action": "negative_knowledge_find",
+        "tenant": "tenant-x",
         "query": "Command timed out",
         "response_profile": "compact",
         "max_response_tokens": 512,
@@ -60,6 +61,7 @@ def test_negative_knowledge_find_preserves_incidents_through_public_dispatch(
     assert len(client.posts) == 1
     assert client.posts[0][0] == "/api/agent-state/incidents"
     assert client.posts[0][1]["action"] == "find"
+    assert client.posts[0][1]["tenant"] == "tenant-x"
     assert client.posts[0][1]["query"] == "Command timed out"
     assert projected["matches"] == matches
     assert projected["incidents"] == incidents
@@ -107,6 +109,7 @@ def test_negative_knowledge_find_preserves_actual_http_response_shape(
     monkeypatch, tmp_path, scoped,
 ):
     root = str(tmp_path)
+    tenant = "tenant-x"
     query = "Command timed out"
     client = DummyClient({
         "success": True,
@@ -125,6 +128,7 @@ def test_negative_knowledge_find_preserves_actual_http_response_shape(
         "action": "negative_knowledge_find",
         "query": query,
         "root": root,
+        "tenant": tenant,
         "response_profile": "compact",
         "max_response_tokens": 512,
     }))
@@ -138,6 +142,7 @@ def test_negative_knowledge_find_preserves_actual_http_response_shape(
     assert client.posts[0][1]["action"] == "find"
     assert client.posts[0][1]["query"] == query
     assert client.posts[0][1]["root"] == root
+    assert client.posts[0][1]["tenant"] == tenant
     assert projected["negative_knowledge"] == scoped
     assert projected["incidents"] == scoped
     assert projected["provenance"] == {"root": root, "query": query}

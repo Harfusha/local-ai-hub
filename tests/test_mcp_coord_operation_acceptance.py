@@ -497,13 +497,17 @@ def test_local_ai_coord_memory_reap_is_private(monkeypatch, tmp_path):
 
 def test_local_ai_coord_negative_knowledge_find_forwards_query_and_limit(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
+    tenant = "tenant-x"
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='negative_knowledge_find', root=root, query="retry exhausted", limit=12)
+    result = mcp_server.local_ai_coord(
+        action='negative_knowledge_find', root=root, tenant=tenant,
+        query="retry exhausted", limit=12,
+    )
     assert result["success"] is True, result
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/incidents",
-        {"action": "find", "root": root, "tenant": "",
+        {"action": "find", "root": root, "tenant": tenant,
          "query": "retry exhausted", "limit": 12},
         {"timeout": mcp_server._timeout("quick")},
     )]
@@ -1074,15 +1078,17 @@ def test_local_ai_coord_negative_knowledge_record_dispatch(monkeypatch, tmp_path
 
 def test_local_ai_coord_negative_knowledge_find_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
+    tenant = "tenant-x"
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="negative_knowledge_find", root=root, query="bad input"
+        action="negative_knowledge_find", root=root, tenant=tenant, query="bad input"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls[0][0] == "/api/agent-state/incidents"
     assert backend.calls[0][1]["action"] == "find"
     assert backend.calls[0][1]["query"] == "bad input"
+    assert backend.calls[0][1]["tenant"] == tenant
 
 
 def test_local_ai_coord_memory_record_dispatch(monkeypatch, tmp_path):
