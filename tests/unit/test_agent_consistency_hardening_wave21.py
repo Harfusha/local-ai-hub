@@ -81,7 +81,7 @@ def test_reuse_candidate_hardening_and_from_dict():
 def test_contract_mapping_from_dict_and_sanitization():
     mapping = ContractMapping(
         kind="endpoint\x00",
-        endpoint="GET /api/v1/users\x00",
+        endpoint="GET /api/users\x00",
         backend_path="src/api.py\x00",
         frontend_path="web/client.ts\x00",
         backend_symbol="get_users\x00",
@@ -90,7 +90,7 @@ def test_contract_mapping_from_dict_and_sanitization():
         status="matched\x00",
     )
     assert mapping.kind == "endpoint"
-    assert mapping.endpoint == "GET /api/v1/users"
+    assert mapping.endpoint == "GET /api/users"
     assert mapping.backend_path == "src/api.py"
     assert mapping.status == "matched"
     assert mapping.backend_fields == ("id", "name")
@@ -99,7 +99,7 @@ def test_contract_mapping_from_dict_and_sanitization():
     assert isinstance(d, dict)
     recovered = ContractMapping.from_dict(d)
     assert recovered.kind == "endpoint"
-    assert recovered.endpoint == "GET /api/v1/users"
+    assert recovered.endpoint == "GET /api/users"
 
     fallback = ContractMapping.from_dict(None)  # type: ignore[arg-type]
     assert isinstance(fallback, ContractMapping)
