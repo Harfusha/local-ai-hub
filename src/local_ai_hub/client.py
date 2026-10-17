@@ -1519,6 +1519,11 @@ class HubClient:
         response_budget_tokens: int | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        if isinstance(action, str) and action.startswith("memo_"):
+            return {
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": f"retired coord action '{action}'",
+            }
         if not isinstance(action, str) or action not in operation_actions("local_ai_coord"):
             return {
                 "success": False, "status_code": 400, "terminal": True, "retryable": False,
@@ -1552,23 +1557,6 @@ class HubClient:
             if response_budget_tokens is not None:
                 payload["response_budget_tokens"] = response_budget_tokens
             return self.post("/api/agent-state/tasks", payload)
-        if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):
-            if act == "memo_put":
-                payload = {
-                    "root": kwargs.get("root", "."),
-                    "key": kwargs.get("key", ""),
-                    "value": kwargs.get("value", ""),
-                    "ttl_seconds": kwargs.get("ttl_seconds", 604800),
-                }
-                if kwargs.get("expected_version") is not None:
-                    payload["expected_version"] = kwargs["expected_version"]
-                return self.post("/api/memory/put", payload)
-            if act == "memo_get":
-                return self.post("/api/memory/get", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
-            if act == "memo_search":
-                return self.post("/api/memory/search", {"root": kwargs.get("root", "."), "query": kwargs.get("query", ""), "limit": kwargs.get("limit", 12)})
-            if act == "memo_delete":
-                return self.post("/api/memory/delete", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
         if act.startswith("memory_") and act != "memory_reap":
             mem_action = act.replace("memory_", "")
             payload = dict(kwargs)
