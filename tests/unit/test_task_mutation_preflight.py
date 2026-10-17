@@ -688,7 +688,7 @@ def test_resume_same_status_retry_preflights_persisted_task(tmp_path, monkeypatc
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
 
-@pytest.mark.parametrize("action", ["task_rollback", "task_resume", "task_heartbeat"])
+@pytest.mark.parametrize("action", ["task_rollback", "task_resume", "task_heartbeat", "task_cleanup_worktree"])
 def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypatch, action):
     from local_ai_hub import mcp_server
 
@@ -698,6 +698,10 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
 
         def coord(self, **kwargs):
             self.requests.append(kwargs)
+            return {"success": True, "task": {"task_id": "budget-forwarding"}}
+
+        def post(self, path, payload, **kwargs):
+            self.requests.append(payload)
             return {"success": True, "task": {"task_id": "budget-forwarding"}}
 
     client = RegisteredFakeClient()
@@ -715,6 +719,35 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
     assert client.requests[-1]["action"] == action
     assert client.requests[-1]["response_budget_tokens"] == 512
     assert result
+
+
+def test_cleanup_worktree_preflights_response_budget_before_git_mutation(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    store = _store(tmp_path)
+    _mock_auto_worktree(monkeypatch, tmp_path)
+    task = store.create(
+        _contract(), ScopeContext(repository_id=str(tmp_path)),
+        task_id="cleanup-budget", auto_worktree=True,
+    )
+    git_calls = []
+    monkeypatch.setattr(
+        process_utils, "get_git_worktree_ownership",
+        lambda *args, **kwargs: pytest.fail("budget rejection must happen before ownership access"),
+    )
+    monkeypatch.setattr(
+        process_utils, "remove_git_worktree",
+        lambda *args, **kwargs: git_calls.append(args) or {"success": True},
+    )
+    monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", lambda payload, **kwargs: 129)
+
+    with pytest.raises(CheckpointResponseBudgetError):
+        store.cleanup_worktree(
+            task.task_id, actor=task.owner, response_budget_tokens=128,
+        )
+
+    assert git_calls == []
+    assert store.get(task.task_id).checkpoint.state_data["worktree"].get("cleanup_success") is None
 
 
 @pytest.mark.parametrize("action", ["rollback", "resume", "heartbeat"])
@@ -779,7 +812,51 @@ def test_http_mutations_map_preflight_errors(monkeypatch, action, failure, expec
         assert body["error"] == "response_budget_tokens must be a positive integer"
 
 
-@pytest.mark.parametrize("action", ["rollback", "resume", "heartbeat"])
+def test_http_cleanup_worktree_maps_response_budget_preflight(monkeypatch):
+    from local_ai_hub import http_server
+
+    calls = []
+
+    def reject_budget(*args, **kwargs):
+        calls.append(kwargs)
+        raise CheckpointResponseBudgetError(128, 129)
+
+    task_store = SimpleNamespace(
+        state_store=SimpleNamespace(enabled=True), cleanup_worktree=reject_budget,
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_tasks=task_store, recovery=None, debug_traces=None))
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *args, **kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._authorization_root = "."
+    handler._authorization_tenant = "tenant-test"
+    handler._authorization_actor = "agent"
+    handler._require_authorized = lambda: True
+    handler._begin_trace = lambda *_: None
+    handler._claim_recovery = lambda *_: True
+    handler._tenant = lambda: "tenant-test"
+    handler._agent = lambda: "agent"
+    handler._request_task = lambda *_args, **_kwargs: SimpleNamespace(owner="agent")
+    handler._bind_task_payload = lambda _payload: True
+    handler._validate_payload = lambda *_args, **_kwargs: None
+    handler._read_json = lambda: {
+        "action": "cleanup_worktree", "task_id": "cleanup-budget-http",
+        "response_budget_tokens": 128,
+    }
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler.do_POST()
+
+    assert calls[-1]["response_budget_tokens"] == 128
+    status, body = responses[-1]
+    assert status == 413
+    assert body["mutation_applied"] is False
+    assert body["operation_not_started"] is True
+
+
+@pytest.mark.parametrize("action", ["rollback", "resume", "heartbeat", "cleanup"])
 @pytest.mark.parametrize("budget", [True, 0, 1.5, "128"])
 def test_remaining_task_mutations_reject_noncanonical_budgets(tmp_path, action, budget):
     store = _store(tmp_path)
@@ -794,8 +871,12 @@ def test_remaining_task_mutations_reject_noncanonical_budgets(tmp_path, action, 
                 task.task_id, actor=task.owner, idempotency_key="invalid-budget-retry",
                 response_budget_tokens=budget,
             )
-        else:
+        elif action == "heartbeat":
             store.heartbeat(task.task_id, actor=task.owner, response_budget_tokens=budget)
+        else:
+            store.cleanup_worktree(
+                task.task_id, actor=task.owner, response_budget_tokens=budget,
+            )
 
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
