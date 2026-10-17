@@ -2362,12 +2362,42 @@ class OllamaRuntime:
                 rows = snapshot.get("models")
                 if not isinstance(rows, list):
                     raise RuntimeError("llama.cpp inventory incomplete")
-                endpoint_status = snapshot.get("endpoint_status", {})
-                if not isinstance(endpoint_status, dict):
-                    raise RuntimeError("llama.cpp endpoint status unavailable")
-                endpoints = snapshot.get("endpoints", {})
-                if not isinstance(endpoints, dict):
-                    raise RuntimeError("llama.cpp endpoint receipts unavailable")
+                configured_endpoints = {
+                    cfg["url"]: "complete"
+                    for cfg in llama_models.values()
+                    if isinstance(cfg, dict) and cfg.get("url")
+                }
+                if "endpoints" not in snapshot:
+                    endpoints = {
+                        str(row["endpoint_url"]): "complete"
+                        for row in rows
+                        if isinstance(row, dict) and row.get("endpoint_url")
+                    } or dict(configured_endpoints)
+                else:
+                    endpoints = snapshot.get("endpoints")
+                    if not isinstance(endpoints, dict):
+                        raise RuntimeError("llama.cpp endpoint receipts unavailable")
+
+                if "endpoint_status" not in snapshot:
+                    endpoint_status = {
+                        str(model_name): "complete" for model_name in llama_models
+                    } or {
+                        str(row.get("name") or row.get("model")): "complete"
+                        for row in rows
+                        if isinstance(row, dict) and (row.get("name") or row.get("model"))
+                    } or dict(endpoints)
+                else:
+                    endpoint_status = snapshot.get("endpoint_status")
+                    if not isinstance(endpoint_status, dict):
+                        raise RuntimeError("llama.cpp endpoint status unavailable")
+
+                if isinstance(endpoint_status, dict) and endpoint_status:
+                    last_llama_endpoint_status.clear()
+                    last_llama_endpoint_status.update({str(key): str(value) for key, value in endpoint_status.items()})
+                if isinstance(endpoints, dict) and endpoints:
+                    last_llama_urls.clear()
+                    last_llama_urls.update({str(key): str(value) for key, value in endpoints.items()})
+
                 errors = snapshot.get("errors")
                 if snapshot.get("complete") is not True or not isinstance(errors, dict) or errors:
                     raise RuntimeError("llama.cpp inventory incomplete")
@@ -2434,8 +2464,13 @@ class OllamaRuntime:
                 stopped = _stop_requested(should_stop)
                 failed[backend] = "unload cancelled" if stopped else ("backend unavailable" if isinstance(exc, RuntimeError) else type(exc).__name__)
                 backend_inventory_ok[backend] = False
+                configured_llama_status = {
+                    cfg["url"]: "unknown"
+                    for cfg in llama_models.values()
+                    if isinstance(cfg, dict) and cfg.get("url")
+                }
                 backend_inventory_status[backend] = (
-                    dict(last_llama_endpoint_status) or {"llama.cpp": "unknown"}
+                    dict(last_llama_endpoint_status) or configured_llama_status or {"llama.cpp": "unknown"}
                     if backend == "llama_cpp" else {"ollama": "unknown"}
                 )
 

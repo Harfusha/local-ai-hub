@@ -1484,7 +1484,7 @@ class AffinityScheduler:
             with self._cond:
                 self._inflight -= 1
                 self._last_model_activity = job.finished_at
-                if self._active_model == job.model:
+                if getattr(self, "_active_model", None) == job.model:
                     self._idle_owned_model = job.model
                 self._inflight_jobs.pop(job.id, None)
                 if job.background:
