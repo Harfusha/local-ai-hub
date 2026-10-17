@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import math
+import queue
 import pytest
 from local_ai_hub.agent_incidents import (
     IncidentFingerprint,
@@ -8,6 +10,7 @@ from local_ai_hub.agent_incidents import (
     RetryDecision,
     ToolOutcome,
     IncidentStore,
+    _IncidentWebhookDispatcher,
 )
 
 
@@ -199,3 +202,21 @@ def test_incident_store_corrupted_row_handling(tmp_path):
     assert rec.updated_at == 0.0
     assert rec.expires_at is None
     assert rec.resolved is True
+
+
+def test_incident_webhook_worker_logs_sender_failure(caplog):
+    jobs = queue.Queue()
+    jobs.put((("https://example.invalid/hook",), b"{}"))
+    jobs.put(None)
+    dispatcher = object.__new__(_IncidentWebhookDispatcher)
+    dispatcher._jobs = jobs
+
+    def fail_sender(_urls, _payload):
+        raise RuntimeError("failure detail is not logged")
+
+    dispatcher._sender = fail_sender
+    with caplog.at_level(logging.WARNING, logger="local_ai_hub.agent_incidents"):
+        dispatcher._run()
+
+    assert "Incident webhook delivery failed (RuntimeError)" in caplog.text
+    assert "failure detail is not logged" not in caplog.text
