@@ -2360,17 +2360,22 @@ class MemoryStore:
     ) -> bool:
         # Never derive authorization from the record being deleted. Callers must
         # provide the scope identity they already verified.
-        if scope is None:
-            return False
-        scope_value = scope.value if isinstance(scope, AgentScope) else str(scope)
-        parsed_scope = AgentScope.parse(scope_value, default=None)
-        if parsed_scope is None:
+        if isinstance(scope, AgentScope):
+            parsed_scope = scope
+        elif isinstance(scope, str):
+            try:
+                parsed_scope = AgentScope.parse(scope, default=None)
+            except ValueError:
+                return False
+        else:
             return False
         scope_value = parsed_scope.value
+        if tenant is not None and not isinstance(tenant, str):
+            return False
         identity_values = {
             "root": str(root or "").strip(),
             "repository_id": str(repository_id or "").strip(),
-            "tenant": str(tenant or "").strip(),
+            "tenant": tenant if isinstance(tenant, str) else "",
             "task_id": str(task_id or "").strip(),
             "session_id": str(session_id or "").strip(),
             "clone_id": str(clone_id or "").strip(),
@@ -2439,8 +2444,17 @@ class MemoryStore:
                         provenance = {}
                     if not isinstance(provenance, dict):
                         provenance = {}
-                    record_tenant = str(provenance.get("tenant", "") or "").strip()
-                    if record_tenant and parsed_scope is not AgentScope.GLOBAL and record_tenant != identity_values["tenant"]:
+                    record_tenant = provenance.get("tenant")
+                    if parsed_scope is AgentScope.GLOBAL:
+                        if record_tenant is not None and not isinstance(record_tenant, str):
+                            con.execute("COMMIT")
+                            return False, None
+                    elif (
+                        not isinstance(record_tenant, str)
+                        or not record_tenant
+                        or not identity_values["tenant"]
+                        or record_tenant != identity_values["tenant"]
+                    ):
                         con.execute("COMMIT")
                         return False, None
                     for identity_key, expected in identity_values.items():
