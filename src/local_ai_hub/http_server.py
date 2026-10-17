@@ -6745,6 +6745,8 @@ class Handler(BaseHTTPRequestHandler):
                                                 "required_tokens": exc.required_tokens,
                                                 "unit": "estimated_tokens"},
                         }); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "heartbeat":
                     t_id = str(payload.get("task_id", "")).strip()
                     ttl_val = payload.get("ttl_seconds", payload.get("ttl"))
@@ -6768,6 +6770,8 @@ class Handler(BaseHTTPRequestHandler):
                                                 "required_tokens": exc.required_tokens,
                                                 "unit": "estimated_tokens"},
                         }); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "cleanup_worktree":
                     t_id = str(payload.get("task_id", ""))
                     del_br = bool(payload.get("delete_branch", True))
