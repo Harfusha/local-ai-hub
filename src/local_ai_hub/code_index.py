@@ -2095,6 +2095,13 @@ class CodeIndex:
                 self._mark_file_unindexable(c_root, path, lang)
                 continue
             file_stats[path] = file_stat
+            if supplied_hash:
+                if existing.get(path, ())[:3] == (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
+                    cached += 1
+                    continue
+                if self._parse_blob_get(supplied_hash, lang) is not None:
+                    candidates.append((path, supplied_hash, lang, []))
+                    continue
             try:
                 digest, lines = self.repo_tools._read_snapshot(
                     file_path, stat=file_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
@@ -2104,7 +2111,7 @@ class CodeIndex:
                 continue
             except OSError:
                 continue
-            content_hash = digest
+            content_hash = supplied_hash or digest
             if existing.get(path, ())[:3] == (content_hash, _PARSER_ANALYZER_VERSION, lang):
                 cached += 1
                 continue

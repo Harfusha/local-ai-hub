@@ -26,13 +26,12 @@ class _FakeProcess:
         self.returncode = -9
 
     def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
         if self.first:
             self.first = False
             self.cancel_event.set()
-            raise subprocess.TimeoutExpired(["whisper"], timeout)
+        return self.returncode
+
+    def wait(self, timeout=None):
         return self.returncode
 
 
