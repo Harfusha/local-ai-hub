@@ -695,7 +695,7 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", FEATURES))
+TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", None))
 
 
 _REPO_ACTIONS = (
@@ -5174,50 +5174,60 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             # Preserve the existing context/evidence projection for other tools;
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
-            for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-                candidate = {
-                    "success": False,
-                    "error": error[:error_chars],
-                    **{
-                        key: value[key]
-                        for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
-                                    "mutation_applied", "operation_not_started")
-                        if key in value
-                    },
-                }
-                for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
-                    if key != "error" and key in value:
-                        candidate[key] = value[key]
-                for text_mode in ("full", "compact", "minimal"):
-                    for metadata in (
-                        {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
-                        {"requested_tokens": requested, "returned_tokens": 0},
-                    ):
-                        trial = dict(candidate)
-                        trial["response_budget"] = dict(metadata)
+            for include_optional in (True, False):
+                for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
+                    candidate = {
+                        "success": False,
+                        "error": error[:error_chars],
+                        **{
+                            key: value[key]
+                            for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+                                        "mutation_applied", "operation_not_started")
+                            if key in value
+                        },
+                    }
+                    if include_optional:
+                        for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                            if key != "error" and key in value:
+                                candidate[key] = value[key]
+                    for text_mode in ("full", "compact", "minimal"):
+                        for metadata in (
+                            {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
+                            {"requested_tokens": requested, "returned_tokens": 0},
+                        ):
+                            trial = dict(candidate)
+                            trial["response_budget"] = dict(metadata)
 
-                        def wire_payload() -> dict[str, Any]:
-                            wire = _mcp_wire_view(trial, structured=True)
-                            if text_mode == "minimal":
-                                wire["content"][0]["text"] = json_dumps({
-                                    "success": False, "error": trial["error"],
-                                })
-                            elif text_mode == "compact":
-                                wire["content"][0]["text"] = json_dumps({
-                                    "success": False, "error": trial["error"],
-                                    **{
-                                        key: trial[key]
-                                        for key in (
-                                            "status", "status_code", "terminal", "retryable",
-                                            "mutation_applied", "operation_not_started",
-                                            "request_id", "execution_id",
-                                            "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
-                                        )
-                                        if key in trial
-                                    },
-                                    "response_budget": trial["response_budget"],
-                                })
-                            return wire
+                            def wire_payload() -> dict[str, Any]:
+                                wire = _mcp_wire_view(trial, structured=True)
+                                if text_mode == "minimal":
+                                    wire["content"][0]["text"] = json_dumps({
+                                        "success": False, "error": trial["error"],
+                                        **{
+                                            key: trial[key]
+                                            for key in (
+                                                "mutation_applied", "operation_not_started",
+                                                "request_id", "execution_id",
+                                            )
+                                            if key in trial
+                                        },
+                                    })
+                                elif text_mode == "compact":
+                                    wire["content"][0]["text"] = json_dumps({
+                                        "success": False, "error": trial["error"],
+                                        **{
+                                            key: trial[key]
+                                            for key in (
+                                                "status", "status_code", "terminal", "retryable",
+                                                "mutation_applied", "operation_not_started",
+                                                "request_id", "execution_id",
+                                                "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
+                                            )
+                                            if key in trial
+                                        },
+                                        "response_budget": trial["response_budget"],
+                                    })
+                                return wire
 
                         for _ in range(16):
                             returned = json_tokens(wire_payload())
