@@ -4967,7 +4967,10 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
         if section or binary or offset != 0 or max_chars != 4000:
             return {"success": False, "error": "multi-slice retrieval cannot be combined with section, binary, offset, or max_chars"}
     if action == "list":
-        return _compact(CLIENT.post("/api/artifact/list", {"limit": 20}), "artifact")
+        list_result = CLIENT.post("/api/artifact/list", {"limit": 20})
+        if isinstance(list_result, dict) and "artifacts" not in list_result and "items" in list_result:
+            list_result = {**list_result, "artifacts": list_result["items"]}
+        return _compact(list_result, "artifact")
     if artifact_id.startswith("E"):
         if slices is not None:
             return {"success": False, "error": "multi-slice retrieval does not support evidence IDs"}

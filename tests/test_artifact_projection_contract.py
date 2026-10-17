@@ -33,6 +33,29 @@ def test_artifact_list_projection_preserves_contract_fields(monkeypatch, artifac
     assert error is None, f"projected payload failed contract: {actual!r}; error={error!r}"
 
 
+def test_artifact_list_normalizes_items_alias(monkeypatch) -> None:
+    response = {
+        "success": True,
+        "items": [
+            {
+                "artifact_id": "art-1",
+                "kind": "text",
+                "size_bytes": 10,
+                "created_at": 1.0,
+                "mime_type": "text/plain",
+            }
+        ],
+    }
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda _path, _payload: response)
+
+    actual = mcp_server.local_ai_artifact(action="list")
+    assert actual["success"] is True
+    assert "artifacts" in actual
+    assert actual["artifacts"][0]["artifact_id"] == "art-1"
+    error = validate_operation_output("local_ai_artifact", "list", actual)
+    assert error is None, f"projected payload failed contract: {actual!r}; error={error!r}"
+
+
 def test_oversized_artifact_page_error_keeps_failure_contract(monkeypatch) -> None:
     response = {
         "success": True,
