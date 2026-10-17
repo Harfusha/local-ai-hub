@@ -2351,7 +2351,8 @@ class TaskStore:
                     if checkpoint is not None
                     else current
                 )
-                self._preflight_response_budget(candidate, response_budget_tokens)
+                if checkpoint is not None or not idempotency_key:
+                    self._preflight_response_budget(candidate, response_budget_tokens)
                 # No-op retries must not trust an old terminal projection alone.
                 self._verify_completion(current)
                 if checkpoint is not None:
@@ -2365,11 +2366,13 @@ class TaskStore:
                     idempotency_key=idempotency_key,
                     _prepared_updated_at=_prepared_updated_at,
                 )
-            self._preflight_response_budget(current, response_budget_tokens)
             if not idempotency_key:
+                self._preflight_response_budget(current, response_budget_tokens)
                 return current
             return self._replay_same_status_transition(
-                task_id, target, reason=reason, actor=actor, idempotency_key=idempotency_key
+                task_id, target, reason=reason, actor=actor,
+                idempotency_key=idempotency_key,
+                response_budget_tokens=response_budget_tokens,
             )
 
         allowed = VALID_TRANSITIONS.get(current.status, set())
@@ -2481,6 +2484,7 @@ class TaskStore:
         reason: str,
         actor: str,
         idempotency_key: str,
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
         """Serialize a no-op retry with writers and validate its original operation."""
         def _read_retry() -> TaskState:
@@ -2499,6 +2503,7 @@ class TaskStore:
                     raise ConcurrentTaskUpdateError(
                         f"Task {task_id} changed during transition; reload and retry"
                     )
+                self._preflight_response_budget(persisted, response_budget_tokens)
                 existing = con.execute(
                     """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
                               correlation_id, actor, created_at
@@ -2818,6 +2823,12 @@ class TaskStore:
     def _preflight_response_budget(task: TaskState, response_budget_tokens: int | None) -> None:
         if response_budget_tokens is None:
             return
+        if (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
         from .trace_context import current as current_trace_context
         request_id = str(current_trace_context().get("request_id") or "")
         raw_result = {"success": True, "task": task.to_dict()}
@@ -3035,6 +3046,7 @@ class TaskStore:
         actor: str = "agent",
         idempotency_key: str = "",
         reason: str = "rolled back to previous checkpoint",
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
         current = self.get(task_id)
         if not current:
@@ -3046,20 +3058,6 @@ class TaskStore:
             restored_checkpoint = TaskCheckpoint.from_dict(chk_events[-2].payload)
         else:
             restored_checkpoint = TaskCheckpoint()
-
-        snapshots = restored_checkpoint.state_data.get("file_snapshots")
-        if isinstance(snapshots, dict):
-            for fpath, orig_content in snapshots.items():
-                try:
-                    p = Path(fpath)
-                    if orig_content is None:
-                        if p.exists():
-                            p.unlink()
-                    else:
-                        p.parent.mkdir(parents=True, exist_ok=True)
-                        p.write_text(str(orig_content), encoding="utf-8")
-                except Exception:
-                    pass
 
         now = time.time()
         new_status = TaskStatus.ACTIVE if current.status in (TaskStatus.VERIFYING, TaskStatus.FAILED, TaskStatus.BLOCKED) else current.status
@@ -3076,6 +3074,21 @@ class TaskStore:
             checkpoint=restored_checkpoint,
             verification_receipts=current.verification_receipts,
         )
+        self._preflight_response_budget(updated, response_budget_tokens)
+
+        snapshots = restored_checkpoint.state_data.get("file_snapshots")
+        if isinstance(snapshots, dict):
+            for fpath, orig_content in snapshots.items():
+                try:
+                    p = Path(fpath)
+                    if orig_content is None:
+                        if p.exists():
+                            p.unlink()
+                    else:
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_text(str(orig_content), encoding="utf-8")
+                except Exception:
+                    pass
 
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",
@@ -3090,7 +3103,14 @@ class TaskStore:
         )
         return self._commit_update(current, updated, event)
 
-    def resume(self, task_id: str, *, actor: str = "agent", idempotency_key: str = "") -> TaskState:
+    def resume(
+        self,
+        task_id: str,
+        *,
+        actor: str = "agent",
+        idempotency_key: str = "",
+        response_budget_tokens: int | None = None,
+    ) -> TaskState:
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
@@ -3102,6 +3122,7 @@ class TaskStore:
                 reason="resumed from checkpoint",
                 actor=actor,
                 idempotency_key=resume_key,
+                response_budget_tokens=response_budget_tokens,
             )
         state_data = dict(current.checkpoint.state_data)
         previous_audit = state_data.pop("memory_audit", None)
@@ -3147,6 +3168,7 @@ class TaskStore:
             actor=actor,
             idempotency_key=resume_key,
             checkpoint=resumed_checkpoint,
+            response_budget_tokens=response_budget_tokens,
             _allow_server_memory_refresh=True,
         )
 
@@ -3157,6 +3179,7 @@ class TaskStore:
         *,
         actor: str = "agent",
         idempotency_key: str = "",
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
         current = self.get(task_id)
         if not current:
@@ -3179,6 +3202,7 @@ class TaskStore:
             checkpoint=current.checkpoint,
             verification_receipts=current.verification_receipts,
         )
+        self._preflight_response_budget(updated, response_budget_tokens)
 
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",
