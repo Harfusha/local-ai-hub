@@ -5604,11 +5604,10 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
-        allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices", "tenant"}
+        allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
         if not isinstance(payload, dict) or set(payload) - allowed_fields:
             self._send(400, {"success": False, "error": "artifact request contains unsupported fields", "terminal": True, "retryable": False})
             return
-        request_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant or "").strip()
         artifact_id = payload.get("artifact_id", "")
         offset = payload.get("offset", 0)
         max_chars = payload.get("max_chars", 6000)
@@ -5634,7 +5633,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         slices = payload.get("slices")
         if slices is not None:
-            if binary or set(payload) - {"artifact_id", "slices", "binary", "tenant"}:
+            if binary or set(payload) - {"artifact_id", "slices", "binary"}:
                 self._send(400, {"success": False, "error": "multi-slice retrieval accepts only artifact_id, slices, and binary=false", "terminal": True, "retryable": False})
                 return
             if not 1 <= len(slices) <= 16:
@@ -5656,20 +5655,20 @@ class Handler(BaseHTTPRequestHandler):
                 if requested > 50_000:
                     self._send(400, {"success": False, "error": "combined slice max_chars cannot exceed 50000", "terminal": True, "retryable": False})
                     return
-            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=request_tenant))
+            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=tenant))
             return
         if binary:
             if section:
                 self._send(400, {"success": False, "error": "section is not valid for binary retrieval", "terminal": True, "retryable": False})
                 return
-            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=request_tenant))
+            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant))
             return
         self._send(200, APP.artifacts.get(
             artifact_id,
             offset,
             max_chars,
             section,
-            tenant=request_tenant,
+            tenant=tenant,
         ))
 
     @staticmethod
