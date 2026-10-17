@@ -1760,7 +1760,6 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
 def validate_operation_call(
     tool: str,
     arguments: dict[str, Any],
-    *,
     features: Any = None,
 ) -> tuple[int, str] | None:
     """Validate a registered MCP call before its handler is dispatched."""
