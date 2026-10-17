@@ -4675,12 +4675,16 @@ def local_ai_coord(
             "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
         }
         if action in {"task_create", "task_checkpoint", "task_fail", "task_transition", "task_complete"}:
-            requested, _, _, budget_enabled = _response_budget(action, {
+            budget_options = {
                 "max_response_tokens": max_response_tokens,
                 "response_profile": response_profile,
                 "reuse_key": reuse_key,
                 "tool": action,
-            })
+            }
+            subminimum = _subminimum_budget_rejection(budget_options)
+            if subminimum is not None:
+                return subminimum
+            requested, _, _, budget_enabled = _response_budget(action, budget_options)
             try:
                 explicit_limit = int(max_response_tokens or 0)
             except (TypeError, ValueError, OverflowError):
@@ -5180,42 +5184,45 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
                     if key != "error" and key in value:
                         candidate[key] = value[key]
-                for structured in (True, False):
-                    for compact_text in (False, True):
-                        for metadata in (
-                            {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
-                            {"requested_tokens": requested, "returned_tokens": 0},
-                        ):
-                            trial = dict(candidate)
-                            trial["response_budget"] = dict(metadata)
+                for text_mode in ("full", "compact", "minimal"):
+                    for metadata in (
+                        {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
+                        {"requested_tokens": requested, "returned_tokens": 0},
+                    ):
+                        trial = dict(candidate)
+                        trial["response_budget"] = dict(metadata)
 
-                            def wire_payload() -> dict[str, Any]:
-                                wire = _mcp_wire_view(trial, structured=structured)
-                                if compact_text:
-                                    wire["content"][0]["text"] = json_dumps({
-                                        "success": False, "error": trial["error"],
-                                        **{
-                                            key: trial[key]
-                                            for key in (
-                                                "status", "status_code", "terminal", "retryable",
-                                                "mutation_applied", "operation_not_started",
-                                                "request_id", "execution_id",
-                                                "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
-                                            )
-                                            if key in trial
-                                        },
-                                        "response_budget": trial["response_budget"],
-                                    })
-                                return wire
+                        def wire_payload() -> dict[str, Any]:
+                            wire = _mcp_wire_view(trial, structured=True)
+                            if text_mode == "minimal":
+                                wire["content"][0]["text"] = json_dumps({
+                                    "success": False, "error": trial["error"],
+                                })
+                            elif text_mode == "compact":
+                                wire["content"][0]["text"] = json_dumps({
+                                    "success": False, "error": trial["error"],
+                                    **{
+                                        key: trial[key]
+                                        for key in (
+                                            "status", "status_code", "terminal", "retryable",
+                                            "mutation_applied", "operation_not_started",
+                                            "request_id", "execution_id",
+                                            "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
+                                        )
+                                        if key in trial
+                                    },
+                                    "response_budget": trial["response_budget"],
+                                })
+                            return wire
 
-                            for _ in range(16):
-                                returned = json_tokens(wire_payload())
-                                trial["response_budget"]["returned_tokens"] = returned
-                                if json_tokens(wire_payload()) == returned:
-                                    break
-                            wire = wire_payload()
-                            if json_tokens(wire) <= requested:
-                                return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], (trial if structured else None)
+                        for _ in range(16):
+                            returned = json_tokens(wire_payload())
+                            trial["response_budget"]["returned_tokens"] = returned
+                            if json_tokens(wire_payload()) == returned:
+                                break
+                        wire = wire_payload()
+                        if json_tokens(wire) <= requested:
+                            return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], trial
             return None
         error = str(value.get("error") or "")
         metadata_variants = (
@@ -5607,8 +5614,12 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             contents, structured_value = result
             if structured_value is None:
                 text_value = contents[0].text
-                candidate_value = json.loads(text_value)
-                emitted_response = {"content": [{"type": "text", "text": text_value}]}
+                try:
+                    candidate_value = json.loads(text_value)
+                except Exception:
+                    candidate_value = {}
+                emitted_response = {"content": [{"type": "text", "text": text_value}], "structuredContent": candidate_value}
+                result = (contents, candidate_value)
             else:
                 candidate_value = structured_value
                 if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):
