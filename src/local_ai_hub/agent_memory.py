@@ -1504,6 +1504,8 @@ class MemoryStore:
         branch: str | None = None,
         tenant_agnostic_global: bool = False,
     ) -> MemoryRecord | None:
+        if tenant is not None and not isinstance(tenant, str):
+            raise ValueError("tenant must be a string")
         requested_scope = AgentScope.parse(scope).value if scope is not None else ""
         if tenant_agnostic_global and requested_scope != AgentScope.GLOBAL.value:
             raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
@@ -1518,7 +1520,7 @@ class MemoryStore:
         if (
             requested_scope == AgentScope.REPOSITORY.value
             or (not requested_scope and str(repository_id or "").strip())
-        ) and (not str(repository_id or "").strip() or not str(tenant or "").strip()):
+        ) and (not str(repository_id or "").strip() or not tenant):
             return None
         if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
             str(value or "").strip() for value in (task_id, session_id, clone_id, worktree_id, branch)
@@ -1607,7 +1609,9 @@ class MemoryStore:
     @contextmanager
     def task_retrieval_scope(self, goal: str, *, root: str, tenant: str, task_id: str):
         """Apply goal relevance only within this request's exact memory identity."""
-        identity = (_normalise_scope_root(root), str(tenant).strip(), str(task_id).strip())
+        if not isinstance(tenant, str):
+            raise ValueError("tenant must be a string")
+        identity = (_normalise_scope_root(root), tenant, str(task_id).strip())
         token = _TASK_MEMORY_QUERY.set((self, identity, _goal_words(str(goal or ""))))
         try:
             yield
@@ -1636,6 +1640,8 @@ class MemoryStore:
         limit: int = 20,
     ) -> list[MemoryRecord]:
         """Find bounded memory for exact context identity; GLOBAL remains cross-project, never cross-tenant."""
+        if not isinstance(tenant, str):
+            raise ValueError("tenant must be a string")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
@@ -1687,7 +1693,7 @@ class MemoryStore:
             sql += f" AND kind IN ({placeholders})"
             params.extend(kinds)
         bound_query = _TASK_MEMORY_QUERY.get()
-        identity = (_normalise_scope_root(root), str(tenant).strip(), str(task_id).strip())
+        identity = (_normalise_scope_root(root), tenant, str(task_id).strip())
         goal_terms = (
             bound_query[2]
             if bound_query is not None and bound_query[0] is self and bound_query[1] == identity
