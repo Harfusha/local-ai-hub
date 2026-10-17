@@ -2404,16 +2404,10 @@ def local_ai_task(
                     "error": f"candidate_promote requires non-empty {field}",
                 }
     try:
-        from local_ai_hub.operational_mode import (
-            load_operational_mode,
-            operational_mode_gate_error,
-        )
-
         mode_snapshot = load_operational_mode(configured_state_dir(CFG, create=False))
     except Exception:
         # Missing or unreadable mode state must fail closed for agent work.
         mode_snapshot = None
-        from local_ai_hub.operational_mode import operational_mode_gate_error
 
     deterministic_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
     mode_rejection = operational_mode_gate_error(
@@ -5008,6 +5002,11 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
 
 
 # Unregister tools that are disabled in current configuration so MCP clients do not receive them
+_ALL_REGISTERED_TOOLS: dict[str, Any] = (
+    dict(mcp._tool_manager._tools)
+    if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools")
+    else {}
+)
 for _disabled in FEATURES.disabled_tools:
     if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         mcp._tool_manager._tools.pop(_disabled, None)
@@ -5043,15 +5042,15 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
     # FastMCP invokes sync callables on its event loop. Keep direct Python
     # functions synchronous, but offload registered MCP callables so one
     # blocking tool cannot stall other requests on the same server.
-    for _registered_tool in mcp._tool_manager._tools.values():
+    for _registered_tool in _ALL_REGISTERED_TOOLS.values():
         if not _registered_tool.is_async:
             _registered_tool.fn = _async_mcp_adapter(_registered_tool.fn)
             _registered_tool.is_async = True
 
     for _tool_name, _desc_fn in _all_desc_map.items():
-        if _tool_name in mcp._tool_manager._tools:
+        if _tool_name in _ALL_REGISTERED_TOOLS:
             description = _desc_fn()
-            mcp._tool_manager._tools[_tool_name].description = description
+            _ALL_REGISTERED_TOOLS[_tool_name].description = description
 
 if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types is not None:
     from local_ai_hub.json_utils import dumps as json_dumps
@@ -5060,7 +5059,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
     # tools. Publish the feature-aware conditional input schema and shared output
     # envelope while keeping per-action output contracts in operation metadata.
     for _tool_name in _all_desc_map:
-        _registered_tool = mcp._tool_manager._tools.get(_tool_name)
+        _registered_tool = _ALL_REGISTERED_TOOLS.get(_tool_name)
         _actions = operation_actions(_tool_name, FEATURES)
         if _registered_tool is None or not _actions:
             continue
@@ -5696,7 +5695,13 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 }
                 return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             try:
-                raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
+                tool_obj = mcp._tool_manager.get_tool(name) if hasattr(mcp, "_tool_manager") else None
+                if tool_obj is None and name in _ALL_REGISTERED_TOOLS:
+                    tool_obj = _ALL_REGISTERED_TOOLS[name]
+                if tool_obj is not None:
+                    raw = await tool_obj.run(arguments, convert_result=False)
+                else:
+                    raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
             except Exception as exc:
                 text = str(exc).strip().splitlines()[0][:500]
                 payload = {
