@@ -181,7 +181,7 @@ def test_code_and_deterministic_reuse_blob_without_read(tmp_path: Path):
     content_hash = "git:cached-blob"
     code._parse_blob_put(content_hash, "python", [], [], [])
     deterministic._fact_blob_put(content_hash, "python", [])
-    tools._read_snapshot = lambda _path: (_ for _ in ()).throw(AssertionError("cache hit must not read file"))
+    tools._read_snapshot = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("cache hit must not read file"))
     try:
         code_result = code.update_files_batch(str(root), [("app.py", content_hash)])
         deterministic_result = deterministic.update_files_batch(str(root), [("app.py", content_hash)])
