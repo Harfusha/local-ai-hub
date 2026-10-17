@@ -151,8 +151,6 @@ class SkillOwnershipTests(unittest.TestCase):
         self.assertEqual(quarantine.parent, self.skills_root.parent / ".local-ai-hub-skill-quarantine")
         self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), "Hub version\n")
         self.assertEqual(quarantine_records[0]["status"], "unverified")
-
-
     def test_concurrent_installs_preserve_all_manifest_entries(self) -> None:
         skills = []
         for name in ("concurrent-a", "concurrent-b"):
@@ -528,7 +526,6 @@ so.install_skill(source, target, root, manifest, name)
         )
         self.assertTrue(quarantine_path.is_relative_to(quarantine_root))
         self.assertTrue((quarantine_path / "SKILL.md").is_file())
-
     @unittest.skipIf(os.name == "nt", "POSIX quarantine-root replacement check")
     def test_quarantine_root_swap_cannot_redirect_noreplace_move(self) -> None:
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")

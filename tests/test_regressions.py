@@ -42,6 +42,10 @@ def test_embedding_auto_backend_requires_qualified_cache(tmp_path):
         def set(self, key, value):
             self.writes.append((key, value))
 
+        def set_many(self, mapping):
+            for key, value in mapping.items():
+                self.writes.append((key, value))
+
     model = EmbeddingModel(_config(tmp_path))
     cache = UnqualifiedCache()
     model.cache = cache

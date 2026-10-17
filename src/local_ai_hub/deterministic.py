@@ -504,12 +504,17 @@ class DeterministicEngine:
             con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(root UNINDEXED,path UNINDEXED,kind UNINDEXED,name,value)")
         except sqlite3.OperationalError:
             pass
+        con.execute("CREATE TABLE IF NOT EXISTS _det_batch_active(root TEXT PRIMARY KEY)")
         initialize_row_counts(con, ("files", "facts", "dependencies", "scripts"))
         # Source writes from any SQLite connection must invalidate both cache tiers,
         # including raw external writes that do not call _bump_generation().
         had_invalidation_triggers = con.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='det_cache_facts_update'"
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='det_cache_facts_update' AND sql LIKE '%_det_batch_active%'"
         ).fetchone() is not None
+        if not had_invalidation_triggers:
+            for table in ("files", "facts", "dependencies", "scripts", "test_source_links"):
+                for event in ("INSERT", "UPDATE", "DELETE"):
+                    con.execute(f"DROP TRIGGER IF EXISTS det_cache_{table}_{event.lower()}")
         for table in ("files", "facts", "dependencies", "scripts", "test_source_links"):
             for event in ("INSERT", "UPDATE", "DELETE"):
                 references = ("OLD", "NEW") if event == "UPDATE" else (("OLD",) if event == "DELETE" else ("NEW",))
@@ -522,8 +527,10 @@ class DeterministicEngine:
                         "ON CONFLICT(root) DO UPDATE SET generation=project_state.generation+1,updated_at=excluded.updated_at; "
                         f"DELETE FROM query_cache WHERE root={reference}.root;"
                     )
+                ref_root = "OLD.root" if event == "DELETE" else "NEW.root"
                 con.execute(
                     f"CREATE TRIGGER IF NOT EXISTS det_cache_{table}_{event.lower()} AFTER {event} ON {table} "
+                    f"WHEN (SELECT 1 FROM _det_batch_active WHERE root = {ref_root}) IS NULL "
                     "BEGIN " + " ".join(statements) + " END"
                 )
         if not had_invalidation_triggers:
@@ -1654,6 +1661,7 @@ class DeterministicEngine:
                     fts_by_path.pop(path, None)
                     fts_by_path[path] = facts
                 con.execute("CREATE TEMP TABLE _deterministic_batch_paths(path TEXT PRIMARY KEY)")
+                con.execute("INSERT OR REPLACE INTO _det_batch_active(root) VALUES(?)", (root_s,))
                 con.executemany(
                     "INSERT INTO _deterministic_batch_paths(path) VALUES(?)",
                     ((path,) for path in fts_by_path),
@@ -1674,6 +1682,7 @@ class DeterministicEngine:
                         con.executemany("INSERT INTO fact_fts(root,path,kind,name,value) VALUES(?,?,?,?,?)", [(root_s, path, f["kind"], f["name"], f["value"]) for f in facts])
                     except sqlite3.OperationalError:
                         pass
+                con.execute("DELETE FROM _det_batch_active WHERE root=?", (root_s,))
                 self._bump_generation(con, root_s)
                 con.commit()
             self._stats["files_parsed"] += len(parsed_rows)
@@ -6740,10 +6749,12 @@ def test_{sym}_regression_edge_cases():
                     "coverage": {"complete": False, "scan_complete": not incomplete, "scope": "python_ast", "resolution": "definition_not_found"},
                 }
 
+        count_key = "caller_count" if direction == "callers" else "callee_count"
         result: dict[str, Any] = {
             "success": True,
             "symbol": sym,
             result_key: page,
+            count_key: len(page),
             "count": len(page),
             "returned_count": len(page),
             "offset": offset,

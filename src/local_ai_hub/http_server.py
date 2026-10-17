@@ -8059,7 +8059,7 @@ class Handler(BaseHTTPRequestHandler):
                             preview: list[dict[str, Any]] = []
                             preview_chars = 0
                             for change in changes[:32]:
-                                size = len(json.dumps(change, ensure_ascii=False))
+                                size = len(json.dumps(change, ensure_ascii=False, separators=(",", ":")))
                                 if preview_chars + size > 8000:
                                     break
                                 preview.append(change)
@@ -8067,7 +8067,7 @@ class Handler(BaseHTTPRequestHandler):
                             result = {**result, "artifact_id": artifact_id, "changes_total": len(changes),
                                       "changes_returned": len(preview), "changes": preview,
                                       "truncated": len(changes) > len(preview)}
-                            if len(changes) > len(preview) or len(json.dumps(result["tree"], ensure_ascii=False)) + preview_chars > 8000:
+                            if len(changes) > len(preview) or len(json.dumps(result["tree"], ensure_ascii=False, separators=(",", ":"))) + preview_chars > 8000:
                                 result.pop("tree", None)
                                 result["tree_in_artifact"] = True
                                 result["truncated"] = True
@@ -8290,15 +8290,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(guarded, bool):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
                 guarded_requested = (
-                    bool(guarded) or bool(str(payload.get("task_id", "")).strip())
+                    bool(guarded)
+                    or bool(str(payload.get("task_id", "")).strip())
                     or bool(str(payload.get("phase", "")).strip())
-                    or bool(str(payload.get("session_id", "")).strip())
-                    or any(bool(str(payload.get(field, "")).strip()) for field in (
-                        "clone_id", "worktree_id", "branch", "repository_id", "repository_revision",
-                    ))
-                    or bool(payload.get("include_diagnostics", False))
-                    or "changed_paths" in payload
-                    or "focus" in payload
                 )
                 if not guarded_requested:
                     guard_fields = (
@@ -8457,6 +8451,8 @@ class Handler(BaseHTTPRequestHandler):
                                     result["task_context_id"] = unified["context_id"]
                                     if auto_injected_task:
                                         result["task_id"] = payload.get("task_id", "")
+                    if isinstance(result, dict) and "query" not in result:
+                        result["query"] = guarded_query
                     self._send(200, result); return
                 result = APP.services._hybrid_context(
                     root, query_text, tenant, payload.get("workspace"), max_tokens,

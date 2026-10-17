@@ -5175,7 +5175,7 @@ class CommandBroker:
                         "rsplit", "replace", "startswith", "endswith", "join", "encode",
                         "decode", "count", "find", "index", "format",
                         "start", "join", "is_alive", "wait", "set", "clear", "is_set",
-                        "write", "flush", "read",
+                        "write", "flush", "read", "hex", "digest", "hexdigest",
                     }
                     safe_module_calls = {
                         ("sys", "stdout", "write"),
@@ -5187,9 +5187,14 @@ class CommandBroker:
                         ("sys", "stderr", "buffer", "write"),
                         ("sys", "stderr", "buffer", "flush"),
                         ("sys", "exit"),
+                        ("os", "write"),
                         ("os", "getenv"),
                         ("os", "getcwd"),
                         ("os", "environ", "get"),
+                        ("hashlib", "sha256"),
+                        ("hashlib", "sha1"),
+                        ("hashlib", "md5"),
+                        ("hashlib", "new"),
                         ("time", "sleep"),
                         ("time", "time"),
                         ("time", "monotonic"),
@@ -8285,8 +8290,10 @@ class CommandBroker:
         phase_timings_ms["command_classification_ms"] = round((time.perf_counter() - classification_started) * 1000, 3)
         command_class = classification.get("class")
         classification_allowed = classification.get("allowed") is True
-        unknown_authorized = command_class != "unknown" or bool(
-            self.config.get("commands", {}).get("allow_mutating", False)
+        command_policy = self.config.get("commands", {})
+        unknown_authorized = command_class != "unknown" or (
+            command_policy.get("allow_unknown") is True
+            and command_policy.get("allow_mutating") is True
         )
         if not command_input_valid:
             classification_allowed = False
@@ -8295,7 +8302,7 @@ class CommandBroker:
         if command_class == "dangerous" or not classification_allowed or not unknown_authorized:
             reason = str(classification.get("reason") or "command policy denied execution")[:120]
             if classification_allowed and not unknown_authorized:
-                reason = "unknown command requires explicit mutation authorization"
+                reason = "unknown command requires explicit unknown and mutation authorization"
             with self._lock:
                 self.blocked += 1
                 self._blocked_by_reason[reason] = self._blocked_by_reason.get(reason, 0) + 1
@@ -8313,13 +8320,13 @@ class CommandBroker:
             tool_identity = self._tool_identity(command, cwd, argv_override=argv_override)
         else:
             tool_identity = self._tool_identity(command, cwd)
-        phase_timings_ms["tool_identity_ms"] = round((time.perf_counter() - tool_identity_started) * 1000, 3)
+        suppressable = command_class not in {"mutating", "unknown"}
         attempt_key = (
             self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint, cache_context=_cache_context)
             if _cache_context
             else self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
         )
-        if not force and not bypass_cache and not is_mutating and not _transaction_context:
+        if not force and not bypass_cache and not _transaction_context and suppressable:
             suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
             if suppression_cache_healthy and isinstance(suppressed, dict):
                 self.suppressed += 1
@@ -8352,6 +8359,25 @@ class CommandBroker:
             if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
+        declared_paths = paths if paths is not None else rollback_paths
+        if rollback_on_failure:
+            if not declared_paths:
+                return {
+                    "success": False,
+                    "error": "rollback paths are required",
+                    "rollback_scope_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            for p in declared_paths:
+                if not isinstance(p, str) or not p.strip() or ".." in Path(p).parts or Path(p).is_absolute():
+                    return {
+                        "success": False,
+                        "error": f"rollback path is invalid: {p}",
+                        "rollback_scope_invalid": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
         if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
             worktree_error = self._require_task_worktree(task_id, cwd, original_command, require_git_identity=True)
             if worktree_error:
@@ -8362,7 +8388,6 @@ class CommandBroker:
                     "terminal": True,
                     "retryable": False,
                 }
-        declared_paths = paths if paths is not None else rollback_paths
         if (is_mutating or auto_fix) and not declared_paths and not _transaction_context:
             return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
         if rollback_on_failure and paths is not None and rollback_paths is not None:
@@ -10250,6 +10275,7 @@ class CommandBroker:
                     "spawn_daemon", endpoint="commands.spawn_daemon.resume", task_id=task_id
                 )
                 if not resume_authorization.get("allowed", False):
+                    registry_persisted = False
                     try:
                         cleanup_confirmed = _stop_daemon_tree(info)
                     except Exception:
@@ -10333,14 +10359,18 @@ class CommandBroker:
             if job_handle:
                 terminate_job_object(job_handle)
             if process is not None:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                try:
-                    process.wait(timeout=2.0)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                kill_fn = getattr(process, "kill", None)
+                if callable(kill_fn):
+                    try:
+                        kill_fn()
+                    except OSError:
+                        pass
+                wait_fn = getattr(process, "wait", None)
+                if callable(wait_fn):
+                    try:
+                        wait_fn(timeout=2.0)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
             if job_handle:
                 close_job_object(job_handle)
             with self._daemons_lock:

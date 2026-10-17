@@ -1217,7 +1217,8 @@ def test_spawn_daemon_retains_tracking_when_registry_and_cleanup_retry_fail(
         return False
 
     monkeypatch.setattr(commands_module, "_stop_daemon_tree", fail_stop)
-    monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: False)
+    persistence_results = iter((True, False) if os.name == "nt" else (False,))
+    monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: next(persistence_results, False))
     expiry_calls: list[str] = []
     monkeypatch.setattr(
         broker,
@@ -1330,7 +1331,11 @@ def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
         return stop_calls > 1
 
     monkeypatch.setattr(commands_module, "_stop_daemon_tree", stop_then_confirm)
-    persistence_results = iter((False, final_registry_persisted))
+    persistence_results = iter(
+        (True, False, final_registry_persisted)
+        if os.name == "nt"
+        else (False, final_registry_persisted)
+    )
     monkeypatch.setattr(
         broker,
         "_persist_daemon_registry",

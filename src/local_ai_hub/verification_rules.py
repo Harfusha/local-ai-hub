@@ -457,9 +457,12 @@ def complete_task_with_project_rules(
         )
     if before is not None and hasattr(before, "checkpoint"):
         current = task_store.get(task_key)
-        current_chk = getattr(current, "checkpoint", None)
-        if current is None or current != preflight_current:
+        if current is None:
             raise CompletionGateError("task owner or mutation generation changed during completion verification")
+        current_generation = _completion_mutation_generation(current)
+        if current != preflight_current or current_generation != before_generation:
+            raise CompletionGateError("task owner or mutation generation changed during completion verification")
+        current_chk = getattr(current, "checkpoint", None)
         current_state_data = dict(getattr(current_chk, "state_data", {}))
         current_state_data["repo_root"] = str(project.root)
         current_state_data["repository_revision"] = revision

@@ -1065,8 +1065,6 @@ def _retain_previous_install(
             source_pin.close()
         if quarantine_directory is not None:
             quarantine_directory.close()
-
-
 def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
     """Install only into an absent or unchanged Hub-owned skill tree."""
     _validate_manifest(manifest)
