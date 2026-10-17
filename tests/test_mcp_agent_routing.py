@@ -50,7 +50,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint"},
     }
     expected["local_ai_task"].add("browser")
@@ -188,7 +188,7 @@ def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monke
     assert calls[1][1]["section"] == "review"
 
 
-def test_coord_memo_put_forwards_expected_version(monkeypatch, tmp_path):
+def test_coord_rejects_operator_memo_actions_before_dispatch(monkeypatch, tmp_path):
     calls = []
 
     class _Client:
@@ -197,17 +197,10 @@ def test_coord_memo_put_forwards_expected_version(monkeypatch, tmp_path):
             return {"success": True}
 
     monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
-    result = local_ai_mcp.local_ai_coord(
-        action="memo_put",
-        root=str(tmp_path),
-        key="decision",
-        value="accepted",
-        expected_version=3,
-    )
+    result = local_ai_mcp.local_ai_coord(action="memo_put", root=str(tmp_path), key="decision", value="accepted")
 
-    assert result["success"] is True
-    assert calls[0][0] == "/api/memory/put"
-    assert calls[0][1]["expected_version"] == 3
+    assert result["success"] is False
+    assert calls == []
 
 
 def test_empty_semantic_success_is_structured_retryable_failure():

@@ -621,12 +621,12 @@ def _desc_coord() -> str:
     if LEAN_SCHEMAS:
         supported = set(FEATURES.supported_coord_actions())
         actions = [name for name in (
-            "claim", "release", "memo_put", "memo_search", "memory_record",
+            "claim", "release", "memory_record",
             "memory_find", "context_compile", "task_create", "task_checkpoint", "ask", "answer",
         ) if name in supported]
         purpose = (
             "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts"
-            if FEATURES.agent_os else "Coordination for leases and memos"
+            if FEATURES.agent_os else "Coordination for leases"
         )
         return (
             f"{purpose} with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
@@ -655,7 +655,7 @@ def _desc_coord() -> str:
         f"{_actions_note(FEATURES.supported_coord_actions())}"
         f"{agent_os_note}"
         " Claim overlapping edit paths before concurrent Hub work."
-        " Search/get memos before repeating expensive investigation and store concise reusable findings after discovery."
+        " Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool."
         " Native peer subagents are coordinated by Codex rather than by this Hub tool."
         f"{usage_note}"
     )
@@ -4335,7 +4335,7 @@ def local_ai_coord(
     output_path: str = "training_dataset.jsonl",
     min_receipts: int = 1,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE):
@@ -4772,19 +4772,6 @@ def local_ai_coord(
         return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}))
     if action == "leases":
         return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
-    if action == "memo_put":
-        payload = {
-            "root": root, "key": key, "value": value, "ttl_seconds": ttl_seconds or 604800,
-        }
-        if expected_version is not None:
-            payload["expected_version"] = expected_version
-        return _compact(CLIENT.post("/api/memory/put", payload))
-    if action == "memo_get":
-        return _compact(CLIENT.post("/api/memory/get", {"root": root, "key": key}))
-    if action == "memo_search":
-        return _compact(CLIENT.post("/api/memory/search", {"root": root, "query": query, "limit": 12}))
-    if action == "memo_delete":
-        return _compact(CLIENT.post("/api/memory/delete", {"root": root, "key": key}))
     if action.startswith("blackboard_"):
         sub = action[len("blackboard_"):]
         payload: dict[str, Any] = {

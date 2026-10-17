@@ -96,7 +96,7 @@ def test_http_coord_pubsub_poll_honors_sequence_cursor(tmp_path: Path, monkeypat
     assert result["after_seq"] == 1
 
 
-def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_app_client):
+def test_coord_task_checkpoint_and_safe_memory_find_use_agent_state(running_app_client):
     client, app = running_app_client
     # Directly test client coord dispatch logic
     # Set up client mock to dispatch to app methods directly
@@ -108,9 +108,9 @@ def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_ap
                 chk = TaskCheckpoint.from_dict(payload.get("checkpoint", {}))
                 t = app.agent_tasks.checkpoint(payload.get("task_id"), chk)
                 return {"success": True, "task": t.to_dict()}
-        if path == "/api/memory/search":
-            results = app.memory.search(payload.get("root"), payload.get("query"))
-            return {"success": True, "results": results}
+        if path == "/api/agent-state/memory":
+            assert payload.get("action") == "find"
+            return {"success": True, "records": []}
         return {"success": False}
 
     client.post = mock_post
@@ -118,8 +118,8 @@ def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_ap
     assert response["success"] is True
     assert response["task"]["checkpoint"]["next_action"] == "test"
 
-    memo_res = client.coord(action="memo_search", query="known")
-    assert memo_res["success"] is True
+    memory_res = client.coord(action="memory_find", query="known")
+    assert memory_res["success"] is True
 
 
 def test_sdk_task_checkpoint_omits_unsupplied_response_budget(running_app_client):
