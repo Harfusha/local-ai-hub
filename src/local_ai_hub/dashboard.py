@@ -703,19 +703,26 @@ function dashboardHealthBadge(status={}){
 }
 
 function dashboardTelemetryState(observability={}){
+  const observedCount=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+  const observedNumber=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
   const writer=observability.writer||{};
-  const dropped=Math.max(0,Number(writer.dropped)||0),errors=Math.max(0,Number(writer.writer_errors)||0);
-  const pending=Math.max(0,Number(writer.pending)||0);
+  const dropped=observedCount(writer.dropped),errors=observedCount(writer.writer_errors);
+  const pending=observedCount(writer.pending);
   const accepted=Number.isSafeInteger(writer.accepted)&&writer.accepted>=0?writer.accepted:null;
   const written=Number.isSafeInteger(writer.written)&&writer.written>=0?writer.written:null;
+  const requestFailures=observedCount(observability.cohorts?.agent_http?.failures);
+  const requestEvents=observedCount(observability.cohorts?.agent_http?.events);
+  const policyRejections=observedCount(observability.cohorts?.policy_rejection?.events);
+  const latencyMetricsAvailable=requestEvents===0||requestEvents!==null&&['p50_duration_ms','p95_duration_ms','p99_duration_ms'].every(key=>observedNumber(observability.cohorts?.agent_http?.[key])!==null);
+  const metricsAvailable=dropped!==null&&requestFailures!==null&&requestEvents!==null&&policyRejections!==null&&latencyMetricsAvailable;
   const activityObserved=writer.activity_observed===true;
   const accountingBalanced=writer.accounting_balanced===true;
   const summaryCacheStale=observability.summary_cache_stale===true;
   const detailIncomplete=observability.detail?.incomplete===true||observability.detail?.status==='incomplete';
   const available=observability.enabled!==false&&observability.data_available!==false&&observability.stale!==true&&
     (observability.data_available===true||Object.hasOwn(observability,'net_cloud_token_delta_est'));
-  const complete=available&&activityObserved&&accountingBalanced&&!pending&&!dropped&&!errors&&!summaryCacheStale&&!detailIncomplete&&!observability.accounting_boundary_incomplete;
-  return {available,complete,dropped,errors,pending,accepted,written,activityObserved,accountingBalanced,summaryCacheStale,detailIncomplete};
+  const complete=available&&metricsAvailable&&activityObserved&&accountingBalanced&&pending===0&&dropped===0&&errors===0&&!summaryCacheStale&&!detailIncomplete&&!observability.accounting_boundary_incomplete;
+  return {available,complete,metricsAvailable,requestFailures,requestEvents,policyRejections,dropped,errors,pending,accepted,written,activityObserved,accountingBalanced,summaryCacheStale,detailIncomplete};
 }
 
 function formatEstimatedUsd(value){
@@ -731,16 +738,19 @@ function formatChannelSavings(value,rate){
 
 function renderTelemetryMetrics(observability={}){
   const state=dashboardTelemetryState(observability),period=observability.scope==='window'||sloScope==='window'?'Last 30 days':'Since restart';
-  const calls=Math.max(0,Number(observability.tool_accounting_events)||0);
+  const observedCount=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+  const observedMetric=value=>typeof value==='number'&&Number.isFinite(value)?value:null;
+  const metricText=value=>value===null?'unknown':n(value);
+  const calls=observedCount(observability.tool_accounting_events);
   const status=$('efficiencyStatus'),breakdown=$('efficiencyBreakdown');
   if(status){
-    const completeness=!state.available?'Telemetry unavailable. Metrics cannot be verified.':!state.activityObserved?'Writer activity was not observed; completeness is unknown.':!state.accountingBalanced?'Writer accounting is unavailable or unbalanced.':state.pending?'Telemetry writer has '+n(state.pending)+' pending record'+(state.pending===1?'':'s')+'.':state.summaryCacheStale?'Cached telemetry summary is stale.':!state.complete?'Incomplete telemetry. Estimates exclude missing records.':!calls?'No accounted tool calls yet.':'Estimated from '+n(calls)+' accounted tool calls.';
+    const completeness=!state.available?'Telemetry unavailable. Metrics cannot be verified.':!state.activityObserved?'Writer activity was not observed; completeness is unknown.':!state.accountingBalanced?'Writer accounting is unavailable or unbalanced.':state.pending?'Telemetry writer has '+metricText(state.pending)+' pending record'+(state.pending===1?'':'s')+'.':state.summaryCacheStale?'Cached telemetry summary is stale.':!state.complete?'Incomplete telemetry. Estimates exclude missing records.':calls===null?'Accounted tool call count is unavailable.':calls===0?'No accounted tool calls yet.':'Estimated from '+metricText(calls)+' accounted tool calls.';
     status.textContent=period+' · '+completeness;
     status.classList.toggle('warn-t',!state.complete);
   }
   if(breakdown){
-    const sources=Object.entries(observability.token_savings_breakdown||{}).map(([name,value])=>name+': '+n(value)).join('\n');
-    breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+(state.accepted==null?'unknown':n(state.accepted))+' accepted; '+(state.written==null?'unknown':n(state.written))+' written; '+n(state.dropped)+' records dropped; '+n(state.errors)+' caught error attempts; '+n(state.pending)+' pending; activity '+(state.activityObserved?'observed':'unobserved')+'; accounting '+(state.accountingBalanced?'balanced':'unknown/unbalanced')+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
+    const sources=Object.entries(observability.token_savings_breakdown||{}).map(([name,value])=>name+': '+metricText(observedMetric(value))).join('\n');
+    breakdown.textContent='Period: '+period+'\nAccounted calls: '+metricText(calls)+'\nBaseline: '+metricText(observedMetric(observability.gross_cloud_tokens_avoided_est))+' tokens\nProtocol: '+metricText(observedMetric(observability.agent_protocol_tokens_est))+' tokens (call '+metricText(observedMetric(observability.agent_tool_request_tokens_est))+' + read '+metricText(observedMetric(observability.agent_tool_response_tokens_est))+')\nSchema-adjusted delta: '+metricText(observedMetric(observability.net_after_schema_token_delta_est))+' tokens\nSchema catalog exposure: '+metricText(observedMetric(observability.tool_schema_tokens_exposure_est))+' tokens\nLocal compute reuse: '+metricText(observedMetric(observability.local_compute_tokens_avoided_est))+' tokens\nWriter: '+metricText(state.accepted)+' accepted; '+metricText(state.written)+' written; '+metricText(state.dropped)+' records dropped; '+metricText(state.errors)+' caught error attempts; '+metricText(state.pending)+' pending; activity '+(state.activityObserved?'observed':'unobserved')+'; accounting '+(state.accountingBalanced?'balanced':'unknown/unbalanced')+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
   }
   if(breakdown){
     breakdown.textContent=breakdown.textContent.replace('Baseline sources:','Baseline sources (retained detail only):');
@@ -751,8 +761,9 @@ function renderTelemetryMetrics(observability={}){
     for(const id of ['handledRequestsSub','tokensSavedSub','dollarsSavedSub','cacheSub','queueWait','reliabilitySub'])if($(id))$(id).textContent='Telemetry unavailable · '+period;
     return;
   }
-  if($('tokensSaved'))$('tokensSaved').textContent=n(observability.net_cloud_token_delta_est);
-  if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls?n(calls)+' accounted calls':'No accounted calls yet')+(!state.complete?' · partial estimate':'');
+  const netDelta=observedMetric(observability.net_cloud_token_delta_est);
+  if($('tokensSaved'))$('tokensSaved').textContent=metricText(netDelta);
+  if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls===null?'Accounted call count unavailable':calls?n(calls)+' accounted calls':'No accounted calls yet')+(!state.complete?' · partial estimate':'');
   if($('dollarsSaved'))$('dollarsSaved').textContent=observability.estimated_savings_pricing_mode==='incomplete'||observability.estimated_savings_usd==null?'Unknown':formatEstimatedUsd(observability.estimated_savings_usd);
   if($('dollarsSavedSub'))$('dollarsSavedSub').textContent=(observability.estimated_savings_pricing_mode==='incomplete'?'Known channel subtotals: input '+formatChannelSavings(observability.estimated_input_savings_usd,observability.cloud_input_token_cost_usd_per_million)+' · output '+formatChannelSavings(observability.estimated_output_savings_usd,observability.cloud_output_token_cost_usd_per_million)+' · historical channel costs unknown':observability.estimated_savings_pricing_mode==='input_output'?'Separate input/output rates':'Cost unavailable')+' · '+period+(!state.complete?' · incomplete data':'');
   if(period==='Last 30 days'){
@@ -781,9 +792,15 @@ function recordTelemetrySnapshot(o={}){
     for(const points of [latencySparkData,throughputSparkData,liveChartLatency,liveChartQueue])points.length=0;
   }
   lastChartScope=o.scope;
-  if(o.data_available===false||o.stale===true||!o.cohorts?.agent_http?.events)return;
-  const latency=Number(o.cohorts.agent_http.p95_duration_ms)||0,wait=Number(o.avg_queue_wait_ms)||0;
-  for(const [points,value,limit] of [[latencySparkData,latency,25],[throughputSparkData,Number(o.cohorts.agent_http.events)||0,25],[liveChartLatency,latency,30],[liveChartQueue,wait,30]]){
+  if(o.data_available===false||o.stale===true)return;
+  const cohort=o.cohorts?.agent_http||{};
+  const observedCount=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+  const observedNumber=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
+  const events=observedCount(cohort.events);
+  const latency=observedNumber(cohort.p95_duration_ms);
+  const wait=observedNumber(o.avg_queue_wait_ms);
+  for(const [points,value,limit] of [[latencySparkData,latency,25],[throughputSparkData,events,25],[liveChartLatency,latency,30],[liveChartQueue,wait,30]]){
+    if(value===null)continue;
     points.push(value);if(points.length>limit)points.shift();
   }
 }
@@ -794,22 +811,27 @@ function dashboardHealth(snapshot={}){
   const count=value=>Math.max(0,Number(value)||0);
   const openIssues=Math.max(count(current.open_incidents),count(current.active_errors),count(current.blocked_requests)),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
   const ollamaStatus=String(snapshot.ollama_status??current.ollama_status??(ollamaOnline==null?'unknown':ollamaOnline?'online':'offline')).toLowerCase();
+  const terminalStatuses=['down','offline','unavailable','crashed','stopped'];
+  const processLiveness=hubOnline===false||terminalStatuses.includes(status)?'offline':heartbeatStale||status==='stale'?'stale':hubOnline===true||['running','healthy','ok','online'].includes(status)?'live':'unknown';
   const signals=[];
   const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
   const features=snapshot.features||current.features||{};
   const preprocessingAdvertised=Object.hasOwn(snapshot,'preprocessing')||Object.hasOwn(current,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
+  let preprocessing={available:true,statsAvailable:true,errorCount:0,disabled:true};
   if(preprocessingAdvertised){
-    const preprocessing=dashboardPreprocessingHealth(snapshot.preprocessing||current.preprocessing||{},preprocessingDeps,features);
+    preprocessing=dashboardPreprocessingHealth(snapshot.preprocessing||current.preprocessing||{},preprocessingDeps,features);
     if(!preprocessing.disabled){
       if(!preprocessing.available)signals.push('preprocessing project status is unknown');
       if(!preprocessing.statsAvailable)signals.push('preprocessing statistics are unavailable');
       if(preprocessing.errorCount)signals.push(`${preprocessing.errorCount} current preprocessing project${preprocessing.errorCount===1?'':'s'} report error`);
     }
   }
-  if(snapshot.observability&&typeof snapshot.observability==='object'){
-    const telemetry=dashboardTelemetryState(snapshot.observability);
+  const telemetry=snapshot.observability&&typeof snapshot.observability==='object'?dashboardTelemetryState(snapshot.observability):null;
+  if(!telemetry){
+    signals.push('telemetry data is unavailable or stale');
+  }else{
     if(!telemetry.available)signals.push('telemetry data is unavailable or stale');
     else if(!telemetry.activityObserved)signals.push('telemetry writer activity is unobserved');
     else if(!telemetry.accountingBalanced)signals.push('telemetry writer accounting is unbalanced');
@@ -817,20 +839,25 @@ function dashboardHealth(snapshot={}){
     else if(telemetry.summaryCacheStale)signals.push('telemetry summary is stale');
     else if(!telemetry.complete)signals.push('telemetry coverage is incomplete');
   }
+  const dataCompleteness=!telemetry?'unknown':!telemetry.available?'unavailable':telemetry.complete?'complete':'incomplete';
+  const functionalFailure=hubOnline===false||heartbeatStale||terminalStatuses.includes(status)||['degraded','stale'].includes(status)||current.degraded===true||failedChecks.length>0||Boolean(!preprocessing.disabled&&preprocessing.errorCount>0);
+  const functionalUncertainty=preprocessingAdvertised&&(!preprocessing.available||!preprocessing.statsAvailable);
+  const functionalHealth=functionalFailure?'degraded':functionalUncertainty||ollamaStatus!=='online'||['attention','warning','warn','partial'].includes(status)?'attention':'healthy';
+  const finish=health=>({...health,process_liveness:processLiveness,data_completeness:dataCompleteness,functional_health:functionalHealth,reason:`${health.reason} Process liveness: ${processLiveness}; data completeness: ${dataCompleteness}; functional health: ${functionalHealth}.`});
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
   if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
     const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
-    return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
+    return finish({level:'degraded',label:'Degraded',reason,actionTab,actionLabel});
   }
   if(ollamaStatus==='unknown')signals.push('Ollama status is unknown');
   else if(ollamaStatus==='offline')signals.push('Ollama is offline');
   if(hubOnline==null&&!status)signals.push('Hub status is unknown');
   if(['attention','warning','warn','partial'].includes(status)||openIssues||signals.length){
     const reason=openIssues?`Current runtime has ${openIssues} open issue${openIssues===1?'':'s'}${signals.length?`; ${signals.join(', ')}`:''}.`:signals.length?`Current runtime needs attention: ${signals.join(', ')}.`:'Current runtime reports a warning state.';
-    return {level:'attention',label:'Needs attention',reason,actionTab,actionLabel};
+    return finish({level:'attention',label:'Needs attention',reason,actionTab,actionLabel});
   }
-  return {level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.',actionTab:'reliability',actionLabel:'Open reliability details'};
+  return finish({level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.',actionTab:'reliability',actionLabel:'Open reliability details'});
 }
 
 function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
@@ -857,13 +884,20 @@ function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
   const target=health.actionTab||'reliability';
   const targetLabel=health.actionLabel||'Open reliability details';
   const stateText=current.health||current.status||current.service_status||'unreported';
-  const activeRequests=Array.isArray(snapshot.observability?.active_requests)?snapshot.observability.active_requests.length:0;
-  const evidenceText=`${health.reason} Runtime state: ${stateText}. ${activeRequests} active API request${activeRequests===1?'':'s'}.`;
+  const activeRequests=Array.isArray(snapshot.observability?.active_requests)?snapshot.observability.active_requests.length:null;
+  const activeRequestText=activeRequests===null?'unknown':`${activeRequests} active API request${activeRequests===1?'':'s'}`;
+  const evidenceText=`${health.reason} Runtime state: ${stateText}. Active API requests: ${activeRequestText}.`;
   level.textContent=label;
   level.className='value primary-metric '+(health.level==='healthy'?'ok':health.level==='attention'?'warn-t':'bad-t');
   evidence.textContent=evidenceText;
   const history=$('overviewHistorySummary'),o=snapshot.observability||{};
-  if(history)history.textContent=o.enabled===false||o.data_available!==true||o.stale===true?'Historical telemetry unavailable · current runtime checks shown above.':`Recorded history · ${telemetryPeriod(o)} · ${Number(o.cohorts?.agent_http?.failures||0).toLocaleString()} request failures · ${Number(o.cohorts?.policy_rejection?.events||0).toLocaleString()} policy rejections (retained samples).`;
+  const historySummary=()=>{
+    const state=dashboardTelemetryState(o);
+    if(!state.available)return 'Historical telemetry unavailable · current runtime checks shown above.';
+    const label=value=>value===null?'unknown':value.toLocaleString();
+    return `Recorded history · ${telemetryPeriod(o)} · ${label(state.requestFailures)} request failures · ${label(state.policyRejections)} policy rejections · ${label(state.dropped)} telemetry queue drops · ${state.complete?'complete':'incomplete'} data.`;
+  };
+  if(history)history.textContent=historySummary();
   freshnessEl.textContent=freshness.ageMs===null?freshness.label:`${freshness.label} · updated ${age(freshness.ageMs)} ago`;
   freshnessEl.className='tiny '+(freshness.state==='stale'?'warn-t':'muted');
   summary.style.borderLeftColor=health.level==='healthy'?'var(--ok)':health.level==='attention'?'var(--warn)':'var(--bad)';

@@ -236,9 +236,15 @@ const empty=dashboardTelemetryState({});
 assert.equal(empty.available,false);
 assert.equal(dashboardTelemetryState({enabled:false}).available,false);
 assert.equal(dashboardTelemetryState({data_available:false,net_cloud_token_delta_est:0}).available,false);
-const zero=dashboardTelemetryState({data_available:true,net_cloud_token_delta_est:0,writer:{activity_observed:true,accounting_balanced:true}});
+const zero=dashboardTelemetryState({data_available:true,net_cloud_token_delta_est:0,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}}});
 assert.equal(zero.available,true);
 assert.equal(zero.complete,true);
+const missing=dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true}});
+assert.equal(missing.complete,false);
+assert.equal(missing.dropped,null);
+const missingLatency=dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:3,failures:0},policy_rejection:{events:0}}});
+assert.equal(missingLatency.metricsAvailable,false);
+assert.equal(missingLatency.complete,false);
 assert.equal(dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:4}}).complete,false);
 assert.equal(dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true,writer_errors:2}}).complete,false);
 assert.equal(dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true},accounting_boundary_incomplete:true}).complete,false);
@@ -254,15 +260,87 @@ def test_aggregate_health_exposes_telemetry_faults_without_runtime_offline():
     source = extract("function dashboardPreprocessingHealth(", "function dashboardFreshness(")
     run_javascript(source, """
 const base={hub_online:true,ollama_online:true,headless:{state:'running'}};
-assert.equal(dashboardHealth(base).level,'healthy');
+assert.equal(dashboardHealth(base).level,'attention');
+assert.equal(dashboardHealth(base).data_completeness,'unknown');
 const incomplete=dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:12}}});
 assert.equal(incomplete.level,'attention');
 assert.match(incomplete.reason,/telemetry coverage is incomplete/i);
 const unavailable=dashboardHealth({...base,observability:{data_available:false}});
 assert.equal(unavailable.level,'attention');
 assert.match(unavailable.reason,/telemetry data is unavailable or stale/i);
-assert.equal(dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0}}}).level,'healthy');
+assert.equal(dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}}}}).level,'healthy');
 assert.equal(dashboardHealth({...base,degraded:true,dependency_status:{'preprocessing.status':{degraded:true}}}).level,'attention');
+""")
+
+
+def test_overview_health_separates_liveness_completeness_and_function_health():
+    source = extract("function dashboardPreprocessingHealth(", "function dashboardFreshness(")
+    run_javascript(source, """
+const base={hub_online:true,ollama_online:true,headless:{state:'running'}};
+const healthy=dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}}},preprocessing:{projects:[]}});
+assert.equal(healthy.process_liveness,'live');
+assert.equal(healthy.data_completeness,'complete');
+assert.equal(healthy.functional_health,'healthy');
+const telemetryMissing=dashboardHealth({...base,observability:{data_available:false},preprocessing:{projects:[]}});
+assert.equal(telemetryMissing.process_liveness,'live');
+assert.equal(telemetryMissing.data_completeness,'unavailable');
+assert.equal(telemetryMissing.functional_health,'healthy');
+const offline=dashboardHealth({...base,hub_online:false,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}}},preprocessing:{projects:[]}});
+assert.equal(offline.process_liveness,'offline');
+assert.equal(offline.functional_health,'degraded');
+const projectFailed=dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}}},preprocessing:{projects:[{status:'error'}]}});
+assert.equal(projectFailed.process_liveness,'live');
+assert.equal(projectFailed.data_completeness,'complete');
+assert.equal(projectFailed.functional_health,'degraded');
+""")
+
+
+def test_overview_history_never_turns_missing_metrics_into_zero():
+    source = extract("function dashboardPreprocessingHealth(", "function redactDiagnostic(")
+    run_javascript(source, """
+const nodes={};
+const $=id=>nodes[id]??={textContent:'',className:'',style:{},onclick:null};
+const switchTab=()=>{};
+const age=value=>`${Math.round(value)}ms`;
+let lastOverviewAnnouncement='';
+const base={hub_online:true,ollama_online:true,headless:{state:'running'},updated_at:Date.now(),preprocessing:{projects:[]}};
+renderOverviewHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{},policy_rejection:{}}}});
+assert.match(nodes.overviewHistorySummary.textContent,/unknown request failures/i);
+assert.match(nodes.overviewHistorySummary.textContent,/unknown policy rejections/i);
+assert.match(nodes.overviewHistorySummary.textContent,/0 telemetry queue drops/i);
+assert.match(nodes.overviewHealthEvidence.textContent,/data completeness: incomplete/i);
+assert.match(nodes.overviewHealthEvidence.textContent,/Active API requests: unknown/i);
+renderOverviewHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0},cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}}}});
+assert.match(nodes.overviewHistorySummary.textContent,/0 request failures/i);
+assert.match(nodes.overviewHistorySummary.textContent,/0 policy rejections/i);
+""")
+
+
+def test_overview_telemetry_cards_keep_absent_values_unknown():
+    source = extract("function dashboardTelemetryState(", "function preprocessingSummary(")
+    run_javascript(source, """
+const nodes={};
+const $=id=>nodes[id]??={textContent:'',classList:{toggle:()=>{}}};
+const n=value=>Number(value||0).toLocaleString();
+const sloScope='process';
+renderTelemetryMetrics({data_available:true,writer:{activity_observed:true,accounting_balanced:true}});
+assert.equal(nodes.tokensSaved.textContent,'unknown');
+assert.match(nodes.efficiencyBreakdown.textContent,/Accounted calls: unknown/);
+assert.match(nodes.efficiencyBreakdown.textContent,/unknown records dropped/);
+assert.match(nodes.efficiencyBreakdown.textContent,/unknown pending/);
+""")
+
+
+def test_telemetry_charts_skip_missing_latency_and_wait_points():
+    source = extract("function telemetryPeriod(", "function dashboardHealth(")
+    run_javascript(source, """
+let lastChartSnapshot=null,lastChartScope=null;
+const latencySparkData=[],throughputSparkData=[],liveChartLatency=[],liveChartQueue=[];
+recordTelemetrySnapshot({scope:'process',data_available:true,cohorts:{agent_http:{events:5}}});
+assert.equal(latencySparkData.length,0);
+assert.deepEqual(throughputSparkData,[5]);
+assert.equal(liveChartLatency.length,0);
+assert.equal(liveChartQueue.length,0);
 """)
 
 
