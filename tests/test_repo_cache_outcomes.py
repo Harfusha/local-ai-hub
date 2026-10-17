@@ -151,10 +151,10 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
             return value, False, False
 
     class _Tools:
-        def search(self, _root, query, top_k, context_lines=None, **_kwargs):
-            return {"success": True, "query": query, "results": [{"path": "a.py"}]}
+        def search(self, _root, query, *args, **_kwargs):
+            return {"success": True, "query": query, "results": [{"path": "a.py"}], "count_exact": True, "total_matches": 1}
 
-        def search_paths(self, _root, query, _paths, top_k, context_lines=None, **_kwargs):
+        def search_paths(self, _root, query, _paths, *args, **_kwargs):
             return {"success": True, "query": query, "results": []}
 
     services = LocalAIServices.__new__(LocalAIServices)
@@ -177,9 +177,9 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
 
 def test_enriched_repo_search_returns_symbol_and_evidence_for_hit(tmp_path: Path, monkeypatch):
     class _Tools:
-        def search(self, _root, _query, _top_k, context_lines=None, **_kwargs):
+        def search(self, _root, _query, *args, context_lines=None, **_kwargs):
             assert context_lines == 8
-            return {"success": True, "results": [{"path": "module.py", "start_line": 2, "text": "def target():"}]}
+            return {"success": True, "results": [{"path": "module.py", "start_line": 2, "text": "def target():"}], "count_exact": True, "total_matches": 1}
 
         def search_paths(self, *_args, **_kwargs):
             return {"success": True, "results": []}
