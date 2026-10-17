@@ -833,8 +833,6 @@ class HubClient:
         }
 
     def _principal_tenant(self) -> str:
-        if getattr(self, "tenant", None):
-            return str(self.tenant).strip()
         security = self.config.get("security", {})
         configured = str(security.get("api_token_tenant", "") or "").strip()
         if configured:
@@ -923,7 +921,7 @@ class HubClient:
         task_route = route == "/api/agent-state/tasks"
         memory_route = route == "/api/agent-state/memory"
         if not task_route and not memory_route:
-            principal = str(self.tenant).strip() if getattr(self, "tenant", None) else request_principal_tenant(self.config, route)
+            principal = request_principal_tenant(self.config, route)
             if tenant_hint is not None and tenant_hint != principal:
                 return None, self._identity_preflight(
                     "tenant override cannot select request scope",
@@ -1593,7 +1591,7 @@ class HubClient:
             validation_error = validate_operation_arguments(
                 "local_ai_coord",
                 act,
-                {**kwargs, "root": kwargs.get("root", "."), "tenant": kwargs.get("tenant", "")},
+                dict(kwargs),
             )
             if validation_error:
                 return {
@@ -1604,13 +1602,16 @@ class HubClient:
                     "error": validation_error,
                 }
         if act == "incident_decision":
-            return self.post("/api/agent-state/incidents", {
+            payload = {
                 "action": "decision",
                 "fingerprint": kwargs.get("fingerprint"),
                 "state_revision": kwargs.get("state_revision", ""),
-                "root": kwargs.get("root", "."),
-                "tenant": kwargs.get("tenant", ""),
-            })
+            }
+            if "root" in kwargs:
+                payload["root"] = kwargs["root"]
+            if "tenant" in kwargs:
+                payload["tenant"] = kwargs["tenant"]
+            return self.post("/api/agent-state/incidents", payload)
         if act == "context_compile":
             payload = dict(kwargs)
             max_tokens = payload.pop("max_tokens", 4000)
