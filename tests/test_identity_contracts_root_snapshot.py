@@ -86,11 +86,12 @@ def test_repository_memory_foreign_id_requires_matching_repository(tmp_path):
         MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.REPOSITORY,
+            scope_id="repo-a",
             key="shared-key",
             value="repo-a value",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(repo_a), "repository_id": "repo-a"},
+            provenance={"root": str(repo_a), "repository_id": "repo-a", "tenant": "tenant-a"},
         ),
         actor="user",
         idempotency_key="repo-a-record",
@@ -99,20 +100,21 @@ def test_repository_memory_foreign_id_requires_matching_repository(tmp_path):
         MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.REPOSITORY,
+            scope_id="repo-b",
             key="shared-key",
             value="repo-b value",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(repo_b), "repository_id": "repo-b"},
+            provenance={"root": str(repo_b), "repository_id": "repo-b", "tenant": "tenant-a"},
         ),
         actor="user",
         idempotency_key="repo-b-record",
     )
 
-    assert store.get(record_a.record_id, root=str(repo_a)).value == "repo-a value"
-    assert store.get(record_a.record_id, root=str(repo_b)) is None
-    assert store.get(record_b.record_id, root=str(repo_a)) is None
-    assert store.get(record_b.record_id, root=str(repo_b)).value == "repo-b value"
+    assert store.get(record_a.record_id, repository_id="repo-a", tenant="tenant-a").value == "repo-a value"
+    assert store.get(record_a.record_id, repository_id="repo-b", tenant="tenant-a") is None
+    assert store.get(record_b.record_id, repository_id="repo-a", tenant="tenant-a") is None
+    assert store.get(record_b.record_id, repository_id="repo-b", tenant="tenant-a").value == "repo-b value"
 
 
 def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_path):
@@ -126,7 +128,7 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
             value="format with tool X",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(tmp_path / "repo-a"), "repository_id": "repo-a"},
+            provenance={"root": str(tmp_path / "repo-a"), "repository_id": "repo-a", "tenant": "tenant-a"},
         ),
         actor="user",
         idempotency_key="repository-convention",
@@ -144,8 +146,9 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
         scope_id="repo-a",
         root=str(tmp_path / "repo-a"),
         repository_id="repo-a",
+        tenant="tenant-a",
     )
-    records = store.find_for_context(root=str(tmp_path / "repo-b"))
+    records = store.find_for_context(root=str(tmp_path / "repo-b"), tenant="tenant-a")
     assert any(record.record_id == shared.record_id for record in records)
 
 

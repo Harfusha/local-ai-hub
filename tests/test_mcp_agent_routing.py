@@ -20,6 +20,7 @@ def isolated_profile_catalog(monkeypatch):
     # Routing tests must not inherit a developer's disabled installed profiles or backend.
     monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "vision", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     # Keep async accounting off: CLIENT.post spies in this module capture routing endpoints.
     monkeypatch.setattr(local_ai_mcp._ACCOUNTING_REPORTER, "record", lambda _event: None)
