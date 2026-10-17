@@ -142,3 +142,27 @@ def test_affected_tests_defaults_and_normalization(tmp_path: Path) -> None:
     # Invalid changed_paths (not None and not iterable) raises TypeError
     with pytest.raises(TypeError, match="changed_paths must be iterable or None"):
         service.affected_tests(root=tmp_path, changed_paths=123)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("base", "error_type"),
+    [
+        ("", ValueError),
+        ("   ", ValueError),
+        ("\x00", ValueError),
+        (None, TypeError),
+        (True, TypeError),
+    ],
+)
+def test_affected_tests_rejects_invalid_base_before_execution(
+    tmp_path: Path, base: Any, error_type: type[Exception]
+) -> None:
+    engine = _DummyEngine()
+    calls: list[tuple[Any, ...]] = []
+    service = RepositoryTestImpactService(engine, _dummy_runner(calls))
+
+    with pytest.raises(error_type, match="base"):
+        service.affected_tests(root=tmp_path, base=base)  # type: ignore[arg-type]
+
+    assert calls == []
+    assert engine.calls == []
