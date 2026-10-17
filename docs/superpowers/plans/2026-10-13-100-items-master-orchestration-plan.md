@@ -1,5 +1,7 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
+**AgentEvent canonical deserialization fixtures (2026-10-17; tests deferred):** Replaced the partial legacy `from_dict` fixture with a full event round-trip and explicit missing-`event_id` rejection. Current parser already rejects missing canonical fields. Tests remain unrun until the source bundle is complete.
+
 **SSE replay zero-shims repair (2026-10-17; tests deferred):** Removed the legacy `events()` adapter, signature probing, manual snapshot emulation, and `TypeError` retry that could replay without `through_seq`. SSE replay now uses the canonical bounded `event_page` contract; a regression case records provider failure without fallback. No tests or runtime checks have run.
 
 **2026-10-17 hardening ancestry correction:** `git rev-list --count 77464e14..a8f5dc5c` returns 48, and master `ab02ce59` descends from `a8f5dc5c`; the full hardening stack is already in master history. This supersedes the older "Next: integrate" sentence below. Ancestry proves commit inclusion, not present-day semantic equivalence or final runtime acceptance.
