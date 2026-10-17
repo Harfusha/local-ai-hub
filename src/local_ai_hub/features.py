@@ -103,9 +103,9 @@ class FeatureSet:
         self.speculative_lint: bool = bool(speculative.get("enabled", False)) if isinstance(speculative, dict) else False
 
         def _model_str(val: Any, default: str) -> str:
-            if val is None or isinstance(val, bool) or not str(val).strip():
+            if type(val) is not str or not val or val.strip() != val or "\x00" in val:
                 return default
-            return str(val).strip()
+            return val
 
         # Model names — used in descriptions and routing
         self.fast_model: str = _model_str(mdl.get("fast_code"), "qwen2.5-coder:1.5b")
@@ -121,11 +121,9 @@ class FeatureSet:
         profiles_cfg = sub.get("profiles")
         if isinstance(profiles_cfg, dict) and profiles_cfg:
             self.subagent_profiles: tuple[str, ...] = tuple(
-                str(k) for k in profiles_cfg.keys() if k and not isinstance(k, bool)
-            )
-        elif isinstance(profiles_cfg, (list, tuple)) and profiles_cfg:
-            self.subagent_profiles = tuple(
-                str(k) for k in profiles_cfg if k and not isinstance(k, bool)
+                k
+                for k in profiles_cfg.keys()
+                if type(k) is str and k and k.strip() == k and "\x00" not in k
             )
         else:
             self.subagent_profiles = ("qwen-explorer", "qwen-drafter", "qwen-critic")

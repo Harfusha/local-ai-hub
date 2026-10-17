@@ -305,8 +305,8 @@ def generate_repo_map(root_dir: str | Path, max_lines: int = 250, exts: set[str]
     """Generate high-density AST skeleton of a codebase."""
     if root_dir is None or isinstance(root_dir, bool) or not isinstance(root_dir, (str, Path)):
         return [], 0
-    root_str = str(root_dir).strip()
-    if not root_str or "\x00" in root_str:
+    root_str = str(root_dir)
+    if not root_str.strip() or "\x00" in root_str:
         return [], 0
     try:
         root_p = Path(root_str).expanduser().resolve()
@@ -315,21 +315,21 @@ def generate_repo_map(root_dir: str | Path, max_lines: int = 250, exts: set[str]
     except Exception:
         return [], 0
 
-    if isinstance(max_lines, bool) or not isinstance(max_lines, (int, float)):
-        safe_max_lines = 250
-    else:
-        try:
-            if not math.isfinite(max_lines) or max_lines <= 0:
-                safe_max_lines = 250
-            else:
-                safe_max_lines = int(max_lines)
-        except (ValueError, TypeError, OverflowError):
-            safe_max_lines = 250
+    if type(max_lines) is not int or max_lines <= 0:
+        return [], 0
+    safe_max_lines = max_lines
 
-    if exts is not None and not isinstance(exts, bool) and hasattr(exts, "__iter__") and not isinstance(exts, (str, bytes)):
-        target_exts = set(str(e).lower() for e in exts if e and not isinstance(e, bool))
-    else:
+    if exts is None:
         target_exts = DEFAULT_EXTS
+    elif type(exts) is not set or len(exts) > 64:
+        return [], 0
+    else:
+        if any(
+            type(ext) is not str or not ext or ext.strip() != ext or "\x00" in ext
+            for ext in exts
+        ):
+            return [], 0
+        target_exts = {ext.lower() for ext in exts}
 
     out_lines: list[str] = []
     total_files = 0

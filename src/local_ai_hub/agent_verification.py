@@ -110,8 +110,10 @@ class VerificationReceipt:
         for name in ("receipt_id", "task_id", "criterion"):
             if not getattr(self, name):
                 raise ValueError(f"verification receipt {name} must be nonempty")
-        if type(self.details) is not dict:
+        if not isinstance(self.details, Mapping):
             raise ValueError("verification receipt details must be a mapping")
+        if type(self.details) is not dict:
+            object.__setattr__(self, "details", dict(self.details))
         for name, value in (("observed_at", self.observed_at), ("expires_at", self.expires_at)):
             if name == "expires_at" and value is None:
                 continue
@@ -190,7 +192,7 @@ class VerificationReceipt:
             raise ValueError("passed verification receipt requires evidence_id")
         if passed_value and evidence_kind in {"test", "benchmark"} and not command_key:
             raise ValueError(f"passed {evidence_kind} verification receipt requires command_id")
-        if details is not None and type(details) is not dict:
+        if details is not None and not isinstance(details, Mapping):
             raise ValueError("verification receipt details must be a mapping")
         now = time.time()
         return cls(
@@ -207,7 +209,7 @@ class VerificationReceipt:
             observed_at=now,
             expires_at=expires_at,
             passed=passed_value,
-            details={} if details is None else details,
+            details={} if details is None else dict(details),
         )
 
     def is_fresh(self, now: float) -> bool:
@@ -246,8 +248,9 @@ class VerificationReceipt:
         if type(mutation_generation) is not int or mutation_generation < 0:
             raise ValueError("verification receipt mutation_generation must be a non-negative integer")
         details = data.get("details", {})
-        if type(details) is not dict:
+        if not isinstance(details, Mapping):
             raise ValueError("verification receipt details must be a mapping")
+        details = dict(details)
         return cls(
             receipt_id=data["receipt_id"],
             task_id=data["task_id"],
