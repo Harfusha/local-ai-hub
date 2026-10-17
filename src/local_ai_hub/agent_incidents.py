@@ -457,8 +457,10 @@ def _send_incident_webhooks(urls: list[str], payload: bytes) -> None:
                     "User-Agent": "LocalAIHub-IncidentHook/1.0",
                 },
             )
-            with urllib.request.urlopen(request, timeout=3.0) as response:
-                response.read()
+            with urllib.request.urlopen(request, timeout=3.0):
+                # The response body is not part of the webhook contract.
+                # Closing it here avoids buffering an unbounded remote body.
+                pass
         except Exception as exc:
             # Keep delivery best-effort without exposing URLs, payloads or
             # untrusted exception text in logs.
