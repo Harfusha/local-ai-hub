@@ -1388,6 +1388,7 @@ class HubClient:
             "/api/memory/get",
             "/api/memory/search",
             "/api/repo/circular_dependencies",
+            "/api/repo/generate_types",
             "/api/repo/complexity",
             "/api/repo/api_spec",
             "/api/repo/dependency_slice",
@@ -1401,8 +1402,6 @@ class HubClient:
             "/api/agent-state/context",
         }:
             return True
-        if path == "/api/repo/generate_types":
-            return not bool((payload or {}).get("write_stub"))
         action = str((payload or {}).get("action", "")).strip().lower()
         read_actions = {
             "/api/agent-state/tasks": {"get", "list", "count"},
@@ -2129,8 +2128,8 @@ class HubClient:
     def circular_dependencies(self, root: str = ".", language: str = "python") -> dict[str, Any]:
         return self.post("/api/repo/circular_dependencies", {"root": root, "language": language})
 
-    def generate_types(self, root: str = ".", file: str = "", write_stub: bool = False) -> dict[str, Any]:
-        return self.post("/api/repo/generate_types", {"root": root, "file": file, "write_stub": write_stub})
+    def generate_types(self, path: str, root: str = ".") -> dict[str, Any]:
+        return self.post("/api/repo/generate_types", {"root": root, "path": path})
 
     def complexity(self, root: str = ".", path: str | None = None, max_results: int = 20) -> dict[str, Any]:
         return self.post("/api/repo/complexity", {"root": root, "path": path, "max_results": max_results})

@@ -526,20 +526,23 @@ def test_post_does_not_replay_unclassified_mutation(tmp_path, monkeypatch):
     assert "secret.png" not in repr(result)
 
 
-def test_post_does_not_replay_file_writing_generate_types(tmp_path, monkeypatch):
+def test_post_replays_read_only_generate_types(tmp_path, monkeypatch):
     client = _client(tmp_path)
-    calls = []
+    request_ids = []
 
-    def pooled_open(*_args, **_kwargs):
-        calls.append(True)
-        raise URLError("connection lost")
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(request_ids) == 1:
+            raise URLError("connection lost")
+        return b'{"success":true}'
 
     monkeypatch.setattr(client, "_pooled_open", pooled_open)
 
-    result = client.generate_types(root="repo", file="types.py", write_stub=True)
+    result = client.generate_types(root="repo", path="types.py")
 
-    assert len(calls) == 1
-    assert result["outcome_unknown"] is True
+    assert result["success"] is True
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 1
 
 
 def test_post_replays_allowlisted_read_only_route(tmp_path, monkeypatch):

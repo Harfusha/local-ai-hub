@@ -27,17 +27,15 @@ def test_generate_types_returns_stub_text_without_creating_stub(tmp_path: Path) 
     assert stub.read_text(encoding="utf-8") == "preserve me\n"
 
 
-def test_generate_types_rejects_write_request_without_touching_stub(tmp_path: Path) -> None:
+def test_generate_types_has_no_write_mode(tmp_path: Path) -> None:
     source = tmp_path / "sample.py"
     stub = source.with_suffix(".pyi")
     source.write_text("def greet() -> None: pass\n", encoding="utf-8")
 
-    result = _engine().generate_types(str(tmp_path), str(source), write_stub=True)
+    result = _engine().generate_types(str(tmp_path), str(source))
 
-    assert result["success"] is False
-    assert result["terminal"] is True
-    assert result["retryable"] is False
-    assert "read-only" in result["error"]
+    assert result["success"] is True
+    assert result["stub_file"] is None
     assert not stub.exists()
 
 
@@ -158,7 +156,7 @@ def test_mcp_generate_types_rejects_diff_without_posting(monkeypatch: pytest.Mon
     assert "read-only" in result["error"]
 
 
-def test_mcp_generate_types_posts_with_writes_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_mcp_generate_types_posts_canonical_read_only_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from local_ai_hub import mcp_server
 
     posted: dict[str, object] = {}
@@ -180,6 +178,5 @@ def test_mcp_generate_types_posts_with_writes_disabled(monkeypatch: pytest.Monke
     assert posted["route"] == "/api/repo/generate_types"
     assert posted["payload"] == {
         "root": str(tmp_path.resolve()),
-        "file": "sample.py",
-        "write_stub": False,
+        "path": "sample.py",
     }

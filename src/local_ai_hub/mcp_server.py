@@ -3759,7 +3759,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_types":
         return _compact(CLIENT.post("/api/repo/generate_types", {
-            "root": root, "file": path, "write_stub": False,
+            "root": root, "path": path,
         }, timeout=_timeout("quick")), "architecture")
     if action == "complexity":
         return _compact(CLIENT.post("/api/repo/complexity", {

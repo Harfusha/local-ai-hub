@@ -8650,7 +8650,31 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_circular_dependencies_1' in post_route_ids:
                 self._send(200, APP.services.circular_dependencies(str(payload.get("root", ".")), language=str(payload.get("language", "python")))); return
             if 'post_generate_types_1' in post_route_ids:
-                self._send(200, APP.services.generate_types(str(payload.get("root", ".")), str(payload.get("file", payload.get("path", ""))), write_stub=bool(payload.get("write_stub", False)))); return
+                if set(payload) - {"root", "path"}:
+                    self._send(
+                        400,
+                        {
+                            "success": False,
+                            "error": "generate_types accepts only root and path",
+                            "terminal": True,
+                            "retryable": False,
+                        },
+                    )
+                    return
+                root = payload.get("root", ".")
+                source_path = payload.get("path")
+                if not isinstance(root, str) or not isinstance(source_path, str) or not source_path:
+                    self._send(
+                        400,
+                        {
+                            "success": False,
+                            "error": "generate_types requires string root and nonempty path",
+                            "terminal": True,
+                            "retryable": False,
+                        },
+                    )
+                    return
+                self._send(200, APP.services.generate_types(root, source_path)); return
             if 'post_complexity_1' in post_route_ids:
                 self._send(200, APP.services.code_complexity(
                     str(payload.get("root", ".")), path=payload.get("path"),
