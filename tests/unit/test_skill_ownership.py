@@ -477,6 +477,35 @@ so.install_skill(source, target, root, manifest, name)
         self.assertEqual(presence, "unknown")
         self.assertEqual(classified["quarantine_path"], str(quarantine))
 
+    @unittest.skipUnless(os.name == "nt", "Windows quarantine-root handle pin check")
+    def test_windows_pinned_quarantine_root_rejects_replacement_during_move(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        quarantine_root = self.skills_root.parent / ".local-ai-hub-skill-quarantine"
+        replacement_root = quarantine_root.with_name(quarantine_root.name + "-replacement")
+        original_move = skill_ownership._rename_noreplace
+
+        def attempt_root_replacement(source: Path, destination: Path, **kwargs: object) -> None:
+            with self.assertRaises(OSError):
+                os.replace(quarantine_root, replacement_root)
+            self.assertFalse(replacement_root.exists())
+            self.assertTrue(quarantine_root.is_dir())
+            self.assertFalse(quarantine_root.is_symlink())
+            original_move(source, destination, **kwargs)
+
+        with patch.object(skill_ownership, "_rename_noreplace", side_effect=attempt_root_replacement):
+            result = remove_skill(self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertIn("uninstalled Hub-owned skill", result)
+        self.assertFalse(self.target.exists())
+        self.assertTrue(quarantine_root.is_dir())
+        self.assertFalse(replacement_root.exists())
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        quarantine_path = Path(
+            next(record["quarantine_path"] for record in entries.values() if record["status"] == "unverified")
+        )
+        self.assertTrue(quarantine_path.is_relative_to(quarantine_root))
+        self.assertTrue((quarantine_path / "SKILL.md").is_file())
+
     @unittest.skipIf(os.name == "nt", "POSIX quarantine-root replacement check")
     def test_quarantine_root_swap_cannot_redirect_noreplace_move(self) -> None:
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
