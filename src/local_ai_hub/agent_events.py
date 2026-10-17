@@ -137,12 +137,16 @@ class AgentEvent:
     def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
         if not isinstance(data, Mapping):
             raise TypeError("AgentEvent data must be a mapping")
-        required = (
-            "event_id", "stream_id", "kind", "payload", "idempotency_key", "actor", "created_at",
+        canonical_fields = (
+            "event_id", "stream_id", "kind", "payload", "idempotency_key",
+            "correlation_id", "actor", "created_at", "seq",
         )
-        for field in required:
+        for field in canonical_fields:
             if field not in data:
                 raise KeyError(field)
+        unexpected_fields = set(data) - set(canonical_fields)
+        if unexpected_fields:
+            raise ValueError(f"unexpected AgentEvent fields: {sorted(map(repr, unexpected_fields))}")
         return cls(
             event_id=data["event_id"],
             stream_id=data["stream_id"],
