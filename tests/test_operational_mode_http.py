@@ -275,6 +275,7 @@ def test_safe_agent_api_reads_block_only_in_maintenance_before_database_call(
             allowed_roots=[str(tmp_path)],
             tenant_derivation_key=tenant_key,
         )
+        monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: principal)
     trace_calls = []
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda _self, trace_path: trace_calls.append(trace_path))
     app.services = SimpleNamespace(

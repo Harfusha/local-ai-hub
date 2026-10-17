@@ -464,17 +464,21 @@ class OllamaRuntime:
     ) -> dict[str, Any]:
         emitted = False
 
-        def forward(text: str) -> None:
-            nonlocal emitted
-            emitted = emitted or bool(text)
-            if callable(on_chunk):
+        if callable(on_chunk):
+            def forward(text: str) -> None:
+                nonlocal emitted
+                emitted = emitted or bool(text)
                 on_chunk(text)
+        else:
+            forward = None
 
-        def forward_thinking(text: str) -> None:
-            nonlocal emitted
-            emitted = emitted or bool(text)
-            if callable(on_thinking):
+        if callable(on_thinking):
+            def forward_thinking(text: str) -> None:
+                nonlocal emitted
+                emitted = emitted or bool(text)
                 on_thinking(text)
+        else:
+            forward_thinking = None
 
         try:
             result = self._request_stream_impl(endpoint, payload, forward, timeout,
@@ -631,11 +635,9 @@ class OllamaRuntime:
                         try:
                             chunk = json.loads(raw_text)
                         except json.JSONDecodeError:
-                            last_error, stream_error = "Ollama returned malformed stream JSON", True
-                            break
+                            continue
                         if not isinstance(chunk, dict):
-                            last_error, stream_error = "Ollama returned a non-object stream event", True
-                            break
+                            continue
                         if chunk.get("error"):
                             last_error = str(chunk["error"])
                             stream_error = True
@@ -742,7 +744,7 @@ class OllamaRuntime:
                     break
             if timed_out:
                 return {"error": last_error, "_lah_retry_count": max(0, attempt - 1), "timed_out": True}
-            if emitted_output or generated or chat or thinking_parts:
+            if emitted_output:
                 return {
                     "error": last_error,
                     "_lah_retry_count": max(0, attempt - 1),
