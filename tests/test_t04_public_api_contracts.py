@@ -345,7 +345,7 @@ def test_artifact_store_rejects_legacy_schema_without_rewriting(tmp_path):
             "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, "
             "tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
         )
-        con.execute("INSERT INTO artifacts VALUES ('legacy-id', 9_999_999_999, 'tenant', 'text', 'kept')")
+        con.execute("INSERT INTO artifacts VALUES ('legacy-id', 9999999999, 'tenant', 'text', 'kept')")
         con.commit()
 
     original = db_path.read_bytes()
