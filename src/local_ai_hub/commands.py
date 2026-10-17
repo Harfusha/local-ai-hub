@@ -8250,13 +8250,19 @@ class CommandBroker:
             tool_identity = self._tool_identity(command, cwd, argv_override=argv_override)
         else:
             tool_identity = self._tool_identity(command, cwd)
-        phase_timings_ms["tool_identity_ms"] = round((time.perf_counter() - tool_identity_started) * 1000, 3)
+        command_class = classification.get("class")
+        classification_allowed = classification.get("allowed") is True
+        allow_unknown_cfg = self.config.get("commands", {}).get("allow_unknown", None)
+        suppressable = (
+            command_class != "mutating"
+            and not (command_class == "unknown" and allow_unknown_cfg is False)
+        )
         attempt_key = (
             self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint, cache_context=_cache_context)
             if _cache_context
             else self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
         )
-        if not force and not bypass_cache and not _transaction_context:
+        if not force and not bypass_cache and not _transaction_context and suppressable:
             suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
             if suppression_cache_healthy and isinstance(suppressed, dict):
                 self.suppressed += 1
@@ -8264,8 +8270,6 @@ class CommandBroker:
                 result.update({"suppression_cache_hit": True, "classification": classification})
                 return self._compact(result, tenant, command)
 
-        command_class = classification.get("class")
-        classification_allowed = classification.get("allowed") is True
         unknown_authorized = command_class != "unknown" or bool(
             self.config.get("commands", {}).get("allow_mutating", False)
         )
@@ -8291,7 +8295,7 @@ class CommandBroker:
                 "execution_authorized": False, "policy_blocked": True,
                 "request_not_sent": True, "terminal": True, "retryable": False,
             }
-            if not force and not bypass_cache and not _transaction_context:
+            if not force and not bypass_cache and not _transaction_context and suppressable:
                 self.suppression_cache.set(attempt_key, result)
             return result
         # Unknown code may mutate regardless of the classifier's lexical heuristics.
