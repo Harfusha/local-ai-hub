@@ -68,11 +68,37 @@ jobs:
           test "$ACTUAL_VERSION" = "Local AI Hub $EXPECTED_VERSION"
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -I "$GITHUB_WORKSPACE/tools/wheel_smoke.py" > "$RUNNER_TEMP/wheel-mcp-smoke.json"
 
+      - name: Bind smoke receipt to release wheel bytes and commit
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("local_ai_hub-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("expected exactly one built Local AI Hub wheel")
+          with wheels[0].open("rb") as stream:
+              digest = hashlib.file_digest(stream, "sha256").hexdigest()
+          receipt_path = Path(os.environ["RUNNER_TEMP"]) / "wheel-mcp-smoke.json"
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          if receipt.get("success") is not True or receipt.get("smoke") != "passed":
+              raise SystemExit("installed wheel MCP smoke did not pass")
+          if receipt.get("wheel_sha256") != digest:
+              raise SystemExit("installed wheel provenance differs from the built wheel bytes")
+          receipt["repository_revision"] = os.environ["GITHUB_SHA"]
+          receipt["wheel_file"] = wheels[0].name
+          Path("dist/wheel-mcp-smoke.json").write_text(
+              json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8",
+          )
+          PY
+
       - name: Create SHA-256 manifest
         shell: bash
         run: |
           cd dist
-          sha256sum *.whl *.tar.gz > SHA256SUMS.txt
+          sha256sum *.whl *.tar.gz wheel-mcp-smoke.json > SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
