@@ -73,6 +73,7 @@ def test_minimal_baseline_comparison_cancels_and_closes_runtime(
     }
 
     baseline = run(**arguments)
+    assert not baseline.get("failed_stages"), [(s, baseline["stages"][s].get("error_types"), baseline["stages"][s].get("error_count_by_phase_by_regime")) for s in baseline.get("failed_stages", [])]
     assert baseline["success"] is True
     compared = run(**arguments, baseline_record=baseline)
     assert compared["success"] is True
