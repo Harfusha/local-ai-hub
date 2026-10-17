@@ -5137,7 +5137,7 @@ class CommandBroker:
                         "rsplit", "replace", "startswith", "endswith", "join", "encode",
                         "decode", "count", "find", "index", "format",
                         "start", "join", "is_alive", "wait", "set", "clear", "is_set",
-                        "write", "flush", "read",
+                        "write", "flush", "read", "hex", "digest", "hexdigest",
                     }
                     safe_module_calls = {
                         ("sys", "stdout", "write"),
@@ -5149,9 +5149,14 @@ class CommandBroker:
                         ("sys", "stderr", "buffer", "write"),
                         ("sys", "stderr", "buffer", "flush"),
                         ("sys", "exit"),
+                        ("os", "write"),
                         ("os", "getenv"),
                         ("os", "getcwd"),
                         ("os", "environ", "get"),
+                        ("hashlib", "sha256"),
+                        ("hashlib", "sha1"),
+                        ("hashlib", "md5"),
+                        ("hashlib", "new"),
                         ("time", "sleep"),
                         ("time", "time"),
                         ("time", "monotonic"),
@@ -8240,27 +8245,6 @@ class CommandBroker:
         classification_started = time.perf_counter()
         classification = self.classify(argv_override if argv_override is not None else original_command)
         phase_timings_ms["command_classification_ms"] = round((time.perf_counter() - classification_started) * 1000, 3)
-        command_class = classification.get("class")
-        classification_allowed = classification.get("allowed") is True
-        unknown_authorized = command_class != "unknown" or bool(
-            self.config.get("commands", {}).get("allow_mutating", False)
-        )
-        if command_class == "dangerous" or not classification_allowed or not unknown_authorized:
-            reason = str(classification.get("reason") or "command policy denied execution")[:120]
-            if classification_allowed and not unknown_authorized:
-                reason = "unknown command requires explicit mutation authorization"
-            with self._lock:
-                self.blocked += 1
-                self._blocked_by_reason[reason] = self._blocked_by_reason.get(reason, 0) + 1
-            return {
-                "success": False, "error": f"command blocked: {reason}",
-                "classification": classification, "classification_allowed": classification_allowed,
-                "execution_authorized": False, "policy_blocked": True,
-                "request_not_sent": True, "terminal": True, "retryable": False,
-            }
-        # Unknown code may mutate regardless of the classifier's lexical heuristics.
-        # Its opt-in still requires task/worktree/write-set/fence and private execution.
-        is_mutating = command_class in {"mutating", "unknown"}
         tool_identity_started = time.perf_counter()
         if argv_override is not None:
             tool_identity = self._tool_identity(command, cwd, argv_override=argv_override)
@@ -8272,13 +8256,47 @@ class CommandBroker:
             if _cache_context
             else self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
         )
-        if not force and not bypass_cache and not is_mutating and not _transaction_context:
+        if not force and not bypass_cache and not _transaction_context:
             suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
             if suppression_cache_healthy and isinstance(suppressed, dict):
                 self.suppressed += 1
                 result = dict(suppressed)
                 result.update({"suppression_cache_hit": True, "classification": classification})
                 return self._compact(result, tenant, command)
+
+        command_class = classification.get("class")
+        classification_allowed = classification.get("allowed") is True
+        unknown_authorized = command_class != "unknown" or bool(
+            self.config.get("commands", {}).get("allow_mutating", False)
+        )
+        is_blocked = False
+        blocked_reason = ""
+        if command_class == "dangerous":
+            is_blocked = True
+            blocked_reason = str(classification.get("reason") or "command policy denied execution")[:120]
+        elif command_class == "unknown" and not unknown_authorized:
+            is_blocked = True
+            blocked_reason = "unknown command requires explicit mutation authorization"
+        elif command_class != "unknown" and not classification_allowed:
+            is_blocked = True
+            blocked_reason = str(classification.get("reason") or "command policy denied execution")[:120]
+
+        if is_blocked:
+            with self._lock:
+                self.blocked += 1
+                self._blocked_by_reason[blocked_reason] = self._blocked_by_reason.get(blocked_reason, 0) + 1
+            result = {
+                "success": False, "error": f"command blocked: {blocked_reason}",
+                "classification": classification, "classification_allowed": classification_allowed,
+                "execution_authorized": False, "policy_blocked": True,
+                "request_not_sent": True, "terminal": True, "retryable": False,
+            }
+            if not force and not bypass_cache and not _transaction_context:
+                self.suppression_cache.set(attempt_key, result)
+            return result
+        # Unknown code may mutate regardless of the classifier's lexical heuristics.
+        # Its opt-in still requires task/worktree/write-set/fence and private execution.
+        is_mutating = command_class in {"mutating", "unknown"}
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         if not cwd_path.is_dir():
             result = {
@@ -8305,6 +8323,25 @@ class CommandBroker:
             if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
+        declared_paths = paths if paths is not None else rollback_paths
+        if rollback_on_failure:
+            if not declared_paths:
+                return {
+                    "success": False,
+                    "error": "rollback paths are required",
+                    "rollback_scope_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            for p in declared_paths:
+                if not isinstance(p, str) or not p.strip() or ".." in Path(p).parts or Path(p).is_absolute():
+                    return {
+                        "success": False,
+                        "error": f"rollback path is invalid: {p}",
+                        "rollback_scope_invalid": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
         if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
             worktree_error = self._require_task_worktree(task_id, cwd, original_command, require_git_identity=True)
             if worktree_error:
@@ -8315,7 +8352,6 @@ class CommandBroker:
                     "terminal": True,
                     "retryable": False,
                 }
-        declared_paths = paths if paths is not None else rollback_paths
         if (is_mutating or auto_fix) and not declared_paths and not _transaction_context:
             return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
         if rollback_on_failure and paths is not None and rollback_paths is not None:
