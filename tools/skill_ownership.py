@@ -12,11 +12,83 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
+import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 MANIFEST_NAME = ".local-ai-hub-skill-ownership.json"
 MANIFEST_VERSION = 1
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+_LOCK_TIMEOUT_SECONDS = 30.0
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _ownership_lock(manifest: Path):
+    """Serialize ownership-manifest and skill-tree mutations across threads/processes."""
+    lock_path = manifest.with_name(manifest.name + ".lock")
+    key = _canonical(lock_path)
+    with _PATH_LOCKS_GUARD:
+        thread_lock = _PATH_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(lock_path, flags, 0o600)
+        acquired = False
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT:
+                raise OSError(f"skill ownership lock is not a regular file: {lock_path}")
+            if info.st_size == 0:
+                os.write(fd, b"\\0")
+            deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+            if os.name == "nt":
+                import msvcrt
+
+                while True:
+                    try:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        acquired = True
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(f"timed out locking skill ownership manifest: {manifest}")
+                        time.sleep(0.05)
+            else:
+                import fcntl
+
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(f"timed out locking skill ownership manifest: {manifest}")
+                        time.sleep(0.05)
+            yield
+        finally:
+            try:
+                if acquired:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 def _is_link(path: Path) -> bool:
@@ -121,7 +193,7 @@ def _validate_target(target: Path, skills_root: Path, skill_name: str) -> Path:
     return resolved_root / target.name
 
 
-def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
+def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
     """Install only into an absent or unchanged Hub-owned skill tree."""
     _validate_manifest(manifest)
     source = _validate_source(source, skill_name)
@@ -157,6 +229,17 @@ def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path,
                 return f"preserved changed skill tree during replacement: {target}"
             os.replace(target, backup)
             moved_old = True
+            try:
+                moved_hash = _safe_tree_hash(backup)
+            except ValueError:
+                moved_hash = None
+            if _is_link(backup) or moved_hash != current_hash:
+                if not target.exists():
+                    os.replace(backup, target)
+                    moved_old = False
+                if backup.exists():
+                    return f"preserved changed skill tree during replacement; recoverable at {backup}"
+                return f"preserved changed skill tree during replacement: {target}"
         elif target.exists() or _is_link(target):
             return f"preserved conflicting skill tree created during install: {target}"
         os.replace(staged, target)
@@ -194,7 +277,13 @@ def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path,
     return f"installed Hub-owned skill: {target}"
 
 
-def remove_skill(target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
+def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
+    _validate_manifest(manifest)
+    with _ownership_lock(manifest):
+        return _install_skill_unlocked(source, target, skills_root, manifest, skill_name)
+
+
+def _remove_skill_unlocked(target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
     """Remove a skill only when its recorded content hash still matches."""
     _validate_manifest(manifest)
     target = _validate_target(target, skills_root, skill_name)
@@ -213,7 +302,45 @@ def remove_skill(target: Path, skills_root: Path, manifest: Path, skill_name: st
         return f"preserved modified Hub-owned skill tree: {target}"
     if _is_link(target):
         return f"preserved conflicting skill tree: {target}"
-    shutil.rmtree(target)
+
+    quarantine = target.with_name(f".{target.name}.removing-{uuid.uuid4().hex}")
+    try:
+        os.replace(target, quarantine)
+    except OSError as exc:
+        return f"skill removal failed for {target}: {exc}"
+    try:
+        moved_hash = _safe_tree_hash(quarantine)
+    except (OSError, ValueError):
+        moved_hash = None
+    if _is_link(quarantine) or moved_hash != current_hash:
+        if not target.exists() and not _is_link(target):
+            try:
+                os.replace(quarantine, target)
+            except OSError:
+                return f"preserved changed skill tree; recoverable at {quarantine}"
+        if quarantine.exists() or _is_link(quarantine):
+            return f"preserved changed skill tree; recoverable at {quarantine}"
+        return f"preserved changed skill tree during removal: {target}"
+
     del entries[key]
-    _manifest_write(manifest, entries)
+    try:
+        _manifest_write(manifest, entries)
+    except (OSError, ValueError) as exc:
+        try:
+            if not target.exists() and not _is_link(target):
+                os.replace(quarantine, target)
+        except OSError:
+            return f"skill removal failed for {target}: {exc}; recoverable at {quarantine}"
+        return f"skill removal failed for {target}: {exc}; previous skill restored"
+
+    try:
+        shutil.rmtree(quarantine)
+    except OSError as exc:
+        return f"removed skill ownership; previous tree retained at {quarantine}: {exc}"
     return f"removed Hub-owned skill: {target}"
+
+
+def remove_skill(target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
+    _validate_manifest(manifest)
+    with _ownership_lock(manifest):
+        return _remove_skill_unlocked(target, skills_root, manifest, skill_name)
