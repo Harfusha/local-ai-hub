@@ -5476,7 +5476,18 @@ def test_{sym}_regression_edge_cases():
                     complete = False
                     errors.append("unsafe_path")
                 else:
-                    for package in sorted(packages_root.iterdir()):
+                    package_entries: list[Path] = []
+                    for package in packages_root.iterdir():
+                        if len(package_entries) >= file_limit or time.monotonic() >= deadline:
+                            complete = False
+                            errors.append("source_root_limit_or_deadline")
+                            break
+                        package_entries.append(package)
+                    for package in sorted(package_entries):
+                        if time.monotonic() >= deadline:
+                            complete = False
+                            errors.append("source_root_deadline")
+                            break
                         package_src = package / "src"
                         if not package_src.is_dir():
                             continue
@@ -5511,12 +5522,18 @@ def test_{sym}_regression_edge_cases():
         eligible: list[tuple[str, Path]] = []
         try:
             for inventory_root in inventory_roots:
+                inventory_count = 0
                 for candidate in self.repo_tools.iter_files(
                     str(inventory_root), max_files=file_limit + 1
                 ):
                     if time.monotonic() >= deadline:
                         complete = False
                         errors.append("inventory_deadline")
+                        break
+                    inventory_count += 1
+                    if inventory_count > file_limit:
+                        complete = False
+                        errors.append("inventory_limit")
                         break
                     rel = eligible_rel(candidate)
                     if rel is None or not rel.lower().endswith(".py"):
@@ -5526,7 +5543,7 @@ def test_{sym}_regression_edge_cases():
                         errors.append("file_limit")
                         break
                     eligible.append((rel, candidate))
-                if "inventory_deadline" in errors or "file_limit" in errors:
+                if any(error in errors for error in ("inventory_deadline", "file_limit", "inventory_limit")):
                     break
         except Exception:
             complete = False
@@ -5570,16 +5587,13 @@ def test_{sym}_regression_edge_cases():
                 layer = "utilities"
             layers[layer].append(rel)
 
+        local_top_levels = {module.partition(".")[0] for module in module_paths}
+
         def resolve_local(module: str) -> str | None:
-            candidate = module
-            while candidate:
-                matches = module_paths.get(candidate, [])
-                if len(matches) == 1:
-                    return matches[0]
-                if len(matches) > 1:
-                    return ""
-                candidate = candidate.rpartition(".")[0]
-            return None
+            matches = module_paths.get(module, [])
+            if len(matches) == 1:
+                return matches[0]
+            return "" if matches else None
 
         def has_unsafe_ancestor(path: Path) -> bool:
             current = resolved_root
@@ -5593,7 +5607,12 @@ def test_{sym}_regression_edge_cases():
         unresolved: list[dict[str, Any]] = []
         external: list[dict[str, Any]] = []
         stdlib_count = total_bytes = files_read = skipped = parse_errors = 0
-        for rel, path in eligible:
+        for file_index, (rel, path) in enumerate(eligible):
+            if len(edges) + len(unresolved) + len(external) >= edge_limit:
+                complete = False
+                errors.append("edge_limit")
+                skipped += len(eligible) - file_index
+                break
             if time.monotonic() >= deadline or total_bytes >= total_bytes_limit:
                 complete = False
                 errors.append(
@@ -5601,7 +5620,7 @@ def test_{sym}_regression_edge_cases():
                     if time.monotonic() >= deadline
                     else "aggregate_byte_limit"
                 )
-                skipped += len(eligible) - files_read - skipped
+                skipped += len(eligible) - file_index
                 break
             try:
                 if has_unsafe_ancestor(path) or not path.resolve().is_relative_to(resolved_root):
@@ -5662,16 +5681,30 @@ def test_{sym}_regression_edge_cases():
                     package_parts = source_module.split(".")[:-1]
                     if Path(rel).name == "__init__.py":
                         package_parts = source_module.split(".")
-                    if node.level:
-                        prefix = package_parts[: max(0, len(package_parts) - node.level + 1)]
+                    if node.level > len(package_parts):
+                        # An invalid relative level cannot become a root import.
+                        imports = [("." * node.level + (node.module or ""), node.lineno, True)]
+                    else:
+                        prefix = package_parts[: len(package_parts) - node.level + 1] if node.level else []
                         if node.module:
                             prefix.extend(node.module.split("."))
-                            modules = [".".join(prefix)]
-                        else:
-                            modules = [".".join(prefix + [alias.name]) for alias in node.names]
-                        imports = [(module, node.lineno, True) for module in modules if module]
-                    elif node.module:
-                        imports = [(node.module, node.lineno, False)]
+                        base_module = ".".join(prefix)
+                        base_matches = module_paths.get(base_module, [])
+                        modules = [base_module] if base_matches else []
+                        base_is_package = not base_matches or all(
+                            Path(match).name == "__init__.py" for match in base_matches
+                        )
+                        if base_is_package:
+                            for alias in node.names:
+                                child = f"{base_module}.{alias.name}"
+                                if alias.name != "*" and child in module_paths:
+                                    modules.append(child)
+                        if not modules:
+                            modules = [base_module]
+                        imports = [
+                            (module, node.lineno, bool(node.level))
+                            for module in dict.fromkeys(modules) if module
+                        ]
 
                 for imported, line, is_relative in imports:
                     target = resolve_local(imported)
@@ -5681,6 +5714,8 @@ def test_{sym}_regression_edge_cases():
                         edges.append({"source": rel, "target": target, "module": imported, "line": line})
                     elif is_relative:
                         unresolved.append({"source": rel, "module": imported, "line": line, "reason": "unresolved_relative_import"})
+                    elif imported.partition(".")[0] in local_top_levels:
+                        unresolved.append({"source": rel, "module": imported, "line": line, "reason": "unresolved_local_module"})
                     elif imported.split(".", 1)[0] in sys.stdlib_module_names:
                         stdlib_count += 1
                     else:
@@ -5694,7 +5729,11 @@ def test_{sym}_regression_edge_cases():
 
         hubs = [
             {"path": path, "in_degree": count}
-            for path, count in Counter(edge["target"] for edge in edges).most_common(10)
+            for path, count in Counter(
+                target for _source, target in dict.fromkeys(
+                    (edge["source"], edge["target"]) for edge in edges
+                )
+            ).most_common(10)
         ]
         has_api = bool(layers["presentation"])
         has_services = bool(layers["core_services"])
