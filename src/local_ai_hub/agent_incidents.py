@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import logging
 import math
 import os
 import queue
@@ -18,6 +19,8 @@ from typing import Any, Callable, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, retry_busy
+
+logger = logging.getLogger(__name__)
 
 
 def _incident_scope_key(kind: str, value: Any) -> str:
@@ -443,10 +446,8 @@ def _extract_root_cause_and_fix(error_msg: str, tool_name: str = "", timed_out: 
 
 
 def _send_incident_webhooks(urls: list[str], payload: bytes) -> None:
-    import logging
     import urllib.request
 
-    logger = logging.getLogger(__name__)
     for url in urls:
         try:
             request = urllib.request.Request(
