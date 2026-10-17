@@ -6779,7 +6779,28 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "cleanup_worktree":
                     t_id = str(payload.get("task_id", ""))
                     del_br = bool(payload.get("delete_branch", True))
-                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br, actor=self._agent())); return
+                    try:
+                        result = APP.agent_tasks.cleanup_worktree(
+                            t_id,
+                            delete_branch=del_br,
+                            actor=self._agent(),
+                            response_budget_tokens=payload.get("response_budget_tokens"),
+                        )
+                        self._send(200, result); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {
+                                "requested_tokens": exc.requested_tokens,
+                                "required_tokens": exc.required_tokens,
+                                "unit": "estimated_tokens",
+                            },
+                        }); return
+                    except ValueError as exc:
+                        self._send(400, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                        }); return
                 if action == "reap_expired":
                     requested_task_id = payload.get("task_id")
                     auto_recover = payload.get("auto_recover", False)

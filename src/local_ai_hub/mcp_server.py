@@ -4652,9 +4652,26 @@ def local_ai_coord(
             "root": root, "task_id": task_id,
         }, timeout=_timeout("quick")), "status")
     if action == "task_cleanup_worktree":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
+        cleanup_payload = {
             "action": "cleanup_worktree", "task_id": task_id,
-        }, timeout=_timeout("quick")), "status")
+        }
+        requested, _, _, budget_enabled = _response_budget(action, {
+            "max_response_tokens": max_response_tokens,
+            "response_profile": response_profile,
+            "reuse_key": reuse_key,
+            "tool": action,
+        })
+        try:
+            explicit_limit = int(max_response_tokens or 0)
+        except (TypeError, ValueError, OverflowError):
+            explicit_limit = 0
+        if explicit_limit > 0:
+            requested = explicit_limit
+        if budget_enabled:
+            cleanup_payload["response_budget_tokens"] = requested
+        return _compact(CLIENT.post(
+            "/api/agent-state/tasks", cleanup_payload, timeout=_timeout("quick")
+        ), "status")
     if action in {"ask", "answer"}:
         question_payload = {
             "action": action, "root": root, "tenant": tenant,
