@@ -309,11 +309,14 @@ class ArtifactStore:
 
     def _rebuild_paging_metadata(self, con: sqlite3.Connection) -> None:
         """Recreate disposable paging indexes from durable artifact text."""
-        con.execute(f"DROP TABLE {_ARTIFACT_PAGING_TABLE}")
-        con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
         deadline = time.monotonic() + MAX_ARTIFACT_METADATA_REBUILD_SECONDS
         con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         try:
+            con.execute(f"DROP TABLE {_ARTIFACT_PAGING_TABLE}")
+            con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
+            # The previous sidecar contract overloaded the core checksum with
+            # its derived JSON checksum. That value now belongs in the sidecar.
+            con.execute("UPDATE artifacts SET checksum=NULL WHERE mime_type IS NULL")
             last_artifact_id: str | None = None
             while True:
                 if time.monotonic() >= deadline:
