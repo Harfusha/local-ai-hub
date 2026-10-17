@@ -14,34 +14,11 @@ def _tenant_identity(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
-def test_canonical_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -> None:
-    artifact_id = "art_durable_canonical"
+def test_fresh_schema_uses_sidecar_and_preserves_nul_slices(tmp_path) -> None:
     text = "A\x00BCDEF\x00GHI"
-    tenant = _tenant_identity("owner")
-    db_path = tmp_path / "artifacts.sqlite3"
-    with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute(
-            """CREATE TABLE artifacts (
-                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-                tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
-                text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
-                size_bytes INTEGER, checksum TEXT, identity_json TEXT
-            )"""
-        )
-        connection.execute(
-            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
-        )
-        connection.execute(
-            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
-            "VALUES(?,?,?,?,?,?)",
-            (artifact_id, time.time(), tenant, tenant, "text", text),
-        )
-        connection.commit()
-
     store = ArtifactStore(tmp_path)
+    artifact_id = store.put(text, "owner", "text")
+    db_path = tmp_path / "artifacts.sqlite3"
     result = store.get_slices(
         artifact_id,
         [{"offset": 0, "max_chars": 7}, {"offset": 5, "max_chars": 6}],
@@ -66,59 +43,22 @@ def test_canonical_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -
     assert sidecar_id == (artifact_id,)
 
 
-def test_unindexed_canonical_row_is_read_without_sidecar_write_after_batch_limit(tmp_path) -> None:
-    artifact_id = "art_z_deferred"
-    text = "before\x00after\x00end"
+def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
     tenant = _tenant_identity("owner")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
-            """CREATE TABLE artifacts (
-                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-                tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
-                text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
-                size_bytes INTEGER, checksum TEXT, identity_json TEXT
-            )"""
-        )
-        connection.execute(
-            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
-        )
-        now = time.time()
-        connection.executemany(
             "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
             "VALUES(?,?,?,?,?,?)",
-            [
-                (f"art_{index:03d}", now + index, tenant, tenant, "text", f"row-{index}")
-                for index in range(128)
-            ] + [(artifact_id, now + 128, tenant, tenant, "text", text)],
+            ("art_missing_paging", time.time(), tenant, tenant, "text", "unindexed"),
         )
         connection.commit()
 
-    store = ArtifactStore(tmp_path)
-    with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM artifact_paging_metadata").fetchone() == (128,)
-        assert connection.execute(
-            "SELECT 1 FROM artifact_paging_metadata WHERE artifact_id=?", (artifact_id,),
-        ).fetchone() is None
-
-    result = store.get_slices(
-        artifact_id,
-        [{"offset": 0, "max_chars": 8}, {"offset": 7, "max_chars": 8}],
-        tenant="owner",
-    )
-    assert result["success"] is True
-    assert result["slices"] == [
-        {"offset": 0, "text": text[0:8]},
-        {"offset": 7, "text": text[7:15]},
-    ]
-    with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM artifact_paging_metadata").fetchone() == (128,)
-        assert connection.execute(
-            "SELECT 1 FROM artifact_paging_metadata WHERE artifact_id=?", (artifact_id,),
-        ).fetchone() is None
+    before = db_path.read_bytes()
+    with pytest.raises(UnsupportedArtifactSchema, match="incomplete artifact paging metadata"):
+        ArtifactStore(tmp_path)
+    assert db_path.read_bytes() == before
 
 
 def test_core_and_sidecar_write_roll_back_together_on_failed_batch(tmp_path) -> None:
