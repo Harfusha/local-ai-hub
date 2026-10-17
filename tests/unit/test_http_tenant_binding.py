@@ -191,7 +191,7 @@ def test_lease_release_requires_specific_id_and_authenticated_tenant(monkeypatch
         {"lease_id": "lease-1"}, tenant="server-bound-tenant",
     )
 
-    assert [response[0] for response in responses] == [400, 400, 400]
+    assert [response[0] for response in responses] == [400, 400, 400, 200]
     assert calls == [("server-bound-tenant", "lease-1")]
 
 

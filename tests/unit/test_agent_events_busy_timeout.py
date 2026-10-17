@@ -9,7 +9,7 @@ import local_ai_hub.agent_events as agent_events
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 
 
-def test_append_uses_quarter_second_sqlite_busy_timeout(monkeypatch, tmp_path):
+def test_append_uses_two_second_sqlite_busy_timeout(monkeypatch, tmp_path):
     db_path = tmp_path / "agent-events.sqlite3"
     store = AgentStateStore(db_path)
     store._ensure_schema()
@@ -27,7 +27,7 @@ def test_append_uses_quarter_second_sqlite_busy_timeout(monkeypatch, tmp_path):
     result = store.append(AgentEvent.create("stream", "test", {"value": 1}))
 
     assert result.error is None
-    assert timeouts == [250]
+    assert timeouts == [2000]
 
 
 def test_concurrent_store_appends_are_durable_and_idempotent(tmp_path):

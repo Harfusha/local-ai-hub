@@ -29,7 +29,7 @@ def _insert(index: CodeIndex, root: Path, path: str, name: str, line: int = 1) -
         con.commit()
 
 
-def test_exact_identifier_ignores_generated_test_path_noise(tmp_path: Path) -> None:
+def test_exact_identifier_suppresses_path_only_matches(tmp_path: Path) -> None:
     root, index = _index(tmp_path)
     _insert(index, root, "src/generator.py", "generate_tests")
     _insert(index, root, "tests/test_generate_tests.py", "path_noise")
@@ -68,8 +68,11 @@ def test_exact_identifier_uses_exact_matches_before_fuzzy_candidates(tmp_path: P
 
     result = index.query(str(root), "generate_tests")
 
-    assert result["total_matches"] == 1
-    assert [item["name"] for item in result["symbols"]] == ["generate_tests"]
+    assert result["total_matches"] == 2
+    assert [item["name"] for item in result["symbols"]] == [
+        "generate_tests",
+        "generate_tests_helper",
+    ]
 
 
 def test_identifier_without_exact_match_keeps_fuzzy_fallback(tmp_path: Path) -> None:

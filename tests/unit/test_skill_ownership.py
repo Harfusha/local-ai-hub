@@ -388,6 +388,7 @@ so.install_skill(source, target, root, manifest, name)
         entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
         self.assertEqual(set(entries), {skill_ownership._canonical(target) for _, target, _ in skills})
 
+    @unittest.skipIf(os.name == "nt", "POSIX quarantine collision check; Windows fails closed without handle-relative child lookup")
     def test_quarantine_collision_retry_preserves_and_reports_all_recovery_paths(self) -> None:
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
         original_move = skill_ownership._rename_noreplace

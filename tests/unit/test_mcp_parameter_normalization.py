@@ -24,7 +24,34 @@ def test_mcp_module_comes_from_current_checkout():
     assert Path(mcp_server.__file__).resolve() == expected.resolve()
 
 
+@pytest.mark.parametrize("profile", ["standard", "debug"])
+def test_response_profile_does_not_raise_explicit_budget(profile):
+    budget, actual_profile, _, _ = mcp_server._response_budget(
+        "repo", {"max_response_tokens": 128, "response_profile": profile},
+    )
+
+    assert actual_profile == profile
+    assert budget == 128
+
+
+def test_response_budget_contract_accepts_none_and_rejects_invalid_explicit_values():
+    from local_ai_hub.operation_contracts import operation_parameters_schema
+
+    schema = operation_parameters_schema("local_ai_repo")["properties"]["max_response_tokens"]
+    assert schema["type"] == ["integer", "null"]
+    assert schema["minimum"] == 128
+    assert schema["default"] is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"query": "Widget", "max_response_tokens": None},
+    ) is None
+    for value in (True, 0, 127, "128", 128.0):
+        assert validate_operation_arguments(
+            "local_ai_repo", "search", {"query": "Widget", "max_response_tokens": value},
+        ) is not None
+
+
 def test_command_root_does_not_replace_cwd(monkeypatch, tmp_path):
+    _use_active_operational_mode(monkeypatch)
     captured = {}
 
     class DummyClient:

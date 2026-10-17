@@ -5187,7 +5187,6 @@ class CommandBroker:
                         ("sys", "stderr", "buffer", "write"),
                         ("sys", "stderr", "buffer", "flush"),
                         ("sys", "exit"),
-                        ("os", "write"),
                         ("os", "getenv"),
                         ("os", "getcwd"),
                         ("os", "environ", "get"),
