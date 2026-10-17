@@ -166,10 +166,15 @@ class AppendResult:
     error: str | None = None
 
     def succeeded(self) -> bool:
-        return self.error is None and not self.retryable and self.seq > 0
+        return (
+            self.error is None
+            and not self.retryable
+            and self.seq > 0
+            and self.event is not None
+        )
 
     def is_error(self) -> bool:
-        return bool(self.error) or self.retryable
+        return not self.succeeded()
 
     def to_dict(self) -> dict[str, Any]:
         return {

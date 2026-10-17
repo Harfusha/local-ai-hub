@@ -47,6 +47,14 @@ def test_append_result_helpers_and_serialization() -> None:
     assert err.succeeded() is False
     assert err.is_error() is True
 
+    missing_event = AppendResult(seq=1, duplicate=False)
+    assert missing_event.succeeded() is False
+    assert missing_event.is_error() is True
+
+    missing_sequence = AppendResult(seq=0, duplicate=False)
+    assert missing_sequence.succeeded() is False
+    assert missing_sequence.is_error() is True
+
 
 def test_swarm_pubsub_strict_inputs_and_helpers() -> None:
     for age in (float("nan"), -50.0, True):

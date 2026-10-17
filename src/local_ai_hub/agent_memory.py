@@ -918,8 +918,10 @@ class MemoryStore:
                             existing_event,
                             strict_idempotency=False,
                         )
-                        if appended.error is not None:
-                            raise RuntimeError(appended.error)
+                        if not appended.succeeded():
+                            raise RuntimeError(
+                                appended.error or "agent memory event append did not succeed"
+                            )
                         existing_record_id = str(existing_event.payload.get("record_id", ""))
                         existing_row = con.execute(
                             """
@@ -956,8 +958,10 @@ class MemoryStore:
                         event,
                         strict_idempotency=False,
                     )
-                    if appended.error is not None:
-                        raise RuntimeError(appended.error)
+                    if not appended.succeeded():
+                        raise RuntimeError(
+                            appended.error or "agent memory event append did not succeed"
+                        )
                     self._save_record_row(con, final_record)
                     con.execute("COMMIT")
                     publish([appended.event])
