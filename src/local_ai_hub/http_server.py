@@ -7972,7 +7972,7 @@ class Handler(BaseHTTPRequestHandler):
                             preview: list[dict[str, Any]] = []
                             preview_chars = 0
                             for change in changes[:32]:
-                                size = len(json.dumps(change, ensure_ascii=False))
+                                size = len(json.dumps(change, ensure_ascii=False, separators=(",", ":")))
                                 if preview_chars + size > 8000:
                                     break
                                 preview.append(change)
@@ -7980,7 +7980,7 @@ class Handler(BaseHTTPRequestHandler):
                             result = {**result, "artifact_id": artifact_id, "changes_total": len(changes),
                                       "changes_returned": len(preview), "changes": preview,
                                       "truncated": len(changes) > len(preview)}
-                            if len(changes) > len(preview) or len(json.dumps(result["tree"], ensure_ascii=False)) + preview_chars > 8000:
+                            if len(changes) > len(preview) or len(json.dumps(result["tree"], ensure_ascii=False, separators=(",", ":"))) + preview_chars > 8000:
                                 result.pop("tree", None)
                                 result["tree_in_artifact"] = True
                                 result["truncated"] = True
