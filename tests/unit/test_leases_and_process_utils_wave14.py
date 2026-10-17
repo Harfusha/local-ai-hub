@@ -44,6 +44,14 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     assert store.claim("tenant1", str(tmp_path), {"some/file.py"})["success"] is False
     assert store.claim("tenant1", str(tmp_path), [tmp_path / "some" / "file.py"])["success"] is False
 
+    # Reject scalar identity coercions before opening a lease transaction.
+    assert store.claim(1, str(tmp_path), ["valid.py"])["error"] == "invalid tenant"
+    assert store.claim("tenant1", tmp_path, ["valid.py"])["error"] == "invalid root"
+    assert store.claim("tenant1", str(tmp_path), ["valid.py"], purpose=1)["error"] == "invalid purpose"
+    assert store.claim(
+        "tenant1", str(tmp_path), ["valid.py"], coordination_id=42
+    )["error"] == "invalid project coordination id"
+
     # Reject paths containing invalid elements
     res_invalid_elem = store.claim("tenant1", str(tmp_path), ["valid.py", "bad\x00.py"])
     assert res_invalid_elem["success"] is False
@@ -60,6 +68,7 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     assert "lease_id must be a string" in res_rel_scalar["error"]
     assert store.release("tenant1", "")["success"] is False
     assert store.release("tenant1", None)["success"] is False
+    assert store.release("   ", "lease-id")["success"] is False
 
     # Renew rejects scalar non-string lease_id
     res_renew_scalar = store.renew("tenant1", 12345)

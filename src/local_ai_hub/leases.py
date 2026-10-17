@@ -204,6 +204,12 @@ class ScopeLeaseStore:
         *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
+        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
+            return {"success": False, "error": "invalid tenant"}
+        if not isinstance(root, str) or not root.strip() or root != root.strip() or "\x00" in root:
+            return {"success": False, "error": "invalid root"}
+        if not isinstance(purpose, str) or not purpose.strip() or "\x00" in purpose:
+            return {"success": False, "error": "invalid purpose"}
         if not isinstance(paths, (list, tuple)):
             return {"success": False, "error": "paths must be a sequence of path strings"}
         if not paths:
@@ -228,9 +234,15 @@ class ScopeLeaseStore:
         if coordination_id is _COORDINATION_ID_UNSET:
             root_id = physical_root_id
         else:
-            namespace = str(coordination_id).strip()
-            if not namespace or "\x00" in namespace or len(namespace) > 512:
+            if (
+                not isinstance(coordination_id, str)
+                or not coordination_id
+                or coordination_id != coordination_id.strip()
+                or "\x00" in coordination_id
+                or len(coordination_id) > 512
+            ):
                 return {"success": False, "error": "invalid project coordination id"}
+            namespace = coordination_id
             root_id = f"project:{namespace}"
         rels = sorted({_norm_rel(str(p), root=root_path) for p in paths})
         now = time.time()
@@ -357,7 +369,7 @@ class ScopeLeaseStore:
         )
 
     def release(self, tenant: str, lease_id: str) -> dict[str, Any]:
-        if not isinstance(tenant, str) or not tenant or "\x00" in tenant:
+        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
             return {"success": False, "error": "invalid tenant"}
         if not isinstance(lease_id, str):
             return {"success": False, "error": "lease_id must be a string"}
@@ -368,7 +380,7 @@ class ScopeLeaseStore:
 
     def release_tenant(self, tenant: str) -> dict[str, Any]:
         """Release all advisory leases for one exact tenant during owner cleanup."""
-        if not isinstance(tenant, str) or not tenant or "\x00" in tenant:
+        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
             return {"success": False, "error": "invalid tenant"}
         return self._release_matching(tenant, None)
 
