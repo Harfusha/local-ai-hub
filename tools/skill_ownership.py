@@ -110,6 +110,11 @@ class _PinnedQuarantine:
         return named.st_dev == pinned.st_dev and named.st_ino == pinned.st_ino
 
     def entry_presence(self, leaf: str) -> bool | None:
+        if os.name == "nt":
+            # Path-based lstat can follow a substituted ancestor even when a
+            # prior is_current check succeeded. Do not claim presence without
+            # a genuine handle-relative child lookup.
+            return None
         if self.directory_fd is None:
             try:
                 (self.path / leaf).lstat()
@@ -1046,7 +1051,7 @@ def _remove_skill_quarantined(
     target: Path,
     skill_name: str,
     manifest: Path,
-    entries: dict[str, dict[str, str]],
+    entries: dict[str, dict[str, object]],
     key: str,
     current_hash: str,
     expected_quarantine_root: Path,
@@ -1066,6 +1071,29 @@ def _remove_skill_quarantined(
     }
     pending_entries = dict(entries)
     pending_entries[quarantine_key] = quarantine_record
+
+    def mark_unknown_location(reason: str) -> str:
+        ambiguous_key = f"ambiguous:{key}:{uuid.uuid4().hex}"
+        ambiguous_record = {
+            **quarantine_record,
+            "quarantine_path": "unknown",
+            "status": "ambiguous",
+            "hash_state": "unverified",
+            "location_state": "unknown",
+        }
+        ambiguous_entries = dict(entries)
+        ambiguous_entries.pop(key, None)
+        ambiguous_entries.pop(quarantine_key, None)
+        ambiguous_entries[ambiguous_key] = ambiguous_record
+        try:
+            _manifest_write(manifest, ambiguous_entries)
+            return f"skill move outcome ambiguous: {reason}; recovery location is unknown"
+        except (OSError, ValueError) as write_exc:
+            return (
+                f"skill move outcome ambiguous: {reason}; recovery location is unknown; "
+                f"manifest reconciliation failed: {write_exc}"
+            )
+
     try:
         _manifest_write(manifest, pending_entries)
     except (OSError, ValueError) as exc:
@@ -1083,27 +1111,12 @@ def _remove_skill_quarantined(
             target, quarantine, quarantine_directory=quarantine_directory, source_pin=source_pin
         )
     except _AmbiguousMoveError as exc:
-        ambiguous_key = f"ambiguous:{key}:{uuid.uuid4().hex}"
-        ambiguous_record = {
-            **quarantine_record,
-            "quarantine_path": "unknown",
-            "status": "ambiguous",
-            "hash_state": "unverified",
-            "location_state": "unknown",
-        }
-        ambiguous_entries = dict(entries)
-        ambiguous_entries.pop(key, None)
-        ambiguous_entries.pop(quarantine_key, None)
-        ambiguous_entries[ambiguous_key] = ambiguous_record
-        try:
-            _manifest_write(manifest, ambiguous_entries)
-            return f"skill move outcome ambiguous: {exc}; recovery location is unknown"
-        except (OSError, ValueError) as write_exc:
-            return (
-                f"skill move outcome ambiguous: {exc}; recovery location is unknown; "
-                f"manifest reconciliation failed: {write_exc}"
-            )
+        return mark_unknown_location(str(exc))
     except OSError as exc:
+        if not quarantine_directory.is_current():
+            return mark_unknown_location(
+                f"pinned quarantine root path changed after move error ({exc})"
+            )
         try:
             target.lstat()
             target_present = True
@@ -1112,6 +1125,14 @@ def _remove_skill_quarantined(
         except OSError:
             target_present = None
         quarantine_present = quarantine_directory.entry_presence(quarantine.name)
+        if os.name == "nt" and not quarantine_directory.is_current():
+            return mark_unknown_location(
+                f"pinned quarantine root path changed during error reconciliation ({exc})"
+            )
+        if quarantine_present is None:
+            return mark_unknown_location(
+                f"quarantine presence could not be established after move error ({exc})"
+            )
 
         if target_present is False and quarantine_present is True:
             tracked_record, _presence = _inspect_quarantine_record(quarantine_record, expected_quarantine_root)
