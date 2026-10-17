@@ -74,3 +74,11 @@ def test_memory_delete_rejects_unknown_scope():
 
     with pytest.raises(RequestBodyError, match="scope must be 'global' or 'tenant'"):
         Handler._validate_payload("/api/memory/delete", {"key": "memo", "scope": "worktree"})
+
+
+@pytest.mark.parametrize("scope", ["GLOBAL", " Global", "global ", "Tenant"])
+def test_memory_delete_rejects_noncanonical_scope(scope):
+    from local_ai_hub.http_server import Handler, RequestBodyError
+
+    with pytest.raises(RequestBodyError, match="scope must be 'global' or 'tenant'"):
+        Handler._validate_payload("/api/memory/delete", {"key": "memo", "scope": scope})

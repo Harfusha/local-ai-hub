@@ -2703,7 +2703,7 @@ class Handler(BaseHTTPRequestHandler):
     def _bind_workspace_memory_payload(self, path: str, payload: dict[str, Any]) -> bool:
         is_global_delete = (
             path == "/api/memory/delete"
-            and str(payload.get("scope", "")).strip().lower() == "global"
+            and payload.get("scope") == "global"
         )
         bound = self._bind_root_tenant(
             payload.get("root"),
@@ -3497,7 +3497,7 @@ class Handler(BaseHTTPRequestHandler):
             if "root" in payload:
                 text(payload["root"], "root", 4096)
             if path == "/api/memory/delete" and "scope" in payload:
-                scope = text(payload["scope"], "scope", 16).strip().lower()
+                scope = text(payload["scope"], "scope", 16)
                 if scope not in {"global", "tenant"}:
                     raise RequestBodyError("scope must be 'global' or 'tenant'")
         elif path == "/api/memory/search":
