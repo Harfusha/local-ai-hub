@@ -64,7 +64,7 @@ def test_public_error_report_and_dashboard_expose_only_safe_diagnostic(tmp_path)
         assert private not in serialized
 
     modal_start = DASHBOARD_HTML.index("function renderErrorFingerprintModal(err)")
-    modal_end = DASHBOARD_HTML.index("function openArchNodeModal", modal_start)
+    modal_end = DASHBOARD_HTML.index("function renderDbOptModal", modal_start)
     modal_source = DASHBOARD_HTML[modal_start:modal_end]
     assert "Diagnostic" in modal_source
     assert "esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))" in modal_source
