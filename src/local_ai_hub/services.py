@@ -5138,8 +5138,8 @@ class LocalAIServices:
                     "error": f"context project hints invalid: {type(exc).__name__}",
                     "context": "", "evidence": [],
                 }
-        # Explicit fast mode remains deterministic-only. Adaptive mode intentionally
-        # bypasses this early return so independent backends can cross-check the pack.
+        # Deterministic fallback remains internal to adaptive retrieval. The adaptive
+        # path bypasses this early return so independent backends can cross-check the pack.
         if self.deterministic is not None and not quality_first:
             try:
                 det = self.deterministic_query(root, query, 30)
