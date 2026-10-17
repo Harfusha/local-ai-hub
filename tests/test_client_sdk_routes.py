@@ -178,7 +178,7 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
     assert http_post_paths[before:] == ["/api/repo/callers"]
 
     before = len(http_post_paths)
-    context_result = client.context_pack(root, "find Example callers", max_tokens=512, mode="fast")
+    context_result = client.context_pack(root, "find Example callers", max_tokens=512, mode="adaptive")
     assert context_result["success"] is True
     assert http_post_paths[before:] == ["/api/context/pack"]
 
@@ -193,7 +193,7 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
     assert http_post_paths[before:] == ["/api/evidence/get"]
 
     assert caller_result["callers"] == ["Example.call"]
-    assert context_result["delivery_mode"] == "fast"
+    assert context_result["delivery_mode"] == "adaptive"
     assert cancel_result["cancelled"] is True
     assert evidence_result["verified"] is False
     assert routes == [
@@ -334,7 +334,7 @@ def test_context_pack_rejects_invalid_mode_before_http(live_client, tmp_path, ht
     assert http_post_paths == []
     assert result["success"] is False
     assert result["status_code"] == 400
-    assert result["error"] == "context mode must be adaptive, full or fast"
+    assert result["error"] == "context mode must be adaptive"
     assert result["terminal"] is True
     assert result["retryable"] is False
 
@@ -516,7 +516,7 @@ def test_context_pack_returns_indexed_evidence_from_real_fast_context(live_clien
         str(repo),
         "config context_sentinel",
         max_tokens=512,
-        mode="fast",
+        mode="adaptive",
     )
 
     assert http_post_paths == ["/api/context/pack"]

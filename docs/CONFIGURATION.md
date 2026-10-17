@@ -32,7 +32,7 @@ The Hub is local-only: its HTTP server binds to `127.0.0.1`, and remote binding 
 
 ## Adaptive context guard
 
-For non-trivial repository work, `local_ai_repo(action="context")` is the default-on guarded context flow. Supply `task_id` or `phase`, or set `guarded = true`, to receive an adaptive context pack. The pack is bounded, revision-aware, and additive: callers that omit guarded fields keep the legacy `fast`/`full` context behavior.
+For non-trivial repository work, `local_ai_repo(action="context")` is the adaptive-only guarded context flow. Supply `task_id` or `phase`, or set `guarded = true`, to receive an adaptive context pack. The pack is bounded and revision-aware; omitted `mode` uses `adaptive`, while every other explicit mode rejects.
 
 `[context.preloads]` configures optional, bounded preload inputs. Preloads are indexed and fingerprinted; their full contents are not copied into every response. Missing files or empty patterns are soft fallbacks, not configuration failures.
 

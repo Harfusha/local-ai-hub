@@ -520,7 +520,7 @@ def _desc_repo() -> str:
         )
     if LEAN_SCHEMAS:
         return (
-            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omitted mode selects adaptive retrieval; explicit fast and full modes retain their distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Context mode is adaptive-only; other values reject before retrieval. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
             " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
         )
@@ -538,7 +538,7 @@ def _desc_repo() -> str:
         " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
-        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Omitted mode selects adaptive retrieval; explicit fast and full modes retain their distinct retrieval paths."
+        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Context mode is adaptive-only; other values reject before retrieval."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
@@ -3332,8 +3332,8 @@ def _local_ai_repo_impl(
     if action == "deterministic":
         return _compact(CLIENT.post("/api/repo/deterministic", {"root": root, "query": query, "limit": 30}, timeout=_timeout("quick")), "context")
     if action == "context":
-        if mode not in {"full", "fast", "adaptive"}:
-            return _context_input_error("context mode must be adaptive, full or fast")
+        if mode != "adaptive":
+            return _context_input_error("context mode must be adaptive")
         path_controls = {
             "path_hints": path_hints,
             "directory_hints": directory_hints,
@@ -3341,8 +3341,6 @@ def _local_ai_repo_impl(
             "force_include_paths": force_include_paths,
         }
         supplied_path_controls = any(value is not None for value in path_controls.values())
-        if supplied_path_controls and mode != "adaptive":
-            return _context_input_error("path controls require mode=adaptive")
         for name, value in path_controls.items():
             if value is None:
                 continue

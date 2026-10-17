@@ -147,7 +147,7 @@ Task resume: Sets task status to `ACTIVE` and preserves checkpoint metadata; doe
 
 The older T19 receipt stated **8/8 successful workflows on first direct call; 8 HTTP requests total**. That is historical evidence, not acceptance for this merged revision. Polling now uses the integer `after_seq` cursor; the former `since_timestamp` example and assertions require updating. Do not infer that a count of returned messages proves cursor semantics or live cross-tenant isolation.
 
-Recovery: `context mode must be adaptive, full or fast` requires a supported mode. `conversation not found` requires an existing conversation. If a continuation is already running (`in_progress=true`, `retryable=true`), wait for it to finish; do not send a duplicate request. Inspect current task or job state before retrying.
+Recovery: `context mode must be adaptive` requires a supported mode. `conversation not found` requires an existing conversation. If a continuation is already running (`in_progress=true`, `retryable=true`), wait for it to finish; do not send a duplicate request. Inspect current task or job state before retrying.
 
 ## Effects and retries
 

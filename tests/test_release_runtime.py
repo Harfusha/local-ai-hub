@@ -108,8 +108,8 @@ def test_deterministic_fast_fallback_remains_useful_and_explicit() -> None:
     assert result["degraded"] is True
     assert result["continuation"] == {
         "available": True,
-        "mode": "full",
-        "hint": "Request context mode=full only when deterministic-fast context is insufficient.",
+        "mode": "adaptive",
+        "hint": "Retry adaptive context when deterministic-only context is insufficient.",
     }
 
 

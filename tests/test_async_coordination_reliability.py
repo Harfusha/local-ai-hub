@@ -231,7 +231,7 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
 
     result = services.adaptive_context_pack(
         ConsistencyRequest(root="C:/repo", query="route", task_id="task-1", phase="review"),
-        mode="fast",
+        mode="adaptive",
         since_hash="rev-1",
     )
 

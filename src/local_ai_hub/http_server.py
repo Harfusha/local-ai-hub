@@ -5679,10 +5679,7 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _context_retrieval_mode(payload: Mapping[str, Any]) -> str | None:
         raw_mode = payload.get("mode", "adaptive")
-        if not isinstance(raw_mode, str):
-            return None
-        mode = raw_mode.strip().lower()
-        return mode if mode in {"adaptive", "fast", "full"} else None
+        return "adaptive" if raw_mode == "adaptive" else None
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -7422,7 +7419,7 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_mode is None:
                         self._send(400, {
                             "success": False,
-                            "error": "context mode must be adaptive, full or fast",
+                            "error": "context mode must be adaptive",
                             "terminal": True,
                             "retryable": False,
                         }); return
@@ -8092,7 +8089,7 @@ class Handler(BaseHTTPRequestHandler):
                 max_tokens = raw_max_tokens or max(128, min(int(configured_tokens or 8000), 20_000))
                 mode = self._context_retrieval_mode(payload)
                 if mode is None:
-                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive, full or fast"}); return
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive"}); return
                 if "project_config_digest" in payload:
                     self._send(400, {
                         "success": False, "terminal": True, "retryable": False,
@@ -8105,11 +8102,6 @@ class Handler(BaseHTTPRequestHandler):
                 project_retrieval_weights = None
                 project_memory_revision = ""
                 if path_controls_requested:
-                    if mode != "adaptive":
-                        self._send(400, {
-                            "success": False, "terminal": True, "retryable": False,
-                            "error": "path controls require adaptive context mode",
-                        }); return
                     for field in path_control_fields:
                         if payload.get(field) is not None and not isinstance(payload.get(field), list):
                             self._send(400, {
@@ -8370,13 +8362,10 @@ class Handler(BaseHTTPRequestHandler):
                                     if auto_injected_task:
                                         result["task_id"] = payload.get("task_id", "")
                     self._send(200, result); return
-                if mode == "fast":
-                    result = APP.services.fast_context(root, query_text, max_tokens)
-                else:
-                    result = APP.services._hybrid_context(
-                        root, query_text, tenant, payload.get("workspace"), max_tokens,
-                        quality_first=mode == "adaptive",
-                        context_identity={
+                result = APP.services._hybrid_context(
+                    root, query_text, tenant, payload.get("workspace"), max_tokens,
+                    quality_first=True,
+                    context_identity={
                             "tenant": tenant,
                             "path_hints": path_controls.path_hints if path_controls else (),
                             "directory_hints": path_controls.directory_hints if path_controls else (),
@@ -8384,13 +8373,13 @@ class Handler(BaseHTTPRequestHandler):
                             "force_include_paths": path_controls.force_include_paths if path_controls else (),
                             "project_config_digest": project_config_digest,
                             "memory_revision": project_memory_revision,
-                        },
-                        path_hints=path_controls.path_hints if path_controls else (),
-                        directory_hints=path_controls.directory_hints if path_controls else (),
-                        exclude_paths=path_controls.exclude_paths if path_controls else (),
-                        force_include_paths=path_controls.force_include_paths if path_controls else (),
-                        retrieval_weights=project_retrieval_weights,
-                    )
+                    },
+                    path_hints=path_controls.path_hints if path_controls else (),
+                    directory_hints=path_controls.directory_hints if path_controls else (),
+                    exclude_paths=path_controls.exclude_paths if path_controls else (),
+                    force_include_paths=path_controls.force_include_paths if path_controls else (),
+                    retrieval_weights=project_retrieval_weights,
+                )
                 if isinstance(result, dict):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
