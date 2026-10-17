@@ -24,7 +24,8 @@ def _current_marker(connection: sqlite3.Connection) -> None:
     connection.execute(
         """CREATE TABLE artifact_paging_metadata (
             artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL,
-            section_names TEXT NOT NULL, page_text TEXT, nul_mask BLOB
+            section_json TEXT NOT NULL, section_checksum TEXT NOT NULL,
+            page_text TEXT, nul_mask BLOB
         )"""
     )
 
@@ -40,12 +41,13 @@ def test_canonical_database_reopens_without_changing_durable_artifact_identity(t
             "VALUES ('art_fixed', 9999999999, ?, ?, 'text', 'preserved')",
             (tenant, tenant),
         )
-        section_names = '{"artifact_id":"art_fixed","names":[],"truncated":false}'
-        checksum = hashlib.sha256(section_names.encode("utf-8")).hexdigest()
-        connection.execute("UPDATE artifacts SET checksum=? WHERE artifact_id='art_fixed'", (checksum,))
+        section_json = '{"artifact_id":"art_fixed","names":[],"truncated":false}'
+        checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
+        core_checksum = "durable-core-checksum"
+        connection.execute("UPDATE artifacts SET checksum=? WHERE artifact_id='art_fixed'", (core_checksum,))
         connection.execute(
-            "INSERT INTO artifact_paging_metadata VALUES ('art_fixed', 9, ?, 'preserved', NULL)",
-            (section_names,),
+            "INSERT INTO artifact_paging_metadata VALUES ('art_fixed', 9, ?, ?, 'preserved', NULL)",
+            (section_json, checksum),
         )
         connection.commit()
 
@@ -55,6 +57,12 @@ def test_canonical_database_reopens_without_changing_durable_artifact_identity(t
         assert connection.execute(
             "SELECT artifact_id, tenant, tenant_identity, text FROM artifacts WHERE artifact_id='art_fixed'"
         ).fetchone() == ("art_fixed", tenant, tenant, "preserved")
+        assert connection.execute(
+            "SELECT checksum FROM artifacts WHERE artifact_id='art_fixed'"
+        ).fetchone() == (core_checksum,)
+        assert connection.execute(
+            "SELECT section_checksum FROM artifact_paging_metadata WHERE artifact_id='art_fixed'"
+        ).fetchone() == (checksum,)
 
 
 @pytest.mark.parametrize(
@@ -153,7 +161,7 @@ def test_formatting_equivalent_canonical_schema_is_accepted(tmp_path) -> None:
             "CREATE TABLE artifact_schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
         )
         connection.execute(
-            "CREATE TABLE artifact_paging_metadata(artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL, section_names TEXT NOT NULL, page_text TEXT, nul_mask BLOB)"
+            "CREATE TABLE artifact_paging_metadata(artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL, section_json TEXT NOT NULL, section_checksum TEXT NOT NULL, page_text TEXT, nul_mask BLOB)"
         )
         connection.execute("INSERT INTO artifact_schema_meta VALUES('tenant_storage','sha256-v1')")
         connection.commit()

@@ -47,6 +47,30 @@ def test_from_dict_rejects_noncanonical_fields():
         AgentEvent.from_dict({**canonical, "task_name": "legacy-alias"})
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("event_id", "", ValueError),
+        ("stream_id", "stream\x00id", ValueError),
+        ("kind", 7, ValueError),
+        ("payload", [], TypeError),
+        ("idempotency_key", None, ValueError),
+        ("correlation_id", "corr\x00id", ValueError),
+        ("actor", "  ", ValueError),
+        ("created_at", True, ValueError),
+        ("created_at", float("nan"), ValueError),
+        ("seq", True, ValueError),
+        ("seq", 1.5, ValueError),
+        ("seq", -1, ValueError),
+    ],
+)
+def test_from_dict_rejects_invalid_canonical_value_formats(field, value, error):
+    canonical = AgentEvent.create("stream-1", "test.event").to_dict()
+
+    with pytest.raises(error):
+        AgentEvent.from_dict({**canonical, field: value})
+
+
 def test_schema_drift_fails_closed_without_deleting_durable_database(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"
     con = sqlite3.connect(db_path)
