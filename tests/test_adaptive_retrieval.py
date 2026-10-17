@@ -105,6 +105,102 @@ def test_pinned_project_hint_survives_fusion_cap_but_remains_policy_checked(tmp_
     assert "docs/pinned.md" not in captured["kwargs"]["force_include_paths"]
 
 
+def test_hybrid_source_intent_ranks_source_and_config_before_history_and_coverage(tmp_path: Path) -> None:
+    captured: dict[str, tuple[str, ...]] = {}
+    groups = {
+        "deterministic": [
+            "docs/plans/old-runtime-plan.md", "docs/API_COVERAGE.md",
+            "docs/guide.md", "src/runtime.py",
+        ],
+        "code_index": ["docs/plans/old-runtime-plan.md", "config/runtime.toml"],
+    }
+
+    class FakeRepoTools:
+        @staticmethod
+        def iter_files(_root):
+            return []
+
+        @staticmethod
+        def context_pack_paths(root, query, paths, **kwargs):
+            captured["paths"] = tuple(paths)
+            evidence = [{
+                "path": path, "start_line": 2, "end_line": 4,
+                "score": 1.0 - index / 10,
+                "file_sha256": f"synthetic-sha-{index}",
+                "raw": f"synthetic evidence for {path}",
+            } for index, path in enumerate(paths[:2])]
+            context = "".join(
+                f"--- {item['path']}:2-4 score={item['score']} ---\n{item['raw']}\n"
+                for item in evidence
+            )
+            return {
+                "success": True, "root": root, "query": query,
+                "context": context,
+                "evidence": evidence,
+                "scanned_files": len(evidence),
+            }
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"search": {}, "features": {"rag": False}, "preprocessing": {}}
+    services.learner = None
+    services.repo_tools = FakeRepoTools()
+    services.deterministic = type("Deterministic", (), {
+        "related_paths": lambda *_args, **_kwargs: groups["deterministic"],
+    })()
+    services.code_index = type("CodeIndex", (), {
+        "related_paths": lambda *_args, **_kwargs: groups["code_index"],
+    })()
+    services.preprocessor = type("Preprocessor", (), {
+        "candidate_paths": lambda *_args, **_kwargs: [],
+    })()
+    services.external_tools = None
+    services.evidence_store = None
+    services.rag = None
+    services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "Fix runtime implementation", "tenant", None, 400,
+        quality_first=True,
+    )
+
+    assert result["success"] is True
+    ranked = captured.get("paths", ())
+    assert ranked
+    assert "src/runtime.py" in ranked
+    assert "config/runtime.toml" in ranked
+    assert "docs/guide.md" in ranked
+    assert "docs/plans/old-runtime-plan.md" in ranked
+    assert "docs/API_COVERAGE.md" in ranked
+    assert ranked.index("src/runtime.py") < ranked.index("docs/guide.md")
+    assert ranked.index("config/runtime.toml") < ranked.index("docs/guide.md")
+    assert ranked.index("docs/guide.md") < ranked.index("docs/plans/old-runtime-plan.md")
+    assert ranked.index("docs/guide.md") < ranked.index("docs/API_COVERAGE.md")
+    evidence = result["evidence"]
+    assert [item["path"] for item in evidence] == list(ranked[:2])
+    assert [item["start_line"] for item in evidence] == [2, 2]
+    assert [item["end_line"] for item in evidence] == [4, 4]
+    assert [item["score"] for item in evidence] == [1.0, 0.9]
+    assert [item["file_sha256"] for item in evidence] == ["synthetic-sha-0", "synthetic-sha-1"]
+    evidence_ids = [item["evidence_id"] for item in evidence]
+    assert all(evidence_ids)
+    assert len(set(evidence_ids)) == len(evidence_ids)
+    rendered_positions = [
+        result["context"].index(f"--- {item['path']}:2-4 score={item['score']} ---")
+        for item in evidence
+    ]
+    body_positions = [result["context"].index(item["raw"]) for item in evidence]
+    assert rendered_positions == sorted(rendered_positions)
+    assert body_positions == sorted(body_positions)
+    assert all(header < body for header, body in zip(rendered_positions, body_positions))
+    assert all(body < next_header for body, next_header in zip(body_positions, rendered_positions[1:]))
+    assert result["estimated_tokens"] > 0
+    assert result["context_budget_tokens"] == 400
+    assert result["scanned_files"] == len(evidence)
+    assert result["retrieval"]["quality_first"] is True
+    assert result["retrieval"]["quality"]["evidence_count"] == len(evidence)
+    assert result["retrieval"]["quality"]["file_coverage"] == len({item["path"] for item in evidence})
+
+
 def test_context_reader_keeps_soft_ignored_pinned_candidate_unread(tmp_path: Path) -> None:
     ignored = tmp_path / "vendor" / "pinned.md"
     ignored.parent.mkdir()
