@@ -2052,18 +2052,31 @@ class LocalAIServices:
         return result
 
     def review(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
-        payload = dict(args)
+        if "context" in args:
+            return {"success": False, "error": "review accepts code; context is not an alias"}
+        code = args.get("code", "")
+        instructions = args.get("instructions", "Review the supplied code or diff and report actionable defects only.")
+        if not isinstance(code, str):
+            return {"success": False, "error": "code must be a string"}
+        if not isinstance(instructions, str):
+            return {"success": False, "error": "instructions must be a string"}
+        payload = {key: value for key, value in args.items() if key not in {"code", "instructions"}}
         payload["task_type"] = "review"
-        payload["task"] = str(args.get("instructions", "Review the supplied code or diff and report actionable defects only."))
-        payload["context"] = str(args.get("code", args.get("context", "")))
+        payload["task"] = instructions
+        payload["context"] = code
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
     def reason(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
-        payload = dict(args)
+        if "task" in args:
+            return {"success": False, "error": "reason accepts problem; task is not an alias"}
+        problem = args.get("problem", "")
+        if not isinstance(problem, str):
+            return {"success": False, "error": "problem must be a string"}
+        payload = {key: value for key, value in args.items() if key != "problem"}
         payload["task_type"] = "reasoning"
-        payload["task"] = str(args.get("problem", args.get("task", "")))
+        payload["task"] = problem
         payload["operation"] = str(args.get("operation", "reason"))
         payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
