@@ -271,7 +271,7 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
             "method": "tools/call",
             "params": {
                 "name": "local_ai_status",
-                "arguments": {"action": "status", "detail": "brief"},
+                "arguments": {"detail": "brief"},
             },
         },
     ]

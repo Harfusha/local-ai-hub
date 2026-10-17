@@ -1861,19 +1861,22 @@ class TelemetryStore:
             int(writer.get(key, 0)) != int(previous_writer.get(key, 0))
             for key in ("attempted", "accepted", "rejected_overflow", "lost_after_acceptance", "written", "writer_errors")
         )
+        if not changed:
+            refreshed["writer"] = dict(previous_writer)
+            refreshed["summary_cache_stale"] = False
+            return refreshed
         old_detail = refreshed.get("detail", {})
         detail = self._detail_status(
             truncated=bool(old_detail.get("truncated", False)) if isinstance(old_detail, dict) else False,
             flush_complete=writer["pending"] == 0,
             writer=writer,
         )
-        if changed:
-            detail["status"] = "incomplete"
-            detail["incomplete"] = True
-            detail["omitted_sections"] = sorted(set(detail["omitted_sections"] + ["cached_summary_data"]))
+        detail["status"] = "incomplete"
+        detail["incomplete"] = True
+        detail["omitted_sections"] = sorted(set(detail["omitted_sections"] + ["cached_summary_data"]))
         refreshed["writer"] = writer
         refreshed["detail"] = detail
-        refreshed["summary_cache_stale"] = changed
+        refreshed["summary_cache_stale"] = True
         decision_grade = refreshed.get("decision_grade")
         if isinstance(decision_grade, dict):
             decision_grade = dict(decision_grade)
@@ -1993,6 +1996,14 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='tool_accounting'""",
                 (cutoff,),
             ).fetchone()
+            # Channel counters are row-level evidence. Aggregate equality can hide
+            # legacy rows when another row has overlapping input/output counters.
+            unpriced_row = (
+                "NOT (gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided "
+                "OR (gross_input_tokens_avoided > 0 AND gross_avoided_cloud_tokens = gross_input_tokens_avoided) "
+                "OR (gross_input_tokens_avoided = 0 AND gross_avoided_cloud_tokens = gross_output_tokens_avoided)) "
+                "OR net_cloud_token_delta <> gross_avoided_cloud_tokens - tool_request_tokens - tool_response_tokens"
+            )
             if scope == "window":
                 # Raw retention is shorter than the reporting window. Use daily
                 # totals once per complete UTC day, and raw rows only for the
@@ -2024,29 +2035,41 @@ class TelemetryStore:
                     (boundary.timestamp(), boundary_end),
                 ).fetchone()[0]
                 accounting_boundary_incomplete = boundary_rollup > boundary_raw
-                pricing_event_window = "created_at>=? AND created_at<? AND event_type='tool_accounting'"
-                pricing_event_params = (cutoff, boundary_end)
+                pricing_table = (
+                    f"(SELECT events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
+                    f"tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM daily_rollups "
+                    f"WHERE day>? AND event_type='tool_accounting' "
+                    f"UNION ALL SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
+                    f"tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
+                    f"WHERE created_at>=? AND created_at<? AND event_type='tool_accounting')"
+                )
+                pricing_table_params = (day, cutoff, boundary_end)
                 pricing_rollup_rows = int(con.execute(
-                    """SELECT COUNT(*) FROM daily_rollups WHERE day>? AND event_type='tool_accounting'
+                    f"""SELECT COUNT(*) FROM daily_rollups WHERE day>? AND event_type='tool_accounting'
                        AND events>0 AND (gross_avoided_cloud_tokens<>0 OR gross_input_tokens_avoided<>0
                            OR gross_output_tokens_avoided<>0 OR tool_request_tokens<>0
-                           OR tool_response_tokens<>0 OR net_cloud_token_delta<>0)""",
+                           OR tool_response_tokens<>0 OR net_cloud_token_delta<>0)
+                       AND ({unpriced_row})""",
                     (day,),
                 ).fetchone()[0])
+                unpriced_event_rows = int(con.execute(
+                    f"SELECT COUNT(*) FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting' AND ({unpriced_row})",
+                    (cutoff, boundary_end),
+                ).fetchone()[0])
             else:
-                pricing_event_window = "created_at>=? AND event_type='tool_accounting'"
-                pricing_event_params = (cutoff,)
+                pricing_table = (
+                    "(SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
+                    "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
+                    "WHERE created_at>=? AND event_type='tool_accounting')"
+                )
+                pricing_table_params = (cutoff,)
                 pricing_rollup_rows = 0
-            # Channel counters are row-level evidence. Aggregate equality can hide
-            # legacy rows when another row has overlapping input/output counters.
-            unpriced_row = (
-                "NOT (gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided "
-                "OR (gross_input_tokens_avoided > 0 AND gross_avoided_cloud_tokens = gross_input_tokens_avoided) "
-                "OR (gross_input_tokens_avoided = 0 AND gross_avoided_cloud_tokens = gross_output_tokens_avoided)) "
-                "OR net_cloud_token_delta <> gross_avoided_cloud_tokens - tool_request_tokens - tool_response_tokens"
-            )
+                unpriced_event_rows = int(con.execute(
+                    f"SELECT COUNT(*) FROM events WHERE created_at>=? AND event_type='tool_accounting' AND ({unpriced_row})",
+                    (cutoff,),
+                ).fetchone()[0])
             known_channel_rows = con.execute(
-                f"""SELECT COUNT(*),
+                f"""SELECT COALESCE(SUM(events),0),
                            COALESCE(SUM(CASE
                                WHEN gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided
                                    THEN gross_input_tokens_avoided
@@ -2058,13 +2081,9 @@ class TelemetryStore:
                                WHEN gross_input_tokens_avoided = 0 THEN gross_output_tokens_avoided
                                ELSE 0 END),0),
                            COALESCE(SUM(tool_request_tokens),0), COALESCE(SUM(tool_response_tokens),0)
-                    FROM events WHERE {pricing_event_window} AND NOT ({unpriced_row})""",
-                pricing_event_params,
+                    FROM {pricing_table} WHERE NOT ({unpriced_row})""",
+                pricing_table_params,
             ).fetchone()
-            unpriced_event_rows = int(con.execute(
-                f"SELECT COUNT(*) FROM events WHERE {pricing_event_window} AND ({unpriced_row})",
-                pricing_event_params,
-            ).fetchone()[0])
             pricing_incomplete = bool(
                 pricing_rollup_rows or unpriced_event_rows or accounting_boundary_incomplete
             )
