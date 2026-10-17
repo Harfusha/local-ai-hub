@@ -6336,10 +6336,29 @@ class LocalAIServices:
     def route_context(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         if self.token_router is None:
             return {"success": False, "error": "lossless token router unavailable"}
-        query = str(args.get("query", args.get("task", "")))
-        if args.get("path"):
-            return self.token_router.route_file(str(args.get("root", ".")), str(args.get("path")), query, tenant)
-        return self.token_router.route_text(str(args.get("text", args.get("context", ""))), query, tenant, path=args.get("label"))
+        if "task" in args or "context" in args:
+            return {
+                "success": False,
+                "error": "route accepts query and text; task and context are not aliases",
+            }
+        query = args.get("query", "")
+        text = args.get("text", "")
+        if not isinstance(query, str):
+            return {"success": False, "error": "query must be a string"}
+        if not isinstance(text, str):
+            return {"success": False, "error": "text must be a string"}
+        path = args.get("path")
+        if path is not None and not isinstance(path, str):
+            return {"success": False, "error": "path must be a string"}
+        label = args.get("label")
+        if label is not None and not isinstance(label, str):
+            return {"success": False, "error": "label must be a string"}
+        if path:
+            root = args.get("root", ".")
+            if not isinstance(root, str):
+                return {"success": False, "error": "root must be a string"}
+            return self.token_router.route_file(root, path, query, tenant)
+        return self.token_router.route_text(text, query, tenant, path=label)
 
     def review_diff(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         diff = self.repo_diff(

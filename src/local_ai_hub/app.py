@@ -647,6 +647,8 @@ class LocalAIApp:
             return self.services.compress(compress_payload, tenant)
         if action == "route":
             route_payload = dict(async_payload)
+            route_payload.pop("task", None)
+            route_payload.pop("context", None)
             route_payload.update({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")})
             return self.services.route_context(route_payload, tenant)
         if action == "batch":
