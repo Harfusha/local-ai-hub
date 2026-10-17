@@ -32,6 +32,45 @@ def _insert_symbols(index, root, records):
         con.commit()
 
 
+def test_trigram_replacement_streams_long_fields_in_bounded_chunks(tmp_path):
+    root, index = _index(tmp_path)
+    path = "src/large.py"
+    long_name = "a" * 12000
+    batch_sizes = []
+
+    with closing(sqlite3.connect(index.db_path)) as con:
+        con.execute(
+            """INSERT INTO symbols(
+                   root,path,name,kind,line,end_line,container,name_path,signature,access,docstring
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(root), path, long_name, "function", 1, 2, "", long_name, "", "public", ""),
+        )
+
+        class TrackingConnection:
+            def execute(self, *args, **kwargs):
+                return con.execute(*args, **kwargs)
+
+            def executemany(self, sql, parameters):
+                if sql.startswith("INSERT OR IGNORE INTO symbol_trigrams"):
+                    batch_sizes.append(len(parameters))
+                return con.executemany(sql, parameters)
+
+        index._replace_symbol_trigrams(TrackingConnection(), str(root), [path])
+        con.commit()
+
+        assert batch_sizes
+        assert max(batch_sizes) == 2048
+        assert all(size <= 2048 for size in batch_sizes)
+        postings = dict(
+            con.execute(
+                "SELECT field,COUNT(*) FROM symbol_trigrams WHERE root=? AND path=? GROUP BY field",
+                (str(root), path),
+            )
+        )
+        assert postings["name"] == 1
+        assert postings["name_path"] == 1
+
+
 def test_trigram_candidates_preserve_full_results_scores_and_pages(tmp_path):
     root, index = _index(tmp_path)
     _insert_symbols(index, root, [

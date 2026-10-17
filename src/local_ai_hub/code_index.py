@@ -1782,17 +1782,17 @@ class CodeIndex:
                     value = str(raw or "").lower()
                     if len(value) < 3:
                         continue
-                    grams = {value[offset:offset + 3] for offset in range(len(value) - 2)}
-                    additions.extend((root, path, symbol_rowid, field, gram) for gram in grams)
-                    if len(additions) >= 2048:
-                        con.executemany(
-                            "INSERT INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
-                            additions,
-                        )
-                        additions.clear()
+                    for offset in range(len(value) - 2):
+                        additions.append((root, path, symbol_rowid, field, value[offset:offset + 3]))
+                        if len(additions) == 2048:
+                            con.executemany(
+                                "INSERT OR IGNORE INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
+                                additions,
+                            )
+                            additions.clear()
             if additions:
                 con.executemany(
-                    "INSERT INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
                     additions,
                 )
 
