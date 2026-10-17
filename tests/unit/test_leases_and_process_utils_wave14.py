@@ -1,4 +1,3 @@
-import math
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -64,8 +63,14 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     assert res_invalid_elem["success"] is False
     assert "invalid lease path" in res_invalid_elem["error"]
 
-    # Valid claim with boolean ttl_seconds falls back safely
-    res_valid = store.claim("tenant1", str(tmp_path), ["valid.py"], ttl_seconds=True)
+    # Invalid TTL values reject instead of silently selecting a default.
+    res_invalid_ttl = store.claim("tenant1", str(tmp_path), ["invalid.py"], ttl_seconds=True)
+    assert res_invalid_ttl["success"] is False
+    assert res_invalid_ttl["error"] == "ttl_seconds must be a positive integer"
+    res_invalid_float_ttl = store.claim("tenant1", str(tmp_path), ["invalid-float.py"], ttl_seconds=900.0)
+    assert res_invalid_float_ttl["success"] is False
+
+    res_valid = store.claim("tenant1", str(tmp_path), ["valid.py"])
     assert res_valid["success"] is True
     lease_id = res_valid["lease_id"]
 
@@ -82,9 +87,10 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     assert res_renew_scalar["success"] is False
     assert "lease_id must be a string" in res_renew_scalar["error"]
 
-    # Renew with boolean ttl_seconds
+    # Renew rejects boolean TTL rather than silently selecting a default.
     res_renew = store.renew("tenant1", lease_id, ttl_seconds=False)
-    assert res_renew["success"] is True
+    assert res_renew["success"] is False
+    assert res_renew["error"] == "ttl_seconds must be a positive integer"
 
     # Proper release
     res_rel = store.release("tenant1", lease_id)
