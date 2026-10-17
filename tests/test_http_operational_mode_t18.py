@@ -187,7 +187,6 @@ def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -
         "after_seq": 0,
         "limit": 50,
     }
-    handler._tenant = lambda: tenant
     handler._async_delivery = lambda *_args: None
 
     handler.do_POST()
@@ -229,14 +228,13 @@ def test_gaming_mode_blocks_workspace_memory_but_allows_artifact_reads(monkeypat
         ),
         (
             "/api/artifact/get",
-            {"root": str(tmp_path), "tenant": tenant, "artifact_id": "artifact-1"},
+            {"artifact_id": "artifact-1"},
             200,
             None,
         ),
     ):
         handler = _handler(path)
         handler._read_json = lambda body=payload: body
-        handler._tenant = lambda: tenant
         handler._async_delivery = lambda *_args: None
         handler.do_POST()
         assert handler.responses[0][0] == expected_status, handler.responses[0]

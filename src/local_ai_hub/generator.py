@@ -701,10 +701,12 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
 
     coord_memo_hint = ""
     if fs.coord:
+        memory_hint = ' Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`.' if fs.agent_os else ""
+        findings_target = "permitted scoped Agent OS memory or the existing operator-approved coordination file." if fs.agent_os else "the existing operator-approved coordination file."
         coord_memo_hint = (
-            " Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action=\"memory_find\")`."
+            f"{memory_hint}"
             " Workspace `memo_*` actions are unavailable through tenant-scoped endpoints; on terminal 403 do not retry or bypass scope."
-            " For overlapping edits use `local_ai_coord` leases; record concise findings in permitted scoped Agent OS memory or the existing operator-approved coordination file."
+            f" For overlapping edits use `local_ai_coord` leases; record concise findings in {findings_target}"
         )
 
     return (
