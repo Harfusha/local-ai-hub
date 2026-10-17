@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import queue
 import re
 import threading
 import time
@@ -13,7 +14,7 @@ import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Collection, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, retry_busy
@@ -464,6 +465,82 @@ def _send_incident_webhooks(urls: list[str], payload: bytes) -> None:
             logger.warning("Incident webhook delivery failed (%s)", type(exc).__name__)
 
 
+_MAX_PENDING_INCIDENT_WEBHOOKS = 32
+_MAX_INCIDENT_WEBHOOK_PAYLOAD_BYTES = 128 * 1024
+_MAX_INCIDENT_WEBHOOK_URLS = 16
+_MAX_INCIDENT_WEBHOOK_URL_CHARS = 2048
+
+
+class _IncidentWebhookDispatcher:
+    """One daemon worker with bounded queued payloads for best-effort hooks."""
+
+    def __init__(
+        self,
+        *,
+        max_pending: int = _MAX_PENDING_INCIDENT_WEBHOOKS,
+        max_payload_bytes: int = _MAX_INCIDENT_WEBHOOK_PAYLOAD_BYTES,
+        sender: Callable[[list[str], bytes], None] = _send_incident_webhooks,
+    ) -> None:
+        if isinstance(max_pending, bool) or not isinstance(max_pending, int) or max_pending < 1:
+            raise ValueError("max_pending must be a positive integer")
+        if isinstance(max_payload_bytes, bool) or not isinstance(max_payload_bytes, int) or max_payload_bytes < 1:
+            raise ValueError("max_payload_bytes must be a positive integer")
+        self._jobs: queue.Queue[tuple[tuple[str, ...], bytes] | None] = queue.Queue(maxsize=max_pending)
+        self._max_payload_bytes = max_payload_bytes
+        self._sender = sender
+        self._worker = threading.Thread(
+            target=self._run, name="local-ai-incident-webhooks", daemon=True
+        )
+        self._worker.start()
+
+    def submit(self, urls: Collection[str], payload: bytes) -> bool:
+        if not urls or not isinstance(payload, bytes) or len(payload) > self._max_payload_bytes:
+            return False
+        try:
+            self._jobs.put_nowait((tuple(urls), payload))
+        except queue.Full:
+            return False
+        return True
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            try:
+                if job is None:
+                    return
+                urls, payload = job
+                self._sender(list(urls), payload)
+            except Exception as exc:
+                logger.warning("Incident webhook delivery failed (%s)", type(exc).__name__)
+            finally:
+                self._jobs.task_done()
+
+    def close(self, timeout: float = 1.0) -> bool:
+        try:
+            self._jobs.put(None, timeout=max(0.0, timeout))
+        except queue.Full:
+            return False
+        self._worker.join(max(0.0, timeout))
+        return not self._worker.is_alive()
+
+
+_incident_webhook_dispatcher: _IncidentWebhookDispatcher | None = None
+_incident_webhook_dispatcher_lock = threading.Lock()
+
+
+def _submit_incident_webhooks(urls: Collection[str], payload: bytes) -> bool:
+    global _incident_webhook_dispatcher
+    with _incident_webhook_dispatcher_lock:
+        if _incident_webhook_dispatcher is None:
+            try:
+                _incident_webhook_dispatcher = _IncidentWebhookDispatcher()
+            except Exception as exc:
+                logger.warning("Incident webhook dispatch unavailable (%s)", type(exc).__name__)
+                return False
+        dispatcher = _incident_webhook_dispatcher
+    return dispatcher.submit(urls, payload)
+
+
 class IncidentStore:
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
@@ -473,11 +550,19 @@ class IncidentStore:
         self._webhook_lock = threading.Lock()
         self._init_table()
 
-    def register_webhook(self, url: str) -> None:
+    def register_webhook(self, url: str) -> bool:
+        if not isinstance(url, str):
+            return False
         clean = url.strip()
+        if not clean or len(clean) > _MAX_INCIDENT_WEBHOOK_URL_CHARS:
+            return False
         with self._webhook_lock:
-            if clean and clean not in self.webhook_urls:
-                self.webhook_urls.append(clean)
+            if clean in self.webhook_urls:
+                return True
+            if len(self.webhook_urls) >= _MAX_INCIDENT_WEBHOOK_URLS:
+                return False
+            self.webhook_urls.append(clean)
+        return True
 
     def unregister_webhook(self, url: str) -> None:
         clean = url.strip()
@@ -491,9 +576,13 @@ class IncidentStore:
         if not urls:
             return
         payload = json_dumps(record_dict, default=str).encode("utf-8")
-        def _send() -> None:
-            _send_incident_webhooks(urls, payload)
-        threading.Thread(target=_send, daemon=True).start()
+        try:
+            accepted = _submit_incident_webhooks(urls, payload)
+        except Exception as exc:
+            logger.warning("Incident webhook dispatch unavailable (%s)", type(exc).__name__)
+            return
+        if not accepted:
+            logger.warning("Incident webhook delivery skipped (queue or payload bound reached)")
 
     def _init_table(self) -> None:
         if self._initialized or not self.state_store.enabled:
