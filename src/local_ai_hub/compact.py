@@ -137,7 +137,26 @@ def compact_result(
     # Command output is aggressively bounded; a full-log artifact is optional.
     output_artifact_available = bool(data.get("output_artifact_id"))
     if isinstance(data.get("summary"), str) and len(data["summary"]) > max_text_chars:
-        data["summary"] = syntax_aware_truncate(data["summary"], max_text_chars, marker="\n[... summary truncated ...]")
+        summary = data["summary"].rstrip()
+        marker = "\n[... summary middle omitted ...]\n"
+        available = max_text_chars - len(marker)
+        final_line = summary.splitlines()[-1] if summary else ""
+        if available > 0 and len(final_line) <= available:
+            tail_budget = min(available, max(len(final_line), max(16, available * 2 // 3)))
+            tail = summary[-tail_budget:]
+            if not tail.endswith(final_line):
+                tail = final_line
+            head_budget = max(0, available - len(tail))
+            data["summary"] = summary[:head_budget] + marker + tail
+        elif available > 0:
+            line_marker = " … "
+            line_budget = max(1, available - len(line_marker))
+            head_budget = (line_budget + 1) // 2
+            tail_budget = line_budget - head_budget
+            tail = final_line[-tail_budget:] if tail_budget else ""
+            data["summary"] = final_line[:head_budget] + line_marker + tail
+        else:
+            data["summary"] = syntax_aware_truncate(summary, max_text_chars, marker="\n[... summary truncated ...]")
     stream_budget = max(256, max_text_chars // 3)
     if isinstance(data.get("stdout"), str) and len(data["stdout"]) > stream_budget:
         marker = "\n[... stdout truncated; use artifact ...]" if output_artifact_available else "\n[... stdout truncated ...]"
