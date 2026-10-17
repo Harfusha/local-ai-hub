@@ -5218,6 +5218,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                 )
                                                 if key in trial
                                             },
+                                            "response_budget": trial["response_budget"],
                                         })
                                     elif text_mode == "compact":
                                         wire["content"][0]["text"] = json_dumps({
