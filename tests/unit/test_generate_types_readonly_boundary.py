@@ -153,7 +153,7 @@ def test_mcp_generate_types_rejects_diff_without_posting(monkeypatch: pytest.Mon
     assert result["success"] is False
     assert result["terminal"] is True
     assert result["retryable"] is False
-    assert "read-only" in result["error"]
+    assert "not an alias" in result["error"]
 
 
 def test_mcp_generate_types_posts_canonical_read_only_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

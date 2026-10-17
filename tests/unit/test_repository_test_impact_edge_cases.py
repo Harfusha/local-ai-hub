@@ -26,6 +26,20 @@ def test_repository_test_impact_rejects_invalid_roots(root: object) -> None:
         service.test_matrix(root)  # type: ignore[arg-type]
 
 
+def test_affected_tests_rejects_blank_base_before_execution(tmp_path: Path) -> None:
+    observed = {}
+
+    class Engine:
+        def affected_tests(self, root, paths, base):
+            observed.update(root=root, paths=paths, base=base)
+            return {"ok": True}
+
+    service = RepositoryTestImpactService(Engine(), _runner)
+    with pytest.raises(ValueError, match="base must be nonempty"):
+        service.affected_tests(str(tmp_path), (path for path in ("tests/a.py",)), "  ", {"limit": 7})
+    assert observed == {}
+
+
 def test_affected_tests_materializes_iterable_and_copies_params(tmp_path: Path) -> None:
     observed = {}
 
@@ -39,15 +53,11 @@ def test_affected_tests_materializes_iterable_and_copies_params(tmp_path: Path) 
     result = service.affected_tests(
         str(tmp_path),
         (path for path in ("tests/a.py", "tests/b.py")),
-        "  ",
+        "HEAD",
         original_params,
     )
 
-    assert observed == {
-        "root": str(tmp_path),
-        "paths": ["tests/a.py", "tests/b.py"],
-        "base": "HEAD",
-    }
+    assert observed == {"root": str(tmp_path), "paths": ["tests/a.py", "tests/b.py"], "base": "HEAD"}
     assert result["params"] == original_params
     assert result["params"] is not original_params
 
@@ -118,11 +128,11 @@ def test_affected_tests_defaults_and_normalization(tmp_path: Path) -> None:
     calls: list[tuple[Any, ...]] = []
     service = RepositoryTestImpactService(engine, _dummy_runner(calls))
 
-    # tuple or set changed_paths normalized to list, None params normalized to dict, empty base defaults to HEAD
+    # tuple or set changed_paths normalized to list, None params normalized to dict
     res = service.affected_tests(
         root=tmp_path,
         changed_paths=("src/foo.py", "src/bar.py"),  # type: ignore[arg-type]
-        base="",
+        base="HEAD",
         params=None,  # type: ignore[arg-type]
     )
     assert res["success"] is True

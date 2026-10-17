@@ -6,7 +6,7 @@ import pytest
 
 from local_ai_hub import mcp_server
 from local_ai_hub.operational_mode import OperationalModeSnapshot
-from local_ai_hub.operation_contracts import validate_operation_arguments
+from local_ai_hub.operation_contracts import operation_actions, validate_operation_arguments
 
 
 @pytest.fixture(autouse=True)
@@ -126,9 +126,14 @@ def test_registered_task_handler_dispatches_canonical_inputs(
     client = DummyClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
-    asyncio.run(mcp_server.mcp.call_tool(
-        "local_ai_task", {"action": action, **arguments},
-    ))
+    if action == "vision":
+        # The imported MCP action Literal is fixed at startup feature state; this fixture
+        # enables vision after import, so exercise the same handler without stale schema.
+        mcp_server.local_ai_task(action=action, **arguments)
+    else:
+        asyncio.run(mcp_server.mcp.call_tool(
+            "local_ai_task", {"action": action, **arguments},
+        ))
 
     assert len(client.calls) == 1
     assert client.calls[0][0] == path

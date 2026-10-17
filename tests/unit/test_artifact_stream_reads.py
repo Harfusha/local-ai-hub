@@ -21,6 +21,11 @@ def _insert_text(store: ArtifactStore, artifact_id: str, text: str, *, tenant: s
             "(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
             (artifact_id, time.time() - age, tenant, _identity(tenant), "text", text),
         )
+        section_map, sections_truncated = store._section_data(text)
+        page_text, nul_mask = store._page_text_metadata(text)
+        store._write_paging_metadata(
+            connection, artifact_id, text, list(section_map), page_text, nul_mask, sections_truncated,
+        )
         connection.commit()
 
 
@@ -57,14 +62,18 @@ def test_streaming_reads_round_trip_unicode_nul_and_distant_spans(tmp_path, enco
     assert one_char["text"] == "x"
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute(
-            "SELECT 1 FROM artifact_paging_metadata WHERE artifact_id='art_stream'",
-        ).fetchone() is None
+            "SELECT artifact_id FROM artifact_paging_metadata WHERE artifact_id='art_stream'",
+        ).fetchone() == ("art_stream",)
 
 
-def test_streaming_read_uses_one_snapshot_and_does_not_backfill(tmp_path, monkeypatch) -> None:
+def test_streaming_read_uses_one_snapshot_without_rewriting_sidecar(tmp_path, monkeypatch) -> None:
     store = ArtifactStore(tmp_path)
     original = "A" * 100_000 + "old"
     _insert_text(store, "art_snapshot", original)
+    with closing(sqlite3.connect(store.path)) as connection:
+        metadata_before = connection.execute(
+            "SELECT section_names FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
+        ).fetchone()
     stream = store._stream_text
     changed = False
 
@@ -89,8 +98,8 @@ def test_streaming_read_uses_one_snapshot_and_does_not_backfill(tmp_path, monkey
             "SELECT text FROM artifacts WHERE artifact_id='art_snapshot'",
         ).fetchone() == ("new",)
         assert connection.execute(
-            "SELECT 1 FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
-        ).fetchone() is None
+            "SELECT section_names FROM artifact_paging_metadata WHERE artifact_id='art_snapshot'",
+        ).fetchone() == metadata_before
 
 
 def test_section_scan_caps_names_and_header_retention(tmp_path) -> None:
@@ -154,7 +163,7 @@ def test_json_section_over_admission_limit_returns_bounded_error(tmp_path) -> No
     assert result["error_code"] == "artifact_section_too_large"
 
 
-def test_missing_json_metadata_reports_bounded_names_and_rejects_duplicate_keys(tmp_path) -> None:
+def test_json_sections_report_bounded_names_and_reject_duplicate_keys(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
     _insert_text(store, "art_json_names", '{"first":1,"second":2}')
     _insert_text(store, "art_json_duplicate", '{"same":1,"same":2}')

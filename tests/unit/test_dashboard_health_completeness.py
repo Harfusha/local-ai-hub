@@ -29,6 +29,7 @@ def test_telemetry_render_warns_on_unknown_or_incomplete_writer_coverage() -> No
         "const n=v=>String(v??0);const sloScope='process';\n" + source,
         """
 const base={enabled:true,data_available:true,scope:'process',tool_accounting_events:0,
+  net_cloud_token_delta_est:0,cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}},
   writer:{dropped:0,writer_errors:0,pending:0,activity_observed:true,accounting_balanced:true},
   detail:{incomplete:false},summary_cache_stale:false};
 renderTelemetryMetrics(base);
@@ -56,6 +57,10 @@ def test_project_errors_and_unknown_inventory_are_functional_health_warnings() -
         "const n=v=>String(v??0);\n" + source,
         """
 const healthy={hub_online:true,ollama_online:true,headless:{state:'running'},
+  observability:{enabled:true,data_available:true,net_cloud_token_delta_est:0,
+    cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}},
+    writer:{dropped:0,writer_errors:0,pending:0,activity_observed:true,accounting_balanced:true},
+    detail:{incomplete:false},summary_cache_stale:false},
   preprocessing:{success:true,projects:[{status:'complete',last_error:'historical text'}]}};
 assert.equal(dashboardHealth(healthy).level,'healthy');
 const failed={...healthy,preprocessing:{success:true,projects:[{status:'error',last_error:'current failure'}]}};
@@ -81,7 +86,7 @@ assert.match(rows.text,/2 registered · 1 currently running · 3 concurrent slot
 const noRows=preprocessingSummary({success:true},{});
 assert.equal(noRows.available,false);
 assert.match(noRows.text,/status unknown/);
-const disabledByProject={hub_online:true,ollama_online:true,preprocessing:{enabled:false}};
+const disabledByProject={...healthy,preprocessing:{enabled:false}};
 assert.equal(dashboardHealth(disabledByProject).level,'healthy');
 assert.equal(dashboardHealthBadge(disabledByProject).className,'ok');
 assert.match(dashboardHealthBadge(disabledByProject).degradedLabel,/preprocessing disabled/);
@@ -106,6 +111,7 @@ def test_overall_health_requires_complete_advertised_telemetry_coverage() -> Non
         """
 const base={hub_online:true,ollama_online:true,headless:{state:'running'},observability:{
   enabled:true,data_available:true,activity_observed:true,accounting_balanced:true,
+  net_cloud_token_delta_est:0,cohorts:{agent_http:{events:0,failures:0},policy_rejection:{events:0}},
   writer:{dropped:0,writer_errors:0,pending:0,activity_observed:true,accounting_balanced:true},
   detail:{incomplete:false},summary_cache_stale:false}};
 assert.equal(dashboardHealth(base).level,'healthy');

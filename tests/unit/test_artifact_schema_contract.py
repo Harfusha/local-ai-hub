@@ -40,8 +40,12 @@ def test_canonical_database_reopens_without_changing_durable_artifact_identity(t
             "VALUES ('art_fixed', 9999999999, ?, ?, 'text', 'preserved')",
             (tenant, tenant),
         )
+        section_names = '{"artifact_id":"art_fixed","names":[],"truncated":false}'
+        checksum = hashlib.sha256(section_names.encode("utf-8")).hexdigest()
+        connection.execute("UPDATE artifacts SET checksum=? WHERE artifact_id='art_fixed'", (checksum,))
         connection.execute(
-            "INSERT INTO artifact_paging_metadata VALUES ('art_fixed', 9, '{\"names\":[],\"truncated\":false}', 'preserved', NULL)"
+            "INSERT INTO artifact_paging_metadata VALUES ('art_fixed', 9, ?, 'preserved', NULL)",
+            (section_names,),
         )
         connection.commit()
 
