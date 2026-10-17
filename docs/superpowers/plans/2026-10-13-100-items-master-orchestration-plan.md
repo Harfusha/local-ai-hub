@@ -495,3 +495,5 @@ The model-free claim validator now takes explicit manifest and receipt paths rat
 **2026-10-17 lease query and renewal contracts:** Renew now rejects malformed tenant/lease identities; list/waits/check_path reject scalar coordination IDs and non-string paths instead of coercing them. Regression cases are authored; validation remains deferred until the complete source bundle is assembled.
 
 **2026-10-17 corrupt lease-scope handling:** Overlap checks now normalize both live and requested scopes; malformed persisted paths conservatively block claims/checks, and a repository-root scope overlaps every child. Temporary-database regression coverage uses explicit connection closing; tests remain deferred.
+
+**2026-10-17 lease TTL contract:** Claim and renew now reject booleans, floats, and nonpositive TTLs instead of silently substituting the default; positive integer TTLs retain the existing 30–7200 second effective bounds. Regression cases are authored but unexecuted.

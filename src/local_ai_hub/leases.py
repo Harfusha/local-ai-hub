@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import ntpath
 import os
 import posixpath
@@ -125,6 +124,12 @@ def _is_canonical_coordination_id(value: object) -> bool:
         and "\x00" not in value
         and len(value) <= 512
     )
+
+
+def _bounded_lease_ttl(value: object) -> int | None:
+    if type(value) is not int or value < 1:
+        return None
+    return max(30, min(value, 7200))
 
 
 class ScopeLeaseStore:
@@ -255,10 +260,9 @@ class ScopeLeaseStore:
             root_id = f"project:{namespace}"
         rels = sorted({_norm_rel(str(p), root=root_path) for p in paths})
         now = time.time()
-        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds):
-            ttl = 900
-        else:
-            ttl = max(30, min(int(ttl_seconds), 7200))
+        ttl = _bounded_lease_ttl(ttl_seconds)
+        if ttl is None:
+            return {"success": False, "error": "ttl_seconds must be a positive integer"}
         expires = now + ttl
         lease_id = f"lease_{uuid.uuid4().hex[:20]}"
 
@@ -458,10 +462,9 @@ class ScopeLeaseStore:
             return {"success": False, "error": "lease_id must be a string"}
         if not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id:
             return {"success": False, "error": "invalid lease_id"}
-        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds):
-            ttl = 900
-        else:
-            ttl = max(30, min(int(ttl_seconds), 7200))
+        ttl = _bounded_lease_ttl(ttl_seconds)
+        if ttl is None:
+            return {"success": False, "error": "ttl_seconds must be a positive integer"}
         now = time.time()
         new_expires = now + ttl
 
