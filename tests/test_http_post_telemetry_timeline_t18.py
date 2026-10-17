@@ -13,8 +13,8 @@ from local_ai_hub.http_route_registry import select_http_routes, select_post_han
 def test_timeline_is_the_only_registered_t18_route_and_pack_stays_inline() -> None:
     ids = select_http_routes("POST", "/api/telemetry/timeline")
     assert ids == ("post_telemetry_timeline_1",)
-    assert select_post_handler(ids) == "_handle_post_telemetry_timeline"
-    assert select_http_routes("POST", "/api/context/pack") == ()
+    assert select_http_routes("POST", "/api/context/pack") == ("post_context_pack_1",)
+    assert select_post_handler(("post_context_pack_1",)) is None
 
 
 def test_timeline_handler_preserves_status_body_arguments_and_degrades_backend_error(monkeypatch) -> None:

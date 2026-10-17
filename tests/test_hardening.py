@@ -57,6 +57,9 @@ def test_embedding_cache_stores_identity_and_dimension(tmp_path):
         def __init__(self): self.writes = []
         def get(self, _key): return None
         def set(self, key, value): self.writes.append((key, value))
+        def set_many(self, items):
+            for key, value in items.items():
+                self.writes.append((key, value))
 
     model = EmbeddingModel(_config(tmp_path))
     cache = Cache()
