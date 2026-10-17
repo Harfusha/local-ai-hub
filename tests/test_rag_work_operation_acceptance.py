@@ -55,7 +55,7 @@ def test_mcp_rag_index_forwards_root_and_workspace(monkeypatch: Any, tmp_path: A
     result = mcp_server.local_ai_rag(action="index", root=str(tmp_path))
 
     assert backend.calls == [
-        ("POST", "/api/rag/index", {"root": str(tmp_path), "workspace": str(tmp_path)}, {"timeout": 77.0})
+        ("POST", "/api/rag/index", {"root": str(tmp_path), "workspace": mcp_server.canonical_workspace_id(str(tmp_path))}, {"timeout": 77.0})
     ]
     _assert_response_fields(result, response)
     assert result["success"] is True
@@ -72,7 +72,7 @@ def test_mcp_rag_search_clamps_top_k_and_uses_root_workspace_default(monkeypatch
         (
             "POST",
             "/api/rag/search",
-            {"query": "release gate", "workspace": str(tmp_path), "top_k": 12, "use_reranker": True},
+            {"root": str(tmp_path), "query": "release gate", "workspace": mcp_server.canonical_workspace_id(str(tmp_path)), "top_k": 12, "use_reranker": True},
             {},
         )
     ]

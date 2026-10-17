@@ -1608,7 +1608,7 @@ def test_status_uses_canonical_detail_schema_in_live_and_generated_tools():
     from local_ai_hub.generator import generate_mcp_tool_schemas
     import mcp.types as mcp_types
 
-    details = {"brief", "cache", "telemetry", "full", "agent_state"}
+    details = {"brief", "cache", "telemetry", "full", "agent_state", "traces", "guide"}
     schemas = generate_mcp_tool_schemas({})["local_ai_status"]["parameters"]["properties"]
     list_handler = mcp_server.mcp._mcp_server.request_handlers[mcp_types.ListToolsRequest]
     response = asyncio.run(list_handler(mcp_types.ListToolsRequest(method="tools/list")))
@@ -1638,6 +1638,16 @@ def test_status_detail_values_route_to_expected_live_status_scope(monkeypatch):
 
         def status(self, **kwargs):
             calls.append(("status", kwargs))
+            if kwargs.get("detail") == "agent_state":
+                return {
+                    "success": True,
+                    "enabled": True,
+                    "active_tasks": [],
+                    "tasks_count": 0,
+                    "incidents_count": 0,
+                    "candidates_count": 0,
+                    "status": "nominal",
+                }
             return status
 
     monkeypatch.setattr(mcp_server, "CLIENT", Client())
@@ -1646,7 +1656,7 @@ def test_status_detail_values_route_to_expected_live_status_scope(monkeypatch):
         "brief": ["/api/live/status?light=1&scope=process"],
         "cache": ["/api/live/status?light=1&scope=process"],
         "telemetry": ["/api/telemetry/report?days=30&scope=process"],
-        "full": ["/api/live/status?light=1&scope=process", "/api/capabilities"],
+        "full": ["/api/status?scope=process", "/api/capabilities"],
         "agent_state": [("status", {"detail": "agent_state"})],
     }
     for action, expected in expected_calls.items():

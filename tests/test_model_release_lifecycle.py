@@ -293,8 +293,8 @@ def test_reranker_rechecks_model_after_release_races_with_prediction(
     pause_once = {"pending": True}
     ensure_results = []
 
-    def ensure_then_pause():
-        available = original_ensure()
+    def ensure_then_pause(*args, **kwargs):
+        available = original_ensure(*args, **kwargs)
         ensure_results.append((available, reranker._model is not None, reranker._load_error))
         if pause_once["pending"]:
             pause_once["pending"] = False
