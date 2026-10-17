@@ -2475,12 +2475,6 @@ class CodeIndex:
         if isinstance(cached, dict):
             return self._apply_query_freshness(copy.deepcopy(cached), verify_content=False)
 
-        def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
-            return _code_index_candidate_score(
-                name, name_path, container, path, terms, exact_identifier,
-            )
-
-        score_sql = "hub_code_index_score(name,name_path,container,path)"
         ignored_paths = []
         for directory in sorted(getattr(self.repo_tools, "ignore_dirs", ())):
             name = str(directory).strip().strip("/\\").lower()
@@ -2497,11 +2491,30 @@ class CodeIndex:
         ))
         base_args: list[Any] = [resolved_root, *(f"/{name}/" for name in ignored_paths)]
         with self._lock, closing(self._connect()) as con:
-            con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+            exact_match_exists = False
+            if exact_identifier is not None:
+                exact_match_exists = con.execute(
+                    "SELECT 1 FROM symbols WHERE " + base_filters_sql + " AND lower(name)=? LIMIT 1",
+                    [*base_args, exact_identifier.lower()],
+                ).fetchone() is not None
+            candidate_filters_sql = base_filters_sql
+            candidate_args = list(base_args)
+            if exact_match_exists and exact_identifier is not None:
+                candidate_filters_sql += " AND lower(name)=?"
+                candidate_args.append(exact_identifier.lower())
+                score_sql = "1000.0"
+            else:
+                def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
+                    return _code_index_candidate_score(
+                        name, name_path, container, path, terms, exact_identifier,
+                    )
+
+                con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+                score_sql = "hub_code_index_score(name,name_path,container,path)"
             sql = (
                 "WITH scored AS MATERIALIZED ("
                 "SELECT rowid AS _rowid," + score_sql + " AS _score "
-                "FROM symbols WHERE " + base_filters_sql
+                "FROM symbols WHERE " + candidate_filters_sql
                 + "), matches AS MATERIALIZED ("
                 "SELECT * FROM scored WHERE _score > 0"
                 "), stats AS (SELECT COUNT(*) AS _total_matches FROM matches), "
@@ -2514,7 +2527,7 @@ class CodeIndex:
                 "page._score,page._present,stats._total_matches FROM stats "
                 "LEFT JOIN page ON 1=1 LEFT JOIN symbols ON symbols.rowid=page._rowid"
             )
-            rows = con.execute(sql, [*base_args, limit, offset]).fetchall()
+            rows = con.execute(sql, [*candidate_args, limit, offset]).fetchall()
         total_matches = int(rows[0]["_total_matches"]) if rows else 0
         rows = [row for row in rows if row["_present"] is not None]
         candidate_truncated = False
@@ -2526,9 +2539,7 @@ class CodeIndex:
             name_l = name.lower()
             name_path = str(row["name_path"] or "")
             haystack = " ".join((name_l, name_path.lower(), str(row["container"] or "").lower(), str(row["path"]).lower()))
-            score = _code_index_candidate_score(
-                name, name_path, row["container"], row["path"], terms, exact_identifier,
-            )
+            score = float(row["_score"])
             matched_terms: list[str] = []
             for term in terms:
                 if name_l == term:

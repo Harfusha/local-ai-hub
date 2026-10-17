@@ -221,20 +221,26 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
             "- Validate changes with bounded native test/lint commands; never repeat identical failing commands."
         )
 
-    # Mandatory repo gate
-    repo_gate_lines: list[str] = ["1. Establish one stable **absolute** project root."]
+    # Keep exact lookups cheap and reuse current evidence. Preprocess only to
+    # repair a missing or stale index; it is not a mandatory task ritual.
+    repo_gate_lines: list[str] = [
+        "Reuse fresh sufficient evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
+    ]
     step_num = 2
-    if fs.preprocessing:
+    if fs.repo:
         repo_gate_lines.append(
-            f"{step_num}. On the first task for that root call `local_ai_repo(action=\"preprocess\", root=ABS_ROOT)` **exactly once**. "
-            "Continue immediately; never poll, wait, refresh or force preprocessing."
+            f'{step_num}. For non-trivial implementation or review without sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once with a stable absolute project root.'
+            + (
+                " Preprocess only when that root is unindexed or its evidence is stale; never wait, poll, or force-refresh."
+                if fs.preprocessing else ""
+            )
         )
         step_num += 1
 
     if fs.commands:
         repo_gate_lines.append(
-            f"{step_num}. `local_ai_command` alone is never sufficient for a repository task: "
-            "first use the cheapest applicable non-command Hub action, then use the command broker only for commands. "
+            f"{step_num}. `local_ai_command` alone is never sufficient for implementation or review: "
+            "use it after fresh repository evidence exists. "
             'For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. '
             "After edits, run the applicable indexed impact/review/security/evidence check before final validation."
         )
@@ -672,14 +678,14 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
 
     repo_task_first = ""
     if fs.repo:
-        prep_call = ' On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once, then continue immediately; preprocessing is asynchronous, so never poll/wait/force-refresh it.' if fs.preprocessing else ""
-        cmd_gate = ' `local_ai_command` alone is never sufficient for a repository task. After one-time preprocess, the first useful Hub operation must be `local_ai_repo(action="context", mode="adaptive")`; use the command broker only for commands after grounded repository evidence exists.' if fs.commands else ""
+        cmd_gate = ' `local_ai_command` alone is never sufficient for implementation or review; use it after fresh repository evidence exists.' if fs.commands else ""
         agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
         task_review_hint = ' Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing.' if (fs.tasks and fs.has_any_model()) else ""
         repo_task_first = (
-            "\nFor every non-trivial repository task, use Local AI Hub before broad native discovery or repeatable validation."
-            f" Keep one stable absolute project root.{prep_call}\n"
-            ' Then call `local_ai_repo(action="context", mode="adaptive")` as the first useful operation; it is the quality-first retrieval gate and accepts the task/context directly.\n'
+            "\nReuse fresh sufficient repository evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
+            " For non-trivial implementation or review without sufficient fresh evidence, use `local_ai_repo(action=\"context\", mode=\"adaptive\")` once with a stable absolute project root."
+            + (' Preprocess only when that root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait, poll, or force-refresh it.' if fs.preprocessing else "")
+            + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
             ' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence'
             f" and before native edits.{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
@@ -726,9 +732,9 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " preserve exact action, arguments, result, and ownership in the audit record.\n"
         + ("\nBackground preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.\n" if fs.preprocessing else "")
         + f"{repo_task_first}\n"
-        "Adaptive retrieval path: call `local_ai_repo(action=\"context\", mode=\"adaptive\")` first; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently."
+        "Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently."
         " Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list."
-        " Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first."
+        " For broader discovery, use Hub evidence before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files; exact file/symbol lookups may use their bounded direct routes."
         " Reuse fresh evidence IDs, artifact slices, memos and cache hits;\n"
         " do not repeat the same hub action with the same root/query while repository state is unchanged.\n\n"
         "Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result;"
@@ -824,10 +830,10 @@ Load and follow this skill before any coding or repository task. Apply its disco
 - Prefer single-block replacements (`replace_file_content` / targeted patches) over rewriting entire files.
 - Do not recite or parrot existing file contents before or after changes.
 
-### 4. Offload to Optional Local Model (Local AI Hub)
-- For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate only when an approved local backend is already available:
-- Use `qwen2.5-coder:1.5b` for quick local work, `qwen2.5-coder:3b` for ordinary work, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile; reserve `qwen2.5-coder:0.5b` for preprocessing.
-  - Do not install Ollama or llama.cpp just to satisfy a delegation; use deterministic/indexed Hub tools when no local backend is healthy.
+### 4. Optional Local AI Hub Models
+- Local semantic delegation is optional. Use only models available under the active profile and user policy; configured routes do not prove installation or quality.
+- Preprocessing-only models must not handle foreground work. Do not pull models or start a backend just to satisfy delegation.
+- Use deterministic/indexed Hub tools for exact facts, symbols, diffs, and tests; model output cannot replace that evidence.
 
 ### 5. Concise Output (Caveman Protocol)
 - Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.

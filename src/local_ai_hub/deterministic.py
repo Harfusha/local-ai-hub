@@ -5281,56 +5281,148 @@ def test_{sym}_regression_edge_cases():
         }
 
     def repo_topology(self, root: str) -> dict[str, Any]:
-        """Return bounded filename heuristics and declared Python import edges."""
+        """Return a bounded local Python import graph and heuristic path labels."""
+        import sys
+
         resolved_root = Path(self._root(root)).resolve()
         root_str = str(resolved_root)
-        file_limit, per_file_limit, total_bytes_limit = 2000, 256 * 1024, 8 * 1024 * 1024
+        file_limit = 20_000
+        per_file_limit = 256 * 1024
+        total_bytes_limit = 8 * 1024 * 1024
+        edge_limit = 5_000
+        sample_limit = 100
         deadline = time.monotonic() + 3.0
         complete = True
         errors: list[str] = []
         excluded_dirs = sorted(getattr(self.repo_tools, "ignore_dirs", set()))
-        all_files: list[str] = []
+        excluded = {
+            ".git", ".hg", ".svn", ".venv", "venv", ".tox", "node_modules",
+            "__pycache__", "docs", "doc", "plans", "tests", "test", "fixtures",
+            "fixture", "examples", "example", "archive", "archives", "artifacts",
+            "handoff", "cache", "caches", "build", "dist", "target", "vendor",
+            "generated",
+        }
+
+        source_roots: list[Path] = []
+        src_root = resolved_root / "src"
+        if src_root.is_dir():
+            resolved_src = src_root.resolve()
+            if _is_symlink_or_reparse_point(src_root) or not resolved_src.is_relative_to(resolved_root):
+                complete = False
+                errors.append("unsafe_path")
+            else:
+                source_roots.append(resolved_src)
+        packages_root = resolved_root / "packages"
+        if packages_root.is_dir():
+            try:
+                if _is_symlink_or_reparse_point(packages_root):
+                    complete = False
+                    errors.append("unsafe_path")
+                else:
+                    for package in sorted(packages_root.iterdir()):
+                        package_src = package / "src"
+                        if not package_src.is_dir():
+                            continue
+                        resolved_package_src = package_src.resolve()
+                        if (
+                            _is_symlink_or_reparse_point(package)
+                            or _is_symlink_or_reparse_point(package_src)
+                            or not resolved_package_src.is_relative_to(resolved_root)
+                        ):
+                            complete = False
+                            errors.append("unsafe_path")
+                            continue
+                        source_roots.append(resolved_package_src)
+            except OSError:
+                complete = False
+                errors.append("source_root_error")
+        unsafe_source_root = "unsafe_path" in errors and not source_roots
+        use_project_root = not source_roots and not unsafe_source_root
+        inventory_roots = source_roots or ([resolved_root] if use_project_root else [])
+
+        def eligible_rel(path: Path) -> str | None:
+            try:
+                rel = path.relative_to(resolved_root)
+            except ValueError:
+                return None
+            if any(part.lower() in excluded for part in rel.parts[:-1]):
+                return None
+            if use_project_root or any(path.is_relative_to(base) for base in source_roots):
+                return rel.as_posix()
+            return None
+
+        eligible: list[tuple[str, Path]] = []
         try:
-            for candidate in self.repo_tools.iter_files(root_str, max_files=file_limit + 1):
-                if time.monotonic() >= deadline:
-                    complete = False
-                    errors.append("inventory_deadline")
-                    break
-                if len(all_files) >= file_limit:
-                    complete = False
-                    errors.append("file_limit")
-                    break
-                try:
-                    rel = candidate.relative_to(resolved_root).as_posix()
-                    if not rel or rel.startswith("../"):
+            for inventory_root in inventory_roots:
+                for candidate in self.repo_tools.iter_files(
+                    str(inventory_root), max_files=file_limit + 1
+                ):
+                    if time.monotonic() >= deadline:
                         complete = False
-                        errors.append("path_outside_root")
+                        errors.append("inventory_deadline")
+                        break
+                    rel = eligible_rel(candidate)
+                    if rel is None or not rel.lower().endswith(".py"):
                         continue
-                    all_files.append(rel)
-                except (OSError, ValueError):
-                    complete = False
-                    errors.append("inventory_path_error")
+                    if len(eligible) >= file_limit:
+                        complete = False
+                        errors.append("file_limit")
+                        break
+                    eligible.append((rel, candidate))
+                if "inventory_deadline" in errors or "file_limit" in errors:
+                    break
         except Exception:
             complete = False
             errors.append("inventory_error")
 
         layers: dict[str, list[str]] = {
-            "entrypoints": [],
-            "presentation": [],
-            "core_services": [],
-            "domain_models": [],
-            "infrastructure": [],
-            "tests": [],
-            "utilities": [],
+            name: []
+            for name in (
+                "entrypoints", "presentation", "core_services",
+                "domain_models", "infrastructure", "utilities",
+            )
         }
+        module_paths: dict[str, list[str]] = defaultdict(list)
+        path_modules: dict[str, str] = {}
+        for rel, path in eligible:
+            base = next(
+                (source_root for source_root in source_roots if path.is_relative_to(source_root)),
+                resolved_root,
+            )
+            module_parts = list(path.relative_to(base).with_suffix("").parts)
+            if module_parts[-1] == "__init__":
+                module_parts.pop()
+            module = ".".join(module_parts)
+            if module:
+                module_paths[module].append(rel)
+                path_modules[rel] = module
 
-        import_graph: dict[str, set[str]] = defaultdict(set)
-        in_degree: Counter[str] = Counter()
+            lowered = rel.lower()
+            name = path.name.lower()
+            if name in {"main.py", "app.py", "cli.py", "__main__.py"}:
+                layer = "entrypoints"
+            elif any(token in lowered for token in ("route", "controller", "view", "endpoint", "http_", "mcp_", "api/", "api_")):
+                layer = "presentation"
+            elif any(token in lowered for token in ("service", "orchestrat", "planner", "pipeline", "handler", "manager", "engine", "core")):
+                layer = "core_services"
+            elif any(token in lowered for token in ("model", "schema", "entity", "types", "event", "state")):
+                layer = "domain_models"
+            elif any(token in lowered for token in ("db", "storage", "repo", "dao", "client", "cache", "telemetry", "hardware", "sqlite")):
+                layer = "infrastructure"
+            else:
+                layer = "utilities"
+            layers[layer].append(rel)
 
-        total_bytes = 0
-        files_read = 0
-        parse_errors = 0
-        skipped = 0
+        def resolve_local(module: str) -> str | None:
+            candidate = module
+            while candidate:
+                matches = module_paths.get(candidate, [])
+                if len(matches) == 1:
+                    return matches[0]
+                if len(matches) > 1:
+                    return ""
+                candidate = candidate.rpartition(".")[0]
+            return None
 
         def has_unsafe_ancestor(path: Path) -> bool:
             current = resolved_root
@@ -5340,153 +5432,164 @@ def test_{sym}_regression_edge_cases():
                     return True
             return False
 
-        for rel in all_files:
+        edges: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        external: list[dict[str, Any]] = []
+        stdlib_count = total_bytes = files_read = skipped = parse_errors = 0
+        for rel, path in eligible:
             if time.monotonic() >= deadline or total_bytes >= total_bytes_limit:
                 complete = False
-                errors.append("analysis_deadline" if time.monotonic() >= deadline else "aggregate_byte_limit")
-                skipped += len(all_files) - files_read - skipped
+                errors.append(
+                    "analysis_deadline"
+                    if time.monotonic() >= deadline
+                    else "aggregate_byte_limit"
+                )
+                skipped += len(eligible) - files_read - skipped
                 break
-            rel_lower = rel.lower()
-            name = Path(rel).name.lower()
-            stem = Path(rel).stem.lower()
-
-            if _is_test_file(rel):
-                layers["tests"].append(rel)
-            elif name in {"main.py", "app.py", "cli.py", "index.ts", "index.js", "server.ts", "server.js", "main.go", "main.rs", "__main__.py"}:
-                layers["entrypoints"].append(rel)
-            elif any(m in rel_lower for m in ("route", "controller", "view", "endpoint", "http_", "mcp_", "api/", "api.")):
-                layers["presentation"].append(rel)
-            elif any(m in rel_lower for m in ("service", "orchestrat", "planner", "pipeline", "handler", "manager", "engine", "core")):
-                layers["core_services"].append(rel)
-            elif any(m in rel_lower for m in ("model", "schema", "entity", "type", "event", "state", "dataclass")):
-                layers["domain_models"].append(rel)
-            elif any(m in rel_lower for m in ("db", "storage", "repo", "dao", "client", "cache", "telemetry", "hardware", "sqlite")):
-                layers["infrastructure"].append(rel)
-            else:
-                layers["utilities"].append(rel)
-
-            if rel.lower().endswith(".py"):
-                fpath = resolved_root / rel
+            try:
+                if has_unsafe_ancestor(path) or not path.resolve().is_relative_to(resolved_root):
+                    raise ValueError("unsafe_path")
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0)
+                    | getattr(os, "O_BINARY", 0)
+                )
+                fd = os.open(path, flags)
                 try:
-                    if has_unsafe_ancestor(fpath) or not fpath.resolve().is_relative_to(resolved_root):
-                        complete = False
-                        errors.append("unsafe_path")
-                        skipped += 1
-                        continue
-                    flags = (
-                        os.O_RDONLY
-                        | getattr(os, "O_NOFOLLOW", 0)
-                        | getattr(os, "O_NONBLOCK", 0)
-                        | getattr(os, "O_BINARY", 0)
-                    )
-                    fd = os.open(fpath, flags)
-                    try:
-                        before = os.fstat(fd)
-                        path_before = os.stat(fpath, follow_symlinks=False)
-                        if (
-                            not stat.S_ISREG(before.st_mode)
-                            or before.st_size > per_file_limit
-                            or has_unsafe_ancestor(fpath)
-                            or (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino)
-                            or not fpath.resolve().is_relative_to(resolved_root)
-                        ):
-                            complete = False
-                            errors.append("nonregular_or_oversize")
-                            skipped += 1
-                            continue
-                        remaining = min(per_file_limit, total_bytes_limit - total_bytes)
-                        with os.fdopen(fd, "rb", closefd=False) as handle:
-                            raw = handle.read(remaining + 1)
-                        after = os.fstat(fd)
-                        path_after = os.stat(fpath, follow_symlinks=False)
-                        total_bytes += len(raw)
-                        files_read += 1
-                        if (
-                            len(raw) > remaining
-                            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                            or (after.st_dev, after.st_ino) != (path_after.st_dev, path_after.st_ino)
-                            or has_unsafe_ancestor(fpath)
-                            or not fpath.resolve().is_relative_to(resolved_root)
-                        ):
-                            complete = False
-                            errors.append("file_changed_or_byte_limit")
-                            continue
-                        tree = ast.parse(raw.decode("utf-8", errors="replace"), filename=rel)
-                        for node in ast.walk(tree):
-                            if time.monotonic() >= deadline:
-                                complete = False
-                                errors.append("analysis_deadline")
-                                break
-                            if isinstance(node, ast.Import):
-                                modules = [alias.name for alias in node.names]
-                            elif isinstance(node, ast.ImportFrom):
-                                prefix = ("." * node.level) + (node.module or "")
-                                modules = (
-                                    [prefix + alias.name for alias in node.names]
-                                    if node.module is None
-                                    else [prefix]
-                                )
-                            else:
-                                continue
-                            for target_mod in modules:
-                                if target_mod and target_mod != stem:
-                                    import_graph[rel].add(target_mod)
-                    finally:
-                        os.close(fd)
-                except (OSError, SyntaxError, UnicodeError, ValueError):
+                    before = os.fstat(fd)
+                    path_before = os.stat(path, follow_symlinks=False)
+                    if (
+                        not stat.S_ISREG(before.st_mode)
+                        or before.st_size > per_file_limit
+                        or (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino)
+                    ):
+                        raise ValueError("unsafe_path")
+                    remaining = min(per_file_limit, total_bytes_limit - total_bytes)
+                    with os.fdopen(fd, "rb", closefd=False) as handle:
+                        raw = handle.read(remaining + 1)
+                    after = os.fstat(fd)
+                    path_after = os.stat(path, follow_symlinks=False)
+                    if (
+                        len(raw) > remaining
+                        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                        or (after.st_dev, after.st_ino) != (path_after.st_dev, path_after.st_ino)
+                        or has_unsafe_ancestor(path)
+                    ):
+                        raise ValueError("file_changed_or_byte_limit")
+                    total_bytes += len(raw)
+                    files_read += 1
+                    parsed = ast.parse(raw.decode("utf-8"), filename=rel)
+                finally:
+                    os.close(fd)
+            except (OSError, SyntaxError, UnicodeError, ValueError) as exc:
+                complete = False
+                skipped += 1
+                parse_errors += 1
+                errors.append(str(exc) if isinstance(exc, ValueError) else "read_or_parse_error")
+                continue
+
+            source_module = path_modules.get(rel)
+            if not source_module:
+                continue
+            for node in ast.walk(parsed):
+                if time.monotonic() >= deadline:
                     complete = False
-                    parse_errors += 1
-                    skipped += 1
-                    errors.append("read_or_parse_error")
+                    errors.append("analysis_deadline")
+                    break
+                imports: list[tuple[str, int, bool]] = []
+                if isinstance(node, ast.Import):
+                    imports = [(alias.name, node.lineno, False) for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    package_parts = source_module.split(".")[:-1]
+                    if Path(rel).name == "__init__.py":
+                        package_parts = source_module.split(".")
+                    if node.level:
+                        prefix = package_parts[: max(0, len(package_parts) - node.level + 1)]
+                        if node.module:
+                            prefix.extend(node.module.split("."))
+                            modules = [".".join(prefix)]
+                        else:
+                            modules = [".".join(prefix + [alias.name]) for alias in node.names]
+                        imports = [(module, node.lineno, True) for module in modules if module]
+                    elif node.module:
+                        imports = [(node.module, node.lineno, False)]
 
-        for sources in import_graph.values():
-            for target_mod in sources:
-                in_degree[target_mod] += 1
+                for imported, line, is_relative in imports:
+                    target = resolve_local(imported)
+                    if target == "":
+                        unresolved.append({"source": rel, "module": imported, "line": line, "reason": "ambiguous_local_module"})
+                    elif target:
+                        edges.append({"source": rel, "target": target, "module": imported, "line": line})
+                    elif is_relative:
+                        unresolved.append({"source": rel, "module": imported, "line": line, "reason": "unresolved_relative_import"})
+                    elif imported.split(".", 1)[0] in sys.stdlib_module_names:
+                        stdlib_count += 1
+                    else:
+                        external.append({"source": rel, "module": imported, "line": line})
+                    if len(edges) + len(unresolved) + len(external) >= edge_limit:
+                        complete = False
+                        errors.append("edge_limit")
+                        break
+                if len(edges) + len(unresolved) + len(external) >= edge_limit:
+                    break
 
-        top_hubs = [{"module": mod, "in_degree": count} for mod, count in in_degree.most_common(10)]
-
-        has_cli = bool(layers["entrypoints"])
+        hubs = [
+            {"path": path, "in_degree": count}
+            for path, count in Counter(edge["target"] for edge in edges).most_common(10)
+        ]
         has_api = bool(layers["presentation"])
         has_services = bool(layers["core_services"])
-        
+        has_cli = bool(layers["entrypoints"])
         if has_api and has_services:
-            arch_pattern = "Layered Service / Web Application"
+            pattern = "Layered Service / Web Application"
         elif has_cli and has_services:
-            arch_pattern = "Modular CLI Application"
+            pattern = "Modular CLI Application"
         elif has_services:
-            arch_pattern = "Library / Application Engine"
+            pattern = "Library / Application Engine"
         else:
-            arch_pattern = "Package / Module Collection"
-
+            pattern = "Package / Module Collection"
+        graph_complete = complete and not unresolved and "edge_limit" not in errors
+        graph = {
+            "scope": "bounded Python AST imports resolved against unique local source modules",
+            "nodes": len(path_modules), "edge_count": len(edges), "edges": edges[:sample_limit], "hub_paths": hubs,
+            "unresolved_count": len(unresolved), "unresolved": unresolved[:sample_limit],
+            "external_import_count": len(external), "external_imports": external[:sample_limit],
+            "stdlib_import_count": stdlib_count, "complete": graph_complete,
+            "truncated": any(len(items) > sample_limit for items in (edges, unresolved, external)),
+        }
         lines = [
             f"# Architecture Topology: {resolved_root.name}",
-            f"**Pattern hypothesis (unverified, path-based)**: {arch_pattern}",
-            "",
-            "## Filename-based layer hypotheses (unverified)",
+            f"**Architecture hypothesis (heuristic)**: {pattern}",
+            "", "## Heuristic path labels",
         ]
-        for layer_name, files in layers.items():
-            if files:
-                sample = ", ".join(files[:4]) + (f" (+{len(files)-4} more)" if len(files) > 4 else "")
-                lines.append(f"- **{layer_name.replace('_', ' ').title()}** ({len(files)} files): `{sample}`")
-        
-        if top_hubs:
-            hubs_str = ", ".join(f"`{h['module']}` ({h['in_degree']})" for h in top_hubs[:5])
-            lines.append("")
-            lines.append(f"## Frequently Imported Declared Names (heuristic): {hubs_str}")
-
-        summary_md = "\n".join(lines)
-
+        for name, paths in layers.items():
+            if paths:
+                lines.append(f"- **{name.replace('_', ' ').title()}** ({len(paths)}): `{', '.join(paths[:4])}`")
+        lines.extend(["", f"## Local Python import graph: {len(edges)} edges; complete={str(graph_complete).lower()}"])
+        for edge in edges[:8]:
+            lines.append(f"- `{edge['source']}:{edge['line']}` -> `{edge['target']}`")
         return {
-            "success": True,
-            "root": root_str,
-            "architecture_pattern": arch_pattern,
-            "layers": layers,
-            "hub_modules": top_hubs,
-            "summary_markdown": summary_md,
-            "coverage": {"complete": complete, "coverage_scope": "bounded repo_tools eligible inventory; iterator may omit oversize/unreadable files before this method sees them; Python AST declared imports; filename-based layer heuristics", "inventory_scope": "repo_tools.iter_files eligible files only", "deadline_kind": "cooperative", "files_seen": len(all_files), "files_read": files_read, "files_skipped": skipped, "parse_errors": parse_errors, "bytes_read": total_bytes, "file_limit": file_limit, "per_file_bytes_limit": per_file_limit, "aggregate_bytes_limit": total_bytes_limit, "excluded_dirs": excluded_dirs, "errors": sorted(set(errors)), "module_graph_resolved": False, "architecture_pattern_basis": "filename heuristics"},
+            "success": True, "root": root_str,
+            "architecture_pattern_hypothesis": pattern,
             "architecture_pattern_verified": False,
-            "import_scope": "Python AST declared imports only; modules are not resolved",
+            "heuristic_layers": layers, "module_graph": graph,
+            "summary_markdown": "\n".join(lines),
+            "coverage": {
+                "complete": complete,
+                "inventory_scope": "eligible Python source under recognized roots; docs, plans, tests and fixtures excluded",
+                "deadline_kind": "cooperative", "files_seen": len(eligible),
+                "files_read": files_read, "files_skipped": skipped,
+                "parse_errors": parse_errors, "bytes_read": total_bytes,
+                "file_limit": file_limit, "per_file_bytes_limit": per_file_limit,
+                "aggregate_bytes_limit": total_bytes_limit, "excluded_dirs": excluded_dirs,
+                "errors": sorted(set(errors)), "module_graph_resolved": True,
+                "module_graph_complete": graph_complete,
+                "architecture_pattern_basis": "filename and path heuristics",
+                "architecture_pattern_verified": False,
+            },
+            "import_scope": "Python AST imports resolved only against unique local modules in the bounded source inventory",
         }
 
     def ast_rename(self, root: str, target_file: str, old_symbol: str, new_symbol: str, apply_changes: bool = False) -> dict[str, Any]:
