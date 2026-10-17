@@ -41,7 +41,7 @@ def test_clean_event_preserves_root_basename():
     event = TelemetryStore._clean_event({
         "event_type": "tool_call",
         "action": "local_ai_repo:context",
-        "root": "C:/Users/Adam/my-awesome-repo",
+        "root": "C:/Users/developer/my-awesome-repo",
     })
     assert event.get("root") == "my-awesome-repo"
     assert "C:" not in event.get("root", "")
