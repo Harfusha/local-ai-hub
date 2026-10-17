@@ -2063,6 +2063,59 @@ class CodeIndex:
                 ).fetchall()
             }
 
+        blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]] = {}
+
+        def _bulk_load_parse_blobs(pairs: list[tuple[str, str]]) -> None:
+            unique_pairs = list(dict.fromkeys(pairs))
+            for content_hash, language in unique_pairs:
+                cached = self._parse_blob_l1.get(
+                    f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
+                )
+                if cached is not None:
+                    diagnostic = cached[3] if len(cached) >= 4 and isinstance(cached[3], dict) else {
+                        "status": "unknown", "parser": "unknown", "fallback_used": False,
+                    }
+                    blob_map[(content_hash, language)] = (
+                        list(cached[0]), list(cached[1]), list(cached[2]), dict(diagnostic),
+                    )
+            missing_pairs = [pair for pair in unique_pairs if pair not in blob_map]
+            if not missing_pairs:
+                return
+            try:
+                for batch in sqlite_batches(missing_pairs):
+                    clauses = " OR ".join("(content_hash=? AND language=?)" for _ in batch)
+                    params: list[Any] = []
+                    for h, lang in batch:
+                        params.extend([h, lang])
+                    with self._lock, closing(self._connect()) as con:
+                        rows = con.execute(
+                            f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})",
+                            (_PARSER_ANALYZER_VERSION, *params),
+                        ).fetchall()
+                    for row in rows:
+                        data = json.loads(str(row[2]))
+                        if isinstance(data, dict):
+                            diagnostic = data.get("parse_outcome")
+                            if not isinstance(diagnostic, dict):
+                                diagnostic = {"status": "unknown", "parser": "unknown", "fallback_used": False}
+                            blob_map[(str(row[0]), str(row[1]))] = (
+                                list(data.get("symbols", [])),
+                                list(data.get("refs", [])),
+                                list(data.get("edges", [])),
+                                diagnostic,
+                            )
+            except Exception:
+                pass
+
+        supplied_pairs: list[tuple[str, str]] = []
+        for path, supplied_hash in normalized:
+            if supplied_hash:
+                lang = self._language_for_path(path, settings)
+                if existing.get(path, ())[:3] != (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
+                    supplied_pairs.append((supplied_hash, lang))
+        if supplied_pairs:
+            _bulk_load_parse_blobs(supplied_pairs)
+
         candidates: list[tuple[str, str, str, list[str]]] = []
         file_stats: dict[str, Any] = {}
         cached = 0
@@ -2095,11 +2148,8 @@ class CodeIndex:
                 self._mark_file_unindexable(c_root, path, lang)
                 continue
             file_stats[path] = file_stat
-            if supplied_hash:
-                if existing.get(path, ())[:3] == (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
-                    cached += 1
-                    continue
-                if self._parse_blob_get(supplied_hash, lang) is not None:
+            if supplied_hash and path not in existing:
+                if (supplied_hash, lang) in blob_map:
                     candidates.append((path, supplied_hash, lang, []))
                     continue
             try:
@@ -2111,7 +2161,7 @@ class CodeIndex:
                 continue
             except OSError:
                 continue
-            content_hash = supplied_hash or digest
+            content_hash = digest
             if existing.get(path, ())[:3] == (content_hash, _PARSER_ANALYZER_VERSION, lang):
                 cached += 1
                 continue
@@ -2119,39 +2169,11 @@ class CodeIndex:
 
         self._remove_indexed_paths(c_root, denied_paths)
 
-        blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]] = {}
         if candidates:
             pairs = list(dict.fromkeys((h, lang) for _, h, lang, _ in candidates))
-            for content_hash, language in pairs:
-                cached = self._parse_blob_l1.get(
-                    f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
-                )
-                if cached is None:
-                    continue
-                diagnostic = cached[3] if len(cached) >= 4 and isinstance(cached[3], dict) else {
-                    "status": "unknown", "parser": "unknown", "fallback_used": False,
-                }
-                blob_map[(content_hash, language)] = (
-                    list(cached[0]), list(cached[1]), list(cached[2]), dict(diagnostic),
-                )
             missing_pairs = [pair for pair in pairs if pair not in blob_map]
-            try:
-                for batch in sqlite_batches(missing_pairs):
-                    clauses = " OR ".join("(content_hash=? AND language=?)" for _ in batch)
-                    params: list[Any] = []
-                    for h, lang in batch:
-                        params.extend([h, lang])
-                    with self._lock, closing(self._connect()) as con:
-                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (_PARSER_ANALYZER_VERSION, *params)).fetchall()
-                    for row in rows:
-                        data = json.loads(str(row[2]))
-                        if isinstance(data, dict):
-                            diagnostic = data.get("parse_outcome")
-                            if not isinstance(diagnostic, dict):
-                                diagnostic = {"status": "unknown", "parser": "unknown", "fallback_used": False}
-                            blob_map[(str(row[0]), str(row[1]))] = (list(data.get("symbols", [])), list(data.get("refs", [])), list(data.get("edges", [])), diagnostic)
-            except Exception:
-                pass
+            if missing_pairs:
+                _bulk_load_parse_blobs(missing_pairs)
 
         files_to_insert: list[tuple[Any, ...]] = []
         syms_to_insert: list[tuple[Any, ...]] = []

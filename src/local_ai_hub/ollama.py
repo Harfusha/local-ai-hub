@@ -562,14 +562,18 @@ class OllamaRuntime:
         timed_out = False
         context_recovery: dict[str, Any] | None = None
         allowed_attempts = attempts
+        generated: list[str] = []
+        chat: list[str] = []
+        thinking_parts: list[str] = []
+        emitted_output = False
         for attempt in range(1, attempts + 2):
             remaining = request_deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 break
-            generated: list[str] = []
-            chat: list[str] = []
-            thinking_parts: list[str] = []
+            generated = []
+            chat = []
+            thinking_parts = []
             emitted_output = False
             stream_error = False
             final: dict[str, Any] = {}
@@ -614,7 +618,7 @@ class OllamaRuntime:
                             raw_line = next(response_lines)
                         except StopIteration:
                             break
-                        except socket.timeout:
+                        except (socket.timeout, TimeoutError):
                             if _stop_requested(should_stop):
                                 return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
                             last_error = f"Ollama request timed out after {total_timeout:g}s"
@@ -680,7 +684,12 @@ class OllamaRuntime:
                         if chunk.get("done") is True:
                             break
                 if timed_out:
-                    return {"error": last_error, "_lah_retry_count": max(0, attempt - 1), "timed_out": True}
+                    return {
+                        "error": last_error,
+                        "_lah_retry_count": max(0, attempt - 1),
+                        "timed_out": True,
+                        **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
+                    }
                 if watchdog.loop_detected:
                     return {
                         "error": "model output repetition loop detected",
@@ -729,7 +738,12 @@ class OllamaRuntime:
                 if _stop_requested(should_stop):
                     return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
                 if time.monotonic() >= deadline:
-                    return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True, "_lah_provider": "ollama"}
+                    return {
+                        "error": f"Ollama request timed out after {total_timeout:g}s",
+                        "timed_out": True,
+                        "_lah_provider": "ollama",
+                        **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
+                    }
                 last_error = f"Ollama request timed out: {exc}"
                 timed_out = True
                 break
@@ -737,14 +751,24 @@ class OllamaRuntime:
                 if _stop_requested(should_stop):
                     return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
                 if time.monotonic() >= deadline:
-                    return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True, "_lah_provider": "ollama"}
+                    return {
+                        "error": f"Ollama request timed out after {total_timeout:g}s",
+                        "timed_out": True,
+                        "_lah_provider": "ollama",
+                        **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
+                    }
                 last_error = f"{type(exc).__name__}: {exc}"
                 if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
                     timed_out = True
                     break
             if timed_out:
-                return {"error": last_error, "_lah_retry_count": max(0, attempt - 1), "timed_out": True}
-            if emitted_output:
+                return {
+                    "error": last_error,
+                    "_lah_retry_count": max(0, attempt - 1),
+                    "timed_out": True,
+                    **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
+                }
+            if emitted_output or generated or chat or thinking_parts:
                 return {
                     "error": last_error,
                     "_lah_retry_count": max(0, attempt - 1),
@@ -774,9 +798,13 @@ class OllamaRuntime:
             remaining = request_deadline - time.monotonic()
             if attempt < allowed_attempts and remaining > 0 and retry_delay:
                 time.sleep(min(retry_delay, remaining))
-        return {"error": last_error, "_lah_retry_count": max(0, attempt - 1),
-                "timed_out": timed_out or time.monotonic() >= deadline,
-                **({"context_recovery": context_recovery} if context_recovery is not None else {})}
+        return {
+            "error": last_error,
+            "_lah_retry_count": max(0, attempt - 1),
+            "timed_out": timed_out or time.monotonic() >= deadline,
+            **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
+            **({"context_recovery": context_recovery} if context_recovery is not None else {}),
+        }
 
     def run_benchmark_scenario(
         self,

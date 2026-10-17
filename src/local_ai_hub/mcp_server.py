@@ -5207,20 +5207,18 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                 def wire_payload() -> dict[str, Any]:
                                     wire = _mcp_wire_view(trial, structured=True)
                                     if text_mode == "minimal":
-                                        if "mutation_applied" in trial:
-                                            wire["content"][0]["text"] = json_dumps({
-                                                "success": False, "error": trial["error"],
-                                            })
-                                        else:
-                                            wire["content"][0]["text"] = json_dumps({
-                                                "success": False, "error": trial["error"],
-                                                **{
-                                                    key: trial[key]
-                                                    for key in ("evidence", "evidence_id", "evidence_ids")
-                                                    if key in trial
-                                                },
-                                                "response_budget": trial["response_budget"],
-                                            })
+                                        wire["content"][0]["text"] = json_dumps({
+                                            "success": False, "error": trial["error"],
+                                            **{
+                                                key: trial[key]
+                                                for key in (
+                                                    "mutation_applied", "operation_not_started",
+                                                    "request_id", "execution_id",
+                                                    "evidence", "evidence_id", "evidence_ids",
+                                                )
+                                                if key in trial
+                                            },
+                                        })
                                     elif text_mode == "compact":
                                         wire["content"][0]["text"] = json_dumps({
                                             "success": False, "error": trial["error"],
