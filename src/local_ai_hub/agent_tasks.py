@@ -2869,6 +2869,15 @@ class TaskStore:
         return counts
 
     @staticmethod
+    def _include_current_request_id(response: dict[str, Any]) -> dict[str, Any]:
+        from .trace_context import current as current_trace_context
+
+        request_id = str(current_trace_context().get("request_id") or "")
+        if request_id:
+            response.setdefault("request_id", request_id)
+        return response
+
+    @staticmethod
     def _preflight_response_budget(task: TaskState, response_budget_tokens: int | None) -> None:
         if response_budget_tokens is None:
             return
@@ -2878,11 +2887,7 @@ class TaskStore:
             or response_budget_tokens < 1
         ):
             raise ValueError("response_budget_tokens must be a positive integer")
-        from .trace_context import current as current_trace_context
-        request_id = str(current_trace_context().get("request_id") or "")
-        raw_result = {"success": True, "task": task.to_dict()}
-        if request_id:
-            raw_result["request_id"] = request_id
+        raw_result = TaskStore._include_current_request_id({"success": True, "task": task.to_dict()})
         projected = task_memory_projection(raw_result)
         if projected is not None:
             projected = normalize_task_memory_response(projected)
@@ -3360,13 +3365,13 @@ class TaskStore:
                     "worktree_path": str(worktree_path.resolve(strict=False)),
                     "worktree_id": worktree_id,
                 }
-                projected_response = {
+                projected_response = self._include_current_request_id({
                     "success": True,
                     "had_worktree": True,
                     "cleanup": projected_cleanup,
                     "cleaned_at": cleaned_at,
                     "task": projected_task.to_dict(),
-                }
+                })
                 required_tokens = mcp_wire_tokens(
                     projected_response, text_payload=projected_response,
                 )
@@ -3427,6 +3432,8 @@ class TaskStore:
                 "cleaned_at": cleaned_at,
                 "task": updated.to_dict(),
             }
+        except CheckpointResponseBudgetError:
+            raise
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -3438,7 +3445,23 @@ class TaskStore:
         repo_root: str | Path | None = None,
         tenant: Any = None,
         task_id: str | None = None,
+        response_budget_tokens: int | None = None,
     ) -> list[str]:
+        if response_budget_tokens is not None:
+            if (
+                isinstance(response_budget_tokens, bool)
+                or not isinstance(response_budget_tokens, int)
+                or response_budget_tokens < 1
+            ):
+                raise ValueError("response_budget_tokens must be a positive integer")
+            if not isinstance(task_id, str) or not task_id or task_id != task_id.strip():
+                raise ValueError("response budget requires a nonempty canonical task_id")
+            projected_response = self._include_current_request_id({"success": True, "reaped": [task_id]})
+            required_tokens = mcp_wire_tokens(
+                projected_response, text_payload=projected_response,
+            )
+            if required_tokens > response_budget_tokens:
+                raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
         try:
             scoped_root = _canonical_repository_root(repo_root)
             tenant_key = _tenant_scope_key(tenant)

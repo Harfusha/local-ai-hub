@@ -622,6 +622,51 @@ def test_task_transition_preflights_before_event_or_state_write(tmp_path, monkey
     assert store.state_store.event_page(f"task:{current.task_id}")["last_seq"] == before_seq
 
 
+def test_zombie_reap_preflights_full_wire_response_before_database_access(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    from local_ai_hub import trace_context
+
+    projected = {}
+    monkeypatch.setattr(trace_context, "current", lambda: {"request_id": "req-zombie"})
+
+    def _wire_tokens(response, **_kwargs):
+        projected.update(response)
+        return 129
+
+    monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", _wire_tokens)
+    monkeypatch.setattr(
+        store, "_db_path_available",
+        lambda: pytest.fail("response budget must be checked before database access"),
+    )
+
+    with pytest.raises(CheckpointResponseBudgetError) as exc_info:
+        store.reap_expired_heartbeats(
+            auto_recover=True,
+            repo_root=tmp_path,
+            tenant="tenant-test",
+            task_id="zombie-budget",
+            response_budget_tokens=128,
+        )
+
+    assert exc_info.value.requested_tokens == 128
+    assert exc_info.value.required_tokens == 129
+    assert projected["request_id"] == "req-zombie"
+
+
+@pytest.mark.parametrize("task_id", [None, "", " zombie-budget"])
+def test_zombie_reap_response_budget_requires_canonical_task_id(tmp_path, task_id):
+    store = _store(tmp_path)
+
+    with pytest.raises(ValueError, match="canonical task_id"):
+        store.reap_expired_heartbeats(
+            auto_recover=True,
+            repo_root=tmp_path,
+            tenant="tenant-test",
+            task_id=task_id,
+            response_budget_tokens=128,
+        )
+
+
 def test_rollback_preflights_before_restoring_checkpoint_files(tmp_path, monkeypatch):
     store = _store(tmp_path)
     monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())

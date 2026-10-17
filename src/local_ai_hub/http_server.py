@@ -6836,13 +6836,27 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     if not self._task_matches_request(scoped_task, repo_root, tenant):
                         self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
-                    reaped = APP.agent_tasks.reap_expired_heartbeats(
-                        auto_recover=auto_recover,
-                        repo_root=repo_root,
-                        tenant=tenant,
-                        task_id=requested_task_id,
-                    )
-                    self._send(200, {"success": True, "reaped": reaped}); return
+                    try:
+                        reaped = APP.agent_tasks.reap_expired_heartbeats(
+                            auto_recover=auto_recover,
+                            repo_root=repo_root,
+                            tenant=tenant,
+                            task_id=requested_task_id,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
+                        )
+                        self._send(200, {"success": True, "reaped": reaped}); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {
+                                "requested_tokens": exc.requested_tokens,
+                                "required_tokens": exc.required_tokens,
+                                "unit": "estimated_tokens",
+                            },
+                        }); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "list":
                     status_filter = None
                     if payload.get("status"):
