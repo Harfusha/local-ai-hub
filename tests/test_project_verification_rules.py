@@ -184,7 +184,8 @@ def test_http_task_completion_uses_persisted_project_receipts(
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        '[security]\napi_token_principal = "agent"\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))

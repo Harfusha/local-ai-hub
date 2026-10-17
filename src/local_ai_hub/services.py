@@ -2984,6 +2984,10 @@ class LocalAIServices:
                 if target.is_file():
                     candidates = (target,)
                 elif target.is_dir():
+                    if file_inventory is None:
+                        inventory_loader = getattr(self.repo_tools, "_git_files", None)
+                        if hint_root is not None and callable(inventory_loader):
+                            file_inventory = inventory_loader(hint_root)
                     if file_inventory is not None:
                         def under_hint_directory():
                             for raw_candidate in file_inventory:

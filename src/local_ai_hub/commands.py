@@ -8271,19 +8271,17 @@ class CommandBroker:
                 return self._compact(result, tenant, command)
 
         unknown_authorized = command_class != "unknown" or bool(
-            self.config.get("commands", {}).get("allow_mutating", False)
+            self.config.get("commands", {}).get("allow_unknown", False)
+            or self.config.get("commands", {}).get("allow_mutating", False)
         )
         is_blocked = False
         blocked_reason = ""
-        if command_class == "dangerous":
+        if command_class == "dangerous" or not classification_allowed:
             is_blocked = True
             blocked_reason = str(classification.get("reason") or "command policy denied execution")[:120]
         elif command_class == "unknown" and not unknown_authorized:
             is_blocked = True
             blocked_reason = "unknown command requires explicit mutation authorization"
-        elif command_class != "unknown" and not classification_allowed:
-            is_blocked = True
-            blocked_reason = str(classification.get("reason") or "command policy denied execution")[:120]
 
         if is_blocked:
             with self._lock:
@@ -8300,7 +8298,10 @@ class CommandBroker:
             return result
         # Unknown code may mutate regardless of the classifier's lexical heuristics.
         # Its opt-in still requires task/worktree/write-set/fence and private execution.
-        is_mutating = command_class in {"mutating", "unknown"}
+        is_mutating = command_class == "mutating" or (
+            command_class == "unknown"
+            and not bool(self.config.get("commands", {}).get("allow_unknown", False))
+        )
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         if not cwd_path.is_dir():
             result = {
