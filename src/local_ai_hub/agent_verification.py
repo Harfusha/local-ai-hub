@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import copy
 import hashlib
 import math
 import os
@@ -112,7 +113,7 @@ class VerificationReceipt:
                 raise ValueError(f"verification receipt {name} must be nonempty")
         if not isinstance(self.details, Mapping):
             raise ValueError("verification receipt details must be a mapping")
-        object.__setattr__(self, "details", dict(self.details))
+        object.__setattr__(self, "details", copy.deepcopy(dict(self.details)))
         for name, value in (("observed_at", self.observed_at), ("expires_at", self.expires_at)):
             if name == "expires_at" and value is None:
                 continue
@@ -233,7 +234,7 @@ class VerificationReceipt:
             "observed_at": self.observed_at,
             "expires_at": self.expires_at,
             "passed": self.passed,
-            "details": dict(self.details),
+            "details": copy.deepcopy(self.details),
         }
 
     @classmethod
@@ -273,10 +274,10 @@ _RECEIPT_METADATA_KEY = "__agent_os_receipt_metadata_v1__"
 
 def _receipt_details_for_storage(receipt: VerificationReceipt) -> dict[str, Any]:
     if not (receipt.owner or receipt.mutation_generation is not None or receipt.evidence_type):
-        return dict(receipt.details)
+        return copy.deepcopy(receipt.details)
     return {
         _RECEIPT_METADATA_KEY: {
-            "details": dict(receipt.details),
+            "details": copy.deepcopy(receipt.details),
             "owner": receipt.owner,
             "mutation_generation": receipt.mutation_generation,
             "evidence_type": receipt.evidence_type,
