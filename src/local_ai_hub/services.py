@@ -1893,12 +1893,19 @@ class LocalAIServices:
                 result["warnings"] = warnings
             return result
 
-        task = str(args.get("task") or args.get("prompt") or "")
+        if "prompt" in args:
+            return {"success": False, "error": "delegate accepts task; prompt is not an alias"}
+        task = args.get("task", "")
+        context_value = args.get("context", "")
+        if not isinstance(task, str):
+            return {"success": False, "error": "task must be a string"}
+        if not isinstance(context_value, str):
+            return {"success": False, "error": "context must be a string"}
         if bool(args.get("conversation", False)):
             task = task.strip()
             if not task:
                 return self._conversation_error("", "task is required")
-        context = str(args.get("context", ""))
+        context = context_value
         task_type_override = str(args.get("task_type", "auto"))
         complexity_override = str(args.get("complexity", "auto"))
         route = self.router.classify(task, context, task_type_override, complexity_override)
@@ -2130,14 +2137,19 @@ class LocalAIServices:
 
     def speculative_draft(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Draft code using fast model and verify against affected tests."""
-        task = str(args.get("task", args.get("prompt", "")))
-        file_path = str(args.get("file", args.get("path", "")))
-        context = str(args.get("context", ""))
-        root = str(args.get("root") or args.get("cwd") or ".")
+        aliases = {"prompt", "path", "cwd"} & args.keys()
+        if aliases:
+            return {"success": False, "error": "speculative_draft rejects aliases: " + ", ".join(sorted(aliases))}
+        task = args.get("task", "")
+        file_path = args.get("file", "")
+        context = args.get("context", "")
+        root = args.get("root", ".")
+        if not isinstance(task, str) or not isinstance(file_path, str) or not isinstance(context, str) or not isinstance(root, str):
+            return {"success": False, "error": "task, file, context, and root must be strings"}
         resolved_root = Path(root).resolve()
 
         if not task:
-            return {"success": False, "error": "task or prompt is required"}
+            return {"success": False, "error": "task is required"}
 
         fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         package = build_prompt(
@@ -2320,13 +2332,18 @@ class LocalAIServices:
 
     def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""
-        spec = str(args.get("spec", args.get("prompt", args.get("task", ""))))
-        context = str(args.get("context", ""))
+        aliases = {"spec", "task"} & args.keys()
+        if aliases:
+            return {"success": False, "error": "scaffold rejects aliases: " + ", ".join(sorted(aliases))}
+        spec = args.get("prompt", "")
+        context = args.get("context", "")
+        if not isinstance(spec, str) or not isinstance(context, str):
+            return {"success": False, "error": "prompt and context must be strings"}
         language = str(args.get("language", "python"))
         max_tokens = int(args.get("max_tokens", 4096))
 
         if not spec:
-            return {"success": False, "error": "spec or prompt is required"}
+            return {"success": False, "error": "prompt is required"}
 
         fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
         prompt = (
