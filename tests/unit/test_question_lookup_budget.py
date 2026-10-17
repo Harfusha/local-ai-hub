@@ -49,7 +49,11 @@ def test_existing_question_lookup_preflights_response_budget(monkeypatch):
     monkeypatch.setattr(
         agent_tasks_module, "retry_busy", lambda callback, **_kwargs: callback()
     )
-    monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", lambda _value: 129)
+    monkeypatch.setattr(
+        agent_tasks_module,
+        "mcp_wire_tokens",
+        lambda _value, **_kwargs: 129,
+    )
 
     with pytest.raises(agent_tasks_module.CheckpointResponseBudgetError):
         store.ask_question(
