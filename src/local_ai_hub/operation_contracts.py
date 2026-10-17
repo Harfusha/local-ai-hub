@@ -1395,7 +1395,10 @@ def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
     }
     binary_result = {
         "type": "object",
-        "required": ["success", "artifact_id", "mime_type", "size_bytes", "binary_payload"],
+        "required": [
+            "success", "artifact_id", "kind", "mime_type", "encoding", "size_bytes",
+            "checksum", "sha256", "identity", "binary_payload",
+        ],
         "properties": {
             "success": {"const": True}, "artifact_id": {"type": "string"},
             "kind": {"type": "string"}, "mime_type": {"type": "string"},

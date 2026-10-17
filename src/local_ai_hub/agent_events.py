@@ -137,21 +137,21 @@ class AgentEvent:
     def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
         if not isinstance(data, Mapping):
             raise TypeError("AgentEvent data must be a mapping")
-        payload = data.get("payload")
-        if payload is None:
-            payload = {}
-        created_at = data.get("created_at")
-        if created_at is None:
-            created_at = time.time()
+        required = (
+            "event_id", "stream_id", "kind", "payload", "idempotency_key", "actor", "created_at",
+        )
+        for field in required:
+            if field not in data:
+                raise KeyError(field)
         return cls(
-            event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex}"),
-            stream_id=str(data.get("stream_id", "")),
-            kind=str(data.get("kind", "")),
-            payload=payload,
-            idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex}"),
-            correlation_id=str(data.get("correlation_id", "")),
-            actor=str(data.get("actor") or "agent"),
-            created_at=created_at,
+            event_id=data["event_id"],
+            stream_id=data["stream_id"],
+            kind=data["kind"],
+            payload=data["payload"],
+            idempotency_key=data["idempotency_key"],
+            correlation_id=data.get("correlation_id", ""),
+            actor=data["actor"],
+            created_at=data["created_at"],
             seq=data.get("seq"),
         )
 

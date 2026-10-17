@@ -54,7 +54,7 @@ def test_sql_paged_artifact_preserves_unicode_and_nul_offsets(tmp_path):
     assert page["next_offset"] == 511
 
 
-def test_unindexed_rows_stream_without_read_side_backfill(tmp_path):
+def test_missing_sidecar_fails_without_read_side_backfill(tmp_path):
     store = ArtifactStore(tmp_path)
     text = "legacy\n" + ("a\x00\ufffdb" * 100)
     artifact_id = store.put(text, tenant="slice-sql", kind="log")
@@ -78,9 +78,8 @@ def test_unindexed_rows_stream_without_read_side_backfill(tmp_path):
 
     selects = [statement.lower() for statement in statements if statement.lstrip().lower().startswith("select")]
     assert not any("substr(" in statement for statement in selects)
-    assert page["text"] == text[99:355]
-    assert page["total_chars"] == len(text)
-    assert page["next_offset"] == 355
+    assert page["success"] is False
+    assert page["error_code"] == "artifact_paging_metadata_invalid"
     connection = sqlite3.connect(store.path)
     try:
         assert connection.execute(

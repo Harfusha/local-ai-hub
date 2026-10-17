@@ -627,13 +627,19 @@ def test_rollback_preflights_before_restoring_checkpoint_files(tmp_path, monkeyp
     target.write_text("before", encoding="utf-8")
     store.checkpoint(
         task.task_id,
-        TaskCheckpoint(state_data={"memory_context": _memory(), "file_snapshots": {str(target): "before"}}),
+        TaskCheckpoint(state_data={
+            "memory_context": _memory(), "memory_audit": {"used_ids": ["memory-1"]},
+            "file_snapshots": {str(target): "before"},
+        }),
         actor=task.owner,
         idempotency_key="rollback-old-checkpoint",
     )
     store.checkpoint(
         task.task_id,
-        TaskCheckpoint(state_data={"memory_context": _memory(), "file_snapshots": {str(target): "after"}}),
+        TaskCheckpoint(state_data={
+            "memory_context": _memory(), "memory_audit": {"used_ids": ["memory-1"]},
+            "file_snapshots": {str(target): "after"},
+        }),
         actor=task.owner,
         idempotency_key="rollback-current-checkpoint",
     )
@@ -665,6 +671,10 @@ def test_resume_same_status_retry_preflights_persisted_task(tmp_path, monkeypatc
     store = _store(tmp_path)
     monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
     task = store.create(_contract(), ScopeContext(), task_id="resume-budget")
+    task = store.transition(
+        task.task_id, TaskStatus.ACTIVE, actor=task.owner, reason="start task",
+        idempotency_key="activate-resume-budget",
+    )
     assert task.status == TaskStatus.ACTIVE
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
     before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]

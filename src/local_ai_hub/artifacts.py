@@ -998,11 +998,11 @@ class ArtifactStore:
                     self._decode_section_metadata(section_json, artifact_id, section_checksum)
                     if isinstance(section_json, str) else None
                 )
-                if metadata is None:
+                if section_json is not None and metadata is None:
                     raise ArtifactTextReadError(
                         "artifact_paging_metadata_invalid", "artifact paging metadata is invalid",
                     )
-                sections, sections_truncated = metadata
+                sections, sections_truncated = metadata if metadata is not None else ([], False)
                 encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
 
                 if section:
@@ -1059,11 +1059,14 @@ class ArtifactStore:
 
                 scan = self._stream_text(
                     con, int(rowid), encoding, [(offset, max_chars)],
-                    parse_sections=False,
+                    parse_sections=metadata is None,
                     deadline=deadline,
                 )
                 piece = scan["pieces"][0]
                 total_chars = scan["total_chars"]
+                if metadata is None:
+                    sections = scan["section_names"]
+                    sections_truncated = scan["sections_truncated"]
                 return {"success": True, "artifact_id": artifact_id, "kind": kind, "text": piece,
                         "offset": offset,
                         "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
@@ -1140,20 +1143,23 @@ class ArtifactStore:
                     self._decode_section_metadata(section_json, artifact_id, section_checksum)
                     if isinstance(section_json, str) else None
                 )
-                if metadata is None:
+                if section_json is not None and metadata is None:
                     raise ArtifactTextReadError(
                         "artifact_paging_metadata_invalid", "artifact paging metadata is invalid",
                     )
-                sections, sections_truncated = metadata
+                sections, sections_truncated = metadata if metadata is not None else ([], False)
                 encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
                 scan = self._stream_text(
                     con, int(rowid), encoding,
                     [(offset, size) for offset, size in normalized],
-                    parse_sections=False,
+                    parse_sections=metadata is None,
                     deadline=deadline,
                 )
                 pieces = scan["pieces"]
                 total_chars = scan["total_chars"]
+                if metadata is None:
+                    sections = scan["section_names"]
+                    sections_truncated = scan["sections_truncated"]
 
                 return {
                     "success": True,
