@@ -1,4 +1,6 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
+**Candidate security-audit correction (2026-10-17):** Commit `1c573f09` replaces the multiline shell regex with Python AST call resolution, including scoped import aliases, positional `Popen.shell`, and effective literal `**` values. Added false-positive/false-negative regressions; both bounded reviews passed. Tests/builds remain deferred until the full source bundle closes.
+
 **Candidate increment (2026-10-17):** Commits `87b6de56` and `8b08f608` preserve distinct `None`/empty `changed_paths` requests and input-order-sensitive cache identity; focused regressions are present. Two bounded reviews passed. No tests or builds run; source-bundle closure remains open.
 
 **Candidate security scan (2026-10-17):** `local_ai_repo(action="security_audit")` completed against the candidate (`req_be97693070e0`): 1,144 visited files, 18 high and 13 medium findings, triage incomplete. Returned examples include synthetic credential-like test fixtures; do not treat as confirmed secrets or dismiss remaining findings until complete triage.
