@@ -495,7 +495,7 @@ def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Pat
     source_config.write_text(config_text, encoding="utf-8")
     (install / "config.toml").write_text(config_text, encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
-    monkeypatch.setattr(setup, "copy_install_tree", lambda *_args: None)
+    monkeypatch.setattr(setup, "copy_install_tree", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
     monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
@@ -535,6 +535,7 @@ def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, mon
     config = source / "config.toml"
     config.write_text("[hardware]\nprofile='cpu'\n", encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "UPDATE_SOURCE_ROOT", source)
     target = tmp_path / "install"
 
     setup.copy_install_tree(target, config)
