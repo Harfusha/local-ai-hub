@@ -1060,7 +1060,7 @@ def test_scoped_memory_delete_still_enforces_tenant(store: MemoryStore):
     ) == session_record
 
 
-def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: MemoryStore, tmp_path: Path):
+def test_tenantless_global_memory_delete_remains_shared_across_transport_tenants(store: MemoryStore, tmp_path: Path):
     repo = tmp_path / "repo-a"
     other_repo = tmp_path / "repo-b"
     repo.mkdir()
@@ -2278,8 +2278,10 @@ def test_get_global_requires_unowned_or_matching_tenant(store: MemoryStore, tmp_
     assert store.get(task.record_id, scope=AgentScope.TASK, root=root, tenant="tenant-a") is None
     assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-b") is None
     assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-a") == task
-    # GLOBAL delete ignores transport tenant; read remains owner-tenant scoped.
-    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is True
+    # Tagged GLOBAL delete requires record tenant; tenantless GLOBAL stays shared.
+    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is False
+    assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") == global_tenant
+    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is True
     assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is None
     assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=str(tmp_path / "other")) is False
     assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=root) is True

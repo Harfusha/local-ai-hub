@@ -2367,19 +2367,24 @@ class MemoryStore:
         else:
             return False
         scope_value = parsed_scope.value
-        if tenant is not None and not isinstance(tenant, str):
+        for supplied_identity in (root, scope_id):
+            if supplied_identity is not None and (
+                not isinstance(supplied_identity, str)
+                or not supplied_identity
+                or supplied_identity != supplied_identity.strip()
+            ):
+                return False
+        if tenant is not None and (
+            not isinstance(tenant, str)
+            or tenant != tenant.strip()
+        ):
             return False
-        identity_values = {
-            "root": str(root or "").strip(),
-            "repository_id": str(repository_id or "").strip(),
-            "tenant": tenant if isinstance(tenant, str) else "",
-            "task_id": str(task_id or "").strip(),
-            "session_id": str(session_id or "").strip(),
-            "clone_id": str(clone_id or "").strip(),
-            "worktree_id": str(worktree_id or "").strip(),
-            "branch": str(branch or "").strip(),
-        }
-        scope_id_value = str(scope_id or "").strip()
+        if parsed_scope is AgentScope.REPOSITORY and (
+            not isinstance(repository_id, str)
+            or not repository_id
+            or repository_id != repository_id.strip()
+        ):
+            return False
         scope_identity_key = {
             AgentScope.TASK: "task_id",
             AgentScope.SESSION: "session_id",
@@ -2387,6 +2392,34 @@ class MemoryStore:
             AgentScope.WORKTREE: "worktree_id",
             AgentScope.BRANCH: "branch",
         }.get(parsed_scope)
+        supplied_scope_identity = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+        }.get(scope_identity_key)
+        if supplied_scope_identity is not None and (
+            not isinstance(supplied_scope_identity, str)
+            or not supplied_scope_identity
+            or supplied_scope_identity != supplied_scope_identity.strip()
+        ):
+            return False
+        identity_values = {
+            "root": root if isinstance(root, str) else "",
+            "repository_id": (
+                repository_id
+                if isinstance(repository_id, str)
+                else str(repository_id or "").strip()
+            ),
+            "tenant": tenant if isinstance(tenant, str) else "",
+            "task_id": str(task_id or "").strip(),
+            "session_id": str(session_id or "").strip(),
+            "clone_id": str(clone_id or "").strip(),
+            "worktree_id": str(worktree_id or "").strip(),
+            "branch": str(branch or "").strip(),
+        }
+        scope_id_value = scope_id if isinstance(scope_id, str) else ""
         if scope_identity_key:
             supplied_scope_identity = identity_values[scope_identity_key]
             if supplied_scope_identity:
@@ -2435,15 +2468,30 @@ class MemoryStore:
                         con.execute("COMMIT")
                         return False, None
                     stored_scope_id = str(row[0] or "")
+                    provenance_valid = False
+                    provenance: Any = {}
                     try:
-                        provenance = json.loads(row[2]) if row[2] else {}
+                        if isinstance(row[2], str):
+                            provenance = json.loads(row[2])
+                            provenance_valid = isinstance(provenance, dict)
                     except (TypeError, ValueError):
                         provenance = {}
                     if not isinstance(provenance, dict):
                         provenance = {}
+                        provenance_valid = False
                     record_tenant = provenance.get("tenant")
                     if parsed_scope is AgentScope.GLOBAL:
+                        if not provenance_valid:
+                            con.execute("COMMIT")
+                            return False, None
                         if record_tenant is not None and not isinstance(record_tenant, str):
+                            con.execute("COMMIT")
+                            return False, None
+                        if record_tenant and (
+                            not identity_values["tenant"]
+                            or record_tenant != record_tenant.strip()
+                            or record_tenant != identity_values["tenant"]
+                        ):
                             con.execute("COMMIT")
                             return False, None
                     elif (
@@ -2457,17 +2505,22 @@ class MemoryStore:
                     for identity_key, expected in identity_values.items():
                         if not expected or identity_key == scope_identity_key:
                             continue
-                        if parsed_scope is AgentScope.REPOSITORY and identity_key == "root":
-                            continue
                         if parsed_scope is AgentScope.GLOBAL and identity_key == "tenant":
                             continue
-                        actual = str(provenance.get(identity_key, "") or "").strip()
                         if identity_key == "root":
-                            repo_id = str(provenance.get("repository_id", "") or "").strip()
-                            if (not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected)) and repo_id != expected:
+                            actual_root = provenance.get("root")
+                            if (
+                                not isinstance(actual_root, str)
+                                or not actual_root
+                                or actual_root != actual_root.strip()
+                            ):
                                 con.execute("COMMIT")
                                 return False, None
-                        elif actual != expected:
+                            actual = actual_root
+                            if not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected):
+                                con.execute("COMMIT")
+                                return False, None
+                        elif str(provenance.get(identity_key, "") or "").strip() != expected:
                             con.execute("COMMIT")
                             return False, None
 
