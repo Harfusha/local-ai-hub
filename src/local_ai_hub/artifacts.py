@@ -29,10 +29,17 @@ _ARTIFACTS_SCHEMA_SQL = """CREATE TABLE artifacts (
     size_bytes INTEGER, checksum TEXT, identity_json TEXT
 )"""
 _ARTIFACT_SCHEMA_META_SQL = "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+_ARTIFACT_PAGING_SCHEMA_SQL = """CREATE TABLE artifact_paging_metadata (
+    artifact_id TEXT PRIMARY KEY,
+    char_count INTEGER NOT NULL,
+    section_names TEXT NOT NULL,
+    page_text TEXT,
+    nul_mask BLOB
+)"""
 MAX_ARTIFACT_SLICES = 16
 MAX_ARTIFACT_SLICE_CHARS = 50_000
 MAX_ARTIFACT_TEXT_CHUNK_BYTES = 64 * 1024
-MAX_ARTIFACT_BACKFILL_BYTES = 1_000_000
+MAX_ARTIFACT_JSON_SOURCE_BYTES = 1_000_000
 MAX_ARTIFACT_SECTION_JSON_CHARS = 250_000
 MAX_ARTIFACT_HEADING_CHARS = 512
 MAX_ARTIFACT_SECTION_NAMES = 50
@@ -258,45 +265,6 @@ class ArtifactStore:
             con.close()
             raise
 
-    def _ensure_paging_metadata(self, con: sqlite3.Connection) -> None:
-        table = self._table
-        sidecar_columns = {
-            str(row[1]) for row in con.execute(f"PRAGMA table_info({_ARTIFACT_PAGING_TABLE})")
-        }
-        expected_sidecar_columns = {"artifact_id", "char_count", "section_names", "page_text", "nul_mask"}
-        if sidecar_columns and sidecar_columns != expected_sidecar_columns:
-            con.execute(f"DROP TABLE {_ARTIFACT_PAGING_TABLE}")
-        con.execute(
-            f"""CREATE TABLE IF NOT EXISTS {_ARTIFACT_PAGING_TABLE} (
-                artifact_id TEXT PRIMARY KEY,
-                char_count INTEGER NOT NULL,
-                section_names TEXT NOT NULL,
-                page_text TEXT,
-                nul_mask BLOB
-            )"""
-        )
-        cutoff = time.time() - self.ttl_seconds
-        # Bound work per initialization and fetch only IDs before loading bodies.
-        artifact_ids = [str(row[0]) for row in con.execute(
-            f"""SELECT a.artifact_id FROM {table} AS a
-                LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
-                WHERE p.artifact_id IS NULL AND a.mime_type IS NULL AND a.created_at>=?
-                    AND length(CAST(a.text AS BLOB))<=?
-                ORDER BY a.created_at, a.artifact_id LIMIT 128""",
-            (cutoff, MAX_ARTIFACT_BACKFILL_BYTES),
-        ).fetchall()]
-        for artifact_id in artifact_ids:
-            row = con.execute(f"SELECT text FROM {table} WHERE artifact_id=?", (artifact_id,)).fetchone()
-            if row is None:
-                continue
-            text = str(row[0] or "")
-            section_map, sections_truncated = self._section_data(text)
-            section_names = list(section_map)
-            page_text, nul_mask = self._page_text_metadata(text)
-            self._write_paging_metadata(
-                con, artifact_id, text, section_names, page_text, nul_mask, sections_truncated,
-            )
-
     @staticmethod
     def _write_paging_metadata(
         con: sqlite3.Connection,
@@ -423,15 +391,13 @@ class ArtifactStore:
         except sqlite3.Error as exc:
             if time.monotonic() >= deadline:
                 raise ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit") from exc
-            raise ArtifactTextReadError("artifact_text_stream_failed", "artifact text could not be streamed safely") from exc
-
     def _read_bounded_json_sections(
         self, con: sqlite3.Connection, rowid: int, encoding: str, deadline: float,
     ) -> tuple[list[str], bool] | None:
         codec = self._sqlite_text_codec(encoding)
         try:
             with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
-                if len(text_blob) > MAX_ARTIFACT_BACKFILL_BYTES:
+                if len(text_blob) > MAX_ARTIFACT_JSON_SOURCE_BYTES:
                     return None
                 decoder = codecs.getincrementaldecoder(codec)(errors="strict")
                 prefix = decoder.decode(text_blob.read(min(128, len(text_blob))), final=False)
@@ -440,7 +406,7 @@ class ArtifactStore:
         self._check_read_deadline(deadline)
         if not prefix.lstrip().startswith("{"):
             return None
-        text = self._read_small_text(con, rowid, encoding, MAX_ARTIFACT_BACKFILL_BYTES, deadline)
+        text = self._read_small_text(con, rowid, encoding, MAX_ARTIFACT_JSON_SOURCE_BYTES, deadline)
         try:
             parsed = json.loads(text, object_pairs_hook=self._json_object_without_duplicate_keys)
         except (TypeError, ValueError):
@@ -608,6 +574,7 @@ class ArtifactStore:
             canonical_sql = {
                 "artifacts": _normalize_artifact_create_sql(_ARTIFACTS_SCHEMA_SQL),
                 "artifact_schema_meta": _normalize_artifact_create_sql(_ARTIFACT_SCHEMA_META_SQL),
+                _ARTIFACT_PAGING_TABLE: _normalize_artifact_create_sql(_ARTIFACT_PAGING_SCHEMA_SQL),
             }
 
             def _validate_connection(con: sqlite3.Connection) -> None:
@@ -616,10 +583,11 @@ class ArtifactStore:
                     for row in con.execute(
                         """SELECT name, type,
                                   CASE WHEN length(CAST(sql AS BLOB))<=8192 THEN sql END
-                           FROM sqlite_master WHERE name IN ('artifacts', 'artifact_schema_meta')"""
+                           FROM sqlite_master
+                           WHERE name IN ('artifacts', 'artifact_schema_meta', 'artifact_paging_metadata')"""
                     )
                 }
-                if set(objects) != {"artifacts", "artifact_schema_meta"}:
+                if set(objects) != {"artifacts", "artifact_schema_meta", _ARTIFACT_PAGING_TABLE}:
                     raise UnsupportedArtifactSchema("unsupported artifact database schema")
                 for name in objects:
                     object_type, statement = objects[name]
@@ -649,6 +617,19 @@ class ArtifactStore:
                     "value": ("TEXT", 0, 1, None, 0),
                 }:
                     raise UnsupportedArtifactSchema("unsupported artifact schema metadata table")
+                paging_columns = list(con.execute(f"PRAGMA table_xinfo({_ARTIFACT_PAGING_TABLE})"))
+                actual_paging = {
+                    str(row[1]): (str(row[2]).upper(), int(row[5]), int(row[3]), row[4], int(row[6]))
+                    for row in paging_columns
+                }
+                if actual_paging != {
+                    "artifact_id": ("TEXT", 1, 0, None, 0),
+                    "char_count": ("INTEGER", 0, 1, None, 0),
+                    "section_names": ("TEXT", 0, 1, None, 0),
+                    "page_text": ("TEXT", 0, 0, None, 0),
+                    "nul_mask": ("BLOB", 0, 0, None, 0),
+                }:
+                    raise UnsupportedArtifactSchema("unsupported artifact paging metadata table")
                 marker = con.execute(
                     """SELECT 1 FROM artifact_schema_meta
                        WHERE key='tenant_storage' AND typeof(value)='text'
@@ -669,14 +650,32 @@ class ArtifactStore:
                              THEN tenant GLOB '*[^0-9a-f]*' OR tenant_identity != tenant
                              ELSE 1 END LIMIT 1"""
                     ).fetchone()
+                    missing_paging = con.execute(
+                        f"""SELECT 1 FROM artifacts AS a
+                             LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
+                             WHERE a.mime_type IS NULL AND p.artifact_id IS NULL LIMIT 1"""
+                    ).fetchone()
+                    invalid_mime_type = con.execute(
+                        """SELECT 1 FROM artifacts
+                             WHERE mime_type IS NOT NULL
+                               AND (typeof(mime_type)!='text' OR length(CAST(mime_type AS BLOB))=0)
+                             LIMIT 1"""
+                    ).fetchone()
+                    stale_paging = con.execute(
+                        f"""SELECT 1 FROM {_ARTIFACT_PAGING_TABLE} AS p
+                             LEFT JOIN artifacts AS a ON a.artifact_id=p.artifact_id
+                             WHERE a.artifact_id IS NULL OR a.mime_type IS NOT NULL LIMIT 1"""
+                    ).fetchone()
                 except sqlite3.OperationalError as exc:
                     if time.monotonic() >= deadline:
-                        raise UnsupportedArtifactSchema("artifact identity validation exceeded its time limit") from exc
+                        raise UnsupportedArtifactSchema("artifact schema validation exceeded its time limit") from exc
                     raise
                 finally:
                     con.set_progress_handler(None, 0)
                 if invalid is not None:
                     raise UnsupportedArtifactSchema("invalid artifact tenant identity")
+                if missing_paging is not None or invalid_mime_type is not None or stale_paging is not None:
+                    raise UnsupportedArtifactSchema("incomplete artifact paging metadata")
 
             def _validate_existing() -> None:
                 # SQLite may create -shm when a WAL-mode DB has no shared-memory file. With no
@@ -729,12 +728,12 @@ class ArtifactStore:
                     if fresh_database:
                         con.execute(_ARTIFACTS_SCHEMA_SQL)
                         con.execute(_ARTIFACT_SCHEMA_META_SQL)
+                        con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
                         con.execute(
                             "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
                         )
                     con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
                     self._table = _ARTIFACT_TABLE
-                    self._ensure_paging_metadata(con)
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
@@ -984,7 +983,7 @@ class ArtifactStore:
                 con.execute("BEGIN")
                 params: list[Any] = [artifact_id, cutoff]
                 query = (
-                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), "
+                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.artifact_id, "
                     f"CASE WHEN length(CAST(p.section_names AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
                     "THEN p.section_names END "
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
@@ -996,7 +995,7 @@ class ArtifactStore:
                 row = con.execute(query, params).fetchone()
                 if row is None:
                     return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
-                rowid, kind, mime_type, text_type, section_json = row
+                rowid, kind, mime_type, text_type, paging_id, section_json = row
                 if mime_type:
                     return {"success": False, "error": "binary artifact requires binary retrieval"}
                 if text_type != "text":
@@ -1006,7 +1005,7 @@ class ArtifactStore:
                 if section:
                     if section.startswith("json:"):
                         text = self._read_small_text(
-                            con, int(rowid), encoding, MAX_ARTIFACT_BACKFILL_BYTES, deadline,
+                            con, int(rowid), encoding, MAX_ARTIFACT_JSON_SOURCE_BYTES, deadline,
                         )
                         try:
                             parsed = json.loads(text, object_pairs_hook=self._json_object_without_duplicate_keys)
@@ -1121,7 +1120,7 @@ class ArtifactStore:
                 con.execute("BEGIN")
                 params: list[Any] = [artifact_id, cutoff]
                 query = (
-                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), "
+                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.artifact_id, "
                     f"CASE WHEN length(CAST(p.section_names AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
                     "THEN p.section_names END "
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
@@ -1133,7 +1132,7 @@ class ArtifactStore:
                 row = con.execute(query, params).fetchone()
                 if row is None:
                     return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
-                rowid, kind, mime_type, text_type, section_json = row
+                rowid, kind, mime_type, text_type, paging_id, section_json = row
                 if mime_type:
                     return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}
                 if text_type != "text":

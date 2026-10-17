@@ -21,6 +21,12 @@ CORE_SCHEMA = """CREATE TABLE artifacts (
 def _current_marker(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     connection.execute("INSERT INTO artifact_schema_meta VALUES ('tenant_storage', 'sha256-v1')")
+    connection.execute(
+        """CREATE TABLE artifact_paging_metadata (
+            artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL,
+            section_names TEXT NOT NULL, page_text TEXT, nul_mask BLOB
+        )"""
+    )
 
 
 def test_canonical_database_reopens_without_changing_durable_artifact_identity(tmp_path) -> None:
@@ -33,6 +39,9 @@ def test_canonical_database_reopens_without_changing_durable_artifact_identity(t
             "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
             "VALUES ('art_fixed', 9999999999, ?, ?, 'text', 'preserved')",
             (tenant, tenant),
+        )
+        connection.execute(
+            "INSERT INTO artifact_paging_metadata VALUES ('art_fixed', 9, '{\"names\":[],\"truncated\":false}', 'preserved', NULL)"
         )
         connection.commit()
 
@@ -115,7 +124,7 @@ def test_incompatible_existing_database_is_rejected_without_modification(tmp_pat
     assert not db_path.with_name(db_path.name + ".pre-tenant-identity.bak").exists()
 
 
-def test_fresh_store_uses_one_canonical_durable_table(tmp_path) -> None:
+def test_fresh_store_uses_current_canonical_tables(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
     artifact_id = store.put_bytes(b"image", "owner", "vision-image", "image/png")
     result = store.get_binary(artifact_id, tenant="owner")
@@ -125,8 +134,7 @@ def test_fresh_store_uses_one_canonical_durable_table(tmp_path) -> None:
     assert reopened.get_binary(artifact_id, tenant="owner")["success"] is True
     with closing(sqlite3.connect(store.path)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "artifacts" in tables
-        assert "artifacts_v2" not in tables
+        assert tables == {"artifacts", "artifact_schema_meta", "artifact_paging_metadata"}
 
 
 def test_formatting_equivalent_canonical_schema_is_accepted(tmp_path) -> None:
@@ -139,6 +147,9 @@ def test_formatting_equivalent_canonical_schema_is_accepted(tmp_path) -> None:
         )
         connection.execute(
             "CREATE TABLE artifact_schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE artifact_paging_metadata(artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL, section_names TEXT NOT NULL, page_text TEXT, nul_mask BLOB)"
         )
         connection.execute("INSERT INTO artifact_schema_meta VALUES('tenant_storage','sha256-v1')")
         connection.commit()

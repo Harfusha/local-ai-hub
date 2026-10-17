@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
 
 
 PNG = b"\x89PNG\r\n\x1a\n\x00\x01"
@@ -101,7 +101,7 @@ def test_artifact_list_rejects_falsey_non_string_tenant_labels(tmp_path: Path, t
         store.list(tenant=tenant)  # type: ignore[arg-type]
 
 
-def test_normal_reopen_preserves_hashed_v1_identity_and_isolates_tenants(tmp_path: Path) -> None:
+def test_pre_paging_schema_fails_closed_without_mutating_database(tmp_path: Path) -> None:
     tenant = "tenant-valid-v1"
     tenant_digest = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
     db_path = tmp_path / "artifacts.sqlite3"
@@ -117,15 +117,14 @@ def test_normal_reopen_preserves_hashed_v1_identity_and_isolates_tenants(tmp_pat
         connection.execute("INSERT INTO artifact_schema_meta VALUES (?, ?)", ("tenant_storage", "sha256-v1"))
         connection.commit()
 
-    store = ArtifactStore(tmp_path)
-    assert store.get("art_v1", tenant=tenant)["success"] is True
-    assert store.get("art_v1", tenant=tenant_digest)["success"] is False
-    with closing(sqlite3.connect(db_path)) as connection:
-        row = connection.execute(
-            "SELECT tenant, tenant_identity FROM artifacts WHERE artifact_id=?",
-            ("art_v1",),
-        ).fetchone()
-    assert row == (tenant_digest, tenant_digest)
+    original_database = db_path.read_bytes()
+    with pytest.raises(UnsupportedArtifactSchema, match="unsupported artifact database schema"):
+        ArtifactStore(tmp_path)
+    assert db_path.read_bytes() == original_database
+
+    current_store = ArtifactStore(tmp_path / "fresh")
+    artifact_id = current_store.put("current schema", tenant, "text")
+    assert current_store.get(artifact_id, tenant=tenant)["text"] == "current schema"
 
 
 def test_binary_integrity_rejects_non_numeric_stored_size(tmp_path: Path) -> None:
