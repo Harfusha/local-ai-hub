@@ -3021,22 +3021,22 @@ def _repo_validation_arguments(action: str, candidates: dict[str, Any]) -> dict[
 def _local_ai_repo_impl(
     action: RepoAction,
     root: str = ".",
-    query: str = "",
-    diff: str = "",
-    task: str = "",
-    workspace: str = "",
-    path: str = "",
+    query: str | None = None,
+    diff: str | None = None,
+    task: str | None = None,
+    workspace: str | None = None,
+    path: str | None = None,
     base: str = "HEAD",
     staged: bool = False,
     dry_run: bool = False,
-    max_tokens: int = 0,
+    max_tokens: int | None = None,
     evidence: list[dict[str, Any]] | None = None,
     mode: str = "adaptive",
     relation: str = "",
     language: str = "auto",
     profile: str = "",
     receipt: dict[str, Any] | None = None,
-    task_id: str = "",
+    task_id: str | None = None,
     include_code: bool = False,
     include_tests: bool = False,
     edits: list[dict[str, Any]] | None = None,
@@ -3107,36 +3107,8 @@ def _local_ai_repo_impl(
     )
     if scoped_error is not None:
         return contract_error(scoped_error, status_code=400)
-    max_commits = 50 if max_commits is None else max_commits
-    author = "" if author is None else author
-    since = "" if since is None else since
-    until = "" if until is None else until
-    days = 30 if days is None else days
-    limit = (20 if action == "hotspots" else 24) if limit is None else limit
-    for numeric_name, numeric_value in (
-        ("max_tokens", max_tokens),
-        ("max_response_tokens", max_response_tokens),
-        ("token_budget", token_budget),
-    ):
-        if isinstance(numeric_value, bool) or not isinstance(numeric_value, int):
-            return contract_error(f"{numeric_name} must be an integer")
-        if numeric_value < 0 or numeric_value > 100000:
-            return contract_error(f"{numeric_name} must be between 0 and 100000")
-    context_query = ""
-    if action == "context":
-        if not isinstance(query, str):
-            return contract_error("context query must be a string")
-        context_query = query.strip()
-        if not context_query:
-            return contract_error("context query cannot be empty")
-    if action not in FEATURES.supported_repo_actions():
-        return _invalid_action(
-            "local_ai_repo",
-            action,
-            tuple(FEATURES.supported_repo_actions()),
-            "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.",
-        )
     retired_input_fields = {
+        "hotspots": ("diff", "max_tokens"),
         **{name: ("task", "diff", "workspace") for name in (
             "investigate", "search", "semantic", "intelligence", "route", "refactor_impact",
             "generate_tests", "generate_mocks", "explain_query", "dependency_slice", "structural_search",
@@ -3166,11 +3138,47 @@ def _local_ai_repo_impl(
     }
     input_values = {
         "query": query, "diff": diff, "task": task, "workspace": workspace,
-        "path": path, "task_id": task_id,
+        "path": path, "task_id": task_id, "max_tokens": max_tokens,
     }
     for field in retired_input_fields.get(action, ()):
-        if input_values[field]:
+        if input_values[field] is not None:
             return contract_error(f"{action} accepts its canonical input field; {field} is not an alias")
+    query = "" if query is None else query
+    diff = "" if diff is None else diff
+    task = "" if task is None else task
+    workspace = "" if workspace is None else workspace
+    path = "" if path is None else path
+    task_id = "" if task_id is None else task_id
+    max_tokens = 0 if max_tokens is None else max_tokens
+    max_commits = 50 if max_commits is None else max_commits
+    author = "" if author is None else author
+    since = "" if since is None else since
+    until = "" if until is None else until
+    days = 30 if days is None else days
+    limit = (20 if action == "hotspots" else 24) if limit is None else limit
+    for numeric_name, numeric_value in (
+        ("max_tokens", max_tokens),
+        ("max_response_tokens", max_response_tokens),
+        ("token_budget", token_budget),
+    ):
+        if isinstance(numeric_value, bool) or not isinstance(numeric_value, int):
+            return contract_error(f"{numeric_name} must be an integer")
+        if numeric_value < 0 or numeric_value > 100000:
+            return contract_error(f"{numeric_name} must be between 0 and 100000")
+    context_query = ""
+    if action == "context":
+        if not isinstance(query, str):
+            return contract_error("context query must be a string")
+        context_query = query.strip()
+        if not context_query:
+            return contract_error("context query cannot be empty")
+    if action not in FEATURES.supported_repo_actions():
+        return _invalid_action(
+            "local_ai_repo",
+            action,
+            tuple(FEATURES.supported_repo_actions()),
+            "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.",
+        )
     required_input_fields = {
         **{name: ("query",) for name in (
             "diagnose", "semantic", "intelligence", "resolve_imports",
@@ -3858,22 +3866,22 @@ def _local_ai_repo_impl(
 def local_ai_repo(
     action: RepoAction,
     root: str = ".",
-    query: str = "",
-    diff: str = "",
-    task: str = "",
-    workspace: str = "",
-    path: str = "",
+    query: str | None = None,
+    diff: str | None = None,
+    task: str | None = None,
+    workspace: str | None = None,
+    path: str | None = None,
     base: str = "HEAD",
     staged: bool = False,
     dry_run: bool = False,
-    max_tokens: int = 0,
+    max_tokens: int | None = None,
     evidence: list[dict[str, Any]] | None = None,
     mode: str = "adaptive",
     relation: str = "",
     language: str = "auto",
     profile: str = "",
     receipt: dict[str, Any] | None = None,
-    task_id: str = "",
+    task_id: str | None = None,
     include_code: bool = False,
     include_tests: bool = False,
     edits: list[dict[str, Any]] | None = None,
@@ -3940,7 +3948,7 @@ def local_ai_repo(
     if scoped_validation is not None:
         return {"success": False, "error": scoped_validation, "status_code": 400,
                 "terminal": True, "retryable": False}
-    if resolved_action == "hotspots" and (diff or max_tokens):
+    if resolved_action == "hotspots" and (diff is not None or max_tokens is not None):
         return {"success": False, "error": "hotspots accepts only canonical days and limit fields",
                 "status_code": 400, "terminal": True, "retryable": False}
     if resolved_action in {"search", "code_index", "callers", "callees", "implementations"}:

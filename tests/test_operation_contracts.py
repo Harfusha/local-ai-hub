@@ -461,6 +461,38 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("action", "alias_field", "alias_value"),
+    (
+        ("search", "diff", ""),
+        ("search", "task", ""),
+        ("search", "workspace", ""),
+        ("hotspots", "diff", ""),
+        ("hotspots", "max_tokens", 0),
+    ),
+)
+def test_repo_rejects_falsey_retired_aliases(monkeypatch, action, alias_field, alias_value):
+    monkeypatch.setattr(
+        local_ai_mcp,
+        "FEATURES",
+        SimpleNamespace(
+            repo=True,
+            enriched_search=False,
+            supported_repo_actions=lambda: [action],
+        ),
+    )
+
+    result = local_ai_mcp._local_ai_repo_impl(
+        action=action,
+        root="C:/repo",
+        query="needle" if action == "search" else None,
+        **{alias_field: alias_value},
+    )
+
+    assert result["success"] is False
+    assert alias_field in result["error"]
+
+
 def test_repo_path_hints_schema_is_bounded_and_context_scoped():
     from local_ai_hub.operation_contracts import (
         operation_input_schema,
