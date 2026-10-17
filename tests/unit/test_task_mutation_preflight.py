@@ -618,3 +618,145 @@ def test_task_transition_preflights_before_event_or_state_write(tmp_path, monkey
     assert commits == []
     assert store.state_store.event_page(f"task:{current.task_id}")["last_seq"] == before_seq
 
+
+def test_rollback_preflights_before_restoring_checkpoint_files(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    task = store.create(_contract(), ScopeContext(), task_id="rollback-budget")
+    target = tmp_path / "tracked.txt"
+    target.write_text("before", encoding="utf-8")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"memory_context": _memory(), "file_snapshots": {str(target): "before"}}),
+        actor=task.owner,
+        idempotency_key="rollback-old-checkpoint",
+    )
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"memory_context": _memory(), "file_snapshots": {str(target): "after"}}),
+        actor=task.owner,
+        idempotency_key="rollback-current-checkpoint",
+    )
+    target.write_text("after", encoding="utf-8")
+    monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+
+    with pytest.raises(CheckpointResponseBudgetError):
+        store.rollback(task.task_id, actor=task.owner, idempotency_key="rollback-budget", response_budget_tokens=128)
+
+    assert target.read_text(encoding="utf-8") == "after"
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
+
+
+def test_heartbeat_preflights_before_event_or_state_write(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    task = store.create(_contract(), ScopeContext(), task_id="heartbeat-budget")
+    monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+
+    with pytest.raises(CheckpointResponseBudgetError):
+        store.heartbeat(task.task_id, actor=task.owner, response_budget_tokens=128)
+
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
+
+
+def test_resume_same_status_retry_preflights_persisted_task(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    task = store.create(_contract(), ScopeContext(), task_id="resume-budget")
+    assert task.status == TaskStatus.ACTIVE
+    monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+
+    with pytest.raises(CheckpointResponseBudgetError):
+        store.resume(
+            task.task_id, actor=task.owner, idempotency_key="resume-budget-retry",
+            response_budget_tokens=128,
+        )
+
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
+
+
+@pytest.mark.parametrize("action", ["task_rollback", "task_resume", "task_heartbeat"])
+def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypatch, action):
+    from local_ai_hub import mcp_server
+
+    class RegisteredFakeClient:
+        def __init__(self):
+            self.requests = []
+
+        def coord(self, **kwargs):
+            self.requests.append(kwargs)
+            return {"success": True, "task": {"task_id": "budget-forwarding"}}
+
+    client = RegisteredFakeClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": action,
+        "task_id": "budget-forwarding",
+        "max_response_tokens": 512,
+        "response_profile": "minimal",
+    }))
+
+    assert client.requests[-1]["action"] == action
+    assert client.requests[-1]["response_budget_tokens"] == 512
+    assert result
+
+
+@pytest.mark.parametrize("action", ["rollback", "resume", "heartbeat"])
+def test_http_mutations_return_preflight_413_without_mutation(monkeypatch, action):
+    from local_ai_hub import http_server
+
+    calls = []
+
+    def reject_budget(*args, **kwargs):
+        calls.append(kwargs)
+        raise CheckpointResponseBudgetError(128, 129)
+
+    task_store = SimpleNamespace(
+        state_store=SimpleNamespace(enabled=True),
+        rollback=reject_budget,
+        resume=reject_budget,
+        heartbeat=reject_budget,
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_tasks=task_store, recovery=None, debug_traces=None))
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *args, **kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._authorization_root = "."
+    handler._authorization_tenant = "tenant-test"
+    handler._authorization_actor = "agent"
+    handler._require_authorized = lambda: True
+    handler._begin_trace = lambda *_: None
+    handler._claim_recovery = lambda *_: True
+    handler._tenant = lambda: "tenant-test"
+    handler._agent = lambda: "agent"
+    handler._request_task = lambda *_args, **_kwargs: SimpleNamespace(owner="agent")
+    handler._bind_task_payload = lambda _payload: True
+    handler._validate_payload = lambda *_args, **_kwargs: None
+    handler._read_json = lambda: {
+        "action": action,
+        "task_id": "budget-http",
+        "response_budget_tokens": 128,
+    }
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler.do_POST()
+
+    assert calls[-1]["response_budget_tokens"] == 128
+    status, body = responses[-1]
+    assert status == 413
+    assert body["mutation_applied"] is False
+    assert body["operation_not_started"] is True
+    assert body["response_budget"] == {
+        "requested_tokens": 128,
+        "required_tokens": 129,
+        "unit": "estimated_tokens",
+    }
+

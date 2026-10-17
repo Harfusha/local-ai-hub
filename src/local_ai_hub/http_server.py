@@ -6711,10 +6711,19 @@ class Handler(BaseHTTPRequestHandler):
                             actor=actor,
                             idempotency_key=idempotency_key,
                             reason=str(payload.get("reason", "manual rollback")),
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
                     except Exception as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "resume":
@@ -6723,10 +6732,19 @@ class Handler(BaseHTTPRequestHandler):
                             str(payload.get("task_id", "")),
                             actor=actor,
                             idempotency_key=idempotency_key,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
                 if action == "heartbeat":
                     t_id = str(payload.get("task_id", "")).strip()
                     ttl_val = payload.get("ttl_seconds", payload.get("ttl"))
@@ -6737,10 +6755,19 @@ class Handler(BaseHTTPRequestHandler):
                             ttl_seconds=ttl_sec,
                             actor=actor,
                             idempotency_key=idempotency_key,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
                 if action == "cleanup_worktree":
                     t_id = str(payload.get("task_id", ""))
                     del_br = bool(payload.get("delete_branch", True))
