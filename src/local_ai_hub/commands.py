@@ -10243,6 +10243,7 @@ class CommandBroker:
                     "spawn_daemon", endpoint="commands.spawn_daemon.resume", task_id=task_id
                 )
                 if not resume_authorization.get("allowed", False):
+                    registry_persisted = False
                     try:
                         cleanup_confirmed = _stop_daemon_tree(info)
                     except Exception:
@@ -10326,14 +10327,18 @@ class CommandBroker:
             if job_handle:
                 terminate_job_object(job_handle)
             if process is not None:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                try:
-                    process.wait(timeout=2.0)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                kill_fn = getattr(process, "kill", None)
+                if callable(kill_fn):
+                    try:
+                        kill_fn()
+                    except OSError:
+                        pass
+                wait_fn = getattr(process, "wait", None)
+                if callable(wait_fn):
+                    try:
+                        wait_fn(timeout=2.0)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
             if job_handle:
                 close_job_object(job_handle)
             with self._daemons_lock:
