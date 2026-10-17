@@ -139,6 +139,31 @@ def test_registered_task_and_verification_payloads_are_canonical(monkeypatch, ac
     assert client.calls == [("post", expected[0], expected_payload)]
 
 
+def test_zombie_reap_forwards_response_budget_to_http_mutation(monkeypatch, tmp_path):
+    _activate_coord(monkeypatch)
+    client = _FakeClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+
+    _implementation()(
+        action="task_zombie_reap",
+        root=str(tmp_path),
+        task_id="task-1",
+        max_response_tokens=256,
+    )
+
+    assert client.calls == [(
+        "post",
+        "/api/agent-state/tasks",
+        {
+            "action": "reap_expired",
+            "auto_recover": True,
+            "root": mcp_server._client_root(str(tmp_path)),
+            "task_id": "task-1",
+            "response_budget_tokens": 256,
+        },
+    )]
+
+
 @pytest.mark.parametrize(("action", "canonical", "alias"), [
     ("ask", {"question": "Question?", "session_id": "s"}, {"query": ""}),
     ("answer", {"question_id": "q", "answer": "Answer"}, {"value": ""}),
