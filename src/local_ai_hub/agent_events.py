@@ -137,22 +137,41 @@ class AgentEvent:
     def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
         if not isinstance(data, Mapping):
             raise TypeError("AgentEvent data must be a mapping")
+        if "kind" not in data:
+            raise KeyError("kind")
+        if "stream_id" not in data:
+            raise KeyError("stream_id")
         payload = data.get("payload")
         if payload is None:
             payload = {}
         created_at = data.get("created_at")
         if created_at is None:
             created_at = time.time()
+        event_id = data.get("event_id")
+        if event_id is None:
+            event_id = f"evt_{uuid.uuid4().hex}"
+        idempotency_key = data.get("idempotency_key")
+        if idempotency_key is None:
+            idempotency_key = f"idemp_{uuid.uuid4().hex}"
+        actor = data.get("actor")
+        if actor is None:
+            actor = "agent"
+        correlation_id = data.get("correlation_id")
+        if correlation_id is None:
+            correlation_id = ""
+        stream_id = data["stream_id"]
+        kind = data["kind"]
+        seq = data.get("seq")
         return cls(
-            event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex}"),
-            stream_id=str(data.get("stream_id", "")),
-            kind=str(data.get("kind", "")),
+            event_id=event_id,
+            stream_id=stream_id,
+            kind=kind,
             payload=payload,
-            idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex}"),
-            correlation_id=str(data.get("correlation_id", "")),
-            actor=str(data.get("actor") or "agent"),
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+            actor=actor,
             created_at=created_at,
-            seq=data.get("seq"),
+            seq=seq,
         )
 
 
