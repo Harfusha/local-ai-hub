@@ -6,6 +6,8 @@ The optional model-free claim validator requires explicit inputs: `python tools/
 
 Both compact and full `local_ai_status` descriptions advertise the `detail` selector. Use `detail="brief"`, `"cache"`, `"telemetry"`, `"full"`, or an enabled advertised detail; never substitute `action`.
 
+For `local_ai_repo`, omit action-inapplicable fields. A retired field rejects whenever supplied as a non-null value, including empty strings and zero; `null` has omission semantics.
+
 Task memory adoption passes the same resolved repository coordination ID into compilation, record materialization and excluded-memory diagnostics; expiry checks retain the current repository and tenant identity.
 
 Outcome records require a canonical kind (accepted/reverted/corrected/regressed/rejected), unchanged canonical string identities, mapping details and a finite nonnegative numeric timestamp. Direct construction and deserialization require explicit kind, actor and timestamp; empty or malformed kinds never become accepted. Named factories supply their named kind and current timestamp, retain their declared default actor `user`, and treat optional `details=None` as empty metadata. Other supplied types are validated without identity or timestamp coercion.
