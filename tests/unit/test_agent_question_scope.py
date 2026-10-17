@@ -40,3 +40,21 @@ def test_agent_question_scope_rejects_spoofed_tenant(tmp_path):
             authorized_root=str(root),
             authorized_tenant="tenant-a",
         )
+
+
+@pytest.mark.parametrize(
+    ("requested_tenant", "authorized_tenant"),
+    [(" tenant-a ", "tenant-a"), (7, "7")],
+)
+def test_agent_question_scope_rejects_tenant_normalization_and_coercion(
+    tmp_path, requested_tenant, authorized_tenant
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="tenant does not match authenticated scope"):
+        _agent_question_scope(
+            payload={"tenant": requested_tenant},
+            authorized_root=str(root),
+            authorized_tenant=authorized_tenant,
+        )
