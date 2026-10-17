@@ -8855,58 +8855,57 @@ def serve(config_path: str | None = None) -> None:
         max_handlers=int(cfg.get("max_concurrent_requests", 64)),
         overload_wait_seconds=float(cfg.get("overload_wait_seconds", 0.05)),
     )
+    app: LocalAIApp | None = None
+    pid_path: Path | None = None
+    telemetry_start_attempted = False
     try:
-        APP = LocalAIApp(config_path)
+        app = LocalAIApp(config_path)
+        APP = app
         validate_network_security(APP.config)
-    except Exception:
-        server.server_close()
-        if APP is not None:
-            try:
-                APP.close()
-            finally:
-                APP = None
-        raise
-    cfg = APP.config["server"]
-    state_dir = Path(cfg["state_dir"]).expanduser().resolve()
-    if state_dir != startup_state_dir:
-        server.server_close()
-        try:
-            APP.close()
-        finally:
-            APP = None
-        raise RuntimeError("Hub config state directory changed during startup")
-    state_dir.mkdir(parents=True, exist_ok=True)
-    pid_path = state_dir / "hub.pid"
-    pid_path.write_text(str(os.getpid()), encoding="utf-8")
-    # Configure rate limiting from security config
-    sec_cfg = APP.config.get("security", {})
-    server.configure_rate_limit(
-        requests=int(sec_cfg.get("rate_limit_requests", 600)),
-        window_seconds=float(sec_cfg.get("rate_limit_window_seconds", 60.0)),
-    )
-    APP.logger.info("hub started version=%s bind=%s port=%s", __version__, cfg.get("bind", "127.0.0.1"), int(cfg.get("port", 11435)))
-    APP.telemetry.session_start(os.getpid(), __version__)
-    APP.telemetry.record_system("hub_start", success=True)
-    try:
+        cfg = APP.config["server"]
+        state_dir = Path(cfg["state_dir"]).expanduser().resolve()
+        if state_dir != startup_state_dir:
+            raise RuntimeError("Hub config state directory changed during startup")
+        state_dir.mkdir(parents=True, exist_ok=True)
+        pid_path = state_dir / "hub.pid"
+        pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        # Configure rate limiting from security config
+        sec_cfg = APP.config.get("security", {})
+        server.configure_rate_limit(
+            requests=int(sec_cfg.get("rate_limit_requests", 600)),
+            window_seconds=float(sec_cfg.get("rate_limit_window_seconds", 60.0)),
+        )
+        APP.logger.info("hub started version=%s bind=%s port=%s", __version__, cfg.get("bind", "127.0.0.1"), int(cfg.get("port", 11435)))
+        telemetry_start_attempted = True
+        APP.telemetry.session_start(os.getpid(), __version__)
+        APP.telemetry.record_system("hub_start", success=True)
         server.serve_forever()
     finally:
-        server.server_close()
         try:
-            APP.telemetry.session_stop()
-            APP.telemetry.record_system("hub_stop", success=True)
-            APP.telemetry.flush(1.0)
-            APP.logger.info("hub stopping version=%s", __version__)
-        except Exception:
-            pass
-        try:
-            APP.close()
-        except Exception:
-            pass
-        try:
-            if pid_path.exists() and pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
-                pid_path.unlink()
-        except OSError:
-            pass
+            server.server_close()
+        finally:
+            if app is not None:
+                if telemetry_start_attempted:
+                    try:
+                        app.telemetry.session_stop()
+                        app.telemetry.record_system("hub_stop", success=True)
+                        app.telemetry.flush(1.0)
+                        app.logger.info("hub stopping version=%s", __version__)
+                    except Exception:
+                        pass
+                try:
+                    app.close()
+                except Exception:
+                    pass
+                finally:
+                    if APP is app:
+                        APP = None
+            if pid_path is not None:
+                try:
+                    if pid_path.exists() and pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                        pid_path.unlink()
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":
