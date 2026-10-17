@@ -134,6 +134,84 @@ def test_artifact_list_rejects_coerced_or_invalid_limits(monkeypatch, limit):
     assert calls == []
 
 
+def test_lease_claim_rejects_tenant_override_and_non_string_paths(monkeypatch):
+    calls = []
+    leases = SimpleNamespace(claim_batch=lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, leases=leases))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_lease_claim(
+        {"tenant": "caller-selected-tenant", "root": "repo", "paths": ["src/a.py"]},
+        tenant="server-bound-tenant",
+    )
+    handler._handle_post_lease_claim(
+        {"root": "repo", "paths": [123]}, tenant="server-bound-tenant",
+    )
+    handler._handle_post_lease_claim(
+        {"root": "repo", "paths": ["src/a.py"], "ttl_seconds": True},
+        tenant="server-bound-tenant",
+    )
+
+    assert [response[0] for response in responses] == [400, 400, 400]
+    assert calls == []
+
+
+def test_lease_claim_uses_only_authenticated_tenant(monkeypatch):
+    calls = []
+    leases = SimpleNamespace(claim_batch=lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, leases=leases))
+    monkeypatch.setattr(http_server, "_lease_coordination_id", lambda _root: "repo-coordination")
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler._send = lambda _status, _payload: None
+
+    handler._handle_post_lease_claim(
+        {"root": "repo", "paths": ["src/a.py"], "ttl_seconds": 120, "purpose": "edit"},
+        tenant="server-bound-tenant",
+    )
+
+    assert calls == [(("server-bound-tenant", "repo", ["src/a.py"], 120, "edit"), {"coordination_id": "repo-coordination"})]
+
+
+def test_lease_release_requires_specific_id_and_authenticated_tenant(monkeypatch):
+    calls = []
+    leases = SimpleNamespace(release=lambda *args: calls.append(args) or {"success": True})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, leases=leases))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_lease_release({}, tenant="server-bound-tenant")
+    handler._handle_post_lease_release(
+        {"lease_id": "lease-1", "tenant": "caller-selected-tenant"}, tenant="server-bound-tenant",
+    )
+    handler._handle_post_lease_release({"lease_id": 123}, tenant="server-bound-tenant")
+    handler._handle_post_lease_release(
+        {"lease_id": "lease-1"}, tenant="server-bound-tenant",
+    )
+
+    assert [response[0] for response in responses] == [400, 400, 400]
+    assert calls == [("server-bound-tenant", "lease-1")]
+
+
+@pytest.mark.parametrize("ttl_seconds", [True, "900", 0, -1])
+def test_lease_renew_rejects_coercive_or_invalid_ttl(monkeypatch, ttl_seconds):
+    calls = []
+    leases = SimpleNamespace(renew=lambda *args: calls.append(args) or {"success": True})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, leases=leases))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_lease_renew(
+        {"lease_id": "lease-1", "ttl_seconds": ttl_seconds}, tenant="server-bound-tenant",
+    )
+
+    assert responses[0][0] == 400
+    assert calls == []
+
+
 def test_authenticated_principal_tenant_is_used_before_configured_fallback(monkeypatch):
     handler = _handler(monkeypatch)
     handler._authorization_tenant = "authenticated-user-tenant"

@@ -6,6 +6,8 @@
 
 **Artifact list tenant isolation repair (2026-10-17; tests deferred):** `/api/artifact/list` now rejects caller-supplied tenant fields and coercive limits, requires a nonempty authenticated tenant, and passes only that tenant to `ArtifactStore.list`; this closes the empty-tenant path that lists all artifact rows. The store now rejects boolean, noninteger, and nonpositive limits before database initialization. Focused regressions were added; tests remain unrun until the source bundle is complete.
 
+**Lease HTTP identity/input hardening (2026-10-18; tests deferred):** Claim, release, and renew now use only the authenticated tenant and reject tenant overrides, unknown fields, coercive identifiers/paths/TTLs, and release requests without a specific lease ID (which otherwise releases every lease owned by that tenant). Regression cases were added; tests remain deferred.
+
 **SSE replay zero-shims repair (2026-10-17; tests deferred):** Removed the legacy `events()` adapter, signature probing, manual snapshot emulation, and `TypeError` retry that could replay without `through_seq`. SSE replay now uses the canonical bounded `event_page` contract; a regression case records provider failure without fallback. No tests or runtime checks have run.
 
 **2026-10-17 hardening ancestry correction:** `git rev-list --count 77464e14..a8f5dc5c` returns 48, and master `ab02ce59` descends from `a8f5dc5c`; the full hardening stack is already in master history. This supersedes the older "Next: integrate" sentence below. Ancestry proves commit inclusion, not present-day semantic equivalence or final runtime acceptance.
