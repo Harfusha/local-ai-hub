@@ -5614,6 +5614,65 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=tenant, limit=limit)})
 
+    def _handle_post_lease_claim(self, payload: dict[str, Any], tenant: str) -> None:
+        allowed_fields = {"root", "paths", "ttl_seconds", "purpose"}
+        if not isinstance(payload, dict) or set(payload) - allowed_fields:
+            self._send(400, {"success": False, "error": "lease claim contains unsupported fields", "terminal": True, "retryable": False})
+            return
+        root = payload.get("root", ".")
+        paths = payload.get("paths", [])
+        ttl_seconds = payload.get("ttl_seconds", 900)
+        purpose = payload.get("purpose", "agent edit")
+        if not isinstance(root, str) or not root.strip() or "\x00" in root:
+            self._send(400, {"success": False, "error": "root must be a non-empty string", "terminal": True, "retryable": False})
+            return
+        if not isinstance(paths, list) or any(not isinstance(path, str) or not path.strip() or "\x00" in path for path in paths):
+            self._send(400, {"success": False, "error": "paths must be an array of non-empty strings", "terminal": True, "retryable": False})
+            return
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds < 1:
+            self._send(400, {"success": False, "error": "ttl_seconds must be a positive integer", "terminal": True, "retryable": False})
+            return
+        if not isinstance(purpose, str) or "\x00" in purpose:
+            self._send(400, {"success": False, "error": "purpose must be a string", "terminal": True, "retryable": False})
+            return
+        if not isinstance(tenant, str) or not tenant.strip():
+            self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
+            return
+        coordination_id = _lease_coordination_id(root)
+        self._send(200, APP.leases.claim_batch(
+            tenant, root, paths, ttl_seconds, purpose, coordination_id=coordination_id,
+        ))
+
+    def _handle_post_lease_release(self, payload: dict[str, Any], tenant: str) -> None:
+        if not isinstance(payload, dict) or set(payload) != {"lease_id"}:
+            self._send(400, {"success": False, "error": "lease release requires only lease_id", "terminal": True, "retryable": False})
+            return
+        lease_id = payload["lease_id"]
+        if not isinstance(lease_id, str) or not lease_id.strip() or "\x00" in lease_id:
+            self._send(400, {"success": False, "error": "lease_id must be a non-empty string", "terminal": True, "retryable": False})
+            return
+        if not isinstance(tenant, str) or not tenant.strip():
+            self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
+            return
+        self._send(200, APP.leases.release(tenant, lease_id))
+
+    def _handle_post_lease_renew(self, payload: dict[str, Any], tenant: str) -> None:
+        if not isinstance(payload, dict) or set(payload) - {"lease_id", "ttl_seconds"}:
+            self._send(400, {"success": False, "error": "lease renewal contains unsupported fields", "terminal": True, "retryable": False})
+            return
+        lease_id = payload.get("lease_id")
+        ttl_seconds = payload.get("ttl_seconds", 900)
+        if not isinstance(lease_id, str) or not lease_id.strip() or "\x00" in lease_id:
+            self._send(400, {"success": False, "error": "lease_id must be a non-empty string", "terminal": True, "retryable": False})
+            return
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds < 1:
+            self._send(400, {"success": False, "error": "ttl_seconds must be a positive integer", "terminal": True, "retryable": False})
+            return
+        if not isinstance(tenant, str) or not tenant.strip():
+            self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
+            return
+        self._send(200, APP.leases.renew(tenant, lease_id, ttl_seconds))
+
     @staticmethod
     def _context_retrieval_mode(payload: Mapping[str, Any]) -> str | None:
         raw_mode = payload.get("mode", "adaptive")
@@ -8364,17 +8423,14 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_evidence_get_1' in post_route_ids:
                 self._send(200, APP.evidence.get(str(payload.get("evidence_id", "")), verify=bool(payload.get("verify", True)))); return
             if 'post_leases_claim_1' in post_route_ids:
-                paths = payload.get("paths", [])
-                root = str(payload.get("root", "."))
-                coordination_id = _lease_coordination_id(root)
-                lease_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant).strip()
-                self._send(200, APP.leases.claim_batch(lease_tenant, root, [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")), coordination_id=coordination_id)); return
+                self._handle_post_lease_claim(payload, tenant)
+                return
             if path == "/api/leases/release":
-                lease_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant).strip()
-                self._send(200, APP.leases.release(lease_tenant, str(payload.get("lease_id", "")))); return
+                self._handle_post_lease_release(payload, tenant)
+                return
             if 'post_leases_renew_1' in post_route_ids:
-                lease_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant).strip()
-                self._send(200, APP.leases.renew(lease_tenant, str(payload.get("lease_id", "")), int(payload.get("ttl_seconds", 900)))); return
+                self._handle_post_lease_renew(payload, tenant)
+                return
             if 'post_memory_put_1' in post_route_ids:
                 self._send(200, APP.memory.put(
                     str(payload.get("root", ".")), str(payload.get("key", "")), str(payload.get("value", "")), tenant,
