@@ -3248,13 +3248,16 @@ def run_benchmark(
 
         def verify_code_index_case(regime: str, index: int) -> dict[str, Any]:
             from local_ai_hub.cache import stable_hash as cache_stable_hash
+            from local_ai_hub.process_utils import canonical_root
 
             case = code_index_cases[index]
             query = f"{case['query']} t02_{regime}_sample_{index}"
             try:
                 params = {
+                    "query": query,
                     "terms": sorted(set(app.code_index._query_terms(query))),
                     "limit": 10,
+                    "offset": 0,
                     "include_code": False,
                 }
                 state = app.services._repo_cache_state(str(repo_root))
@@ -3262,7 +3265,7 @@ def run_benchmark(
                 if not isinstance(state_fingerprint, str) or not state_fingerprint:
                     return {"success": False}
                 cache_key = cache_stable_hash({
-                    "op": "code-index", "state": state_fingerprint, "params": params,
+                    "op": "code-index", "root": canonical_root(repo_root), "state": state_fingerprint, "params": params,
                 })
                 cached = app.services.repo_cache.get(cache_key)
             except Exception:
