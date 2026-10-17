@@ -1752,6 +1752,8 @@ class MemoryStore:
         worktree_id: str | None = None,
         branch: str | None = None,
     ) -> list[MemoryRecord]:
+        if tenant is not None and not isinstance(tenant, str):
+            raise ValueError("tenant must be a string")
         scope = AgentScope.parse(scope) if scope is not None else None
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -1777,7 +1779,7 @@ class MemoryStore:
         scope_id_val = str(scope_id or "").strip()
         root = str(root or "").strip()
         repository_id = str(repository_id or "").strip()
-        tenant = str(tenant or "").strip()
+        tenant = tenant if isinstance(tenant, str) else ""
         identity_scopes = [
             (task_id_val, AgentScope.TASK.value),
             (session_id_val, AgentScope.SESSION.value),
