@@ -467,6 +467,9 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
         ("search", "diff", ""),
         ("search", "task", ""),
         ("search", "workspace", ""),
+        ("git_history_search", "max_tokens", 0),
+        ("dependency_slice", "relation", ""),
+        ("generate_types", "diff", ""),
         ("hotspots", "diff", ""),
         ("hotspots", "max_tokens", 0),
     ),
@@ -485,7 +488,8 @@ def test_repo_rejects_falsey_retired_aliases(monkeypatch, action, alias_field, a
     result = local_ai_mcp._local_ai_repo_impl(
         action=action,
         root="C:/repo",
-        query="needle" if action == "search" else None,
+        query="needle" if action in {"search", "git_history_search", "dependency_slice"} else None,
+        path="src/local_ai_hub/__init__.py" if action == "generate_types" else None,
         **{alias_field: alias_value},
     )
 
