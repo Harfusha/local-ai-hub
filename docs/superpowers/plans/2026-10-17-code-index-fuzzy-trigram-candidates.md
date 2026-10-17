@@ -17,7 +17,7 @@ Implement the accepted design in `docs/superpowers/specs/2026-10-17-code-index-f
 
 - [x] Design states exact result contract and no-migration policy.
 - [x] Source paths and deferred tests implemented; unit tests remain unrun.
-- [ ] Static source review and impact review complete.
+- [x] Manual source review and staged `git diff --check` complete. Hub `review_diff` returned a different checkout's files, so it is not counted; indexed impact review remains unavailable for this worktree.
 - [ ] Full source bundle closed; then run integrated tests and benchmark.
 
 ## Risks to resolve in implementation
