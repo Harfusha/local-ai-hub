@@ -62,10 +62,10 @@ def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path
     assert db_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("corruption", ["missing", "malformed", "stale_names"])
+@pytest.mark.parametrize("corruption", ["missing", "malformed", "inconsistent"])
 def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corruption) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put('{"legacy_section":"must not restore metadata"}', "owner", "text")
+    artifact_id = store.put("# Heading\n\nbody", "owner", "text")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         if corruption == "missing":
@@ -74,17 +74,17 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
             )
         else:
             if corruption == "malformed":
-                section_names = '{"legacy_section":true}'
+                section_json = "{invalid"
             else:
                 metadata = json.loads(connection.execute(
-                    "SELECT section_names FROM artifact_paging_metadata WHERE artifact_id=?",
+                    "SELECT section_json FROM artifact_paging_metadata WHERE artifact_id=?",
                     (artifact_id,),
                 ).fetchone()[0])
                 metadata["names"] = ["stale_but_shape_valid"]
-                section_names = json.dumps(metadata, separators=(",", ":"))
+                section_json = json.dumps(metadata, separators=(",", ":"))
             connection.execute(
-                "UPDATE artifact_paging_metadata SET section_names=? WHERE artifact_id=?",
-                (section_names, artifact_id),
+                "UPDATE artifact_paging_metadata SET section_json=? WHERE artifact_id=?",
+                (section_json, artifact_id),
             )
         connection.commit()
 
@@ -96,6 +96,51 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
     for result in (read_result, slices_result):
         assert result["success"] is False
         assert result["error_code"] == "artifact_paging_metadata_invalid"
+
+
+def test_rebuilds_derived_paging_metadata_and_preserves_artifact_text(tmp_path) -> None:
+    text = "heading\n\nbody\x00tail"
+    store = ArtifactStore(tmp_path)
+    artifact_id = store.put(text, "owner", "text")
+    db_path = tmp_path / "artifacts.sqlite3"
+    previous_paging_schema = """CREATE TABLE artifact_paging_metadata (
+        artifact_id TEXT PRIMARY KEY,
+        char_count INTEGER NOT NULL,
+        section_names TEXT NOT NULL,
+        page_text TEXT,
+        nul_mask BLOB
+    )"""
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        durable_before = connection.execute(
+            "SELECT text, tenant, tenant_identity FROM artifacts WHERE artifact_id=?",
+            (artifact_id,),
+        ).fetchone()
+        connection.execute("DROP TABLE artifact_paging_metadata")
+        connection.execute(previous_paging_schema)
+        connection.execute(
+            "INSERT INTO artifact_paging_metadata VALUES(?,?,?,?,?)",
+            (artifact_id, len(text), "malformed derived data", None, None),
+        )
+        connection.commit()
+
+    reopened = ArtifactStore(tmp_path)
+    result = reopened.get_slices(
+        artifact_id, [{"offset": 0, "max_chars": len(text)}], tenant="owner",
+    )
+
+    assert result["success"] is True
+    assert result["slices"] == [{"offset": 0, "text": text}]
+    with closing(sqlite3.connect(db_path)) as connection:
+        durable_after = connection.execute(
+            "SELECT text, tenant, tenant_identity FROM artifacts WHERE artifact_id=?",
+            (artifact_id,),
+        ).fetchone()
+        paging_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_xinfo(artifact_paging_metadata)")
+        }
+    assert durable_after == durable_before
+    assert {"section_json", "section_checksum"} <= paging_columns
 
 
 def test_core_and_sidecar_write_roll_back_together_on_failed_batch(tmp_path) -> None:
@@ -137,8 +182,10 @@ def test_new_core_schema_keeps_paging_fields_out_of_artifacts(tmp_path) -> None:
     with closing(sqlite3.connect(tmp_path / "artifacts.sqlite3")) as connection:
         core_columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts)")}
         sidecar_columns = {row[1] for row in connection.execute("PRAGMA table_info(artifact_paging_metadata)")}
-    assert not {"char_count", "section_names", "page_text", "nul_mask"} & core_columns
-    assert {"artifact_id", "char_count", "section_names", "page_text", "nul_mask"} <= sidecar_columns
+    assert not {"char_count", "section_json", "section_checksum", "page_text", "nul_mask"} & core_columns
+    assert {
+        "artifact_id", "char_count", "section_json", "section_checksum", "page_text", "nul_mask",
+    } <= sidecar_columns
 
 
 def test_noncanonical_core_paging_schema_is_rejected(tmp_path) -> None:
