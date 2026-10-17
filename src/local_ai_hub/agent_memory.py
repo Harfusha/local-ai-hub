@@ -302,6 +302,7 @@ def _context_scope_sql(
         ]
         clauses.append("(" + " AND ".join(shared_repository) + ")")
         params.extend([AgentScope.REPOSITORY.value, tenant, coordination_id])
+    add_scoped_identity(AgentScope.REPOSITORY.value, root)
     add_scoped_identity(AgentScope.TASK.value, task_id)
     add_scoped_identity(AgentScope.SESSION.value, session_id)
     add_scoped_identity(AgentScope.CLONE.value, clone_id)
@@ -1497,6 +1498,8 @@ class MemoryStore:
         tenant_agnostic_global: bool = False,
     ) -> MemoryRecord | None:
         requested_scope = AgentScope.parse(scope).value if scope is not None else ""
+        if tenant_agnostic_global and requested_scope != AgentScope.GLOBAL.value:
+            raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
         if (
