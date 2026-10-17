@@ -247,8 +247,9 @@ def _context_scope_sql(
     branch: str,
     coordination_id: str = "",
 ) -> tuple[str, list[Any]]:
+    if not isinstance(tenant, str):
+        raise ValueError("tenant must be a string")
     root = str(root or "").strip()
-    tenant = str(tenant or "").strip()
     canonical_root = _normalise_scope_root(root) if root else ""
     provenance_tenant = (
         "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
