@@ -68,7 +68,7 @@ def test_pubsub_sequence_and_timestamp_are_distinct_canonical_filters(monkeypatc
     result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), after_seq=17, after_ts=3.5)
     assert result["success"] is True
     assert calls[0]["after_seq"] == 17
-    assert calls[0]["since_timestamp"] == 3.5
+    assert calls[0]["after_ts"] == 3.5
     retired = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), expected_version=3)
     assert retired["terminal"] is True
     for value in (-1, True, MAX_EVENT_SEQUENCE + 1):
