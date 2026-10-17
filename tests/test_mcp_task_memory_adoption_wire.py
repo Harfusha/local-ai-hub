@@ -378,6 +378,9 @@ def test_registered_mcp_large_checkpoint_error_keeps_mutation_flags(tmp_path, mo
     assert payload["mutation_applied"] is False
     assert payload["operation_not_started"] is True
     assert payload["request_id"] == calls[0]["request_id"]
+    text_payload = json.loads(results[0].content[0].text)
+    assert text_payload["mutation_applied"] is False
+    assert text_payload["operation_not_started"] is True
     assert results[0].isError is False
 
 
