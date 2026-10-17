@@ -25,6 +25,7 @@ def _insert(index: CodeIndex, root: Path, path: str, name: str, line: int = 1) -
             "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (str(root), path, name, "function", line, line, "", name, "", "public", ""),
         )
+        index._replace_symbol_trigrams(con, str(root), [path])
         con.commit()
 
 

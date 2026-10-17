@@ -65,6 +65,11 @@ def test_query_excludes_symbols_from_ignored_overlay_paths(tmp_path: Path) -> No
                 "FROM symbols WHERE root=? AND path='src/current.py'",
                 (archived_path, str(root.resolve())),
             )
+        index._replace_symbol_trigrams(
+            con,
+            str(root.resolve()),
+            [*archived_paths, r"handoff\legacy.py"],
+        )
         con.commit()
 
     result = index.query(str(root), "ActiveHandler", verify_freshness=True)
@@ -111,6 +116,11 @@ def test_legacy_archive_rows_cannot_starve_current_query_candidates(tmp_path: Pa
                 (f"artifacts/t08-ast-check-{ordinal}/stale.py",),
             )
         con.execute("INSERT INTO symbols SELECT * FROM current_symbol")
+        index._replace_symbol_trigrams(
+            con,
+            str(root.resolve()),
+            [str(row[0]) for row in con.execute("SELECT DISTINCT path FROM symbols WHERE root=?", (str(root.resolve()),))],
+        )
         con.commit()
 
     result = index.query(str(root), "ActiveHandler", limit=1, verify_freshness=True)

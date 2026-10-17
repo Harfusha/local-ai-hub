@@ -69,6 +69,13 @@ def test_archive_relation_rows_cannot_starve_live_retrieval_or_impact(tmp_path: 
                 (resolved_root, "src/current.py", "src/base.py", "current.py", "base.py", "imports", live_path, 1),
             ],
         )
+        index._replace_symbol_trigrams(
+            con,
+            resolved_root,
+            [str(row[0]) for row in con.execute(
+                "SELECT DISTINCT path FROM symbols WHERE root=?", (resolved_root,),
+            )],
+        )
         con.commit()
 
     symbols = index.find_symbol(str(root), "LiveCaller", limit=1)

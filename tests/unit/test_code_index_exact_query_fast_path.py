@@ -25,6 +25,7 @@ def test_exact_identifier_keeps_fuzzy_matches_with_one_materialized_score_pass(m
                 (str(root), "src/c.py", "generate_tests_archive", "function", 3, 6, "", "generate_tests_archive", "", "public", ""),
             ],
         )
+        index._replace_symbol_trigrams(con, str(root), ["src/a.py", "src/b.py", "src/c.py"])
         con.commit()
 
     statements: list[str] = []
