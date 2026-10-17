@@ -5244,14 +5244,14 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                     })
                                 return wire
 
-                        for _ in range(16):
-                            returned = json_tokens(wire_payload())
-                            trial["response_budget"]["returned_tokens"] = returned
-                            if json_tokens(wire_payload()) == returned:
-                                break
-                        wire = wire_payload()
-                        if json_tokens(wire) <= requested:
-                            return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], trial
+                            for _ in range(16):
+                                returned = json_tokens(wire_payload())
+                                trial["response_budget"]["returned_tokens"] = returned
+                                if json_tokens(wire_payload()) == returned:
+                                    break
+                            wire = wire_payload()
+                            if json_tokens(wire) <= requested:
+                                return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], trial
             return None
         error = str(value.get("error") or "")
         metadata_variants = (
