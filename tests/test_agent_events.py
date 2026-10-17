@@ -34,6 +34,18 @@ def test_from_dict_rejects_missing_canonical_event_fields():
     with pytest.raises(KeyError, match="event_id"):
         AgentEvent.from_dict({"stream_id": "stream-1", "kind": "test.event"})
 
+    canonical = AgentEvent.create("stream-1", "test.event").to_dict()
+    for field in ("correlation_id", "seq"):
+        incomplete = {key: value for key, value in canonical.items() if key != field}
+        with pytest.raises(KeyError, match=field):
+            AgentEvent.from_dict(incomplete)
+
+
+def test_from_dict_rejects_noncanonical_fields():
+    canonical = AgentEvent.create("stream-1", "test.event").to_dict()
+    with pytest.raises(ValueError, match="unexpected AgentEvent fields"):
+        AgentEvent.from_dict({**canonical, "task_name": "legacy-alias"})
+
 
 def test_schema_drift_fails_closed_without_deleting_durable_database(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"
