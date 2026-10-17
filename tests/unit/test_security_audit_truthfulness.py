@@ -58,3 +58,165 @@ def test_unreadable_source_prevents_clean_verdict(tmp_path):
     assert "error" in result["scan_errors"][0]
     assert len(result["scan_errors"][0]["error"]) > 0
 
+
+def test_shell_injection_finding_belongs_to_call_with_shell_enabled(tmp_path):
+    source = tmp_path / "unsafe.py"
+    source.write_text(
+        "import subprocess\n"
+        "subprocess.run([\"git\", \"status\"], check=True)\n"
+        "subprocess.run(\n"
+        "    command,\n"
+        "    shell=True,\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    shell_findings = [
+        finding for finding in result["findings"]
+        if finding["title"] == "Shell Injection Risk"
+    ]
+    assert [(finding["line"], finding["severity"]) for finding in shell_findings] == [
+        (3, "MEDIUM"),
+    ]
+
+
+def test_shell_injection_finding_supports_subprocess_import_aliases(tmp_path):
+    source = tmp_path / "unsafe_alias.py"
+    source.write_text(
+        "import subprocess as process\n"
+        "from subprocess import run as execute\n"
+        "process.run(command, shell=True)\n"
+        "execute(command, shell=True)\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    shell_findings = [
+        finding for finding in result["findings"]
+        if finding["title"] == "Shell Injection Risk"
+    ]
+    assert [(finding["line"], finding["severity"]) for finding in shell_findings] == [
+        (3, "MEDIUM"),
+        (4, "MEDIUM"),
+    ]
+
+
+def test_shell_injection_finding_detects_literal_expanded_shell_keyword(tmp_path):
+    source = tmp_path / "unsafe_expanded_keyword.py"
+    source.write_text(
+        "import subprocess\n"
+        "subprocess.run(command, **{\"shell\": True})\n"
+        "subprocess.run(command, **{\"shell\": False})\n"
+        "subprocess.run(command, **{\"shell\": True, \"shell\": False})\n"
+        "subprocess.run(command, **{\"shell\": True, **{\"shell\": False}})\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    shell_findings = [
+        finding for finding in result["findings"]
+        if finding["title"] == "Shell Injection Risk"
+    ]
+    assert [(finding["line"], finding["severity"]) for finding in shell_findings] == [
+        (2, "MEDIUM"),
+    ]
+
+
+def test_shell_injection_finding_detects_positional_popen_shell_argument(tmp_path):
+    source = tmp_path / "unsafe_positional.py"
+    source.write_text(
+        "import subprocess\n"
+        "from subprocess import Popen as spawn\n"
+        "subprocess.Popen(command, -1, None, None, None, None, None, True, True)\n"
+        "spawn(command, -1, None, None, None, None, None, True, True)\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    shell_findings = [
+        finding for finding in result["findings"]
+        if finding["title"] == "Shell Injection Risk"
+    ]
+    assert [(finding["line"], finding["severity"]) for finding in shell_findings] == [
+        (3, "MEDIUM"),
+        (4, "MEDIUM"),
+    ]
+
+
+def test_shell_injection_finding_ignores_shadowed_subprocess_name(tmp_path):
+    source = tmp_path / "shadowed.py"
+    source.write_text(
+        "def run_with_local_object(subprocess):\n"
+        "    subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    assert not any(
+        finding["title"] == "Shell Injection Risk" for finding in result["findings"]
+    )
+
+
+def test_shell_injection_finding_ignores_function_shadowing_import(tmp_path):
+    source = tmp_path / "function_shadow.py"
+    source.write_text(
+        "import subprocess\n"
+        "def subprocess():\n"
+        "    return None\n"
+        "subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    assert not any(
+        finding["title"] == "Shell Injection Risk" for finding in result["findings"]
+    )
+
+
+def test_shell_injection_finding_skips_class_scope_when_resolving_method_name(tmp_path):
+    source = tmp_path / "class_scope.py"
+    source.write_text(
+        "import subprocess\n"
+        "class Runner:\n"
+        "    subprocess = object()\n"
+        "    def run(self):\n"
+        "        subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    shell_findings = [
+        finding for finding in result["findings"]
+        if finding["title"] == "Shell Injection Risk"
+    ]
+    assert [(finding["line"], finding["severity"]) for finding in shell_findings] == [
+        (5, "MEDIUM"),
+    ]
+
+
+def test_shell_injection_finding_supports_dotted_subprocess_import(tmp_path):
+    source = tmp_path / "unsafe_dotted_import.py"
+    source.write_text(
+        "import subprocess.tools\n"
+        "subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path, [source])
+
+    shell_findings = [
+        finding for finding in result["findings"]
+        if finding["title"] == "Shell Injection Risk"
+    ]
+    assert [(finding["line"], finding["severity"]) for finding in shell_findings] == [
+        (2, "MEDIUM"),
+    ]
+
