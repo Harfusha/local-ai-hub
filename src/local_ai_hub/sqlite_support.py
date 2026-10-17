@@ -453,18 +453,18 @@ def validate_durable_schema(
     for batch in sqlite_batches(expected_names):
         placeholders = ",".join("?" for _ in batch)
         rows = con.execute(
-            "SELECT name, CASE WHEN length(CAST(sql AS BLOB)) <= ? THEN sql END, "
+            "SELECT name, type, CASE WHEN length(CAST(sql AS BLOB)) <= ? THEN sql END, "
             "length(CAST(sql AS BLOB)) FROM sqlite_master "
             f"WHERE name IN ({placeholders})",
             (_MAX_DURABLE_SCHEMA_SQL_BYTES, *batch),
         )
         for row in rows:
             name = str(row[0])
-            if row[2] is not None and int(row[2]) > _MAX_DURABLE_SCHEMA_SQL_BYTES:
+            object_type = str(row[1] or "")
+            if row[3] is not None and int(row[3]) > _MAX_DURABLE_SCHEMA_SQL_BYTES:
                 oversized_definitions.add(name)
             else:
-                object_type = objects.get(name, ("", ""))[0]
-                objects[name] = (object_type, str(row[1] or ""))
+                objects[name] = (object_type, str(row[2] or ""))
     existing = {name for name, (object_type, _sql) in objects.items() if object_type == "table"}
     mismatches: list[str] = []
     for group in complete_groups:

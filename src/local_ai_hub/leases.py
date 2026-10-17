@@ -143,22 +143,22 @@ class ScopeLeaseStore:
                         backup_on_mismatch=False,
                     )
                     initialize_wal(con)
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS leases (
-                            lease_id TEXT NOT NULL,
-                            tenant TEXT NOT NULL,
-                            root_id TEXT NOT NULL,
-                            root_path TEXT NOT NULL,
-                            path TEXT NOT NULL,
-                            purpose TEXT NOT NULL,
-                            created_at REAL NOT NULL,
-                            expires_at REAL NOT NULL,
-                            PRIMARY KEY(lease_id, path)
-                        )"""
-                    )
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
                     con.execute("BEGIN IMMEDIATE")
                     try:
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS leases (
+                                lease_id TEXT NOT NULL,
+                                tenant TEXT NOT NULL,
+                                root_id TEXT NOT NULL,
+                                root_path TEXT NOT NULL,
+                                path TEXT NOT NULL,
+                                purpose TEXT NOT NULL,
+                                created_at REAL NOT NULL,
+                                expires_at REAL NOT NULL,
+                                PRIMARY KEY(lease_id, path)
+                            )"""
+                        )
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
                         con.execute(
                             """CREATE TABLE IF NOT EXISTS lease_waits (
                                 tenant TEXT NOT NULL,
