@@ -1166,23 +1166,22 @@ def test_scoped_memory_delete_requires_matching_tenant(store: MemoryStore):
     ) is None
 
 
-def test_global_memory_get_ignores_transport_tenant_but_honors_other_identity(store: MemoryStore, tmp_path: Path):
+def test_global_memory_get_enforces_tenant_and_other_identity(store: MemoryStore, tmp_path: Path):
     repo = tmp_path / "repo"
     global_record = store.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.GLOBAL,
         key="global-codex-contract",
         value="global value",
-        provenance={"root": str(repo), "repository_id": "repo-global", "tenant": "legacy-tenant"},
+        provenance={"root": str(repo), "repository_id": "repo-global", "tenant": "tenant-a"},
     ))
 
     assert store.get(
         global_record.record_id,
         scope=AgentScope.GLOBAL,
-        tenant="codex",
+        tenant="tenant-a",
         root=str(repo),
         repository_id="repo-global",
-        tenant_agnostic_global=True,
     ) == global_record
     assert store.get(
         global_record.record_id,
@@ -1197,7 +1196,6 @@ def test_global_memory_get_ignores_transport_tenant_but_honors_other_identity(st
         tenant="codex",
         root=str(tmp_path / "other-repo"),
         repository_id="repo-global",
-        tenant_agnostic_global=True,
     ) is None
     assert store.get(
         global_record.record_id,
@@ -1205,7 +1203,6 @@ def test_global_memory_get_ignores_transport_tenant_but_honors_other_identity(st
         tenant="codex",
         root=str(repo),
         repository_id="other-repository",
-        tenant_agnostic_global=True,
     ) is None
 
     session_record = store.record(MemoryRecord.create(
