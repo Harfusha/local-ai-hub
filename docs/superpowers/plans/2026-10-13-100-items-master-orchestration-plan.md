@@ -4,7 +4,7 @@
 
 **AgentEvent canonical deserialization hardening (2026-10-17; tests deferred):** `AgentEvent.from_dict` now requires every serialized field (`event_id`, `stream_id`, `kind`, `payload`, `idempotency_key`, `correlation_id`, `actor`, `created_at`, `seq`) and rejects unknown keys. Regression cases cover missing optional-valued fields and a retired extra field. Tests remain unrun until the source bundle is complete.
 
-**Artifact list tenant isolation repair (2026-10-17; tests deferred):** `/api/artifact/list` now rejects caller-supplied tenant fields and coercive limits, requires a nonempty authenticated tenant, and passes only that tenant to `ArtifactStore.list`; this closes the empty-tenant path that lists all artifact rows. Focused regressions were added; tests remain unrun until the source bundle is complete.
+**Artifact list tenant isolation repair (2026-10-17; tests deferred):** `/api/artifact/list` now rejects caller-supplied tenant fields and coercive limits, requires a nonempty authenticated tenant, and passes only that tenant to `ArtifactStore.list`; this closes the empty-tenant path that lists all artifact rows. The store now rejects boolean, noninteger, and nonpositive limits before database initialization. Focused regressions were added; tests remain unrun until the source bundle is complete.
 
 **SSE replay zero-shims repair (2026-10-17; tests deferred):** Removed the legacy `events()` adapter, signature probing, manual snapshot emulation, and `TypeError` retry that could replay without `through_seq`. SSE replay now uses the canonical bounded `event_page` contract; a regression case records provider failure without fallback. No tests or runtime checks have run.
 

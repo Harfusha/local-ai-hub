@@ -101,6 +101,14 @@ def test_artifact_list_rejects_falsey_non_string_tenant_labels(tmp_path: Path, t
         store.list(tenant=tenant)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("limit", [True, False, 0, -1, "20", 20.0])
+def test_artifact_list_rejects_noncanonical_limits(tmp_path: Path, limit: object) -> None:
+    store = ArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError, match="limit"):
+        store.list(limit=limit)  # type: ignore[arg-type]
+
+
 def test_pre_paging_schema_fails_closed_without_mutating_database(tmp_path: Path) -> None:
     tenant = "tenant-valid-v1"
     tenant_digest = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
