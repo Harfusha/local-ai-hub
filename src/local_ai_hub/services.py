@@ -4981,6 +4981,7 @@ class LocalAIServices:
             approved = False
         result = dict(base)
         result.update({
+            "query": request.query,
             "guarded": True,
             "delivery_mode": mode,
             "adaptive_context_pack": pack_data,
