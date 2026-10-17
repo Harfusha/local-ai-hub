@@ -1187,7 +1187,8 @@ class LlamaCppRouter:
         selected = self._entry(model)
         if selected is None:
             return None
-        limit = time.monotonic() + max(0.05, float(timeout if timeout is not None else self.config.get("server", {}).get("request_timeout_seconds", 300)))
+        started = time.monotonic()
+        limit = started + max(0.05, float(timeout if timeout is not None else self.config.get("server", {}).get("request_timeout_seconds", 300)))
         if deadline is not None:
             limit = min(limit, float(deadline))
         token = _MODEL_LOAD_FAILED.set(False)
@@ -1207,7 +1208,7 @@ class LlamaCppRouter:
                     if current_payload is None:
                         return {"success": False, "error": "input does not fit recovered llama.cpp context", "context_recovery": recovery, "retryable": False}
                 result = self._request_stream_once(endpoint, current_payload, on_chunk, timeout,
-                                                   should_stop, on_thinking, limit)
+                                                   should_stop, on_thinking, limit, started)
                 if recovery is not None and isinstance(result, dict):
                     result["context_recovery"] = recovery
                 if active is not None or self.managed_runtime is None or not isinstance(result, dict):
@@ -1234,7 +1235,7 @@ class LlamaCppRouter:
                 self._models.pop("__loaded_details__", None)
                 _MODEL_LOAD_FAILED.set(False)
                 retried = self._request_stream_once(endpoint, adjusted, on_chunk, timeout,
-                                                    should_stop, on_thinking, limit)
+                                                    should_stop, on_thinking, limit, started)
                 if isinstance(retried, dict):
                     if retried.get("_lah_backend_unavailable") or retried.get("model_load_failed"):
                         self._active_recoveries.pop(model, None)
@@ -1252,6 +1253,7 @@ class LlamaCppRouter:
         should_stop: Any | None = None,
         on_thinking: Any | None = None,
         deadline: float | None = None,
+        started: float | None = None,
     ) -> dict[str, Any] | None:
         if endpoint not in {"/api/chat", "/api/generate"} or not isinstance(payload, dict):
             return None
@@ -1267,7 +1269,8 @@ class LlamaCppRouter:
         configured_ctx = int(entry.get("context_length", 0) or 0)
         if requested_ctx and configured_ctx and requested_ctx > configured_ctx:
             return {"_lah_backend_unavailable": f"SYCL server context is {configured_ctx}, request needs {requested_ctx}"}
-        started = time.monotonic()
+        if started is None:
+            started = time.monotonic()
         timeout_budget = max(0.05, float(timeout if timeout is not None else self.config.get("server", {}).get("request_timeout_seconds", 300)))
         request_deadline = started + timeout_budget
         if deadline is not None:
