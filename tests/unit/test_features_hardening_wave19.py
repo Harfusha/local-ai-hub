@@ -12,15 +12,18 @@ def test_rollout_feature_enabled_hardening():
 
 
 def test_featureset_profiles_and_models_hardening():
-    # profiles as a list instead of dict should work without AttributeError
-    cfg_list = {
+    # The canonical TOML shape is a profile table; list expansion is not supported.
+    cfg_profiles = {
         "ollama_subagents": {
-            "profiles": ["agent-a", "agent-b"]
+            "profiles": {"agent-a": {}, "agent-b": {}}
         }
     }
-    fs_list = FeatureSet(cfg_list)
-    assert "agent-a" in fs_list.subagent_profiles
-    assert "agent-b" in fs_list.subagent_profiles
+    fs_profiles = FeatureSet(cfg_profiles)
+    assert "agent-a" in fs_profiles.subagent_profiles
+    assert "agent-b" in fs_profiles.subagent_profiles
+
+    fs_list = FeatureSet({"ollama_subagents": {"profiles": ["agent-a", "agent-b"]}})
+    assert fs_list.subagent_profiles == ("qwen-explorer", "qwen-drafter", "qwen-critic")
 
     # profiles as boolean or invalid type should fall back cleanly
     cfg_bool = {
@@ -49,3 +52,9 @@ def test_featureset_profiles_and_models_hardening():
     assert fs_models.background_model != "None"
     assert fs_models.embedding_model != "None"
     assert fs_models.reranker_model != "None"
+
+    fs_malformed_model = FeatureSet({"models": {"fast_code": 123}})
+    assert fs_malformed_model.fast_model == "qwen2.5-coder:1.5b"
+
+    fs_malformed_profile = FeatureSet({"ollama_subagents": {"profiles": {1: {}}}})
+    assert "1" not in fs_malformed_profile.subagent_profiles

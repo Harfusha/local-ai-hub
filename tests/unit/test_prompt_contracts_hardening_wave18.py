@@ -42,6 +42,10 @@ def test_model_perform_and_capabilities_hardening():
     cap = capability_for(True, role=False)
     assert cap.model == "" or cap.tier == "background"
 
+    malformed_model = capability_for("qwen2.5-coder:7\x00b")
+    assert malformed_model.model == "qwen2.5-coder:0.5b"
+    assert "root_cause" not in malformed_model.can
+
 
 def test_build_prompt_hardening():
     pkg = build_prompt(

@@ -15,12 +15,14 @@ def test_generate_repo_map_hardening():
     assert generate_repo_map(False) == ([], 0)
     assert generate_repo_map(12345) == ([], 0)
     assert generate_repo_map("path/with\x00null") == ([], 0)
+    assert generate_repo_map("   ") == ([], 0)
     assert generate_repo_map("non_existent_directory_xyz_123") == ([], 0)
 
-    # Valid root with boolean/invalid max_lines and exts
-    lines, total_files = generate_repo_map(Path.cwd(), max_lines=True, exts=True)
-    assert isinstance(lines, list)
-    assert isinstance(total_files, int)
+    # Invalid limits and extension containers must fail closed without scanning.
+    assert generate_repo_map(Path.cwd(), max_lines=True) == ([], 0)
+    assert generate_repo_map(Path.cwd(), max_lines=0) == ([], 0)
+    assert generate_repo_map(Path.cwd(), max_lines=50, exts=True) == ([], 0)
+    assert generate_repo_map(Path.cwd(), max_lines=50, exts=(ext for ext in (".py",))) == ([], 0)
 
 
 def test_strip_ansi_and_is_allowed_command_hardening():
