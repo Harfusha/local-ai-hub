@@ -1407,7 +1407,7 @@ class TaskStore:
         TaskStore._validate_question_response_budget(response_budget_tokens)
         if response_budget_tokens is None:
             return
-        payload = {"success": True, "question": question}
+        payload = TaskStore._include_current_request_id({"success": True, "question": question})
         required_tokens = mcp_wire_tokens(payload, text_payload=payload)
         if required_tokens > response_budget_tokens:
             raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)

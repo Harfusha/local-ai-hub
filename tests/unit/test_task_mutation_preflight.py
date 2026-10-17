@@ -653,6 +653,28 @@ def test_zombie_reap_preflights_full_wire_response_before_database_access(tmp_pa
     assert projected["request_id"] == "req-zombie"
 
 
+def test_question_mutation_preflight_includes_http_request_id(monkeypatch):
+    from local_ai_hub import trace_context
+
+    projected = {}
+    monkeypatch.setattr(trace_context, "current", lambda: {"request_id": "req-question"})
+
+    def _wire_tokens(response, **_kwargs):
+        projected.update(response)
+        return 1
+
+    monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", _wire_tokens)
+    question = {"question_id": "question-1", "status": "pending"}
+
+    TaskStore._preflight_question_response(question, 128)
+
+    assert projected == {
+        "success": True,
+        "question": question,
+        "request_id": "req-question",
+    }
+
+
 @pytest.mark.parametrize("task_id", [None, "", " zombie-budget"])
 def test_zombie_reap_response_budget_requires_canonical_task_id(tmp_path, task_id):
     store = _store(tmp_path)
