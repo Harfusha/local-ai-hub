@@ -245,7 +245,7 @@ class ProjectPreprocessor:
         self._lookup_cache: dict[str, tuple[float, str, dict[str, Any]]] = {}
         self._lookup_cache_ttl = max(1.0, _safe_float(self.cfg.get("lookup_l1_ttl_seconds"), 30.0))
         self._stats_lock = threading.Lock()
-        self._last_db_maintenance = 0.0
+        self._last_db_maintenance = time.time()
         self._stats = {
             "loops": 0, "steps": 0, "yields": 0, "errors": 0, "file_card_hits": 0,
             "file_card_generations": 0, "module_generations": 0, "project_generations": 0,
@@ -1498,7 +1498,7 @@ class ProjectPreprocessor:
                 lock = getattr(component, "_lock", nullcontext())
                 with lock, closing(component._connect()) as con:
                     roots = [str(row[0]) for row in con.execute("SELECT DISTINCT root FROM files").fetchall()]
-                    orphans = [root for root in roots if root not in active][:limit]
+                    orphans = [root for root in roots if root not in active and not Path(root).exists()][:limit]
                     existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
                     for root in orphans:
                         for table in allowed_tables:
