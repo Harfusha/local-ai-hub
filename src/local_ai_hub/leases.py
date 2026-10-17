@@ -204,12 +204,12 @@ class ScopeLeaseStore:
         *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
-        if paths is None or isinstance(paths, (str, bytes)) or not isinstance(paths, (list, tuple, set, frozenset)):
-            return {"success": False, "error": "paths must be a collection of path strings"}
+        if not isinstance(paths, (list, tuple)):
+            return {"success": False, "error": "paths must be a sequence of path strings"}
         if not paths:
             return {"success": False, "error": "paths must not be empty"}
         for p in paths:
-            if not isinstance(p, (str, Path)) or isinstance(p, bool) or not str(p).strip() or "\x00" in str(p):
+            if not isinstance(p, str) or not p.strip() or "\x00" in p:
                 return {"success": False, "error": f"invalid lease path: {p}"}
         if (not root or root == ".") and paths:
             first_abs = next((str(p) for p in paths if PureWindowsPath(str(p)).is_absolute() or Path(str(p)).is_absolute() or bool(PureWindowsPath(str(p)).drive)), None)
@@ -356,19 +356,29 @@ class ScopeLeaseStore:
             coordination_id=coordination_id,
         )
 
-    def release(self, tenant: str, lease_id: str = "") -> dict[str, Any]:
-        if not isinstance(tenant, str) or "\x00" in tenant:
+    def release(self, tenant: str, lease_id: str) -> dict[str, Any]:
+        if not isinstance(tenant, str) or not tenant or "\x00" in tenant:
             return {"success": False, "error": "invalid tenant"}
-        if lease_id is not None and not isinstance(lease_id, str):
+        if not isinstance(lease_id, str):
             return {"success": False, "error": "lease_id must be a string"}
-        if lease_id and "\x00" in lease_id:
+        if not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id:
             return {"success": False, "error": "invalid lease_id"}
+
+        return self._release_matching(tenant, lease_id)
+
+    def release_tenant(self, tenant: str) -> dict[str, Any]:
+        """Release all advisory leases for one exact tenant during owner cleanup."""
+        if not isinstance(tenant, str) or not tenant or "\x00" in tenant:
+            return {"success": False, "error": "invalid tenant"}
+        return self._release_matching(tenant, None)
+
+    def _release_matching(self, tenant: str, lease_id: str | None) -> dict[str, Any]:
 
         def write() -> int:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 released_scopes: list[tuple[str, str]] = []
-                if lease_id:
+                if lease_id is not None:
                     p_rows = con.execute(
                         "SELECT root_id,path FROM leases WHERE lease_id=? AND tenant=?",
                         (lease_id, tenant),
