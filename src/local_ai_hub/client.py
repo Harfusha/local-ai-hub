@@ -920,6 +920,10 @@ class HubClient:
         route = urlsplit(path).path.lower()
         task_route = route == "/api/agent-state/tasks"
         memory_route = route == "/api/agent-state/memory"
+        lease_route = route.startswith("/api/leases")
+        if lease_route:
+            effective = tenant_hint or self.tenant or request_principal_tenant(self.config, route)
+            return effective, None
         if not task_route and not memory_route:
             principal = request_principal_tenant(self.config, route)
             if tenant_hint is not None and tenant_hint != principal:
@@ -998,13 +1002,22 @@ class HubClient:
                     "root is missing, invalid, or not allowed",
                     "root_not_allowed",
                 )
+            configured_principal = str(
+                self.config.get("security", {}).get("api_token_tenant", "")
+                or self.config.get("security", {}).get("api_token_principal", "")
+                or ""
+            ).strip()
+            is_rootless_global = str(scope or "").strip().lower() == "global" or (not roots and not has_task_identity)
+            effective_principal = configured_principal or (
+                principal if is_rootless_global else (self.tenant or principal)
+            )
             for hint in tenant_hints:
-                if hint is not None and str(hint).strip() != principal:
+                if hint is not None and str(hint).strip() != effective_principal:
                     return None, self._identity_preflight(
                         "tenant does not match authenticated principal",
                         "tenant_binding_mismatch",
                     )
-            return principal, None
+            return effective_principal, None
         effective_tenant = principal
         if task_route:
             effective_tenant, error = self._root_scoped_tenant(roots)
@@ -1660,7 +1673,7 @@ class HubClient:
                 "paths": kwargs.get("paths") or [],
                 "ttl_seconds": kwargs.get("ttl_seconds", 900),
                 "purpose": kwargs.get("value", "agent edit"),
-            })
+            }, tenant=kwargs.get("tenant") or self.tenant or None)
         if act.startswith("blackboard_"):
             bb_action = act.replace("blackboard_", "")
             board_id = kwargs.get("board_id") or kwargs.get("task_id") or "default"
@@ -1677,9 +1690,11 @@ class HubClient:
                 payload["expected_version"] = kwargs["expected_version"]
             return self.post("/api/agent-state/blackboard", payload)
         if act == "release":
-            return self.post("/api/leases/release", {"lease_id": kwargs.get("lease_id", "")})
+            return self.post("/api/leases/release", {"lease_id": kwargs.get("lease_id", "")}, tenant=kwargs.get("tenant") or self.tenant or None)
+        if act == "renew":
+            return self.post("/api/leases/renew", {"lease_id": kwargs.get("lease_id", ""), "ttl_seconds": kwargs.get("ttl_seconds", 900)}, tenant=kwargs.get("tenant") or self.tenant or None)
         if act == "leases":
-            return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}")
+            return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}", tenant=kwargs.get("tenant") or self.tenant or None)
         if act == "worktree_lease":
             return self.post("/api/coord/worktree_lease", {
                 "root": kwargs.get("root", "."),

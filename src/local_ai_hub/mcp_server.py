@@ -4863,13 +4863,13 @@ def local_ai_coord(
                     pass
         return _compact(CLIENT.post("/api/leases/claim_batch", {
             "root": claim_root, "paths": paths or [], "ttl_seconds": ttl_seconds or 900, "purpose": value or "agent edit",
-        }))
+        }, tenant=tenant))
     if action == "release":
-        return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}))
+        return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}, tenant=tenant))
     if action == "renew":
-        return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}))
+        return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}, tenant=tenant))
     if action == "leases":
-        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
+        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}", tenant=tenant))
     if action.startswith("blackboard_"):
         sub = action[len("blackboard_"):]
         payload: dict[str, Any] = {
