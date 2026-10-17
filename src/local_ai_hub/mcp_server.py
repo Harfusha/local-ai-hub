@@ -5211,8 +5211,6 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                             **{
                                                 key: trial[key]
                                                 for key in (
-                                                    "mutation_applied", "operation_not_started",
-                                                    "request_id", "execution_id",
                                                     "evidence", "evidence_id", "evidence_ids",
                                                 )
                                                 if key in trial
