@@ -275,6 +275,16 @@ class ArtifactStore:
         nul_mask: bytes | None,
         sections_truncated: bool,
     ) -> None:
+        section_json = json.dumps(
+            {"artifact_id": artifact_id, "names": section_names, "truncated": sections_truncated},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        section_checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
+        con.execute(
+            f"UPDATE {_ARTIFACT_TABLE} SET checksum=? WHERE artifact_id=?",
+            (section_checksum, artifact_id),
+        )
         con.execute(
             f"""INSERT INTO {_ARTIFACT_PAGING_TABLE}
                 (artifact_id, char_count, section_names, page_text, nul_mask)
@@ -284,11 +294,7 @@ class ArtifactStore:
             (
                 artifact_id,
                 len(text),
-                json.dumps(
-                    {"names": section_names, "truncated": sections_truncated},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
+                section_json,
                 page_text,
                 nul_mask,
             ),
@@ -306,18 +312,27 @@ class ArtifactStore:
         return text.replace("\x00", "\ufffd"), bytes(mask)
 
     @staticmethod
-    def _decode_section_metadata(value: str) -> tuple[list[str], bool | None] | None:
+    def _decode_section_metadata(
+        value: str, expected_artifact_id: str, expected_checksum: str | None,
+    ) -> tuple[list[str], bool | None] | None:
+        if (
+            not isinstance(expected_checksum, str)
+            or hashlib.sha256(value.encode("utf-8")).hexdigest() != expected_checksum
+        ):
+            return None
         try:
             parsed = json.loads(value)
         except Exception:
             return None
         if isinstance(parsed, dict):
-            if set(parsed) != {"names", "truncated"}:
+            if set(parsed) != {"artifact_id", "names", "truncated"}:
                 return None
+            artifact_id = parsed.get("artifact_id")
             names = parsed.get("names")
             truncated = parsed.get("truncated")
             if (
-                isinstance(names, list)
+                artifact_id == expected_artifact_id
+                and isinstance(names, list)
                 and len(names) <= MAX_ARTIFACT_SECTION_NAMES
                 and not any(not isinstance(name, str) for name in names)
                 and all(len(name) <= MAX_ARTIFACT_HEADING_CHARS for name in names)
@@ -391,31 +406,6 @@ class ArtifactStore:
         except sqlite3.Error as exc:
             if time.monotonic() >= deadline:
                 raise ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit") from exc
-    def _read_bounded_json_sections(
-        self, con: sqlite3.Connection, rowid: int, encoding: str, deadline: float,
-    ) -> tuple[list[str], bool] | None:
-        codec = self._sqlite_text_codec(encoding)
-        try:
-            with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
-                if len(text_blob) > MAX_ARTIFACT_JSON_SOURCE_BYTES:
-                    return None
-                decoder = codecs.getincrementaldecoder(codec)(errors="strict")
-                prefix = decoder.decode(text_blob.read(min(128, len(text_blob))), final=False)
-        except (sqlite3.Error, UnicodeError):
-            return None
-        self._check_read_deadline(deadline)
-        if not prefix.lstrip().startswith("{"):
-            return None
-        text = self._read_small_text(con, rowid, encoding, MAX_ARTIFACT_JSON_SOURCE_BYTES, deadline)
-        try:
-            parsed = json.loads(text, object_pairs_hook=self._json_object_without_duplicate_keys)
-        except (TypeError, ValueError):
-            return None
-        self._check_read_deadline(deadline)
-        if not isinstance(parsed, dict):
-            return None
-        return self._json_section_names(parsed)
-
     def _stream_text(
         self,
         con: sqlite3.Connection,
@@ -985,7 +975,7 @@ class ArtifactStore:
                 query = (
                     f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.artifact_id, "
                     f"CASE WHEN length(CAST(p.section_names AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
-                    "THEN p.section_names END "
+                    "THEN p.section_names END, a.checksum "
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
                     "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
                 )
@@ -995,11 +985,24 @@ class ArtifactStore:
                 row = con.execute(query, params).fetchone()
                 if row is None:
                     return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
-                rowid, kind, mime_type, text_type, paging_id, section_json = row
+                rowid, kind, mime_type, text_type, paging_id, section_json, section_checksum = row
                 if mime_type:
                     return {"success": False, "error": "binary artifact requires binary retrieval"}
                 if text_type != "text":
                     return {"success": False, "error": "artifact text encoding unsupported", "error_code": "artifact_text_encoding_unsupported", "artifact_id": artifact_id}
+                if paging_id != artifact_id:
+                    raise ArtifactTextReadError(
+                        "artifact_paging_metadata_invalid", "artifact paging metadata is missing",
+                    )
+                metadata = (
+                    self._decode_section_metadata(section_json, artifact_id, section_checksum)
+                    if isinstance(section_json, str) else None
+                )
+                if metadata is None:
+                    raise ArtifactTextReadError(
+                        "artifact_paging_metadata_invalid", "artifact paging metadata is invalid",
+                    )
+                sections, sections_truncated = metadata
                 encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
 
                 if section:
@@ -1054,20 +1057,12 @@ class ArtifactStore:
                             "total_chars": section_chars, "sections": scan["section_names"],
                             "sections_truncated": scan["sections_truncated"]}
 
-                metadata = self._decode_section_metadata(section_json) if section_json else None
-                json_metadata = (
-                    self._read_bounded_json_sections(con, int(rowid), encoding, deadline)
-                    if metadata is None else None
-                )
                 scan = self._stream_text(
                     con, int(rowid), encoding, [(offset, max_chars)],
-                    parse_sections=metadata is None and json_metadata is None,
+                    parse_sections=False,
                     deadline=deadline,
                 )
                 piece = scan["pieces"][0]
-                sections, sections_truncated = metadata or json_metadata or (
-                    scan["section_names"], scan["sections_truncated"]
-                )
                 total_chars = scan["total_chars"]
                 return {"success": True, "artifact_id": artifact_id, "kind": kind, "text": piece,
                         "offset": offset,
@@ -1122,7 +1117,7 @@ class ArtifactStore:
                 query = (
                     f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.artifact_id, "
                     f"CASE WHEN length(CAST(p.section_names AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
-                    "THEN p.section_names END "
+                    "THEN p.section_names END, a.checksum "
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
                     "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
                 )
@@ -1132,27 +1127,32 @@ class ArtifactStore:
                 row = con.execute(query, params).fetchone()
                 if row is None:
                     return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
-                rowid, kind, mime_type, text_type, paging_id, section_json = row
+                rowid, kind, mime_type, text_type, paging_id, section_json, section_checksum = row
                 if mime_type:
                     return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}
                 if text_type != "text":
                     return {"success": False, "error": "artifact text encoding unsupported", "error_code": "artifact_text_encoding_unsupported", "artifact_id": artifact_id}
-                metadata = self._decode_section_metadata(section_json) if section_json else None
-                encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
-                json_metadata = (
-                    self._read_bounded_json_sections(con, int(rowid), encoding, deadline)
-                    if metadata is None else None
+                if paging_id != artifact_id:
+                    raise ArtifactTextReadError(
+                        "artifact_paging_metadata_invalid", "artifact paging metadata is missing",
+                    )
+                metadata = (
+                    self._decode_section_metadata(section_json, artifact_id, section_checksum)
+                    if isinstance(section_json, str) else None
                 )
+                if metadata is None:
+                    raise ArtifactTextReadError(
+                        "artifact_paging_metadata_invalid", "artifact paging metadata is invalid",
+                    )
+                sections, sections_truncated = metadata
+                encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
                 scan = self._stream_text(
                     con, int(rowid), encoding,
                     [(offset, size) for offset, size in normalized],
-                    parse_sections=metadata is None and json_metadata is None,
+                    parse_sections=False,
                     deadline=deadline,
                 )
                 pieces = scan["pieces"]
-                sections, sections_truncated = metadata or json_metadata or (
-                    scan["section_names"], scan["sections_truncated"]
-                )
                 total_chars = scan["total_chars"]
 
                 return {

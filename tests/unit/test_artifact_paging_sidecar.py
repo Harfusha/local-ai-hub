@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
 from contextlib import closing
@@ -59,6 +60,42 @@ def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path
     with pytest.raises(UnsupportedArtifactSchema, match="incomplete artifact paging metadata"):
         ArtifactStore(tmp_path)
     assert db_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("corruption", ["missing", "malformed", "stale_names"])
+def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corruption) -> None:
+    store = ArtifactStore(tmp_path)
+    artifact_id = store.put('{"legacy_section":"must not restore metadata"}', "owner", "text")
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        if corruption == "missing":
+            connection.execute(
+                "DELETE FROM artifact_paging_metadata WHERE artifact_id=?", (artifact_id,),
+            )
+        else:
+            if corruption == "malformed":
+                section_names = '{"legacy_section":true}'
+            else:
+                metadata = json.loads(connection.execute(
+                    "SELECT section_names FROM artifact_paging_metadata WHERE artifact_id=?",
+                    (artifact_id,),
+                ).fetchone()[0])
+                metadata["names"] = ["stale_but_shape_valid"]
+                section_names = json.dumps(metadata, separators=(",", ":"))
+            connection.execute(
+                "UPDATE artifact_paging_metadata SET section_names=? WHERE artifact_id=?",
+                (section_names, artifact_id),
+            )
+        connection.commit()
+
+    read_result = store.get(artifact_id, tenant="owner")
+    slices_result = store.get_slices(
+        artifact_id, [{"offset": 0, "max_chars": 10}], tenant="owner",
+    )
+
+    for result in (read_result, slices_result):
+        assert result["success"] is False
+        assert result["error_code"] == "artifact_paging_metadata_invalid"
 
 
 def test_core_and_sidecar_write_roll_back_together_on_failed_batch(tmp_path) -> None:
