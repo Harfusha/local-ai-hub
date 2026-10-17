@@ -58,7 +58,7 @@ def affected_test_command(paths: list[str], runner: str) -> str:
         return f"npm test -- {arguments}"
     if runner == "dotnet":
         filters = " | ".join(f"FullyQualifiedName~{stem}" for stem in stems)
-        return f"dotnet test --filter {quote(filters)}"
+        return f'dotnet test --filter "{filters}"'
     if runner == "cargo":
         return "cargo test " + " ".join(quote(stem) for stem in stems)
     if runner == "go":

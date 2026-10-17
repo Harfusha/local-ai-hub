@@ -690,8 +690,8 @@ def _run_case(
     symbol_query = lambda: index.find_symbol(str(case_root), "shared_target", limit=30)
     code_index_query = lambda: index.query(str(case_root), "shared_target", limit=30)
     repository_search_query = "caller_000000"
-    repository_query = lambda: search_tools.search(str(case_root), repository_search_query, top_k=12)
-    full_repository_query = lambda: full_search_tools.search(str(case_root), repository_search_query, top_k=12)
+    repository_query = lambda: search_tools.search(str(case_root), repository_search_query, limit=12)
+    full_repository_query = lambda: full_search_tools.search(str(case_root), repository_search_query, limit=12)
     symbol_query()
     repository_cold_started = time.perf_counter()
     repository_cold_search_result = repository_query()
@@ -711,7 +711,7 @@ def _run_case(
     full_search_result = full_repository_query()
     full_search_samples = _timed_call(full_repository_query, full_search_repeats)
     accelerator_started = time.perf_counter()
-    accelerator_search_result = repo_tools.search(str(case_root), repository_search_query, top_k=12)
+    accelerator_search_result = repo_tools.search(str(case_root), repository_search_query, limit=12)
     accelerator_search_latency_ms = (time.perf_counter() - accelerator_started) * 1000
     callers_quality_result = index.find_callers(str(case_root), "shared_target", limit=10)
     path_hint_groups = {

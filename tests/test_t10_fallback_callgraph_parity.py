@@ -171,15 +171,17 @@ def test_callgraph_suffix_queries_escape_sql_like_wildcards(
     con = index._connect()
     try:
         con.execute(
-            "INSERT INTO edges(root, src, dst, kind, path, line) VALUES (?, ?, ?, ?, ?, ?)",
-            (resolved, f"module/{caller}", f"module/{callee}", "calls", "src/calls.py", 1),
+            "INSERT INTO edges(root, src, dst, src_name, dst_name, kind, path, line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (resolved, f"module/{caller}", f"module/{callee}", caller, callee, "calls", "src/calls.py", 1),
         )
         con.execute(
-            "INSERT INTO edges(root, src, dst, kind, path, line) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO edges(root, src, dst, src_name, dst_name, kind, path, line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 resolved,
                 f"module/{caller_decoy}",
                 f"module/{callee_decoy}",
+                caller_decoy,
+                callee_decoy,
                 "calls",
                 "src/calls.py",
                 2,
