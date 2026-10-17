@@ -5601,6 +5601,19 @@ class Handler(BaseHTTPRequestHandler):
             tenant=effective_tenant,
         ))
 
+    def _handle_post_artifact_list(self, payload: dict[str, Any], tenant: str) -> None:
+        if not isinstance(payload, dict) or set(payload) - {"limit"}:
+            self._send(400, {"success": False, "error": "artifact list accepts only limit", "terminal": True, "retryable": False})
+            return
+        limit = payload.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            self._send(400, {"success": False, "error": "limit must be a positive integer", "terminal": True, "retryable": False})
+            return
+        if not isinstance(tenant, str) or not tenant.strip():
+            self._send(403, {"success": False, "error": "authenticated tenant is required", "terminal": True, "retryable": False})
+            return
+        self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=tenant, limit=limit)})
+
     @staticmethod
     def _context_retrieval_mode(payload: Mapping[str, Any]) -> str | None:
         raw_mode = payload.get("mode", "adaptive")
@@ -8343,8 +8356,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_post_artifact_get(payload, tenant)
                 return
             if 'post_artifact_list_1' in post_route_ids:
-                list_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant or "").strip()
-                self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=list_tenant, limit=int(payload.get("limit", 20)))}); return
+                self._handle_post_artifact_list(payload, tenant)
+                return
             if 'post_evidence_verify_1' in post_route_ids:
                 evidence = payload.get("evidence", [])
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return

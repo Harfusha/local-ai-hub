@@ -72,6 +72,68 @@ def test_artifact_get_uses_server_bound_tenant(monkeypatch):
     assert calls == [(("artifact-a", 0, 6000, ""), {"tenant": "server-bound-tenant"})]
 
 
+def test_artifact_list_rejects_caller_selected_tenant(monkeypatch):
+    calls = []
+    artifacts = SimpleNamespace(
+        list=lambda **kwargs: calls.append(kwargs) or []
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, artifacts=artifacts))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_artifact_list(
+        {"tenant": "caller-selected-tenant", "limit": 10},
+        tenant="server-bound-tenant",
+    )
+
+    assert responses[0][0] == 400
+    assert calls == []
+
+
+def test_artifact_list_uses_only_authenticated_tenant(monkeypatch):
+    calls = []
+    artifacts = SimpleNamespace(
+        list=lambda **kwargs: calls.append(kwargs) or []
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, artifacts=artifacts))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler._send = lambda _status, _payload: None
+
+    handler._handle_post_artifact_list({"limit": 15}, tenant="server-bound-tenant")
+
+    assert calls == [{"tenant": "server-bound-tenant", "limit": 15}]
+
+
+def test_artifact_list_fails_closed_without_authenticated_tenant(monkeypatch):
+    calls = []
+    artifacts = SimpleNamespace(list=lambda **kwargs: calls.append(kwargs) or [])
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, artifacts=artifacts))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_artifact_list({}, tenant=" ")
+
+    assert responses[0][0] == 403
+    assert calls == []
+
+
+@pytest.mark.parametrize("limit", [True, 0, -1, "10"])
+def test_artifact_list_rejects_coerced_or_invalid_limits(monkeypatch, limit):
+    calls = []
+    artifacts = SimpleNamespace(list=lambda **kwargs: calls.append(kwargs) or [])
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, artifacts=artifacts))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_artifact_list({"limit": limit}, tenant="server-bound-tenant")
+
+    assert responses[0][0] == 400
+    assert calls == []
+
+
 def test_authenticated_principal_tenant_is_used_before_configured_fallback(monkeypatch):
     handler = _handler(monkeypatch)
     handler._authorization_tenant = "authenticated-user-tenant"
