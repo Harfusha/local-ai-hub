@@ -23,12 +23,6 @@ from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
 from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
-try:
-    from local_ai_hub.inprocess_transport import InProcessTransport
-except ModuleNotFoundError as exc:
-    if exc.name != "local_ai_hub.inprocess_transport":
-        raise
-    InProcessTransport = None  # type: ignore[assignment,misc]
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
     LIFECYCLE_PROTECTED_KEYS,
