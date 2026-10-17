@@ -6637,10 +6637,12 @@ def test_{sym}_regression_edge_cases():
                     "coverage": {"complete": False, "scan_complete": not incomplete, "scope": "python_ast", "resolution": "definition_not_found"},
                 }
 
+        count_key = "caller_count" if direction == "callers" else "callee_count"
         result: dict[str, Any] = {
             "success": True,
             "symbol": sym,
             result_key: page,
+            count_key: len(page),
             "count": len(page),
             "returned_count": len(page),
             "offset": offset,

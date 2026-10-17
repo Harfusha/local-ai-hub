@@ -768,7 +768,7 @@ class OllamaRuntime:
                     "timed_out": True,
                     **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
                 }
-            if emitted_output or generated or chat or thinking_parts:
+            if emitted_output or (stream_error and (generated or chat or thinking_parts)):
                 return {
                     "error": last_error,
                     "_lah_retry_count": max(0, attempt - 1),
