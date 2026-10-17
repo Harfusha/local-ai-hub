@@ -541,7 +541,7 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.
 - Success also returns `diagram_indexed` and the resolved image path.
 - `local_ai_repo(action="pipeline")` accepts closed step objects.
-- `POST /api/route` accepts canonical string fields `query` and `text`; `task` and `context` are not aliases. The `local_ai_task(action="route")` adapter maps its `task` and `context` fields to those HTTP fields.
+- `POST /api/route` accepts canonical string fields `query` and `text`; `task` and `context` are not aliases. `POST /api/reason` accepts `problem` plus optional `context` and rejects `task`; `POST /api/review` accepts `code` plus optional `instructions` and rejects `context`. The `local_ai_task` adapters map canonical `task`/`context` into those HTTP fields.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq`.
 - `local_ai_coord` bounds `max_tokens` to 0 through 100000.

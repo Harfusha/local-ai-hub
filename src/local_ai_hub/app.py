@@ -626,11 +626,11 @@ class LocalAIApp:
         if action == "delegate":
             return self.services.delegate(async_payload, tenant)
         if action == "reason":
-            reason_payload = dict(async_payload)
+            reason_payload = {key: value for key, value in async_payload.items() if key != "task"}
             reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
             return self.services.reason(reason_payload, tenant)
         if action == "review":
-            review_payload = dict(async_payload)
+            review_payload = {key: value for key, value in async_payload.items() if key not in {"task", "context"}}
             review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
             return self.services.review(review_payload, tenant)
         if action == "review_diff":

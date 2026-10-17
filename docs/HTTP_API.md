@@ -1,6 +1,6 @@
 # HTTP API
 
-`POST /api/route` uses the canonical string fields `query` and `text`; `task` and `context` are rejected rather than treated as aliases. The MCP `local_ai_task(action="route")` adapter translates its canonical `task` and `context` fields to `query` and `text` at the HTTP boundary.
+`POST /api/route` uses the canonical string fields `query` and `text`; `task` and `context` are rejected rather than treated as aliases. The MCP `local_ai_task(action="route")` adapter translates its canonical `task` and `context` fields to `query` and `text` at the HTTP boundary. `POST /api/reason` uses `problem` and optional `context`; `task` is rejected as an alias. `POST /api/review` uses `code` and optional `instructions`; `context` is rejected as an alias. The corresponding `local_ai_task` adapters translate `task` and `context` at the HTTP boundary.
 
 Authenticated dashboard-only debug endpoints expose bounded execution history:
 
