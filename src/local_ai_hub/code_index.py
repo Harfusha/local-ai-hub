@@ -1274,7 +1274,7 @@ class CodeIndex:
         self._advance_query_cache_generation()
 
     def _parse_python(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        max_file_bytes = getattr(self.repo_tools, "max_file_bytes", 2_000_000) or 2_000_000
+        max_file_bytes = getattr(getattr(self, "repo_tools", None), "max_file_bytes", 2_000_000) or 2_000_000
         if len(text) > max_file_bytes or len(text.encode("utf-8")) > max_file_bytes:
             return [], [], []
         syms: list[dict[str, Any]] = []

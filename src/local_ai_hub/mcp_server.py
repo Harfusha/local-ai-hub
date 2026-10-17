@@ -689,7 +689,7 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", FEATURES))
+TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", None))
 
 
 _REPO_ACTIONS = (
@@ -1361,6 +1361,7 @@ def _compact(
         and isinstance(raw_value, dict)
         and raw_value.get("success") is True
         and isinstance(raw_value.get("results"), list)
+        and not raw_value.get("artifact_id")
     ):
         page_key = "results"
         expected_count = len(raw_value[page_key])
@@ -3141,6 +3142,8 @@ def _local_ai_repo_impl(
     }
     for field in retired_input_fields.get(action, ()):
         if input_values[field] is not None:
+            if action == "generate_types" and field == "diff":
+                return contract_error("generate_types is read-only; diff is not allowed and not an alias")
             return contract_error(f"{action} accepts its canonical input field; {field} is not an alias")
     query = "" if query is None else query
     diff = "" if diff is None else diff
@@ -3315,13 +3318,14 @@ def _local_ai_repo_impl(
                 "terminal": True, "retryable": False,
             }
         search_payload: dict[str, Any] = {
-            "root": root, "query": query, "top_k": 12, "enrich": enrich,
+            "root": root,
+            "query": query,
+            "top_k": 12,
+            "enrich": enrich,
+            "limit": limit if explicit_limit else 24,
+            "offset": offset,
         }
-        if explicit_limit:
-            search_payload["limit"] = limit
-        if offset:
-            search_payload["offset"] = offset
-        return _compact(CLIENT.post("/api/search", search_payload, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
+        return _compact(CLIENT.post("/api/search", search_payload, timeout=float(min(120, _timeout("quick"))), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -4706,12 +4710,16 @@ def local_ai_coord(
             "task_create", "task_checkpoint", "task_fail", "task_transition", "task_complete",
             "task_rollback", "task_resume", "task_heartbeat",
         }:
-            requested, _, _, budget_enabled = _response_budget(action, {
+            budget_options = {
                 "max_response_tokens": max_response_tokens,
                 "response_profile": response_profile,
                 "reuse_key": reuse_key,
                 "tool": action,
-            })
+            }
+            subminimum = _subminimum_budget_rejection(budget_options)
+            if subminimum is not None:
+                return subminimum
+            requested, _, _, budget_enabled = _response_budget(action, budget_options)
             try:
                 explicit_limit = int(max_response_tokens or 0)
             except (TypeError, ValueError, OverflowError):
@@ -5181,22 +5189,23 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             # Preserve the existing context/evidence projection for other tools;
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
-            for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-                candidate = {
-                    "success": False,
-                    "error": error[:error_chars],
-                    **{
-                        key: value[key]
-                        for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
-                                    "mutation_applied", "operation_not_started")
-                        if key in value
-                    },
-                }
-                for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
-                    if key != "error" and key in value:
-                        candidate[key] = value[key]
-                for structured in (True, False):
-                    for compact_text in (False, True):
+            for include_optional in (True, False):
+                for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
+                    candidate = {
+                        "success": False,
+                        "error": error[:error_chars],
+                        **{
+                            key: value[key]
+                            for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+                                        "mutation_applied", "operation_not_started")
+                            if key in value
+                        },
+                    }
+                    if include_optional:
+                        for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                            if key != "error" and key in value:
+                                candidate[key] = value[key]
+                    for text_mode in ("full", "compact", "minimal"):
                         for metadata in (
                             {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
                             {"requested_tokens": requested, "returned_tokens": 0},
@@ -5205,8 +5214,20 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                             trial["response_budget"] = dict(metadata)
 
                             def wire_payload() -> dict[str, Any]:
-                                wire = _mcp_wire_view(trial, structured=structured)
-                                if compact_text:
+                                wire = _mcp_wire_view(trial, structured=True)
+                                if text_mode == "minimal":
+                                    wire["content"][0]["text"] = json_dumps({
+                                        "success": False, "error": trial["error"],
+                                        **{
+                                            key: trial[key]
+                                            for key in (
+                                                "mutation_applied", "operation_not_started",
+                                                "request_id", "execution_id",
+                                            )
+                                            if key in trial
+                                        },
+                                    })
+                                elif text_mode == "compact":
                                     wire["content"][0]["text"] = json_dumps({
                                         "success": False, "error": trial["error"],
                                         **{
@@ -5223,14 +5244,14 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                     })
                                 return wire
 
-                            for _ in range(16):
-                                returned = json_tokens(wire_payload())
-                                trial["response_budget"]["returned_tokens"] = returned
-                                if json_tokens(wire_payload()) == returned:
-                                    break
-                            wire = wire_payload()
-                            if json_tokens(wire) <= requested:
-                                return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], (trial if structured else None)
+                        for _ in range(16):
+                            returned = json_tokens(wire_payload())
+                            trial["response_budget"]["returned_tokens"] = returned
+                            if json_tokens(wire_payload()) == returned:
+                                break
+                        wire = wire_payload()
+                        if json_tokens(wire) <= requested:
+                            return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], trial
             return None
         error = str(value.get("error") or "")
         metadata_variants = (
@@ -5622,8 +5643,12 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             contents, structured_value = result
             if structured_value is None:
                 text_value = contents[0].text
-                candidate_value = json.loads(text_value)
-                emitted_response = {"content": [{"type": "text", "text": text_value}]}
+                try:
+                    candidate_value = json.loads(text_value)
+                except Exception:
+                    candidate_value = {}
+                emitted_response = {"content": [{"type": "text", "text": text_value}], "structuredContent": candidate_value}
+                result = (contents, candidate_value)
             else:
                 candidate_value = structured_value
                 if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):

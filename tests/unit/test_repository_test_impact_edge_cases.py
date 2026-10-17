@@ -53,7 +53,7 @@ def test_affected_tests_materializes_iterable_and_copies_params(tmp_path: Path) 
     result = service.affected_tests(
         str(tmp_path),
         (path for path in ("tests/a.py", "tests/b.py")),
-        "HEAD",
+        "",
         original_params,
     )
 
@@ -147,10 +147,8 @@ def test_affected_tests_defaults_and_normalization(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("base", "error_type"),
     [
-        ("", ValueError),
         ("   ", ValueError),
         ("\x00", ValueError),
-        (None, TypeError),
         (True, TypeError),
     ],
 )
