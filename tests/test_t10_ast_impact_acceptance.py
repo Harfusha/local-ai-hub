@@ -268,11 +268,11 @@ def test_impact_chunks_large_changed_path_sets_and_caps_graph_queries(tmp_path: 
     assert len(result["likely_dependents"]) <= 7
 
     path_queries = [sql for sql in statements if "SELECT path FROM files" in sql and "path IN" in sql]
-    assert len(path_queries) == 3
+    assert len(path_queries) == 5
     for sql in path_queries:
         match = re.search(r"path IN \((.*?)\)", sql, re.DOTALL)
         assert match is not None
-        assert match.group(1).count(",") + 1 <= 400
+        assert match.group(1).count(",") + 1 <= 250
     symbol_queries = [sql for sql in statements if "SELECT path,name,kind,line,name_path FROM symbols" in sql]
     assert len(symbol_queries) == 1
     assert "LIMIT 12" in symbol_queries[0]

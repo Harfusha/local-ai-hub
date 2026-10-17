@@ -1274,7 +1274,8 @@ class CodeIndex:
         self._advance_query_cache_generation()
 
     def _parse_python(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        if len(text) > self.repo_tools.max_file_bytes or len(text.encode("utf-8")) > self.repo_tools.max_file_bytes:
+        max_file_bytes = getattr(self.repo_tools, "max_file_bytes", 2_000_000) or 2_000_000
+        if len(text) > max_file_bytes or len(text.encode("utf-8")) > max_file_bytes:
             return [], [], []
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
@@ -1791,8 +1792,13 @@ class CodeIndex:
 
 
     def _parse_file_content(self, text: str, lang: str, *, source_key: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        symbols, refs, edges, diagnostic = (self._parse_file_content_report(text, lang, source_key=source_key)
-                                          if source_key is not None else self._parse_file_content_report(text, lang))
+        if source_key is not None:
+            try:
+                symbols, refs, edges, diagnostic = self._parse_file_content_report(text, lang, source_key=source_key)
+            except TypeError:
+                symbols, refs, edges, diagnostic = self._parse_file_content_report(text, lang)
+        else:
+            symbols, refs, edges, diagnostic = self._parse_file_content_report(text, lang)
         self._parse_diagnostic.value = diagnostic
         return symbols, refs, edges
 

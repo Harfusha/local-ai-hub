@@ -141,6 +141,8 @@ def test_repo_search_hints_cannot_restore_excluded_or_outside_results(tmp_path: 
                 {"path": "secret/blocked.php", "start_line": 1},
                 {"path": "../outside.php", "start_line": 1},
             ],
+            "total_matches": 4,
+            "count_exact": True,
             "engine": "fixture",
         },
     )
@@ -157,7 +159,10 @@ def test_repo_search_hints_cannot_restore_excluded_or_outside_results(tmp_path: 
         scope="task",
     )
 
-    assert [item["path"] for item in result["results"]] == ["src/allowed.php"]
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["error"] == "repository search filters disagreed while materializing the exact page"
+    assert result["results"] == []
 
 
 def test_repo_search_uses_path_override_include_only_as_priority(tmp_path: Path) -> None:

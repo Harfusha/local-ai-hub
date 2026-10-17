@@ -3205,6 +3205,7 @@ class LocalAIServices:
                     "error": "repository search could not produce an exact match count",
                     "status_code": 503,
                     "preprocessed_hit": False,
+                    "results": [],
                 }
             total_matches = int(full_result["total_matches"])
             source_page = full_result.get("results", [])
@@ -3214,6 +3215,7 @@ class LocalAIServices:
                     "error": "repository search filters disagreed while materializing the exact page",
                     "status_code": 503,
                     "preprocessed_hit": False,
+                    "results": [],
                 }
             result["total_matches"] = total_matches
             result["matches_count"] = total_matches
