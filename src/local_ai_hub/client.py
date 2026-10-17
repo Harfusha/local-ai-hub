@@ -833,6 +833,8 @@ class HubClient:
         }
 
     def _principal_tenant(self) -> str:
+        if getattr(self, "tenant", None):
+            return str(self.tenant).strip()
         security = self.config.get("security", {})
         configured = str(security.get("api_token_tenant", "") or "").strip()
         if configured:
@@ -921,7 +923,7 @@ class HubClient:
         task_route = route == "/api/agent-state/tasks"
         memory_route = route == "/api/agent-state/memory"
         if not task_route and not memory_route:
-            principal = request_principal_tenant(self.config, route)
+            principal = str(self.tenant).strip() if getattr(self, "tenant", None) else request_principal_tenant(self.config, route)
             if tenant_hint is not None and tenant_hint != principal:
                 return None, self._identity_preflight(
                     "tenant override cannot select request scope",

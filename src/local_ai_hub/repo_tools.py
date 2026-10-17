@@ -18,7 +18,7 @@ from queue import Empty, Queue
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
@@ -1475,8 +1475,11 @@ class RepositoryTools:
 
     def _expand_project_force_paths(
         self, base: Path, project_settings: Any, limit: int,
+        *, extra_patterns: Sequence[str] = (),
     ) -> list[Path]:
         _text, _binary, patterns, _maximum = self._project_settings_values(project_settings)
+        if extra_patterns:
+            patterns = tuple(dict.fromkeys((*patterns, *extra_patterns)))
         found: dict[str, Path] = {}
         entry_budget = max(256, min(65_536, max(1, limit) * 32))
         deadline = time.monotonic() + min(2.0, self.git_files_timeout)
@@ -1720,6 +1723,13 @@ class RepositoryTools:
                         raise TimeoutError("exact Git inventory exceeded its configured time bound")
                     if return_code != 0:
                         raise OSError("Git exact-search inventory failed")
+                    for forced_path in self._expand_project_force_paths(
+                        base, project_settings, file_cap, extra_patterns=force_patterns,
+                    ):
+                        try:
+                            inventory.add(forced_path.relative_to(base).as_posix())
+                        except (OSError, RuntimeError, ValueError):
+                            continue
                     # Git groups cached and untracked output separately; -co is
                     # not globally ordered. Sort a hard-bounded, deduplicated set
                     # only after successful enumeration, preserving exactness.
