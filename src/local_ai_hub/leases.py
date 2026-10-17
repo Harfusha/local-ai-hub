@@ -112,6 +112,16 @@ def _overlap(a: str, b: str) -> bool:
     return na.startswith(nb + "/") or nb.startswith(na + "/")
 
 
+def _is_canonical_coordination_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and "\x00" not in value
+        and len(value) <= 512
+    )
+
+
 class ScopeLeaseStore:
     """Advisory cross-agent write-scope leases for avoiding obvious concurrent edit collisions."""
 
@@ -234,13 +244,7 @@ class ScopeLeaseStore:
         if coordination_id is _COORDINATION_ID_UNSET:
             root_id = physical_root_id
         else:
-            if (
-                not isinstance(coordination_id, str)
-                or not coordination_id
-                or coordination_id != coordination_id.strip()
-                or "\x00" in coordination_id
-                or len(coordination_id) > 512
-            ):
+            if not _is_canonical_coordination_id(coordination_id):
                 return {"success": False, "error": "invalid project coordination id"}
             namespace = coordination_id
             root_id = f"project:{namespace}"
@@ -443,11 +447,11 @@ class ScopeLeaseStore:
 
     def renew(self, tenant: str, lease_id: str, ttl_seconds: int = 900) -> dict[str, Any]:
         """Atomically extend the expiration TTL of an existing held lease."""
-        if not isinstance(tenant, str) or "\x00" in tenant:
+        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
             return {"success": False, "error": "invalid tenant"}
-        if not isinstance(lease_id, str) or not lease_id:
+        if not isinstance(lease_id, str):
             return {"success": False, "error": "lease_id must be a string"}
-        if "\x00" in lease_id:
+        if not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id:
             return {"success": False, "error": "invalid lease_id"}
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds):
             ttl = 900
@@ -482,11 +486,15 @@ class ScopeLeaseStore:
         *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> list[dict[str, Any]]:
+        if not isinstance(root, str) or root != root.strip() or "\x00" in root:
+            return []
+        if coordination_id is None:
+            return []
+        if coordination_id is not _COORDINATION_ID_UNSET and not _is_canonical_coordination_id(coordination_id):
+            return []
         now = time.time()
         def read():
             with closing(self._connect()) as con:
-                if coordination_id is None:
-                    return []
                 if root:
                     root_path, physical_root_id = self._root(root)
                     if coordination_id is _COORDINATION_ID_UNSET:
@@ -495,20 +503,17 @@ class ScopeLeaseStore:
                             "WHERE (root_id=? OR root_path=?) AND expires_at>? ORDER BY expires_at",
                             (physical_root_id, root_path, now),
                         ).fetchall()
-                    root_id = f"project:{str(coordination_id).strip()}"
+                    root_id = f"project:{coordination_id}"
                     return con.execute(
                         "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
                         "WHERE (root_id=? OR (root_id=? AND root_path=?)) AND expires_at>? ORDER BY expires_at",
                         (root_id, physical_root_id, root_path, now),
                     ).fetchall()
                 if coordination_id is not _COORDINATION_ID_UNSET:
-                    namespace = str(coordination_id).strip()
-                    if not namespace or "\x00" in namespace or len(namespace) > 512:
-                        return []
                     return con.execute(
                         "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
                         "WHERE root_id=? AND expires_at>? ORDER BY expires_at",
-                        (f"project:{namespace}", now),
+                        (f"project:{coordination_id}", now),
                     ).fetchall()
                 return con.execute(
                     "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases WHERE expires_at>? ORDER BY expires_at",
@@ -526,20 +531,21 @@ class ScopeLeaseStore:
         *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> list[dict[str, Any]]:
+        if not isinstance(root, str) or root != root.strip() or "\x00" in root:
+            return []
+        if coordination_id is None:
+            return []
+        if coordination_id is not _COORDINATION_ID_UNSET and not _is_canonical_coordination_id(coordination_id):
+            return []
         now = time.time()
         def read():
             with closing(self._connect()) as con:
-                if coordination_id is None:
-                    return []
                 if root:
                     _, physical_root_id = self._root(root)
                     if coordination_id is _COORDINATION_ID_UNSET:
                         root_ids = (physical_root_id,)
                     else:
-                        namespace = str(coordination_id).strip()
-                        if not namespace or "\x00" in namespace or len(namespace) > 512:
-                            return []
-                        root_ids = (f"project:{namespace}", physical_root_id)
+                        root_ids = (f"project:{coordination_id}", physical_root_id)
                     placeholders = ",".join("?" for _ in root_ids)
                     return con.execute(
                         f"SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits "
@@ -547,13 +553,10 @@ class ScopeLeaseStore:
                         (*root_ids, now - 3600),
                     ).fetchall()
                 if coordination_id is not _COORDINATION_ID_UNSET:
-                    namespace = str(coordination_id).strip()
-                    if not namespace or "\x00" in namespace or len(namespace) > 512:
-                        return []
                     return con.execute(
                         "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits "
                         "WHERE root_id=? AND updated_at>? ORDER BY updated_at DESC",
-                        (f"project:{namespace}", now - 3600),
+                        (f"project:{coordination_id}", now - 3600),
                     ).fetchall()
                 return con.execute(
                     "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits WHERE updated_at>? ORDER BY updated_at DESC",
@@ -574,23 +577,44 @@ class ScopeLeaseStore:
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
         """Check if a specific file or directory path is leased or in conflict."""
+        if not isinstance(path, str):
+            return {
+                "leased": False, "conflict": False, "path": "",
+                "error": "path must be a string", "tenant": None,
+                "lease_id": None, "expires_at": None, "purpose": None,
+            }
+        if not isinstance(root, str) or root != root.strip() or "\x00" in root:
+            return {
+                "leased": False, "conflict": False, "path": path,
+                "error": "invalid root", "tenant": None,
+                "lease_id": None, "expires_at": None, "purpose": None,
+            }
+        if tenant is not None and (not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant):
+            return {
+                "leased": False, "conflict": False, "path": path,
+                "error": "invalid tenant", "tenant": None,
+                "lease_id": None, "expires_at": None, "purpose": None,
+            }
+        if coordination_id is not _COORDINATION_ID_UNSET and coordination_id is not None and not _is_canonical_coordination_id(coordination_id):
+            return {
+                "leased": False, "conflict": False, "path": path,
+                "error": "invalid project coordination id", "tenant": None,
+                "lease_id": None, "expires_at": None, "purpose": None,
+            }
         if not path:
             return {"leased": False, "conflict": False, "path": "", "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
         try:
             root_path, physical_root_id = self._root(root)
-            rel_path = _norm_rel(str(path), root=root_path)
+            rel_path = _norm_rel(path, root=root_path)
         except Exception as exc:
-            return {"leased": False, "conflict": False, "path": str(path), "error": str(exc), "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+            return {"leased": False, "conflict": False, "path": path, "error": str(exc), "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
 
         if coordination_id is _COORDINATION_ID_UNSET:
             root_id = physical_root_id
         elif coordination_id is None:
             return {"leased": False, "conflict": False, "path": rel_path, "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
         else:
-            namespace = str(coordination_id).strip()
-            if not namespace or "\x00" in namespace or len(namespace) > 512:
-                return {"leased": False, "conflict": False, "path": rel_path, "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
-            root_id = f"project:{namespace}"
+            root_id = f"project:{coordination_id}"
 
         now = time.time()
 

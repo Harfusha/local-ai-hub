@@ -95,6 +95,20 @@ def test_scope_lease_store_tenant_cleanup_is_explicit(tmp_path: Path):
     assert store.release("tenant1", first["lease_id"])["released_rows"] == 0
 
 
+def test_scope_lease_store_read_and_renew_inputs_fail_closed(tmp_path: Path):
+    store = ScopeLeaseStore(tmp_path / "leases")
+
+    assert store.renew(1, "lease-id")["error"] == "invalid tenant"
+    assert store.renew("tenant1", " lease-id ")["error"] == "invalid lease_id"
+    assert store.list(coordination_id=42) == []
+    assert store.list(root=tmp_path) == []
+    assert store.waits(coordination_id=True) == []
+    assert store.check_path(42, root=str(tmp_path))["error"] == "path must be a string"
+    assert store.check_path(
+        "file.py", root=str(tmp_path), coordination_id=42
+    )["error"] == "invalid project coordination id"
+
+
 def test_process_utils_pid_and_env_hardening():
     assert is_valid_pid(True) is False
     assert is_valid_pid(False) is False

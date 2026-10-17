@@ -491,3 +491,5 @@ The model-free claim validator now takes explicit manifest and receipt paths rat
 **2026-10-17 lease-store canonicalization:** Scope lease claims now accept only ordered sequences of strings; Path objects and unordered collections reject. `release` requires one exact nonempty lease ID; explicit `release_tenant` is reserved for swarm-owner cleanup and recovery. Added regression coverage; tests remain deferred until the complete source bundle is assembled.
 
 **2026-10-17 lease identity validation:** Scope lease claim now rejects non-string tenant/root/purpose and non-string or whitespace-padded project coordination IDs before database work; tenant cleanup uses the same nonempty tenant rule. Regression cases are authored but remain unexecuted until the complete source bundle is assembled.
+
+**2026-10-17 lease query and renewal contracts:** Renew now rejects malformed tenant/lease identities; list/waits/check_path reject scalar coordination IDs and non-string paths instead of coercing them. Regression cases are authored; validation remains deferred until the complete source bundle is assembled.
