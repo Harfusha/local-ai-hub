@@ -1277,6 +1277,68 @@ def test_retry_stop_unpersisted_daemon_removes_tracking_after_confirmed_exit(
     assert info["_slot_released"] is False
 
 
+def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+
+    class StoppableProcess:
+        pid = 43212
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return None if self.alive else 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            self.alive = False
+            return 0
+
+    process = StoppableProcess()
+    _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        commands_module,
+        "process_identity",
+        lambda pid: {"pid": pid, "creation_identity": 1},
+    )
+    monkeypatch.setattr(commands_module, "_create_named_daemon_job", lambda _daemon_id: 77)
+    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "_resume_suspended_process", lambda _child: True)
+    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    stop_calls = 0
+
+    def stop_then_confirm(_info: dict[str, Any]) -> bool:
+        nonlocal stop_calls
+        stop_calls += 1
+        return stop_calls > 1
+
+    monkeypatch.setattr(commands_module, "_stop_daemon_tree", stop_then_confirm)
+    monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: False)
+    original_start = commands_module.threading.Thread.start
+
+    def fail_log_reader(thread: object) -> None:
+        if str(getattr(thread, "name", "")).startswith("local-ai-daemon-log-"):
+            raise RuntimeError("simulated reader startup failure")
+        original_start(thread)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(commands_module.threading.Thread, "start", fail_log_reader)
+    result = broker.spawn_daemon(
+        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert result["success"] is False
+    assert result["registry_persisted"] is False
+    assert result.get("outcome_unknown") is not True
+    assert stop_calls == 2
+    assert process.wait_calls == 1
+    assert process.alive is False
+    assert broker._daemons == {}
+
+
 @pytest.mark.skipif(
     os.name != "nt",
     reason="suspended-process worktree revalidation is Windows-specific",
