@@ -1350,7 +1350,7 @@ def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatc
         ("/api/rag/ingest_document", {"workspace": "default", "content": "doc"}, "rag-ingest"),
         ("/api/rag/ingest_diagram", {"workspace": "default", "image_path": "diagram.png"}, "rag-diagram"),
         ("/api/work-orders", {"action": "submit", "work_id": "work-1"}, "work-submit"),
-        ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1", "phase": "testing", "next_action": "verify"}, "task-checkpoint"),
+        ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1", "checkpoint": {"phase": "testing", "next_action": "verify"}}, "task-checkpoint"),
         ("/api/command", {"command": "pytest"}, "command"),
     ],
 )
