@@ -37,7 +37,7 @@ def test_real_context_evidence_shape_keeps_outcome_and_citations(tmp_path, monke
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
     contents, structured = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
         "action": "context", "root": str(tmp_path), "mode": "adaptive",
-        "task": "Inspect grounded retrieval contracts", "max_response_tokens": 3200,
+        "query": "Inspect grounded retrieval contracts", "max_response_tokens": 3200,
         "response_profile": "compact",
     }))
     result = structured if structured is not None else json.loads(contents[0].text)
