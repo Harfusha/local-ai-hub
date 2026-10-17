@@ -545,6 +545,53 @@ so.install_skill(source, target, root, manifest, name)
         self.assertEqual(ambiguous[0]["quarantine_path"], "unknown")
         self.assertEqual(ambiguous[0]["location_state"], "unknown")
 
+    @unittest.skipUnless(os.name == "nt", "Windows quarantine path identity check")
+    def test_windows_error_reconciliation_skips_presence_when_quarantine_root_changed(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        with (
+            patch.object(skill_ownership, "_rename_noreplace", side_effect=OSError("move failed")),
+            patch.object(skill_ownership._PinnedQuarantine, "is_current", return_value=False) as is_current,
+            patch.object(
+                skill_ownership._PinnedQuarantine,
+                "entry_presence",
+                side_effect=AssertionError("must not inspect a substituted quarantine path"),
+            ) as entry_presence,
+        ):
+            result = remove_skill(self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertIn("recovery location is unknown", result)
+        is_current.assert_called_once_with()
+        entry_presence.assert_not_called()
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        ambiguous = [record for record in entries.values() if record.get("status") == "ambiguous"]
+        self.assertEqual(len(ambiguous), 1)
+        self.assertEqual(ambiguous[0]["quarantine_path"], "unknown")
+
+    @unittest.skipUnless(os.name == "nt", "Windows path-based quarantine presence is unsupported")
+    def test_windows_unknown_quarantine_presence_propagates_without_path_lookup(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        real_lstat = Path.lstat
+        quarantine_name = ".local-ai-hub-skill-quarantine"
+
+        def reject_quarantine_lookup(path: Path):
+            if path.name == quarantine_name or path.parent.name == quarantine_name:
+                raise AssertionError("must not perform path-based quarantine lookup")
+            return real_lstat(path)
+
+        with (
+            patch.object(skill_ownership, "_rename_noreplace", side_effect=OSError("move failed")),
+            patch.object(skill_ownership._PinnedQuarantine, "is_current", return_value=True),
+            patch.object(Path, "lstat", autospec=True, side_effect=reject_quarantine_lookup),
+        ):
+            result = remove_skill(self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertIn("recovery location is unknown", result)
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        ambiguous = [record for record in entries.values() if record.get("status") == "ambiguous"]
+        self.assertEqual(len(ambiguous), 1)
+        self.assertEqual(ambiguous[0]["quarantine_path"], "unknown")
+        self.assertEqual(ambiguous[0]["location_state"], "unknown")
+
     def test_nul_quarantine_path_and_lstat_value_error_are_unknown(self) -> None:
         expected_root = self.skills_root.parent / ".local-ai-hub-skill-quarantine"
         expected_root.mkdir(parents=True)
