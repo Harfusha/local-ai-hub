@@ -160,7 +160,7 @@ class Reranker:
                     return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
                     models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
-                    allow_hf = bool(models_cfg.get("allow_hf_downloads", False)) if isinstance(models_cfg, dict) else False
+                    allow_hf = models_cfg.get("allow_hf_downloads") is True if isinstance(models_cfg, dict) else False
                     if not allow_hf:
                         raise
                     return CrossEncoder(self.model_name, **kwargs)

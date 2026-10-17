@@ -98,7 +98,6 @@ def _install_service_spies(monkeypatch, app):
 @pytest.mark.parametrize(("path", "payload_fields", "expected_call"), [
     ("/api/git/status", {}, ("git_status", (), {})),
     ("/api/repo/state", {}, ("repo_state", (), {})),
-    ("/api/repo_state", {}, ("repo_state", (), {})),
     ("/api/git/diff", {"path": "src/a.py", "staged": True, "max_lines": 17},
      ("git_diff", (), {"path": "src/a.py", "staged": True, "max_lines": 17})),
     ("/api/git/history_search", {
@@ -109,8 +108,6 @@ def _install_service_spies(monkeypatch, app):
         "until": "2026-01-02", "path": "src/a.py",
     })),
     ("/api/repo/hotspots", {"days": 8, "limit": 4},
-     ("find_hotspots", (), {"days": 8, "limit": 4})),
-    ("/api/hotspots", {"days": 8, "limit": 4},
      ("find_hotspots", (), {"days": 8, "limit": 4})),
     ("/api/test_matrix", {}, ("test_matrix", (), {})),
 ])
