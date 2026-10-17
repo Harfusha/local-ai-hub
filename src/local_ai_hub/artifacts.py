@@ -1257,6 +1257,8 @@ class ArtifactStore:
     def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:
         if not isinstance(tenant, str):
             raise ValueError("tenant label must be a string")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("artifact list limit must be a positive integer")
         self._init_db()
         with closing(self._connect()) as con:
             lim = max(1, min(limit, 100))
