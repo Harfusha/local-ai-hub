@@ -576,6 +576,50 @@ def merge_overlapping_evidence(
     return result
 
 
+_SOURCE_FOCUS_TERMS = (
+    "source", "code", "implementation", "implement", "bug", "fix",
+    "refactor", "symbol", "function", "class", "test", "audit",
+    "kód", "kod", "oprava",
+)
+_SOURCE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+    ".go", ".rs", ".java", ".kt", ".cs", ".c", ".h", ".cc", ".cpp",
+    ".hpp", ".sql", ".html", ".css", ".scss",
+})
+
+
+def _source_focused_query(query: str) -> bool:
+    lowered = query.casefold()
+    return any(term in lowered for term in _SOURCE_FOCUS_TERMS)
+
+
+def _context_path_priority(
+    relative: str, *, source_focused: bool, override_match: bool,
+) -> int:
+    if override_match:
+        return 0
+    if not source_focused:
+        return 1
+    normalized = relative.replace("\\", "/").casefold()
+    parts = normalized.split("/")
+    suffix = Path(normalized).suffix
+    filename = parts[-1] if parts else ""
+    if (
+        filename.startswith("test_")
+        or filename.endswith("_test.py")
+        or any(part in {"test", "tests", "fixture", "fixtures"} for part in parts[:-1])
+    ):
+        return 2
+    if suffix in _SOURCE_SUFFIXES and not any(part in {"docs", "doc", "plans"} for part in parts[:-1]):
+        return 1
+    if suffix in {".md", ".rst", ".txt"} and any(
+        part in {"docs", "doc", "plans", "archive", "archives"}
+        for part in parts[:-1]
+    ):
+        return 3
+    return 2
+
+
 class LocalAIServices:
     commands: Any = None
     task_store: Any = None
@@ -3079,6 +3123,8 @@ class LocalAIServices:
             )
             request_hint_roots = matching_hint_roots(request_hints, learned=False)
 
+            source_focused = _source_focused_query(query)
+
             def path_priority(relative: str) -> tuple[int, int, int]:
                 candidate = (hint_root / relative).resolve(strict=False) if hint_root else None
 
@@ -3093,7 +3139,11 @@ class LocalAIServices:
                 return (
                     0 if matches(request_hint_roots) else 1,
                     0 if matches(durable_hint_roots) else 1,
-                    0 if override_match else 1,
+                    _context_path_priority(
+                        relative,
+                        source_focused=source_focused,
+                        override_match=override_match,
+                    ),
                 )
 
             full_result = self.repo_tools.search(

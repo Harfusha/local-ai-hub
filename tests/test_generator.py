@@ -184,6 +184,17 @@ class TestGlobalPolicyGeneration:
         assert "local_ai_task" in policy
         assert "local_ai_rag" in policy
 
+    def test_policy_reuses_fresh_evidence_and_keeps_exact_lookups_bounded(self):
+        generated = (generate_global_policy({}), generate_skill_markdown({}))
+
+        for content in generated:
+            policy = content.lower()
+            assert "reuse fresh sufficient evidence" in policy
+            assert "exact file or symbol lookups" in policy
+            assert "do not preprocess or compile adaptive context first" in policy
+            assert "first useful operation" not in policy
+            assert "preprocess\", root=abs_root) exactly once" not in policy
+
     def test_policy_without_commands_and_rag(self):
         policy = generate_global_policy({"features": {"commands": False, "rag": False}})
         assert "local_ai_command" not in policy

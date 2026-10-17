@@ -798,7 +798,10 @@ _RELIABILITY_PROTECTED_KEYS = (
     "mutation_applied", "operation_not_started",
 )
 _VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts")
-_TOPOLOGY_PROTECTED_KEYS = ("coverage", "architecture_pattern_verified", "import_scope")
+_TOPOLOGY_PROTECTED_KEYS = (
+    "coverage", "architecture_pattern_hypothesis", "architecture_pattern_verified",
+    "heuristic_layers", "module_graph", "import_scope",
+)
 _COMPLEXITY_PROTECTED_KEYS = (
     "complete", "scope", "coverage", "limits", "files_analyzed", "eligible_files",
     "skipped_files", "skipped_directories", "parse_error_count", "read_error_count",

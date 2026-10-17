@@ -60,6 +60,17 @@ def test_exact_identifier_paging_and_root_filter(tmp_path: Path) -> None:
     assert other_root["symbols"][0]["path"] == "pkg/c.py"
 
 
+def test_exact_identifier_uses_exact_matches_before_fuzzy_candidates(tmp_path: Path) -> None:
+    root, index = _index(tmp_path)
+    _insert(index, root, "src/generator.py", "generate_tests")
+    _insert(index, root, "src/helpers.py", "generate_tests_helper")
+
+    result = index.query(str(root), "generate_tests")
+
+    assert result["total_matches"] == 1
+    assert [item["name"] for item in result["symbols"]] == ["generate_tests"]
+
+
 def test_identifier_without_exact_match_keeps_fuzzy_fallback(tmp_path: Path) -> None:
     root, index = _index(tmp_path)
     _insert(index, root, "src/generate.py", "generate_tests")
