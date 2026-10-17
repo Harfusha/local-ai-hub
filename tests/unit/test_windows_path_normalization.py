@@ -12,8 +12,8 @@ from local_ai_hub.process_utils import canonical_path, canonical_root, canonical
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        (r"c:\Users\Adam\.\repo\..\Repo", "C:/Users/Adam/Repo"),
-        ("c:/Users/Adam/./repo/../Repo", "C:/Users/Adam/Repo"),
+        (r"c:\Users\tester\.\repo\..\Repo", "C:/Users/tester/Repo"),
+        ("c:/Users/tester/./repo/../Repo", "C:/Users/tester/Repo"),
         (r"\\Server\Share\folder\..\Repo", "//Server/Share/Repo"),
         ("//Server/Share/folder/../Repo", "//Server/Share/Repo"),
     ],
@@ -23,7 +23,7 @@ def test_canonical_path_normalizes_windows_drive_and_unc_spellings(path, expecte
 
 
 def test_canonical_path_preserves_component_case_and_posix_backslashes():
-    assert canonical_path(r"d:\Users\Adam\Project") == "D:/Users/Adam/Project"
+    assert canonical_path(r"d:\Users\tester\Project") == "D:/Users/tester/Project"
     assert canonical_path("/Tmp/Repo/a\\b") == "/Tmp/Repo/a\\b"
     assert canonical_path("/Tmp/Repo/a\\b") != canonical_path("/Tmp/Repo/a/b")
     assert canonical_path(r"relative\file") == r"relative\file"

@@ -34,6 +34,8 @@ def _broker(monkeypatch, classification=None):
 @pytest.mark.parametrize("cache_options", [{}, {"force": True}, {"bypass_cache": True}])
 def test_denied_classification_never_reaches_cache_or_process(tmp_path, monkeypatch, command_class, cache_options):
     broker = _broker(monkeypatch, {"class": command_class, "allowed": False, "reason": "denied"})
+    if command_class == "unknown":
+        broker.config["commands"]["allow_mutating"] = False
     result = broker.run("python -I -c ignored", str(tmp_path), **cache_options)
     assert result["success"] is False
     assert result["policy_blocked"] is True
@@ -54,8 +56,11 @@ def test_non_boolean_allowance_is_not_authorization(tmp_path, monkeypatch, allow
 
 def test_unknown_opt_in_still_requires_declared_write_set(tmp_path, monkeypatch):
     broker = _broker(monkeypatch, {"class": "unknown", "allowed": True})
+    broker.config["commands"].update({"allow_unknown": True, "allow_mutating": True})
+    broker._require_task_worktree = Mock(return_value=None)
     result = broker.run("custom-tool", str(tmp_path), task_id="owned-task")
     assert result["mutation_write_set_required"] is True
+    broker._require_task_worktree.assert_called_once()
     broker._read_cache_entry.assert_not_called()
     broker._execute.assert_not_called()
 
@@ -77,7 +82,7 @@ def test_unknown_opt_in_does_not_replace_mutation_permission(tmp_path, monkeypat
     broker._tool_identity.assert_not_called()
 
 
-def test_unknown_opt_in_authorizes_actual_nonempty_unknown_classification(tmp_path, monkeypatch):
+def test_unknown_requires_explicit_unknown_and_mutation_authorization(tmp_path, monkeypatch):
     broker = _broker(monkeypatch)
     broker.config["commands"]["allow_unknown"] = False
 
@@ -85,8 +90,10 @@ def test_unknown_opt_in_authorizes_actual_nonempty_unknown_classification(tmp_pa
 
     assert result["classification"]["class"] == "unknown"
     assert result["classification"]["allowed"] is False
-    assert result["classification_allowed"] is True
-    assert result["mutation_write_set_required"] is True
+    assert result["classification_allowed"] is False
+    assert result["policy_blocked"] is True
+    assert result["request_not_sent"] is True
+    broker._tool_identity.assert_not_called()
     broker._read_cache_entry.assert_not_called()
     broker._execute.assert_not_called()
 

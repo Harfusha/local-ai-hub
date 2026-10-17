@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import pytest
 import threading
@@ -211,10 +212,15 @@ def test_wait_rechecks_terminal_status_after_tick_evicts_old_event(tmp_path, mon
         status_calls += 1
         if status_calls == 1:
             running = original_status(tenant, current_job_id)
+            artifact_id = manager.artifacts.put(
+                json.dumps({"success": True, "task": "interleaved"}),
+                tenant,
+                "async-job",
+            )
             with closing(manager._connect()) as con:
                 con.execute(
-                    "UPDATE async_jobs SET state='done',updated_at=? WHERE job_id=? AND tenant=?",
-                    (time.time(), current_job_id, tenant),
+                    "UPDATE async_jobs SET state='done',artifact_id=?,updated_at=? WHERE job_id=? AND tenant=?",
+                    (artifact_id, time.time(), current_job_id, tenant),
                 )
                 con.commit()
             manager.tick()

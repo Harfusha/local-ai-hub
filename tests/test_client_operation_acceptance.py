@@ -191,7 +191,7 @@ def test_client_incident_decision_targets_agent_state_incidents(
 
     result = client.coord(
         "incident_decision",
-        fingerprint={"kind": "test", "value": "case-17", "error_class": "AssertionError"},
+        fingerprint={"error_class": "AssertionError", "operation_class": "test", "signature_hash": "case-17"},
         state_revision="rev-17",
     )
 
@@ -203,7 +203,7 @@ def test_client_incident_decision_targets_agent_state_incidents(
             "payload": {
                 "action": "decision",
                 "fingerprint": {
-                    "kind": "test", "value": "case-17", "error_class": "AssertionError"
+                    "error_class": "AssertionError", "operation_class": "test", "signature_hash": "case-17"
                 },
                 "state_revision": "rev-17",
             },

@@ -17,6 +17,8 @@ def _mode(monkeypatch, name: str) -> None:
         )
 
     monkeypatch.setattr(mcp_server, "load_operational_mode", load_mode, raising=False)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
 
 
 def _dispatch(name: str, arguments: dict[str, object]):

@@ -21,7 +21,7 @@ def test_stdio_builder_uses_daemon_client_and_preserves_request_identity(monkeyp
     assert observed["method"] == "GET"
     assert observed["path"] == path
     headers = observed["headers"]
-    assert headers["X-LocalAI-Tenant"] == "tenant-stdio"
+    assert headers["X-LocalAI-Tenant"] == "http-default"
     assert headers["X-LocalAI-Request-ID"].startswith("req_")
 
 

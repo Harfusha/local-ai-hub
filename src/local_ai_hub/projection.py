@@ -338,7 +338,7 @@ class AgentProjector:
                 requested_limit = data.get("limit")
                 if isinstance(requested_limit, int) and not isinstance(requested_limit, bool):
                     result_limit = max(1, min(requested_limit, 100_000))
-            if self.coalesce_snippets and task_kind != "search":
+            if self.coalesce_snippets:
                 results = self._coalesce_snippets(results)
             results = results[:result_limit]
             # Search results backed by E-ids use progressive disclosure too. This
@@ -376,8 +376,7 @@ class AgentProjector:
                         blocks.append(r)
                 data["text"] = "\n\n".join(blocks)
                 data["format"] = "text"
-                if task_kind != "search":
-                    data.pop("results", None)
+                data.pop("results", None)
 
         # Codex benefits from action/evidence density; Claude/Gemini can use relationships.
         if not bool(p.get("relationships", False)) and "relationships" not in extra:

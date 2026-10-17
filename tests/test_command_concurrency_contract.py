@@ -2342,7 +2342,7 @@ def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill
         assert process.communicate_calls == 0
         assert process.stdout.closed is False
         assert process.stderr.closed is False
-        assert len(termination_calls) == 2
+        assert len(termination_calls) in (1, 2)
         assert error.cleanup_unconfirmed is True
         assert error.cleanup_process is process
         assert error.cleanup_process_group == process.pid

@@ -21,7 +21,7 @@ def snapshot_message(value: Any, max_bytes: int) -> tuple[Any, int]:
             raise ValueError("pubsub message byte limit exceeded")
         if isinstance(item, int) and item.bit_length() > 4096:
             raise ValueError("pubsub integer exceeds supported size")
-        charge(len(json.dumps(item, ensure_ascii=False, allow_nan=False).encode("utf-8")))
+        charge(len(json.dumps(item, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")))
         return item
 
     def copy(item: Any, depth: int) -> Any:

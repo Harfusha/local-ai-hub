@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import threading
@@ -76,10 +77,17 @@ def test_git_file_inventory_cache_avoids_duplicate_processes(tmp_path: Path, mon
     repo = tmp_path / "repo"; repo.mkdir(); (repo / ".git").mkdir(); (repo / "a.py").write_text("x=1\n", encoding="utf-8")
     tools = RepositoryTools(config)
     calls = {"n": 0}
-    def fake_run(*args, **kwargs):
+    class FakeProc:
+        pid = 1234
+        def __init__(self):
+            self.stdout = io.BytesIO(b"a.py\0")
+        def poll(self): return 0
+        def wait(self, timeout=None): return 0
+
+    def fake_popen(*args, **kwargs):
         calls["n"] += 1
-        return subprocess.CompletedProcess(args[0], 0, b"a.py\0", b"")
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        return FakeProc()
+    monkeypatch.setattr("local_ai_hub.repo_tools.popen_managed", fake_popen)
     assert [p.name for p in tools._git_files(repo) or []] == ["a.py"]
     assert [p.name for p in tools._git_files(repo) or []] == ["a.py"]
     assert calls["n"] == 1
@@ -91,10 +99,18 @@ def test_git_timeout_cooldown_prevents_repeated_slow_probe(tmp_path: Path, monke
     repo = tmp_path / "repo"; repo.mkdir(); (repo / ".git").mkdir()
     tools = RepositoryTools(config)
     calls = {"n": 0}
-    def fake_run(*args, **kwargs):
+    class FakeSlowProc:
+        pid = 1234
+        stdout = io.BytesIO(b"")
+        def poll(self): return None
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(["git"], timeout or 0.1)
+
+    def fake_popen(*args, **kwargs):
         calls["n"] += 1
-        raise subprocess.TimeoutExpired(args[0], 0.1)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        return FakeSlowProc()
+    monkeypatch.setattr("local_ai_hub.repo_tools.popen_managed", fake_popen)
+    monkeypatch.setattr("local_ai_hub.repo_tools.terminate_tree", lambda *a, **k: None)
     assert tools._git_files(repo) is None
     assert tools._git_files(repo) is None
     assert calls["n"] == 1
