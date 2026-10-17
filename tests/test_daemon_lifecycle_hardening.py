@@ -1179,7 +1179,7 @@ def test_daemon_status_requires_policy_and_scopes_result_to_task() -> None:
     assert broker.status_calls == [("daemon-a", "task-a")]
 
 
-def test_spawn_daemon_retains_tracking_when_reader_start_cleanup_is_unconfirmed(
+def test_spawn_daemon_retains_tracking_when_registry_and_cleanup_retry_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broker = _broker(tmp_path)
@@ -1209,7 +1209,15 @@ def test_spawn_daemon_retains_tracking_when_reader_start_cleanup_is_unconfirmed(
     monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
     monkeypatch.setattr(commands_module, "_resume_suspended_process", lambda _child: True)
     monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", lambda _info: False)
+    stop_calls = 0
+
+    def fail_stop(_info: dict[str, Any]) -> bool:
+        nonlocal stop_calls
+        stop_calls += 1
+        return False
+
+    monkeypatch.setattr(commands_module, "_stop_daemon_tree", fail_stop)
+    monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: False)
     expiry_calls: list[str] = []
     monkeypatch.setattr(
         broker,
@@ -1231,6 +1239,8 @@ def test_spawn_daemon_retains_tracking_when_reader_start_cleanup_is_unconfirmed(
     assert result["success"] is False
     assert result.get("outcome_unknown") is True, result
     assert result.get("cleanup_unconfirmed") is True, result
+    assert result.get("registry_persisted") is False, result
+    assert stop_calls == 2
     daemon_id = str(result["daemon_id"])
     info = broker._daemons[daemon_id]
     assert process.alive is True
@@ -1277,8 +1287,11 @@ def test_retry_stop_unpersisted_daemon_removes_tracking_after_confirmed_exit(
     assert info["_slot_released"] is False
 
 
+@pytest.mark.parametrize("final_registry_persisted", [False, True])
 def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    final_registry_persisted: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     broker = _broker(tmp_path)
 
@@ -1317,7 +1330,12 @@ def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
         return stop_calls > 1
 
     monkeypatch.setattr(commands_module, "_stop_daemon_tree", stop_then_confirm)
-    monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: False)
+    persistence_results = iter((False, final_registry_persisted))
+    monkeypatch.setattr(
+        broker,
+        "_persist_daemon_registry",
+        lambda: next(persistence_results),
+    )
     original_start = commands_module.threading.Thread.start
 
     def fail_log_reader(thread: object) -> None:
@@ -1331,7 +1349,7 @@ def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
     )
 
     assert result["success"] is False
-    assert result["registry_persisted"] is False
+    assert result["registry_persisted"] is final_registry_persisted
     assert result.get("outcome_unknown") is not True
     assert stop_calls == 2
     assert process.wait_calls == 1
