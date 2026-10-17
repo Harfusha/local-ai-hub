@@ -202,7 +202,12 @@ class AgentStateStore:
         ("index", "idx_leases_root", "leases"): "a0ede5303197cc5172c5583f33a72ee1636083712d84e9d618a642a34671cc85",
         ("table", "agent_state_migrations", "agent_state_migrations"): "c05fc94a41754f655038115d920ca125256bad65f5fd82bcc8ee4cdc8ce1c164",
         ("table", "agent_state_schema_versions", "agent_state_schema_versions"): "a2884a575e1e67cfbc5b40c2e90370a89d5310197171332b6806c0b4e036a547",
-        ("table", "lease_waits", "lease_waits"): "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+        ("table", "lease_waits", "lease_waits"): {
+            "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+            # ScopeLeaseStore's namespace-key rebuild/rename quotes the table name.
+            # Same NOT NULL columns and root-inclusive PK; no SQL normalization widening.
+            "314dbe78e360c6c00133c85323b9349936d9cb2e87121e60c8ffb733b46d20aa",
+        },
         ("table", "leases", "leases"): "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
         ("index", "idx_lease_waits_blocked", "lease_waits"): "366fe3b81e54f9032edecf9d798a2b2d23160bba578438a89591b929c1e87cab",
         ("table", "agent_swarms", "agent_swarms"): "5ccda29c6b858caae83c2ca78296c4ff939f7ae41cdab14054e67bf374592a81",
@@ -498,7 +503,12 @@ class AgentStateStore:
                 raise RuntimeError(
                     f"unsupported agent_state schema object: {object_type} {name}"
                 )
-            if actual_hash != expected_hash:
+            if isinstance(expected_hash, (set, frozenset, tuple, list)):
+                if actual_hash not in expected_hash:
+                    raise RuntimeError(
+                        f"unsupported agent_state schema object definition: {object_type} {name}"
+                    )
+            elif actual_hash != expected_hash:
                 raise RuntimeError(
                     f"unsupported agent_state schema object definition: {object_type} {name}"
                 )

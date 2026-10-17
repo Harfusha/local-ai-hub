@@ -15,7 +15,7 @@ def test_t18_full_status_matches_generic_object_output_contract(monkeypatch) -> 
 
     monkeypatch.setattr(mcp_server.CLIENT, "get", fake_get)
 
-    tool_result = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", {"action": "full"}))
+    tool_result = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", {"detail": "full"}))
     content = tool_result[0][0] if isinstance(tool_result, tuple) else tool_result[0]
     result = json.loads(content.text)
 
