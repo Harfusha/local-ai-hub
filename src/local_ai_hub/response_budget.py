@@ -425,7 +425,7 @@ def _budget_rejection(
     protocol_keys = (
         "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
         "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
-        "mutation_applied", "operation_not_started",
+        "mutation_applied", "operation_not_started", "reused", "reuse_key",
     )
     error_limits: tuple[int | None, ...] = (None, 256, 128, 64, 32, 16)
     summary_limits: tuple[int | None, ...] = (None, 512, 256, 128, 96, 64, 48, 32, 24, 16, 8, 1)
@@ -509,7 +509,7 @@ def _budget_rejection(
                     for key in (
                         "status", "status_code", "terminal", "retryable",
                         "mutation_applied", "operation_not_started",
-                        "request_id", "execution_id",
+                        "request_id", "execution_id", "reused", "reuse_key",
                     ):
                         if key in preserved and key not in value:
                             value[key] = _bounded_pointer_item(preserved[key], budget_chars=error_chars)
@@ -533,7 +533,7 @@ def _budget_rejection(
     for key in (
         "status", "status_code", "terminal", "retryable",
         "mutation_applied", "operation_not_started",
-        "request_id", "execution_id",
+        "request_id", "execution_id", "reused", "reuse_key",
     ):
         if key in preserved:
             minimal[key] = _bounded_pointer_item(preserved[key], budget_chars=160)
@@ -573,7 +573,7 @@ def _budget_rejection(
         "status", "status_code", "terminal", "retryable", "outcome_unknown",
         "request_not_sent", "in_progress", "timed_out", "exit_code",
         "mutation_applied", "operation_not_started",
-        "request_id", "execution_id",
+        "request_id", "execution_id", "reused", "reuse_key",
     ):
         if key not in preserved:
             continue
@@ -826,9 +826,13 @@ def budget_response(
             token_metadata=token_metadata,
             evidence_store=evidence_store,
         )
-        return _bounded_result(
-            result, requested=requested, original=original, source=value, protected_keys=protected
-        ) if protected or json_tokens(result) > requested else result
+        return (
+            result
+            if json_tokens(result) <= requested
+            else _bounded_result(
+                result, requested=requested, original=original, source=value, protected_keys=protected
+            )
+        )
     if original <= requested:
         if not isinstance(value, dict):
             return value
