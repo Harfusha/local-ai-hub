@@ -8208,15 +8208,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(guarded, bool):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
                 guarded_requested = (
-                    bool(guarded) or bool(str(payload.get("task_id", "")).strip())
+                    bool(guarded)
+                    or bool(str(payload.get("task_id", "")).strip())
                     or bool(str(payload.get("phase", "")).strip())
-                    or bool(str(payload.get("session_id", "")).strip())
-                    or any(bool(str(payload.get(field, "")).strip()) for field in (
-                        "clone_id", "worktree_id", "branch", "repository_id", "repository_revision",
-                    ))
-                    or bool(payload.get("include_diagnostics", False))
-                    or "changed_paths" in payload
-                    or "focus" in payload
                 )
                 if not guarded_requested:
                     guard_fields = (
@@ -8375,6 +8369,8 @@ class Handler(BaseHTTPRequestHandler):
                                     result["task_context_id"] = unified["context_id"]
                                     if auto_injected_task:
                                         result["task_id"] = payload.get("task_id", "")
+                    if isinstance(result, dict) and "query" not in result:
+                        result["query"] = guarded_query
                     self._send(200, result); return
                 if mode == "fast":
                     result = APP.services.fast_context(root, query_text, max_tokens)

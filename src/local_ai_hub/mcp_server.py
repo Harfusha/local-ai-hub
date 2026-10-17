@@ -3398,7 +3398,7 @@ def _local_ai_repo_impl(
         payload: dict[str, Any] = {
             "root": root, "query": context_query, "workspace": workspace or None,
             "max_tokens": effective_tokens,
-            "mode": mode,
+            "mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast",
         }
         if guarded_requested:
             payload.update({
