@@ -47,7 +47,7 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     schemas = generate_mcp_tool_schemas(cfg)
 
     assert features.agent_os
-    assert "Recipe — Durable execution" in policy
+    assert "Recipe — Agent OS Execution" in policy
     assert "Create a task contract before edits" in skill
     assert "verify_completion" in skill
     assert "Agent OS trigger and lifecycle" in references["tools.md"]
@@ -86,11 +86,16 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     assert {"contract", "checkpoint", "record", "tool_outcome", "target_scope"}.issubset(schemas["local_ai_coord"]["parameters"]["properties"])
     artifact_parameters = schemas["local_ai_artifact"]["parameters"]
     assert "artifact_id" not in artifact_parameters.get("required", [])
-    artifact_list_rule = next(
+    get_rule = next(
         rule for rule in artifact_parameters["allOf"]
-        if rule["if"]["properties"]["action"]["enum"] == ["list"]
+        if rule.get("if", {}).get("properties", {}).get("action", {}).get("enum") == ["get"]
     )
-    assert artifact_list_rule["else"]["required"] == ["artifact_id"]
+    assert get_rule["then"]["required"] == ["artifact_id"]
+    slice_rule = next(
+        rule for rule in artifact_parameters["allOf"]
+        if rule.get("if", {}).get("properties", {}).get("action", {}).get("enum") == ["slice"]
+    )
+    assert slice_rule["then"]["required"] == ["artifact_id"]
     assert "id" not in artifact_parameters["properties"]
     assert "agent_state" in schemas["local_ai_status"]["description"]
     assert "local_ai_work" not in schemas
