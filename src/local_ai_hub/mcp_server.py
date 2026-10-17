@@ -3318,13 +3318,14 @@ def _local_ai_repo_impl(
                 "terminal": True, "retryable": False,
             }
         search_payload: dict[str, Any] = {
-            "root": root, "query": query, "top_k": 12, "enrich": enrich,
+            "root": root,
+            "query": query,
+            "top_k": 12,
+            "enrich": enrich,
+            "limit": limit if explicit_limit else 24,
+            "offset": offset,
         }
-        if explicit_limit:
-            search_payload["limit"] = limit
-        if offset:
-            search_payload["offset"] = offset
-        return _compact(CLIENT.post("/api/search", search_payload, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
+        return _compact(CLIENT.post("/api/search", search_payload, timeout=float(min(120, _timeout("quick"))), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
