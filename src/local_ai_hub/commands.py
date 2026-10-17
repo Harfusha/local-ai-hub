@@ -4321,6 +4321,32 @@ class CommandBroker:
         except ValueError:
             pass
 
+    def _retry_stop_unpersisted_daemon(self, daemon_id: str, info: dict[str, Any]) -> bool:
+        """Retry one bounded stop when an unconfirmed daemon cannot be durably tracked."""
+        try:
+            stopped = _stop_daemon_tree(info)
+        except Exception:
+            stopped = False
+        if not stopped:
+            return False
+        process = info.get("process")
+        if process is None:
+            return False
+        try:
+            if process.poll() is None:
+                process.wait(timeout=2.0)
+            if process.poll() is None:
+                return False
+        except Exception:
+            return False
+        job_handle = getattr(process, "_local_ai_job_handle", None)
+        if job_handle:
+            close_job_object(job_handle)
+        with self._daemons_lock:
+            self._daemons.pop(daemon_id, None)
+            self._persist_daemon_registry()
+        return True
+
     def _refresh_daemon_capacity(self) -> None:
         now = time.time()
         changed = False
@@ -10204,13 +10230,23 @@ class CommandBroker:
                         except OSError:
                             pass
                     else:
+                        registry_persisted = True
                         info["cleanup_unconfirmed"] = True
                         self._close_daemon_log(info)
                         with self._daemons_lock:
                             self._daemons[daemon_id] = info
-                            self._persist_daemon_registry()
+                            registry_persisted = self._persist_daemon_registry()
+                        if not registry_persisted:
+                            cleanup_confirmed = self._retry_stop_unpersisted_daemon(daemon_id, info)
+                            if cleanup_confirmed:
+                                try:
+                                    log_path.unlink()
+                                except OSError:
+                                    pass
+                                self._daemon_slots.release()
                         try:
-                            self._schedule_daemon_expiry(info)
+                            if not cleanup_confirmed:
+                                self._schedule_daemon_expiry(info)
                         except RuntimeError:
                             info["ttl_stop_failed"] = True
                     return {
@@ -10221,6 +10257,7 @@ class CommandBroker:
                         "daemon_id": daemon_id if not cleanup_confirmed else None,
                         "cleanup_unconfirmed": not cleanup_confirmed,
                         "outcome_unknown": not cleanup_confirmed,
+                        "registry_persisted": registry_persisted,
                         "terminal": True,
                         "retryable": False,
                     }
@@ -10307,27 +10344,36 @@ class CommandBroker:
                 pass
             info["reader_thread"] = None
             self._close_daemon_log(info)
+            registry_persisted = True
             if not tree_stopped:
                 info["cleanup_unconfirmed"] = True
                 with self._daemons_lock:
-                    self._persist_daemon_registry()
-                try:
-                    self._schedule_daemon_expiry(info)
-                except RuntimeError:
-                    info["ttl_stop_failed"] = True
-                return {
-                    "success": False,
-                    "error": f"failed to start daemon log reader and process cleanup is unconfirmed: {exc}",
-                    "daemon_id": daemon_id,
-                    "cleanup_unconfirmed": True,
-                    "outcome_unknown": True,
-                    "terminal": True,
-                    "retryable": False,
-                }
+                    registry_persisted = self._persist_daemon_registry()
+                if not registry_persisted:
+                    tree_stopped = self._retry_stop_unpersisted_daemon(daemon_id, info)
+                if not tree_stopped:
+                    try:
+                        self._schedule_daemon_expiry(info)
+                    except RuntimeError:
+                        info["ttl_stop_failed"] = True
+                    return {
+                        "success": False,
+                        "error": f"failed to start daemon log reader and process cleanup is unconfirmed: {exc}",
+                        "daemon_id": daemon_id,
+                        "cleanup_unconfirmed": True,
+                        "registry_persisted": registry_persisted,
+                        "outcome_unknown": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
             with self._daemons_lock:
                 self._daemons.pop(daemon_id, None)
             self._release_daemon_slot(info)
-            return {"success": False, "error": f"failed to start daemon log reader: {exc}"}
+            return {
+                "success": False,
+                "error": f"failed to start daemon log reader: {exc}",
+                "registry_persisted": registry_persisted,
+            }
         try:
             self._schedule_daemon_expiry(info)
         except RuntimeError as exc:

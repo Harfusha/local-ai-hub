@@ -1244,6 +1244,39 @@ def test_spawn_daemon_retains_tracking_when_reader_start_cleanup_is_unconfirmed(
     broker._daemons.pop(daemon_id, None)
 
 
+def test_retry_stop_unpersisted_daemon_removes_tracking_after_confirmed_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+
+    class StoppableProcess:
+        def __init__(self) -> None:
+            self.alive = True
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return None if self.alive else 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            self.alive = False
+            return 0
+
+    process = StoppableProcess()
+    daemon_id = "unpersisted-daemon"
+    info = {"daemon_id": daemon_id, "process": process, "_slot_released": False}
+    broker._daemons[daemon_id] = info
+    monkeypatch.setattr(commands_module, "_stop_daemon_tree", lambda _info: True)
+    monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: True)
+
+    stopped = broker._retry_stop_unpersisted_daemon(daemon_id, info)
+
+    assert stopped is True
+    assert process.wait_calls == 1
+    assert daemon_id not in broker._daemons
+    assert info["_slot_released"] is False
+
+
 @pytest.mark.skipif(
     os.name != "nt",
     reason="suspended-process worktree revalidation is Windows-specific",
