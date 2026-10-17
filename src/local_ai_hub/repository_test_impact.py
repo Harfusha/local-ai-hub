@@ -62,11 +62,18 @@ class RepositoryTestImpactService:
         else:
             normalized_paths = None
 
-        if isinstance(base, bool) or not isinstance(base, (str, Path)):
+        if base is None:
+            clean_base = "HEAD"
+        elif isinstance(base, bool) or not isinstance(base, (str, Path)):
             raise TypeError("base must be a revision string or Path")
-        clean_base = str(base)
-        if not clean_base.strip() or "\x00" in clean_base:
-            raise ValueError("base must be nonempty and contain no NUL")
+        else:
+            clean_base = str(base)
+            if "\x00" in clean_base:
+                raise ValueError("base must be nonempty and contain no NUL")
+            if clean_base == "":
+                clean_base = "HEAD"
+            elif not clean_base.strip():
+                raise ValueError("base must be nonempty and contain no NUL")
 
         if params is not None and not isinstance(params, dict):
             raise TypeError("params must be a mapping or None")
