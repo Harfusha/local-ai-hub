@@ -1201,8 +1201,9 @@ def _agent_question_scope(
             raise ValueError("root does not match authenticated scope")
 
     requested_tenant = payload.get("tenant")
-    if requested_tenant not in (None, "") and str(requested_tenant).strip() != authorized_tenant:
-        raise ValueError("tenant does not match authenticated scope")
+    if requested_tenant not in (None, ""):
+        if not isinstance(requested_tenant, str) or requested_tenant != authorized_tenant:
+            raise ValueError("tenant does not match authenticated scope")
     return str(canonical_root), authorized_tenant
 
 
