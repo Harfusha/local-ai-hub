@@ -244,7 +244,7 @@ class SwarmCoordinator:
         for lease in active_leases:
             tenant = str(lease.get("tenant", ""))
             if tenant.startswith("swarm:") and tenant[len("swarm:"):] not in known:
-                self.leases.release(tenant=tenant)
+                self.leases.release_tenant(tenant)
 
     def is_valid_swarm_id(self, swarm_id: str) -> bool:
         if not isinstance(swarm_id, str) or not swarm_id.startswith("swarm_") or "\x00" in swarm_id:
@@ -376,7 +376,7 @@ class SwarmCoordinator:
         if self.leases is None:
             return True
         try:
-            result = self.leases.release(tenant=f"swarm:{swarm_id}")
+            result = self.leases.release_tenant(f"swarm:{swarm_id}")
             return bool(result.get("success", False))
         except Exception:
             return False

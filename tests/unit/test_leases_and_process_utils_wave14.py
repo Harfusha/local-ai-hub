@@ -38,7 +38,11 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     # Reject scalar paths (e.g. string instead of list/set of strings)
     res_scalar = store.claim("tenant1", str(tmp_path), "some/file.py")
     assert res_scalar["success"] is False
-    assert "paths must be a collection of path strings" in res_scalar["error"]
+    assert "paths must be a sequence of path strings" in res_scalar["error"]
+
+    # Reject unordered collections and Path objects; the contract is a sequence of strings.
+    assert store.claim("tenant1", str(tmp_path), {"some/file.py"})["success"] is False
+    assert store.claim("tenant1", str(tmp_path), [tmp_path / "some" / "file.py"])["success"] is False
 
     # Reject paths containing invalid elements
     res_invalid_elem = store.claim("tenant1", str(tmp_path), ["valid.py", "bad\x00.py"])
@@ -54,6 +58,8 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     res_rel_scalar = store.release("tenant1", 12345)
     assert res_rel_scalar["success"] is False
     assert "lease_id must be a string" in res_rel_scalar["error"]
+    assert store.release("tenant1", "")["success"] is False
+    assert store.release("tenant1", None)["success"] is False
 
     # Renew rejects scalar non-string lease_id
     res_renew_scalar = store.renew("tenant1", 12345)
@@ -67,6 +73,17 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     # Proper release
     res_rel = store.release("tenant1", lease_id)
     assert res_rel["success"] is True
+
+
+def test_scope_lease_store_tenant_cleanup_is_explicit(tmp_path: Path):
+    store = ScopeLeaseStore(tmp_path / "leases")
+    first = store.claim("tenant1", str(tmp_path), ["one.py"])
+    second = store.claim("tenant1", str(tmp_path), ["two.py"])
+    assert first["success"] and second["success"]
+
+    result = store.release_tenant("tenant1")
+    assert result == {"success": True, "released_rows": 2}
+    assert store.release("tenant1", first["lease_id"])["released_rows"] == 0
 
 
 def test_process_utils_pid_and_env_hardening():
