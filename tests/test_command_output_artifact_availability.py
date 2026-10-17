@@ -59,6 +59,18 @@ def test_command_with_full_log_artifact_publishes_output_artifact_id() -> None:
     assert artifacts.items == [("$ run\n\nSTDOUT:\n" + "x" * 40 + "\n\nSTDERR:\n" + "y" * 40, "tenant", "command")]
 
 
+def test_long_skip_reasons_do_not_displace_final_pytest_summary_after_compaction() -> None:
+    final_summary = "=== 59 passed, 3 skipped in 120.34s ==="
+    output = "\n".join(["SKIPPED platform case: " + "x" * 220 for _ in range(40)] + [final_summary])
+
+    summary = CommandBroker._deterministic_summary({"stdout": output, "stderr": ""}, limit=40)
+    compacted = compact_result({"summary": summary, "output_truncated": True}, max_text_chars=128)
+
+    assert final_summary in compacted["summary"]
+    assert "summary middle omitted" in compacted["summary"]
+    assert "output_artifact_id" not in compacted
+
+
 def test_diagnostic_preview_artifact_does_not_claim_full_output() -> None:
     artifacts = _Artifacts()
     broker = _broker(diagnostic_artifacts=True, artifacts=artifacts)

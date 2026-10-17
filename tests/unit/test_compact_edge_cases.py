@@ -56,6 +56,36 @@ def test_compact_result_clamps_negative_and_small_limits() -> None:
     assert res["results_omitted"] == 2
 
 
+@pytest.mark.parametrize("artifact_id", [None, "artifact-real-123"])
+def test_compact_result_preserves_final_test_summary_and_real_artifact_pointer(artifact_id: str | None) -> None:
+    final_summary = "=== 59 passed, 3 skipped in 120.34s ==="
+    summary = "\n".join(["SKIPPED slow platform case: " + "x" * 220 for _ in range(20)] + [final_summary])
+    data: dict[str, Any] = {"summary": summary, "output_truncated": True}
+    if artifact_id is not None:
+        data["output_artifact_id"] = artifact_id
+
+    compacted = compact_result(data, max_text_chars=128)
+
+    assert len(compacted["summary"]) <= 128
+    assert final_summary in compacted["summary"]
+    assert "summary middle omitted" in compacted["summary"]
+    if artifact_id is None:
+        assert "output_artifact_id" not in compacted
+    else:
+        assert compacted["output_artifact_id"] == artifact_id
+
+
+def test_compact_result_keeps_test_counts_and_elapsed_ends_when_summary_line_is_long() -> None:
+    final_line = "=== 59 passed, 3 skipped " + "x" * 220 + " in 120.34s ==="
+
+    compacted = compact_result({"summary": final_line}, max_text_chars=128)
+
+    assert len(compacted["summary"]) <= 128
+    assert compacted["summary"].startswith("=== 59 passed, 3 skipped")
+    assert compacted["summary"].endswith("in 120.34s ===")
+    assert " … " in compacted["summary"]
+
+
 def test_compact_result_single_string_extra_fields() -> None:
     data = {
         "text": "hello",
