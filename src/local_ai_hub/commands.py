@@ -4339,12 +4339,9 @@ class CommandBroker:
                 return False
         except Exception:
             return False
-        job_handle = getattr(process, "_local_ai_job_handle", None)
-        if job_handle:
-            close_job_object(job_handle)
         with self._daemons_lock:
             self._daemons.pop(daemon_id, None)
-            self._persist_daemon_registry()
+            info["registry_persisted"] = self._persist_daemon_registry()
         return True
 
     def _refresh_daemon_capacity(self) -> None:
@@ -10238,6 +10235,9 @@ class CommandBroker:
                             registry_persisted = self._persist_daemon_registry()
                         if not registry_persisted:
                             cleanup_confirmed = self._retry_stop_unpersisted_daemon(daemon_id, info)
+                            registry_persisted = bool(
+                                info.get("registry_persisted", registry_persisted)
+                            )
                             if cleanup_confirmed:
                                 try:
                                     log_path.unlink()
@@ -10351,6 +10351,7 @@ class CommandBroker:
                     registry_persisted = self._persist_daemon_registry()
                 if not registry_persisted:
                     tree_stopped = self._retry_stop_unpersisted_daemon(daemon_id, info)
+                    registry_persisted = bool(info.get("registry_persisted", registry_persisted))
                 if not tree_stopped:
                     try:
                         self._schedule_daemon_expiry(info)
