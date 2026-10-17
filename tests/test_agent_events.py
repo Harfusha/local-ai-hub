@@ -32,17 +32,16 @@ def test_generated_event_identifiers_use_full_uuid_entropy_and_keep_supplied_key
 
 def test_from_dict_rejects_missing_required_event_fields():
     canonical = AgentEvent.create("stream-1", "test.event").to_dict()
-    for field in ("event_id", "stream_id", "kind", "payload", "idempotency_key", "actor", "created_at"):
+    for field in canonical:
         incomplete = {key: value for key, value in canonical.items() if key != field}
         with pytest.raises(KeyError, match=field):
             AgentEvent.from_dict(incomplete)
 
 
-def test_from_dict_defaults_optional_event_fields():
+def test_from_dict_preserves_explicit_empty_optional_event_fields():
     canonical = AgentEvent.create("stream-1", "test.event").to_dict()
-    incomplete = {key: value for key, value in canonical.items() if key not in {"correlation_id", "seq"}}
 
-    restored = AgentEvent.from_dict(incomplete)
+    restored = AgentEvent.from_dict(canonical)
 
     assert restored.correlation_id == ""
     assert restored.seq is None

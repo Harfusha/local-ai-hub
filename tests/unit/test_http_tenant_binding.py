@@ -195,6 +195,65 @@ def test_lease_release_requires_specific_id_and_authenticated_tenant(monkeypatch
     assert calls == [("server-bound-tenant", "lease-1")]
 
 
+@pytest.mark.parametrize(
+    ("operation", "payload"),
+    [
+        ("claim", {"root": "repo", "paths": ["src/a.py"]}),
+        ("release", {"lease_id": "lease-1"}),
+        ("renew", {"lease_id": "lease-1", "ttl_seconds": 120}),
+    ],
+)
+def test_lease_handlers_preserve_authenticated_identity_over_header_and_config(
+    monkeypatch, operation, payload,
+):
+    calls = []
+    record = lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True}
+    leases = SimpleNamespace(claim_batch=record, release=record, renew=record)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token_tenant": "configured-principal"}}, leases=leases,
+    ))
+    monkeypatch.setattr(http_server, "_lease_coordination_id", lambda _root: "repo-coordination")
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = Message()
+    handler.headers["X-LocalAI-Tenant"] = "caller-selected-tenant"
+    handler._send = lambda _status, _payload: None
+
+    getattr(handler, f"_handle_post_lease_{operation}")(payload, tenant="authenticated-owner")
+
+    assert len(calls) == 1
+    assert calls[0][0][0] == "authenticated-owner"
+
+
+@pytest.mark.parametrize("tenant", [None, "", "  ", True])
+@pytest.mark.parametrize(
+    ("operation", "payload"),
+    [
+        ("claim", {"root": "repo", "paths": ["src/a.py"]}),
+        ("release", {"lease_id": "lease-1"}),
+        ("renew", {"lease_id": "lease-1", "ttl_seconds": 120}),
+    ],
+)
+def test_lease_handlers_reject_missing_identity_despite_header_or_config(
+    monkeypatch, tenant, operation, payload,
+):
+    calls = []
+    record = lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True}
+    leases = SimpleNamespace(claim_batch=record, release=record, renew=record)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token_tenant": "configured-principal"}}, leases=leases,
+    ))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = Message()
+    handler.headers["X-LocalAI-Tenant"] = "caller-selected-tenant"
+    responses = []
+    handler._send = lambda status, body: responses.append((status, body))
+
+    getattr(handler, f"_handle_post_lease_{operation}")(payload, tenant=tenant)
+
+    assert responses[0][0] == 403
+    assert calls == []
+
+
 @pytest.mark.parametrize("ttl_seconds", [True, "900", 0, -1])
 def test_lease_renew_rejects_coercive_or_invalid_ttl(monkeypatch, ttl_seconds):
     calls = []

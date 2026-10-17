@@ -139,9 +139,9 @@ class AgentEvent:
             raise TypeError("AgentEvent data must be a mapping")
         required_fields = (
             "event_id", "stream_id", "kind", "payload", "idempotency_key",
-            "actor", "created_at",
+            "correlation_id", "actor", "created_at", "seq",
         )
-        allowed_fields = {*required_fields, "correlation_id", "seq"}
+        allowed_fields = set(required_fields)
         for field in required_fields:
             if field not in data:
                 raise KeyError(field)
@@ -154,10 +154,10 @@ class AgentEvent:
             kind=data["kind"],
             payload=data["payload"],
             idempotency_key=data["idempotency_key"],
-            correlation_id=data.get("correlation_id", ""),
+            correlation_id=data["correlation_id"],
             actor=data["actor"],
             created_at=data["created_at"],
-            seq=data.get("seq"),
+            seq=data["seq"],
         )
 
 

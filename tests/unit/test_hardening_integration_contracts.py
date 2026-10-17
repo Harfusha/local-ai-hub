@@ -48,7 +48,7 @@ def test_cache_rejects_invalid_state_path_without_database(tmp_path, monkeypatch
 ])
 def test_events_reject_corrupt_provenance(field, value):
     data = dict(event_id="evt", stream_id="stream", kind="created", payload={},
-                idempotency_key="key", correlation_id="", actor="agent", created_at=0)
+                idempotency_key="key", correlation_id="", actor="agent", created_at=0, seq=None)
     data[field] = value
     with pytest.raises((TypeError, ValueError)):
         AgentEvent.from_dict(data)
