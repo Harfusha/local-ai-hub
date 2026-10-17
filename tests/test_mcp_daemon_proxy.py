@@ -4,11 +4,7 @@ from __future__ import annotations
 def test_stdio_builder_uses_daemon_client_and_preserves_request_identity(monkeypatch) -> None:
     from local_ai_hub import mcp_server
 
-    class ForbiddenInProcessTransport:
-        def __init__(self, **_kwargs):
-            raise AssertionError("stdio MCP must use the shared daemon HTTP transport")
-
-    monkeypatch.setattr(mcp_server, "InProcessTransport", ForbiddenInProcessTransport)
+    assert not hasattr(mcp_server, "InProcessTransport")
     client = mcp_server._build_mcp_client("tenant-stdio", None)
     observed: dict[str, object] = {}
 
