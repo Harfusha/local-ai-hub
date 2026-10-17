@@ -113,6 +113,7 @@ def test_local_ai_coord_verify_export_mcp(monkeypatch, tmp_path):
     fake_client = FakeClient()
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", fake_client)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
 
     res = mcp_server.local_ai_coord(
         action="verify_export",

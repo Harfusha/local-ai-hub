@@ -2790,8 +2790,9 @@ class TaskStore:
                 if time.monotonic() >= deadline:
                     counts["preserved"] += 1
                     return counts
+                remaining = max(0.5, min(3.0, deadline - time.monotonic()))
                 safe, _reason = worktree_is_clean_ancestor(
-                    repo, path, str(wt["base_commit"]), timeout_seconds=0.5,
+                    repo, path, str(wt["base_commit"]), timeout_seconds=remaining,
                     deadline_monotonic=deadline,
                 )
                 if not safe:
@@ -2800,8 +2801,9 @@ class TaskStore:
                 if time.monotonic() >= deadline:
                     counts["preserved"] += 1
                     return counts
+                remaining = max(0.5, min(3.0, deadline - time.monotonic()))
                 result = self.cleanup_worktree(
-                    candidate.task_id, actor=candidate.owner, _timeout_seconds=0.5,
+                    candidate.task_id, actor=candidate.owner, _timeout_seconds=remaining,
                     _required_base_commit=str(wt["base_commit"]),
                     _deadline_monotonic=deadline,
                 )
