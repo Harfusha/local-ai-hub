@@ -96,5 +96,48 @@ def test_project_preprocessor_init_with_invalid_configs(tmp_path: Path):
     st = prep.stats()
     assert isinstance(st, dict)
     assert "loops" in st
+    assert prep._last_db_maintenance > 0.0
 
     prep._cpu_pool.shutdown(wait=False)
+
+
+def test_cleanup_orphaned_indexes_preserves_existing_directories(tmp_path: Path):
+    import sqlite3
+    import threading
+    from contextlib import closing
+
+    existing_dir = tmp_path / "my_project"
+    existing_dir.mkdir()
+
+    class _MockDb:
+        def __init__(self, path: Path):
+            self._lock = threading.RLock()
+            self.path = path
+            with closing(sqlite3.connect(path)) as con:
+                con.executescript("CREATE TABLE files(root TEXT, path TEXT); CREATE TABLE symbols(root TEXT, path TEXT);")
+                con.executemany("INSERT INTO files VALUES(?,?)", [("non_existent_orphan", "o.py"), (str(existing_dir), "e.py")])
+                con.executemany("INSERT INTO symbols VALUES(?,?)", [("non_existent_orphan", "o.py"), (str(existing_dir), "e.py")])
+                con.commit()
+
+        def _connect(self):
+            return sqlite3.connect(self.path)
+
+    prep = ProjectPreprocessor(
+        {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}},
+        services=MagicMock(),
+        rag=MagicMock(),
+        scheduler=MagicMock(),
+        runtime=MagicMock(),
+        repo_tools=MagicMock(),
+        code_index=_MockDb(tmp_path / "code.sqlite3"),
+    )
+    try:
+        assert prep._last_db_maintenance > 0.0
+        result = prep.cleanup_orphaned_indexes(max_roots=4)
+        assert result["success"] is True
+        with closing(sqlite3.connect(tmp_path / "code.sqlite3")) as con:
+            assert con.execute("SELECT count(*) FROM files WHERE root='non_existent_orphan'").fetchone()[0] == 0
+            assert con.execute("SELECT count(*) FROM files WHERE root=?", (str(existing_dir),)).fetchone()[0] == 1
+    finally:
+        prep._cpu_pool.shutdown(wait=False)
+        prep.close()

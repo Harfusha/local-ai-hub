@@ -3186,6 +3186,10 @@ class DeterministicEngine:
                 value = x.get("value")
                 suffix = f" = {value}" if value and value != label else ""
                 lines.append(f"- {x.get('kind')}: {label}{suffix} — {x.get('path')}:{x.get('line')}")
+            if not lines:
+                graph = result.get("code_index", {}) if isinstance(result.get("code_index"), dict) else {}
+                for x in graph.get("symbols", [])[:max_items]:
+                    lines.append(f"- definition {x.get('name')} — {x.get('path')}:{x.get('line')}")
         if not lines:
             return "No deterministic match found."
         return "\n".join(lines)
@@ -3243,6 +3247,16 @@ class DeterministicEngine:
             try:
                 sym_res = self.code_index.find_symbol(root, query, depth=1, include_info=True, limit=6)
                 symbols = sym_res.get("symbols", [])
+                if not symbols:
+                    for term in self._terms(query):
+                        if term.isidentifier():
+                            sym_res = self.code_index.find_symbol(root, term, depth=1, include_info=True, limit=6)
+                            symbols = sym_res.get("symbols", [])
+                            if symbols:
+                                break
+                    if not symbols:
+                        q_res = self.code_index.query(root, query, limit=6)
+                        symbols = q_res.get("symbols", [])
                 if symbols:
                     sym_blocks = ["\nHIERARCHICAL SYMBOLS & SIGNATURES:"]
                     for s in symbols:
