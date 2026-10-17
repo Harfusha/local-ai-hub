@@ -49,13 +49,16 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
 
         app.agent_context.compile = capture_context_request
 
+        from local_ai_hub.project_config import resolve_project_context
+        coord_id = resolve_project_context(root, tmp_path / "state").coordination_id
+
         safe = app.agent_memory.record(MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope="repository",
             key="safe fact",
             value="tenant-a fresh value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": coord_id},
             repository_revision="revision-1",
             path_refs=("src/keep.py",),
         ))
@@ -65,7 +68,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             key="stale fact",
             value="old changed-path value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": coord_id},
             repository_revision="revision-0",
             path_refs=("src/changed.py",),
         ))
@@ -75,12 +78,12 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             key="foreign fact",
             value="tenant-b private value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "tenant": "tenant-b"},
+            provenance={"root": str(root), "tenant": "tenant-b", "repository_id": coord_id},
             repository_revision="revision-1",
             path_refs=("src/keep.py",),
         ))
         assert app.agent_memory.mark_stale_for_revision(str(root), "revision-1", ["src/changed.py"]) == 1
-        assert app.agent_memory.get(stale.record_id, root=str(root), tenant="tenant-a").status is MemoryStatus.STALE
+        assert app.agent_memory.get(stale.record_id, root=str(root), repository_id=coord_id, tenant="tenant-a").status is MemoryStatus.STALE
 
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
             "success": True,
