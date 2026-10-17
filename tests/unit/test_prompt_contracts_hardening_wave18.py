@@ -46,6 +46,10 @@ def test_model_perform_and_capabilities_hardening():
     assert malformed_model.model == "qwen2.5-coder:0.5b"
     assert "root_cause" not in malformed_model.can
 
+    padded_model = capability_for(" qwen2.5-coder:7b ")
+    assert padded_model.model == "qwen2.5-coder:0.5b"
+    assert "root_cause" not in padded_model.can
+
 
 def test_build_prompt_hardening():
     pkg = build_prompt(

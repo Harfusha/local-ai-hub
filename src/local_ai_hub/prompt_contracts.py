@@ -67,11 +67,11 @@ _OPERATION_GUIDANCE = {
 
 def capability_for(model: str, *, role: str = "") -> ModelCapability:
     """Return conservative capabilities for a configured or custom model."""
-    if type(model) is not str or "\x00" in model:
+    if type(model) is not str or not model or model.strip() != model or "\x00" in model:
         model = ""
     if type(role) is not str or "\x00" in role:
         role = ""
-    normalized = model.strip().lower()
+    normalized = model.lower()
     known = _CAPABILITIES.get(normalized)
     if known is not None:
         if str(role).lower() == "vision" and "visual_review" not in known.can:

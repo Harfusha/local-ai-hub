@@ -160,7 +160,7 @@ def test_dataset_exports_only_scoped_tasks_and_optional_task_id(store: TaskStore
     wrong_root = _create_task(store, other_root, "tenant-a", "wrong-root")
     wrong_tenant = _create_task(store, root, "tenant-b", "wrong-tenant")
     completed = [
-        replace(task, status=TaskStatus.COMPLETED, verification_receipts={"receipt": {}})
+        replace(task, status=TaskStatus.COMPLETED, verification_receipts={"receipt": "rcpt-1"})
         for task in (matching, same_scope, wrong_root, wrong_tenant)
     ]
     monkeypatch.setattr(store, "list_tasks", lambda **kwargs: completed)
@@ -207,7 +207,7 @@ def test_dataset_enforces_serialized_byte_budget(store: TaskStore, tmp_path: Pat
         task,
         status=TaskStatus.COMPLETED,
         contract=replace(task.contract, goal="large" * 100),
-        verification_receipts={"receipt": {}},
+        verification_receipts={"receipt": "rcpt-1"},
     )
     monkeypatch.setattr(store, "list_tasks", lambda **kwargs: [completed])
     monkeypatch.setattr(agent_tasks_module, "MAX_TRAINING_DATASET_BYTES", 64)
