@@ -5606,6 +5606,9 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
+        headers = getattr(self, "headers", None)
+        explicit_tenant = headers.get("X-LocalAI-Tenant") if headers is not None else None
+        effective_tenant = (str(explicit_tenant).strip() if explicit_tenant else None) or tenant
         allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
         if not isinstance(payload, dict) or set(payload) - allowed_fields:
             self._send(400, {"success": False, "error": "artifact request contains unsupported fields", "terminal": True, "retryable": False})
@@ -5657,20 +5660,20 @@ class Handler(BaseHTTPRequestHandler):
                 if requested > 50_000:
                     self._send(400, {"success": False, "error": "combined slice max_chars cannot exceed 50000", "terminal": True, "retryable": False})
                     return
-            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=tenant))
+            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=effective_tenant))
             return
         if binary:
             if section:
                 self._send(400, {"success": False, "error": "section is not valid for binary retrieval", "terminal": True, "retryable": False})
                 return
-            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant))
+            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=effective_tenant))
             return
         self._send(200, APP.artifacts.get(
             artifact_id,
             offset,
             max_chars,
             section,
-            tenant=tenant,
+            tenant=effective_tenant,
         ))
 
     @staticmethod
