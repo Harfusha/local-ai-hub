@@ -1499,13 +1499,13 @@ class HubClient:
         mode: str = "adaptive",
         **options: Any,
     ) -> dict[str, Any]:
-        if mode != "adaptive":
+        if not isinstance(mode, str) or mode not in {"adaptive", "full", "fast"}:
             return {
                 "success": False,
                 "status_code": 400,
                 "terminal": True,
                 "retryable": False,
-                "error": "context mode must be adaptive",
+                "error": "context mode must be adaptive, full or fast",
             }
         mode = mode.strip().lower()
         payload = dict(options)

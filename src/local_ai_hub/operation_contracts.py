@@ -1125,13 +1125,17 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             "then": then,
         })
     if tool == "local_ai_repo" and "context" in actions:
-        conditions.append({
-            "if": {
-                "properties": {"action": {"const": "context"}},
-                "required": ["action"],
-            },
-            "then": {"properties": {"mode": {"const": "adaptive"}}},
-        })
+        for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
+            conditions.append({
+                "if": {
+                    "properties": {
+                        "action": {"const": "context"},
+                        "mode": {"not": {"const": "adaptive"}},
+                    },
+                    "required": ["action", "mode"],
+                },
+                "then": {"not": {"required": [field]}},
+            })
     existing_all_of = list(schema.get("allOf", []))
     combined_all_of = [*existing_all_of, *conditions]
     if combined_all_of:
@@ -1917,7 +1921,9 @@ def validate_operation_arguments(
     if tool == "local_ai_repo" and action == "context":
         mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
         if mode != "adaptive":
-            return "context mode must be adaptive"
+            for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
+                if field in arguments:
+                    return f"{field} requires mode='adaptive' for action='context'"
     if tool == "local_ai_repo" and action in {"search", "code_index", "callers", "callees", "implementations"}:
         bounds_error = pagination_bounds_error(
             arguments.get("limit", properties.get("limit", {}).get("default", 24)),

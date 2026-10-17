@@ -3370,8 +3370,8 @@ def _local_ai_repo_impl(
     if action == "deterministic":
         return _compact(CLIENT.post("/api/repo/deterministic", {"root": root, "query": query, "limit": 30}, timeout=_timeout("quick")), "context")
     if action == "context":
-        if mode != "adaptive":
-            return _context_input_error("context mode must be adaptive")
+        if not isinstance(mode, str) or mode not in {"full", "fast", "adaptive"}:
+            return _context_input_error("context mode must be adaptive, full or fast")
         path_controls = {
             "path_hints": path_hints,
             "directory_hints": directory_hints,
