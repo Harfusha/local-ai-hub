@@ -21,7 +21,7 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
     cache.set("discard", {"value": "derived"})
     other_namespace.set("retain", {"value": "other namespace"})
 
-    state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    state = AgentStateStore(state_dir / "agent_state.sqlite")
     tasks = TaskStore(state)
     task = tasks.create(
         GoalContract(goal="preserve durable state", acceptance_criteria=("receipt",)),
@@ -62,7 +62,7 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
     assert cache.get("discard") is None
     assert other_namespace.get("retain") == {"value": "other namespace"}
 
-    reopened_state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    reopened_state = AgentStateStore(state_dir / "agent_state.sqlite")
     reopened_tasks = TaskStore(reopened_state)
     reopened_memories = MemoryStore(reopened_state)
     reopened_verifications = VerificationStore(reopened_state, task_store=reopened_tasks)

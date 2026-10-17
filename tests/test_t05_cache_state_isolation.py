@@ -322,7 +322,7 @@ def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_pat
     assert reopened_tasks.get(task.task_id).contract.goal == task.contract.goal
     assert reopened_state.events(task.task_id) == events_before
     _assert_task_memory_access(reopened_memories, memory, task.task_id)
-    with closing(sqlite3.connect(state_dir / "agent_state.sqlite3")) as connection:
+    with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as connection:
         assert connection.execute(
             "SELECT receipt_id FROM agent_verification_receipts WHERE receipt_id = ?",
             (receipt.receipt_id,),
