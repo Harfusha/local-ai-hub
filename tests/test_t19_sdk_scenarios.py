@@ -102,17 +102,14 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     )
     measurements: dict[str, dict[str, object]] = {}
 
-    callers = client.post(
-        "/api/callers",
-        {"root": str(workspace), "symbol": "target", "limit": 10},
-    )
+    callers = client.callers(str(workspace), "target", limit=10)
     measurements["caller discovery"] = {
         "success": callers.get("success") is True,
         "calls": len(calls),
     }
     assert callers.get("success") is True
     assert len(calls) == 1
-    assert calls[0]["path"] == "/api/callers"
+    assert calls[0]["path"] == "/api/repo/callers"
     assert calls[0]["payload"] == {
         "root": str(workspace),
         "symbol": "target",
