@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from local_ai_hub.pipeline import LocalAgentPipeline
 
@@ -64,3 +66,37 @@ def test_select_worker_model_invalid_inputs():
 
     res3 = LocalAgentPipeline._select_worker_model({"complexity_score": float("inf")}, "adaptive", 0, 99, "fast", "heavy")
     assert res3 == "fast"
+
+
+def test_solve_repo_uses_task_without_query_fallback(tmp_path):
+    observed_tasks = []
+
+    class Deterministic:
+        def render_answer(self, _result):
+            return "deterministic answer"
+
+    class Services:
+        router = SimpleNamespace(
+            classify=lambda task, *_args: {
+                "semantic_required": False,
+                "task_type": "question",
+                "complexity": "simple",
+            }
+        )
+        deterministic = Deterministic()
+        code_index = None
+
+        def deterministic_query(self, _root, task, _limit):
+            observed_tasks.append(task)
+            return {"success": True, "direct_answer": True, "confidence": 1.0}
+
+    pipeline = LocalAgentPipeline({"server": {"state_dir": str(tmp_path)}}, Services(), None)
+
+    query_only = pipeline.solve_repo({"query": "legacy query"}, "tenant")
+    canonical_and_legacy = pipeline.solve_repo(
+        {"task": "canonical task", "query": "legacy query"}, "tenant"
+    )
+
+    assert query_only["canonical"]["task"] == ""
+    assert canonical_and_legacy["canonical"]["task"] == "canonical task"
+    assert observed_tasks == ["", "canonical task"]
