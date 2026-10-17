@@ -1,5 +1,7 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
+**SSE replay zero-shims repair (2026-10-17; tests deferred):** Removed the legacy `events()` adapter, signature probing, manual snapshot emulation, and `TypeError` retry that could replay without `through_seq`. SSE replay now uses the canonical bounded `event_page` contract; a regression case records provider failure without fallback. No tests or runtime checks have run.
+
 **2026-10-17 hardening ancestry correction:** `git rev-list --count 77464e14..a8f5dc5c` returns 48, and master `ab02ce59` descends from `a8f5dc5c`; the full hardening stack is already in master history. This supersedes the older "Next: integrate" sentence below. Ancestry proves commit inclusion, not present-day semantic equivalence or final runtime acceptance.
 
 **Artifact paging zero-compatibility repair (2026-10-17; tests deferred):** Candidate rejects the previous paging sidecar DDL before opening write initialization; it does not rebuild or migrate derived metadata. The regression asserts `UnsupportedArtifactSchema` and unchanged durable artifact and prior sidecar rows. Unknown schemas also reject. `git diff --check` passed; tests and imports remain deferred until the complete source bundle is assembled. This remains isolated in `codex/f34-dashboard-health`; do not merge into Gemini-owned master yet.

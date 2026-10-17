@@ -346,6 +346,45 @@ def test_sse_stream_replays_all_pages_and_advances_cursor(tmp_path: Path, monkey
     assert requested_cursors == list(range(0, 1001, http_server.AGENT_EVENT_PAGE_MAX_LIMIT))
 
 
+def test_sse_replay_does_not_retry_without_snapshot_bound(tmp_path: Path, monkeypatch):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    for index in range(2):
+        store.append(
+            AgentEvent.create(
+                "task-1", "task.updated", {"step": index}, f"bounded-{index}"
+            )
+        )
+    calls = []
+    original_page = store.event_page
+
+    def fail_snapshot_page(*, stream_id, after_seq, limit, through_seq=None):
+        calls.append(through_seq)
+        if through_seq is not None:
+            raise TypeError("event page implementation failed")
+        return original_page(
+            stream_id=stream_id,
+            after_seq=after_seq,
+            limit=limit,
+            through_seq=through_seq,
+        )
+
+    monkeypatch.setattr(store, "event_page", fail_snapshot_page)
+    monkeypatch.setattr(http_server, "AGENT_EVENT_PAGE_MAX_LIMIT", 1)
+
+    class DummyApp:
+        agent_state = store
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.01)
+
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert calls == [None, 2]
+    assert "event: replay_error" in output
+    assert "event: task.updated" in output
+    assert '"code":"event_replay_unavailable"' in output
+
+
 def test_sse_stream_surfaces_retention_gap_before_kind_filtered_replay(
     tmp_path: Path, monkeypatch
 ):
