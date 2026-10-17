@@ -1389,6 +1389,29 @@ class TaskStore:
             raise ValueError("session_id exceeds 256 UTF-8 bytes")
         return root_value, tenant_value, session_value
 
+    @staticmethod
+    def _validate_question_response_budget(response_budget_tokens: int | None) -> None:
+        if response_budget_tokens is None:
+            return
+        if (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
+
+    @staticmethod
+    def _preflight_question_response(
+        question: dict[str, Any], response_budget_tokens: int | None,
+    ) -> None:
+        TaskStore._validate_question_response_budget(response_budget_tokens)
+        if response_budget_tokens is None:
+            return
+        payload = {"success": True, "question": question}
+        required_tokens = mcp_wire_tokens(payload, text_payload=payload)
+        if required_tokens > response_budget_tokens:
+            raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+
     def ask_question(
         self,
         *,
@@ -1399,6 +1422,7 @@ class TaskStore:
         task_id: str = "",
         actor: str = "agent",
         question_id: str = "",
+        response_budget_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         """Persist a session-bound question or retrieve it within the same scope."""
         if not self._db_path_available():
@@ -1409,8 +1433,8 @@ class TaskStore:
         question_key = str(question_id or "").strip()
         if len(question_key) > 80:
             raise ValueError("question_id exceeds 80 characters")
-        self._init_projection_table()
         if question_key:
+            self._init_projection_table()
             def _read() -> dict[str, Any] | None:
                 with closing(connect_sqlite(self.state_store.db_path)) as con:
                     row = con.execute(
@@ -1431,6 +1455,20 @@ class TaskStore:
         actor_value = str(actor or "agent").strip() or "agent"
         question_key = f"q_{uuid.uuid4().hex}"
         created_at = time.time()
+        projected_question = {
+            "question_id": question_key,
+            "session_id": session_value,
+            "task_id": task_value,
+            "question": question_value,
+            "answer": "",
+            "status": "pending",
+            "asked_by": actor_value,
+            "answered_by": "",
+            "created_at": created_at,
+            "answered_at": None,
+        }
+        self._preflight_question_response(projected_question, response_budget_tokens)
+        self._init_projection_table()
 
         def _write(con: sqlite3.Connection) -> tuple[dict[str, Any], list[AgentEvent]]:
             try:
@@ -1448,18 +1486,7 @@ class TaskStore:
                     ),
                 )
                 con.execute("COMMIT")
-                return ({
-                    "question_id": question_key,
-                    "session_id": session_value,
-                    "task_id": task_value,
-                    "question": question_value,
-                    "answer": "",
-                    "status": "pending",
-                    "asked_by": actor_value,
-                    "answered_by": "",
-                    "created_at": created_at,
-                    "answered_at": None,
-                }, [])
+                return (projected_question, [])
             except Exception:
                 if con.in_transaction:
                     con.execute("ROLLBACK")
@@ -1475,6 +1502,7 @@ class TaskStore:
         tenant: str,
         answer: str,
         actor: str = "operator",
+        response_budget_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         """Record operator response for a question in the authenticated root tenant."""
         if not self._db_path_available():
@@ -1491,6 +1519,7 @@ class TaskStore:
             raise ValueError("question_id, root and tenant are required")
         if len(question_key) > 80:
             raise ValueError("question_id exceeds 80 characters")
+        self._validate_question_response_budget(response_budget_tokens)
         answer_value = self._validate_question_text(answer, "answer")
         actor_value = str(actor or "operator").strip() or "operator"
         answered_at = time.time()
@@ -1514,9 +1543,18 @@ class TaskStore:
                 current = self._question_row_to_dict(row)
                 if current["status"] == "answered":
                     if current["answer"] == answer_value:
+                        self._preflight_question_response(current, response_budget_tokens)
                         con.execute("COMMIT")
                         return current, []
                     raise ValueError("question has already been answered")
+                projected_question = {
+                    **current,
+                    "answer": answer_value,
+                    "status": "answered",
+                    "answered_by": actor_value,
+                    "answered_at": answered_at,
+                }
+                self._preflight_question_response(projected_question, response_budget_tokens)
                 con.execute(
                     """
                     UPDATE agent_questions

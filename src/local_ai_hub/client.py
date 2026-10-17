@@ -1543,6 +1543,8 @@ class HubClient:
                 "question": kwargs.get("question", ""),
                 "answer": kwargs.get("answer", ""),
             }
+            if response_budget_tokens is not None:
+                payload["response_budget_tokens"] = response_budget_tokens
             return self.post("/api/agent-state/tasks", payload)
         if act.startswith("task_"):
             task_action = act.replace("task_", "")

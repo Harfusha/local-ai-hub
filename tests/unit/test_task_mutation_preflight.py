@@ -475,17 +475,20 @@ def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_pat
     assert all("worktree add" not in " ".join(args) for args, _kwargs in git_reads)
 
 
-@pytest.mark.parametrize("action", ["create", "checkpoint", "fail", "transition", "complete"])
-def test_sdk_task_coord_only_sends_budget_when_supplied(monkeypatch, action):
+@pytest.mark.parametrize("action", ["create", "checkpoint", "fail", "transition", "complete", "ask", "answer"])
+def test_sdk_mutation_coord_only_sends_budget_when_supplied(monkeypatch, action):
     from local_ai_hub.client import HubClient
 
     client = HubClient(auto_start=False)
     sent = []
     monkeypatch.setattr(client, "post", lambda path, payload, **kwargs: sent.append(dict(payload)) or {"success": True})
 
-    client.coord(action=f"task_{action}", task_id="sdk-task")
+    client.coord(action=(action if action in {"ask", "answer"} else f"task_{action}"), task_id="sdk-task")
     assert "response_budget_tokens" not in sent[-1]
-    client.coord(action=f"task_{action}", task_id="sdk-task", response_budget_tokens=320)
+    client.coord(
+        action=(action if action in {"ask", "answer"} else f"task_{action}"),
+        task_id="sdk-task", response_budget_tokens=320,
+    )
     assert sent[-1]["response_budget_tokens"] == 320
 
 
@@ -721,6 +724,96 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
     assert result
 
 
+@pytest.mark.parametrize("action", ["ask", "answer"])
+def test_mcp_forwards_response_budget_for_question_mutations(monkeypatch, action):
+    from local_ai_hub import mcp_server
+
+    class RegisteredFakeClient:
+        def __init__(self):
+            self.requests = []
+
+        def coord(self, **kwargs):
+            self.requests.append(kwargs)
+            return {"success": True, "question": {"question_id": "budget-forwarding"}}
+
+    client = RegisteredFakeClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": action,
+        "task_id": "budget-forwarding",
+        "max_response_tokens": 512,
+        "response_profile": "minimal",
+    }))
+
+    assert client.requests[-1]["action"] == action
+    assert client.requests[-1]["response_budget_tokens"] == 512
+    assert result
+
+
+@pytest.mark.parametrize("action", ["ask", "answer"])
+def test_question_mutations_preflight_response_before_persistence(tmp_path, monkeypatch, action):
+    store = _store(tmp_path)
+    question = None
+    write_calls = []
+    run_write = store._run_ordered_task_write
+    monkeypatch.setattr(
+        store, "_run_ordered_task_write",
+        lambda operation: write_calls.append(True) or run_write(operation),
+    )
+    if action == "answer":
+        question = store.ask_question(
+            root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+            question="Need an answer?", actor="agent",
+        )
+    monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", lambda payload, **kwargs: 129)
+
+    with pytest.raises(CheckpointResponseBudgetError):
+        if action == "ask":
+            store.ask_question(
+                root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+                question="Need an answer?", actor="agent", response_budget_tokens=128,
+            )
+        else:
+            store.answer_question(
+                question_id=question["question_id"], root=str(tmp_path), tenant="tenant-test",
+                answer="Here is the answer.", actor="operator", response_budget_tokens=128,
+            )
+
+    if action == "ask":
+        assert write_calls == []
+        assert store.ask_question(
+            root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+            question_id="q_missing_after_preflight",
+        ) is None
+    else:
+        current = store.ask_question(
+            root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+            question_id=question["question_id"],
+        )
+        assert current["status"] == "pending"
+        assert current["answer"] == ""
+
+
+@pytest.mark.parametrize("action", ["ask", "answer"])
+@pytest.mark.parametrize("budget", [True, 0, 1.5, "128"])
+def test_question_mutations_reject_noncanonical_budgets(tmp_path, action, budget):
+    store = _store(tmp_path)
+    with pytest.raises(ValueError, match="positive integer"):
+        if action == "ask":
+            store.ask_question(
+                root=str(tmp_path), tenant="tenant-test", session_id="session-invalid-budget",
+                question="Question?", response_budget_tokens=budget,
+            )
+        else:
+            store.answer_question(
+                question_id="question-invalid-budget", root=str(tmp_path), tenant="tenant-test",
+                answer="Answer.", response_budget_tokens=budget,
+            )
+
+
 def test_cleanup_worktree_preflights_response_budget_before_git_mutation(tmp_path, monkeypatch):
     from local_ai_hub import process_utils
 
@@ -842,6 +935,54 @@ def test_http_cleanup_worktree_maps_response_budget_preflight(monkeypatch):
     handler._validate_payload = lambda *_args, **_kwargs: None
     handler._read_json = lambda: {
         "action": "cleanup_worktree", "task_id": "cleanup-budget-http",
+        "response_budget_tokens": 128,
+    }
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler.do_POST()
+
+    assert calls[-1]["response_budget_tokens"] == 128
+    status, body = responses[-1]
+    assert status == 413
+    assert body["mutation_applied"] is False
+    assert body["operation_not_started"] is True
+
+
+@pytest.mark.parametrize("action", ["ask", "answer"])
+def test_http_question_mutations_map_response_budget_preflight(monkeypatch, action):
+    from local_ai_hub import http_server
+
+    calls = []
+
+    def reject_budget(*args, **kwargs):
+        calls.append(kwargs)
+        raise CheckpointResponseBudgetError(128, 129)
+
+    task_store = SimpleNamespace(
+        state_store=SimpleNamespace(enabled=True),
+        ask_question=reject_budget,
+        answer_question=reject_budget,
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_tasks=task_store, recovery=None, debug_traces=None))
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *args, **kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._authorization_root = "."
+    handler._authorization_tenant = "tenant-test"
+    handler._authorization_actor = "agent"
+    handler._require_authorized = lambda: True
+    handler._begin_trace = lambda *_: None
+    handler._claim_recovery = lambda *_: True
+    handler._tenant = lambda: "tenant-test"
+    handler._agent = lambda: "agent"
+    handler._request_task = lambda *_args, **_kwargs: SimpleNamespace(owner="agent")
+    handler._bind_task_payload = lambda _payload: True
+    handler._validate_payload = lambda *_args, **_kwargs: None
+    handler._read_json = lambda: {
+        "action": action, "question_id": "question-budget-http",
+        "session_id": "session-budget-http", "question": "Question?", "answer": "Answer.",
         "response_budget_tokens": 128,
     }
     responses = []
