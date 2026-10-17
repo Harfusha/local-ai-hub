@@ -38,7 +38,10 @@ _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
 _POSIX_FILE_PATH_RE = re.compile(r"(?<![\w:])/[^\s/,;\"']+\.[A-Za-z0-9]{1,12}(?![\w-])")
 _POSIX_ROOT_PATH_RE = re.compile(r"(?<![\w:/])/(?!/)[^\s/\\,;\"']+(?![\w/])")
 _SAFE_HTTP_ROUTE_LABELS = frozenset(
-    {"/slow", "/median", "/api/context/pack", "/api/debug-traces/{trace_id}"}
+    {
+        "/slow", "/median", "/api/context/pack", "/api/debug-traces/{trace_id}",
+        "/api/cross_repo_contract", "/api/ast_rename", "/api/repo/batch_replace", "/api/code_invariants",
+    }
     | set(TELEMETRY_SAFE_GET_ROUTE_LABELS)
     | set(GET_ROUTE_HANDLER_BOUNDARIES)
     | {path for rule in POST_ROUTE_REGISTRY for path in rule.paths}

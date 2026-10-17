@@ -5614,7 +5614,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
         headers = getattr(self, "headers", None)
         explicit_tenant = headers.get("X-LocalAI-Tenant") if headers is not None else None
-        effective_tenant = (str(explicit_tenant).strip() if explicit_tenant else None) or tenant
+        effective_tenant = tenant or (str(explicit_tenant).strip() if explicit_tenant else "default")
         allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
         if not isinstance(payload, dict) or set(payload) - allowed_fields:
             self._send(400, {"success": False, "error": "artifact request contains unsupported fields", "terminal": True, "retryable": False})
