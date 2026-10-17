@@ -96,7 +96,7 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `wait_async_job` | `POST /api/async-jobs`; body contains `action=wait`, `job_id`, and a bounded `timeout_seconds`. Defaults to a 90-second wait and derives a transport timeout with a 30-second margin, capped by the client's maximum request timeout. |
 | `continue_conversation` | `POST /api/conversations/continue`; body carries `conversation_id` and `task` (the `prompt` argument), plus optional `model`, `system`, `max_tokens`, and `temperature` settings. |
 | `circular_dependencies` | `POST /api/repo/circular_dependencies`; body: `root`, `language`. |
-| `generate_types` | `POST /api/repo/generate_types`; body: `root`, `file`, `write_stub`. |
+| `generate_types` | `POST /api/repo/generate_types`; body: `root`, `path`. Returns stub text and never writes files. |
 | `complexity`, `hotspots` | `POST /api/repo/complexity` (`root`, `path`, `max_results`) and `POST /api/repo/hotspots` (`root`, `days`, `limit`). |
 | `api_spec` | `POST /api/repo/api_spec`; body: `root`, `framework`. |
 | `dependency_slice` | `POST /api/repo/dependency_slice`; body: `root`, `symbol`, `path`, `depth`. |

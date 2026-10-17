@@ -92,7 +92,7 @@ def test_repo_operation_schemas_match_canonical_inputs(action, canonical, requir
     ("code_invariants", {"path": "src/a.py"}, "/api/repo/code_invariants", "path", "src/a.py"),
     ("profile_digest", {"path": "profile.prof"}, "/api/repo/profile_digest", "profile_path", None),
     ("schema_inspect", {"path": "db.sqlite"}, "/api/repo/schema_inspect", "db_path", "db.sqlite"),
-    ("generate_types", {"path": "src/a.py"}, "/api/repo/generate_types", "file", "src/a.py"),
+    ("generate_types", {"path": "src/a.py"}, "/api/repo/generate_types", "path", "src/a.py"),
     ("complexity", {"path": "src/a.py"}, "/api/repo/complexity", "path", "src/a.py"),
     ("declaration", {"query": "Widget", "path": "src/a.py"}, "/api/code/declaration", "symbol", "Widget"),
     ("ast_refactor", {"path": "src/a.py", "old_symbol": "Old", "new_symbol": "New"}, "/api/code/ast_rename", "old_symbol", "Old"),

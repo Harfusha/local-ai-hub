@@ -7594,16 +7594,8 @@ def test_{sym}_regression_edge_cases():
             "complete": not truncated,
         }
 
-    def generate_types(self, root: str, file_path: str, write_stub: bool = False) -> dict[str, Any]:
+    def generate_types(self, root: str, file_path: str) -> dict[str, Any]:
         """Generate PEP 484 stub text without writing files."""
-        if write_stub:
-            return {
-                "success": False,
-                "error": "generate_types is read-only; write_stub must be false",
-                "terminal": True,
-                "retryable": False,
-            }
-
         max_source_bytes = 1_048_576
         try:
             p_root = Path(root).expanduser().resolve(strict=True)

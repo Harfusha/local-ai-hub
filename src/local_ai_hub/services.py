@@ -4136,8 +4136,8 @@ class LocalAIServices:
     def circular_dependencies(self, root: str, language: str = "python") -> dict[str, Any]:
         return self.deterministic_operation("circular-dependencies", root, {"language": language}, lambda: self.deterministic.find_circular_dependencies(root, language))
 
-    def generate_types(self, root: str, file_path: str, write_stub: bool = False) -> dict[str, Any]:
-        return self.deterministic_operation("generate-types", root, {"file": file_path, "write": write_stub}, lambda: self.deterministic.generate_types(root, file_path, write_stub))
+    def generate_types(self, root: str, path: str) -> dict[str, Any]:
+        return self.deterministic_operation("generate-types", root, {"path": path}, lambda: self.deterministic.generate_types(root, path))
 
     def code_complexity(
         self, root: str, path: str | None = None, max_results: int = 20, include_tests: bool = False
