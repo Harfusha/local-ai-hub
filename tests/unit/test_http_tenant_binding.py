@@ -34,6 +34,44 @@ def test_canonical_tenant_header_is_only_a_claim(monkeypatch):
     assert responses[0][1]["error_code"] == "tenant_binding_mismatch"
 
 
+def test_artifact_get_rejects_caller_selected_tenant(monkeypatch):
+    calls = []
+    artifacts = SimpleNamespace(
+        get=lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True}
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, artifacts=artifacts))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = Message()
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_artifact_get(
+        {"artifact_id": "artifact-a", "tenant": "caller-selected-tenant"},
+        tenant="server-bound-tenant",
+    )
+
+    assert responses[0][0] == 400
+    assert calls == []
+
+
+def test_artifact_get_uses_server_bound_tenant(monkeypatch):
+    calls = []
+    artifacts = SimpleNamespace(
+        get=lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True}
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}, artifacts=artifacts))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = Message()
+    handler._send = lambda _status, _payload: None
+
+    handler._handle_post_artifact_get(
+        {"artifact_id": "artifact-a"},
+        tenant="server-bound-tenant",
+    )
+
+    assert calls == [(("artifact-a", 0, 6000, ""), {"tenant": "server-bound-tenant"})]
+
+
 def test_authenticated_principal_tenant_is_used_before_configured_fallback(monkeypatch):
     handler = _handler(monkeypatch)
     handler._authorization_tenant = "authenticated-user-tenant"
