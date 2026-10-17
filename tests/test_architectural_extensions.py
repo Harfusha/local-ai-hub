@@ -308,9 +308,9 @@ def test_code_complexity_excludes_test_tree_by_default(tmp_path: Path):
     with_tests = engine.code_complexity(str(tmp_path), include_tests=True)
 
     assert production["include_tests"] is False
-    assert all(not item["file"].startswith("tests\\") for item in production["functions"])
+    assert all(not (item["file"].startswith("tests/") or item["file"].startswith("tests\\")) for item in production["functions"])
     assert with_tests["include_tests"] is True
-    assert any(item["file"].startswith("tests\\") for item in with_tests["functions"])
+    assert any(item["file"].startswith("tests/") or item["file"].startswith("tests\\") for item in with_tests["functions"])
 
 
 def test_deterministic_extract_api_spec(tmp_path: Path):
