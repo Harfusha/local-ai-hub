@@ -28,6 +28,67 @@ _PATH_LOCKS: dict[str, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
 
 
+def _open_ownership_lock_file(lock_path: Path) -> int:
+    if os.name != "nt":
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        return os.open(lock_path, flags, 0o600)
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    get_file_information = kernel32.GetFileInformationByHandle
+    get_file_information.argtypes = [wintypes.HANDLE, ctypes.POINTER(_FileInformation)]
+    get_file_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    handle = create_file(str(lock_path), 0x80000000 | 0x40000000, 0x1 | 0x2, None, 4, 0x00200000, None)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        information = _FileInformation()
+        if not get_file_information(handle, ctypes.byref(information)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if information.attributes & (_REPARSE_POINT | 0x10):
+            raise OSError(f"skill ownership lock is not a regular file: {lock_path}")
+        if information.number_of_links != 1:
+            raise OSError(f"skill ownership lock has unexpected hard links: {lock_path}")
+        return msvcrt.open_osfhandle(handle, os.O_RDWR)
+    except BaseException:
+        close_handle(handle)
+        raise
+
+
 @contextmanager
 def _ownership_lock(manifest: Path):
     """Serialize ownership-manifest and skill-tree mutations across threads/processes."""
@@ -37,15 +98,14 @@ def _ownership_lock(manifest: Path):
         thread_lock = _PATH_LOCKS.setdefault(key, threading.RLock())
     with thread_lock:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(lock_path, flags, 0o600)
+        fd = _open_ownership_lock_file(lock_path)
         acquired = False
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT:
                 raise OSError(f"skill ownership lock is not a regular file: {lock_path}")
+            if info.st_nlink != 1:
+                raise OSError(f"skill ownership lock has unexpected hard links: {lock_path}")
             if info.st_size == 0:
                 os.write(fd, b"\\0")
             deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
@@ -332,6 +392,25 @@ def _remove_skill_unlocked(target: Path, skills_root: Path, manifest: Path, skil
         except OSError:
             return f"skill removal failed for {target}: {exc}; recoverable at {quarantine}"
         return f"skill removal failed for {target}: {exc}; previous skill restored"
+
+    try:
+        final_hash = _safe_tree_hash(quarantine)
+    except (OSError, ValueError):
+        final_hash = None
+    if _is_link(quarantine) or final_hash != current_hash:
+        recovery = ""
+        try:
+            if not target.exists() and not _is_link(target) and not _is_link(quarantine):
+                os.replace(quarantine, target)
+            else:
+                recovery = f"; changed tree recoverable at {quarantine}"
+        except OSError:
+            recovery = f"; changed tree recoverable at {quarantine}"
+        try:
+            _manifest_write(manifest, {**entries, key: previous})
+        except (OSError, ValueError) as exc:
+            recovery += f"; ownership record restore failed: {exc}"
+        return f"preserved changed skill tree during removal: {target}{recovery}"
 
     try:
         shutil.rmtree(quarantine)
