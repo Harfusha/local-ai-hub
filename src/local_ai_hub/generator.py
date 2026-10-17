@@ -246,10 +246,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
         step_num += 1
 
-    coord_memo_hint = " and coordination memos" if fs.coord else ""
     command_result_hint = ", command results" if fs.commands else ""
     repo_gate_lines.append(
-        f"{step_num}. Use the cheapest sufficient action and reuse evidence IDs, artifact slices{command_result_hint}{coord_memo_hint}."
+        f"{step_num}. Use the cheapest sufficient action and reuse evidence IDs, artifact slices{command_result_hint}."
     )
     repo_gate_section = "\n".join(repo_gate_lines)
 
@@ -286,7 +285,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_artifact` — exact evidence/artifact slices only.')
         r_idx += 1
     if fs.coord:
-        routing_lines.append(f'{r_idx}. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.')
+        routing_lines.append(f'{r_idx}. `local_ai_coord` — leases before overlapping edits; Agent OS memory actions for scoped reusable findings.')
         r_idx += 1
     routing_section = "\n".join(routing_lines) if routing_lines else "*(No actions available: all tools disabled)*"
     public_contract_lines: list[str] = []
@@ -522,7 +521,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.artifacts:
         tool_bullets.append("- `local_ai_artifact`: exact `E...` evidence or artifact slices.")
     if fs.coord:
-        tool_bullets.append("- `local_ai_coord`: edit leases and reusable investigation memos" + (", Agent OS task lifecycle, scoped memory/relations, context, verification, negative knowledge, and coordination primitives" if fs.agent_os else "") + ".")
+        tool_bullets.append("- `local_ai_coord`: edit leases" + (", Agent OS task lifecycle, scoped memory/relations, context, verification, negative knowledge, and coordination primitives" if fs.agent_os else "") + ".")
     if fs.status:
         status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
         tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry/debug-trace{status_detail_note} inspection; no polling loops.")
@@ -973,7 +972,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     if operation_enabled(fs, "local_ai_coord"):
         coord_actions = fs.supported_coord_actions()
-        coord_description = "Coordination, leases, and reusable memos."
+        coord_description = "Coordination and leases."
         if fs.agent_os:
             coord_description += " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task, checkpoint progress, compile context when needed, call `verify_completion`, then `task_complete` only when receipts satisfy every criterion. Enabled families include task lifecycle, scoped memory/relations, context, verification, negative knowledge/incidents, blackboard, swarm, worktree leases, pub/sub, merge simulation, and dataset curation."
         coord_description += _actions_note(coord_actions)

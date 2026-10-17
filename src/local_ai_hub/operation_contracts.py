@@ -135,8 +135,9 @@ _COMMAND_ACTIONS = (
     "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight",
     "speculative_lint",
 )
+_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
 _COORD_ACTIONS = (
-    "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
+    *_COORD_BASE_ACTIONS,
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
     "memory_promote", "memory_delete", "context_compile",
@@ -706,10 +707,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     "local_ai_coord": _tool_contract(
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
-            "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
+            "leases", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
         ),
-        action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[8:]},
+        action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[len(_COORD_BASE_ACTIONS):]},
         allowed={
             "ask": ("root", "tenant", "session_id", "question_id", "question", "task_id"),
             "answer": ("root", "tenant", "question_id", "answer", "task_id"),
@@ -780,7 +781,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "simulate_merge": ("source_branch",),
         },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
-            "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
+            "leases", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
         }},
         properties={
