@@ -5604,10 +5604,11 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
-        allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
+        allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices", "tenant"}
         if not isinstance(payload, dict) or set(payload) - allowed_fields:
             self._send(400, {"success": False, "error": "artifact request contains unsupported fields", "terminal": True, "retryable": False})
             return
+        request_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant or "").strip()
         artifact_id = payload.get("artifact_id", "")
         offset = payload.get("offset", 0)
         max_chars = payload.get("max_chars", 6000)
@@ -5633,7 +5634,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         slices = payload.get("slices")
         if slices is not None:
-            if binary or set(payload) - {"artifact_id", "slices", "binary"}:
+            if binary or set(payload) - {"artifact_id", "slices", "binary", "tenant"}:
                 self._send(400, {"success": False, "error": "multi-slice retrieval accepts only artifact_id, slices, and binary=false", "terminal": True, "retryable": False})
                 return
             if not 1 <= len(slices) <= 16:
@@ -5655,20 +5656,20 @@ class Handler(BaseHTTPRequestHandler):
                 if requested > 50_000:
                     self._send(400, {"success": False, "error": "combined slice max_chars cannot exceed 50000", "terminal": True, "retryable": False})
                     return
-            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=tenant))
+            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=request_tenant))
             return
         if binary:
             if section:
                 self._send(400, {"success": False, "error": "section is not valid for binary retrieval", "terminal": True, "retryable": False})
                 return
-            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant))
+            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=request_tenant))
             return
         self._send(200, APP.artifacts.get(
             artifact_id,
             offset,
             max_chars,
             section,
-            tenant=tenant,
+            tenant=request_tenant,
         ))
 
     @staticmethod
@@ -8393,7 +8394,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_post_artifact_get(payload, tenant)
                 return
             if 'post_artifact_list_1' in post_route_ids:
-                self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=tenant, limit=int(payload.get("limit", 20)))}); return
+                list_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant or "").strip()
+                self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=list_tenant, limit=int(payload.get("limit", 20)))}); return
             if 'post_evidence_verify_1' in post_route_ids:
                 evidence = payload.get("evidence", [])
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return
