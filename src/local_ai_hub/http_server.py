@@ -3410,9 +3410,16 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "find":
                 if "query" not in payload:
                     raise RequestBodyError("query is required")
-                if not text(payload["query"], "query", 4096).strip():
+                query = text(payload["query"], "query", 4096)
+                if not query.strip() or "\x00" in query:
                     raise RequestBodyError("query is required")
                 bounded_integer(payload.get("limit", 100), "limit", 1, 100)
+                for field, maximum in (("root", 4096), ("tenant", 160)):
+                    if field not in payload:
+                        raise RequestBodyError(f"{field} is required")
+                    scope_value = text(payload[field], field, maximum)
+                    if not scope_value or scope_value != scope_value.strip() or "\x00" in scope_value:
+                        raise RequestBodyError(f"{field} must be a canonical non-empty string")
 
         if path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
@@ -7346,13 +7353,13 @@ class Handler(BaseHTTPRequestHandler):
                         inc = APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
                     self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
                 if action == "find":
-                    query_str = payload["query"].strip().lower()
+                    query = payload["query"]
                     limit_val = payload.get("limit", 100)
                     scoped = APP.agent_incidents.find_negative_knowledge(
-                        query_str,
+                        query,
                         limit=limit_val,
-                        root=str(payload.get("root", "")),
-                        tenant=str(payload.get("tenant", "")),
+                        root=payload["root"],
+                        tenant=payload["tenant"],
                     )
                     self._send(200, {"success": True, "negative_knowledge": scoped, "incidents": scoped}); return
             if 'post_agent_state_verification_1' in post_route_ids:

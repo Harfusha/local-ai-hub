@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import closing
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
 from local_ai_hub.sqlite_support import connect_sqlite
@@ -21,18 +23,27 @@ def _capture(store: IncidentStore, root: Path, tenant: str, *, error: str = "sam
     )
 
 
-def test_scoped_negative_knowledge_returns_no_rows_for_non_positive_limit(tmp_path: Path):
+@pytest.mark.parametrize("limit", [0, -1, 101, True, 1.5, "1", None])
+def test_scoped_negative_knowledge_rejects_invalid_limits(tmp_path: Path, limit):
     store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
     root = tmp_path / "repo"
     root.mkdir()
     _capture(store, root, "tenant-alpha")
 
-    assert store.find_negative_knowledge(
-        "failure", limit=0, root=str(root), tenant="tenant-alpha"
-    ) == []
-    assert store.find_negative_knowledge(
-        "failure", limit=-1, root=str(root), tenant="tenant-alpha"
-    ) == []
+    with pytest.raises(ValueError, match="limit"):
+        store.find_negative_knowledge(
+            "failure", limit=limit, root=str(root), tenant="tenant-alpha"
+        )
+
+
+@pytest.mark.parametrize("query", [None, 1, True, "", "  ", "bad\x00query"])
+def test_scoped_negative_knowledge_rejects_invalid_queries(tmp_path: Path, query):
+    store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="query"):
+        store.find_negative_knowledge(query, root=str(root), tenant="tenant-alpha")
 
 
 def test_scoped_negative_knowledge_requires_exact_repository_and_tenant(tmp_path: Path):

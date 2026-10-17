@@ -779,6 +779,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "swarm_status": ("swarm_id",),
             "swarm_cancel": ("swarm_id",),
             "simulate_merge": ("source_branch",),
+            "negative_knowledge_find": ("root", "tenant", "query"),
         },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "task_get", "task_list", "memory_get", "memory_find",
@@ -1947,6 +1948,15 @@ def validate_operation_arguments(
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
             return "limit must be an integer from 1 to 1000 for action='task_sync'"
     if tool == "local_ai_coord" and action == "negative_knowledge_find":
+        for field in ("root", "tenant", "query"):
+            value = arguments.get(field, properties.get(field, {}).get("default"))
+            if (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                or "\x00" in value
+            ):
+                return f"{field} must be a canonical non-empty string for action='negative_knowledge_find'"
         limit = arguments.get("limit", 100)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             return "limit must be an integer from 1 to 100 for action='negative_knowledge_find'"
