@@ -425,6 +425,7 @@ def _budget_rejection(
     protocol_keys = (
         "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
         "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
+        "mutation_applied", "operation_not_started",
     )
     error_limits: tuple[int | None, ...] = (None, 256, 128, 64, 32, 16)
     summary_limits: tuple[int | None, ...] = (None, 512, 256, 128, 96, 64, 48, 32, 24, 16, 8, 1)
@@ -505,7 +506,11 @@ def _budget_rejection(
 
                     # Retain protocol outcome fields when supplied, but give evidence
                     # and the diagnostic precedence when the requested cap is tiny.
-                    for key in ("status", "status_code", "terminal", "retryable"):
+                    for key in (
+                        "status", "status_code", "terminal", "retryable",
+                        "mutation_applied", "operation_not_started",
+                        "request_id", "execution_id",
+                    ):
                         if key in preserved and key not in value:
                             value[key] = _bounded_pointer_item(preserved[key], budget_chars=error_chars)
 
@@ -525,7 +530,11 @@ def _budget_rejection(
     # unusually large protected fields. Keep the diagnostic keys and evidence
     # first, with the same deterministic size bounds.
     minimal: dict[str, Any] = {"success": False, "error": _bounded_string(error, 512)}
-    for key in ("status", "status_code", "terminal", "retryable"):
+    for key in (
+        "status", "status_code", "terminal", "retryable",
+        "mutation_applied", "operation_not_started",
+        "request_id", "execution_id",
+    ):
         if key in preserved:
             minimal[key] = _bounded_pointer_item(preserved[key], budget_chars=160)
     for key in protected_keys:
