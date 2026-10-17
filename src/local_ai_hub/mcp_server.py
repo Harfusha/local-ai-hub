@@ -4681,6 +4681,20 @@ def local_ai_coord(
             question_payload.update(session_id=session_id, question=question)
         else:
             question_payload["answer"] = answer
+        requested, _, _, budget_enabled = _response_budget(action, {
+            "max_response_tokens": max_response_tokens,
+            "response_profile": response_profile,
+            "reuse_key": reuse_key,
+            "tool": action,
+        })
+        try:
+            explicit_limit = int(max_response_tokens or 0)
+        except (TypeError, ValueError, OverflowError):
+            explicit_limit = 0
+        if explicit_limit > 0:
+            requested = explicit_limit
+        if budget_enabled:
+            question_payload["response_budget_tokens"] = requested
         return _compact(CLIENT.coord(**question_payload), "status", extra_fields=["question"])
     if action.startswith("task_"):
         task_kwargs: dict[str, Any] = {

@@ -6461,6 +6461,7 @@ class Handler(BaseHTTPRequestHandler):
                                 task_id=task_id,
                                 actor=actor,
                                 question_id=question_id,
+                                response_budget_tokens=payload.get("response_budget_tokens"),
                             )
                         else:
                             result = APP.agent_tasks.answer_question(
@@ -6469,6 +6470,7 @@ class Handler(BaseHTTPRequestHandler):
                                 tenant=request_tenant,
                                 answer=payload.get("answer", ""),
                                 actor=actor,
+                                response_budget_tokens=payload.get("response_budget_tokens"),
                             )
                         if result is None:
                             self._send(404, {
@@ -6478,6 +6480,16 @@ class Handler(BaseHTTPRequestHandler):
                                 "retryable": False,
                             }); return
                         self._send(200, {"success": True, "question": result}); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {
+                                "requested_tokens": exc.requested_tokens,
+                                "required_tokens": exc.required_tokens,
+                                "unit": "estimated_tokens",
+                            },
+                        }); return
                     except (TypeError, ValueError, RuntimeError) as exc:
                         self._send(400, {
                             "success": False,
