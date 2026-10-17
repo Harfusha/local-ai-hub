@@ -132,38 +132,45 @@ def _memory_matches_request_scope(
     worktree_id: str = "",
     branch: str = "",
 ) -> bool:
-    scope_value = scope.value if hasattr(scope, "value") else str(scope)
+    if not isinstance(scope, AgentScope):
+        return False
+    scope_value = scope.value
     if scope_value == AgentScope.REPOSITORY.value:
-        if not isinstance(provenance, Mapping):
+        if not isinstance(provenance, Mapping) or not isinstance(tenant, str):
             return False
         record_root = str(provenance.get("root") or "")
-        record_tenant = str(provenance.get("tenant") or "").strip()
-        requested_tenant = str(tenant or "").strip()
+        record_tenant = provenance.get("tenant")
+        if not isinstance(record_tenant, str) or not record_tenant or not tenant:
+            return False
         if not (root and _normalise_scope_root(record_root) == _normalise_scope_root(root)):
             return False
-        return requested_tenant == record_tenant
+        return tenant == record_tenant
     if scope_value == AgentScope.TASK.value:
-        if not isinstance(provenance, Mapping):
+        if not isinstance(provenance, Mapping) or not isinstance(tenant, str):
             return False
         record_root = str(provenance.get("root") or "").strip()
-        record_tenant = str(provenance.get("tenant") or "").strip()
+        record_tenant = provenance.get("tenant")
         requested_root = str(root or "").strip()
-        requested_tenant = str(tenant or "").strip()
         requested_task_id = str(task_id or "").strip()
-        if not all((requested_root, requested_tenant, record_root, record_tenant, requested_task_id)):
+        if not isinstance(record_tenant, str) or not all(
+            (requested_root, tenant, record_root, record_tenant, requested_task_id)
+        ):
             return False
         if str(scope_id or "").strip() != requested_task_id:
             return False
         if _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
             return False
-        return requested_tenant == record_tenant
+        return tenant == record_tenant
     if scope_value == AgentScope.SESSION.value:
-        record_tenant = str((provenance or {}).get("tenant") or "").strip()
-        requested_tenant = str(tenant or "").strip()
+        if not isinstance(provenance, Mapping) or not isinstance(tenant, str):
+            return False
+        record_tenant = provenance.get("tenant")
+        if not isinstance(record_tenant, str) or not record_tenant or not tenant:
+            return False
         requested_session = str(session_id or "").strip()
         if not requested_session or str(scope_id or "").strip() != requested_session:
             return False
-        return requested_tenant == record_tenant
+        return tenant == record_tenant
     if scope_value == AgentScope.CLONE.value:
         return bool(clone_id) and scope_id == clone_id
     if scope_value == AgentScope.WORKTREE.value:
