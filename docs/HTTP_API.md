@@ -1,5 +1,7 @@
 # HTTP API
 
+`POST /api/route` uses the canonical string fields `query` and `text`; `task` and `context` are rejected rather than treated as aliases. The MCP `local_ai_task(action="route")` adapter translates its canonical `task` and `context` fields to `query` and `text` at the HTTP boundary.
+
 Authenticated dashboard-only debug endpoints expose bounded execution history:
 
 * `GET /api/debug-traces?kind=&state=&agent=&model=&limit=&offset=` lists trace summaries. `limit` is capped by `debug_traces.max_list_limit`.
