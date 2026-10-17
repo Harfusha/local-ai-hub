@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from pathlib import Path
 
@@ -103,6 +106,70 @@ class SkillOwnershipTests(unittest.TestCase):
 
         self.assertIn("replacement failed", result)
         self.assertEqual((self.target / "SKILL.md").read_text(encoding="utf-8"), original)
+
+
+    def test_concurrent_installs_preserve_all_manifest_entries(self) -> None:
+        skills = []
+        for name in ("concurrent-a", "concurrent-b"):
+            source = self.source_root / name
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text(f"{name}\\n", encoding="utf-8")
+            target = self.skills_root / name
+            skills.append((source, target, name))
+
+        first_write_entered = threading.Event()
+        second_lock_attempted = threading.Event()
+        release_first_write = threading.Event()
+        original_write = skill_ownership._manifest_write
+        original_lock = skill_ownership._ownership_lock
+
+        def observe_lock(manifest: Path):
+            if threading.current_thread().name.endswith("_1"):
+                second_lock_attempted.set()
+            return original_lock(manifest)
+
+        def pause_first_write(manifest: Path, entries: dict[str, dict[str, str]]) -> None:
+            if threading.current_thread().name.endswith("_0"):
+                first_write_entered.set()
+                if not release_first_write.wait(timeout=5):
+                    raise TimeoutError("test did not release the first manifest writer")
+            original_write(manifest, entries)
+
+        with patch.object(skill_ownership, "_ownership_lock", side_effect=observe_lock), patch.object(
+            skill_ownership, "_manifest_write", side_effect=pause_first_write
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(
+                    install_skill, skills[0][0], skills[0][1], self.skills_root, self.manifest, skills[0][2]
+                )
+                self.assertTrue(first_write_entered.wait(timeout=5))
+                second = pool.submit(
+                    install_skill, skills[1][0], skills[1][1], self.skills_root, self.manifest, skills[1][2]
+                )
+                self.assertTrue(second_lock_attempted.wait(timeout=5))
+                release_first_write.set()
+                self.assertIn("installed Hub-owned skill", first.result(timeout=10))
+                self.assertIn("installed Hub-owned skill", second.result(timeout=10))
+
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        self.assertEqual(set(entries), {skill_ownership._canonical(target) for _, target, _ in skills})
+
+
+    def test_uninstall_revalidates_tree_after_atomic_quarantine(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        real_replace = skill_ownership.os.replace
+
+        def modify_before_quarantine(source: str | Path, destination: str | Path) -> None:
+            if Path(source) == self.target and ".removing-" in Path(destination).name:
+                (self.target / "SKILL.md").write_text("operator change\\n", encoding="utf-8")
+            real_replace(source, destination)
+
+        with patch.object(skill_ownership.os, "replace", side_effect=modify_before_quarantine):
+            result = remove_skill(self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertIn("preserved changed skill tree", result)
+        self.assertEqual((self.target / "SKILL.md").read_text(encoding="utf-8"), "operator change\\n")
+        self.assertTrue(self.manifest.exists())
 
 
 if __name__ == "__main__":
