@@ -50,6 +50,20 @@ def test_verification_receipt_helpers_require_canonical_strings() -> None:
     assert rcpt.is_expired(now=250.0) is True
 
 
+def test_verification_receipt_snapshots_direct_details_mapping() -> None:
+    details = {"source": "tests"}
+    receipt = VerificationReceipt(
+        receipt_id="rcpt-snapshot",
+        task_id="task-1",
+        criterion="tests",
+        details=details,
+    )
+
+    details["source"] = "mutated"
+
+    assert receipt.details == {"source": "tests"}
+
+
 def test_change_intent_preserves_canonical_values() -> None:
     ci = ChangeIntent.create(
         task_id="task-1",

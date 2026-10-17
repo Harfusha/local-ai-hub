@@ -112,8 +112,7 @@ class VerificationReceipt:
                 raise ValueError(f"verification receipt {name} must be nonempty")
         if not isinstance(self.details, Mapping):
             raise ValueError("verification receipt details must be a mapping")
-        if type(self.details) is not dict:
-            object.__setattr__(self, "details", dict(self.details))
+        object.__setattr__(self, "details", dict(self.details))
         for name, value in (("observed_at", self.observed_at), ("expires_at", self.expires_at)):
             if name == "expires_at" and value is None:
                 continue
