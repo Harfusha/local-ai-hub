@@ -209,6 +209,8 @@ def test_registered_search_path_hints_use_candidate_worktree_config(
                 "query": token,
                 "top_k": 12,
                 "enrich": False,
+                "limit": 24,
+                "offset": 0,
                 "path_hints": [hint],
             }
         ]
