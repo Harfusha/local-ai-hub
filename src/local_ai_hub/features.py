@@ -82,7 +82,14 @@ class FeatureSet:
             and bool(feat.get("local_models", True))
             and (self.ollama or self.llama_cpp)
         )
-        self.vision: bool = self.tasks and bool(feat.get("vision", True)) and bool(mdl.get("vision", "qwen3-vl:4b"))
+        vision_model = mdl.get("vision", "qwen3-vl:4b")
+        vision_model_is_valid = (
+            type(vision_model) is str
+            and bool(vision_model)
+            and vision_model.strip() == vision_model
+            and "\x00" not in vision_model
+        )
+        self.vision: bool = self.tasks and bool(feat.get("vision", True)) and vision_model_is_valid
 
         # Code-intelligence backends
         self.code_intelligence: bool = self.repo and bool(feat.get("code_intelligence", True)) and bool(ci.get("enabled", True))
@@ -113,7 +120,7 @@ class FeatureSet:
         self.reasoning_model: str = _model_str(mdl.get("reasoning"), "qwen2.5-coder:7b")
         self.general_model: str = _model_str(mdl.get("general"), self.smart_model)
         self.background_model: str = _model_str(mdl.get("background_code"), "qwen2.5-coder:0.5b")
-        self.vision_model: str = _model_str(mdl.get("vision"), "qwen3-vl:4b") if self.vision else ""
+        self.vision_model: str = vision_model if self.vision else ""
         self.embedding_model: str = _model_str(mdl.get("embedding"), "BAAI/bge-small-en-v1.5")
         self.reranker_model: str = _model_str(mdl.get("reranker"), "BAAI/bge-reranker-v2-m3")
 

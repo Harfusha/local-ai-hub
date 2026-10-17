@@ -42,6 +42,21 @@ class TestFeatureSetDefaults:
         assert FeatureSet({}).has_any_model() is True
 
 
+class TestVisionConfig:
+    @pytest.mark.parametrize("vision_model", [None, 17, ["qwen3-vl:4b"], {"name": "qwen3-vl:4b"}, " qwen3-vl:4b", "qwen3-vl:4b\x00"])
+    def test_malformed_vision_model_fails_closed(self, vision_model):
+        fs = FeatureSet({"models": {"vision": vision_model}})
+
+        assert fs.vision is False
+        assert fs.vision_model == ""
+
+    def test_valid_vision_model_enables_vision(self):
+        fs = FeatureSet({"models": {"vision": "qwen3-vl:8b"}})
+
+        assert fs.vision is True
+        assert fs.vision_model == "qwen3-vl:8b"
+
+
 class TestSerenaDisabled:
     def test_serena_disabled(self):
         cfg = {"code_intelligence": {"serena_enabled": False}}
