@@ -158,7 +158,7 @@ class LocalAgentPipeline:
             root = "."
         else:
             root = str(raw_root).replace("\x00", "").strip() or "."
-        task = str(args.get("task", args.get("query", "")) if isinstance(args, dict) else "").strip()
+        task = str(args.get("task", "") if isinstance(args, dict) else "").strip()
         mode = str(args.get("mode", self.default_mode) if isinstance(args, dict) else self.default_mode).lower()
         if mode not in {"fast", "adaptive", "quality"}:
             mode = self.default_mode
