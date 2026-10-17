@@ -5693,7 +5693,7 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _context_retrieval_mode(payload: Mapping[str, Any]) -> str | None:
         raw_mode = payload.get("mode", "adaptive")
-        return "adaptive" if raw_mode == "adaptive" else None
+        return raw_mode if isinstance(raw_mode, str) and raw_mode in {"adaptive", "full", "fast"} else None
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -7515,7 +7515,7 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_mode is None:
                         self._send(400, {
                             "success": False,
-                            "error": "context mode must be adaptive",
+                            "error": "context mode must be adaptive, full or fast",
                             "terminal": True,
                             "retryable": False,
                         }); return
@@ -8185,7 +8185,7 @@ class Handler(BaseHTTPRequestHandler):
                 max_tokens = raw_max_tokens or max(128, min(int(configured_tokens or 8000), 20_000))
                 mode = self._context_retrieval_mode(payload)
                 if mode is None:
-                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive"}); return
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive, full or fast"}); return
                 if "project_config_digest" in payload:
                     self._send(400, {
                         "success": False, "terminal": True, "retryable": False,

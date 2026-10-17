@@ -6,13 +6,14 @@ import pytest
 
 from local_ai_hub import client as client_module, http_server, mcp_server, services
 from local_ai_hub.agent_consistency import ConsistencyRequest
+from local_ai_hub.operation_contracts import validate_operation_call
 
 
 @pytest.mark.parametrize(
     ("mode", "expected_mode"),
-    ((None, "adaptive"), ("adaptive", "adaptive")),
+    ((None, "adaptive"), ("adaptive", "adaptive"), ("fast", "fast"), ("full", "full")),
 )
-def test_context_uses_only_canonical_adaptive_mode(
+def test_context_routes_default_and_explicit_canonical_modes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     mode: str | None,
@@ -44,7 +45,7 @@ def test_context_uses_only_canonical_adaptive_mode(
     assert captured["payload"]["mode"] == expected_mode  # type: ignore[index]
 
 
-@pytest.mark.parametrize("mode", ["fast", "full", "legacy-fast", "Adaptive"])
+@pytest.mark.parametrize("mode", ["legacy-fast", "Adaptive"])
 def test_context_rejects_retired_or_noncanonical_mode_before_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -71,14 +72,14 @@ def test_context_rejects_retired_or_noncanonical_mode_before_request(
     assert result["success"] is False
     assert result["terminal"] is True
     assert result["retryable"] is False
-    assert result["error"] == "context mode must be adaptive"
+    assert result["error"] == "context mode must be adaptive, full or fast"
     assert calls == []
 
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
     (({}, "adaptive"), ({"mode": "adaptive"}, "adaptive"),
-     ({"mode": "fast"}, None), ({"mode": "full"}, None),
+     ({"mode": "fast"}, "fast"), ({"mode": "full"}, "full"),
      ({"mode": "legacy-fast"}, None), ({"mode": "Adaptive"}, None), ({"mode": None}, None)),
 )
 def test_http_context_mode_resolver_defaults_adaptive_and_rejects_invalid(
@@ -87,7 +88,7 @@ def test_http_context_mode_resolver_defaults_adaptive_and_rejects_invalid(
     assert http_server.Handler._context_retrieval_mode(payload) == expected
 
 
-@pytest.mark.parametrize("mode", ["fast", "full", "legacy-fast", "Adaptive"])
+@pytest.mark.parametrize("mode", ["legacy-fast", "Adaptive"])
 def test_service_context_mode_defaults_adaptive_and_rejects_before_context_work(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
@@ -106,10 +107,10 @@ def test_service_context_mode_defaults_adaptive_and_rejects_before_context_work(
     assert result["success"] is False
     assert result["terminal"] is True
     assert result["retryable"] is False
-    assert result["error"] == "context mode must be adaptive"
+    assert result["error"] == "context mode must be adaptive, full or fast"
 
 
-def test_client_context_pack_defaults_adaptive_and_rejects_before_post(
+def test_client_context_pack_routes_canonical_modes_and_rejects_invalid_before_post(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = object.__new__(client_module.HubClient)
@@ -121,12 +122,38 @@ def test_client_context_pack_defaults_adaptive_and_rejects_before_post(
     )
 
     client.context_pack("C:/repo", "find symbols")
+    client.context_pack("C:/repo", "find symbols", mode="fast")
+    client.context_pack("C:/repo", "find symbols", mode="full")
     invalid = client.context_pack("C:/repo", "find symbols", mode="legacy-fast")
 
     assert calls == [
-        ("/api/context/pack", {"root": "C:/repo", "query": "find symbols", "max_tokens": 4200, "mode": "adaptive"})
+        ("/api/context/pack", {"root": "C:/repo", "query": "find symbols", "max_tokens": 4200, "mode": "adaptive"}),
+        ("/api/context/pack", {"root": "C:/repo", "query": "find symbols", "max_tokens": 4200, "mode": "fast"}),
+        ("/api/context/pack", {"root": "C:/repo", "query": "find symbols", "max_tokens": 4200, "mode": "full"}),
     ]
     assert invalid["success"] is False
     assert invalid["terminal"] is True
     assert invalid["retryable"] is False
-    assert invalid["error"] == "context mode must be adaptive"
+    assert invalid["error"] == "context mode must be adaptive, full or fast"
+
+
+@pytest.mark.parametrize("mode", ["adaptive", "fast", "full"])
+def test_context_operation_contract_preserves_canonical_query(mode: str) -> None:
+    assert validate_operation_call(
+        "local_ai_repo", {"action": "context", "query": "grounded task", "mode": mode}
+    ) is None
+
+
+def test_context_operation_contract_rejects_query_alias_and_nonadaptive_path_controls() -> None:
+    alias_error = validate_operation_call(
+        "local_ai_repo", {"action": "context", "description": "grounded task"}
+    )
+    assert alias_error is not None
+    assert "description" in alias_error[1]
+
+    path_control_error = validate_operation_call(
+        "local_ai_repo",
+        {"action": "context", "query": "grounded task", "mode": "fast", "path_hints": ["src"]},
+    )
+    assert path_control_error is not None
+    assert "requires mode='adaptive'" in path_control_error[1]
