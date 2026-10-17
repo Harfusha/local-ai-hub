@@ -8,7 +8,7 @@ from local_ai_hub.agent_events import AgentEvent, AgentStateStore, AppendResult
 
 def test_generated_event_identifiers_use_full_uuid_entropy_and_keep_supplied_keys():
     created = AgentEvent.create("stream-1", "test.event")
-    restored = AgentEvent.from_dict({"stream_id": "stream-1", "kind": "test.event"})
+    restored = AgentEvent.from_dict(created.to_dict())
 
     for value, prefix in (
         (created.event_id, "evt_"),
@@ -25,9 +25,14 @@ def test_generated_event_identifiers_use_full_uuid_entropy_and_keep_supplied_key
     assert caller_key.idempotency_key == "client-key"
 
     restored_key = AgentEvent.from_dict(
-        {"stream_id": "stream-1", "kind": "test.event", "idempotency_key": "stored-key"}
+        {**created.to_dict(), "idempotency_key": "stored-key"}
     )
     assert restored_key.idempotency_key == "stored-key"
+
+
+def test_from_dict_rejects_missing_canonical_event_fields():
+    with pytest.raises(KeyError, match="event_id"):
+        AgentEvent.from_dict({"stream_id": "stream-1", "kind": "test.event"})
 
 
 def test_schema_drift_fails_closed_without_deleting_durable_database(tmp_path: Path):
