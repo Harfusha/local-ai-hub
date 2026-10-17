@@ -708,14 +708,17 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
 
 
 @pytest.mark.parametrize("action", ["rollback", "resume", "heartbeat"])
-def test_http_mutations_return_preflight_413_without_mutation(monkeypatch, action):
+@pytest.mark.parametrize("failure,expected_status", [("budget", 413), ("invalid", 400)])
+def test_http_mutations_map_preflight_errors(monkeypatch, action, failure, expected_status):
     from local_ai_hub import http_server
 
     calls = []
 
     def reject_budget(*args, **kwargs):
         calls.append(kwargs)
-        raise CheckpointResponseBudgetError(128, 129)
+        if failure == "budget":
+            raise CheckpointResponseBudgetError(128, 129)
+        raise ValueError("response_budget_tokens must be a positive integer")
 
     task_store = SimpleNamespace(
         state_store=SimpleNamespace(enabled=True),
@@ -751,12 +754,38 @@ def test_http_mutations_return_preflight_413_without_mutation(monkeypatch, actio
 
     assert calls[-1]["response_budget_tokens"] == 128
     status, body = responses[-1]
-    assert status == 413
-    assert body["mutation_applied"] is False
-    assert body["operation_not_started"] is True
-    assert body["response_budget"] == {
-        "requested_tokens": 128,
-        "required_tokens": 129,
-        "unit": "estimated_tokens",
-    }
+    assert status == expected_status
+    if expected_status == 413:
+        assert body["mutation_applied"] is False
+        assert body["operation_not_started"] is True
+        assert body["response_budget"] == {
+            "requested_tokens": 128,
+            "required_tokens": 129,
+            "unit": "estimated_tokens",
+        }
+    else:
+        assert body["terminal"] is True
+        assert body["retryable"] is False
+        assert body["error"] == "response_budget_tokens must be a positive integer"
+
+
+@pytest.mark.parametrize("action", ["rollback", "resume", "heartbeat"])
+@pytest.mark.parametrize("budget", [True, 0, 1.5, "128"])
+def test_remaining_task_mutations_reject_noncanonical_budgets(tmp_path, action, budget):
+    store = _store(tmp_path)
+    task = store.create(_contract(), ScopeContext(), task_id=f"invalid-{action}-budget")
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+
+    with pytest.raises(ValueError, match="positive integer"):
+        if action == "rollback":
+            store.rollback(task.task_id, actor=task.owner, response_budget_tokens=budget)
+        elif action == "resume":
+            store.resume(
+                task.task_id, actor=task.owner, idempotency_key="invalid-budget-retry",
+                response_budget_tokens=budget,
+            )
+        else:
+            store.heartbeat(task.task_id, actor=task.owner, response_budget_tokens=budget)
+
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
