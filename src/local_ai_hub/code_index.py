@@ -2506,17 +2506,21 @@ class CodeIndex:
                 ).fetchone() is not None
             candidate_filters_sql = base_filters_sql
             candidate_args = list(base_args)
-            if exact_match_exists and exact_identifier is not None:
-                candidate_filters_sql += " AND lower(name)=?"
-                candidate_args.append(exact_identifier.lower())
-                score_sql = "1000.0"
-            else:
-                def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
-                    return _code_index_candidate_score(
-                        name, name_path, container, path, terms, exact_identifier,
-                    )
+            def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
+                return _code_index_candidate_score(
+                    name, name_path, container, path, terms, exact_identifier,
+                )
 
-                con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+            con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+            if exact_match_exists and exact_identifier is not None:
+                # Boost indexed exact hits without filtering fuzzy candidates,
+                # which still count toward totals and later offset pages.
+                score_sql = (
+                    "CASE WHEN lower(name)=? THEN 1000.0 "
+                    "ELSE hub_code_index_score(name,name_path,container,path) END"
+                )
+                candidate_args = [exact_identifier.lower(), *base_args]
+            else:
                 score_sql = "hub_code_index_score(name,name_path,container,path)"
             sql = (
                 "WITH scored AS MATERIALIZED ("
