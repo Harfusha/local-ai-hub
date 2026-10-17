@@ -43,17 +43,18 @@ def _playwright_runtime() -> tuple[Path, Path, Path]:
 
 
 def test_dashboard_mode_dom_auth_and_error_projection(tmp_path: Path) -> None:
-    if _ROOT_SOURCE:
-        root_package = Path(_ROOT_SOURCE).resolve() / "local_ai_hub"
-        for module, filename, env_key in (
-            (http_server, "http_server.py", "T18_ROOT_HTTP_SERVER_SHA256"),
-            (dashboard, "dashboard.py", "T18_ROOT_DASHBOARD_SHA256"),
-        ):
-            source_path = root_package / filename
-            expected_sha = os.environ.get(env_key, "").upper()
-            assert Path(module.__file__).resolve() == source_path
-            assert len(expected_sha) == 64
-            assert hashlib.sha256(source_path.read_bytes()).hexdigest().upper() == expected_sha
+    if not _ROOT_SOURCE:
+        pytest.skip("set T18_ROOT_SOURCE to pin the current root source")
+    root_package = Path(_ROOT_SOURCE).resolve() / "local_ai_hub"
+    for module, filename, env_key in (
+        (http_server, "http_server.py", "T18_ROOT_HTTP_SERVER_SHA256"),
+        (dashboard, "dashboard.py", "T18_ROOT_DASHBOARD_SHA256"),
+    ):
+        source_path = root_package / filename
+        expected_sha = os.environ.get(env_key, "").upper()
+        assert Path(module.__file__).resolve() == source_path
+        assert len(expected_sha) == 64
+        assert hashlib.sha256(source_path.read_bytes()).hexdigest().upper() == expected_sha
     node, playwright_package, chromium = _playwright_runtime()
     html_path = tmp_path / "dashboard.html"
     html_path.write_text(DASHBOARD_HTML, encoding="utf-8")
