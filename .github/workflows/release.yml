@@ -55,16 +55,18 @@ jobs:
       - name: Build wheel and sdist
         run: python -m build
 
-      - name: Smoke installed wheel
+      - name: Smoke installed wheel MCP health
+        timeout-minutes: 2
+        working-directory: ${{ runner.temp }}
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/local-ai-hub-wheel-smoke"
-          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install dist/local_ai_hub-*.whl
+          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install "$GITHUB_WORKSPACE"/dist/local_ai_hub-*.whl
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip check
           EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
           ACTUAL_VERSION=$("$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/local-ai-hub" --version)
           test "$ACTUAL_VERSION" = "Local AI Hub $EXPECTED_VERSION"
-          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -c "import mcp, watchdog, local_ai_hub.mcp_server; print('wheel CLI and MCP imports OK')"
+          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -I "$GITHUB_WORKSPACE/tools/wheel_smoke.py" > "$RUNNER_TEMP/wheel-mcp-smoke.json"
 
       - name: Create SHA-256 manifest
         shell: bash
