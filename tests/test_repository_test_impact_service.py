@@ -122,6 +122,33 @@ def test_cold_warm_cache_preserves_both_engine_call_counts(tmp_path: Path) -> No
     ]
 
 
+def test_affected_tests_cache_distinguishes_discovery_from_explicit_empty_paths(
+    tmp_path: Path,
+) -> None:
+    engine = _Engine()
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {}
+    services.deterministic = engine
+    services.repo_flight = _RepositoryCache()
+    services._touch_project = lambda _root: None
+    services._repo_cache_state = lambda _root: {
+        "fingerprint": "rev-1",
+        "kind": "git",
+    }
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    discovered = services.affected_tests(str(root), None, "HEAD")
+    explicitly_empty = services.affected_tests(str(root), [], "HEAD")
+
+    assert discovered["cache_hit"] is False
+    assert explicitly_empty["cache_hit"] is False
+    assert engine.calls == [
+        ("affected_tests", str(root), None, "HEAD"),
+        ("affected_tests", str(root), [], "HEAD"),
+    ]
+
+
 def test_affected_tests_adapter_preserves_params_and_cached_result() -> None:
     engine = _Engine()
     operation_calls: list[tuple[Any, ...]] = []
