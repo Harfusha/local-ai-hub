@@ -46,6 +46,12 @@ def _insert_symbols(
             "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
+        for inserted_root in {str(row[0]) for row in rows}:
+            index._replace_symbol_trigrams(
+                con,
+                inserted_root,
+                [str(row[1]) for row in rows if str(row[0]) == inserted_root],
+            )
         con.commit()
 
 

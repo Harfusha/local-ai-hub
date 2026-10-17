@@ -1098,6 +1098,22 @@ class CodeIndex:
         return con
 
     def _schema(self, con: sqlite3.Connection) -> None:
+        existing_symbols = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='symbols'"
+        ).fetchone()
+        existing_trigrams = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='symbol_trigrams'"
+        ).fetchone()
+        if existing_symbols and not existing_trigrams:
+            # The index is derived state; old databases are rebuilt, never migrated.
+            raise sqlite3.DatabaseError("stale derived code-index trigram schema; rebuild this cache")
+        if existing_trigrams:
+            trigram_columns = {
+                str(row["name"])
+                for row in con.execute("PRAGMA table_info(symbol_trigrams)").fetchall()
+            }
+            if not {"root", "path", "symbol_rowid", "field", "gram"}.issubset(trigram_columns):
+                raise sqlite3.DatabaseError("invalid derived code-index trigram schema; rebuild this cache")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS files(
             root TEXT,
@@ -1130,6 +1146,17 @@ class CodeIndex:
         CREATE INDEX IF NOT EXISTS idx_symbols_name_path_lc ON symbols(root, lower(name_path));
         CREATE INDEX IF NOT EXISTS idx_symbols_path ON symbols(root, path);
         CREATE INDEX IF NOT EXISTS idx_symbols_container ON symbols(root, container);
+
+        CREATE TABLE IF NOT EXISTS symbol_trigrams(
+            root TEXT NOT NULL,
+            path TEXT NOT NULL,
+            symbol_rowid INTEGER NOT NULL,
+            field TEXT NOT NULL,
+            gram TEXT NOT NULL,
+            PRIMARY KEY(root, path, symbol_rowid, field, gram)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_symbol_trigrams_root_gram_symbol
+            ON symbol_trigrams(root, gram, symbol_rowid, field);
 
         CREATE TABLE IF NOT EXISTS refs(
             root TEXT,
@@ -1268,6 +1295,7 @@ class CodeIndex:
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
             for path in paths:
+                con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (c_root, path))
                 for table in ("files", "symbols", "refs", "edges"):
                     con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (c_root, path))
             con.commit()
@@ -1738,6 +1766,36 @@ class CodeIndex:
         con.executemany(f"INSERT INTO {table}(root,path,{columns}) VALUES({placeholders})", added)
         return {"retained": retained, "deleted": len(removed), "inserted": len(added)}
 
+    @staticmethod
+    def _replace_symbol_trigrams(con: sqlite3.Connection, root: str, paths: list[str]) -> None:
+        """Rebuild searchable trigrams from the symbol rows in the current transaction."""
+        for path in dict.fromkeys(paths):
+            con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
+            additions: list[tuple[str, str, int, str, str]] = []
+            rows = con.execute(
+                "SELECT rowid,name,name_path,container,path FROM symbols WHERE root=? AND path=?",
+                (root, path),
+            )
+            for row in rows:
+                symbol_rowid = int(row[0])
+                for field, raw in zip(("name", "name_path", "container", "path"), row[1:]):
+                    value = str(raw or "").lower()
+                    if len(value) < 3:
+                        continue
+                    grams = {value[offset:offset + 3] for offset in range(len(value) - 2)}
+                    additions.extend((root, path, symbol_rowid, field, gram) for gram in grams)
+                    if len(additions) >= 2048:
+                        con.executemany(
+                            "INSERT INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
+                            additions,
+                        )
+                        additions.clear()
+            if additions:
+                con.executemany(
+                    "INSERT INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
+                    additions,
+                )
+
     def _parse_file_content_report(
         self, text: str, lang: str, *, source_key: str | None = None
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
@@ -1894,6 +1952,7 @@ class CodeIndex:
         """Retain authorized path metadata while removing stale parsed data."""
         updated_at = time.time()
         with self._lock, closing(self._connect()) as con:
+            con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
             for table in ("symbols", "refs", "edges"):
                 con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
             con.execute(
@@ -1943,6 +2002,7 @@ class CodeIndex:
                 return {"success": True, "skipped": True, "path": path, "reason": "project path excluded"}
         if not target.is_file():
             with self._lock, closing(self._connect()) as con:
+                con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (str(base), path))
                 for t in ("files", "symbols", "refs", "edges"):
                     con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
                 con.commit()
@@ -2018,6 +2078,7 @@ class CodeIndex:
                     (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
                      x.get("kind", "reference"), x["line"]) for x in edges]),
             }
+            self._replace_symbol_trigrams(con, str(base), [path])
             con.commit()
 
         self._advance_query_cache_generation()
@@ -2211,6 +2272,7 @@ class CodeIndex:
                 _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
                 if deleted_paths:
                     con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                    con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
                     for table in ("symbols", "refs", "edges"):
                         assert table in _IDX_TABLES
                         con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
@@ -2241,6 +2303,11 @@ class CodeIndex:
                         "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
                         edges_to_insert,
                     )
+                self._replace_symbol_trigrams(
+                    con,
+                    c_root,
+                    [str(item[1]) for item in files_to_insert],
+                )
                 con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
@@ -2506,6 +2573,42 @@ class CodeIndex:
                 ).fetchone() is not None
             candidate_filters_sql = base_filters_sql
             candidate_args = list(base_args)
+            if all(len(term) >= 3 for term in terms):
+                try:
+                    con.execute(
+                        "CREATE TEMP TABLE hub_query_trigrams("
+                        "term_index INTEGER NOT NULL,gram TEXT NOT NULL,gram_count INTEGER NOT NULL,"
+                        "PRIMARY KEY(term_index,gram)) WITHOUT ROWID"
+                    )
+                    con.execute(
+                        "CREATE TEMP TABLE hub_query_symbol_candidates("
+                        "symbol_rowid INTEGER PRIMARY KEY) WITHOUT ROWID"
+                    )
+                    for term_index, term in enumerate(terms):
+                        grams = {term[offset:offset + 3] for offset in range(len(term) - 2)}
+                        con.executemany(
+                            "INSERT INTO temp.hub_query_trigrams(term_index,gram,gram_count) VALUES(?,?,?)",
+                            ((term_index, gram, len(grams)) for gram in grams),
+                        )
+                    con.execute(
+                        "INSERT OR IGNORE INTO temp.hub_query_symbol_candidates(symbol_rowid) "
+                        "SELECT matched.symbol_rowid FROM ("
+                        "SELECT postings.symbol_rowid,postings.field,query.term_index "
+                        "FROM symbol_trigrams AS postings "
+                        "JOIN temp.hub_query_trigrams AS query ON query.gram=postings.gram "
+                        "WHERE postings.root=? "
+                        "GROUP BY postings.symbol_rowid,postings.field,query.term_index "
+                        "HAVING COUNT(*)=MAX(query.gram_count)) AS matched",
+                        (resolved_root,),
+                    )
+                    candidate_filters_sql += (
+                        " AND rowid IN (SELECT symbol_rowid FROM temp.hub_query_symbol_candidates)"
+                    )
+                except sqlite3.Error:
+                    # The derived candidate index is an optimization only. A
+                    # failed lookup must retain the complete scan contract.
+                    candidate_filters_sql = base_filters_sql
+                    candidate_args = list(base_args)
             def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
                 return _code_index_candidate_score(
                     name, name_path, container, path, terms, exact_identifier,
@@ -3145,6 +3248,7 @@ class CodeIndex:
                     return {"success": True, "root": resolved_root, "pruned": 0}
                 con.execute("BEGIN IMMEDIATE")
                 pairs = [(resolved_root, path) for path in stale]
+                con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", pairs)
                 for table in ("symbols", "refs", "edges", "files"):
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", pairs)
                 con.commit()
