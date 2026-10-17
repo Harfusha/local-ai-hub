@@ -2225,7 +2225,12 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
             "token_saving": status.get("observability"),
             "context_ledger": CONTEXT_LEDGER.snapshot(),
         }
-        return _compact(_preserve_contract_state(status, projected), "status")
+        cache_fields = [
+            *(extra_fields or ()), "generation_cache", "semantic_cache", "repo_cache", "repo_snapshots",
+            "commands", "lossless_router", "pipeline", "preprocessing", "tool_agent",
+            "circuit_breakers", "fallback_count", "embeddings", "reranker", "token_saving", "context_ledger",
+        ]
+        return _compact(_preserve_contract_state(status, projected), "status", extra_fields=cache_fields)
     sched = status.get("scheduler", {}) if isinstance(status, dict) else {}
     saving = status.get("observability", {}) if isinstance(status, dict) else {}
     vram = status.get("vram_balancer") if isinstance(status, dict) else None

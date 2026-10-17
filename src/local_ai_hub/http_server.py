@@ -2060,6 +2060,7 @@ class Handler(BaseHTTPRequestHandler):
         *,
         allow_principal_header: bool = False,
         require_configured_principal: bool = False,
+        ignore_transport_tenant: bool = False,
     ) -> tuple[str, str] | None:
         supplied_tenants = {
             str(value).strip()
@@ -2089,7 +2090,7 @@ class Handler(BaseHTTPRequestHandler):
                 header_tenant = self.headers.get("X-LocalAI-Tenant")
                 principal = self._tenant()
                 effective = principal
-                if any(
+                if not ignore_transport_tenant and any(
                     value is not None and str(value).strip() != principal
                     for value in (*tenant_values, header_tenant)
                 ):
@@ -2125,7 +2126,7 @@ class Handler(BaseHTTPRequestHandler):
             for value in headers
         )
         value_mismatch = any(value is not None and str(value).strip() != effective for value in tenant_values)
-        if header_mismatch or value_mismatch:
+        if not ignore_transport_tenant and (header_mismatch or value_mismatch):
             self._send(403, {"success": False, "error": "tenant does not match authenticated root scope", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
             return None
         self._authorization_root = str(canonical)
@@ -2752,11 +2753,16 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _bind_workspace_memory_payload(self, path: str, payload: dict[str, Any]) -> bool:
+        is_global_delete = (
+            path == "/api/memory/delete"
+            and str(payload.get("scope", "")).strip().lower() == "global"
+        )
         bound = self._bind_root_tenant(
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
             require_configured_principal=True,
+            ignore_transport_tenant=is_global_delete,
         )
         if bound is None:
             return False

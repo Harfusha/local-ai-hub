@@ -120,6 +120,10 @@ def test_vram_balancer_nominal_for_integrated_gpu():
         "reported_adapter_memory_mb": 1024.0,
         "integrated": True,
         "shared_memory": True,
+        "unified_memory_mb": 16384.0,
+        "unified_memory_used_mb": 2048.0,
+        "unified_memory_available_mb": 14336.0,
+        "unified_memory_used_pct": 12.5,
         "vram_used_mb": 0.0,
         "vram_used_pct": 0.0,
     }
