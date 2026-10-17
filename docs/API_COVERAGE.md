@@ -89,7 +89,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HTTP OPTIONS | /api/browser/ | conditional | tools/surface_inventory.py | op-e354e9379c82 |
 | HTTP OPTIONS | /api/vision/review | conditional | tools/surface_inventory.py | op-498bfb3d062d |
 | HTTP POST | /api/admin/mode | confirmed | src/local_ai_hub/http_server.py | op-8bf1bb5e54e6 |
-| HTTP POST | /api/affected_tests | confirmed | src/local_ai_hub/http_server.py | op-234c8b5b8401 |
 | HTTP POST | /api/agent-state/ | confirmed | src/local_ai_hub/http_server.py | op-ce9f5c2d1c47 |
 | HTTP POST | /api/agent-state/blackboard | confirmed | src/local_ai_hub/http_server.py | op-cba9a800cd60 |
 | HTTP POST | /api/agent-state/cleanup | confirmed | src/local_ai_hub/http_server.py | op-79a6996c295f |
@@ -163,7 +162,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HTTP POST | /api/cross_project_symbols | confirmed | src/local_ai_hub/http_server.py | op-c7dc72b3b4cb |
 | HTTP POST | /api/cross_repo_contract | confirmed | src/local_ai_hub/http_server.py | op-740fe3ca36c6 |
 | HTTP POST | /api/db/query | confirmed | src/local_ai_hub/http_server.py | op-6de9fa7594c4 |
-| HTTP POST | /api/dead_code | confirmed | src/local_ai_hub/http_server.py | op-84a3e66061f9 |
 | HTTP POST | /api/delegate | confirmed | src/local_ai_hub/http_server.py | op-d5d8bbdc9bea |
 | HTTP POST | /api/delegate/batch | confirmed | src/local_ai_hub/http_server.py | op-35a099bc5a33 |
 | HTTP POST | /api/delegate/repo | confirmed | src/local_ai_hub/http_server.py | op-5ec20d3d74e7 |
@@ -243,7 +241,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HTTP POST | /api/repo/synthesize_rules | confirmed | src/local_ai_hub/http_server.py | op-0c2641994a62 |
 | HTTP POST | /api/repo/topology | confirmed | src/local_ai_hub/http_server.py | op-ad2b9b07bba6 |
 | HTTP POST | /api/repo/type_stubs | confirmed | src/local_ai_hub/http_server.py | op-19e807602695 |
-| HTTP POST | /api/repo_state | confirmed | src/local_ai_hub/http_server.py | op-e39aca83008f |
 | HTTP POST | /api/rerank | confirmed | src/local_ai_hub/http_server.py | op-fce52e024a61 |
 | HTTP POST | /api/resolve_imports | confirmed | src/local_ai_hub/http_server.py | op-709bba7ad8f5 |
 | HTTP POST | /api/review | confirmed | src/local_ai_hub/http_server.py | op-5925b89cf9bc |
@@ -265,11 +262,9 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HTTP POST | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-e7c38a4c7425 |
 | HTTP POST | /api/telemetry/tool-accounting | confirmed | src/local_ai_hub/http_server.py | op-04438ec90d60 |
 | HTTP POST | /api/test_matrix | confirmed | src/local_ai_hub/http_server.py | op-1321702d7984 |
-| HTTP POST | /api/topology | confirmed | src/local_ai_hub/http_server.py | op-e0d6f5ff0810 |
 | HTTP POST | /api/vision | confirmed | src/local_ai_hub/http_server.py | op-8a27267bb6c5 |
 | HTTP POST | /api/vision/review | confirmed | src/local_ai_hub/http_server.py | op-e81bbd33a8df |
 | HTTP POST | /api/work-orders | confirmed | src/local_ai_hub/http_server.py | op-44a15019a847 |
-| HTTP POST | /api/worktrees | confirmed | src/local_ai_hub/http_server.py | op-421ddf925385 |
 | MCP action local_ai_artifact | get | confirmed | src/local_ai_hub/generator.py | op-9d00ab4f0eec |
 | MCP action local_ai_artifact | list | confirmed | src/local_ai_hub/generator.py | op-901c14322762 |
 | MCP action local_ai_artifact | slice | confirmed | src/local_ai_hub/generator.py | op-04d682da59b8 |
@@ -313,6 +308,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | MCP action local_ai_coord | curate_dataset | confirmed | src/local_ai_hub/generator.py | op-26aa09a9ccbf |
 | MCP action local_ai_coord | incident_decision | confirmed | src/local_ai_hub/generator.py | op-0d8149da9907 |
 | MCP action local_ai_coord | leases | confirmed | src/local_ai_hub/generator.py | op-10fac56595f4 |
+| MCP action local_ai_coord | memory_delete | confirmed | src/local_ai_hub/generator.py | op-ffe070fa4b4c |
 | MCP action local_ai_coord | memory_find | confirmed | src/local_ai_hub/generator.py | op-0a673cc2e7e9 |
 | MCP action local_ai_coord | memory_get | confirmed | src/local_ai_hub/generator.py | op-4c0cbfa154c1 |
 | MCP action local_ai_coord | memory_promote | confirmed | src/local_ai_hub/generator.py | op-b0904bf92e19 |
@@ -563,10 +559,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HubClient target | POST /api/coord/pubsub_publish | confirmed | src/local_ai_hub/client.py | op-91d988792943 |
 | HubClient target | POST /api/coord/pubsub_poll | confirmed | src/local_ai_hub/client.py | op-db3ce93f08f4 |
 | HubClient target | POST /api/coord/simulate_merge | confirmed | src/local_ai_hub/client.py | op-5b8700840a7b |
-| HubClient target | POST /api/memory/put | confirmed | src/local_ai_hub/client.py | op-dc13f7588b74 |
-| HubClient target | POST /api/memory/get | confirmed | src/local_ai_hub/client.py | op-6b6825859012 |
-| HubClient target | POST /api/memory/search | confirmed | src/local_ai_hub/client.py | op-4c7c85175c86 |
-| HubClient target | POST /api/memory/delete | confirmed | src/local_ai_hub/client.py | op-3a1a72a6651b |
 | HubClient target | POST /api/agent-state/context | confirmed | src/local_ai_hub/client.py | op-78996094a2da |
 | HubClient target | POST /api/evidence/get | confirmed | src/local_ai_hub/client.py | op-e2cfd2b35745 |
 | HubClient target | POST /api/agent-state/verification | confirmed | src/local_ai_hub/client.py | op-601c61cd374a |
