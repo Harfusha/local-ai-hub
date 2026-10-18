@@ -1090,3 +1090,23 @@ The current checkout is actually serving version 4.0.0 from the isolated convert
 Built and installed `local_ai_hub-4.0.0-py3-none-any.whl` from the integrated source (`84c585461c1ca00def7b8632490c541741062b8394db7d5e22f3897975812c03`); installed `http_server.py`, `rag.py` and `mcp_server.py` SHA-256 values match source. The actual supervised source runtime now serves `127.0.0.1:11435` from a fully isolated state copy populated with all eight converted stores and the converted RAG database. Health and dashboard returned HTTP 200; title is `Local AI Hub — realtime`. Direct MCP stdio `initialize` and `tools/list` succeeded on protocol `2025-06-18`, server version `1.30.0`, eight public tools. Supervisor remained `running`, `hub_ready=true`, `restarts=0` across samples 23.49 seconds apart. Aggregate Python working set was 307.6 MB; observed CPU delta was 23.562 CPU seconds over 23.49 seconds (100.3% of one logical core), so performance acceptance remains open. Receipts and process samples are under `state/single-owner-conversion-20261018-1d55c3d703/`.
 
 The original `config.toml` and `state/` were not modified. This is an isolated current-source run, not a persistent service cutover. The connected MCP command broker still injects retired `X-LocalAI-Tenant` and receives the intentional HTTP 400; direct tenantless MCP stdio succeeds. Refreshing that host-side connector is required before broker-backed command receipts can work.
+
+### Candidate a6044d3e isolated runtime acceptance and integrated verification — 2026-10-18
+
+Candidate wheel `local_ai_hub-4.0.0-py3-none-any.whl` (SHA-256 `50f17786cc9dcbcccc92936f2860ba8658c443765e26643165ba7fea8d14ec40`) was installed with `--no-deps` into isolated target `state/single-owner-conversion-20261018-1d55c3d703/installed-wheel-a6044d3e/`. All eight core modules (`http_server.py`, `rag.py`, `mcp_server.py`, `project_config.py`, `code_index.py`, `preprocess.py`, `supervisor.py`, `app.py`) match source SHA-256 byte-for-byte.
+
+An isolated candidate runtime instance was executed on port `64486` against a dedicated converted state copy (`runtime-state-a6044d3e/`) using `config.runtime-a6044d3e.toml`:
+- **HTTP endpoints:** `/health` (200), `/ready` (200), `/dashboard` (200, title `Local AI Hub — realtime` verified).
+- **Authentication & Scopes:** Task state API rejected unauthenticated requests (HTTP 401) and accepted authorized bearer token (HTTP 200). Task creation established canonical single-owner contract with `goal` and `session_id`.
+- **Zero-tenancy enforcement:** Strict HTTP 400 rejection on header `X-LocalAI-Tenant` (`retired request header: X-LocalAI-Tenant`), payload field `tenant` (`retired tenancy field: tenant`), and direct MCP stdio call containing `tenant`.
+- **MCP stdio:** Protocol `2025-06-18`, 6 compact tools listed, `local_ai_status` executed cleanly.
+- **Supervisor & resources:** Zero restarts, memory ~4.1 MB, clean shutdown. Full durable proof recorded in `state/single-owner-conversion-20261018-1d55c3d703/runtime-a6044d3e-acceptance-proof.json`.
+
+**Integrated verification & consolidated fix:**
+- `python -m compileall -q src tools tests` passed.
+- `python tools/release_check.py --allow-installed` passed (`release-check: OK`).
+- Full integrated test suite executed: **11,364 passed, 116 skipped, 23 subtests passed**. The 11 failures comprised 9 transient concurrency/stress artifacts (confirmed by focused rerun) and 2 true mock fixture failures in `tests/test_t10_project_config_consumers.py`.
+- **Root cause & resolution:** Commit `a6044d3e` introduced `ProjectPathPolicy` to reuse resolved path policies across batches, but callers in `code_index.py` and `preprocess.py` invoked `api.ProjectPathPolicy` assuming external or mock modules always define the class. Introduced `_CallablePathPolicy` and `_resolve_*_path_policy` to seamlessly adapt callable `path_is_allowed` check functions to the policy protocol, and added `MockProjectPathPolicy` to the test fixture.
+- **Targeted validation:** `pytest tests/test_project_config.py tests/test_t21_project_config_preprocess.py tests/test_t10_project_config_consumers.py` passed: **95 passed, 1 skipped in 7.07s**.
+- Root `config.toml` (retaining legacy scheduler quota keys pending cutover) and root `state/` databases remain untouched and preserved. Production cutover remains pending; goal remains open.
+

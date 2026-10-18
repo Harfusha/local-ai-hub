@@ -150,6 +150,50 @@ def _project_git_identity(root: str) -> tuple[str, bool]:
         return "", False
 
 
+class _CallablePathPolicy:
+    """Adapt a callable path checker to the ProjectPathPolicy protocol."""
+
+    def __init__(self, checker: Any, root: Any, settings: Any) -> None:
+        self._checker = checker
+        self._root = root
+        self._settings = settings
+
+    def allows(
+        self,
+        path: Any,
+        *,
+        phase: str,
+        soft_ignored: bool = False,
+        hard_denied: bool = False,
+        binary: bool = False,
+        size_bytes: int | None = None,
+    ) -> bool:
+        return bool(
+            self._checker(
+                self._root,
+                path,
+                self._settings,
+                phase=phase,
+                soft_ignored=soft_ignored,
+                hard_denied=hard_denied,
+                binary=binary,
+                size_bytes=size_bytes,
+            )
+        )
+
+
+def _resolve_preprocess_path_policy(api: Any | None, root: Any, settings: Any | None) -> Any | None:
+    if settings is None:
+        return None
+    policy_cls = getattr(api, "ProjectPathPolicy", None)
+    if policy_cls is not None:
+        return policy_cls(root, settings)
+    checker = getattr(api, "path_is_allowed", None)
+    if callable(checker):
+        return _CallablePathPolicy(checker, root, settings)
+    return ProjectPathPolicy(root, settings)
+
+
 class ProjectPreprocessor:
     """Durable idle-time project preprocessing.
 
@@ -834,7 +878,7 @@ class ProjectPreprocessor:
         if not extensions:
             return
         base = Path(root)
-        path_policy = api.ProjectPathPolicy(root, settings)
+        path_policy = _resolve_preprocess_path_policy(api, root, settings)
         ignored = {str(value).lower() for value in getattr(self.repo_tools, "ignore_dirs", ())}
         may_descend = getattr(api, "may_descend", None)
         for current, directories, filenames in os.walk(base, followlinks=False):
@@ -1562,7 +1606,9 @@ class ProjectPreprocessor:
             hard_denied = True
         checker = path_policy.allows if path_policy is not None else None
         if checker is None:
-            return path_is_allowed(
+            api, _context = self._project_config_context(root)
+            checker_func = getattr(api, "path_is_allowed", path_is_allowed) if api is not None else path_is_allowed
+            return checker_func(
                 root,
                 Path(root) / relative,
                 settings,

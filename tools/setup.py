@@ -251,10 +251,12 @@ def json_server_merge(
     if path.exists():
         backup(path, backup_enabled)
         try:
-            parsed = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(parsed, dict):
-                raise ValueError("top-level JSON value must be an object")
-            data = parsed
+            raw_text = path.read_text(encoding="utf-8").strip()
+            if raw_text:
+                parsed = json.loads(raw_text)
+                if not isinstance(parsed, dict):
+                    raise ValueError("top-level JSON value must be an object")
+                data = parsed
         except Exception as exc:
             raise RuntimeError(f"Cannot parse JSON config {path}: {exc}") from exc
     container = data.setdefault(container_key, {})

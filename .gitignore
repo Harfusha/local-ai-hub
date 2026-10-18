@@ -20,6 +20,7 @@ data/*.sqlite3-*
 generated/*
 !generated/.gitkeep
 !data/.gitkeep
+.local-ai-hub-skill-ownership.json*
 
 # User configuration (keep config.toml.example in repo)
 config.toml

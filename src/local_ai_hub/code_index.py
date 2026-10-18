@@ -1020,6 +1020,50 @@ def _code_index_candidate_score(
     return score
 
 
+class _CallablePathPolicy:
+    """Adapt a callable path checker to the ProjectPathPolicy protocol."""
+
+    def __init__(self, checker: Any, root: Any, settings: Any) -> None:
+        self._checker = checker
+        self._root = root
+        self._settings = settings
+
+    def allows(
+        self,
+        path: Any,
+        *,
+        phase: str,
+        soft_ignored: bool = False,
+        hard_denied: bool = False,
+        binary: bool = False,
+        size_bytes: int | None = None,
+    ) -> bool:
+        return bool(
+            self._checker(
+                self._root,
+                path,
+                self._settings,
+                phase=phase,
+                soft_ignored=soft_ignored,
+                hard_denied=hard_denied,
+                binary=binary,
+                size_bytes=size_bytes,
+            )
+        )
+
+
+def _resolve_code_index_path_policy(api: Any | None, root: Any, settings: Any | None) -> Any | None:
+    if api is None or settings is None:
+        return None
+    policy_cls = getattr(api, "ProjectPathPolicy", None)
+    if policy_cls is not None:
+        return policy_cls(root, settings)
+    checker = getattr(api, "path_is_allowed", None)
+    if callable(checker):
+        return _CallablePathPolicy(checker, root, settings)
+    return None
+
+
 class CodeIndex:
     def __init__(self, config: dict[str, Any], repo_tools: Any):
         self.config = config
@@ -1918,11 +1962,7 @@ class CodeIndex:
         settings = project_context.settings if project_context is not None else None
         if api is not None and settings is not None and not api.phase_is_allowed(settings, "call_graph"):
             return []
-        path_policy = (
-            api.ProjectPathPolicy(c_root, settings)
-            if api is not None and settings is not None
-            else None
-        )
+        path_policy = _resolve_code_index_path_policy(api, c_root, settings)
         existing: dict[str, tuple[str, str, str]] = {}
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN")
@@ -2115,11 +2155,7 @@ class CodeIndex:
         if api is not None and settings is not None and not api.phase_is_allowed(settings, "call_graph"):
             self.prune(c_root, [])
             return {"success": True, "files_processed": 0, "cached": 0, "symbols": 0, "refs": 0, "edges": 0, "skipped": len(normalized)}
-        path_policy = (
-            api.ProjectPathPolicy(c_root, settings)
-            if api is not None and settings is not None
-            else None
-        )
+        path_policy = _resolve_code_index_path_policy(api, c_root, settings)
 
         with self._lock, closing(self._connect()) as con:
             existing = {
