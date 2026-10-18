@@ -1108,6 +1108,20 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
     stage_root = Path(tempfile.mkdtemp(prefix=f".{skill_name}.lah-stage-", dir=target.parent))
     staged = stage_root / "replacement"
     backup = stage_root / "previous"
+
+    def finish_stage(result: str) -> str:
+        if backup.exists():
+            return f"{result}; staging directory retained at {stage_root}"
+        try:
+            if _is_link(stage_root):
+                return f"{result}; staging directory preserved at {stage_root}"
+            stage_root.rmdir()
+        except FileNotFoundError:
+            return result
+        except OSError:
+            return f"{result}; staging data preserved at {stage_root}"
+        return result
+
     had_target = target.exists()
     moved_old = False
     installed_new = False
@@ -1117,7 +1131,7 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
             raise OSError("staged skill content differs from source")
         if had_target:
             if _safe_tree_hash(target) != current_hash or _is_link(target):
-                return f"preserved changed skill tree during replacement: {target}"
+                return finish_stage(f"preserved changed skill tree during replacement: {target}")
             os.replace(target, backup)
             moved_old = True
             try:
@@ -1129,10 +1143,10 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
                     os.replace(backup, target)
                     moved_old = False
                 if backup.exists():
-                    return f"preserved changed skill tree during replacement; recoverable at {backup}"
-                return f"preserved changed skill tree during replacement: {target}"
+                    return finish_stage(f"preserved changed skill tree during replacement; recoverable at {backup}")
+                return finish_stage(f"preserved changed skill tree during replacement: {target}")
         elif target.exists() or _is_link(target):
-            return f"preserved conflicting skill tree created during install: {target}"
+            return finish_stage(f"preserved conflicting skill tree created during install: {target}")
         _rename_noreplace(staged, target)
         installed_new = True
         entries[key] = {"name": skill_name, "sha256": source_hash}
@@ -1155,15 +1169,15 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
                         f"previous skill remains recoverable at {backup}; "
                         f"quarantine reconciliation failed: {recovery_exc}"
                     )
-                return f"skill replacement failed for {target}: {exc}; current target preserved; {recovery}"
+                return finish_stage(f"skill replacement failed for {target}: {exc}; current target preserved; {recovery}")
             try:
                 _manifest_write(manifest, entries)
             except (OSError, ValueError) as manifest_exc:
-                return (
+                return finish_stage(
                     f"skill installation failed for {target}: {exc}; installed tree preserved; "
                     f"manifest reconciliation failed: {manifest_exc}"
                 )
-            return f"skill installed at {target}; manifest recovered after write failure: {exc}"
+            return finish_stage(f"skill installed at {target}; manifest recovered after write failure: {exc}")
 
         if moved_old and backup.exists() and target.exists():
             recovery_entries = dict(entries)
@@ -1180,7 +1194,7 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
                 )
             except (OSError, ValueError) as recovery_exc:
                 recovery = f"previous version remains recoverable at {backup}; manifest reconciliation failed: {recovery_exc}"
-            return f"skill replacement failed for {target}: {exc}; competing target preserved; {recovery}"
+            return finish_stage(f"skill replacement failed for {target}: {exc}; competing target preserved; {recovery}")
 
         rollback_error: Exception | None = None
         try:
@@ -1194,10 +1208,7 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
             recovery = "; previous skill restored" if had_target and target.exists() else "; target unchanged"
         if rollback_error:
             recovery += f"; rollback failed: {rollback_error}"
-        return f"skill replacement failed for {target}: {exc}{recovery}"
-    finally:
-        if not backup.exists():
-            shutil.rmtree(stage_root, ignore_errors=True)
+        return finish_stage(f"skill replacement failed for {target}: {exc}{recovery}")
     if backup.exists():
         recovery = _retain_previous_install(
             backup,
@@ -1208,12 +1219,8 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
             original_hash=current_hash,
             entries=entries,
         )
-        return f"installed Hub-owned skill: {target}; {recovery}"
-    try:
-        shutil.rmtree(stage_root)
-    except OSError:
-        pass
-    return f"installed Hub-owned skill: {target}"
+        return finish_stage(f"installed Hub-owned skill: {target}; {recovery}")
+    return finish_stage(f"installed Hub-owned skill: {target}")
 
 
 def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
