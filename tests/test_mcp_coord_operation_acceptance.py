@@ -216,6 +216,35 @@ def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatc
     assert result["summary"] == "lease granted"
 
 
+@pytest.mark.parametrize("action", ["claim", "release", "renew", "leases"])
+def test_registered_local_ai_coord_lease_actions_forward_explicit_tenant(monkeypatch, tmp_path, action):
+    from local_ai_hub.features import FeatureSet
+
+    root = str(tmp_path.resolve())
+    backend = ApiBackend({"success": True, "summary": "lease accepted"})
+    monkeypatch.setattr(mcp_server, "FEATURES", FeatureSet({"coord": True}))
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **kwargs: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda *args, **kwargs: mcp_server.OperationalModeSnapshot("active", 0, None),
+    )
+    arguments = {"action": action, "root": root, "tenant": "fixed-principal"}
+    if action == "claim":
+        arguments["paths"] = ["src/example.py"]
+    elif action in {"release", "renew"}:
+        arguments["lease_id"] = "lease-42"
+
+    tool_result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
+    contents, _structured = tool_result if isinstance(tool_result, tuple) else (tool_result, None)
+    result = json.loads(contents[0].text)
+
+    assert backend.calls[0][2] == {"tenant": "fixed-principal"}
+    assert result["success"] is True
+
+
 def _direct_post(app, path, payload):
     handler = object.__new__(http_server.Handler)
     handler.path = path

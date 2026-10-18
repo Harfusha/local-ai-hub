@@ -920,10 +920,6 @@ class HubClient:
         route = urlsplit(path).path.lower()
         task_route = route == "/api/agent-state/tasks"
         memory_route = route == "/api/agent-state/memory"
-        lease_route = route.startswith("/api/leases")
-        if lease_route:
-            effective = tenant_hint or self.tenant or request_principal_tenant(self.config, route)
-            return effective, None
         if not task_route and not memory_route:
             principal = request_principal_tenant(self.config, route)
             if tenant_hint is not None and tenant_hint != principal:
