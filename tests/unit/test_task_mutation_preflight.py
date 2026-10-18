@@ -1073,7 +1073,7 @@ def test_http_cleanup_worktree_maps_response_budget_preflight(monkeypatch):
 
 
 @pytest.mark.parametrize("action", ["ask", "answer"])
-def test_http_question_mutations_map_response_budget_preflight(monkeypatch, action):
+def test_http_question_mutations_map_response_budget_preflight(tmp_path, monkeypatch, action):
     from local_ai_hub import http_server
 
     calls = []
@@ -1094,7 +1094,7 @@ def test_http_question_mutations_map_response_budget_preflight(monkeypatch, acti
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/agent-state/tasks"
     handler.headers = {"Content-Type": "application/json"}
-    handler._authorization_root = "."
+    handler._authorization_root = str(tmp_path)
     handler._authorization_tenant = "tenant-test"
     handler._authorization_actor = "agent"
     handler._require_authorized = lambda: True
@@ -1106,7 +1106,7 @@ def test_http_question_mutations_map_response_budget_preflight(monkeypatch, acti
     handler._bind_task_payload = lambda _payload: True
     handler._validate_payload = lambda *_args, **_kwargs: None
     handler._read_json = lambda: {
-        "action": action, "root": ".", "question_id": "question-budget-http",
+        "action": action, "root": str(tmp_path), "question_id": "question-budget-http",
         "session_id": "session-budget-http", "question": "Question?", "answer": "Answer.",
         "response_budget_tokens": 128,
     }
