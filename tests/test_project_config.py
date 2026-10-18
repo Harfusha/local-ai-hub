@@ -8,6 +8,7 @@ import local_ai_hub.project_config as project_config
 import pytest
 from local_ai_hub.project_config import (
     CommandDefinition,
+    ProjectPathPolicy,
     ProjectSettings,
     custom_extension_kind,
     may_descend,
@@ -18,6 +19,32 @@ from local_ai_hub.project_config import (
     resolve_project_config,
     resolve_project_context,
 )
+
+
+def test_project_path_policy_resolves_root_once_and_keeps_confinement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "allowed.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("secret = 1\n", encoding="utf-8")
+
+    original_resolve = Path.resolve
+    root_resolutions = 0
+
+    def count_root_resolution(path: Path, *args, **kwargs):
+        nonlocal root_resolutions
+        if path == root:
+            root_resolutions += 1
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", count_root_resolution)
+    policy = ProjectPathPolicy(root, ProjectSettings())
+
+    assert policy.allows("src/allowed.py", phase="call_graph")
+    assert not policy.allows("../outside.py", phase="call_graph")
+    assert root_resolutions == 1
 
 
 def _mock_resolutions(monkeypatch, resolutions: dict[Path, Path]) -> None:

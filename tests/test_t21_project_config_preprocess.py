@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import closing
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -245,3 +246,45 @@ def test_python_fallback_truncation_requires_omitted_candidate_sentinel(
     assert result["python_fallback_scanned_files"] == 1
     assert result["python_fallback_truncated"] is expected_truncated
     assert len(iterated) == candidate_count
+
+
+def test_watcher_skips_project_config_resolution_for_default_source_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pre = _preprocessor(tmp_path)
+    pre.repo_tools.extensions = {".py"}
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    path = root / "src" / "current.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+
+    def unexpected_config_resolution(_root: str):
+        pytest.fail("default source extension should not resolve project config")
+
+    monkeypatch.setattr(pre, "_project_config_context", unexpected_config_resolution)
+
+    assert pre._watch_relevant(root, path) == "src/current.py"
+
+
+def test_watcher_still_resolves_project_config_for_custom_text_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pre = _preprocessor(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = root / "notes.custom"
+    path.write_text("content\n", encoding="utf-8")
+    context = SimpleNamespace(
+        settings=SimpleNamespace(
+            text_extensions={".custom"}, language_overrides={}, binary_extensions=set()
+        )
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        pre,
+        "_project_config_context",
+        lambda value: (calls.append(value) or object(), context),
+    )
+
+    assert pre._watch_relevant(root, path) == "notes.custom"
+    assert calls == [str(root)]
