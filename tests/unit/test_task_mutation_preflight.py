@@ -815,7 +815,8 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
         "response_profile": "minimal",
     }))
 
-    assert client.requests[-1]["action"] == action
+    expected_action = "cleanup_worktree" if action == "task_cleanup_worktree" else action
+    assert client.requests[-1]["action"] == expected_action
     assert client.requests[-1]["response_budget_tokens"] == 512
     assert result
 

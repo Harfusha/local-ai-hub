@@ -117,14 +117,14 @@ class SkillOwnershipTests(unittest.TestCase):
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
         original = (self.target / "SKILL.md").read_text(encoding="utf-8")
         (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
-        real_replace = skill_ownership.os.replace
+        real_rename = skill_ownership._rename_noreplace
 
-        def fail_staged_swap(source: str | Path, destination: str | Path) -> None:
+        def fail_staged_swap(source: Path, destination: Path, **kwargs: object) -> None:
             if Path(source).name == "replacement":
                 raise OSError("simulated staged replacement failure")
-            real_replace(source, destination)
+            real_rename(source, destination, **kwargs)
 
-        with patch.object(skill_ownership.os, "replace", side_effect=fail_staged_swap):
+        with patch.object(skill_ownership, "_rename_noreplace", side_effect=fail_staged_swap):
             result = install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
 
         self.assertIn("replacement failed", result)
@@ -658,6 +658,7 @@ so.install_skill(source, target, root, manifest, name)
 
     def test_install_reports_retained_stage_when_target_changes_during_copy(self) -> None:
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
         real_mkdtemp = skill_ownership.tempfile.mkdtemp
         real_copytree = skill_ownership.shutil.copytree
         stage_roots: list[Path] = []
@@ -686,7 +687,7 @@ so.install_skill(source, target, root, manifest, name)
         self.assertIn("preserved changed skill tree", result)
         self.assertIn("staging data preserved", result)
         self.assertEqual((self.target / "external-write.txt").read_text(encoding="utf-8"), "preserve me\n")
-        self.assertEqual((stage_roots[0] / "replacement" / "SKILL.md").read_text(encoding="utf-8"), "Hub version\n")
+        self.assertEqual((stage_roots[0] / "replacement" / "SKILL.md").read_text(encoding="utf-8"), "Updated Hub version\n")
 
     @unittest.skipIf(os.name == "nt", "POSIX quarantine-root replacement check")
     def test_quarantine_root_swap_cannot_redirect_noreplace_move(self) -> None:
