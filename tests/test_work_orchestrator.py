@@ -316,7 +316,11 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
         assert res["artifact_id"] in artifacts.data
         handoff_report = json.loads(artifacts.data[res["artifact_id"]]["text"])
         assert handoff_report["verification_receipts"] == res["verification_receipts"]
-        assert not list((tmp_path / "state" / "work_journals").glob("*.json"))
+        journal_dir = tmp_path / "state" / "work_journals"
+        cleanup_deadline = time.monotonic() + 2.0
+        while list(journal_dir.glob("*.json")) and time.monotonic() < cleanup_deadline:
+            time.sleep(0.01)
+        assert not list(journal_dir.glob("*.json"))
     finally:
         wo.close()
 

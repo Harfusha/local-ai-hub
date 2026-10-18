@@ -75,7 +75,7 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     assert "CodeGraphContext" not in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
-    assert "before native reads, grep" in skill
+    assert "before native broad discovery" in skill
     assert "semantic" in skill and "local_ai_command" in skill
     assert "CodeGraphContext" in skill and "optional standalone CLI/MCP" in skill
     installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
@@ -408,7 +408,14 @@ def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path
 
     for note in notes:
         assert all(note in prompt for prompt in prompts)
-        assert note in generated
+        if note.startswith('`image_path`'):
+            assert (
+                '`image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, '
+                '`.webp`, `.svg`, or `.bmp` file within that root, without symlink/junction escapes; '
+                '`caption` and `metadata` are optional.'
+            ) in generated
+        else:
+            assert note in generated
     assert all('`local_ai_rag(action="ingest_document")`' in prompt for prompt in prompts)
     assert '`local_ai_rag(action="ingest_document")`' in mcp_docs
     assert all(note in mcp_docs for note in (*ingest_notes, *synthesis_notes))

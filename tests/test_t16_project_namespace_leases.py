@@ -95,6 +95,18 @@ def test_linked_worktrees_conflict_on_same_relative_path_across_owners(
     store.release(owner="owner-a", lease_id=str(first["lease_id"]))
 
 
+def test_project_namespace_ignores_inherited_git_routing(tmp_path: Path, monkeypatch) -> None:
+    primary, linked = _linked_worktrees(tmp_path, "clean-git-routing")
+    state_dir = tmp_path / "project-state"
+    expected = _coordination_id(primary, state_dir)
+    assert expected
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "foreign.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "foreign-root"))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(tmp_path / "foreign-common"))
+    assert _coordination_id(primary, state_dir) == expected
+    assert _coordination_id(linked, state_dir) == expected
+
+
 def test_same_relative_alias_in_unrelated_git_common_dirs_does_not_conflict(
     tmp_path: Path,
 ) -> None:
@@ -167,7 +179,7 @@ def test_missing_project_coordination_id_fails_closed(tmp_path: Path) -> None:
     assert "coordination" in str(result.get("error", "")).lower()
 
 
-def test_namespace_bridge_preserves_legacy_active_leases_on_same_root(
+def test_legacy_root_scope_conflict_remains_fenced_and_old_schema_refuses(
     tmp_path: Path,
 ) -> None:
     physical_root, _ = _linked_worktrees(tmp_path, "legacy-lease")
@@ -246,24 +258,11 @@ def test_namespace_bridge_preserves_legacy_active_leases_on_same_root(
         connection.commit()
     finally:
         connection.close()
-    migrated = FencingLeaseStore(migrated_db, clock=lambda: 100.0)
-    migrated_connection = migrated._connect()
-    try:
-        legacy_scope = migrated_connection.execute(
-            "SELECT scope_id FROM writer_fence_attempts WHERE attempt_id=?",
-            ("pre-namespace-attempt",),
-        ).fetchone()
-        assert legacy_scope == (physical_id,)
-    finally:
-        migrated_connection.close()
-    with pytest.raises(LeaseUnavailableError):
-        migrated.claim_attempt(
-            str(physical_root),
-            "migrated-work",
-            "owner-b",
-            ttl_seconds=30,
-            coordination_id=coordination_id,
-        )
+    migrated_before = migrated_db.read_bytes()
+    with pytest.raises(ValueError, match="explicit offline conversion"):
+        FencingLeaseStore(migrated_db, clock=lambda: 100.0)
+    assert migrated_db.read_bytes() == migrated_before
+
 
 
 def test_shared_namespace_keeps_physical_root_containment(tmp_path: Path) -> None:

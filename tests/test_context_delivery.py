@@ -733,9 +733,22 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         assert status == 400
         assert "adaptive" in non_adaptive_hints["error"]
 
-        status, full = post({"root": str(tmp_path), "query": "route repair", "mode": "adaptive", "max_tokens": 512})
+        status, full = post({"root": str(tmp_path), "query": "route repair", "mode": "full", "max_tokens": 512})
         assert status == 200
-        assert hybrid_calls[-1]["quality_first"] is True
+        assert hybrid_calls[-1]["quality_first"] is False
+
+        fast_calls = []
+        app.services.fast_context = lambda root, query, max_tokens: (
+            fast_calls.append((root, query, max_tokens)) or
+            {"success": True, "context": "deterministic fast evidence", "context_source": "deterministic-fast"}
+        )
+        hybrid_count = len(hybrid_calls)
+        status, fast = post({"root": str(tmp_path), "query": "route repair", "mode": "fast", "max_tokens": 512})
+        assert status == 200
+        assert fast["context_source"] == "deterministic-fast"
+        assert fast["delivery_mode"] == "fast"
+        assert fast_calls == [(str(tmp_path.resolve()), "route repair", 512)]
+        assert len(hybrid_calls) == hybrid_count
 
         from local_ai_hub.agent_context import CompiledContext
 
@@ -1135,7 +1148,6 @@ class _EvidenceDeterministic(_Deterministic):
         self.events = events
 
     def context_pack(self, root, query, *, max_chars, max_raw_evidence):
-        self.events.append("deterministic")
         return {
             "success": True,
             "root": root,
@@ -1144,6 +1156,38 @@ class _EvidenceDeterministic(_Deterministic):
             "evidence": [{"evidence_id": "det-1", "path": "src/app.py", "raw": "secret-value"}],
             "estimated_tokens": 3,
         }
+
+    def query(self, root, query, limit):
+        self.events.append("deterministic")
+        return {
+            "success": True, "confidence": 1.0,
+            "facts": [{"path": "src/app.py", "text": "route fact"}],
+            "evidence": [{"path": "src/app.py", "evidence_id": "det-1"}],
+        }
+
+    def related_paths(self, root, query, *, limit, result=None):
+        return ["src/app.py"]
+
+
+class _EvidenceRepoTools(_RepoTools):
+    def __init__(self, backend):
+        self.backend = backend
+
+    def iter_files(self, root):
+        return iter(("src/app.py",))
+
+    def context_pack(self, root, query, *, max_tokens, top_k):
+        return self.backend.context_pack(
+            root, query, max_chars=max_tokens * 4, max_raw_evidence=top_k,
+        )
+
+    def context_pack_paths(self, root, query, paths, *, max_tokens, top_k, **kwargs):
+        return self.context_pack(root, query, max_tokens=max_tokens, top_k=top_k)
+
+
+def _bind_evidence_backends(services):
+    services.repo_tools = _EvidenceRepoTools(services.deterministic)
+    services._refresh_changed_intelligence = lambda _root: None
 
 
 class _RelevanceGuard(_Guard):
@@ -1159,12 +1203,13 @@ def test_adaptive_context_is_deterministic_first():
     guard = _RelevanceGuard()
     services = _guarded_services(guard, stub_retrieval=False)
     services.deterministic = _EvidenceDeterministic(events)
+    _bind_evidence_backends(services)
     services._generate = lambda *args, **kwargs: events.append("model") or {"success": True, "text": '{"selected_evidence_ids":["det-1"],"claims":[]}' }
 
     result = services.adaptive_context_pack(_request(memory_revision="memory-1"), mode="adaptive")
 
     assert events == ["deterministic", "model"]
-    assert result["context_source"] == "deterministic-fast"
+    assert result["context_source"] == "adaptive-hybrid"
     assert result["repo_revision"] == "revision-1"
 
 
@@ -1180,6 +1225,7 @@ def test_model_relevance_pass_receives_structured_evidence_only():
         return {"success": True, "text": '{"selected_evidence_ids":["det-1"],"claims":[]}' }
 
     services.deterministic = _EvidenceDeterministic([])
+    _bind_evidence_backends(services)
     services._generate = generate
 
     services.adaptive_context_pack(_request(query="find route private prompt secret-value"), mode="adaptive")
@@ -1195,6 +1241,7 @@ def test_model_failure_returns_deterministic_degraded_pack():
     guard = _RelevanceGuard()
     services = _guarded_services(guard, stub_retrieval=False)
     services.deterministic = _EvidenceDeterministic([])
+    _bind_evidence_backends(services)
     services._generate = lambda *args, **kwargs: {"success": False, "error": "timeout"}
 
     result = services.adaptive_context_pack(_request(), mode="adaptive")
@@ -1202,7 +1249,7 @@ def test_model_failure_returns_deterministic_degraded_pack():
     assert result["context"] == "deterministic context"
     assert result["model_degraded"] is True
     assert result["model_degraded_reason"] == "model_unavailable"
-    assert result["context_source"] == "deterministic-fast"
+    assert result["context_source"] == "adaptive-hybrid"
 
 
 def test_adaptive_context_cache_key_includes_revision_phase_and_memory_revision():
@@ -1210,6 +1257,7 @@ def test_adaptive_context_cache_key_includes_revision_phase_and_memory_revision(
     guard = _RelevanceGuard()
     services = _guarded_services(guard, stub_retrieval=False)
     services.deterministic = _EvidenceDeterministic([])
+    _bind_evidence_backends(services)
     services._generate = lambda *args, **kwargs: {"success": True, "text": '{"claims":[]}' }
     original = services._repo_cached
 
@@ -1572,6 +1620,7 @@ def test_authoritative_deterministic_evidence_gets_stable_evidence_id():
             }
 
     services.deterministic = DeterministicWithEvidence()
+    _bind_evidence_backends(services)
     result = services.adaptive_context_pack(_request(), mode="adaptive")
 
     assert result["evidence"][0]["evidence_id"]

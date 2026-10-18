@@ -1525,7 +1525,9 @@ def test_stop_daemon_does_not_kill_only_leader_when_tree_stop_fails(
 def test_stop_daemon_leaves_no_child_process_orphan(
     tmp_path: Path,
 ) -> None:
-    broker = _broker(tmp_path, allow_unknown=True)
+    # The launcher creates a child and writes its PID inside the registered
+    # task worktree, so this integration fixture explicitly permits mutation.
+    broker = _broker(tmp_path, allow_mutating=True)
     child_pid_file = tmp_path / "daemon-child.pid"
     parent_code = (
         "import pathlib, subprocess, sys, time; "
@@ -1541,7 +1543,7 @@ def test_stop_daemon_leaves_no_child_process_orphan(
         name="explicit-tree-stop-test",
         task_id="daemon-test",
     )
-    assert daemon["success"] is True
+    assert daemon["success"] is True, daemon
     process = broker._daemons[daemon["daemon_id"]]["process"]
     child_pid: int | None = None
     child_identity: object | None = None
@@ -1584,7 +1586,8 @@ def test_daemon_job_stops_descendants_after_leader_exits(
         return stop_tree(info)
 
     monkeypatch.setattr(commands_module, "_stop_daemon_tree", fail_once)
-    broker = _broker(tmp_path, allow_unknown=True)
+    # The launcher creates a child and publishes its PID in the task worktree.
+    broker = _broker(tmp_path, allow_mutating=True)
     child_pid_file = tmp_path / "daemon-child.pid"
     parent_code = (
         "import pathlib, subprocess, sys; "
@@ -1596,7 +1599,7 @@ def test_daemon_job_stops_descendants_after_leader_exits(
     daemon = broker.spawn_daemon(
         [sys.executable, str(parent_script), str(child_pid_file)], str(tmp_path), name="orphan-child-test", task_id="daemon-test"
     )
-    assert daemon["success"] is True
+    assert daemon["success"] is True, daemon
     child_pid: int | None = None
     try:
         deadline = time.monotonic() + 5

@@ -155,6 +155,7 @@ def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
         error="SyntaxError: invalid syntax in foo.py",
         exit_code=1,
         state_revision="rev_1",
+        repository_root=str(tmp_path.resolve()),
     )
 
     rec1 = istore.capture(outcome)
@@ -190,6 +191,7 @@ def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
         error="unclassified internal failure",
         exit_code=1,
         state_revision="rev_1",
+        repository_root=str(tmp_path.resolve()),
     )
     rec_unclass = istore.capture(unclassified)
     dec_stop = istore.retry_decision(rec_unclass.fingerprint, "rev_1", root=str(tmp_path.resolve()))

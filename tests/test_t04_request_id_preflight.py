@@ -91,13 +91,13 @@ def test_invalid_request_id_does_not_bypass_authorization(monkeypatch) -> None:
     assert submitted == []
 
 
-def test_request_id_header_wins_over_conflicting_body_request_id(monkeypatch) -> None:
+def test_conflicting_body_request_id_rejects_before_journal_or_submit(monkeypatch) -> None:
     journal, submitted, responses, _payload_reads = _run_work_order_post(
         monkeypatch,
         "header-request-id",
         {"action": "submit", "work_id": "work-1", "request_id": "body-request-id"},
     )
 
-    assert responses[0][0] == 200
-    assert [call[1][0] for call in journal] == ["header-request-id"]
-    assert submitted == [{"action": "submit", "work_id": "work-1", "request_id": "body-request-id"}]
+    assert responses[0][0] == 400
+    assert journal == []
+    assert submitted == []

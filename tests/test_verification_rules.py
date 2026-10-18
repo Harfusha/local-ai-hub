@@ -58,6 +58,16 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     return root, tmp_path / "state"
 
 
+def _bind_created_root(task_store: object, task_id: str, root: Path) -> None:
+    """Give lightweight stores the same trusted task.created root evidence."""
+    payload = {
+        "task_id": task_id,
+        "checkpoint": {"state_data": {"repo_root": str(root.resolve())}},
+    }
+    events = lambda **_kwargs: [SimpleNamespace(kind="task.created", payload=payload)]
+    setattr(task_store, "state_store", SimpleNamespace(events=events))
+
+
 def _bind_execution_record(
     verification: VerificationStore, receipt, proof: dict, root: Path,
 ) -> None:
@@ -115,7 +125,9 @@ def test_evaluate_project_completion_passes_rules_and_configured_commands(tmp_pa
         context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
-    verification.task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    _bind_created_root(task_store, "task-1", root)
+    verification.task_store = task_store
 
     actual = evaluate_project_completion(
         verification,
@@ -152,6 +164,7 @@ def test_completion_handler_does_not_mutate_task_when_receipts_fail(tmp_path: Pa
         context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
+    _bind_created_root(task_store, "task-1", root)
     verification = _VerificationStore(result)
     verification.task_store = task_store
 
@@ -196,7 +209,16 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
             return result
 
     class Tasks:
-        state_store = SimpleNamespace(enabled=True)
+        state_store = SimpleNamespace(
+            enabled=True,
+            events=lambda **_kwargs: [SimpleNamespace(
+                kind="task.created",
+                payload={
+                    "task_id": "task-1",
+                    "checkpoint": {"state_data": {"repo_root": str(root.resolve())}},
+                },
+            )],
+        )
 
         def get(self, _task_id: str) -> object:
             return SimpleNamespace(
@@ -205,6 +227,10 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
                 context=SimpleNamespace(repository_id=coordination_id, session_id="default"),
                 checkpoint=SimpleNamespace(state_data={
                     "repo_root": str(root.resolve()),
+                    "_agent_task_scope": {
+                        "version": 2,
+                        "repo_root": str(root.resolve()),
+                    },
                     "repository_revision": "rev-1",
                     "mutation_generation": 0,
                 }),
@@ -226,6 +252,7 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
     verification.task_store = app_tasks
     app = SimpleNamespace(
         config={},
+        agent_state=SimpleNamespace(db_path=state_dir / "agent_state.sqlite"),
         debug_traces=None,
         recovery=Recovery(),
         agent_tasks=app_tasks,
@@ -284,6 +311,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
     verification_store = VerificationStore(
         state_store, task_store=task_store, artifact_store=artifact_store
     )
+    verification_store.set_command_execution_record_lookup(lambda *_args, **_kwargs: None)
     task_store.create(
         GoalContract(goal="verify configured rule", acceptance_criteria=("required_commands",)),
         ScopeContext(task_id="task-mcp", repository_id=coordination_id, session_id=session_id),
@@ -300,6 +328,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
 
     app = SimpleNamespace(
         config={},
+        agent_state=state_store,
         debug_traces=None,
         recovery=Recovery(),
         agent_tasks=task_store,
@@ -413,12 +442,6 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         evidence_type="test",
     )
     verification_store.record(command_receipt)
-    _bind_execution_record(
-        verification_store,
-        command_receipt,
-        command_proof,
-        root,
-    )
     first_completion_attempt = mcp_server.local_ai_coord(
         action="task_complete", task_id="task-mcp", root=str(root), reason="done"
     )
@@ -441,21 +464,26 @@ def test_mcp_task_completion_enforces_project_verification_rules(
 def test_invalid_project_configuration_blocks_completion(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
+    state_dir = tmp_path / "state"
+    coordination_id = resolve_project_context(root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     (root / ".local-ai.toml").write_text("[verification_rules]\nbad = false\n", encoding="utf-8")
     verification = _VerificationStore(CompletionResult("task-1", False, (), ("check",), (), ()))
     task = SimpleNamespace(
         task_id="task-1",
         owner="owner-1",
-        context=SimpleNamespace(repository_id=str(root.resolve())),
+        context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
-    verification.task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    _bind_created_root(task_store, "task-1", root)
+    verification.task_store = task_store
 
     result = evaluate_project_completion(
         verification,
         "task-1",
         root=root,
-        state_dir=tmp_path / "state",
+        state_dir=state_dir,
     )
 
     assert not result.complete
@@ -476,7 +504,9 @@ def test_project_completion_rejects_root_not_bound_to_task(tmp_path: Path) -> No
         context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
-    verification.task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    _bind_created_root(task_store, "task-1", trusted_root)
+    verification.task_store = task_store
 
     result = evaluate_project_completion(
         verification,

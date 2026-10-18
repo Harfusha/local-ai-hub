@@ -19,7 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
-from .process_utils import hidden_run_kwargs
+from .process_utils import clean_git_env, hidden_run_kwargs
 
 
 _MAX_CONFIG_BYTES = 256 * 1024
@@ -303,6 +303,7 @@ def _git_common_dir(root: Path) -> Path | None:
     """Return Git common directory using one bounded, shell-free subprocess."""
     kwargs: dict[str, Any] = {
         "cwd": str(root),
+        "env": clean_git_env(),
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.DEVNULL,
@@ -367,6 +368,7 @@ def _git_primary_worktree_root(root: Path, common_dir: Path | None) -> Path | No
 
     kwargs: dict[str, Any] = {
         "cwd": str(root),
+        "env": clean_git_env(),
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.DEVNULL,

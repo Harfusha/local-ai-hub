@@ -40,7 +40,7 @@ def test_telemetry_report_route_returns_first_next_and_last_error_pages(
 
         pages = []
         for offset in (0, 2, 4):
-            handler = Handler()
+            handler = object.__new__(Handler)
             handler.path = (
                 f"/api/telemetry/report?days=30&recent_errors=2&error_offset={offset}"
             )
@@ -90,7 +90,8 @@ def test_telemetry_report_route_rejects_non_integer_page_values(
         def _send(self, status, payload):
             responses.append((status, payload))
 
-    http_server.Handler.do_GET(Handler())
+    handler = object.__new__(Handler)
+    http_server.Handler.do_GET(handler)
 
     assert responses[0][0] == 400
     assert "error_offset" in responses[0][1]["error"]

@@ -107,16 +107,14 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     _files(root)
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
-    store.require_workspace_root(workspace=workspace, root=str(root))
+    assert store.index_paths_step(
+        root=str(root), workspace=workspace, paths=[]
+    )["success"] is True
     digest_key = store._workspace_project_config_key(
         workspace, store._project_root_identity(root)
     )
     rejected = ["private/secret.py", "payload.binx", "large.py"]
     with closing(store._connect()) as con:
-        con.execute(
-            "INSERT INTO rag_meta(key,value) VALUES(?,?)",
-            (digest_key, "test-config-digest"),
-        )
         for rel in rejected:
             stat = (root / rel).stat()
             file_hash = "hash-" + rel
@@ -211,14 +209,19 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     _files(root)
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
-    store.require_workspace_root(workspace=workspace, root=str(root))
+    assert store.index_paths_step(
+        root=str(root), workspace=workspace, paths=[]
+    )["success"] is True
+    with closing(store._connect()) as con:
+        generation_before_policy_prune = store._workspace_index_generation(con, workspace)
     digest_key = store._workspace_project_config_key(
         workspace, store._project_root_identity(root)
     )
     source_stat = (root / "private" / "secret.py").stat()
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO rag_meta(key,value) VALUES(?,?)", (digest_key, "old-policy-digest")
+            "UPDATE rag_meta SET value=? WHERE key=?",
+            ("old-policy-digest", digest_key),
         )
         con.execute(
             "INSERT INTO files VALUES(?,?,?,?,?)",
@@ -243,7 +246,7 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
             "SELECT COUNT(*) FROM chunks WHERE workspace=? AND path=?",
             (workspace, "private/secret.py"),
         ).fetchone()[0] == 0
-        assert store._workspace_index_generation(con, workspace) == 1
+        assert store._workspace_index_generation(con, workspace) == generation_before_policy_prune + 1
         assert con.execute("SELECT value FROM rag_meta WHERE key=?", (digest_key,)).fetchone()[0] == "test-config-digest"
 
     context.api.resolve_project_context = lambda root, _state_dir=None: SimpleNamespace(
@@ -253,7 +256,7 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
 
     assert result["success"] is True
     with closing(store._connect()) as con:
-        assert store._workspace_index_generation(con, workspace) == 2
+        assert store._workspace_index_generation(con, workspace) == generation_before_policy_prune + 2
         assert con.execute("SELECT value FROM rag_meta WHERE key=?", (digest_key,)).fetchone()[0] == "changed-policy-digest"
         metadata = [str(row[0]) + str(row[1]) for row in con.execute("SELECT key,value FROM rag_meta")]
         assert all("secret source" not in item and str(root) not in item for item in metadata)
@@ -266,14 +269,28 @@ def test_rag_skip_phase_prunes_rows_and_advances_workspace_identity(
     root.mkdir()
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
-    store.require_workspace_root(workspace=workspace, root=str(root))
+    store._sync_workspace_project_policy_identity(
+        root, workspace, store.project_context(root)
+    )
+    with closing(store._connect()) as con:
+        generation_before_skip_prune = store._workspace_index_generation(con, workspace)
     source = root / "secret.py"
     source.write_text("x\n", encoding="utf-8")
     stat = source.stat()
     with closing(store._connect()) as con:
         con.execute(
+            "UPDATE rag_meta SET value=? WHERE key=?",
+            ("old-policy-digest", store._workspace_project_config_key(
+                workspace, store._project_root_identity(root)
+            )),
+        )
+        con.execute(
             "INSERT INTO files VALUES(?,?,?,?,?)",
             (workspace, "secret.py", stat.st_mtime_ns, stat.st_size, "hash"),
+        )
+        con.execute(
+            "INSERT INTO project_file_owners(workspace,root,path) VALUES(?,?,?)",
+            (workspace, str(root.resolve()), "secret.py"),
         )
         con.execute(
             "INSERT INTO chunks VALUES(?,?,?,?,?,?,?)",
@@ -284,9 +301,9 @@ def test_rag_skip_phase_prunes_rows_and_advances_workspace_identity(
     result = store.index(root=str(root))
 
     assert result["skipped"] is True
-    assert result["removed_paths"] == 1
+    assert result["removed_paths"] == 2  # policy identity invalidation plus the removed owner path
     with closing(store._connect()) as con:
-        assert store._workspace_index_generation(con, workspace) == 1
+        assert store._workspace_index_generation(con, workspace) == generation_before_skip_prune + 2
         assert con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=?",
             (workspace,),

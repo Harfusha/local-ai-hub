@@ -1037,6 +1037,14 @@ def test_plan_grade_inference_requires_valid_model_digest() -> None:
 def test_run_benchmark_retains_busy_scratch_without_cleanup_watcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This test verifies scratch retention after an admitted worker outlives
+    # shutdown. Keep host resource pressure from changing that fixture's path;
+    # admission rejection has separate coverage above.
+    monkeypatch.setattr(
+        AsyncJobManager,
+        "_resource_admission",
+        lambda self: self._admission("accepted", "capacity_available", retryable=False),
+    )
     scratch_parent = tmp_path / "scratch"
     worker_start_gate = threading.Event()
     worker_start_attempted = threading.Event()
@@ -1411,6 +1419,13 @@ def test_python_allocation_peak_preserves_caller_tracing_and_peak(
 def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
 ) -> None:
+    # Preserve the test's focus on scratch isolation, independent of live host
+    # pressure that can otherwise reject the benchmark's queue probes.
+    monkeypatch.setattr(
+        AsyncJobManager,
+        "_resource_admission",
+        lambda self: self._admission("accepted", "capacity_available", retryable=False),
+    )
     state_dir = tmp_path / "state"
     scratch_dir = tmp_path / "synthetic"
     sqlite_operational_errors: list[dict[str, object]] = []

@@ -543,7 +543,7 @@ def test_dashboard_health_prioritizes_current_degradation() -> None:
     assert "current.degraded===true" in source
     assert "return finish({level:'degraded',label:'Degraded'" in source
     assert source.index("return finish({level:'degraded'") < source.index(
-        "return {level:'attention'"
+        "return finish({level:'attention'"
     )
 
 
