@@ -2905,11 +2905,11 @@ def test_post_import_verification_error_invalidates_caches_and_requires_incident
     owned.write_text("before", encoding="utf-8")
     unrelated = repo / "unrelated.txt"
     unrelated.write_text("keep", encoding="utf-8")
-    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
     broker = CommandBroker(
         {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True}},
         artifacts=None,

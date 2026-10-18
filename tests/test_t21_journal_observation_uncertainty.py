@@ -13,7 +13,6 @@ def test_invalid_recovery_claim_fails_closed_before_mutation(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={}, recovery=SimpleNamespace(begin=lambda *_args, **_kwargs: None)
     ))
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant-a")
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
     monkeypatch.setattr(
         http_server.Handler, "_send", lambda self, status, data: responses.append((status, data))
@@ -33,18 +32,16 @@ def test_observation_failure_of_existing_mutation_is_terminal_unknown(
 ):
     journal = RecoveryJournal(tmp_path / "state")
     request_id = "existing-mutation-observation"
-    tenant = "tenant-a"
-    identity = "agent-a"
     operation = "/api/command/run"
     payload = {"command": "owned-mutation", "request_id": request_id}
-    claim = journal.begin(request_id, tenant, operation, identity=identity, payload=payload)
+    claim = journal.begin(request_id, action=operation, payload=payload)
     assert claim["claimed"] is True
     side_effect = tmp_path / "committed-side-effect.txt"
     stored_response = {"success": prior_outcome == "done", "operation_marker": "original-owner"}
 
     def observe_then_fail(*args, **kwargs):
-        assert args[:3] == (request_id, tenant, operation)
-        assert kwargs["identity"] == identity
+        assert args == (request_id,)
+        assert kwargs["action"] == operation
         assert kwargs["payload_fingerprint"] == journal.fingerprint_payload(payload)
         # The original owner mutates while this duplicate waits for its outcome.
         side_effect.write_text("original owner already performed the mutation", encoding="utf-8")
@@ -59,8 +56,6 @@ def test_observation_failure_of_existing_mutation_is_terminal_unknown(
 
     monkeypatch.setattr(journal, "wait_for", observe_then_fail)
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, recovery=journal))
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: tenant)
-    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: identity)
     responses = []
     monkeypatch.setattr(
         http_server.Handler, "_send", lambda self, status, data: responses.append((status, data))
@@ -73,9 +68,7 @@ def test_observation_failure_of_existing_mutation_is_terminal_unknown(
     assert side_effect.read_text(encoding="utf-8") == "original owner already performed the mutation"
     stored = journal.lookup(
         request_id,
-        tenant,
-        operation,
-        identity=identity,
+        action=operation,
         payload_fingerprint=journal.fingerprint_payload(payload),
     )
     assert stored["state"] == prior_outcome

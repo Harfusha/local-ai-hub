@@ -29,10 +29,16 @@ def _install_event_route_app(monkeypatch, agent_state, extra_config=None):
     task_ids = ("one", "task-1")
     agent_tasks = {
         task_id: SimpleNamespace(
+            task_id=task_id,
             context=SimpleNamespace(
                 repository_id=_EVENT_TEST_ROOT,
                 session_id=_EVENT_TEST_SESSION_ID,
-            )
+            ),
+            checkpoint=SimpleNamespace(
+                state_data={
+                    "_agent_task_scope": {"version": 2, "repo_root": _EVENT_TEST_ROOT}
+                }
+            ),
         )
         for task_id in task_ids
     }
@@ -1010,6 +1016,14 @@ def test_agent_state_detail_includes_contract_counts(monkeypatch):
                     task_id="t1",
                     status=http_server.TaskStatus.ACTIVE,
                     context=SimpleNamespace(repository_id=_EVENT_TEST_ROOT, session_id="owner"),
+                    checkpoint=SimpleNamespace(
+                        state_data={
+                            "_agent_task_scope": {
+                                "version": 2,
+                                "repo_root": _EVENT_TEST_ROOT,
+                            }
+                        }
+                    ),
                 )]
             ),
             agent_incidents=SimpleNamespace(list_incidents=lambda: [

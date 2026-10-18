@@ -70,7 +70,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
 def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     assert source.count("@mcp.tool()") == 8
-    assert "CALL THIS FIRST before broad repository reads" in source
+    assert "Omitted mode selects adaptive" in source
     assert "context mode must be adaptive" in source
     assert "CodeGraphContext" not in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
@@ -319,7 +319,8 @@ def test_bounded_runtime_and_sqlite_contracts():
 def test_agent_policy_and_packaging_hardening_contracts(tmp_path: Path):
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
-    assert "exactly once" in skill and "in_progress=true" in skill and "never poll" in skill
+    assert "reuse fresh sufficient repository evidence" in skill.lower()
+    assert "in_progress=true" in skill and "never poll" in skill
     for phrase in ("READ-ONLY AUDIT CONTRACT", "git worktree add", "terminal=true", "allow_write", "Codex controls subagent permissions per task"):
         assert phrase in skill
     setup_source = (ROOT / "tools" / "setup.py").read_text(encoding="utf-8")
@@ -393,7 +394,6 @@ def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path
         "Check active configuration and backend state before claiming synthesis is disabled.",
     )
     notes = (
-        '`local_ai_rag(action="ingest_document")`',
         *ingest_notes,
         '`local_ai_repo(action="pipeline")` accepts closed step objects',
         '`local_ai_artifact(action="list")` does not require `artifact_id`',
@@ -409,6 +409,8 @@ def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path
     for note in notes:
         assert all(note in prompt for prompt in prompts)
         assert note in generated
+    assert all('`local_ai_rag(action="ingest_document")`' in prompt for prompt in prompts)
+    assert '`local_ai_rag(action="ingest_document")`' in mcp_docs
     assert all(note in mcp_docs for note in (*ingest_notes, *synthesis_notes))
 
 

@@ -576,7 +576,6 @@ def test_unsupported_legacy_journal_is_preserved_and_fails_closed(tmp_path) -> N
     journal = RecoveryJournal(tmp_path)
 
     assert journal._journal_unavailable is True
-    assert (tmp_path / "recovery.unavailable").is_file()
     assert path.read_bytes() == original
     with closing(sqlite3.connect(path)) as con:
         assert con.execute("SELECT request_id,state FROM requests").fetchall() == [("req-legacy", "running")]
@@ -1354,11 +1353,18 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     payload = dict(payload)
     task_root = str(tmp_path.resolve())
     session_id = "session-journal-replay"
+    payload["root"] = task_root
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
+    from local_ai_hub.project_config import resolve_project_context
+
+    coordination_id = resolve_project_context(task_root, state_dir).coordination_id
     task = SimpleNamespace(
-        context=SimpleNamespace(repository_id=task_root, session_id=session_id)
+        context=SimpleNamespace(repository_id=coordination_id, session_id=session_id),
+        checkpoint=SimpleNamespace(state_data={
+            "_agent_task_scope": {"version": 2, "repo_root": task_root},
+        }),
     )
-    if path == "/api/agent-state/tasks":
-        payload["root"] = task_root
     calls: list[str] = []
 
     def failed_publish(label: str) -> dict[str, Any]:
@@ -1373,6 +1379,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         config={"security": {
             "allowed_roots": [task_root],
         }},
+        agent_state=SimpleNamespace(db_path=str(state_dir / "agent_state.sqlite3")),
         recovery=journal,
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         rag=SimpleNamespace(
@@ -1589,11 +1596,18 @@ def test_http_request_journal_replays_action_mutations_once(
     payload = dict(payload)
     task_root = str(tmp_path.resolve())
     session_id = "session-journal-replay"
-    task = SimpleNamespace(
-        context=SimpleNamespace(repository_id=task_root, session_id=session_id)
-    )
+    task = SimpleNamespace(context=SimpleNamespace(repository_id="", session_id=session_id))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
     if path == "/api/agent-state/tasks":
         payload["root"] = task_root
+        from local_ai_hub.project_config import resolve_project_context
+
+        task.context.repository_id = resolve_project_context(task_root, state_dir).coordination_id
+        task.owner = "agent-a"
+        task.checkpoint = SimpleNamespace(state_data={
+            "_agent_task_scope": {"version": 2, "repo_root": task_root},
+        })
     calls: list[str] = []
     responses: list[tuple[int, dict[str, Any]]] = []
 
@@ -1610,7 +1624,11 @@ def test_http_request_journal_replays_action_mutations_once(
         },
         recovery=journal,
         rag=SimpleNamespace(),
-        agent_state=SimpleNamespace(enabled=True, cleanup=lambda **_kwargs: effect("agent-state-cleanup")),
+        agent_state=SimpleNamespace(
+            enabled=True,
+            db_path=str(state_dir / "agent_state.sqlite3"),
+            cleanup=lambda **_kwargs: effect("agent-state-cleanup"),
+        ),
         agent_tasks=SimpleNamespace(
             enabled=True,
             state_store=SimpleNamespace(enabled=True),

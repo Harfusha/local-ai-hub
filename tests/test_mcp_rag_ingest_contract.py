@@ -41,13 +41,14 @@ def test_document_ingest_requires_explicit_content_and_does_not_use_query_or_roo
     assert client.calls == []
 
 
-def test_document_ingest_maps_explicit_content_on_first_call(monkeypatch):
+def test_document_ingest_maps_explicit_content_on_first_call(monkeypatch, tmp_path):
     client = _CapturingClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
 
     result = mcp_server.local_ai_rag(
         action="ingest_document",
+        root=str(tmp_path.resolve()),
         content="specific document text",
         query="different query text",
         title="SDK guide",
@@ -58,7 +59,8 @@ def test_document_ingest_maps_explicit_content_on_first_call(monkeypatch):
     path, payload, _timeout = client.calls[0]
     assert path == "/api/rag/ingest_document"
     assert payload == {
-        "workspace": "default",
+        "root": str(tmp_path.resolve()),
+        "workspace": mcp_server.canonical_workspace_id(str(tmp_path.resolve())),
         "content": "specific document text",
         "title": "SDK guide",
         "metadata": None,

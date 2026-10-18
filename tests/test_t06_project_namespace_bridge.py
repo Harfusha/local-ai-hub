@@ -55,7 +55,7 @@ def test_http_lease_blocks_command_broker_across_linked_worktrees(tmp_path: Path
     try:
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/leases/claim_batch",
-            data=json.dumps({"root": str(primary), "paths": ["owned.txt"]}).encode("utf-8"),
+            data=json.dumps({"owner": "t06-http-task", "root": str(primary), "paths": ["owned.txt"]}).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "Connection": "close",
@@ -95,7 +95,7 @@ def test_http_lease_blocks_command_broker_across_linked_worktrees(tmp_path: Path
         assert (linked / "owned.txt").read_text(encoding="utf-8") == "before\n"
     finally:
         if held_lease_id:
-            app.leases.release("http-owner", held_lease_id)
+            app.leases.release(owner="t06-http-task", lease_id=held_lease_id)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

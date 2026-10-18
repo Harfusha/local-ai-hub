@@ -180,7 +180,7 @@ def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
     assert payload["attempts"] == 2
 
     # Test retry_decision: syntax error produces verified_fix with high confidence
-    dec = istore.retry_decision(rec1.fingerprint, "rev_1")
+    dec = istore.retry_decision(rec1.fingerprint, "rev_1", root=str(tmp_path.resolve()))
     assert dec.action == "apply_verified_fix"
 
     # Test retry_decision on unknown error without verified fix
@@ -192,9 +192,9 @@ def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
         state_revision="rev_1",
     )
     rec_unclass = istore.capture(unclassified)
-    dec_stop = istore.retry_decision(rec_unclass.fingerprint, "rev_1")
+    dec_stop = istore.retry_decision(rec_unclass.fingerprint, "rev_1", root=str(tmp_path.resolve()))
     assert dec_stop.action == "stop"  # Identical error on unchanged revision
-    dec_retry = istore.retry_decision(rec_unclass.fingerprint, "rev_2")
+    dec_retry = istore.retry_decision(rec_unclass.fingerprint, "rev_2", root=str(tmp_path.resolve()))
     assert dec_retry.action == "retry"  # Revision changed
 
     fetched = istore.get(rec1.incident_id)

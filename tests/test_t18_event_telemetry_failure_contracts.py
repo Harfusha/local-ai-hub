@@ -31,7 +31,15 @@ def _scoped_app(tmp_path, **components):
     root = tmp_path / "repo"
     root.mkdir()
     session_id = "session-t18-event-test"
-    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id=session_id))
+    task = SimpleNamespace(
+        task_id="task-1",
+        context=SimpleNamespace(repository_id=str(root.resolve()), session_id=session_id),
+        checkpoint=SimpleNamespace(
+            state_data={
+                "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())}
+            }
+        ),
+    )
     config = {
         "security": {
             "api_token": "t18-test-api-token",

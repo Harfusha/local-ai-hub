@@ -75,16 +75,16 @@ def _rag_snapshot(store, workspace: str):
     with closing(store._connect()) as con:
         files = con.execute(
             "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=? ORDER BY path",
-            (workspace),
+            (workspace,),
         ).fetchall()
         chunks = con.execute(
             "SELECT path,chunk_no,content_hash,text,embedding,embedding_space FROM chunks "
             "WHERE workspace=? ORDER BY path,chunk_no",
-            (workspace),
+            (workspace,),
         ).fetchall()
         fts = con.execute(
             "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=? ORDER BY path,chunk_no",
-            (workspace),
+            (workspace,),
         ).fetchall()
         embedding_space = store._stored_workspace_embedding_space(con, workspace)
         generation = store._workspace_index_generation(con, workspace)
@@ -140,7 +140,7 @@ def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
             }
 
     store.services = _RecordingServices()
-    result = store.ingest_document(title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
+    result = store.ingest_document(root=str(tmp_path), title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
 
     assert result["success"] is True
     embedded_text = "\n".join(embedded_texts)
@@ -153,7 +153,7 @@ def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
 def test_document_ingest_indexes_title_and_metadata(tmp_path):
     store = _store(tmp_path)
 
-    result = store.ingest_document(title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
+    result = store.ingest_document(root=str(tmp_path), title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
 
     assert result["success"] is True
     assert result["embedded"] is False
@@ -174,7 +174,7 @@ def test_document_ingest_reports_embedded_only_when_all_chunks_have_vectors(tmp_
             return {"success": True, "embeddings": [[0.1, 0.2]]}
 
     store.services = _OneVectorServices()
-    result = store.ingest_document(title="Long document", workspace="specs", content="x" * 1200)
+    result = store.ingest_document(root=str(tmp_path), title="Long document", workspace="specs", content="x" * 1200)
 
     assert result["success"] is True
     assert result["chunks_ingested"] > 1
@@ -201,7 +201,7 @@ def test_document_ingest_reports_real_embedding_success(tmp_path):
             return {"success": True, "embeddings": [[0.1, 0.2] for _ in texts]}
 
     store.services = _VectorServices()
-    result = store.ingest_document(title="Embedded", workspace="specs", content="A fully embedded document.")
+    result = store.ingest_document(root=str(tmp_path), title="Embedded", workspace="specs", content="A fully embedded document.")
 
     assert result["success"] is True
     assert result["embedded"] is True
@@ -214,8 +214,8 @@ def test_document_ingest_replay_replaces_one_stable_document_snapshot(tmp_path):
     store = _store(tmp_path)
     content = "repeatable section " * 90
 
-    first = store.ingest_document(title="Replay Safe", workspace="specs", content=content)
-    second = store.ingest_document(title="Replay Safe", workspace="specs", content=content)
+    first = store.ingest_document(root=str(tmp_path), title="Replay Safe", workspace="specs", content=content)
+    second = store.ingest_document(root=str(tmp_path), title="Replay Safe", workspace="specs", content=content)
 
     assert first["success"] is True
     assert second["success"] is True
@@ -270,7 +270,7 @@ def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monk
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(connect()))
 
-    result = store.ingest_document(title="Busy", workspace="specs", content="retryable publication")
+    result = store.ingest_document(root=str(tmp_path), title="Busy", workspace="specs", content="retryable publication")
 
     assert result["success"] is True
     assert state["begins"] == 2
@@ -280,7 +280,7 @@ def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monk
 def test_document_ingest_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch):
     store = _store(tmp_path)
     title = "Atomic Document"
-    assert store.ingest_document(title=title, workspace="specs", content="old content")["success"] is True
+    assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="old content")["success"] is True
 
     class _DiskFullConnection:
         def __init__(self, connection):
@@ -303,7 +303,7 @@ def test_document_ingest_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _DiskFullConnection(connect()))
 
-    result = store.ingest_document(title=title, workspace="specs", content="new content")
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="new content")
     monkeypatch.setattr(store, "_connect", connect)
 
     assert result["success"] is False
@@ -383,11 +383,11 @@ def test_document_ingest_fts_write_failure_keeps_previous_snapshot(
 ):
     store = _store(tmp_path)
     title = "Atomic FTS Document"
-    assert store.ingest_document(title=title, workspace="specs", content="before snapshot")["success"] is True
+    assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
     previous = _rag_snapshot(store, "default", "specs")
 
     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
-    result = store.ingest_document(title=title, workspace="specs", content="after snapshot")
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
 
     assert result["success"] is False
     assert result["retryable"] is False
@@ -428,9 +428,9 @@ def test_exhausted_publish_busy_retries_preserve_snapshot_and_report_retryable(
         expected_error = "publish_failed"
     else:
         title = "Busy Document"
-        assert store.ingest_document(title=title, workspace="specs", content="before snapshot")["success"] is True
+        assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
         previous = _rag_snapshot(store, "default", "specs")
-        invoke = lambda: store.ingest_document(title=title, workspace="specs", content="after snapshot")
+        invoke = lambda: store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
         expected_error = "ingest_publish_failed"
 
     injected = _inject_sqlite_write_failure(
@@ -599,7 +599,7 @@ def test_document_ingest_bounds_batches_and_preserves_long_document_order(tmp_pa
     services = _RecordingServices()
     store.services = services
 
-    result = store.ingest_document(title=title, workspace="specs", content=content)
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content=content)
 
     assert result["success"] is True
     assert result["embedded"] is True
@@ -646,7 +646,7 @@ def test_document_ingest_keeps_text_and_degrades_remainder_after_later_batch_fai
     services = _FailSecondBatchServices()
     store.services = services
 
-    result = store.ingest_document(title=title, workspace="specs", content=content)
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content=content)
 
     assert result["success"] is True
     assert result["embedded_chunks"] == 64
@@ -700,7 +700,7 @@ def test_document_ingest_rejects_overlong_later_batch_without_misassociation(tmp
     services = _OverlongSecondBatchServices()
     store.services = services
 
-    result = store.ingest_document(title=title, workspace="specs", content=content)
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content=content)
 
     assert result["success"] is True
     assert result["embedded_chunks"] == 64
@@ -732,8 +732,8 @@ def test_heuristic_rerank_scores_and_orders_every_candidate(tmp_path):
 
     store.services = _FixedServices()
     workspace = "heuristic-rerank"
-    store.ingest_document(title="Credential Rotation Plan", workspace=workspace, content="Rotate authentication credentials weekly.")
-    store.ingest_document(title="Cafeteria Menu", workspace=workspace, content="Soup and tea are served at lunch.")
+    store.ingest_document(root=str(tmp_path), title="Credential Rotation Plan", workspace=workspace, content="Rotate authentication credentials weekly.")
+    store.ingest_document(root=str(tmp_path), title="Cafeteria Menu", workspace=workspace, content="Soup and tea are served at lunch.")
 
     result = store.search("credential rotation", top_k=2, use_reranker=True, workspace=workspace)
 
@@ -749,8 +749,8 @@ def test_docset_rejects_empty_names_without_index_or_search(tmp_path, monkeypatc
     monkeypatch.setattr(store, "index", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("indexed empty docset")))
     monkeypatch.setattr(store, "search", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("searched empty docset")))
 
-    assert store.docset_index("  ", str(tmp_path))["success"] is False
-    assert store.docset_index(None, str(tmp_path))["success"] is False
+    assert store.docset_index("  ", root=str(tmp_path))["success"] is False
+    assert store.docset_index(None, root=str(tmp_path))["success"] is False
     assert store.docset_search("\t", "query")["success"] is False
 
 
@@ -759,7 +759,7 @@ def test_raster_diagram_reports_metadata_only_and_indexes_caption_metadata(tmp_p
     image = tmp_path / "network.png"
     image.write_bytes(b"not decoded by metadata-only ingestion")
 
-    result = store.ingest_diagram(caption="Private edge routing", metadata={"owner": "platform", "revision": 4}, workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), caption="Private edge routing", metadata={"owner": "platform", "revision": 4}, workspace="diagrams", image_path=str(image))
 
     assert result["success"] is True
     assert result["diagram_content_mode"] == "metadata_only"
@@ -774,7 +774,7 @@ def test_svg_diagram_reports_extracted_text_provenance(tmp_path):
     image = tmp_path / "flow.svg"
     image.write_text("<svg><text>Queue Drain</text></svg>", encoding="utf-8")
 
-    result = store.ingest_diagram(caption="Drain workflow", workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), caption="Drain workflow", workspace="diagrams", image_path=str(image))
 
     assert result["diagram_content_mode"] == "svg_text_nodes"
     assert result["vision_or_ocr_used"] is False
@@ -790,7 +790,7 @@ def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch
         lambda _state_dir: OperationalModeSnapshot("active", 0, None),
     )
     parameters = inspect.signature(mcp_server.local_ai_rag).parameters
-    assert {"content", "title", "metadata", "image_path", "caption"} <= set(parameters)
+    assert {"content", "title", "metadata", "image_path", "caption", "root"} <= set(parameters)
 
     requests = []
 
@@ -806,6 +806,7 @@ def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch
 
     mcp_server.local_ai_rag(
         action="ingest_document",
+        root=str(tmp_path),
         workspace="specs",
         content="Explicit content",
         title="Explicit title",
@@ -813,6 +814,7 @@ def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch
     )
     mcp_server.local_ai_rag(
         action="ingest_diagram",
+        root=str(tmp_path),
         workspace="diagrams",
         image_path=str(tmp_path / "diagram.png"),
         caption="Explicit caption",
@@ -826,12 +828,14 @@ def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch
     assert rag_requests == [
         {
             "workspace": "specs",
+            "root": str(tmp_path),
             "content": "Explicit content",
             "title": "Explicit title",
             "metadata": {"owner": "team"},
         },
         {
             "workspace": "diagrams",
+            "root": str(tmp_path),
             "image_path": str(tmp_path / "diagram.png"),
             "caption": "Explicit caption",
             "metadata": {"owner": "team"},
@@ -889,13 +893,13 @@ def test_t11_live_ollama_rag_ingest_and_reranker_truthfulness(tmp_path):
             return result
 
         app.services.embed = capture_embed
-        target = app.rag.ingest_document(
+        target = app.rag.ingest_document(root=str(tmp_path),
             workspace=workspace,
             content="Rotate API authentication secrets every seven days.",
             title="Credential Rotation Plan",
             metadata={"owner": "identity-team"},
         )
-        app.rag.ingest_document(
+        app.rag.ingest_document(root=str(tmp_path),
             workspace=workspace,
             content="The cafeteria serves soup and tea during lunch.",
             title="Cafeteria Menu",
@@ -1153,7 +1157,7 @@ def test_preemption_after_embed_batch_preserves_published_snapshot(tmp_path, mon
     ],
 )
 def test_mcp_rag_ingest_requires_explicit_input(
-    action, kwargs, expected_error, monkeypatch
+    action, kwargs, expected_error, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(
         mcp_server,
@@ -1169,6 +1173,7 @@ def test_mcp_rag_ingest_requires_explicit_input(
         lambda *args, **kw: calls.append((args, kw)) or {"success": True},
     )
 
+    kwargs["root"] = str(tmp_path)
     result = mcp_server.local_ai_rag(action=action, **kwargs)
 
     assert result["success"] is False
@@ -1176,7 +1181,7 @@ def test_mcp_rag_ingest_requires_explicit_input(
     assert calls == []
 
 
-def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
+def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch, tmp_path):
     monkeypatch.setattr(
         mcp_server,
         "load_operational_mode",
@@ -1199,6 +1204,7 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
 
     mcp_server.local_ai_rag(
         action="ingest_document",
+        root=str(tmp_path),
         workspace="specs",
         content="Explicit document content.",
         title="Explicit title",
@@ -1207,6 +1213,7 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
     )
     mcp_server.local_ai_rag(
         action="ingest_diagram",
+        root=str(tmp_path),
         image_path="diagram.svg",
         caption="",
         metadata={"kind": "diagram"},
@@ -1223,6 +1230,7 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
             "/api/rag/ingest_document",
             {
                 "workspace": "specs",
+                "root": str(tmp_path),
                 "content": "Explicit document content.",
                 "title": "Explicit title",
                 "metadata": {"source": "test"},
@@ -1232,6 +1240,7 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
             "/api/rag/ingest_diagram",
             {
                 "workspace": "default",
+                "root": str(tmp_path),
                 "image_path": "diagram.svg",
                 "caption": "",
                 "metadata": {"kind": "diagram"},
@@ -1248,7 +1257,7 @@ def test_diagram_ingest_rejects_svg_over_configured_file_limit(tmp_path, monkeyp
     calls = []
     monkeypatch.setattr(store, "ingest_document", lambda **kwargs: calls.append(kwargs))
 
-    result = store.ingest_diagram(workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(image))
 
     assert result["success"] is False
     assert calls == []
@@ -1272,7 +1281,7 @@ def test_diagram_ingest_bounds_svg_read_when_file_grows_after_stat(tmp_path, mon
     calls = []
     monkeypatch.setattr(store, "ingest_document", lambda **kwargs: calls.append(kwargs))
 
-    result = store.ingest_diagram(workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(image))
 
     assert result["success"] is False
     assert calls == []
@@ -1287,9 +1296,9 @@ def test_diagram_ingest_uses_path_identity_for_same_stem_files(tmp_path):
     first.write_text("<svg><text>first</text></svg>", encoding="utf-8")
     second.write_text("<svg><text>second</text></svg>", encoding="utf-8")
 
-    assert store.ingest_diagram(workspace="diagrams", image_path=str(first))["success"] is True
-    assert store.ingest_diagram(workspace="diagrams", image_path=str(second))["success"] is True
-    assert store.ingest_diagram(workspace="diagrams", image_path=str(first))["success"] is True
+    assert store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(first))["success"] is True
+    assert store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(second))["success"] is True
+    assert store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(first))["success"] is True
 
     with closing(store._connect()) as con:
         paths = con.execute(
@@ -1309,7 +1318,7 @@ def test_diagram_ingest_reports_document_publish_failure(tmp_path, monkeypatch):
         lambda **kwargs: {"success": False, "error": "publish failed"},
     )
 
-    result = store.ingest_diagram(workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(image))
 
     assert result["success"] is False
     assert result["diagram_indexed"] is False
@@ -1319,7 +1328,7 @@ def test_document_ingest_rejects_content_over_configured_file_limit(tmp_path):
     store = _store(tmp_path)
     store.config["rag"]["max_file_bytes"] = 12
 
-    result = store.ingest_document(title="oversized", workspace="specs", content="x" * 13)
+    result = store.ingest_document(root=str(tmp_path), title="oversized", workspace="specs", content="x" * 13)
 
     assert result["success"] is False
     with closing(store._connect()) as con:
@@ -1342,7 +1351,7 @@ def test_document_ingest_rejects_indexed_fields_over_configured_file_limit(tmp_p
     store = _store(tmp_path)
     store.config["rag"]["max_file_bytes"] = 64
 
-    result = store.ingest_document(**fields, workspace="specs", content="ok")
+    result = store.ingest_document(root=str(tmp_path), **fields, workspace="specs", content="ok")
 
     assert result["success"] is False
     assert result["error"] == "indexed document exceeds configured file size limit"

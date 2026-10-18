@@ -86,6 +86,7 @@ def _guarded_services(guard, *, stub_retrieval=True):
     services.rag = None
     services.preprocessor = None
     services.external_tools = None
+    services.evidence_store = None
     services.consistency_guard = guard
     services.learner = None
     services._repo_cached = lambda _op, _root, _params, compute: compute()
@@ -549,6 +550,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         settings = SimpleNamespace(retrieval_weights={}, pinned_context=(), entry_points=())
         return SimpleNamespace(
             config_digest=resolved_project["digest"],
+            coordination_id=original_project_resolver(_root, _state_dir).coordination_id,
             settings=settings,
             path_hints=lambda **_kwargs: (),
         )
@@ -640,7 +642,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         route_warnings = [{"code": "route-context-warning"}]
         def record_hybrid(*args, **kwargs):
             hybrid_calls.append(kwargs)
-            hybrid_budgets.append(args[4])
+            hybrid_budgets.append(kwargs["max_tokens"])
             return {
                 "success": True, "context": "adaptive evidence", "context_source": "adaptive-hybrid",
                 "warnings": route_warnings,
@@ -1155,7 +1157,7 @@ class _RelevanceGuard(_Guard):
 def test_adaptive_context_is_deterministic_first():
     events = []
     guard = _RelevanceGuard()
-    services = _guarded_services(guard)
+    services = _guarded_services(guard, stub_retrieval=False)
     services.deterministic = _EvidenceDeterministic(events)
     services._generate = lambda *args, **kwargs: events.append("model") or {"success": True, "text": '{"selected_evidence_ids":["det-1"],"claims":[]}' }
 
@@ -1169,7 +1171,7 @@ def test_adaptive_context_is_deterministic_first():
 def test_model_relevance_pass_receives_structured_evidence_only():
     captured = {}
     guard = _RelevanceGuard()
-    services = _guarded_services(guard)
+    services = _guarded_services(guard, stub_retrieval=False)
 
     def generate(*args, **kwargs):
         captured["prompt"] = args[1]
@@ -1191,7 +1193,7 @@ def test_model_relevance_pass_receives_structured_evidence_only():
 
 def test_model_failure_returns_deterministic_degraded_pack():
     guard = _RelevanceGuard()
-    services = _guarded_services(guard)
+    services = _guarded_services(guard, stub_retrieval=False)
     services.deterministic = _EvidenceDeterministic([])
     services._generate = lambda *args, **kwargs: {"success": False, "error": "timeout"}
 
@@ -1206,7 +1208,7 @@ def test_model_failure_returns_deterministic_degraded_pack():
 def test_adaptive_context_cache_key_includes_revision_phase_and_memory_revision():
     calls = []
     guard = _RelevanceGuard()
-    services = _guarded_services(guard)
+    services = _guarded_services(guard, stub_retrieval=False)
     services.deterministic = _EvidenceDeterministic([])
     services._generate = lambda *args, **kwargs: {"success": True, "text": '{"claims":[]}' }
     original = services._repo_cached
@@ -1233,7 +1235,7 @@ def test_adaptive_context_uses_project_weights_and_invalidates_config_identity(m
     from types import SimpleNamespace
     from local_ai_hub import project_config
 
-    services = _guarded_services(_Guard())
+    services = _guarded_services(_Guard(), stub_retrieval=False)
     services.consistency_guard = None
     captured = []
     cache_calls = []
@@ -1256,10 +1258,12 @@ def test_adaptive_context_uses_project_weights_and_invalidates_config_identity(m
         memory_revision="m" * 500,
     )
 
+    coordination_id = project_config.resolve_project_context(ROOT, services.config["server"]["state_dir"]).coordination_id
     results = []
     for digest, weight in (("config-a", 0.25), ("config-b", 0.75)):
         project = SimpleNamespace(
             root=ROOT,
+            coordination_id=coordination_id,
             settings=project_config.ProjectSettings(retrieval_weights={"lexical": weight}),
             config_digest=digest,
             path_hints=lambda **_kwargs: (),
@@ -1557,7 +1561,7 @@ def test_context_http_preserves_terminal_pack_failure_with_and_without_task_cont
 
 
 def test_authoritative_deterministic_evidence_gets_stable_evidence_id():
-    services = _guarded_services(_Guard())
+    services = _guarded_services(_Guard(), stub_retrieval=False)
 
     class DeterministicWithEvidence:
         @staticmethod

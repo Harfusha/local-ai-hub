@@ -14,7 +14,7 @@ def test_retired_tenant_selector_rejects_without_removing_queued_timer(tmp_path)
         job_id = submitted["job_id"]
         timer = manager._delayed_dispatch[job_id]
 
-        with pytest.raises(ValueError, match="retired tenant"):
+        with pytest.raises(TypeError, match="retired async job field: tenant"):
             manager.cancel(job_id, tenant="")
         assert manager._delayed_dispatch[job_id] is timer
         assert not timer.finished.is_set()

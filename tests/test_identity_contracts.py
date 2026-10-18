@@ -191,11 +191,14 @@ def test_worktree_memory_idempotency_isolated_by_scope_id(tmp_path):
 
 def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
     store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    root = tmp_path / "repo"
+    root.mkdir()
     first = MemoryRecord.create(
         kind=MemoryKind.DECISION,
         scope=AgentScope.WORKTREE,
         scope_id="a:b",
         key="c",
+        provenance={"root": str(root), "worktree_id": "a:b"},
         value="scope delimiter pair",
         status=MemoryStatus.CONFIRMED,
         source="user",
@@ -205,6 +208,7 @@ def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
         scope=AgentScope.WORKTREE,
         scope_id="a",
         key="b:c",
+        provenance={"root": str(root), "worktree_id": "a"},
         value="key delimiter pair",
         status=MemoryStatus.CONFIRMED,
         source="user",
@@ -216,8 +220,8 @@ def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
     assert recorded_first.record_id == first.record_id
     assert recorded_second.record_id == second.record_id
     assert recorded_second.record_id != recorded_first.record_id
-    assert store.get(first.record_id, scope=AgentScope.WORKTREE, scope_id="a:b").value == "scope delimiter pair"
-    assert store.get(second.record_id, scope=AgentScope.WORKTREE, scope_id="a").value == "key delimiter pair"
+    assert store.get(first.record_id, scope=AgentScope.WORKTREE, scope_id="a:b", root=str(root), worktree_id="a:b").value == "scope delimiter pair"
+    assert store.get(second.record_id, scope=AgentScope.WORKTREE, scope_id="a", root=str(root), worktree_id="a").value == "key delimiter pair"
 
 
 def test_memory_delete_requires_matching_scope_identity(tmp_path):
@@ -260,6 +264,8 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="worktree-delete",
+        root=str(worktree),
+        worktree_id="worktree-delete",
     ).value == "remove exact record"
     assert store.find_relations(source_entity=record.record_id) == relations_before_denied_delete
 
@@ -267,11 +273,15 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="worktree-delete",
+        root=str(worktree),
+        worktree_id="worktree-delete",
     ) is True
     assert store.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="worktree-delete",
+        root=str(worktree),
+        worktree_id="worktree-delete",
     ) is None
     assert store.find_relations(source_entity=record.record_id) == []
 
@@ -338,7 +348,7 @@ def test_workspace_memo_expiry_preserves_last_committed_generation(tmp_path):
     assert store.get(str(root), "decision")["value"] == "restored"
 
 
-def test_workspace_memo_schema_upgrade_preserves_existing_rows(tmp_path):
+def test_workspace_memo_legacy_schema_refuses_runtime_conversion_without_writes(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     root = tmp_path / "repo"
@@ -357,143 +367,16 @@ def test_workspace_memo_schema_upgrade_preserves_existing_rows(tmp_path):
             (WorkspaceMemoryStore.workspace_id(str(root)), "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0),
         )
         connection.commit()
-
-    store = WorkspaceMemoryStore(state_dir)
+    db_before = db_path.read_bytes()
     backup_path = db_path.with_name(db_path.name + ".pre-memo-version.bak")
-    assert backup_path.is_file()
-    with closing(sqlite3.connect(backup_path)) as backup:
-        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        backup_columns = {str(row[1]) for row in backup.execute("PRAGMA table_info(memos)")}
-        backup_row = backup.execute(
-            "SELECT workspace, memo_key, value, tenant, metadata, updated_at, expires_at FROM memos"
-        ).fetchone()
-    assert "version" not in backup_columns
-    assert backup_row == (WorkspaceMemoryStore.workspace_id(str(root)), "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0)
-    backup_contents = backup_path.read_bytes()
+    backup_path.write_bytes(b"operator-preserved backup")
 
-    current = store.get(str(root), "decision")
-    assert current["success"] is True
-    assert current["value"] == "kept"
-    assert current["version"] == 1
-    WorkspaceMemoryStore(state_dir)
-    assert backup_path.read_bytes() == backup_contents
-
-
-def test_workspace_memo_migration_backup_refreshes_when_stale(tmp_path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    root = tmp_path / "repo"
-    root.mkdir()
-    db_path = state_dir / "workspace_memory.sqlite3"
-    workspace = WorkspaceMemoryStore.workspace_id(str(root))
-    with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute(
-            """CREATE TABLE memos (
-                workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL,
-                tenant TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL,
-                expires_at REAL NOT NULL, PRIMARY KEY(workspace, memo_key)
-            )"""
-        )
-        connection.execute(
-            "INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (workspace, "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0),
-        )
-        connection.commit()
-
-    store = WorkspaceMemoryStore(state_dir)
-    backup_path = db_path.with_name(db_path.name + ".pre-memo-version.bak")
-    store.put(str(root), "later", "new row")
-    store._create_migration_backup()
-
-    with closing(sqlite3.connect(backup_path)) as backup:
-        rows = set(backup.execute("SELECT memo_key, value FROM memos"))
-    assert rows == {("decision", "kept"), ("later", "new row")}
-
-
-def test_workspace_memo_migration_backup_replaces_hard_link(tmp_path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    root = tmp_path / "repo"
-    root.mkdir()
-    store = WorkspaceMemoryStore(state_dir)
-    store.put(str(root), "decision", "kept")
-    backup_path = store.path.with_name(store.path.name + ".pre-memo-version.bak")
-    os.link(store.path, backup_path)
-    assert os.path.samefile(store.path, backup_path)
-
-    store._create_migration_backup()
-
-    assert not os.path.samefile(store.path, backup_path)
-    with closing(sqlite3.connect(backup_path)) as backup:
-        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        assert backup.execute(
-            "SELECT value FROM memos WHERE memo_key='decision'"
-        ).fetchone() == ("kept",)
-
-
-def test_workspace_memo_migration_backup_replaces_symlink_to_matching_copy(tmp_path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    root = tmp_path / "repo"
-    root.mkdir()
-    store = WorkspaceMemoryStore(state_dir)
-    store.put(str(root), "decision", "kept")
-    backup_path = store.path.with_name(store.path.name + ".pre-memo-version.bak")
-    external_copy = tmp_path / "external-copy.sqlite3"
-    with closing(sqlite3.connect(store.path)) as source, closing(
-        sqlite3.connect(external_copy)
-    ) as destination:
-        source.backup(destination)
-        destination.commit()
-    try:
-        os.symlink(external_copy, backup_path)
-    except (OSError, NotImplementedError) as error:
-        pytest.skip(f"symlinks unavailable: {error}")
-    assert backup_path.is_symlink()
-    assert not backup_path.samefile(store.path)
-
-    store._create_migration_backup()
-
-    assert not backup_path.is_symlink()
-    assert not backup_path.samefile(store.path)
-    with closing(sqlite3.connect(backup_path)) as backup:
-        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        assert backup.execute(
-            "SELECT value FROM memos WHERE memo_key='decision'"
-        ).fetchone() == ("kept",)
-
-def test_workspace_memo_migration_backup_failure_leaves_schema_unchanged(tmp_path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    root = tmp_path / "repo"
-    root.mkdir()
-    db_path = state_dir / "workspace_memory.sqlite3"
-    workspace = WorkspaceMemoryStore.workspace_id(str(root))
-    with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute(
-            """CREATE TABLE memos (
-                workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL,
-                tenant TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL,
-                expires_at REAL NOT NULL, PRIMARY KEY(workspace, memo_key)
-            )"""
-        )
-        connection.execute(
-            "INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (workspace, "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0),
-        )
-        connection.commit()
-    db_path.with_name(db_path.name + ".pre-memo-version.bak").mkdir()
-
-    with pytest.raises(sqlite3.DatabaseError, match="backup path is not a file"):
+    with pytest.raises(RuntimeError, match="explicit offline conversion"):
         WorkspaceMemoryStore(state_dir)
 
-    with closing(sqlite3.connect(db_path)) as connection:
-        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(memos)")}
-        row = connection.execute("SELECT value FROM memos WHERE memo_key='decision'").fetchone()
-    assert "memo_versions" not in tables
-    assert "version" not in columns
-    assert row == ("kept",)
+    assert db_path.read_bytes() == db_before
+    assert backup_path.read_bytes() == b"operator-preserved backup"
+
 
 @pytest.mark.parametrize(
     ("key", "value"),
@@ -511,7 +394,7 @@ def test_workspace_memo_rejects_malformed_key_or_value(tmp_path, key, value):
         store.put(str(tmp_path), key, value)
 
 
-def test_workspace_memo_delete_rejects_non_string_tenant_label(tmp_path):
+def test_workspace_memo_delete_rejects_retired_tenant_keyword(tmp_path):
     store = WorkspaceMemoryStore(tmp_path / "state")
     store.put(str(tmp_path), "key", "value")
 
@@ -589,7 +472,7 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
     assert any(record.record_id == shared.record_id for record in records)
 
 
-def test_tenant_header_does_not_replace_api_token_authentication(monkeypatch):
+def test_api_token_authentication_requires_a_valid_token(monkeypatch):
     monkeypatch.setattr(
         http_server,
         "APP",
@@ -597,7 +480,7 @@ def test_tenant_header_does_not_replace_api_token_authentication(monkeypatch):
     )
 
     request = http_server.Handler.__new__(http_server.Handler)
-    request.headers = {"X-LocalAI-Tenant": "administrator"}
+    request.headers = {}
     request.client_address = ("127.0.0.1", 1234)
     request.path = "/api/test"
     request.command = "GET"
@@ -613,9 +496,9 @@ def test_tenant_header_does_not_replace_api_token_authentication(monkeypatch):
 def test_lease_conflicts_keep_owner_details_visible(tmp_path):
     leases = ScopeLeaseStore(tmp_path / "state")
     root = str(tmp_path / "repo")
-    held = leases.claim("identity-a", root, ["src/shared.py"], purpose="inspect")
+    held = leases.claim(owner="identity-a", root=root, paths=["src/shared.py"], purpose="inspect")
 
-    conflict = leases.claim("identity-b", root, ["src/shared.py"], purpose="edit")
+    conflict = leases.claim(owner="identity-b", root=root, paths=["src/shared.py"], purpose="edit")
 
     assert conflict["success"] is False
     assert conflict["conflicts"][0]["owner"] == "identity-a"
@@ -627,11 +510,11 @@ def test_lease_conflicts_keep_owner_details_visible(tmp_path):
 def test_unknown_lease_owner_cannot_spoof_current_owner(tmp_path, label):
     leases = ScopeLeaseStore(tmp_path / "state")
     root = str(tmp_path / "repo")
-    held_for_release = leases.claim("identity-a", root, ["src/release.py"])
-    held_for_renew = leases.claim("identity-a", root, ["src/renew.py"])
+    held_for_release = leases.claim(owner="identity-a", root=root, paths=["src/release.py"])
+    held_for_renew = leases.claim(owner="identity-a", root=root, paths=["src/renew.py"])
 
-    released = leases.release(label, held_for_release["lease_id"])
-    renewed = leases.renew(label, held_for_renew["lease_id"])
+    released = leases.release(owner=label, lease_id=held_for_release["lease_id"])
+    renewed = leases.renew(owner=label, lease_id=held_for_renew["lease_id"])
 
     assert released["released_rows"] == 0
     assert renewed["success"] is False

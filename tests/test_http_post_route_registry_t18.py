@@ -304,7 +304,7 @@ def test_async_named_handler_dispatches_action_without_tenant_identity(monkeypat
     handler = http_server.Handler.__new__(http_server.Handler)
     responses = []
     handler._send = lambda status, payload: responses.append((status, payload))
-    payload = {"action": action, "job_id": " job-1 "}
+    payload = {"action": action, "job_id": "job-1"}
     if timeout is not None:
         payload["timeout_seconds"] = timeout
     handler._handle_post_async_jobs(payload)

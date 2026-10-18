@@ -56,7 +56,7 @@ def test_local_ai_coord_task_get_forwards_task_and_root_identity(monkeypatch, tm
     assert backend.calls == [{
         "action": "task_get", "task_id": "t-get-1", "contract": None,
         "checkpoint": None, "status": "", "reason": "", "root": root,
-        "ttl_seconds": 0, "include_stale": True,
+        "include_stale": True,
     }]
     assert result["success"] is True
     assert result["summary"] == "task t-get-1 is active"
@@ -77,7 +77,7 @@ def test_local_ai_coord_task_checkpoint_preserves_checkpoint_payload(monkeypatch
     assert backend.calls == [{
         "action": "task_checkpoint", "task_id": "t-check-1", "contract": None,
         "checkpoint": checkpoint, "status": "", "reason": "", "root": root,
-        "ttl_seconds": 0, "include_stale": False, "response_budget_tokens": 768,
+        "include_stale": False, "response_budget_tokens": 768,
     }]
     assert result["success"] is True
     assert result["summary"] == "checkpoint recorded for t-check-1"
@@ -97,7 +97,7 @@ def test_local_ai_coord_task_transition_forwards_target_state_and_reason(monkeyp
     assert backend.calls == [{
         "action": "task_transition", "task_id": "t-transition-1", "contract": None,
         "checkpoint": None, "status": "verifying", "reason": "focused checks are ready",
-        "root": root, "ttl_seconds": 0, "include_stale": False, "response_budget_tokens": 768,
+        "root": root, "include_stale": False, "response_budget_tokens": 768,
     }]
     assert result["success"] is True
     assert result["summary"] == "task t-transition-1 moved to verifying"
@@ -116,7 +116,7 @@ def test_local_ai_coord_task_list_forwards_status_and_stale_filter(monkeypatch, 
     assert backend.calls == [{
         "action": "task_list", "task_id": "", "contract": None,
         "checkpoint": None, "status": "active", "reason": "", "root": root, "query": "",
-        "ttl_seconds": 0, "include_stale": True,
+        "include_stale": True,
     }]
     assert result["success"] is True
     assert result["summary"] == "one active task"
@@ -136,13 +136,13 @@ def test_local_ai_coord_task_complete_forwards_reason_and_identity(monkeypatch, 
     assert backend.calls == [{
         "action": "task_complete", "task_id": "t-done-1", "contract": None,
         "checkpoint": None, "status": "", "reason": "acceptance receipts attached",
-        "root": root, "ttl_seconds": 0, "include_stale": False, "response_budget_tokens": 768,
+        "root": root, "include_stale": False, "response_budget_tokens": 768,
     }]
     assert result["success"] is True
     assert result["summary"] == "task t-done-1 completed"
 
 
-def test_local_ai_coord_memo_put_posts_root_key_value_and_ttl(monkeypatch, tmp_path):
+def test_local_ai_coord_memo_put_is_private_and_never_dispatches(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = ApiBackend({"success": True, "summary": "memo stored", "key": "handoff:cli"})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
@@ -153,16 +153,12 @@ def test_local_ai_coord_memo_put_posts_root_key_value_and_ttl(monkeypatch, tmp_p
         ttl_seconds=3600,
     )
 
-    assert backend.calls == [(
-        "/api/memory/put",
-        {"root": root, "key": "handoff:cli", "value": "CLI audit complete", "ttl_seconds": 3600},
-        {},
-    )]
-    assert result["success"] is True
-    assert result["summary"] == "memo stored"
+    assert result["success"] is False
+    assert "Unknown local_ai_coord action 'memo_put'" in result["error"]
+    assert backend.calls == []
 
 
-def test_local_ai_coord_memo_search_posts_query_with_root_scope(monkeypatch, tmp_path):
+def test_local_ai_coord_memo_search_is_private_and_never_dispatches(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = ApiBackend({"success": True, "summary": "one matching memo", "records": [{"key": "handoff:cli"}]})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
@@ -172,14 +168,12 @@ def test_local_ai_coord_memo_search_posts_query_with_root_scope(monkeypatch, tmp
         action="memo_search", root=root, query="CLI audit"
     )
 
-    assert backend.calls == [(
-        "/api/memory/search", {"root": root, "query": "CLI audit", "limit": 12}, {}
-    )]
-    assert result["success"] is True
-    assert result["summary"] == "one matching memo"
+    assert result["success"] is False
+    assert "Unknown local_ai_coord action 'memo_search'" in result["error"]
+    assert backend.calls == []
 
 
-def test_local_ai_coord_memo_delete_posts_exact_root_and_key(monkeypatch, tmp_path):
+def test_local_ai_coord_memo_delete_is_private_and_never_dispatches(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = ApiBackend({"success": True, "summary": "memo deleted", "key": "handoff:old"})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
@@ -189,11 +183,9 @@ def test_local_ai_coord_memo_delete_posts_exact_root_and_key(monkeypatch, tmp_pa
         action="memo_delete", root=root, key="handoff:old"
     )
 
-    assert backend.calls == [
-        ("/api/memory/delete", {"root": root, "key": "handoff:old"}, {})
-    ]
-    assert result["success"] is True
-    assert result["summary"] == "memo deleted"
+    assert result["success"] is False
+    assert "Unknown local_ai_coord action 'memo_delete'" in result["error"]
+    assert backend.calls == []
 
 
 def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatch, tmp_path):
@@ -204,12 +196,13 @@ def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatc
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
 
     result = mcp_server.local_ai_coord(
-        action="claim", root=root, paths=paths, ttl_seconds=1200, value="T01 matcher tests"
+        action="claim", root=root, owner="execution-lease-t01", paths=paths,
+        ttl_seconds=1200, purpose="T01 matcher tests"
     )
 
     assert backend.calls == [(
         "/api/leases/claim_batch",
-        {"root": root, "paths": paths, "ttl_seconds": 1200, "purpose": "T01 matcher tests"},
+        {"owner": "execution-lease-t01", "root": root, "paths": paths, "ttl_seconds": 1200, "purpose": "T01 matcher tests"},
         {},
     )]
     assert result["success"] is True
@@ -311,17 +304,21 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
     tasks.create(
         GoalContract(goal="exercise rollback"),
         ScopeContext(
-            repository_id=str(tmp_path.resolve()),
+            repository_id=mcp_server.canonical_workspace_id(str(tmp_path.resolve())),
             task_id=task_id,
             session_id="api-token-default",
         ),
         task_id=task_id,
+        repo_root=str(tmp_path.resolve()),
     )
     tasks.checkpoint(
         task_id,
         TaskCheckpoint(
             phase="baseline",
-            state_data={"file_snapshots": {str(target): "baseline"}},
+            state_data={
+                "_agent_task_scope": {"version": 2, "repo_root": str(tmp_path.resolve())},
+                "file_snapshots": {str(target): "baseline"},
+            },
         ),
     )
     target.write_text("changed", encoding="utf-8")
@@ -329,7 +326,10 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
         task_id,
         TaskCheckpoint(
             phase="changed",
-            state_data={"file_snapshots": {str(target): "changed"}},
+            state_data={
+                "_agent_task_scope": {"version": 2, "repo_root": str(tmp_path.resolve())},
+                "file_snapshots": {str(target): "changed"},
+            },
         ),
     )
     app = SimpleNamespace(agent_state=state_store, agent_tasks=tasks, config={"security": {}})
@@ -487,15 +487,13 @@ def test_local_ai_coord_leases_forwards_root_filter(monkeypatch, tmp_path):
     assert calls == [(f"/api/leases?root={mcp_server.quote(root)}", None, {})]
 
 
-def test_local_ai_coord_memo_get_forwards_root_and_key(monkeypatch, tmp_path):
+def test_local_ai_coord_memo_get_is_private_and_never_dispatches(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(action='memo_get', root=root, key="handoff:active")
-    assert result["success"] is True
-    calls = backend.calls
-    assert calls == [(
-        "/api/memory/get", {"root": root, "key": "handoff:active"}, {}
-    )]
+    assert result["success"] is False
+    assert "Unknown local_ai_coord action 'memo_get'" in result["error"]
+    assert backend.calls == []
 
 
 def test_local_ai_coord_memory_promote_forwards_record_identity(monkeypatch, tmp_path):
@@ -595,21 +593,21 @@ def test_local_ai_coord_relation_actions_are_private(monkeypatch):
 
 def test_local_ai_coord_release_forwards_lease_identity(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='release', lease_id="lease-41")
+    result = mcp_server.local_ai_coord(action='release', owner="task-release", lease_id="lease-41")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
-        "/api/leases/release", {"lease_id": "lease-41"}, {}
+        "/api/leases/release", {"owner": "task-release", "lease_id": "lease-41"}, {}
     )]
 
 
 def test_local_ai_coord_renew_forwards_lease_identity_and_ttl(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='renew', lease_id="lease-42", ttl_seconds=240)
+    result = mcp_server.local_ai_coord(action='renew', owner="task-renew", lease_id="lease-42", ttl_seconds=240)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
-        "/api/leases/renew", {"lease_id": "lease-42", "ttl_seconds": 240}, {}
+        "/api/leases/renew", {"owner": "task-renew", "lease_id": "lease-42", "ttl_seconds": 240}, {}
     )]
 
 
@@ -688,7 +686,7 @@ def test_local_ai_coord_task_cleanup_worktree_forwards_task_identity(monkeypatch
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/tasks",
-        {"action": "cleanup_worktree", "task_id": "task-55"},
+        {"action": "cleanup_worktree", "task_id": "task-55", "response_budget_tokens": 3200},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -702,7 +700,7 @@ def test_local_ai_coord_task_fail_forwards_failure_reason(monkeypatch, tmp_path)
     assert calls == [{
         "action": "task_fail", "task_id": "task-56", "contract": None,
         "checkpoint": None, "status": "failed", "reason": "acceptance failed",
-        "root": root, "ttl_seconds": 0, "include_stale": False, "response_budget_tokens": 768,
+        "root": root, "include_stale": False, "response_budget_tokens": 768,
     }]
 
 
@@ -715,7 +713,7 @@ def test_local_ai_coord_task_heartbeat_forwards_task_identity_and_ttl(monkeypatc
     assert calls == [{
         "action": "task_heartbeat", "task_id": "task-57", "contract": None,
         "checkpoint": None, "status": "", "reason": "", "root": root,
-        "ttl_seconds": 180, "include_stale": False,
+        "ttl_seconds": 180, "include_stale": False, "response_budget_tokens": 3200,
     }]
 
 
@@ -728,7 +726,7 @@ def test_local_ai_coord_task_resume_forwards_task_identity_and_reason(monkeypatc
     assert calls == [{
         "action": "task_resume", "task_id": "task-58", "contract": None,
         "checkpoint": None, "status": "", "reason": "operator resumed",
-        "root": root, "ttl_seconds": 0, "include_stale": False,
+        "root": root, "include_stale": False, "response_budget_tokens": 3200,
     }]
 
 
@@ -810,7 +808,7 @@ def test_local_ai_coord_task_zombie_reap_forwards_recovery_flag(monkeypatch, tmp
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/tasks",
-        {"action": "reap_expired", "auto_recover": True, "root": root, "task_id": "expired-task"},
+        {"action": "reap_expired", "auto_recover": True, "root": root, "task_id": "expired-task", "response_budget_tokens": 3200},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -1036,7 +1034,7 @@ def test_local_ai_coord_task_create_forwards_goal_and_contract(monkeypatch, tmp_
     assert backend.calls == [{
         "action": "task_create", "task_id": "task-66", "contract": contract,
         "checkpoint": None, "status": "", "reason": "", "root": root,
-        "ttl_seconds": 0, "include_stale": False, "task": "dispatch acceptance", "response_budget_tokens": 768,
+        "include_stale": False, "task": "dispatch acceptance", "response_budget_tokens": 768,
     }]
 
 
@@ -1224,13 +1222,13 @@ def test_local_ai_coord_claim_forwards_owned_paths(monkeypatch, tmp_path):
     paths = ["src/worker.py", "tests/test_worker.py"]
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(
-        action="claim", root=root, paths=paths, ttl_seconds=300,
-        value="bounded worker edit",
+        action="claim", root=root, owner="execution-lease-worker", paths=paths,
+        ttl_seconds=300, purpose="bounded worker edit",
     )
     assert result["success"] is True
     assert backend.calls == [(
         "/api/leases/claim_batch",
-        {"root": root, "paths": paths, "ttl_seconds": 300,
+        {"owner": "execution-lease-worker", "root": root, "paths": paths, "ttl_seconds": 300,
          "purpose": "bounded worker edit"},
         {},
     )]
@@ -1254,11 +1252,11 @@ def test_local_ai_coord_curate_dataset_forwards_policy(monkeypatch):
 def test_local_ai_coord_renew_forwards_lease_and_ttl(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(
-        action="renew", lease_id="lease-74", ttl_seconds=210,
+        action="renew", owner="task-renew", lease_id="lease-74", ttl_seconds=210,
     )
     assert result["success"] is True
     assert backend.calls == [(
-        "/api/leases/renew", {"lease_id": "lease-74", "ttl_seconds": 210}, {}
+        "/api/leases/renew", {"owner": "task-renew", "lease_id": "lease-74", "ttl_seconds": 210}, {}
     )]
 
 

@@ -22,8 +22,8 @@ def test_retired_tenant_header_is_rejected_before_root_scoped_delete(tmp_path):
     root_b = tmp_path / "repo-b"
     root_a.mkdir()
     root_b.mkdir()
-    app.memory.put(str(root_a), "global-key", "global value", "owner-tenant")
-    app.memory.put(str(root_b), "global-key", "other root value", "owner-tenant")
+    app.memory.put(str(root_a), "global-key", "global value")
+    app.memory.put(str(root_b), "global-key", "other root value")
 
     previous_app = http_server.APP
     http_server.APP = app
@@ -34,7 +34,7 @@ def test_retired_tenant_header_is_rejected_before_root_scoped_delete(tmp_path):
     try:
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/memory/delete",
-            data=json.dumps({"root": str(root_a), "key": "global-key", "scope": "global"}).encode("utf-8"),
+            data=json.dumps({"root": str(root_a), "key": "global-key"}).encode("utf-8"),
             headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "codex", "Connection": "close"},
             method="POST",
         )
@@ -92,5 +92,5 @@ def test_memory_delete_rejects_unknown_scope():
 def test_memory_delete_rejects_noncanonical_scope(scope):
     from local_ai_hub.http_server import Handler, RequestBodyError
 
-    with pytest.raises(RequestBodyError, match="scope must be 'global' or 'tenant'"):
+    with pytest.raises(RequestBodyError, match="scope is not supported by workspace memo deletion"):
         Handler._validate_payload("/api/memory/delete", {"key": "memo", "scope": scope})

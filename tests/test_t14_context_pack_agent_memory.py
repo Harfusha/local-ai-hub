@@ -12,14 +12,19 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.agent_verification import VerificationReceipt
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.project_config import resolve_project_context
 
 
 def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
+    state_dir = tmp_path / "state"
+    project_context = resolve_project_context(root, state_dir)
+    coordination_id = project_context.coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
@@ -33,7 +38,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         task_id = "task-context-pack-resume"
         task = app.agent_tasks.create(
             GoalContract(goal="Resume scoped context task", acceptance_criteria=("context pack",)),
-            ScopeContext(repository_id=str(root), task_id=task_id, session_id="session-a"),
+            ScopeContext(repository_id=coordination_id, task_id=task_id, session_id="session-a"),
             task_id=task_id,
             repo_root=str(root),
         )
@@ -48,9 +53,6 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             return compile_context(request)
 
         app.agent_context.compile = capture_context_request
-
-        from local_ai_hub.project_config import resolve_project_context
-        coord_id = resolve_project_context(root, tmp_path / "state").coordination_id
 
         safe = app.agent_memory.record(MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -101,7 +103,8 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             "clone_id": "clone-current",
             "worktree_id": "worktree-current",
             "branch": "feature/context-pack",
-            "repository_id": "repo-current",
+            "repository_id": coordination_id,
+            "session_id": "session-a",
             "include_diagnostics": True,
             "max_tokens": 128,
         }
@@ -125,7 +128,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         assert compiled_requests[0].clone_id == "clone-current"
         assert compiled_requests[0].worktree_id == "worktree-current"
         assert compiled_requests[0].branch == "feature/context-pack"
-        assert compiled_requests[0].repository_id == "repo-current"
+        assert compiled_requests[0].repository_id == coordination_id
         assert compiled_requests[0].repository_revision == "revision-1"
         assert compiled_requests[0].include_diagnostics is True
 

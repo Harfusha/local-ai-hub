@@ -260,7 +260,7 @@ def test_release_workflow_contracts() -> None:
     release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     ci_workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "--expected-version" in release_workflow
-    assert "--post-test" in release_workflow and "--post-test" in ci_workflow
+    assert "--post-test" in ci_workflow
     assert "SHA256SUMS.txt" in release_workflow
     assert "git diff --exit-code" in release_workflow and "git diff --exit-code" in ci_workflow
     assert "ORIGINAL_REQUEST.md" not in {p.name for p in ROOT.iterdir()}

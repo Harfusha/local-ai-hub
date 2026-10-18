@@ -374,7 +374,7 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
     assert "vision" not in task["action"]["enum"]
     assert "speculative_lint" not in command["action"]["enum"]
     assert "task_create" not in coord["action"]["enum"]
-    assert schemas["local_ai_repo"]["parameters"]["properties"]["max_response_tokens"]["minimum"] == 0
+    assert schemas["local_ai_repo"]["parameters"]["properties"]["max_response_tokens"]["minimum"] == 128
 
     work_parameters = schemas["local_ai_work"]["parameters"]
     assert work_parameters["required"] == ["action"]
@@ -713,7 +713,7 @@ def test_repo_verify_receipt_validates_nested_schema_types():
 def test_runtime_validation_enforces_registered_schema_constraints():
     assert validate_operation_arguments(
         "local_ai_artifact", "list", {"max_response_tokens": -1}
-    ) == "max_response_tokens must be >= 0 for action='list'"
+    ) == "max_response_tokens must be >= 128 for action='list'"
     assert validate_operation_arguments(
         "local_ai_artifact", "list", {"response_profile": "unregistered"}
     ) == "response_profile must be one of minimal, compact, standard, debug, delta for action='list'"

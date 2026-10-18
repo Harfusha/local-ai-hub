@@ -476,14 +476,14 @@ enabled=true
         status,_,_= _request(base+"/api/command",method="POST",body=b"x"*2048,headers={**auth,"Content-Type":"application/json"})
         assert status==413
         import hashlib
-        tables={}; canonical=json.dumps(tables,sort_keys=True,separators=(",",":")).encode()
+        tables={"rag_files":[],"rag_chunks":[],"rag_project_file_owners":[]}; canonical=json.dumps(tables,sort_keys=True,separators=(",",":")).encode()
         payload={"format":"local-ai-hub-project-bundle","version":__version__,"root":str(repo),"tables":tables,"tables_sha256":hashlib.sha256(canonical).hexdigest()}
         buf=io.BytesIO()
         with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as zf: zf.writestr("bundle.json",json.dumps(payload,separators=(",",":")))
         url=base+"/api/bundle/import?target_root="+urllib.parse.quote(str(repo))
         status,_,body=_request(url,method="POST",body=buf.getvalue(),headers={**auth,"Content-Type":"application/zip"})
         assert status==200, body
-        assert json.loads(body)["success"] is True
+        assert json.loads(body)["success"] is True, body
 
         # Broad public deterministic contract: every cheap repository/operator endpoint
         # must remain usable without Ollama or optional external processes.

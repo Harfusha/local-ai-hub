@@ -252,12 +252,12 @@ def _services(tmp_path: Path, *, models: dict[str, str] | None = None):
 def test_vision_rejects_non_object_request_payload(tmp_path: Path, payload: object) -> None:
     services, runtime, _image = _services(tmp_path)
 
-    result = services.vision(payload)
+    from local_ai_hub.repository_scope import RepositoryScopeError
 
-    assert result["success"] is False
-    assert result["error_code"] == "invalid_request"
-    assert result["terminal"] is True
-    assert result["retryable"] is False
+    with pytest.raises(RepositoryScopeError) as error:
+        services.vision(payload)
+
+    assert error.value.code == "invalid_payload"
     runtime.request.assert_not_called()
 
 

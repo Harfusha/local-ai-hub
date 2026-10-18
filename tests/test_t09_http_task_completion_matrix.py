@@ -173,7 +173,7 @@ _CASES = (
         id="used-volatile-memory-has-current-source-check",
     ),
     pytest.param("owner-mismatch", {"test_owner": "other-agent"}, False, id="owner-mismatch"),
-    pytest.param("repository-mismatch", {"test_record_root": "other-repository", "expect_record_rejected": True}, False, id="repository-mismatch"),
+    pytest.param("repository-mismatch", {"test_record_root": "other-repository"}, False, id="repository-mismatch"),
     pytest.param("task-mismatch", {"test_receipt_task_id": "other-task", "test_proof_task_id": "other-task"}, False, id="task-mismatch"),
     pytest.param("revision-mismatch", {"test_revision": "stale-revision"}, False, id="revision-mismatch"),
     pytest.param("criterion-mismatch", {"test_criterion": "test-other"}, False, id="criterion-mismatch"),
@@ -234,11 +234,29 @@ def test_task_completion_http_receipt_and_memory_matrix(
     )
     project_context = resolve_project_context(project_root, state_dir)
     project_config_digest = project_context.config_digest
+    coordination_id = project_context.coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
 
     app = LocalAIApp(str(config_path))
     request.addfinalizer(app.close)
     memory_context = changes.get("memory_context")
     if memory_context is not None:
+        memory_context = {
+            "schema_version": 2,
+            "context": {
+                "root": str(project_root.resolve()),
+                "coordination_id": coordination_id,
+                "task_id": task_id,
+                "session_id": session_id,
+                "clone_id": "",
+                "worktree_id": "",
+                "branch": "",
+            },
+            "instruction": "",
+            "items": list(memory_context.get("items", [])),
+            "warnings": list(memory_context.get("warnings", [])),
+            "estimated_tokens": 0,
+        }
         # Model the memory bundle injected by the server at task creation.
         # T08 makes that field immutable through the checkpoint API.
         monkeypatch.setattr(
@@ -251,7 +269,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
             goal="exercise project completion receipt gates over HTTP",
             acceptance_criteria=("test",),
         ),
-        ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=session_id),
+        ScopeContext(repository_id=coordination_id, task_id=task_id, session_id=session_id),
         task_id=task_id,
         actor="agent-t09",
         repo_root=str(project_root),
@@ -259,7 +277,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
     if changes.get("test_receipt_task_id") == "other-task":
         app.agent_tasks.create(
             GoalContract(goal="unrelated task", acceptance_criteria=("test",)),
-            ScopeContext(repository_id=str(project_root), task_id="other-task", session_id=session_id),
+            ScopeContext(repository_id=coordination_id, task_id="other-task", session_id=session_id),
             task_id="other-task",
             actor="agent-t09",
             repo_root=str(project_root),
@@ -309,11 +327,10 @@ def test_task_completion_http_receipt_and_memory_matrix(
         repository_root=project_root,
         record_root_override=(project_root.parent / str(changes["test_record_root"])) if changes.get("test_record_root") else "",
     )
-    expected_receipt_recorded = not bool(changes.get("expect_record_rejected"))
-    assert test_receipt_recorded is expected_receipt_recorded, case
-    if not test_receipt_recorded:
-        evidence_view = app.artifacts.get(test_evidence_id, max_chars=50_000)
-        assert evidence_view.get("success") is True, (case, evidence_view)
+    # Receipt storage binds task owner; completion gates repository execution-record scope.
+    assert test_receipt_recorded is True, case
+    evidence_view = app.artifacts.get(test_evidence_id, max_chars=50_000)
+    assert evidence_view.get("success") is True, (case, evidence_view)
     if changes.get("include_lint", True):
         _record_command(
             app,
@@ -424,7 +441,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         stored = app.agent_tasks.get(task_id)
         assert stored is not None
         assert stored.owner == "agent-t09"
-        assert stored.context.repository_id == str(project_root)
+        assert stored.context.repository_id == coordination_id
         assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
         assert stored.checkpoint.state_data["repository_revision"] == revision
     else:

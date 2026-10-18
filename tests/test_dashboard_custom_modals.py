@@ -541,8 +541,8 @@ def test_dashboard_health_prioritizes_current_degradation() -> None:
         )
     ]
     assert "current.degraded===true" in source
-    assert "return {level:'degraded',label:'Degraded'" in source
-    assert source.index("return {level:'degraded'") < source.index(
+    assert "return finish({level:'degraded',label:'Degraded'" in source
+    assert source.index("return finish({level:'degraded'") < source.index(
         "return {level:'attention'"
     )
 
@@ -625,7 +625,7 @@ def test_dashboard_health_marks_stale_heartbeat_as_degraded() -> None:
     assert "'stale'" in health_source
     stale_guard = health_source[health_source.index("if(hubOnline===false") :]
     assert "heartbeatStale" in stale_guard
-    assert "return {level:'degraded'" in stale_guard
+    assert "return finish({level:'degraded'" in stale_guard
 
 
 def test_dashboard_redacts_diagnostic_secrets_and_absolute_paths() -> None:

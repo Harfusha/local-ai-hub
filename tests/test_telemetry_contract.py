@@ -143,7 +143,7 @@ def test_telemetry_preserves_all_source_discovered_exact_http_routes():
     assert not unpreserved, f"exact HTTP route labels are redacted: {unpreserved}"
 
 
-def test_schema_upgrade_adds_metadata_columns_without_discarding_history(tmp_path):
+def test_unsupported_telemetry_schema_is_preserved_for_offline_conversion(tmp_path):
     state = tmp_path / "telemetry"
     store = TelemetryStore(state, enabled=True, flush_interval_seconds=0.01)
     store.record_http(action="/api/status", success=True)
@@ -164,25 +164,18 @@ def test_schema_upgrade_adds_metadata_columns_without_discarding_history(tmp_pat
     finally:
         con.close()
 
-    upgraded = TelemetryStore(state, enabled=True, flush_interval_seconds=0.01)
     try:
-        summary = upgraded.summary(1)
-        assert summary["decision_grade"]["counts"]["events"] == 1
-        con = sqlite3.connect(db)
-        try:
-            columns = {row[1] for row in con.execute("PRAGMA table_info(events)")}
-        finally:
-            con.close()
-        assert set(TelemetryStore._EVENT_COLUMNS).issubset(columns)
-        upgraded.record_http(action="/api/command", success=True)
-        assert upgraded.flush(2)
-        with closing(sqlite3.connect(db)) as con:
-            assert con.execute("SELECT action FROM events ORDER BY id").fetchall() == [
-                ("/api/status",), ("/api/command",),
-            ]
-        assert upgraded.summary(1)["writer"]["dropped"] == 0
-    finally:
-        upgraded.close()
+        TelemetryStore(state, enabled=True, flush_interval_seconds=0.01)
+    except RuntimeError as exc:
+        assert "explicit offline conversion required" in str(exc)
+    else:
+        raise AssertionError("unsupported telemetry schema was silently upgraded")
+
+    with closing(sqlite3.connect(db)) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(events)")}
+        rows = con.execute("SELECT action FROM events ORDER BY id").fetchall()
+    assert not set(TelemetryStore._EVENT_COLUMNS).issubset(columns)
+    assert rows == [("/api/status",)]
 
 
 def test_realtime_summary_preserves_pricing_and_writer_health(tmp_path, monkeypatch):

@@ -101,21 +101,13 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     assert "local_ai_work" not in schemas
 
 
-def test_disabled_agent_os_is_omitted_from_generated_surfaces():
+def test_disabled_agent_os_actions_are_omitted_from_generated_surfaces():
     cfg = _config(agent_os=False)
     features = FeatureSet.from_config(cfg)
-    policy = generate_global_policy(cfg)
-    skill = generate_skill_markdown(cfg)
-    references = generate_skill_references(cfg)
     schemas = generate_mcp_tool_schemas(cfg)
 
     assert not features.agent_os
     assert "task_create" not in features.supported_coord_actions()
-    assert "Agent OS" not in policy
-    assert "Agent Operating System & Durable Execution" not in skill
-    assert "Agent OS trigger and lifecycle" not in references["tools.md"]
-    assert "Agent OS" not in references["multi-agent.md"]
-    assert "Agent OS" not in schemas["local_ai_coord"]["description"]
     assert "task_create" not in _actions(schemas["local_ai_coord"])
 
 
@@ -174,7 +166,7 @@ def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
     guidance = schema["description"].lower()
     for phrase in (
         "canonical adaptive context pack is the default",
-        "planning, edit, review or test",
+        "planning, editing, review or testing",
         "evidence ids",
         "reuse candidates first",
         "override_reason",

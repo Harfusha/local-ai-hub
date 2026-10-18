@@ -111,7 +111,7 @@ def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, mon
         assert get_origin(enabled_action) is Literal
         assert "batch_replace" in get_args(enabled_action)
     finally:
-        monkeypatch.delenv("LOCAL_AI_CONFIG", raising=False)
+        monkeypatch.setenv("LOCAL_AI_CONFIG", str(enabled_config))
         importlib.reload(local_ai_mcp)
 
 

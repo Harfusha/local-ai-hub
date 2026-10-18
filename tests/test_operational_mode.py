@@ -262,7 +262,7 @@ def test_http_mode_routes_read_and_update_persisted_mode(monkeypatch, tmp_path):
         "config": {"server": {"state_dir": str(tmp_path)}}, "runtime": runtime, "async_jobs": async_jobs,
     })())
     responses = []
-    handler = type("MockHandler", (), {
+    handler = type("MockHandler", (http_server.Handler,), {
         "path": "/api/mode",
         "headers": {},
         "client_address": ("127.0.0.1", 0),

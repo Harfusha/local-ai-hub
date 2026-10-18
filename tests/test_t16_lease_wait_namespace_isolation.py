@@ -36,22 +36,22 @@ def test_wait_edges_and_release_cleanup_are_scoped_by_repository_namespace(tmp_p
     assert id_a and id_c and id_a != id_c
     store = ScopeLeaseStore(state_dir)
 
-    blocker_a = store.claim("blocker", str(root_a), ["src/shared.py"], coordination_id=id_a)
-    blocker_c = store.claim("blocker", str(root_c), ["src/shared.py"], coordination_id=id_c)
+    blocker_a = store.claim(owner="blocker", root=str(root_a), paths=["src/shared.py"], coordination_id=id_a)
+    blocker_c = store.claim(owner="blocker", root=str(root_c), paths=["src/shared.py"], coordination_id=id_c)
     assert blocker_a["success"] is True
     assert blocker_c["success"] is True
-    assert store.claim("waiter", str(root_a), ["src/shared.py"], coordination_id=id_a)["success"] is False
-    assert store.claim("waiter", str(root_c), ["src/shared.py"], coordination_id=id_c)["success"] is False
+    assert store.claim(owner="waiter", root=str(root_a), paths=["src/shared.py"], coordination_id=id_a)["success"] is False
+    assert store.claim(owner="waiter", root=str(root_c), paths=["src/shared.py"], coordination_id=id_c)["success"] is False
 
     waits_a = store.waits(str(root_a), coordination_id=id_a)
     waits_c = store.waits(str(root_c), coordination_id=id_c)
-    assert [(item["tenant"], item["blocked_by"]) for item in waits_a] == [("waiter", "blocker")]
-    assert [(item["tenant"], item["blocked_by"]) for item in waits_c] == [("waiter", "blocker")]
+    assert [(item["owner"], item["blocked_by"]) for item in waits_a] == [("waiter", "blocker")]
+    assert [(item["owner"], item["blocked_by"]) for item in waits_c] == [("waiter", "blocker")]
 
-    store.release("blocker", str(blocker_a["lease_id"]))
+    store.release(owner="blocker", lease_id=str(blocker_a["lease_id"]))
     assert store.waits(str(root_a), coordination_id=id_a) == []
     assert store.waits(str(root_c), coordination_id=id_c) == waits_c
-    reclaimed_a = store.claim("waiter", str(root_a), ["src/shared.py"], coordination_id=id_a)
+    reclaimed_a = store.claim(owner="waiter", root=str(root_a), paths=["src/shared.py"], coordination_id=id_a)
     assert reclaimed_a["success"] is True
     assert store.waits(str(root_a), coordination_id=id_a) == []
     assert store.waits(str(root_c), coordination_id=id_c) == waits_c
@@ -98,8 +98,8 @@ def test_concurrent_canonical_wait_initialization_preserves_namespace_rows(tmp_p
         try:
             barrier.wait()
             store = ScopeLeaseStore(state_dir)
-            assert store.claim("blocker", str(root), ["src/shared.py"], coordination_id=namespace)["success"] is True
-            assert store.claim("waiter", str(root), ["src/shared.py"], coordination_id=namespace)["success"] is False
+            assert store.claim(owner="blocker", root=str(root), paths=["src/shared.py"], coordination_id=namespace)["success"] is True
+            assert store.claim(owner="waiter", root=str(root), paths=["src/shared.py"], coordination_id=namespace)["success"] is False
             results[namespace] = store.waits(str(root), coordination_id=namespace)
         except BaseException as exc:
             errors.append(exc)

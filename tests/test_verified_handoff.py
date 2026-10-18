@@ -14,6 +14,8 @@ from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus, TaskStore
+from local_ai_hub.agent_verification import VerificationStore
+from local_ai_hub.project_config import resolve_project_context
 
 
 class _Artifacts:
@@ -120,6 +122,12 @@ def _repo(root: Path) -> Path:
     return root
 
 
+def _repository_scope(repo: Path, state_dir: Path) -> ScopeContext:
+    return ScopeContext(
+        repository_id=resolve_project_context(str(repo), state_dir).coordination_id
+    )
+
+
 def _wait(orch: WorkOrchestrator, work_id: str):
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -141,6 +149,18 @@ def _run_handoff(tmp_path, validation_command="git diff --check", command_id="")
         text=True,
     ).stdout.strip()
     services = _Services(validation_command, command_id, repository_revision)
+    task_state = AgentStateStore(state / "agent-state.sqlite3")
+    tasks = TaskStore(task_state)
+    task_id = "verified-handoff-task"
+    repository_id = resolve_project_context(str(root), state).coordination_id
+    tasks.create(
+        GoalContract(goal="verified handoff", acceptance_criteria=["tests pass"]),
+        ScopeContext(repository_id=repository_id),
+        task_id=task_id,
+        actor="handoff-owner",
+        repo_root=str(root),
+    )
+    verification_store = VerificationStore(task_state, task_store=tasks, artifact_store=artifacts)
     orch = WorkOrchestrator(
         {"work_orchestrator": {"enabled": True, "max_steps": 16, "max_llm_steps": 10, "max_seconds": 60, "step_retry_limit": 0}},
         state,
@@ -148,11 +168,13 @@ def _run_handoff(tmp_path, validation_command="git diff --check", command_id="")
         None,
         _Leases(),
         artifacts,
+        verification_store=verification_store,
     )
     try:
         submitted = orch.submit({
             "root": str(root.resolve()),
             "task": "change a.txt and verify tests",
+            "task_id": task_id,
             "acceptance_criteria": ["tests pass"],
         })
         result = _wait(orch, submitted["work_id"])
@@ -300,8 +322,9 @@ def test_task_cleanup_checks_owner_and_preserves_dirty_worktree(tmp_path):
     tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
     task = tasks.create(
         GoalContract(goal="safe worktree", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo)),
+        _repository_scope(repo, tmp_path / "project-state"),
         actor="owner-a", auto_worktree=True,
+        repo_root=str(repo),
     )
     worktree_info = task.checkpoint.state_data["worktree"]
     worktree = Path(worktree_info["worktree_path"])
@@ -330,9 +353,10 @@ def test_task_cleanup_removes_owned_clean_worktree_and_records_trace(tmp_path):
     tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
     task = tasks.create(
         GoalContract(goal="clean owned worktree", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo)),
+        _repository_scope(repo, tmp_path / "project-state"),
         actor="owner-a",
         auto_worktree=True,
+        repo_root=str(repo),
     )
     worktree = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
 
@@ -356,9 +380,10 @@ def test_task_cleanup_rejects_tampered_ownership_metadata(tmp_path, field):
     tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
     task = tasks.create(
         GoalContract(goal="validate worktree identity", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo)),
+        _repository_scope(repo, tmp_path / "project-state"),
         actor="owner-a",
         auto_worktree=True,
+        repo_root=str(repo),
     )
     original = dict(task.checkpoint.state_data["worktree"])
     worktree = Path(original["worktree_path"])
@@ -415,8 +440,9 @@ def test_task_cleanup_rejects_reserved_or_missing_actor(tmp_path, actor):
     tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
     task = tasks.create(
         GoalContract(goal="owner-gated cleanup", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo)),
+        _repository_scope(repo, tmp_path / "project-state"),
         actor="owner-a", auto_worktree=True,
+        repo_root=str(repo),
     )
     worktree_info = task.checkpoint.state_data["worktree"]
     worktree = Path(worktree_info["worktree_path"])
@@ -435,8 +461,9 @@ def test_task_cleanup_rejects_foreign_worktree_path(tmp_path):
     tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
     task = tasks.create(
         GoalContract(goal="safe worktree", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo_a)),
+        _repository_scope(repo_a, tmp_path / "project-state"),
         actor="owner-a", auto_worktree=True,
+        repo_root=str(repo_a),
     )
     own_path = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
     tampered = dict(task.checkpoint.state_data["worktree"])
@@ -466,9 +493,10 @@ def test_task_cleanup_rejects_same_repo_foreign_worktree_retarget(tmp_path):
     tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
     task = tasks.create(
         GoalContract(goal="safe worktree", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo)),
+        _repository_scope(repo, tmp_path / "project-state"),
         actor="owner-a",
         auto_worktree=True,
+        repo_root=str(repo),
     )
     own_worktree = dict(task.checkpoint.state_data["worktree"])
     own_path = Path(own_worktree["worktree_path"])

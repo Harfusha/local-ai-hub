@@ -63,7 +63,7 @@ def test_current_scoped_path_controls(name: str) -> None:
     for contract in (
         "`.local-ai.toml`", "`.local-ai.worktree.toml`", "`info/local-ai.toml`",
         "Cross-worktree Agent OS memory sharing remains HOLD",
-        "`HubClient.post` accepts optional `request_id`, `path_hints`, `tenant`, and `cancel_event`. It bounds typed hints and forwards them to `/api/search` and `/api/command`; an explicit `path` removes those hints.",
+        "`HubClient.post` accepts optional `request_id`, `path_hints`, and `cancel_event`; retired tenant arguments reject. It bounds typed hints and forwards them to `/api/search` and `/api/command`; an explicit `path` removes those hints.",
         "HTTP `/api/context/pack` accepts `path_hints`, `directory_hints`, `exclude_paths`, and `force_include_paths` in `adaptive` mode and validates lists. T14 owns that contract.",
         "request hints remain subordinate to root containment and hard exclusions",
     ):

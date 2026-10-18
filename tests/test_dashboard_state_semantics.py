@@ -5,8 +5,8 @@ def test_current_health_does_not_reclassify_history_as_active_failures():
     run_javascript(extract('function dashboardTelemetryState(', 'function dashboardFreshness('), """
 const base={hub_online:true,ollama_online:true,headless:{state:'running',restarts:12}};
 for(const scope of ['process','window']){
-  const snapshot={...base,observability:{scope,data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0},
-    cohorts:{agent_http:{failures:2404},policy_rejection:{events:47},inference:{retry_count:8,degraded_count:3}},
+  const snapshot={...base,observability:{scope,data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0,accepted:2404,written:2404},
+    cohorts:{agent_http:{events:2404,failures:2404,p50_duration_ms:1,p95_duration_ms:2,p99_duration_ms:3},policy_rejection:{events:47},inference:{retry_count:8,degraded_count:3}},
     sessions:[{status:'crashed'}]}};
   assert.equal(dashboardHealth(snapshot).level,'healthy');
   assert.doesNotMatch(dashboardHealth(snapshot).reason,/2404|restart|dropped|rejection/);
@@ -32,7 +32,7 @@ def test_reliability_keeps_live_health_and_historical_counts_separate():
 const elements=Object.fromEntries(['reliabilityHeadline','reliabilityTrend','reliabilityAction','requestHistoryStatus','workState','workSearch','requestHistorySearch','requestHistoryAction','requestHistoryPeriod'].map(id=>[id,{}]));
 const $=id=>elements[id],n=v=>String(v??0),esc=v=>String(v);
 let tab='',last=null;const switchTab=value=>tab=value;
-renderReliabilitySummary({hub_online:true,ollama_online:true,headless:{state:'running',restarts:9},observability:{scope:'window',data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0},cohorts:{agent_http:{failures:2404}},sessions:[{status:'crashed'}]}});
+renderReliabilitySummary({hub_online:true,ollama_online:true,headless:{state:'running',restarts:9},observability:{scope:'window',data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0,accepted:2404,written:2404},cohorts:{agent_http:{events:2404,failures:2404,p50_duration_ms:1,p95_duration_ms:2,p99_duration_ms:3},policy_rejection:{events:0}},sessions:[{status:'crashed'}]}});
 assert.match(elements.reliabilityHeadline.innerHTML,/Healthy/);
 assert.match(elements.reliabilityHeadline.innerHTML,/2404/);
 assert.match(elements.reliabilityHeadline.innerHTML,/Last 30 days/);
@@ -101,7 +101,7 @@ def test_live_freshness_is_independent_of_historical_sample_timestamp():
     run_javascript(source, """
 const elements=Object.fromEntries(['overviewHealthLevel','overviewHealthEvidence','overviewFreshness','overviewHealthAction','overviewHealthSummary','overviewAnnouncement','overviewHistorySummary'].map(id=>[id,{style:{}}]));
 const $=id=>elements[id],age=String,switchTab=()=>{};let lastOverviewAnnouncement='';
-const now=1900000000000,base={hub_online:true,ollama_online:true,headless:{state:'running'},observability:{updated_at:1,data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0},cohorts:{agent_http:{failures:2404}}}};
+const now=1900000000000,base={hub_online:true,ollama_online:true,headless:{state:'running'},observability:{updated_at:1,data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0,accepted:2404,written:2404},cohorts:{agent_http:{events:2404,failures:2404,p50_duration_ms:1,p95_duration_ms:2,p99_duration_ms:3},policy_rejection:{events:0}}}};
 renderOverviewHealth(base,now,now);
 assert.equal(elements.overviewHealthLevel.textContent,'Healthy');
 assert.ok(elements.overviewHistorySummary.textContent.includes((2404).toLocaleString()));

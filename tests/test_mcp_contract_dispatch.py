@@ -89,6 +89,8 @@ def test_mcp_dispatch_rejects_invalid_output_envelope(monkeypatch) -> None:
         return {"success": "yes"}
 
     monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "get_tool", lambda _name: None)
+    monkeypatch.setattr(mcp_server, "_ALL_REGISTERED_TOOLS", {})
 
     _content, payload = asyncio.run(
         mcp_server._compact_mcp_call_tool(
@@ -109,6 +111,8 @@ def test_mcp_dispatch_rejects_invalid_artifact_list_item_shape(monkeypatch) -> N
         return {"success": True, "artifacts": [{"artifact_id": "artifact-1"}]}
 
     monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "get_tool", lambda _name: None)
+    monkeypatch.setattr(mcp_server, "_ALL_REGISTERED_TOOLS", {})
 
     _content, payload = asyncio.run(
         mcp_server._compact_mcp_call_tool(

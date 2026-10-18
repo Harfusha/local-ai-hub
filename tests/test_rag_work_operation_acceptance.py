@@ -127,7 +127,7 @@ def test_mcp_rag_docset_search_defaults_name_and_clamps_top_k(monkeypatch: Any) 
     assert result["success"] is True
 
 
-def test_mcp_rag_ingest_document_forwards_content_and_quick_timeout(monkeypatch: Any) -> None:
+def test_mcp_rag_ingest_document_forwards_content_and_quick_timeout(monkeypatch: Any, tmp_path: Any) -> None:
     response = {"success": True, "status": "queued", "document_id": "doc-17"}
     backend = _Backend(response)
     _enable_rag(monkeypatch, backend)
@@ -142,10 +142,14 @@ def test_mcp_rag_ingest_document_forwards_content_and_quick_timeout(monkeypatch:
     )
 
     result = mcp_server.local_ai_rag(
-        action="ingest_document", workspace="manuals", **ingest_args
+        action="ingest_document", root=str(tmp_path.resolve()), **ingest_args
     )
 
-    expected_payload = {"workspace": "manuals", "content": content}
+    expected_payload = {
+        "root": str(tmp_path.resolve()),
+        "workspace": mcp_server.canonical_workspace_id(str(tmp_path.resolve())),
+        "content": content,
+    }
     if explicit_ingest:
         expected_payload.update({"title": title, "metadata": metadata})
     assert backend.calls == [
@@ -160,7 +164,7 @@ def test_mcp_rag_ingest_document_forwards_content_and_quick_timeout(monkeypatch:
     assert result["success"] is True
 
 
-def test_mcp_rag_ingest_diagram_forwards_image_path_and_caption(monkeypatch: Any) -> None:
+def test_mcp_rag_ingest_diagram_forwards_image_path_and_caption(monkeypatch: Any, tmp_path: Any) -> None:
     response = {"success": True, "status": "ingested", "diagram_id": "diagram-5"}
     backend = _Backend(response)
     _enable_rag(monkeypatch, backend)
@@ -176,12 +180,13 @@ def test_mcp_rag_ingest_diagram_forwards_image_path_and_caption(monkeypatch: Any
 
     result = mcp_server.local_ai_rag(
         action="ingest_diagram",
-        workspace="architecture",
+        root=str(tmp_path.resolve()),
         **ingest_args,
     )
 
     expected_payload = {
-        "workspace": "architecture",
+        "root": str(tmp_path.resolve()),
+        "workspace": mcp_server.canonical_workspace_id(str(tmp_path.resolve())),
         "image_path": image_path,
         "caption": caption,
     }
@@ -225,6 +230,7 @@ def test_mcp_work_submit_forwards_closed_task_contract(monkeypatch: Any, tmp_pat
                 "root": str(tmp_path),
                 "task": "Implement release receipt handling",
                 "work_id": "",
+                "task_id": "",
                 "acceptance_criteria": ["Receipt verifies", "Failure remains terminal"],
                 "constraints": ["No network writes"],
                 "mode": "plan_then_execute",
@@ -260,6 +266,7 @@ def test_mcp_work_status_forwards_work_identity(monkeypatch: Any) -> None:
                 "root": mcp_server._workspace,
                 "task": "",
                 "work_id": "work-202",
+                "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
                 "mode": "execute",
@@ -295,6 +302,7 @@ def test_mcp_work_wait_forwards_timeout_and_uses_long_transport_timeout(monkeypa
                 "root": mcp_server._workspace,
                 "task": "",
                 "work_id": "work-303",
+                "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
                 "mode": "execute",
@@ -336,6 +344,7 @@ def test_mcp_work_get_forwards_projection_options(monkeypatch: Any) -> None:
                 "root": mcp_server._workspace,
                 "task": "",
                 "work_id": "work-404",
+                "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
                 "mode": "execute",
@@ -371,6 +380,7 @@ def test_mcp_work_cancel_returns_cancelled_state(monkeypatch: Any) -> None:
                 "root": mcp_server._workspace,
                 "task": "",
                 "work_id": "work-505",
+                "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
                 "mode": "execute",
@@ -413,6 +423,7 @@ def test_mcp_work_continue_forwards_answer_and_preserves_updated_state(monkeypat
                 "root": mcp_server._workspace,
                 "task": "",
                 "work_id": "work-606",
+                "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
                 "mode": "execute",

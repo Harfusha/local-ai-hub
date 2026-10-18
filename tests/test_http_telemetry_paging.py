@@ -26,7 +26,7 @@ def test_telemetry_report_route_returns_first_next_and_last_error_pages(
         )
         responses = []
 
-        class Handler:
+        class Handler(http_server.Handler):
             headers = {"X-LocalAI-Client": "dashboard"}
 
             def _require_authorized(self):
@@ -77,7 +77,7 @@ def test_telemetry_report_route_rejects_non_integer_page_values(
     )
     responses = []
 
-    class Handler:
+    class Handler(http_server.Handler):
         headers = {"X-LocalAI-Client": "dashboard"}
         path = "/api/telemetry/report?error_offset=invalid"
 

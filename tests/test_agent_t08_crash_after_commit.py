@@ -3,6 +3,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from local_ai_hub.process_utils import hidden_run_kwargs
 
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStatus, TaskStore
@@ -131,13 +132,13 @@ def test_process_exit_during_receipt_write_recovers_atomically(tmp_path, phase):
     (repo_root / "test_receipt_crash.py").write_text(
         "def test_receipt_crash_evidence():\n    assert True\n", encoding="utf-8"
     )
-    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
-    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True)
-    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True)
-    subprocess.run(["git", "add", ".local-ai.toml", "test_receipt_crash.py"], cwd=repo_root, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "initialize crash receipt fixture"], cwd=repo_root, check=True)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "add", ".local-ai.toml", "test_receipt_crash.py"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize crash receipt fixture"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
     revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, capture_output=True, timeout=10, **hidden_run_kwargs(text=True)
     ).stdout.strip()
     task_id = f"task-receipt-hard-crash-{phase}"
     TaskStore(AgentStateStore(db_path)).create(
@@ -163,6 +164,7 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import TaskStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.process_utils import hidden_run_kwargs
 
 store = AgentStateStore(sys.argv[1])
 task_store = TaskStore(store)
@@ -174,7 +176,7 @@ class _RepoState:
     def fingerprint(self, cwd):
         revision = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=cwd, check=True,
-            text=True, capture_output=True,
+            capture_output=True, timeout=10, **hidden_run_kwargs(text=True),
         ).stdout.strip()
         return {"fingerprint": revision, "root": str(cwd)}
 
@@ -223,7 +225,7 @@ os._exit(74)
         ],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        **hidden_run_kwargs(text=True),
         timeout=60,
         check=False,
     )

@@ -105,12 +105,14 @@ def _bind_execution_record(
 
 def test_evaluate_project_completion_passes_rules_and_configured_commands(tmp_path: Path) -> None:
     root, state_dir = _project(tmp_path)
+    coordination_id = resolve_project_context(root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     result = CompletionResult("task-1", False, (), ("criterion",), (), ())
     verification = _VerificationStore(result)
     task = SimpleNamespace(
         task_id="task-1",
         owner="owner-1",
-        context=SimpleNamespace(repository_id=str(root.resolve())),
+        context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
     verification.task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
@@ -140,12 +142,14 @@ def test_evaluate_project_completion_passes_rules_and_configured_commands(tmp_pa
 
 def test_completion_handler_does_not_mutate_task_when_receipts_fail(tmp_path: Path) -> None:
     root, state_dir = _project(tmp_path)
+    coordination_id = resolve_project_context(root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     result = CompletionResult("task-1", False, (), ("required_commands",), (), ())
     task_store = _TaskStore()
     task_store.task = SimpleNamespace(
         task_id="task-1",
         owner="owner-1",
-        context=SimpleNamespace(repository_id=str(root.resolve())),
+        context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
     verification = _VerificationStore(result)
@@ -168,6 +172,8 @@ def test_completion_handler_does_not_mutate_task_when_receipts_fail(tmp_path: Pa
 def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_path: Path) -> None:
     root, state_dir = _project(tmp_path)
     state_dir.mkdir()
+    coordination_id = resolve_project_context(root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     receipt = VerificationReceipt.create(
         "task-1",
         "check",
@@ -181,7 +187,7 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
     result = CompletionResult("task-1", True, ("check",), (), (), (receipt,))
 
     class Verification:
-        state_store = SimpleNamespace(db_path=state_dir / "agent.sqlite3")
+        state_store = SimpleNamespace(db_path=state_dir / "agent_state.sqlite")
         calls: list[dict[str, object]] = []
         task_store = None
 
@@ -196,7 +202,7 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
             return SimpleNamespace(
                 task_id="task-1",
                 owner="agent",
-                context=SimpleNamespace(repository_id=str(root.resolve()), session_id="default"),
+                context=SimpleNamespace(repository_id=coordination_id, session_id="default"),
                 checkpoint=SimpleNamespace(state_data={
                     "repo_root": str(root.resolve()),
                     "repository_revision": "rev-1",
@@ -269,7 +275,10 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         '[verification_rules]\nrequired_commands = ["test"]\n',
         encoding="utf-8",
     )
-    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    state_dir.mkdir()
+    coordination_id = resolve_project_context(root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     task_store = TaskStore(state_store)
     artifact_store = ArtifactStore(tmp_path / "artifacts")
     verification_store = VerificationStore(
@@ -277,7 +286,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
     )
     task_store.create(
         GoalContract(goal="verify configured rule", acceptance_criteria=("required_commands",)),
-        ScopeContext(task_id="task-mcp", repository_id=str(root), session_id=session_id),
+        ScopeContext(task_id="task-mcp", repository_id=coordination_id, session_id=session_id),
         task_id="task-mcp",
         repo_root=str(root),
     )
@@ -456,13 +465,15 @@ def test_invalid_project_configuration_blocks_completion(tmp_path: Path) -> None
 
 def test_project_completion_rejects_root_not_bound_to_task(tmp_path: Path) -> None:
     trusted_root, state_dir = _project(tmp_path)
+    coordination_id = resolve_project_context(trusted_root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     foreign_root = tmp_path / "foreign"
     foreign_root.mkdir()
     verification = _VerificationStore(CompletionResult("task-1", False, (), ("check",), (), ()))
     task = SimpleNamespace(
         task_id="task-1",
         owner="owner-1",
-        context=SimpleNamespace(repository_id=str(trusted_root.resolve())),
+        context=SimpleNamespace(repository_id=coordination_id),
         checkpoint=SimpleNamespace(state_data={"mutation_generation": 0}),
     )
     verification.task_store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
@@ -487,7 +498,10 @@ def test_completion_handler_uses_persisted_receipts_and_completes_task(tmp_path:
         '[verification_rules]\nrequired_commands = ["test"]\n',
         encoding="utf-8",
     )
-    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    state_dir.mkdir(exist_ok=True)
+    coordination_id = resolve_project_context(root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     task_store = TaskStore(state_store)
     artifact_store = ArtifactStore(tmp_path / "artifacts")
     verification_store = VerificationStore(
@@ -495,7 +509,7 @@ def test_completion_handler_uses_persisted_receipts_and_completes_task(tmp_path:
     )
     task_store.create(
         GoalContract(goal="verify configured rule", acceptance_criteria=("required_commands",)),
-        ScopeContext(task_id="task-live", repository_id=str(root), session_id="agent"),
+        ScopeContext(task_id="task-live", repository_id=coordination_id, session_id="session-live"),
         task_id="task-live",
         repo_root=str(root),
     )

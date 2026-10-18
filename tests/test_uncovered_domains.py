@@ -58,7 +58,7 @@ def test_docset_rag(tmp_path: Path) -> None:
     rag.index = MagicMock(return_value={"success": True, "indexed": 5, "workspace": "docset:pandas"})
     rag.search = MagicMock(return_value={"success": True, "results": [{"path": "api.md", "text": "DataFrame"}]})
 
-    idx_res = rag.docset_index("pandas", str(tmp_path))
+    idx_res = rag.docset_index("pandas", root=str(tmp_path))
     assert idx_res["success"] is True
     rag.index.assert_called_once_with(str(tmp_path), "docset", workspace="docset:pandas")
 

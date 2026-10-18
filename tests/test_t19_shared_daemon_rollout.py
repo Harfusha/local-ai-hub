@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import plistlib
 import subprocess
@@ -204,7 +205,26 @@ def test_rollout_docs_state_adapter_multiplicity_root_and_transport_gates() -> N
 
 def test_mcp_stdio_adapter_does_not_construct_hub_backend_app() -> None:
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
-    assert "CLIENT = HubClient()" in source
     assert "mcp.run()" in source
-    for forbidden in ("LocalAIApp(", "HubServices(", "ProjectPreprocessor(", "CodeIndex(", "RAGStore(", "ModelRouter("):
-        assert forbidden not in source
+    module = ast.parse(source)
+    client_assignment = next(
+        node for node in module.body
+        if isinstance(node, ast.Try) and any(
+            isinstance(child, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "CLIENT" for target in child.targets)
+            for child in node.body
+        )
+    )
+    client_call = next(
+        child.value for child in client_assignment.body
+        if isinstance(child, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "CLIENT" for target in child.targets)
+    )
+    assert isinstance(client_call, ast.Call)
+    assert isinstance(client_call.func, ast.Name) and client_call.func.id == "_build_mcp_client"
+    module_level_calls = [
+        node for statement in module.body if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        for node in ast.walk(statement) if isinstance(node, ast.Call)
+    ]
+    forbidden_constructors = {"LocalAIApp", "HubServices", "ProjectPreprocessor", "CodeIndex", "RAGStore", "ModelRouter"}
+    assert not any(isinstance(call.func, ast.Name) and call.func.id in forbidden_constructors for call in module_level_calls)

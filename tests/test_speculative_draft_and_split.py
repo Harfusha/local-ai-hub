@@ -136,8 +136,7 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
         {
             "task": "write calculate function",
             "file": "calc.py",
-            "root": "",
-            "cwd": str(tmp_path),
+            "root": str(tmp_path),
             "verify_tests": True,
         },
     )
@@ -147,7 +146,10 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
     )
     services.commands.run.assert_called_once()
     assert services.commands.run.call_args.args[0] == "pytest -q tests/test_calculator.py"
-    assert services.commands.run.call_args.args[2] == "test-tenant"
+    assert services.commands.run.call_args.args == (
+        "pytest -q tests/test_calculator.py",
+        str(tmp_path),
+    )
     assert verified["verification"]["tests_passed"] is True
     assert verified["verification"]["test_summary"] == "tests passed"
     assert verified["validated"] is True

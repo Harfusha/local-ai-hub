@@ -30,7 +30,10 @@ def test_rollback_reports_suppressed_sqlite_cache_delete_failure(
 
     assert result["outcome_unknown"] is True
     assert result.get("cache_invalidation_failed") is True
-    assert result.get("cache_invalidation_errors") == ["database is locked"]
+    assert result.get("cache_invalidation_errors") == [
+        "database is locked",
+        "cache clear failed: database is locked",
+    ]
 
 
 def test_failed_sqlite_delete_does_not_serve_stale_cached_value(

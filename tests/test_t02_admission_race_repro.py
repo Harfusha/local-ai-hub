@@ -28,7 +28,7 @@ def test_nine_admission_probes_cancel_while_one_worker_is_in_flight(tmp_path: Pa
     snapshots: list[dict[str, Any]] = []
     try:
         sentinel = manager.submit(
-            "benchmark", {"task_id": "t02-inflight-sentinel"},
+            "reason", {"task_id": "t02-inflight-sentinel"},
         )
         assert sentinel.get("success") is True
         sentinel_id = str(sentinel["job_id"])
@@ -37,7 +37,7 @@ def test_nine_admission_probes_cancel_while_one_worker_is_in_flight(tmp_path: Pa
 
         def probe(sample_id: str) -> dict[str, Any]:
             submitted = manager.submit(
-                "benchmark", {"task_id": f"t02-{sample_id}"},
+                "reason", {"task_id": f"t02-{sample_id}"},
                 dispatch_delay_seconds=30,
             )
             job_id = str(submitted.get("job_id", ""))

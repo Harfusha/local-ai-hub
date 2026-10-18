@@ -43,7 +43,7 @@ def _stored_paths(store: RAGStore, workspace: str) -> set[str]:
         return {
             str(row[0])
             for row in con.execute(
-                "SELECT path FROM files WHERE workspace=?", (workspace)
+                "SELECT path FROM files WHERE workspace=?", (workspace,)
             ).fetchall()
         }
 

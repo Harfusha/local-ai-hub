@@ -251,7 +251,7 @@ def test_telemetry_does_not_price_overlapping_output_baseline_twice(tmp_path: Pa
         store.close()
 
 
-def test_noncurrent_telemetry_schema_is_rebuilt(tmp_path: Path):
+def test_noncurrent_telemetry_schema_is_preserved_for_offline_conversion(tmp_path: Path):
     import sqlite3
 
     path = tmp_path / "telemetry.sqlite3"
@@ -261,20 +261,23 @@ def test_noncurrent_telemetry_schema_is_rebuilt(tmp_path: Path):
     con.commit()
     con.close()
 
-    store = TelemetryStore(tmp_path, enabled=True)
     try:
-        check = sqlite3.connect(path)
-        try:
-            tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'") if not row[0].startswith("sqlite_")}
-            cols = {row[1] for row in check.execute("PRAGMA table_info(events)")}
-            rows = check.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        finally:
-            check.close()
-        assert tables == {"events", "errors", "snapshots", "daily_rollups", "process_sessions"}
-        assert cols == {"id", *store._EVENT_COLUMNS}
-        assert rows == 0
+        TelemetryStore(tmp_path, enabled=True)
+    except RuntimeError as exc:
+        assert "explicit offline conversion required" in str(exc)
+    else:
+        raise AssertionError("legacy telemetry schema was silently rebuilt")
+
+    check = sqlite3.connect(path)
+    try:
+        tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'") if not row[0].startswith("sqlite_")}
+        cols = {row[1] for row in check.execute("PRAGMA table_info(events)")}
+        rows = check.execute("SELECT id, marker FROM events").fetchall()
     finally:
-        store.close()
+        check.close()
+    assert tables == {"events"}
+    assert cols == {"id", "marker"}
+    assert rows == [(1, "discard-me")]
 
 def test_tool_accounting_exposes_negative_net_delta_when_tool_costs_more_than_it_saves():
     event = finalize_tool_accounting(

@@ -16,11 +16,12 @@ from local_ai_hub.agent_tasks import (
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.sqlite_support import connect_sqlite
+from local_ai_hub.project_config import resolve_project_context
 
 
 @pytest.fixture
 def tasks(tmp_path):
-    return TaskStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
+    return TaskStore(AgentStateStore(tmp_path / "agent_state.sqlite"))
 
 
 @pytest.mark.parametrize("requested,expected", [
@@ -198,12 +199,31 @@ def test_mutation_generation_rejects_invalid_counter_without_reset(tasks, bad_ge
 
 
 def test_mutation_generation_preserves_server_owned_scope_and_memory(tasks, tmp_path, monkeypatch):
-    memory_context = {"items": [{"id": "server-memory"}]}
+    task_id = "task-memory-audit"
+    coordination_id = resolve_project_context(tmp_path, tmp_path / "project-state").coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
+    memory_context = {
+        "schema_version": 2,
+        "context": {
+            "root": str(tmp_path.resolve()),
+            "coordination_id": coordination_id,
+            "task_id": task_id,
+            "session_id": "",
+            "clone_id": "",
+            "worktree_id": "",
+            "branch": "",
+        },
+        "instruction": "",
+        "items": [{"id": "server-memory", "content": "server value"}],
+        "warnings": [],
+        "estimated_tokens": 0,
+    }
     monkeypatch.setattr(tasks, "_task_memory_context", lambda *args, **kwargs: memory_context)
     token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         created = tasks.create(
-            GoalContract(goal="owned generation"), ScopeContext(repository_id=str(tmp_path)),
+            GoalContract(goal="owned generation"), ScopeContext(repository_id=coordination_id, task_id=task_id),
+            task_id=task_id,
             repo_root=str(tmp_path), actor="owner", repository_revision="rev-1",
         )
     finally:
@@ -216,7 +236,7 @@ def test_mutation_generation_preserves_server_owned_scope_and_memory(tasks, tmp_
     assert tasks.state_store.events(f"task:{created.task_id}") == before_events
     updated = tasks.advance_mutation_generation(created.task_id, actor="owner")
     assert updated.checkpoint.state_data == {**created.checkpoint.state_data, "mutation_generation": 1}
-    assert updated.checkpoint.state_data["memory_context"] == memory_context
+    assert updated.checkpoint.state_data["memory_context"] == created.checkpoint.state_data["memory_context"]
     assert updated.checkpoint.state_data["_agent_task_scope"] == before_scope
     assert updated.owner == created.owner
 

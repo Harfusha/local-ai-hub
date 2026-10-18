@@ -61,7 +61,7 @@ def test_workspace_memo_rejects_malformed_key_or_value(tmp_path, key, value):
         store.put(str(tmp_path), key, value)
 
 
-def test_workspace_memo_delete_rejects_non_string_tenant_label(tmp_path):
+def test_workspace_memo_delete_rejects_retired_tenant_keyword(tmp_path):
     store = WorkspaceMemoryStore(tmp_path / "state")
     store.put(str(tmp_path), "key", "value")
 
@@ -143,7 +143,7 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
     assert any(record.record_id == shared.record_id for record in records)
 
 
-def test_tenant_label_does_not_authenticate_http_request(monkeypatch):
+def test_api_token_authentication_requires_a_valid_token(monkeypatch):
     monkeypatch.setattr(
         http_server,
         "APP",
@@ -151,7 +151,7 @@ def test_tenant_label_does_not_authenticate_http_request(monkeypatch):
     )
 
     request = http_server.Handler.__new__(http_server.Handler)
-    request.headers = {"X-LocalAI-Tenant": "administrator"}
+    request.headers = {}
     request.client_address = ("127.0.0.1", 1234)
     request.path = "/api/test"
     request.command = "GET"
@@ -167,9 +167,9 @@ def test_tenant_label_does_not_authenticate_http_request(monkeypatch):
 def test_lease_conflicts_keep_owner_details_visible(tmp_path):
     leases = ScopeLeaseStore(tmp_path / "state")
     root = str(tmp_path / "repo")
-    held = leases.claim("identity-a", root, ["src/shared.py"], purpose="inspect")
+    held = leases.claim(owner="identity-a", root=root, paths=["src/shared.py"], purpose="inspect")
 
-    conflict = leases.claim("identity-b", root, ["src/shared.py"], purpose="edit")
+    conflict = leases.claim(owner="identity-b", root=root, paths=["src/shared.py"], purpose="edit")
 
     assert conflict["success"] is False
     assert conflict["conflicts"][0]["owner"] == "identity-a"
@@ -181,11 +181,11 @@ def test_lease_conflicts_keep_owner_details_visible(tmp_path):
 def test_unknown_lease_owner_cannot_spoof_current_owner(tmp_path, label):
     leases = ScopeLeaseStore(tmp_path / "state")
     root = str(tmp_path / "repo")
-    held_for_release = leases.claim("identity-a", root, ["src/release.py"])
-    held_for_renew = leases.claim("identity-a", root, ["src/renew.py"])
+    held_for_release = leases.claim(owner="identity-a", root=root, paths=["src/release.py"])
+    held_for_renew = leases.claim(owner="identity-a", root=root, paths=["src/renew.py"])
 
-    released = leases.release(label, held_for_release["lease_id"])
-    renewed = leases.renew(label, held_for_renew["lease_id"])
+    released = leases.release(owner=label, lease_id=held_for_release["lease_id"])
+    renewed = leases.renew(owner=label, lease_id=held_for_renew["lease_id"])
 
     assert released["released_rows"] == 0
     assert renewed["success"] is False
@@ -264,11 +264,14 @@ def test_worktree_memory_idempotency_isolated_by_scope_id(tmp_path):
 
 def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
     store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    root = tmp_path / "repo"
+    root.mkdir()
     first = MemoryRecord.create(
         kind=MemoryKind.DECISION,
         scope=AgentScope.WORKTREE,
         scope_id="a:b",
         key="c",
+        provenance={"root": str(root), "worktree_id": "a:b"},
         value="scope delimiter pair",
         status=MemoryStatus.CONFIRMED,
         source="user",
@@ -278,6 +281,7 @@ def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
         scope=AgentScope.WORKTREE,
         scope_id="a",
         key="b:c",
+        provenance={"root": str(root), "worktree_id": "a"},
         value="key delimiter pair",
         status=MemoryStatus.CONFIRMED,
         source="user",
@@ -289,8 +293,8 @@ def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
     assert recorded_first.record_id == first.record_id
     assert recorded_second.record_id == second.record_id
     assert recorded_second.record_id != recorded_first.record_id
-    assert store.get(first.record_id, scope=AgentScope.WORKTREE, scope_id="a:b").value == "scope delimiter pair"
-    assert store.get(second.record_id, scope=AgentScope.WORKTREE, scope_id="a").value == "key delimiter pair"
+    assert store.get(first.record_id, scope=AgentScope.WORKTREE, scope_id="a:b", root=str(root), worktree_id="a:b").value == "scope delimiter pair"
+    assert store.get(second.record_id, scope=AgentScope.WORKTREE, scope_id="a", root=str(root), worktree_id="a").value == "key delimiter pair"
 
 
 def test_memory_delete_requires_matching_scope_identity(tmp_path):
@@ -333,6 +337,8 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="worktree-delete",
+        root=str(worktree),
+        worktree_id="worktree-delete",
     ).value == "remove exact record"
     assert store.find_relations(source_entity=record.record_id) == relations_before_denied_delete
 
@@ -340,11 +346,15 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="worktree-delete",
+        root=str(worktree),
+        worktree_id="worktree-delete",
     ) is True
     assert store.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="worktree-delete",
+        root=str(worktree),
+        worktree_id="worktree-delete",
     ) is None
     assert store.find_relations(source_entity=record.record_id) == []
 

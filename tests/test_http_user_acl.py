@@ -43,11 +43,11 @@ def test_owner_supervisor_and_action_tokens_keep_separate_permissions(monkeypatc
     security = {
         "api_token": "service-secret",
         "supervisor_token": "supervisor-secret",
-        "action_tokens": {"dashboard:read": "action-secret"},
+        "action_tokens": {"dashboard:read": "long-enough-action-secret"},
     }
     service = _handler(monkeypatch, security, "service-secret")
     supervisor = _handler(monkeypatch, security, "supervisor-secret")
-    action = _handler(monkeypatch, security, "action-secret")
+    action = _handler(monkeypatch, security, "long-enough-action-secret")
 
     assert http_server.Handler._authorized(service, action="admin:write") is True
     assert service._authorization_actor == "api_token"
@@ -80,15 +80,13 @@ def test_diagnostic_config_redacts_every_authentication_secret():
     redacted = http_server._redact_config_secrets({"security": {
         "api_token": "api-secret",
         "supervisor_token": "supervisor-secret",
-        "action_tokens": {"dashboard:read": "action-secret"},
-        "users": {"viewer": {"token": "user-secret", "permissions": ["dashboard:read"]}},
+        "action_tokens": {"dashboard:read": "long-enough-action-secret"},
     }})
 
     security = redacted["security"]
     assert security["api_token"] == "***configured***"
     assert security["supervisor_token"] == "***configured***"
     assert security["action_tokens"]["dashboard:read"] == "***configured***"
-    assert security["users"]["viewer"]["token"] == "***configured***"
 
 
 @pytest.mark.parametrize("bind", ["0.0.0.0", "localhost", "::1"])
@@ -122,3 +120,9 @@ def test_http_route_maps_to_least_privilege_permission(method, path, expected):
     handler = SimpleNamespace(command=method, path=path)
 
     assert http_server.Handler._required_permission(handler) == expected
+
+
+@pytest.mark.parametrize("retired_value", [None, {}, False])
+def test_config_redaction_rejects_retired_users_by_presence(retired_value):
+    with pytest.raises(ValueError, match="security.users was removed"):
+        http_server._redact_config_secrets({"security": {"users": retired_value}})

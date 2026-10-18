@@ -74,21 +74,21 @@ def test_cancellable_invocation_passes_cancel_event():
     assert seen == [({"task": "x"}, False)]
 
 
-def test_pause_gate_skips_legacy_uncancellable_callback():
+def test_pause_state_is_forwarded_to_cancellable_callback():
     registry = _ActiveTranscriptionRegistry()
     registry.enter_gaming()
     calls = []
 
     result = _invoke_cancellable_request(
         registry,
-        lambda _payload, *, cancel_event: calls.append("started") or {
+        lambda _payload, *, cancel_event: calls.append(("started", cancel_event.is_set())) or {
             "success": False, "cancelled": cancel_event.is_set(),
         },
         {},
     )
 
     assert result["cancelled"] is True
-    assert calls == []
+    assert calls == [("started", True)]
     assert registry.active_count() == 0
 
 

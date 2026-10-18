@@ -2,6 +2,31 @@
 
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
+**Whole-suite repair checkpoint:** Frozen master `ab66423243f19cae7cb722784ff8ac8c4ce824e8`
+completed the entire suite without a failure cutoff: 10,949 passed, 412 failed,
+116 skipped and 23 subtests passed in 2,532.81 seconds. Exact log and parsed
+failure sections are under operator temp `lah-all-363f9424d1/`. This is a failed
+integrated gate, not release acceptance. Tracked source stayed frozen throughout.
+
+The complete repair batch covers all 99 failing test files, with disjoint bounded
+fixture scopes recorded in ignored `state/single-owner-conversion-20261018-1d55c3d703/repair-ownership.json`.
+No new tests run until that batch is assembled and reviewed. Retired positive
+calls become canonical root/task/owner contracts; negative rejection, durable
+preservation, scope separation and authorization assertions remain. Confirmed
+source defects include the benchmark's old tenant-first async calls, disabled
+Agent State event gating after task lookup, and an over-compacted command-failure
+summary. Production configuration/data remain unchanged; cutover still waits for
+fresh integrated gates and an installed current-source runtime proof.
+
+The repair bundle is assembled. Standard-library AST parsing accepted all 100
+changed Python files and `git diff --check` passed. Indexed impact evidence
+`req_1152c3500c67` reports high risk for the bounded multi-file/security/process
+scope; it is not whole-diff coverage or approval. The separate semantic review
+was explicitly refused because this isolated profile disables `local_ai_task`;
+no model review was inferred. The primary owner reviewed the three runtime/tool
+diffs directly. Integrated execution, installation and production activation
+remain pending.
+
 **Expanded source-bundle checkpoint:** A complete static fixture inventory found
 remaining positive tenant parameters, callbacks and positional service calls
 outside the first failing group. Those fixtures now use canonical single-owner

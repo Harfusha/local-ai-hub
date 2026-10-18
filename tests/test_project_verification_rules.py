@@ -189,6 +189,8 @@ def test_http_task_completion_uses_persisted_project_receipts(
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
+    coordination_id = resolve_project_context(project_root, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     task_id = "task-http-completion"
     test_dir = project_root / "tests"
     test_dir.mkdir()
@@ -201,7 +203,7 @@ def test_http_task_completion_uses_persisted_project_receipts(
             goal="verify configured project rules",
             acceptance_criteria=("required_commands",),
         ),
-        ScopeContext(task_id=task_id, repository_id=str(project_root), session_id="agent"),
+        ScopeContext(task_id=task_id, repository_id=coordination_id, session_id="session-http-completion"),
         task_id=task_id,
         actor="agent",
         repo_root=str(project_root),

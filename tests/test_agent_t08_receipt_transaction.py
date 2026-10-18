@@ -7,11 +7,12 @@ import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_verification import VerificationStore
-from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
+from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.sqlite_support import connect_sqlite
 from local_ai_hub.project_config import resolve_project_context
+from local_ai_hub.process_utils import hidden_run_kwargs
 
 
 def _repository_fixture(tmp_path):
@@ -22,13 +23,13 @@ def _repository_fixture(tmp_path):
         encoding="utf-8",
     )
     _write_passing_test(repo_root)
-    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
-    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True)
-    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True)
-    subprocess.run(["git", "add", ".local-ai.toml", "tests/test_receipt_fixture.py"], cwd=repo_root, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt fixture"], cwd=repo_root, check=True)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "add", ".local-ai.toml", "tests/test_receipt_fixture.py"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt fixture"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
     revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, capture_output=True, timeout=10, **hidden_run_kwargs(text=True)
     ).stdout.strip()
     coordination_id = resolve_project_context(repo_root, tmp_path / "state").coordination_id
     return repo_root, revision, coordination_id
@@ -50,7 +51,7 @@ class _RepoState:
     def fingerprint(self, cwd):
         revision = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=cwd, check=True,
-            text=True, capture_output=True,
+            capture_output=True, timeout=10, **hidden_run_kwargs(text=True),
         ).stdout.strip()
         return {"fingerprint": revision, "root": str(Path(cwd).resolve())}
 
@@ -203,18 +204,34 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
     reloaded_verifier.set_command_execution_record_lookup(
         reloaded_broker.get_command_execution_record
     )
-    completion = reloaded_verifier.completion(task_id)
+    current_revision = _RepoState().fingerprint(repo_root)["fingerprint"]
+    completion = reloaded_verifier.completion(
+        task_id, current_revision=current_revision, project_root=repo_root,
+    )
     assert completion.complete is True
     assert len(completion.receipts) == 1
     assert any(
         event.kind == "verification.receipt_recorded"
         for event in reloaded_state_store.events(f"verification:{task_id}")
     )
+    current_task = reloaded_tasks.get(task_id)
+    assert current_task is not None
+    completion_state_data = dict(current_task.checkpoint.state_data)
+    completion_state_data["repository_revision"] = current_revision
+    completion_checkpoint = TaskCheckpoint(
+        phase=current_task.checkpoint.phase,
+        next_action=current_task.checkpoint.next_action,
+        affected_paths=current_task.checkpoint.affected_paths,
+        evidence_ids=current_task.checkpoint.evidence_ids,
+        blockers=current_task.checkpoint.blockers,
+        state_data=completion_state_data,
+    )
     completed = reloaded_tasks.complete(
         task_id,
         actor="agent",
         reason="verified command receipt",
         idempotency_key="command-receipt-completion",
+        checkpoint=completion_checkpoint,
     )
     assert completed.status.value == "completed"
 

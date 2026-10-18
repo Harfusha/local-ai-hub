@@ -8,6 +8,7 @@ from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.client import HubClient
+from local_ai_hub.project_config import resolve_project_context
 
 
 def test_http_task_complete_uses_persisted_repository_scoped_receipts(
@@ -40,6 +41,9 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     )
 
     app = LocalAIApp(str(config_path))
+    project_context = resolve_project_context(project_root, state_dir)
+    coordination_id = project_context.coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     session_id = "session-t09-http-receipts"
     app.agent_tasks.create(
         GoalContract(
@@ -47,7 +51,7 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
             acceptance_criteria=("test",),
         ),
         ScopeContext(
-            repository_id=str(project_root),
+            repository_id=coordination_id,
             task_id=task_id,
             session_id=session_id,
         ),
@@ -74,11 +78,11 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     # Receipt identity binds the explicit task owner and canonical repository.
     command_id = str(receipt["command_id"])
     assert app.commands.get_command_execution_record(
-        command_id,  task_id=task_id,
-        repository_root=str(project_root),
+        command_id, task_id=task_id,
+        repository_root=str(project_root.parent),
     ) is None
     assert app.commands.get_command_execution_record(
-        command_id,  task_id=task_id,
+        command_id, task_id=task_id,
         repository_root=str(project_root),
     ) is not None
     task_state = app.agent_tasks.get(task_id)
@@ -153,10 +157,10 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
             reason="wrong-owner completion attempt",
         )
         assert wrong_owner["success"] is False, wrong_owner
-        after_cross_tenant = app.agent_tasks.get(task_id)
-        assert after_cross_tenant == before_wrong_owner
-        assert after_cross_tenant.status == before_wrong_owner.status
-        assert after_cross_tenant.owner == before_wrong_owner.owner
+        after_cross_owner = app.agent_tasks.get(task_id)
+        assert after_cross_owner == before_wrong_owner
+        assert after_cross_owner.status == before_wrong_owner.status
+        assert after_cross_owner.owner == before_wrong_owner.owner
         assert app.agent_tasks.state_store.events(
             stream_id=f"task:{task_id}"
         ) == task_events_before_wrong_owner
@@ -188,8 +192,8 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     assert payload["task"]["status"] == "completed"
     stored = app.agent_tasks.get(task_id)
     assert stored is not None
-    assert stored.owner == tenant_id
-    assert stored.context.repository_id == str(project_root)
+    assert stored.owner == agent_id
+    assert stored.context.repository_id == coordination_id
     assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
     assert stored.checkpoint.state_data["repository_revision"] == repository_revision
 
@@ -200,5 +204,5 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     assert {
         (receipt.task_id, receipt.owner, receipt.criterion, receipt.repository_revision)
         for receipt in completion.receipts
-    } == {(task_id, tenant_id, "test", repository_revision)}
+    } == {(task_id, agent_id, "test", repository_revision)}
     assert {receipt.evidence_id for receipt in completion.receipts} == {command_evidence}
