@@ -3610,7 +3610,7 @@ class CommandBroker:
         """Authorize auxiliary process actions at their final broker boundary."""
         from .agent_policy import AUXILIARY_ACTION_POLICIES, ActionRequest, CapabilityGrant, RiskClass
 
-        action_name = str(action or "").strip().lower().replace("-", "_")
+        action_name = action if type(action) is str else ""
         policy_config = self.config.get("agent_policy", {})
         policy_enabled = isinstance(policy_config, dict) and bool(policy_config.get("enabled", True))
         developer_authorized = (
@@ -3618,6 +3618,17 @@ class CommandBroker:
             and isinstance(policy_config, dict)
             and bool(policy_config.get("allow_developer_authorized_mutations", False))
         )
+        if action_name not in AUXILIARY_ACTION_POLICIES:
+            return {
+                "success": False,
+                "allowed": False,
+                "reason": f"unknown auxiliary action '{action_name}' denied",
+                "owner": "agent_policy",
+                "side_effect_class": "unknown",
+                "terminal": True,
+                "retryable": False,
+            }
+
         engine = self.policy_engine
         if engine is None or not callable(getattr(engine, "authorize", None)):
             return {
@@ -3630,17 +3641,6 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-        if action_name not in AUXILIARY_ACTION_POLICIES:
-            return {
-                "success": False,
-                "allowed": False,
-                "reason": f"unknown auxiliary action '{action_name}' denied",
-                "owner": "agent_policy",
-                "side_effect_class": "unknown",
-                "terminal": True,
-                "retryable": False,
-            }
-
         task = None
         if task_id:
             if self.task_store is None:

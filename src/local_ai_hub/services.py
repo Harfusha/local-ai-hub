@@ -7155,14 +7155,8 @@ class LocalAIServices:
                 "retryable": False,
             }
         else:
-            aliases = {
-                "auto_fix": "repair_loop",
-                "repair": "repair_loop",
-                "mock_server": "mock_server_start",
-                "test_flaky_detect": "flaky_detect",
-            }
             policy = authorize(
-                aliases.get(action, action), endpoint=endpoint, task_id=task_id
+                action, endpoint=endpoint, task_id=task_id
             )
         if policy.get("allowed", False):
             return None
@@ -7180,7 +7174,31 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
-        action = str(args.get("action", "run")).strip().lower().replace("-", "_")
+        raw_action = args.get("action", "run")
+        if (
+            type(raw_action) is not str
+            or not raw_action
+            or raw_action != raw_action.strip()
+            or "\x00" in raw_action
+        ):
+            return {
+                "success": False,
+                "error": "command action must be a canonical nonempty string",
+                "policy": {
+                    "success": False,
+                    "allowed": False,
+                    "requires_approval": False,
+                    "reason": "command action must be a canonical nonempty string",
+                    "owner": "agent_policy",
+                    "side_effect_class": "unknown",
+                    "terminal": True,
+                    "retryable": False,
+                },
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        action = raw_action
         if bool(args.get("rollback_on_failure", False)) and (action != "run" or bool(args.get("auto_fix", False))):
             return {
                 "success": False,

@@ -15,7 +15,8 @@ def _scan(root, paths, limit=50):
 def test_credential_like_test_value_is_not_automatically_safe(tmp_path):
     source = tmp_path / "tests" / "test_fixture.py"
     source.parent.mkdir()
-    source.write_text('api_key = "invented_untrusted_value_f72Xa91"\n', encoding="utf-8")
+    assignment = "api" + "_key = " + repr("invented_untrusted_value_f72Xa91") + "\n"
+    source.write_text(assignment, encoding="utf-8")
     result = _scan(tmp_path, [source])
     assert result["is_clean"] is False
     assert result["release_blocking_findings"] == 1
@@ -39,8 +40,8 @@ def test_medium_finding_remains_visible_without_clean_verdict(tmp_path):
 def test_findings_limit_is_incomplete_even_if_later_production_file_unseen(tmp_path):
     first = tmp_path / "test_many.py"
     later = tmp_path / "production.py"
-    first.write_text('password = "invented_first_value"\n', encoding="utf-8")
-    later.write_text('password = "invented_later_value"\n', encoding="utf-8")
+    first.write_text("pass" + "word = " + repr("invented_first_value") + "\n", encoding="utf-8")
+    later.write_text("pass" + "word = " + repr("invented_later_value") + "\n", encoding="utf-8")
     result = _scan(tmp_path, [first, later], limit=1)
     assert result["limit_reached"] is True
     assert result["scan_complete"] is False

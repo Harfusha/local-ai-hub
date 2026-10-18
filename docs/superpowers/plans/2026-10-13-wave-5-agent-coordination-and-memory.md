@@ -135,7 +135,7 @@ Add `action="ask"` and `action="answer"` to `local_ai_coord`. Stores questions i
 
 - [x] **Step 1: Write test verifying memory tagged `scope="global"` is retrievable across different project roots**
 - [x] **Step 2: Implement fix**
-Allow memories to specify `scope: "project" | "global"`. When querying memories, include global memories regardless of `root`.
+Use only the canonical `AgentScope` values. Global memories are retrievable across roots; repository memories are matched by the trusted repository coordination ID and exact tenant. The retired `project` value is invalid and must not be accepted as an alias.
 - [x] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(memory): allow cross-workspace and global scope memories"`
 

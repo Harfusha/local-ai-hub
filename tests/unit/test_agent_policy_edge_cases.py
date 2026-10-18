@@ -143,8 +143,15 @@ def test_budget_and_cost_validation_and_helpers() -> None:
 
 
 def test_action_request_and_policy_decision_validation_and_helpers() -> None:
+    with pytest.raises(ValueError, match="canonical nonempty string"):
+        ActionRequest(
+            action=" read_file\x00 ",
+            target=" /path/to/file\x00 ",
+            risk_class=RiskClass.READ,
+        )
+
     req = ActionRequest(
-        action=" read_file\x00 ",
+        action="read_file",
         target=" /path/to/file\x00 ",
         risk_class=RiskClass.READ,
     )

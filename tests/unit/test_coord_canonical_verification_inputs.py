@@ -58,12 +58,12 @@ def test_registered_ask_and_answer_use_canonical_fields(monkeypatch, tmp_path):
         ("coord", {
             "action": "ask", "root": str(tmp_path), "tenant": "tenant-a",
             "session_id": "session-a", "question_id": "q-1", "question": "Question?", "task_id": "task-a",
-            "response_budget_tokens": 3200,
+            "response_budget_tokens": mcp_server._response_budget("ask", {"tool": "ask"})[0],
         }),
         ("coord", {
             "action": "answer", "root": str(tmp_path), "tenant": "tenant-a",
             "question_id": "q-1", "answer": "Answer.", "task_id": "task-a",
-            "response_budget_tokens": 3200,
+            "response_budget_tokens": mcp_server._response_budget("answer", {"tool": "answer"})[0],
         }),
     ]
 
@@ -124,7 +124,7 @@ def test_verification_receipt_is_required_and_never_synthesized(monkeypatch, tmp
 
 
 @pytest.mark.parametrize(("action", "arguments", "expected"), [
-    ("task_cleanup_worktree", {"task_id": "task-1"}, ("/api/agent-state/tasks", {"action": "cleanup_worktree", "task_id": "task-1", "response_budget_tokens": 3200})),
+    ("task_cleanup_worktree", {"task_id": "task-1"}, ("/api/agent-state/tasks", {"action": "cleanup_worktree", "task_id": "task-1", "response_budget_tokens": mcp_server._response_budget("task_cleanup_worktree", {"tool": "task_cleanup_worktree"})[0]})),
     ("verify_completion", {"task_id": "task-1", "repository_revision": "rev-1"}, ("/api/agent-state/verification", {"action": "completion", "task_id": "task-1", "root": ".", "repository_revision": "rev-1"})),
     ("verify_export", {"task_id": "task-1"}, ("/api/agent-state/verification", {"action": "export", "task_id": "task-1", "root": ".", "format": "markdown"})),
 ])
