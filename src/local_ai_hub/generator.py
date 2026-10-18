@@ -26,6 +26,7 @@ SINGLE_OWNER_CONTRACT = (
     "MCP coordination has no tenant argument; LOCAL_AI_TENANT is retired. Session evidence uses session_id, never an agent/workspace-derived tenant. "
     "HubClient constructor options are keyword-only; constructor/request/get/post reject retired tenant arguments. "
     "SDK requests retain API tokens without tenant headers; scope aliases and conflicting repository identities reject before transport. "
+    "SDK checkpoint_task sends the canonical nested checkpoint object with explicit phase, next_action, affected_paths, evidence_ids, blockers and state_data; root, response budget and idempotency key remain request controls. Unknown keyword fields reject, and falsey malformed checkpoint values are never converted into empty defaults. "
     "HTTP root binding preserves owner-global memory and explicit session IDs; never rewrite global scope into a credential-derived session. "
     "HTTP task creation derives context.repository_id from the authorized root's resolved project coordination ID; supplied IDs must match exactly. SDK preflight validates logical IDs without interpreting them as filesystem paths. "
     "Task ownership checks repository identity, and request rate limiting uses one bounded installation window without tenant buckets. "

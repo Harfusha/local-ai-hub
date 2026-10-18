@@ -2,6 +2,24 @@
 
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
+**Isolated runtime checkpoint:** Stock supervisor and Hub started successfully
+on loopback port 64484 using separately converted data and a private acceptance
+configuration. HTTP/SDK evidence proves repository isolation, actual scope
+identities, owner-global memory, API-token denial, path confinement and rejection
+of retired fields/headers/query selectors even when empty. Actual MCP stdio calls
+retrieve the authorized task and reject a retired tenant input. The configured
+no-model-start profile advertises six tools; semantic tool availability is not
+inferred. Fake command evidence was refused by receipt verification.
+Live execution exposed SDK checkpoint_task sending flat fields; it now sends the
+canonical nested checkpoint, with explicit named options and no falsey coercion.
+Final integrated validation and a real broker-issued receipt remain pending.
+
+The acceptance converted-state directory is now mutable and contains synthetic
+proof records. It is quarantined from production cutover: final activation must
+use fresh source-pinned conversion targets, never these acceptance databases.
+Original production data/configuration and its supervisor remain untouched.
+
+
 **Runtime-start preservation repair:** The first isolated supervised startup
 refused the converted Agent State because the converter had omitted its
 database-wide `PRAGMA user_version=1`. The source header remains version 1;
