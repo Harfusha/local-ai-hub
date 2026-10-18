@@ -1918,6 +1918,11 @@ class CodeIndex:
         settings = project_context.settings if project_context is not None else None
         if api is not None and settings is not None and not api.phase_is_allowed(settings, "call_graph"):
             return []
+        path_policy = (
+            api.ProjectPathPolicy(c_root, settings)
+            if api is not None and settings is not None
+            else None
+        )
         existing: dict[str, tuple[str, str, str]] = {}
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN")
@@ -1941,7 +1946,9 @@ class CodeIndex:
                     size_bytes = target.stat().st_size
                 except OSError:
                     continue
-                if not api.path_is_allowed(c_root, target, settings, phase="call_graph", size_bytes=size_bytes):
+                if not path_policy.allows(
+                    target, phase="call_graph", size_bytes=size_bytes,
+                ):
                     continue
             language = self._language_for_path(path, settings)
             if existing.get(path) != (str(content_hash), _PARSER_ANALYZER_VERSION, language):
@@ -2108,6 +2115,11 @@ class CodeIndex:
         if api is not None and settings is not None and not api.phase_is_allowed(settings, "call_graph"):
             self.prune(c_root, [])
             return {"success": True, "files_processed": 0, "cached": 0, "symbols": 0, "refs": 0, "edges": 0, "skipped": len(normalized)}
+        path_policy = (
+            api.ProjectPathPolicy(c_root, settings)
+            if api is not None and settings is not None
+            else None
+        )
 
         with self._lock, closing(self._connect()) as con:
             existing = {
@@ -2198,9 +2210,9 @@ class CodeIndex:
                 file_stat = file_path.stat()
             except OSError:
                 continue
-            if api is not None and settings is not None:
-                if not api.path_is_allowed(
-                    c_root, file_path, settings, phase="call_graph", size_bytes=file_stat.st_size,
+            if path_policy is not None:
+                if not path_policy.allows(
+                    file_path, phase="call_graph", size_bytes=file_stat.st_size,
                 ):
                     denied_paths.append(path)
                     continue

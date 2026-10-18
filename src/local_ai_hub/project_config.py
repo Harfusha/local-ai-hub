@@ -1021,6 +1021,87 @@ def _path_policy_phase_is_allowed(phase: str) -> bool:
     return isinstance(phase, str) and phase in _PATH_POLICY_PHASES
 
 
+class ProjectPathPolicy:
+    """Apply one project's path rules while reusing its resolved root per batch."""
+
+    def __init__(self, root: str | os.PathLike[str], settings: ProjectSettings) -> None:
+        self.settings = settings
+        try:
+            self.project_root: Path | None = Path(root).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            self.project_root = None
+
+    def allows(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        phase: str,
+        soft_ignored: bool = False,
+        hard_denied: bool = False,
+        binary: bool = False,
+        size_bytes: int | None = None,
+    ) -> bool:
+        settings = self.settings
+        project_root = self.project_root
+        if (
+            project_root is None
+            or not _path_policy_phase_is_allowed(phase)
+            or _phase_is_skipped(settings, phase)
+        ):
+            return False
+        try:
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = project_root / candidate
+            if candidate.name in _LOCAL_CONFIG_FILES:
+                return False
+            lexical_candidate = Path(os.path.abspath(candidate))
+            lexical_relative = lexical_candidate.relative_to(project_root).as_posix()
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_relative_to(project_root):
+                return False
+            resolved_relative = resolved.relative_to(project_root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        if resolved.name in _LOCAL_CONFIG_FILES:
+            return False
+        if hard_denied or binary:
+            return False
+        if custom_extension_kind(resolved.name, settings) == "binary":
+            return False
+        if settings.max_file_size_bytes is not None:
+            if (
+                isinstance(size_bytes, bool)
+                or not isinstance(size_bytes, int)
+                or size_bytes < 0
+                or size_bytes > settings.max_file_size_bytes
+            ):
+                return False
+        if phase == "preprocess" and (
+            _matches_any(lexical_relative, settings.preprocess_exclude_paths)
+            or _matches_any(resolved_relative, settings.preprocess_exclude_paths)
+        ):
+            return False
+        if _matches_any(lexical_relative, settings.exclude_paths) or _matches_any(
+            resolved_relative, settings.exclude_paths
+        ):
+            return False
+        override = _path_override_for_candidates(
+            (lexical_relative, resolved_relative), settings.path_overrides
+        )
+        if override == "exclude":
+            return False
+        if override == "include":
+            return True
+        if _matches_any(lexical_relative, settings.force_include_paths) or _matches_any(
+            resolved_relative, settings.force_include_paths
+        ):
+            return True
+        if soft_ignored:
+            return False
+        return True
+
+
 def path_is_allowed(
     root: str | os.PathLike[str],
     path: str | os.PathLike[str],
@@ -1033,60 +1114,14 @@ def path_is_allowed(
     size_bytes: int | None = None,
 ) -> bool:
     """Apply shared project path rules without granting force-include extra trust."""
-    if not _path_policy_phase_is_allowed(phase) or _phase_is_skipped(settings, phase):
-        return False
-    try:
-        project_root = Path(root).resolve(strict=True)
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = project_root / candidate
-        if candidate.name in _LOCAL_CONFIG_FILES:
-            return False
-        lexical_candidate = Path(os.path.abspath(candidate))
-        lexical_relative = lexical_candidate.relative_to(project_root).as_posix()
-        resolved = candidate.resolve(strict=True)
-        if not resolved.is_relative_to(project_root):
-            return False
-        resolved_relative = resolved.relative_to(project_root).as_posix()
-    except (OSError, RuntimeError, ValueError):
-        return False
-    if resolved.name in _LOCAL_CONFIG_FILES:
-        return False
-    if hard_denied or binary:
-        return False
-    if custom_extension_kind(resolved.name, settings) == "binary":
-        return False
-    if settings.max_file_size_bytes is not None:
-        if (
-            isinstance(size_bytes, bool)
-            or not isinstance(size_bytes, int)
-            or size_bytes < 0
-            or size_bytes > settings.max_file_size_bytes
-        ):
-            return False
-    if phase == "preprocess" and (
-        _matches_any(lexical_relative, settings.preprocess_exclude_paths)
-        or _matches_any(resolved_relative, settings.preprocess_exclude_paths)
-    ):
-        return False
-    if _matches_any(lexical_relative, settings.exclude_paths) or _matches_any(
-        resolved_relative, settings.exclude_paths
-    ):
-        return False
-    override = _path_override_for_candidates(
-        (lexical_relative, resolved_relative), settings.path_overrides
+    return ProjectPathPolicy(root, settings).allows(
+        path,
+        phase=phase,
+        soft_ignored=soft_ignored,
+        hard_denied=hard_denied,
+        binary=binary,
+        size_bytes=size_bytes,
     )
-    if override == "exclude":
-        return False
-    if override == "include":
-        return True
-    if _matches_any(lexical_relative, settings.force_include_paths) or _matches_any(
-        resolved_relative, settings.force_include_paths
-    ):
-        return True
-    if soft_ignored:
-        return False
-    return True
 
 
 def resolve_pinned_context(

@@ -20,6 +20,7 @@ from typing import Any
 from . import __version__
 from .cache import stable_hash
 from .project_config import (
+    ProjectPathPolicy,
     path_is_allowed,
     phase_is_allowed,
     resolve_project_config,
@@ -765,6 +766,10 @@ class ProjectPreprocessor:
         if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
             return str(rel_path).replace("\\", "/")
         suffix = rel_path.suffix.lower()
+        if name in self.repo_tools.special_filenames or (
+            self.repo_tools.extensions and suffix in self.repo_tools.extensions
+        ):
+            return str(rel_path).replace("\\", "/")
         project_extensions: set[str] = set()
         _api, project_context = self._project_config_context(str(root))
         if project_context is not None:
@@ -829,6 +834,7 @@ class ProjectPreprocessor:
         if not extensions:
             return
         base = Path(root)
+        path_policy = api.ProjectPathPolicy(root, settings)
         ignored = {str(value).lower() for value in getattr(self.repo_tools, "ignore_dirs", ())}
         may_descend = getattr(api, "may_descend", None)
         for current, directories, filenames in os.walk(base, followlinks=False):
@@ -853,6 +859,7 @@ class ProjectPreprocessor:
                     continue
                 if int(stat.st_size) > int(getattr(self.repo_tools, "max_file_bytes", stat.st_size)) or not self._project_path_allowed(
                     root, relative, settings, phase="preprocess", size_bytes=int(stat.st_size),
+                    path_policy=path_policy,
                 ):
                     continue
                 files.setdefault(relative, {
@@ -1535,6 +1542,7 @@ class ProjectPreprocessor:
         *,
         phase: str,
         size_bytes: int,
+        path_policy: ProjectPathPolicy | None = None,
     ) -> bool:
         parts = Path(relative).parts
         ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
@@ -1552,10 +1560,19 @@ class ProjectPreprocessor:
         special_filenames = getattr(self.repo_tools, "special_filenames", set())
         if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).suffix.lower() not in project_extensions and Path(relative).name.lower() not in special_filenames:
             hard_denied = True
-        return path_is_allowed(
-            root,
+        checker = path_policy.allows if path_policy is not None else None
+        if checker is None:
+            return path_is_allowed(
+                root,
+                Path(root) / relative,
+                settings,
+                phase=phase,
+                soft_ignored=any(part.lower() in ignored_dirs for part in parts[:-1]),
+                hard_denied=hard_denied,
+                size_bytes=size_bytes,
+            )
+        return checker(
             Path(root) / relative,
-            settings,
             phase=phase,
             soft_ignored=any(part.lower() in ignored_dirs for part in parts[:-1]),
             hard_denied=hard_denied,
@@ -1564,6 +1581,7 @@ class ProjectPreprocessor:
 
     def _forced_preprocess_files(self, root: str, settings: Any) -> dict[str, dict[str, Any]]:
         base = Path(root).resolve(strict=True)
+        path_policy = ProjectPathPolicy(base, settings)
         patterns = list(settings.force_include_paths)
         patterns.extend(
             pattern
@@ -1591,7 +1609,8 @@ class ProjectPreprocessor:
                     if size > int(getattr(self.repo_tools, "max_file_bytes", size)):
                         continue
                     if not self._project_path_allowed(
-                        str(base), relative, settings, phase="preprocess", size_bytes=size
+                        str(base), relative, settings, phase="preprocess", size_bytes=size,
+                        path_policy=path_policy,
                     ):
                         continue
                     files[relative] = {
@@ -2396,6 +2415,7 @@ class ProjectPreprocessor:
         paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))[:1024]
         if not paths:
             return False
+        path_policy = ProjectPathPolicy(root, settings)
         if any(Path(rel).name in {".local-ai.toml", ".local-ai.worktree.toml"} for rel in paths):
             # Policy changes can affect paths outside the dirty batch. Recompute full inventory.
             return False
@@ -2429,7 +2449,8 @@ class ProjectPreprocessor:
                     continue
                 size, mtime_ns = int(stat.st_size), int(stat.st_mtime_ns)
                 if size > int(getattr(self.repo_tools, "max_file_bytes", size)) or not self._project_path_allowed(
-                    root, rel, settings, phase="preprocess", size_bytes=size
+                    root, rel, settings, phase="preprocess", size_bytes=size,
+                    path_policy=path_policy,
                 ):
                     if rel in old:
                         deleted.add(rel)
@@ -3077,12 +3098,14 @@ class ProjectPreprocessor:
                 ).fetchall()
             ]
         settings = self._project_settings(root)
+        path_policy = ProjectPathPolicy(root, settings)
         refs = [
             (path, digest)
             for path, digest, size_bytes in refs
             if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
             and self._project_path_allowed(
                 root, path, settings, phase="call_graph", size_bytes=size_bytes,
+                path_policy=path_policy,
             )
         ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
