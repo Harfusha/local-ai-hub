@@ -2,6 +2,32 @@
 
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
+**Separate-target conversion completed, production cutover pending:** All eight
+inventoried durable stores now have verified separate targets and provenance
+under `state/single-owner-conversion-20261018-1d55c3d703/converted-state/`.
+The converter checked original component hashes before/after publication. The
+operator configuration also has a separate converted target; only the two
+retired per-tenant scheduler assignments were removed. No original source file,
+live configuration or production database was replaced.
+Agent State conversion retains 295,169 live-table rows; 39 retired schema-table
+rows remain typed in the explicit external archive. The 82 old memory advice
+envelopes remain fully preserved in pinned provenance, with no fabricated v2
+identity. Telemetry conversion retains all 121,770 inventoried rows and sequence
+high-water marks. Failed private-copy attempts were not published as targets.
+
+Real conversion exposed a normalized-vs-raw SQL hash comparison and a 100,000
+entry provenance bound below the actual telemetry requirement. The offline bound
+is now 200,000, checked during planning, with existing per-value limits retained.
+Eight named SQLite iterators now close explicitly on early errors so Windows
+temporary-file cleanup cannot hide the actual refusal. Three focused regression
+cases passed in 0.52 seconds; the preceding packet returned 114 passes and one
+fixture-index omission, now corrected. The 100k-row root-memory case passed in
+that focused packet. Test-local app configuration explicitly disables model
+autostart. Full pytest at `fd90b924` was interrupted around 4% after an observed
+failure while these conversion defects were investigated; its partial log
+`lah-single-owner-full-7be229960d21450ab289a2477aa12d53.log` is not acceptance.
+Whole-suite and actual installed-runtime acceptance remain outstanding.
+
 **Offline preservation bundle source checkpoint:** The complete focused packet
 passed 110 tests in 2.34 seconds; log: operator temp
 `lah-single-owner-offline-repairs-7233f80e1fe34314a344fe9ad45f7eb7.log`.
