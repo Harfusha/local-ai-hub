@@ -3,6 +3,9 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from contextlib import closing
+
+import pytest
 
 
 _TOOL = Path(__file__).parents[2] / "tools" / "convert_single_owner_state.py"
@@ -10,6 +13,50 @@ _SPEC = importlib.util.spec_from_file_location("single_owner_state_converter", _
 assert _SPEC is not None and _SPEC.loader is not None
 _converter = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_converter)
+
+
+def test_sqlite_generated_target_objects_use_registered_sql_normalization(monkeypatch):
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for statement in _converter._STORE_DDL["agent_state"][0].values():
+            connection.execute(statement)
+        _converter._verify_generated_agent_objects(connection)
+        identity = ("table", "agent_memory_fts_config", "agent_memory_fts_config")
+        monkeypatch.setitem(_converter._GENERATED_AGENT_HASHES, identity, "0" * 64)
+        with pytest.raises(_converter.ConversionError, match="generated Agent State object pin mismatch"):
+            _converter._verify_generated_agent_objects(connection)
+
+
+def test_failed_conversion_closes_source_cursor_before_temporary_cleanup(tmp_path, monkeypatch):
+    source = tmp_path / "memos.sqlite"
+    with closing(sqlite3.connect(source)) as connection, connection:
+        connection.execute("CREATE TABLE memos (workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL, version INTEGER NOT NULL DEFAULT 1, tenant TEXT NOT NULL, PRIMARY KEY(tenant, workspace, memo_key))")
+        connection.execute("CREATE TABLE memo_versions (workspace TEXT NOT NULL, memo_key TEXT NOT NULL, version INTEGER NOT NULL, tenant TEXT NOT NULL, PRIMARY KEY(tenant, workspace, memo_key))")
+        for statement in _converter._STORE_DDL["workspace_memos"][1]:
+            connection.execute(statement)
+        for key in ("first", "second"):
+            connection.execute("INSERT INTO memos VALUES (?,?,?,?,?,?,?,?)", ("project", key, "preserve", "{}", 1.0, 0.0, 1, "retired"))
+            connection.execute("INSERT INTO memo_versions VALUES (?,?,?,?)", ("project", key, 1, "retired"))
+    original = source.read_bytes()
+    monkeypatch.setattr(_converter, "_MAX_PROVENANCE_VALUE_CHARS", 1)
+    target = tmp_path / "converted.sqlite"
+    with pytest.raises(_converter.ConversionError, match="removed tenant field exceeds supported provenance size"):
+        _converter.convert_sqlite_store(source, target)
+    assert source.read_bytes() == original
+    assert not target.exists()
+    assert not list(tmp_path.glob("single-owner-conversion-*"))
+
+
+def test_plan_refuses_provenance_budget_before_target_creation(tmp_path, monkeypatch):
+    source = tmp_path / "memos.sqlite"
+    with closing(sqlite3.connect(source)) as connection, connection:
+        connection.execute("CREATE TABLE memos (workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL, version INTEGER NOT NULL DEFAULT 1, tenant TEXT NOT NULL, PRIMARY KEY(tenant, workspace, memo_key))")
+        connection.execute("CREATE TABLE memo_versions (workspace TEXT NOT NULL, memo_key TEXT NOT NULL, version INTEGER NOT NULL, tenant TEXT NOT NULL, PRIMARY KEY(tenant, workspace, memo_key))")
+        connection.execute("INSERT INTO memos VALUES ('project','key','value','{}',1,0,1,'retired')")
+        connection.execute("INSERT INTO memo_versions VALUES ('project','key',1,'retired')")
+    monkeypatch.setattr(_converter, "_MAX_PROVENANCE_ENTRIES", 1)
+    plan = _converter.plan_sqlite_store(source, _converter.inventory_sqlite(source))
+    assert plan["conversion_support"] == "unsupported_schema"
+    assert "provenance exceeds supported record bound" in plan["conversion_reason"]
 
 
 def test_json_conversion_removes_retired_keys_by_presence_and_preserves_source(tmp_path: Path) -> None:

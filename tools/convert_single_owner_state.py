@@ -29,7 +29,7 @@ from typing import Any
 _RETIRED = {"tenant", "tenant_id", "tenant_key", "tenant_scope", "api_token_principal"}
 _MAX_CONFIG_BYTES = 4 * 1024 * 1024
 _MAX_SQLITE_BYTES = 512 * 1024 * 1024
-_MAX_PROVENANCE_ENTRIES = 100_000
+_MAX_PROVENANCE_ENTRIES = 200_000
 _MAX_PROVENANCE_VALUE_CHARS = 1024
 _MAX_TABLES = 512
 _MAX_ROWS = 1_000_000
@@ -834,6 +834,9 @@ def _source_store_shape(connection: sqlite3.Connection) -> tuple[str, dict[str, 
 
     # Every source object is fingerprint-pinned. A small registry maps only
     # those exact historical indexes whose tenant key is removed or renamed.
+    if sum(item["rows"] * len(item["retired_columns"]) for item in inventory_tables) > _MAX_PROVENANCE_ENTRIES:
+        raise ConversionError("removed-field provenance exceeds supported record bound")
+
     expected_indexes = _canonical_index_contract(store)
     seen_expected_indexes: set[tuple[str, str]] = set()
     historical_actions = (_HISTORICAL_STORE_CONTRACTS["HISTORICAL_INDEX_ACTIONS"].get(store, {})
@@ -977,19 +980,19 @@ def _row_hash(connection: sqlite3.Connection, table: str, columns: list[str], ke
               replacements: dict[tuple[tuple[Any, ...], str], Any] | None = None) -> str:
     digest = hashlib.sha256()
     order = ", ".join(_quote(key) for key in keys)
-    cursor = connection.execute(f"SELECT {', '.join(_quote(column) for column in columns)} FROM {_quote(table)} ORDER BY {order}")
-    for row in cursor:
-        if replacements:
-            identity = tuple(row[columns.index(key)] for key in keys)
-            row = tuple(replacements.get((identity, column), value) for column, value in zip(columns, row))
-        encoded = []
-        for value in row:
-            if isinstance(value, bytes):
-                encoded.append({"blob_b64": base64.b64encode(value).decode("ascii")})
-            else:
-                encoded.append(value)
-        digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
-        digest.update(b"\n")
+    with closing(connection.execute(f"SELECT {', '.join(_quote(column) for column in columns)} FROM {_quote(table)} ORDER BY {order}")) as cursor:
+        for row in cursor:
+            if replacements:
+                identity = tuple(row[columns.index(key)] for key in keys)
+                row = tuple(replacements.get((identity, column), value) for column, value in zip(columns, row))
+            encoded = []
+            for value in row:
+                if isinstance(value, bytes):
+                    encoded.append({"blob_b64": base64.b64encode(value).decode("ascii")})
+                else:
+                    encoded.append(value)
+            digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+            digest.update(b"\n")
     return digest.hexdigest()
 
 
@@ -1011,60 +1014,60 @@ def _historical_store_row_transforms(
     provenance: list[dict[str, Any]] = []
     digest = hashlib.sha256()
     deadline = time.monotonic() + 30.0
-    cursor = connection.execute(
+    with closing(connection.execute(
         "SELECT artifact_id,char_count,section_names,page_text,nul_mask "
-        "FROM artifact_paging_metadata ORDER BY artifact_id")
-    for row_number, values in enumerate(cursor, 1):
-        if row_number > _MAX_ROWS or time.monotonic() >= deadline:
-            raise ConversionError("artifact section metadata preflight exceeded its bounded scan")
-        artifact_id, char_count, raw, page_text, nul_mask = values
-        if (type(artifact_id) is not str or not artifact_id or type(raw) is not str
-                or len(raw.encode("utf-8")) > _MAX_STRUCTURED_JSON_CHARS):
-            raise ConversionError("artifact section metadata row has an invalid or oversized identity/value")
-        def unique_pairs(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("duplicate metadata key")
-                result[key] = value
-            return result
-        try:
-            parsed = json.loads(raw, object_pairs_hook=unique_pairs)
-        except (TypeError, ValueError, RecursionError) as exc:
-            raise ConversionError(f"artifact {artifact_id!r} has malformed historical section_names metadata") from exc
-        names = parsed.get("names") if isinstance(parsed, dict) else None
-        truncated = parsed.get("truncated") if isinstance(parsed, dict) else None
-        if (not isinstance(parsed, dict) or set(parsed) != {"names", "truncated"}
-                or not isinstance(names, list) or len(names) > int(contract["maximum_names"])
-                or any(type(name) is not str or len(name) > int(contract["maximum_name_chars"]) for name in names)
-                or len(set(names)) != len(names) or type(truncated) is not bool):
-            raise ConversionError(f"artifact {artifact_id!r} has unsupported historical section_names values")
-        section_json = json.dumps(
-            {"artifact_id": artifact_id, "names": names, "truncated": truncated},
-            ensure_ascii=False, separators=(",", ":"),
-        )
-        section_checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
-        replacements[("artifact_paging_metadata", (artifact_id,))] = {
-            "section_json": section_json,
-            "section_checksum": section_checksum,
-        }
-        if len(provenance) >= _MAX_PROVENANCE_ENTRIES:
-            raise ConversionError("artifact section metadata provenance exceeds supported row bound")
-        source_row_sha256 = hashlib.sha256(json.dumps(
-            [artifact_id, char_count, raw, page_text,
-             {"blob_b64": base64.b64encode(nul_mask).decode("ascii")} if isinstance(nul_mask, bytes) else nul_mask],
-            ensure_ascii=False, separators=(",", ":"), allow_nan=False,
-        ).encode("utf-8")).hexdigest()
-        provenance.append({"store": store, "table": "artifact_paging_metadata", "artifact_id": artifact_id,
-                           "removed_field": "section_names", "removed_value": {"type": "text", "value": raw},
-                           "source_row_sha256": source_row_sha256,
-                           "target_section_json_sha256": hashlib.sha256(section_json.encode("utf-8")).hexdigest()})
-        row_values = {"artifact_id": artifact_id, "char_count": char_count, "section_json": section_json,
-                      "section_checksum": section_checksum, "page_text": page_text, "nul_mask": nul_mask}
-        encoded = [{"blob_b64": base64.b64encode(value).decode("ascii")} if isinstance(value, bytes) else value
-                   for value in (row_values[column] for column in target_columns)]
-        digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
-        digest.update(b"\n")
+        "FROM artifact_paging_metadata ORDER BY artifact_id")) as cursor:
+        for row_number, values in enumerate(cursor, 1):
+            if row_number > _MAX_ROWS or time.monotonic() >= deadline:
+                raise ConversionError("artifact section metadata preflight exceeded its bounded scan")
+            artifact_id, char_count, raw, page_text, nul_mask = values
+            if (type(artifact_id) is not str or not artifact_id or type(raw) is not str
+                    or len(raw.encode("utf-8")) > _MAX_STRUCTURED_JSON_CHARS):
+                raise ConversionError("artifact section metadata row has an invalid or oversized identity/value")
+            def unique_pairs(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate metadata key")
+                    result[key] = value
+                return result
+            try:
+                parsed = json.loads(raw, object_pairs_hook=unique_pairs)
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise ConversionError(f"artifact {artifact_id!r} has malformed historical section_names metadata") from exc
+            names = parsed.get("names") if isinstance(parsed, dict) else None
+            truncated = parsed.get("truncated") if isinstance(parsed, dict) else None
+            if (not isinstance(parsed, dict) or set(parsed) != {"names", "truncated"}
+                    or not isinstance(names, list) or len(names) > int(contract["maximum_names"])
+                    or any(type(name) is not str or len(name) > int(contract["maximum_name_chars"]) for name in names)
+                    or len(set(names)) != len(names) or type(truncated) is not bool):
+                raise ConversionError(f"artifact {artifact_id!r} has unsupported historical section_names values")
+            section_json = json.dumps(
+                {"artifact_id": artifact_id, "names": names, "truncated": truncated},
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            section_checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
+            replacements[("artifact_paging_metadata", (artifact_id,))] = {
+                "section_json": section_json,
+                "section_checksum": section_checksum,
+            }
+            if len(provenance) >= _MAX_PROVENANCE_ENTRIES:
+                raise ConversionError("artifact section metadata provenance exceeds supported row bound")
+            source_row_sha256 = hashlib.sha256(json.dumps(
+                [artifact_id, char_count, raw, page_text,
+                 {"blob_b64": base64.b64encode(nul_mask).decode("ascii")} if isinstance(nul_mask, bytes) else nul_mask],
+                ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8")).hexdigest()
+            provenance.append({"store": store, "table": "artifact_paging_metadata", "artifact_id": artifact_id,
+                               "removed_field": "section_names", "removed_value": {"type": "text", "value": raw},
+                               "source_row_sha256": source_row_sha256,
+                               "target_section_json_sha256": hashlib.sha256(section_json.encode("utf-8")).hexdigest()})
+            row_values = {"artifact_id": artifact_id, "char_count": char_count, "section_json": section_json,
+                          "section_checksum": section_checksum, "page_text": page_text, "nul_mask": nul_mask}
+            encoded = [{"blob_b64": base64.b64encode(value).decode("ascii")} if isinstance(value, bytes) else value
+                       for value in (row_values[column] for column in target_columns)]
+            digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+            digest.update(b"\n")
     return replacements, provenance, {"artifact_paging_metadata": digest.hexdigest()}
 
 
@@ -1261,49 +1264,49 @@ def _preflight_agent_json(old: sqlite3.Connection, tables: list[dict[str, Any]],
         if (table, column) == ("agent_verification_receipts", "details"):
             receipt_index = len(selected)
             selected.extend(('"passed"', '"observed_at"', '"expires_at"'))
-        cursor = old.execute(f"SELECT {', '.join(selected)} FROM {_quote(table)} ORDER BY {_quote(key_name)}")
-        for row in cursor:
-            if time.monotonic() >= deadline:
-                raise ConversionError("Agent State structured JSON preflight exceeded its time bound")
-            key_value, raw = row[:2]
-            if (table, column) == ("agent_verification_receipts", "details") and (type(row[receipt_index]) is not int or row[receipt_index] not in (0, 1)):
-                raise ConversionError(f"agent_verification_receipts row {key_value!r} has a noncanonical passed flag")
-            if (table, column) == ("agent_verification_receipts", "details"):
-                observed_at, expires_at = row[receipt_index + 1], row[receipt_index + 2]
-                if (type(observed_at) not in (int, float) or not math.isfinite(observed_at)
-                        or expires_at is not None and (type(expires_at) not in (int, float) or not math.isfinite(expires_at))):
-                    raise ConversionError(f"agent_verification_receipts row {key_value!r} has invalid timestamps")
-            if not isinstance(raw, str):
-                if raw is None:
-                    continue
-                raise ConversionError(f"{table}.{column} must contain text JSON")
-            row_context = None
-            if context_index is not None:
-                try:
-                    row_context = json.loads(row[context_index]) if isinstance(row[context_index], str) else None
-                except (ValueError, TypeError, RecursionError):
-                    row_context = None
-            row_coordination = row[coordination_index] if coordination_index is not None else None
-            if (table, column) in {("agent_tasks_projection", "checkpoint"), ("agent_snapshots", "state")}:
-                _validate_memory_context_identity(raw, table, key_value, task_context=row_context,
-                                                  coordination_id=row_coordination)
-            if manifest is None:
-                if _json_contract_needs_disposition(raw, table, column):
-                    raise ConversionError(f"{table}.{column} record {key_value!r} requires explicit --json-dispositions")
-                continue
-            try:
-                converted, proof = _JSON_DISPOSITION_API.transform_json(
-                    raw, store="agent_state", table=table, key=str(key_value), column=column, manifest=manifest)
-            except ValueError as exc:
-                raise ConversionError(f"JSON disposition failed for {table}.{key_value}.{column}: {exc}") from exc
-            _validate_json_contract_result(converted, table, column)
-            if proof.get("matched"):
+        with closing(old.execute(f"SELECT {', '.join(selected)} FROM {_quote(table)} ORDER BY {_quote(key_name)}")) as cursor:
+            for row in cursor:
+                if time.monotonic() >= deadline:
+                    raise ConversionError("Agent State structured JSON preflight exceeded its time bound")
+                key_value, raw = row[:2]
+                if (table, column) == ("agent_verification_receipts", "details") and (type(row[receipt_index]) is not int or row[receipt_index] not in (0, 1)):
+                    raise ConversionError(f"agent_verification_receipts row {key_value!r} has a noncanonical passed flag")
+                if (table, column) == ("agent_verification_receipts", "details"):
+                    observed_at, expires_at = row[receipt_index + 1], row[receipt_index + 2]
+                    if (type(observed_at) not in (int, float) or not math.isfinite(observed_at)
+                            or expires_at is not None and (type(expires_at) not in (int, float) or not math.isfinite(expires_at))):
+                        raise ConversionError(f"agent_verification_receipts row {key_value!r} has invalid timestamps")
+                if not isinstance(raw, str):
+                    if raw is None:
+                        continue
+                    raise ConversionError(f"{table}.{column} must contain text JSON")
+                row_context = None
+                if context_index is not None:
+                    try:
+                        row_context = json.loads(row[context_index]) if isinstance(row[context_index], str) else None
+                    except (ValueError, TypeError, RecursionError):
+                        row_context = None
+                row_coordination = row[coordination_index] if coordination_index is not None else None
                 if (table, column) in {("agent_tasks_projection", "checkpoint"), ("agent_snapshots", "state")}:
-                    _validate_memory_context_identity(converted, table, key_value, task_context=row_context,
+                    _validate_memory_context_identity(raw, table, key_value, task_context=row_context,
                                                       coordination_id=row_coordination)
-                identity = (key_value,)
-                changes[(table, identity, column)] = converted
-                proofs.append({**proof, "record_key": [key_value]})
+                if manifest is None:
+                    if _json_contract_needs_disposition(raw, table, column):
+                        raise ConversionError(f"{table}.{column} record {key_value!r} requires explicit --json-dispositions")
+                    continue
+                try:
+                    converted, proof = _JSON_DISPOSITION_API.transform_json(
+                        raw, store="agent_state", table=table, key=str(key_value), column=column, manifest=manifest)
+                except ValueError as exc:
+                    raise ConversionError(f"JSON disposition failed for {table}.{key_value}.{column}: {exc}") from exc
+                _validate_json_contract_result(converted, table, column)
+                if proof.get("matched"):
+                    if (table, column) in {("agent_tasks_projection", "checkpoint"), ("agent_snapshots", "state")}:
+                        _validate_memory_context_identity(converted, table, key_value, task_context=row_context,
+                                                          coordination_id=row_coordination)
+                    identity = (key_value,)
+                    changes[(table, identity, column)] = converted
+                    proofs.append({**proof, "record_key": [key_value]})
     if manifest is not None:
         try:
             _JSON_DISPOSITION_API.require_all_dispositions_used(manifest, proofs)
@@ -1535,77 +1538,77 @@ def _data_transform_requirements(connection: sqlite3.Connection, store: str,
         for column in ("payload_json", "result_json"):
             if column not in columns or ("async_jobs", column) not in registered:
                 continue
-            cursor = connection.execute(
+            with closing(connection.execute(
                 f"SELECT job_id, substr({_quote(column)},1,?) FROM async_jobs LIMIT ?",
-                (_MAX_STRUCTURED_JSON_CHARS + 1, _MAX_STRUCTURED_RECORDS + 1))
-            for row_number, (job_id, raw) in enumerate(cursor, 1):
-                if time.monotonic() >= deadline:
-                    raise ConversionError("async structured-record preflight exceeded its time bound")
-                if row_number > _MAX_STRUCTURED_RECORDS:
-                    reasons.append(f"async_jobs.{column}: row scan exceeds bounded retired-field preflight")
-                    break
-                if not isinstance(raw, str) or len(raw) > _MAX_STRUCTURED_JSON_CHARS:
-                    reasons.append(f"async_jobs.{column} row {job_id!r}: record exceeds bounded retired-field preflight")
-                    break
-                try:
-                    value = json.loads(raw)
-                except (TypeError, ValueError, RecursionError):
-                    continue
-                retired = (_async_payload_retired_key(value) if column == "payload_json"
-                           else _async_result_retired_key(value))
-                if retired:
-                    reasons.append(f"async_jobs.{column} row {job_id!r}: retired field {retired}")
-                    break
+                (_MAX_STRUCTURED_JSON_CHARS + 1, _MAX_STRUCTURED_RECORDS + 1))) as cursor:
+                for row_number, (job_id, raw) in enumerate(cursor, 1):
+                    if time.monotonic() >= deadline:
+                        raise ConversionError("async structured-record preflight exceeded its time bound")
+                    if row_number > _MAX_STRUCTURED_RECORDS:
+                        reasons.append(f"async_jobs.{column}: row scan exceeds bounded retired-field preflight")
+                        break
+                    if not isinstance(raw, str) or len(raw) > _MAX_STRUCTURED_JSON_CHARS:
+                        reasons.append(f"async_jobs.{column} row {job_id!r}: record exceeds bounded retired-field preflight")
+                        break
+                    try:
+                        value = json.loads(raw)
+                    except (TypeError, ValueError, RecursionError):
+                        continue
+                    retired = (_async_payload_retired_key(value) if column == "payload_json"
+                               else _async_result_retired_key(value))
+                    if retired:
+                        reasons.append(f"async_jobs.{column} row {job_id!r}: retired field {retired}")
+                        break
 
     if store == "work_orchestrator" and "work_orders" in names:
         item = next(item for item in tables if item["table"] == "work_orders")
         if "payload_json" in item["columns"]:
-            cursor = connection.execute(
+            with closing(connection.execute(
                 f"SELECT work_id, substr({_quote('payload_json')},1,?) FROM work_orders LIMIT ?",
-                (_MAX_STRUCTURED_JSON_CHARS + 1, _MAX_STRUCTURED_RECORDS + 1))
-            for row_number, (work_id, raw) in enumerate(cursor, 1):
-                if time.monotonic() >= deadline:
-                    raise ConversionError("work-order control preflight exceeded its time bound")
-                if row_number > _MAX_STRUCTURED_RECORDS:
-                    reasons.append("work_orders.payload_json: row scan exceeds bounded control preflight")
-                    break
-                if not isinstance(raw, str) or len(raw) > _MAX_STRUCTURED_JSON_CHARS:
-                    reasons.append(f"work_orders.payload_json row {work_id!r}: record exceeds bounded control preflight")
-                    break
-                try:
-                    value = json.loads(raw)
-                except (TypeError, ValueError, RecursionError):
-                    continue
-                if isinstance(value, dict) and "tenant" in value:
-                    reasons.append(f"work_orders.payload_json row {work_id!r}: retired field tenant")
-                    break
+                (_MAX_STRUCTURED_JSON_CHARS + 1, _MAX_STRUCTURED_RECORDS + 1))) as cursor:
+                for row_number, (work_id, raw) in enumerate(cursor, 1):
+                    if time.monotonic() >= deadline:
+                        raise ConversionError("work-order control preflight exceeded its time bound")
+                    if row_number > _MAX_STRUCTURED_RECORDS:
+                        reasons.append("work_orders.payload_json: row scan exceeds bounded control preflight")
+                        break
+                    if not isinstance(raw, str) or len(raw) > _MAX_STRUCTURED_JSON_CHARS:
+                        reasons.append(f"work_orders.payload_json row {work_id!r}: record exceeds bounded control preflight")
+                        break
+                    try:
+                        value = json.loads(raw)
+                    except (TypeError, ValueError, RecursionError):
+                        continue
+                    if isinstance(value, dict) and "tenant" in value:
+                        reasons.append(f"work_orders.payload_json row {work_id!r}: retired field tenant")
+                        break
 
     if store == "telemetry" and "snapshots" in names:
         item = next(item for item in tables if item["table"] == "snapshots")
         registered = set(_JSON_CONTAINERS.get(store, {}))
         if "metrics_json" in item["columns"] and ("snapshots", "metrics_json") in registered:
-            cursor = connection.execute(
+            with closing(connection.execute(
                 f"SELECT substr({_quote('metrics_json')},1,?) FROM snapshots LIMIT ?",
-                (_MAX_STRUCTURED_JSON_CHARS + 1, _MAX_STRUCTURED_RECORDS + 1))
-            for row_number, (raw,) in enumerate(cursor, 1):
-                if time.monotonic() >= deadline:
-                    raise ConversionError("telemetry metadata preflight exceeded its time bound")
-                if row_number > _MAX_STRUCTURED_RECORDS:
-                    reasons.append("snapshots.metrics_json: row scan exceeds bounded metadata preflight")
-                    break
-                if not isinstance(raw, str):
-                    continue
-                if len(raw) > _MAX_STRUCTURED_JSON_CHARS:
-                    reasons.append("snapshots.metrics_json: record exceeds bounded metadata preflight")
-                    break
-                try:
-                    value = json.loads(raw)
-                except (TypeError, ValueError, RecursionError):
-                    continue
-                retired = _recursive_retired_key(value, _TELEMETRY_RETIRED_JSON_KEYS)
-                if retired:
-                    reasons.append(f"snapshots.metrics_json row {row_number}: retired metadata field {retired}")
-                    break
+                (_MAX_STRUCTURED_JSON_CHARS + 1, _MAX_STRUCTURED_RECORDS + 1))) as cursor:
+                for row_number, (raw,) in enumerate(cursor, 1):
+                    if time.monotonic() >= deadline:
+                        raise ConversionError("telemetry metadata preflight exceeded its time bound")
+                    if row_number > _MAX_STRUCTURED_RECORDS:
+                        reasons.append("snapshots.metrics_json: row scan exceeds bounded metadata preflight")
+                        break
+                    if not isinstance(raw, str):
+                        continue
+                    if len(raw) > _MAX_STRUCTURED_JSON_CHARS:
+                        reasons.append("snapshots.metrics_json: record exceeds bounded metadata preflight")
+                        break
+                    try:
+                        value = json.loads(raw)
+                    except (TypeError, ValueError, RecursionError):
+                        continue
+                    retired = _recursive_retired_key(value, _TELEMETRY_RETIRED_JSON_KEYS)
+                    if retired:
+                        reasons.append(f"snapshots.metrics_json row {row_number}: retired metadata field {retired}")
+                        break
 
     fence_tables = {"writer_fence_leases", "writer_fence_attempts"}
     if store in {"work_fencing", "agent_state"}:
@@ -1693,7 +1696,7 @@ def _verify_generated_agent_objects(connection: sqlite3.Connection) -> None:
                connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type='table'")}
     for identity, expected_hash in _GENERATED_AGENT_HASHES.items():
         sql = objects.get(identity)
-        if sql is None or hashlib.sha256(str(sql).encode("utf-8")).hexdigest() != expected_hash:
+        if sql is None or _agent_object_sql_sha256(sql) != expected_hash:
             raise ConversionError(f"SQLite-generated Agent State object pin mismatch: {identity}")
 
 
@@ -1795,44 +1798,44 @@ def convert_sqlite_store(source: Path, target: Path, *, collision_manifest: Path
                         new_info = target_connection.execute(f"PRAGMA table_info({_quote(table)})").fetchall()
                         target_columns = [str(row[1]) for row in new_info]
                         keys = [str(row[1]) for row in sorted(new_info, key=lambda row: int(row[5]) or 10**9) if int(row[5])]
-                        source_rows = old.execute(f"SELECT {', '.join(_quote(column) for column in old_columns)} FROM {_quote(table)}")
-                        placeholders = ",".join("?" for _ in target_columns)
-                        insert = f"INSERT INTO {_quote(table)} ({', '.join(_quote(column) for column in target_columns)}) VALUES ({placeholders})"
-                        for row in source_rows:
-                            if time.monotonic() >= deadline:
-                                raise ConversionError("SQLite conversion exceeded its time bound")
-                            row_values = dict(zip(old_columns, row))
-                            if table in {"leases", "lease_waits"} and store == "agent_state":
-                                source_pk_columns = _WRITER_DISPOSITION_API._PRIMARY_KEYS[table]
-                                source_pk = tuple(row_values[name] for name in source_pk_columns)
-                                writer_replacement = writer_rows.get((table, source_pk))
-                                if writer_replacement is None:
-                                    raise ConversionError(f"{table} row has no preflighted writer disposition")
-                                row_identity = tuple(row_values[key] for key in source_pk_columns)
-                            else:
-                                writer_replacement = None
-                                row_identity = tuple(row_values[key] for key in keys if key in row_values)
-                            insert_values = dict(row_values)
-                            if writer_replacement is not None:
-                                insert_values.update(writer_replacement)
-                            insert_values.update(historical_row_changes.get((table, row_identity), {}))
-                            for column in kept:
-                                replacement = json_changes.get((table, row_identity, column))
-                                if replacement is not None:
-                                    insert_values[column] = replacement
-                            for tenant_column in (() if writer_replacement is not None else retired):
-                                if len(provenance_rows) >= _MAX_PROVENANCE_ENTRIES:
-                                    raise ConversionError("removed-field provenance exceeds supported record bound")
-                                removed_value = row_values[tenant_column]
-                                if removed_value is not None and len(str(removed_value)) > _MAX_PROVENANCE_VALUE_CHARS:
-                                    raise ConversionError("removed tenant field exceeds supported provenance size")
-                                provenance_rows.append({"store": store, "table": table,
-                                    "record_key": [row_values[key] for key in keys],
-                                    "removed_field": tenant_column, "removed_value": removed_value})
-                            if not set(target_columns).issubset(insert_values):
-                                missing = set(target_columns) - set(insert_values)
-                                raise ConversionError(f"{table} mapped row is missing target fields: {', '.join(sorted(missing))}")
-                            target_connection.execute(insert, tuple(insert_values[column] for column in target_columns))
+                        with closing(old.execute(f"SELECT {', '.join(_quote(column) for column in old_columns)} FROM {_quote(table)}")) as source_rows:
+                            placeholders = ",".join("?" for _ in target_columns)
+                            insert = f"INSERT INTO {_quote(table)} ({', '.join(_quote(column) for column in target_columns)}) VALUES ({placeholders})"
+                            for row in source_rows:
+                                if time.monotonic() >= deadline:
+                                    raise ConversionError("SQLite conversion exceeded its time bound")
+                                row_values = dict(zip(old_columns, row))
+                                if table in {"leases", "lease_waits"} and store == "agent_state":
+                                    source_pk_columns = _WRITER_DISPOSITION_API._PRIMARY_KEYS[table]
+                                    source_pk = tuple(row_values[name] for name in source_pk_columns)
+                                    writer_replacement = writer_rows.get((table, source_pk))
+                                    if writer_replacement is None:
+                                        raise ConversionError(f"{table} row has no preflighted writer disposition")
+                                    row_identity = tuple(row_values[key] for key in source_pk_columns)
+                                else:
+                                    writer_replacement = None
+                                    row_identity = tuple(row_values[key] for key in keys if key in row_values)
+                                insert_values = dict(row_values)
+                                if writer_replacement is not None:
+                                    insert_values.update(writer_replacement)
+                                insert_values.update(historical_row_changes.get((table, row_identity), {}))
+                                for column in kept:
+                                    replacement = json_changes.get((table, row_identity, column))
+                                    if replacement is not None:
+                                        insert_values[column] = replacement
+                                for tenant_column in (() if writer_replacement is not None else retired):
+                                    if len(provenance_rows) >= _MAX_PROVENANCE_ENTRIES:
+                                        raise ConversionError("removed-field provenance exceeds supported record bound")
+                                    removed_value = row_values[tenant_column]
+                                    if removed_value is not None and len(str(removed_value)) > _MAX_PROVENANCE_VALUE_CHARS:
+                                        raise ConversionError("removed tenant field exceeds supported provenance size")
+                                    provenance_rows.append({"store": store, "table": table,
+                                        "record_key": [row_values[key] for key in keys],
+                                        "removed_field": tenant_column, "removed_value": removed_value})
+                                if not set(target_columns).issubset(insert_values):
+                                    missing = set(target_columns) - set(insert_values)
+                                    raise ConversionError(f"{table} mapped row is missing target fields: {', '.join(sorted(missing))}")
+                                target_connection.execute(insert, tuple(insert_values[column] for column in target_columns))
                     if store == "agent_state":
                         target_connection.execute(
                             "INSERT INTO agent_memory_fts(record_id,key,value) "
@@ -1884,26 +1887,26 @@ def convert_sqlite_store(source: Path, target: Path, *, collision_manifest: Path
                                     target_by_key[tuple(proof["new_key"][key] for key in keys)] = proof
                             expected_digest = hashlib.sha256()
                             actual_digest = hashlib.sha256()
-                            cursor = target_connection.execute(
-                                f"SELECT {', '.join(_quote(column) for column in target_columns)} FROM {_quote(table)} ORDER BY {', '.join(_quote(key) for key in keys)}")
-                            seen_keys = set()
-                            for target_row in cursor:
-                                target_values = dict(zip(target_columns, target_row))
-                                target_key = tuple(target_values[key] for key in keys)
-                                proof = target_by_key.get(target_key)
-                                if proof is None or target_key in seen_keys:
-                                    raise ConversionError(f"converted {table} row has no unique expected writer identity")
-                                seen_keys.add(target_key)
-                                source_pk = tuple(proof["source_primary_key"][name]
-                                                  for name in _WRITER_DISPOSITION_API._PRIMARY_KEYS[table])
-                                expected_values = writer_rows[(table, source_pk)]
-                                if any(target_values[column] != expected_values.get(column) for column in target_columns):
-                                    raise ConversionError(f"converted {table} row differs from its source-pinned writer disposition")
-                                expected_row = [expected_values[column] for column in target_columns]
-                                expected_encoded = json.dumps(expected_row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-                                actual_encoded = json.dumps(list(target_row), ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-                                expected_digest.update(expected_encoded + b"\n")
-                                actual_digest.update(actual_encoded + b"\n")
+                            with closing(target_connection.execute(
+                                f"SELECT {', '.join(_quote(column) for column in target_columns)} FROM {_quote(table)} ORDER BY {', '.join(_quote(key) for key in keys)}")) as cursor:
+                                seen_keys = set()
+                                for target_row in cursor:
+                                    target_values = dict(zip(target_columns, target_row))
+                                    target_key = tuple(target_values[key] for key in keys)
+                                    proof = target_by_key.get(target_key)
+                                    if proof is None or target_key in seen_keys:
+                                        raise ConversionError(f"converted {table} row has no unique expected writer identity")
+                                    seen_keys.add(target_key)
+                                    source_pk = tuple(proof["source_primary_key"][name]
+                                                      for name in _WRITER_DISPOSITION_API._PRIMARY_KEYS[table])
+                                    expected_values = writer_rows[(table, source_pk)]
+                                    if any(target_values[column] != expected_values.get(column) for column in target_columns):
+                                        raise ConversionError(f"converted {table} row differs from its source-pinned writer disposition")
+                                    expected_row = [expected_values[column] for column in target_columns]
+                                    expected_encoded = json.dumps(expected_row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                                    actual_encoded = json.dumps(list(target_row), ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                                    expected_digest.update(expected_encoded + b"\n")
+                                    actual_digest.update(actual_encoded + b"\n")
                             if seen_keys != set(target_by_key):
                                 raise ConversionError(f"converted {table} rows do not preserve every mapped source record")
                             retained_expected, retained_actual = expected_digest.hexdigest(), actual_digest.hexdigest()
