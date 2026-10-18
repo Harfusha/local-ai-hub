@@ -352,11 +352,14 @@ def test_8_stash_save_and_restore_requires_task_worktree(tmp_path: Path):
 
 def test_9_secret_scanner(tmp_path: Path):
     f_sec = tmp_path / "config.py"
-    f_sec.write_text("""
-AWS_SECRET = "AKIAIOSFODNN7EXAMPLE"
-OPENAI_TOKEN = "sk-1234567890abcdef1234567890abcdef123456"
-NORMAL_VAR = "hello"
-""", encoding="utf-8")
+    aws_name = "AWS" + "_SECRET"
+    openai_name = "OPENAI" + "_TOKEN"
+    aws_value = "AKIA" + "IOSFODNN7EXAMPLE"
+    openai_value = "sk-" + "1234567890abcdef1234567890abcdef123456"
+    f_sec.write_text(
+        f"{aws_name} = {aws_value!r}\n{openai_name} = {openai_value!r}\nNORMAL_VAR = 'hello'\n",
+        encoding="utf-8",
+    )
 
     engine = DeterministicEngine()
     res = engine.secret_scan(str(tmp_path))
