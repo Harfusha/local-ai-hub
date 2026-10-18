@@ -469,6 +469,28 @@ def test_tokenless_agent_state_uses_server_principal_not_client_tenant(tmp_path)
     assert mismatch_error["error_code"] == "tenant_binding_mismatch"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/leases/claim_batch",
+        "/api/leases/release",
+        "/api/leases/renew",
+        "/api/leases?root=/repo",
+    ],
+)
+def test_lease_routes_bind_tenant_to_authenticated_principal(tmp_path, path):
+    client = _client(tmp_path, tenant="client-selected-tenant")
+
+    derived, derived_error = client._request_tenant(path, {}, None)
+    matching, matching_error = client._request_tenant(path, {}, "fixed-principal")
+    overridden, override_error = client._request_tenant(path, {}, "other-tenant")
+
+    assert (derived, derived_error) == ("fixed-principal", None)
+    assert (matching, matching_error) == ("fixed-principal", None)
+    assert overridden is None
+    assert override_error["error_code"] == "tenant_binding_mismatch"
+
+
 def test_configured_token_with_empty_allowlist_rejects_root_scoped_request(tmp_path):
     client = _client(
         tmp_path,

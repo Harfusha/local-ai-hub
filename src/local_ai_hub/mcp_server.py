@@ -4848,6 +4848,7 @@ def local_ai_coord(
             action=action, fingerprint=fingerprint, state_revision=state_revision,
             root=root, tenant=tenant,
         ), "status")
+    lease_tenant_kwargs = {"tenant": tenant} if tenant else {}
     if action == "claim":
         claim_root = root
         if (not requested_root or requested_root == ".") and paths:
@@ -4863,13 +4864,13 @@ def local_ai_coord(
                     pass
         return _compact(CLIENT.post("/api/leases/claim_batch", {
             "root": claim_root, "paths": paths or [], "ttl_seconds": ttl_seconds or 900, "purpose": value or "agent edit",
-        }, tenant=tenant))
+        }, **lease_tenant_kwargs))
     if action == "release":
-        return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}, tenant=tenant))
+        return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}, **lease_tenant_kwargs))
     if action == "renew":
-        return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}, tenant=tenant))
+        return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}, **lease_tenant_kwargs))
     if action == "leases":
-        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}", tenant=tenant))
+        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}", **lease_tenant_kwargs))
     if action.startswith("blackboard_"):
         sub = action[len("blackboard_"):]
         payload: dict[str, Any] = {
