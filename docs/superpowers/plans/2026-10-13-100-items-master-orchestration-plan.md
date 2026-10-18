@@ -1110,3 +1110,14 @@ An isolated candidate runtime instance was executed on port `64486` against a de
 - **Targeted validation:** `pytest tests/test_project_config.py tests/test_t21_project_config_preprocess.py tests/test_t10_project_config_consumers.py` passed: **95 passed, 1 skipped in 7.07s**.
 - Root `config.toml` (retaining legacy scheduler quota keys pending cutover) and root `state/` databases remain untouched and preserved. Production cutover remains pending; goal remains open.
 
+### Consolidated candidate 2be89933 isolated runtime acceptance — 2026-10-18
+
+Candidate wheel `local_ai_hub-4.0.0-py3-none-any.whl` (SHA-256 `467a4b5bef6680c6100321e848e60b2d6d2361a7c149a51335b8221ad11c605c`) was built from commit `2be89933` and installed with `--no-deps` into isolated target `state/single-owner-conversion-20261018-1d55c3d703/installed-wheel-2be89933/`. All eight core modules match source SHA-256 byte-for-byte.
+
+An isolated candidate runtime instance was executed on port `64487` against a dedicated converted state copy (`runtime-state-2be89933/` with hardlinked `rag.sqlite3`) using `config.runtime-2be89933.toml`:
+- **HTTP endpoints:** `/health` (200), `/ready` (200), `/dashboard` (200, title `Local AI Hub — realtime` verified).
+- **Authentication & Scopes:** Protected API token enforcement verified (401 without token, 200 with token). Single-owner task contract created (`task-acceptance-2be89933`) with explicit `goal` and `session_id`.
+- **Zero-tenancy enforcement:** Strict HTTP 400 rejection verified on header `X-LocalAI-Tenant`, payload field `tenant`, and stdio MCP call argument `tenant`.
+- **MCP stdio:** Protocol `2025-06-18`, 6 compact tools listed, clean tool execution.
+- **Supervisor & resources:** Zero restarts, clean shutdown. Durable acceptance proof recorded in `state/single-owner-conversion-20261018-1d55c3d703/runtime-2be89933-acceptance-proof.json`.
+
