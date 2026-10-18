@@ -23,6 +23,37 @@ def _load_benchmark_module():
     return module
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        (1.25, 3.75, 2.5),
+        (None, 3.75, None),
+        (3.75, 1.25, None),
+        (float("nan"), 3.75, None),
+        ("1.25", 3.75, None),
+        (True, 3.75, None),
+    ],
+)
+def test_process_cpu_measurement_uses_finite_monotonic_seconds(
+    before: object, after: object, expected: float | None
+) -> None:
+    benchmark = _load_benchmark_module()
+    measurement = benchmark._process_cpu_time_measurement(before, after)
+
+    assert measurement == {
+        "measurement_scope": "benchmark_process_user_and_system_cpu_time",
+        "measurement_basis": "time.process_time",
+        "cpu_time_seconds_delta": expected,
+    }
+
+
+def test_process_cpu_time_snapshot_fails_closed_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = _load_benchmark_module()
+    monkeypatch.setattr(benchmark.time, "process_time", lambda: float("nan"))
+
+    assert benchmark._process_cpu_time_seconds() is None
+
+
 def test_benchmark_input_fingerprint_uses_imported_source_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     benchmark = _load_benchmark_module()
     project_root = tmp_path / "project"

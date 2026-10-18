@@ -337,6 +337,36 @@ def _impact_coverage_status(result: dict[str, Any], *, expected: int) -> dict[st
     }
 
 
+def _process_cpu_time_seconds() -> float | None:
+    try:
+        measured = float(time.process_time())
+    except (AttributeError, OverflowError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return measured if math.isfinite(measured) and measured >= 0 else None
+
+
+def _process_cpu_time_measurement(before: Any, after: Any) -> dict[str, Any]:
+    delta: float | None = None
+    numeric = (int, float)
+    if (
+        isinstance(before, numeric) and not isinstance(before, bool)
+        and isinstance(after, numeric) and not isinstance(after, bool)
+    ):
+        try:
+            start = float(before)
+            end = float(after)
+        except (OverflowError, TypeError, ValueError):
+            pass
+        else:
+            if math.isfinite(start) and math.isfinite(end) and 0 <= start <= end:
+                delta = end - start
+    return {
+        "measurement_scope": "benchmark_process_user_and_system_cpu_time",
+        "measurement_basis": "time.process_time",
+        "cpu_time_seconds_delta": round(delta, 4) if delta is not None else None,
+    }
+
+
 def _process_memory() -> dict[str, int | None]:
     if os.name == "nt":
         try:
@@ -555,6 +585,7 @@ def _run_case(
     max_files_override: int | None = None,
     search_fallback_max_files_override: int | None = None,
 ) -> dict[str, Any]:
+    cpu_time_before = _process_cpu_time_seconds()
     memory_before = _process_memory()
     case_root = parent / f"repo-{file_count}"
     state_dir = parent / f"state-{file_count}"
@@ -900,6 +931,7 @@ def _run_case(
     }
     parse_outcomes = indexed.get("parse_outcomes", {})
     memory_after = _process_memory()
+    cpu_time_after = _process_cpu_time_seconds()
     peak_before = memory_before.get("peak_working_set_bytes")
     peak_after = memory_after.get("peak_working_set_bytes")
     return {
@@ -1058,6 +1090,7 @@ def _run_case(
             **parser_runtime,
             "serena": "not_invoked_by_repository_benchmark",
         },
+        "cpu": _process_cpu_time_measurement(cpu_time_before, cpu_time_after),
         "memory": {
             "measurement_scope": "process_lifetime_high_water_mark",
             "current_working_set_before_case_bytes": memory_before.get("current_working_set_bytes"),

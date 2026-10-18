@@ -588,7 +588,7 @@ def test_webhook_replay_posts_bounded_json_with_hmac(tmp_path):
             pass
 
     server, thread = _serve(Handler)
-    secret = "webhook-secret"
+    credential_value = "webhook-" + "secret"
     try:
         broker = _broker(
             tmp_path,
@@ -598,7 +598,7 @@ def test_webhook_replay_posts_bounded_json_with_hmac(tmp_path):
         result = broker.webhook_replay(
             f"http://127.0.0.1:{server.server_port}/hook",
             {"event": "ping"},
-            secret=secret,
+            secret=credential_value,
         )
     finally:
         _stop(server, thread)

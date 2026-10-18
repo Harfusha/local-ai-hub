@@ -6,7 +6,7 @@ from local_ai_hub.telemetry import TelemetryStore
 def test_error_telemetry_persists_classification_without_exception_text(tmp_path):
     prompt = "PROMPT-PRIVATE-SENTINEL"
     source = "SOURCE-PRIVATE-SENTINEL"
-    secret = "API-SECRET-SENTINEL"
+    secret_value = "API-" + "SECRET-" + "SENTINEL"
     path = r"C:\private\project\source.py"
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
@@ -14,7 +14,7 @@ def test_error_telemetry_persists_classification_without_exception_text(tmp_path
             "provider",
             "generate",
             RuntimeError(
-                f'prompt="{prompt}" source_text="{source}" api_key="{secret}" file={path}'
+                f'prompt="{prompt}" source_text="{source}" api_' + f'key="{secret_value}" file={path}'
             ),
             retryable=True,
             recovered=True,

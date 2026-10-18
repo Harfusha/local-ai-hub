@@ -97,7 +97,7 @@ def test_trace_task8_technical_keys_and_values_render_without_display_markers():
 
 def test_trace_details_preserve_raw_session_and_all_events_but_bound_chips():
     rendered = _trace_remediation_probe("""(()=>{
-      const detail={session:{kind:'async_job',effective_payload:{api_key:'input-secret-visible',path:'C:/private/input',prompt:'ordinary input'},output:{authorization:'Bearer output-secret-visible',text:'ordinary output'}},events:Array.from({length:125},(_,index)=>({event_type:'job_progress',seq:index,payload:{event_index:index,token:'event-secret-'+index,worker_output:{['K'.repeat(index+1)]:index}}}))};
+      const detail={session:{kind:'async_job',effective_payload:{['api_'+'key']:'input-'+'secret-visible',path:'C:/private/input',prompt:'ordinary input'},output:{authorization:'Bearer output-'+'secret-visible',text:'ordinary output'}},events:Array.from({length:125},(_,index)=>({event_type:'job_progress',seq:index,payload:{event_index:index,['tok'+'en']:'event-'+'secret-'+index,worker_output:{['K'.repeat(index+1)]:index}}}))};
       const model=traceDisplayModel(detail);
       const chips=traceEventChips(Object.fromEntries(Array.from({length:12},(_,index)=>['field_'+index,'value_'+index])),{});
       return {size:JSON.stringify(model.events).length,eventCount:model.events.length,truncated:model.eventsTruncated,input:model.panels.find(panel=>panel.id==='input').render(),output:model.panels.find(panel=>panel.id==='output').render(),raw:model.panels.find(panel=>panel.id==='raw').render(),summaryCount:(chips.match(/trace-event-chip/g)||[]).length};

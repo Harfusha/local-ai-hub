@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -604,31 +605,29 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     def invoke(budget):
         result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
             "action": "task_create",
+            "root": str(Path.cwd()),
             "task": "wire task",
             "max_response_tokens": budget,
             "response_profile": "minimal",
         }))
-        if isinstance(result, tuple):
-            contents, structured = result
-            if isinstance(structured, dict):
-                return structured
-        else:
-            contents = result
-        return json.loads(next(item.text for item in contents if item.type == "text"))
+        contents = result[0] if isinstance(result, tuple) else result
+        visible = json.loads(next(item.text for item in contents if item.type == "text"))
+        structured = result[1] if isinstance(result, tuple) else visible
+        return visible, structured
 
-    rejected = invoke(128)
+    rejected, rejected_structured = invoke(128)
     assert client.requests[-1]["response_budget_tokens"] == 128
     assert rejected.get("mutation_applied") is False, {
         key: rejected.get(key)
         for key in ("error", "status_code", "request_id", "mutation_applied", "operation_not_started", "task_id", "context_id")
     }
     assert rejected["operation_not_started"] is True
-    assert rejected["request_id"] == "request-wire"
+    assert rejected_structured["request_id"] == "request-wire"
 
-    accepted = invoke(adequate_budget)
+    accepted, accepted_structured = invoke(adequate_budget)
     assert client.requests[-1]["response_budget_tokens"] == adequate_budget
-    assert accepted["context_id"] == "context-wire"
-    assert accepted["request_id"] == "request-wire"
+    assert accepted_structured["context_id"] == "context-wire"
+    assert accepted_structured["request_id"] == "request-wire"
     assert accepted["task"]["checkpoint"]["state_data"]["memory_context"] == memory_bundle
     assert accepted["response_budget"]["original_tokens"] == task_memory_original_tokens(success)
     assert accepted["response_budget"]["returned_tokens"] <= adequate_budget
@@ -826,13 +825,14 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
 
     result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
         "action": action,
-        "root": ".",
+        "root": str(Path.cwd()),
         "task_id": "budget-forwarding",
         "max_response_tokens": 512,
         "response_profile": "minimal",
     }))
 
-    assert client.requests[-1]["action"] == action
+    expected_action = "cleanup_worktree" if action == "task_cleanup_worktree" else action
+    assert client.requests[-1]["action"] == expected_action
     assert client.requests[-1]["response_budget_tokens"] == 512
     assert result
 
@@ -858,7 +858,7 @@ def test_mcp_forwards_response_budget_for_question_mutations(monkeypatch, action
 
     request = {
         "action": action,
-        "root": ".",
+        "root": str(Path.cwd()),
         "task_id": "budget-forwarding",
         "max_response_tokens": 512,
         "response_profile": "minimal",
@@ -871,7 +871,8 @@ def test_mcp_forwards_response_budget_for_question_mutations(monkeypatch, action
         request.update(question_id="question-budget", answer="Answer.")
     result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", request))
 
-    assert client.requests[-1]["action"] == action
+    expected_action = "cleanup_worktree" if action == "task_cleanup_worktree" else action
+    assert client.requests[-1]["action"] == expected_action
     assert client.requests[-1]["response_budget_tokens"] == 512
     assert result
 

@@ -7,12 +7,17 @@ import sqlite3
 
 
 def _validated_table_names(tables: Sequence[str] | None) -> tuple[str, ...]:
-    if tables is None:
-        raise ValueError("tables cannot be None")
+    if tables is None or isinstance(tables, bool):
+        raise ValueError("tables cannot be None and must be a sequence of table names")
     if isinstance(tables, (str, bytes, bytearray)) or not isinstance(tables, Sequence):
         raise ValueError("tables must be a sequence of table names")
     table_list = tuple(tables)
-    if any(not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", table) for table in table_list):
+    if any(
+        not isinstance(table, str)
+        or "\x00" in table
+        or not re.fullmatch(r"[a-z][a-z0-9_]*", table)
+        for table in table_list
+    ):
         raise ValueError("invalid count table name")
     return table_list
 
@@ -26,6 +31,8 @@ def initialize_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Seq
     """
     if con is None:
         raise ValueError("con cannot be None")
+    if not isinstance(con, sqlite3.Connection):
+        raise ValueError("con must be a sqlite3.Connection")
     table_list = _validated_table_names(tables)
     con.execute("PRAGMA recursive_triggers=ON")
     con.execute("SAVEPOINT hub_row_counts")
@@ -51,6 +58,8 @@ def initialize_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Seq
 def global_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Sequence[str]) -> dict[str, int]:
     if con is None:
         raise ValueError("con cannot be None")
+    if not isinstance(con, sqlite3.Connection):
+        raise ValueError("con must be a sqlite3.Connection")
     table_list = _validated_table_names(tables)
     try:
         counts = {str(row[0]): int(row[1]) for row in con.execute("SELECT table_name,row_count FROM hub_row_counts")}
@@ -63,7 +72,7 @@ def global_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Sequenc
 
 def get_table_count(con: sqlite3.Connection, table: str) -> int | None:
     """Safely return cached row count for table, or None if uninitialized or untracked."""
-    if con is None or not table or not isinstance(table, str):
+    if con is None or not isinstance(con, sqlite3.Connection) or not table or not isinstance(table, str) or "\x00" in table:
         return None
     try:
         row = con.execute("SELECT row_count FROM hub_row_counts WHERE table_name=?", (table,)).fetchone()
@@ -74,7 +83,7 @@ def get_table_count(con: sqlite3.Connection, table: str) -> int | None:
 
 def is_row_counts_initialized(con: sqlite3.Connection, tables: tuple[str, ...] | Sequence[str] | None = None) -> bool:
     """Check whether hub_row_counts exists and tracks all requested tables."""
-    if con is None:
+    if con is None or not isinstance(con, sqlite3.Connection):
         return False
     try:
         if tables is None:
@@ -82,5 +91,5 @@ def is_row_counts_initialized(con: sqlite3.Connection, tables: tuple[str, ...] |
         table_list = _validated_table_names(tables)
         counts = {str(row[0]) for row in con.execute("SELECT table_name FROM hub_row_counts")}
         return all(t in counts for t in table_list)
-    except (sqlite3.Error, ValueError):
+    except (sqlite3.Error, TypeError, ValueError):
         return False

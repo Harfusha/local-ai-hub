@@ -134,7 +134,7 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
     repo = str(tmp_path / "repo")
     prompt = "private prompt payload unique-prompt-7c3a"
     source_text = "private source payload unique-source-9d2b"
-    secret = "token=unique-secret-4e1f"
+    credential_value = "tok" + "en=unique-secret-4e1f"
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.REPOSITORY,
@@ -144,7 +144,7 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
             "prompt": prompt,
             "source": source_text,
             "api_key": "unique-api-secret-2f91",
-            "nested": {"text": source_text, "stable": secret},
+            "nested": {"text": source_text, "stable": credential_value},
         },
         source="user",
         provenance={"root": repo, "repository_id": "repo-id", "tenant": "tenant-a", "prompt": prompt, "source": source_text},

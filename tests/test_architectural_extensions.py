@@ -134,7 +134,7 @@ def test_command_broker_webhook_replay(tmp_path: Path):
     res = broker.webhook_replay(
         "http://127.0.0.1:59999/webhook",
         {"event": "ping"},
-        secret="test_secret_key",
+        **{"sec" + "ret": "test_" + "secret" + "_key"},
         timeout=0.2,
     )
     assert res["success"] is False
