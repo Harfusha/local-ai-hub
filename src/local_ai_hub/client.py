@@ -1752,20 +1752,37 @@ class HubClient:
         affected_paths: list[str] | None = None,
         root: str | None = None,
         response_budget_tokens: int | None = None,
-        **kwargs: Any,
+        *,
+        evidence_ids: list[str] | None = None,
+        blockers: list[str] | None = None,
+        state_data: dict[str, Any] | None = None,
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
+        for name, items in (("affected_paths", affected_paths), ("evidence_ids", evidence_ids), ("blockers", blockers)):
+            if items is not None and (not isinstance(items, list) or any(not isinstance(item, str) for item in items)):
+                raise TypeError(f"{name} must be a list of strings")
+        if state_data is not None and not isinstance(state_data, dict):
+            raise TypeError("state_data must be an object")
         payload = {
-            **kwargs,
             "action": "checkpoint",
             "task_id": task_id,
-            "phase": phase,
-            "next_action": next_action,
-            "affected_paths": affected_paths or [],
+            "checkpoint": {
+                "phase": phase,
+                "next_action": next_action,
+                "affected_paths": [] if affected_paths is None else affected_paths,
+                "evidence_ids": [] if evidence_ids is None else evidence_ids,
+                "blockers": [] if blockers is None else blockers,
+                "state_data": {} if state_data is None else state_data,
+            },
         }
         if response_budget_tokens is not None:
             payload["response_budget_tokens"] = response_budget_tokens
         if root is not None:
             payload["root"] = root
+        if not isinstance(idempotency_key, str):
+            raise TypeError("idempotency_key must be a string")
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
         return self.post("/api/agent-state/tasks", payload)
 
     def record_memory(self, key: str, value: Any, scope: str = "task", kind: str = "fact", **kwargs: Any) -> dict[str, Any]:
