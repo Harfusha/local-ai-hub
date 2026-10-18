@@ -29,8 +29,7 @@ def test_cleanup_preserves_online_endpoint_without_autostart_or_unowned_signals(
     ports = []
 
     class FakeClient:
-        def __init__(self, *, tenant, config_path, auto_start):
-            assert tenant == "hubctl"
+        def __init__(self, *, config_path, auto_start):
             assert config_path == "resolved:test-config.toml"
             assert auto_start is False
             self.posts = []

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from local_ai_hub.work_fencing import WorkAttemptFence
+from local_ai_hub.commands import CommandInvocation
 
 
 class FakeFencingLeaseStore:
@@ -172,7 +173,7 @@ def install_test_work_attempt_fence(broker, store, *, work_id="task-owned", owne
             if kwargs.get("_work_attempt_fence") is None and isinstance(task_id, str) and task_id:
                 if method_name == "run":
                     command = args[0] if args else kwargs.get("command", "")
-                    classification = broker.classify(command)
+                    classification = broker.classify(command.argv if isinstance(command, CommandInvocation) else command)
                     declared_mutation = bool(
                         kwargs.get("rollback_on_failure")
                         or kwargs.get("rollback_paths")

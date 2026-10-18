@@ -64,6 +64,7 @@ def test_process_exit_after_task_commit_before_publish_recovers_projection_and_c
 
     script = """
 import os
+import subprocess
 import sys
 sys.path.insert(0, sys.argv[4])
 from local_ai_hub.agent_events import AgentStateStore
@@ -153,6 +154,7 @@ def test_process_exit_during_receipt_write_recovers_atomically(tmp_path, phase):
 
     script = """
 import os
+import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[3])

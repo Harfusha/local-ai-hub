@@ -20,7 +20,7 @@ def _service() -> LocalAIServices:
 
 @pytest.mark.parametrize("payload", [None, [], "malformed"])
 def test_transcribe_rejects_non_object_request_payload(payload: object) -> None:
-    result = _service().transcribe(payload, "task-17")
+    result = _service().transcribe(payload)
 
     assert result["success"] is False
     assert result["reason"] == "invalid_request"
@@ -50,7 +50,7 @@ def test_transcribe_honors_requested_model_and_cleans_task_owned_output(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
 
-    result = _service().transcribe({"audio": str(audio), "model": "base.en"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "base.en"})
 
     assert command[command.index("--model") + 1] == str(_verified_whisper_cache / "base.en.pt")
     assert command[command.index("--model_dir") + 1] == str(_verified_whisper_cache)
@@ -81,7 +81,7 @@ def test_transcribe_defaults_to_base_model(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
 
-    result = _service().transcribe({"audio": str(audio)}, "task-17")
+    result = _service().transcribe({"audio": str(audio)})
 
     assert command[command.index("--model") + 1] == str(_verified_whisper_cache / "base.pt")
     assert command[command.index("--model_dir") + 1] == str(_verified_whisper_cache)
@@ -109,7 +109,7 @@ def test_transcribe_forwards_explicit_language_hint(
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
 
     result = _service().transcribe(
-        {"audio": str(audio), "model": "base", "language": "cs"}, "task-17"
+        {"audio": str(audio), "model": "base", "language": "cs"}
     )
 
     assert result["success"] is True
@@ -136,7 +136,7 @@ def test_transcribe_auto_language_keeps_whisper_autodetection(
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
 
     result = _service().transcribe(
-        {"audio": str(audio), "language": " AUTO "}, "task-17"
+        {"audio": str(audio), "language": " AUTO "}
     )
 
     assert "--language" not in command
@@ -152,7 +152,7 @@ def test_transcribe_rejects_non_string_language_hint_before_running_whisper(
     monkeypatch.setattr(process_utils, "run_hidden", unexpected_run)
 
     result = _service().transcribe(
-        {"audio": str(tmp_path / "missing.wav"), "language": 42}, "task-17"
+        {"audio": str(tmp_path / "missing.wav"), "language": 42}
     )
 
     assert result["success"] is False
@@ -167,7 +167,7 @@ def test_missing_whisper_cli_does_not_report_metadata_as_transcription(
     audio.write_bytes(b"not decoded audio")
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: None)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "cli_missing"
@@ -199,7 +199,7 @@ def test_missing_output_after_cli_success_is_not_reported_as_missing_cli(
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
     monkeypatch.setattr(Path, "read_text", missing_output)
 
-    result = _service().transcribe({"audio": str(audio)}, "task-17")
+    result = _service().transcribe({"audio": str(audio)})
 
     assert result["success"] is False
     assert result["reason"] == "process_error"
@@ -208,7 +208,7 @@ def test_missing_output_after_cli_success_is_not_reported_as_missing_cli(
 
 
 def test_audio_directory_is_not_reported_as_missing_file_preserved_checkpoint_1(tmp_path: Path) -> None:
-    result = _service().transcribe({"audio": str(tmp_path), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(tmp_path), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "audio_not_regular_file"
@@ -235,7 +235,7 @@ def test_audio_directory_is_not_reported_as_missing_file_preserved_checkpoint_1(
 def test_missing_audio_has_machine_readable_failure_reason(tmp_path: Path) -> None:
     missing_audio = tmp_path / "missing.wav"
 
-    result = _service().transcribe({"audio": str(missing_audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(missing_audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "audio_not_found"
@@ -244,7 +244,7 @@ def test_missing_audio_has_machine_readable_failure_reason(tmp_path: Path) -> No
 
 
 def test_audio_directory_is_not_reported_as_missing_file(tmp_path: Path) -> None:
-    result = _service().transcribe({"audio": str(tmp_path), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(tmp_path), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "audio_not_regular_file"
@@ -270,7 +270,7 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", cancelled_run)
 
-    result = _service().transcribe({"audio": str(audio)}, "task-17", cancel_event=cancel_event)
+    result = _service().transcribe({"audio": str(audio)}, cancel_event=cancel_event)
 
     assert result["success"] is False
     assert result["reason"] == "cancelled"
@@ -320,7 +320,7 @@ def test_transcribe_cancellation_waits_for_worker_and_model_release_before_clean
     monkeypatch.setattr(process_utils, "run_hidden", wait_for_worker)
 
     def transcribe() -> None:
-        results.append(_service().transcribe({"audio": str(audio)}, "task-17", cancel_event=cancel_event))
+        results.append(_service().transcribe({"audio": str(audio)}, cancel_event=cancel_event))
         request_finished.set()
 
     request = threading.Thread(target=transcribe, daemon=True)
@@ -361,7 +361,7 @@ def test_unreadable_audio_has_degraded_unavailable_reason(
 
     monkeypatch.setattr(Path, "stat", deny_audio_stat)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "audio_unavailable"
@@ -382,7 +382,7 @@ def test_audio_resolution_failure_has_invalid_path_reason(
 
     monkeypatch.setattr(Path, "resolve", fail_audio_resolution)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "audio_path_invalid"
@@ -401,7 +401,7 @@ def test_whisper_binary_removed_after_lookup_reports_cli_missing(
 
     monkeypatch.setattr(process_utils, "run_hidden", binary_removed)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "cli_missing"
@@ -434,7 +434,7 @@ def test_whisper_process_failure_never_returns_successful_transcript(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == ("timeout" if outcome == "timeout" else "process_failed")
@@ -464,7 +464,7 @@ def test_unexpected_whisper_error_uses_process_error_and_cleans_output(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", fail_unexpectedly)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "process_error"
@@ -485,7 +485,7 @@ def test_empty_whisper_output_is_not_a_successful_transcription(
         lambda args, **_kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
     )
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "empty_transcript"
@@ -511,7 +511,7 @@ def test_whisper_decode_skip_does_not_report_successful_transcription_preserved_
         ),
     )
 
-    result = _service().transcribe({"audio": str(audio), "model": "base"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "base"})
 
     assert result["success"] is False
     assert result["reason"] == "invalid_audio"
@@ -548,7 +548,7 @@ def test_whisper_decode_skip_does_not_report_successful_transcription(
 
     monkeypatch.setattr(process_utils, "run_hidden", whisper_skip)
 
-    result = _service().transcribe({"audio": str(audio), "model": "base"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "base"})
 
     assert result["success"] is False
     assert result["reason"] == "invalid_audio"
@@ -570,7 +570,7 @@ def test_malformed_whisper_json_is_not_a_successful_transcription(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", malformed_output)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "empty_transcript"
@@ -591,7 +591,7 @@ def test_cancellation_cleans_task_owned_whisper_output(
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", cancel)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "small"})
 
     assert result["success"] is False
     assert result["reason"] == "cancelled"
@@ -624,12 +624,11 @@ def test_http_transcribe_route_preserves_requested_model(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         app.services,
         "transcribe",
-        lambda payload, tenant, **_kwargs: {
+        lambda payload, **_kwargs: {
             "success": False,
             "model": payload.get("model"),
             "language": payload.get("language"),
             "audio_path": payload.get("audio_path"),
-            "tenant": tenant,
         },
     )
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -656,7 +655,6 @@ def test_http_transcribe_route_preserves_requested_model(tmp_path: Path, monkeyp
             "model": "base.en",
             "language": "cs",
             "audio_path": "/fixture/sample.wav",
-            "tenant": "http-default",
         }
     finally:
         server.shutdown()
@@ -681,7 +679,7 @@ def test_whisper_decode_skip_stderr_does_not_report_successful_transcription(
         return subprocess.CompletedProcess(args, 0, stdout="", stderr=notice)
 
     monkeypatch.setattr(process_utils, "run_hidden", whisper_skip)
-    result = _service().transcribe({"audio": str(audio), "model": "base"}, "task-17")
+    result = _service().transcribe({"audio": str(audio), "model": "base"})
 
     assert result["success"] is False
     assert result["reason"] == "invalid_audio"

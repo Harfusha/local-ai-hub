@@ -29,7 +29,7 @@ def production_hub(tmp_path, monkeypatch):
     app = LocalAIApp(str(config))
     calls = []
 
-    def fake_generate(model, prompt, system, max_tokens, temperature, tenant, source, priority, **kwargs):
+    def fake_generate(model, prompt, system, max_tokens, temperature, *, source, priority, **kwargs):
         calls.append({"prompt": prompt, "system": system})
         return {"success": True, "model": model, "text": f"answer {len(calls)}"}
 
@@ -67,24 +67,24 @@ def test_hub_client_async_job_methods_share_production_route(production_hub):
     app, client, _ = production_hub
     calls = []
 
-    def submit(tenant, job_action, payload):
-        calls.append(("submit", tenant, job_action, dict(payload)))
+    def submit(job_action, payload):
+        calls.append(("submit", job_action, dict(payload)))
         return {"success": True, "job_id": "job-1"}
 
-    def status(tenant, job_id):
-        calls.append(("status", tenant, job_id))
+    def status(job_id):
+        calls.append(("status", job_id))
         return {"success": True, "job_id": job_id, "state": "running"}
 
-    def wait(tenant, job_id, timeout_seconds):
-        calls.append(("wait", tenant, job_id, timeout_seconds))
+    def wait(job_id, timeout_seconds):
+        calls.append(("wait", job_id, timeout_seconds))
         return {"success": True, "job_id": job_id, "state": "completed"}
 
-    def result(tenant, job_id):
-        calls.append(("result", tenant, job_id))
+    def result(job_id):
+        calls.append(("result", job_id))
         return {"success": True, "job_id": job_id, "state": "completed"}
 
-    def cancel(tenant, job_id):
-        calls.append(("cancel", tenant, job_id))
+    def cancel(job_id):
+        calls.append(("cancel", job_id))
         return {"success": True, "job_id": job_id, "state": "cancelled"}
 
     app.async_jobs.submit = submit
@@ -105,13 +105,12 @@ def test_hub_client_async_job_methods_share_production_route(production_hub):
     assert fetched["state"] == "completed"
     assert cancelled["state"] == "cancelled"
     assert [call[0] for call in calls] == ["submit", "status", "wait", "result", "cancel"]
-    assert all(call[1] == calls[0][1] for call in calls)
-    assert calls[0][2:] == (
+    assert calls[0][1:] == (
         "reason",
         {"action": "submit", "job_action": "reason", "task": "summarize", "request_id": "stable-submit"},
     )
-    assert calls[2][2] == "job-1"
-    assert calls[2][3] == pytest.approx(0.25)
+    assert calls[2][1] == "job-1"
+    assert calls[2][2] == pytest.approx(0.25)
 
 
 def test_http_async_job_submit_rejects_conversation_payload(production_hub):
@@ -143,9 +142,9 @@ def test_hub_client_continues_through_production_route_and_preserves_transcript(
     service_payloads = []
     continue_conversation = app.services.continue_conversation
 
-    def observe_service_boundary(payload, tenant):
+    def observe_service_boundary(payload):
         service_payloads.append(dict(payload))
-        return continue_conversation(payload, tenant)
+        return continue_conversation(payload)
 
     app.services.continue_conversation = observe_service_boundary
     started = _start_conversation(client)
@@ -185,7 +184,7 @@ def test_competing_continuation_is_retryable_in_progress_through_production_rout
     entered_generation = threading.Event()
     release_generation = threading.Event()
 
-    def blocking_generate(model, prompt, system, max_tokens, temperature, tenant, source, priority, **kwargs):
+    def blocking_generate(model, prompt, system, max_tokens, temperature, *, source, priority, **kwargs):
         entered_generation.set()
         if not release_generation.wait(timeout=10):
             raise TimeoutError("test did not release blocked generation")

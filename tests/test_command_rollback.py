@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import multiprocessing
 import os
 import sqlite3
@@ -10,6 +11,11 @@ from types import SimpleNamespace
 import pytest
 from local_ai_hub import commands as commands_module
 from local_ai_hub.commands import CommandBroker, _get_windows_dacl, _windows_dacl_bytes
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import GoalContract, TaskStore
+from local_ai_hub.agent_verification import VerificationStore
+from local_ai_hub.artifacts import ArtifactStore
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.process_utils import hidden_run_kwargs
 
@@ -279,7 +285,7 @@ def test_stash_save_message_cannot_execute_shell_code(tmp_path: Path) -> None:
     else:
         message = f'plain"; touch \'{sentinel}\'; #'
 
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}})
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path.parent / f"{tmp_path.name}-state")}})
     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
     result = broker.stash_save(str(tmp_path), message, task_id="task-owned")
 
@@ -329,7 +335,7 @@ def test_git_mutation_helpers_work_inside_registered_task_worktree(tmp_path: Pat
     git("add", tracked.name)
     git("commit", "-m", "initial")
 
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}})
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path.parent / f"{tmp_path.name}-state")}})
     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
     tracked.write_text("staged\n", encoding="utf-8")
     patch = git("diff", "--", tracked.name).stdout
@@ -1058,7 +1064,7 @@ def test_patch_rollback_conflict_is_outcome_unknown_and_preserves_foreign_state(
     untracked = tmp_path / "keep.tmp"
     untracked.write_text("pre-existing untracked file\n", encoding="utf-8")
 
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}})
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path.parent / f"{tmp_path.name}-state")}})
     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
     install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
@@ -1808,15 +1814,25 @@ def test_rollback_snapshot_requests_noatime_on_supported_posix(monkeypatch) -> N
 
 
 def test_command_rollback_rejects_path_escape(tmp_path: Path) -> None:
+    (tmp_path / "test_mutation_failure.py").write_text(
+        "from pathlib import Path\n\n"
+        "def test_failure_would_write_marker():\n"
+        "    Path('must_not_run.tmp').touch()\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
     broker = CommandBroker(
-        {"server": {"state_dir": str(tmp_path)}, "commands": {"allow_mutating": True}},
+        {
+            "server": {"state_dir": str(tmp_path)},
+            "commands": {"enabled": True, "allow_validation": True, "allow_mutating": True},
+        },
         artifacts=None, repo_state=None,
     )
     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
     install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
 
     result = broker.run(
-        'python -c "import pathlib, sys; pathlib.Path(\'must_not_run.tmp\').touch(); sys.exit(1)"',
+        "python -B -m pytest -q test_mutation_failure.py",
         str(tmp_path),
         force=True,
         task_id="task-owned",
@@ -2466,67 +2482,79 @@ def test_snapshot_git_operations_use_configured_timeout(tmp_path: Path, monkeypa
     assert timeouts == [0.7, 0.7]
 
 
-def test_successful_short_command_creates_auditable_verification_evidence(tmp_path: Path, monkeypatch) -> None:
-    class _Artifacts:
-        def __init__(self):
-            self.records = []
+def test_successful_short_command_creates_auditable_verification_evidence(tmp_path: Path) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[commands.tests]\nargv = ["python", "-m", "pytest", "-q"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "test_command_evidence.py").write_text(
+        "def test_evidence_source():\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "add", ".local-ai.toml", "test_command_evidence.py"], cwd=tmp_path, check=True
+    )
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize evidence repository"], cwd=tmp_path, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    state = AgentStateStore(tmp_path / "agent-state.sqlite3", enabled=True)
+    tasks = TaskStore(state)
+    owner = "command-test-owner"
+    task = tasks.create(
+        GoalContract(goal="record command evidence", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-proof"),
+        task_id="task-proof",
+        actor=owner,
+        repo_root=str(tmp_path),
+        repository_revision=revision,
+    )
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    verification = VerificationStore(state, task_store=tasks, artifact_store=artifacts)
+    class _RepoState:
+        def fingerprint(self, cwd):
+            current = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=cwd, check=True, text=True, capture_output=True
+            ).stdout.strip()
+            return {"fingerprint": current, "root": str(cwd)}
 
-        def put_json(self, value, *, kind):
-            self.records.append((value, kind))
-            return "ev-command-proof"
-
-    class _VerificationStore:
-        def __init__(self):
-            self.receipts = []
-
-        def record(self, receipt):
-            self.receipts.append(receipt)
-            return receipt
-
-    artifacts = _Artifacts()
-    verification = _VerificationStore()
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=artifacts, repo_state=None)
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(tmp_path / "command-state")},
+            "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
+        },
+        artifacts=artifacts,
+        repo_state=_RepoState(),
+    )
+    broker.set_task_store(tasks)
     broker.set_verification_store(verification)
-    monkeypatch.setattr(
-        broker,
-        "_key",
-        lambda *_args, **_kwargs: ("cache-key", {"fingerprint": "revision-1", "changed_paths": []}),
-    )
-    monkeypatch.setattr(
-        broker,
-        "_execute",
-        lambda *_args, **_kwargs: {"success": True, "exit_code": 0, "stdout": "ok", "stderr": "", "duration_ms": 5},
-    )
-
-    result = broker.run(
-        "python -m pytest -q",
+    verification.set_command_execution_record_lookup(broker.get_command_execution_record)
+    result = broker.run_project_command(
+        "tests",
         str(tmp_path),
         force=True,
         task_id="task-proof",
         criterion="tests",
-        bypass_cache=True,
-        _project_command_context=commands_module._ResolvedProjectCommand(
-            alias="tests",
-            command="python -m pytest -q",
-            environment={},
-            config_digest="test-config-digest",
-            cache_context="test-command-context",
-            configured_command="python -m pytest -q",
-            caller_arguments=(),
-        ),
     )
 
     assert result["success"] is True
-    assert len(artifacts.records) == 1
-    proof, kind = artifacts.records[0]
-    assert kind == "command_verification"
+    receipt_data = result.get("verification_receipt")
+    assert isinstance(receipt_data, dict)
+    artifact = artifacts.get(receipt_data["evidence_id"], max_chars=50_000)
+    assert artifact["kind"] == "command_verification"
+    proof = json.loads(artifact["text"])
     assert proof["exit_code"] == 0
     assert "command" not in proof
     assert proof["command_sha256"] == hashlib.sha256(b"python -m pytest -q").hexdigest()
-    assert len(verification.receipts) == 1
-    receipt = verification.receipts[0]
-    assert receipt.evidence_id == "ev-command-proof"
-    assert receipt.command_id == result["execution_id"]
+    assert any(item["artifact_id"] == receipt_data["evidence_id"] for item in artifacts.list(limit=20))
+    exported = verification.export_receipts("task-proof", format="json")
+    assert exported["success"] is True
+    assert exported["count"] == 1
+    receipt = json.loads(exported["output"])[0]
+    assert receipt["evidence_id"] == receipt_data["evidence_id"]
+    assert receipt["command_id"] == result["execution_id"]
 
 
 def test_private_transaction_source_conflict_marks_outcome_unknown_and_invalidates_caches(

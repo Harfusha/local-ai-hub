@@ -25,15 +25,15 @@ class _NoServices:
 
 
 class _Leases:
-    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+    def claim_batch(self, *, owner, root, paths, ttl_seconds=900, purpose="", coordination_id=None):
         return {"success": True, "lease_id": "unused", "paths": paths}
 
-    def release(self, tenant, lease_id=""):
+    def release(self, *, owner, lease_id=""):
         return {"success": True}
 
 
 class _Artifacts:
-    def put(self, text, tenant, kind):
+    def put(self, text, *, kind):
         return "unused-artifact"
 
 
@@ -53,7 +53,7 @@ def _orchestrator(tmp_path: Path) -> tuple[WorkOrchestrator, Path]:
 
 
 def _submit_and_terminal(app: WorkOrchestrator, root: Path, work_id: str):
-    response = app.submit("tenant", {
+    response = app.submit({
         "root": str(root),
         "task": "inspect fixture",
         "work_id": work_id,
@@ -75,7 +75,7 @@ def test_delayed_worker_does_not_claim_or_execute_after_successor_terminal_state
         row, terminal = _submit_and_terminal(app, root, work_id)
         app._execute(row)
 
-        stored = app._row(work_id, "tenant")
+        stored = app._row(work_id)
         assert stored is not None and stored["state"] == "complete"
         assert json.loads(stored["result_json"]) == terminal
         assert app.services.calls == []
@@ -98,7 +98,7 @@ def test_fresh_attempt_cannot_rewrite_terminal_work_state(tmp_path: Path) -> Non
         with pytest.raises(LeaseLostError):
             app._set_state(work_id, "planning", {"summary": "late worker"}, attempt=attempt)
 
-        stored = app._row(work_id, "tenant")
+        stored = app._row(work_id)
         assert stored is not None and stored["state"] == "complete"
         assert json.loads(stored["result_json"]) == terminal
     finally:

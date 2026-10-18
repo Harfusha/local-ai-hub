@@ -205,9 +205,8 @@ def test_generate_fails_fast_without_backend_and_skips_scheduler() -> None:
         "",
         64,
         0.0,
-        "tenant",
-        "delegate:general",
-        5,
+        source="delegate:general",
+        priority=5,
     )
 
     assert result["success"] is False
@@ -249,9 +248,8 @@ def test_generate_persists_semantic_cache_result_once() -> None:
         "",
         64,
         0.0,
-        "tenant",
-        "delegate:general",
-        5,
+        source="delegate:general",
+        priority=5,
     )
 
     assert result["success"] is True
@@ -270,9 +268,8 @@ def test_generate_exposes_retryable_scheduler_timeout_metadata() -> None:
         "",
         64,
         0.0,
-        "tenant",
-        "delegate:general",
-        5,
+        source="delegate:general",
+        priority=5,
     )
 
     assert result["success"] is False
@@ -318,9 +315,8 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
         "",
         64,
         0.0,
-        "tenant",
-        "review",
-        5,
+        source="review",
+        priority=5,
     )
 
     assert result["success"] is False

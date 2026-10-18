@@ -65,7 +65,6 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "HubClient has no dedicated start helper",
             "`POST /api/delegate`",
             "`POST /api/reason`",
-            "tenant-scoped",
             "12 user turns",
             "56,000",
             "900 seconds",
@@ -98,7 +97,6 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
         "`cold_start_review_diff`",
         "`speculative_lint`",
         "`X-LocalAI-Request-ID`",
-        "tenant-scoped",
         "12 turns",
         "`model_conversations.max_prompt_tokens`",
         "default 56,000",
@@ -161,8 +159,8 @@ def test_async_delivery_maps_reason_payload_to_the_existing_job_contract(monkeyp
             return {"samples": 12, "p95_duration_ms": 9_000}
 
     class _Jobs:
-        def submit(self, tenant, action, payload):
-            submitted.update( action=action, payload=payload)
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
             return {"success": True, "job_id": "job-1", "state": "queued"}
 
     class _App:
@@ -172,12 +170,12 @@ def test_async_delivery_maps_reason_payload_to_the_existing_job_contract(monkeyp
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
     status, response = handler._async_delivery(
-        "/api/reason", {"delivery": "auto", "latency_budget_ms": 5_000, "problem": "find cause", "context": "facts"}, "tenant-a"
+        "/api/reason", {"delivery": "auto", "latency_budget_ms": 5_000, "problem": "find cause", "context": "facts"}
     )
 
     assert status == 200
     assert response["delivery"]["reason"] == "p95_latency_budget_exceeded"
-    assert submitted == {"tenant": "tenant-a", "action": "reason", "payload": {"problem": "find cause", "context": "facts", "task": "find cause"}}
+    assert submitted == {"action": "reason", "payload": {"problem": "find cause", "context": "facts", "task": "find cause"}}
 
 
 def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
@@ -188,8 +186,8 @@ def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
             return {"samples": 20, "p95_duration_ms": 70_000}
 
     class _Jobs:
-        def submit(self, tenant, action, payload):
-            submitted.update( action=action, payload=payload)
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
             return {"success": True, "job_id": "job-review", "state": "queued"}
 
     class _App:
@@ -201,13 +199,11 @@ def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
     status, response = handler._async_delivery(
         "/api/review/diff",
         {"delivery": "auto", "latency_budget_ms": 5_000, "instructions": "find defects", "context": "large diff"},
-        "tenant-a",
     )
 
     assert status == 200
     assert response["job_id"] == "job-review"
     assert submitted == {
-        "tenant": "tenant-a",
         "action": "review_diff",
         "payload": {"instructions": "find defects", "context": "large diff", "_async_job": True},
     }
@@ -221,8 +217,8 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
             return {"samples": 0, "p95_duration_ms": 0}
 
     class _Jobs:
-        def submit(self, tenant, action, payload):
-            submitted.update( action=action, payload=payload)
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
             return {"success": True, "job_id": "job-cold-review", "state": "queued"}
 
     class _App:
@@ -234,7 +230,6 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
     status, response = handler._async_delivery(
         "/api/review/diff",
         {"delivery": "auto", "latency_budget_ms": 30_000, "instructions": "find defects"},
-        "tenant-a",
     )
 
     assert status == 200

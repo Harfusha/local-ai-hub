@@ -2,6 +2,53 @@
 
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
+**Expanded source-bundle checkpoint:** A complete static fixture inventory found
+remaining positive tenant parameters, callbacks and positional service calls
+outside the first failing group. Those fixtures now use canonical single-owner
+APIs; explicit retired-input and historical offline-conversion negatives remain.
+Actual repository/task/session/worktree identities replace former tenant
+separation assertions. The only remaining named tenant fixture parameter is an
+explicit falsey retired-selector rejection case. Benchmark quality-golden callers
+also use the current payload-only service API; no runtime shim was added.
+
+A scoped repair packet returned 122 passed, 7 skipped and 20 failures in 149.03s
+before the expanded bundle was finished. Its log is operator temp
+`lah-fix-ca6a1873a9/pytest.log`. Residuals included the subprocess import placed
+in the wrong embedded crash script, missing durable command-record binding after
+verifier reload, incomplete controlled retrieval fixtures, a fencing test helper
+misclassifying canonical CommandInvocation, and an obsolete expectation that a
+policy denial is cached. These are now repaired; all expanded changes still
+require integrated validation. Command authorization remains rechecked before
+suppression cache access. No production configuration or data was changed.
+
+
+**Integrated validation and repair checkpoint:** Master `59229d34` passed compileall,
+release_check --allow-installed, the 55-test SDK packet and actual broker-routed
+selftest. Live MCP minted `rcpt_33f9681e7bdf` from a real seven-test command;
+verify_completion returned complete=true for its isolated acceptance task.
+HTTP live evidence additionally verifies clone/worktree/branch/task/session memory
+isolation and overlapping writer-lease refusal/release. These are bounded runtime
+proofs, not final production activation or whole-goal completion.
+
+The full suite collected 11,512 cases and stopped at the configured 30-failure
+limit: 1,742 passed, 25 skipped, 30 failed in 797.37 seconds. Log:
+operator temp `lah-single-owner-final-505d143ed3b44a2f87bd1b4eb8c647e5/pytest.log`.
+The coherent fixture repair removes remaining tenant call/provenance inputs,
+uses real temporary repositories and durable command artifacts, keeps runtime
+SQLite state outside stash worktrees, and isolates context roots/state.
+The 100k-row test received a delayed unclosed-socket ResourceWarning. An
+HTTPError retained by a preceding HTTP rejection fixture lacked explicit close;
+these responses now close explicitly, and the combined HTTP/100k packet passed
+those scenarios without the socket warning. No warning filter or runtime compatibility path was added.
+The repaired bundle and remaining full-suite cases still require validation.
+
+Fresh conversions of all eight original pinned stores plus configuration are
+ready under `state/single-owner-conversion-20261018-1d55c3d703/production-candidate-9a01c82a2e/`.
+These targets have never been activated or used for synthetic runtime proofs.
+Original configuration and Agent State raw hashes remain unchanged. Production
+activation, installed-SDK refresh and final doctor acceptance remain pending.
+
+
 **Isolated runtime checkpoint:** Stock supervisor and Hub started successfully
 on loopback port 64484 using separately converted data and a private acceptance
 configuration. HTTP/SDK evidence proves repository isolation, actual scope

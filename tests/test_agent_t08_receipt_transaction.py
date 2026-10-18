@@ -1,4 +1,6 @@
 from contextlib import closing
+from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -9,36 +11,31 @@ from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.sqlite_support import connect_sqlite
+from local_ai_hub.project_config import resolve_project_context
 
 
-def _command_broker_for_task(tmp_path, task_id):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    state_store = AgentStateStore(state_dir / "agent_state.sqlite")
-    tasks = TaskStore(state_store)
-    artifacts = ArtifactStore(state_dir)
-    verifier = VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
-    tasks.set_verification_store(verifier)
-    tasks.create(
-        GoalContract(goal="command receipt contract", acceptance_criteria=("tests",)),
-        ScopeContext(task_id=task_id),
-        task_id=task_id,
-        actor="agent",
+def _repository_fixture(tmp_path):
+    repo_root = tmp_path / "repository"
+    (repo_root / "tests").mkdir(parents=True)
+    (repo_root / ".local-ai.toml").write_text(
+        '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n',
+        encoding="utf-8",
     )
-    broker = CommandBroker(
-        {
-            "server": {"state_dir": str(state_dir)},
-            "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
-        },
-        artifacts,
-        repo_state=type("RepoState", (), {"fingerprint": lambda _self, _cwd: {"fingerprint": "rev-1"}})(),
-    )
-    broker.set_verification_store(verifier)
-    return broker, verifier, artifacts
+    _write_passing_test(repo_root)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True)
+    subprocess.run(["git", "add", ".local-ai.toml", "tests/test_receipt_fixture.py"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt fixture"], cwd=repo_root, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    coordination_id = resolve_project_context(repo_root, tmp_path / "state").coordination_id
+    return repo_root, revision, coordination_id
 
 
-def _passing_test_command(tmp_path):
-    tests = tmp_path / "tests"
+def _write_passing_test(repo_root):
+    tests = repo_root / "tests"
     tests.mkdir(exist_ok=True)
     (tests / "test_receipt_fixture.py").write_text(
         "import unittest\n"
@@ -47,6 +44,47 @@ def _passing_test_command(tmp_path):
         "        self.assertEqual(2 + 2, 4)\n",
         encoding="utf-8",
     )
+
+
+class _RepoState:
+    def fingerprint(self, cwd):
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=cwd, check=True,
+            text=True, capture_output=True,
+        ).stdout.strip()
+        return {"fingerprint": revision, "root": str(Path(cwd).resolve())}
+
+
+def _command_broker_for_task(tmp_path, task_id):
+    repo_root, revision, coordination_id = _repository_fixture(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite")
+    tasks = TaskStore(state_store)
+    artifacts = ArtifactStore(state_dir)
+    verifier = VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
+    tasks.set_verification_store(verifier)
+    tasks.create(
+        GoalContract(goal="command receipt contract", acceptance_criteria=("tests",)),
+        ScopeContext(repository_id=coordination_id, task_id=task_id),
+        task_id=task_id,
+        actor="agent",
+        repo_root=str(repo_root.resolve()),
+        repository_revision=revision,
+    )
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(state_dir)},
+            "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
+        },
+        artifacts,
+        repo_state=_RepoState(),
+    )
+    broker.set_verification_store(verifier)
+    return broker, verifier, artifacts
+
+
+def _passing_test_command(_repo_root):
     return f'"{sys.executable}" -m unittest discover -s tests -q'
 
 
@@ -96,8 +134,9 @@ def test_receipt_projection_helper_is_caller_transaction_atomic(tmp_path):
 
 
 def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeypatch):
+    repo_root, revision, coordination_id = _repository_fixture(tmp_path)
     state_dir = tmp_path / "state"
-    state_dir.mkdir()
+    state_dir.mkdir(exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     tasks = TaskStore(state_store)
     artifacts = ArtifactStore(state_dir)
@@ -106,9 +145,11 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
     task_id = "command-receipt-completion"
     tasks.create(
         GoalContract(goal="command receipt completion", acceptance_criteria=("tests",)),
-        ScopeContext(task_id=task_id),
+        ScopeContext(repository_id=coordination_id, task_id=task_id),
         task_id=task_id,
         actor="agent",
+        repo_root=str(repo_root.resolve()),
+        repository_revision=revision,
     )
     broker = CommandBroker(
         {
@@ -116,7 +157,7 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
             "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
         },
         artifacts,
-        repo_state=type("RepoState", (), {"fingerprint": lambda _self, _cwd: {"fingerprint": "rev-1"}})(),
+        repo_state=_RepoState(),
     )
     broker.set_verification_store(verifier)
 
@@ -130,8 +171,8 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
 
     monkeypatch.setattr(state_store, "ordered_event_publication", tracked_publication)
     result = broker.run(
-        _passing_test_command(tmp_path),
-        str(tmp_path),
+        _passing_test_command(repo_root),
+        str(repo_root),
         task_id=task_id,
         criterion="tests",
     )
@@ -149,6 +190,19 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
         reloaded_state_store, task_store=reloaded_tasks, artifact_store=ArtifactStore(state_dir),
     )
     reloaded_tasks.set_verification_store(reloaded_verifier)
+    reloaded_broker = CommandBroker(
+        {
+            "server": {"state_dir": str(state_dir)},
+            "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
+        },
+        ArtifactStore(state_dir),
+        repo_state=_RepoState(),
+    )
+    reloaded_broker.set_task_store(reloaded_tasks)
+    reloaded_broker.set_verification_store(reloaded_verifier)
+    reloaded_verifier.set_command_execution_record_lookup(
+        reloaded_broker.get_command_execution_record
+    )
     completion = reloaded_verifier.completion(task_id)
     assert completion.complete is True
     assert len(completion.receipts) == 1
@@ -168,8 +222,8 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
 def test_failed_command_does_not_create_passed_verification_receipt(tmp_path):
     task_id = "failed-command-no-receipt"
     broker, verifier, _artifacts = _command_broker_for_task(tmp_path, task_id)
-    command = _passing_test_command(tmp_path)
-    (tmp_path / "tests" / "test_receipt_fixture.py").write_text(
+    command = _passing_test_command(tmp_path / "repository")
+    (tmp_path / "repository" / "tests" / "test_receipt_fixture.py").write_text(
         "import unittest\nclass FailingReceiptFixture(unittest.TestCase):\n"
         "    def test_failure(self):\n        self.fail('intentional failure')\n",
         encoding="utf-8",
@@ -177,7 +231,7 @@ def test_failed_command_does_not_create_passed_verification_receipt(tmp_path):
 
     result = broker.run(
         command,
-        str(tmp_path),
+        str(tmp_path / "repository"),
         task_id=task_id,
         criterion="tests",
     )
@@ -205,11 +259,11 @@ def test_receipt_persistence_failure_warns_without_overwriting_command_result(
         monkeypatch.setattr(artifacts, "put_json", fail_write)
     else:
         monkeypatch.setattr(verifier, "record", fail_write)
-    command = _passing_test_command(tmp_path)
+    command = _passing_test_command(tmp_path / "repository")
 
     result = broker.run(
         command,
-        str(tmp_path),
+        str(tmp_path / "repository"),
         task_id=task_id,
         criterion="tests",
     )
@@ -227,8 +281,8 @@ def test_receipt_persistence_failure_warns_without_overwriting_command_result(
 def test_success_without_test_execution_does_not_mint_test_receipt(tmp_path, command):
     task_id = "no-tests-no-receipt"
     broker, verifier, _artifacts = _command_broker_for_task(tmp_path, task_id)
-    (tmp_path / "tests").mkdir()
-    result = broker.run(command, str(tmp_path), task_id=task_id, criterion="tests")
+    (tmp_path / "repository" / "tests").mkdir(exist_ok=True)
+    result = broker.run(command, str(tmp_path / "repository"), task_id=task_id, criterion="tests")
     assert result["success"] is True
     assert result["exit_code"] == 0
     assert "verification_receipt" not in result

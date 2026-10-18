@@ -12,7 +12,6 @@ def test_memory_compaction_basic(tmp_path):
     state_store = AgentStateStore(store_dir)
     mem_store = MemoryStore(state_store)
     root = str(tmp_path.resolve())
-    tenant = "compaction-test-tenant"
     task_id = "compaction-test-task"
 
     # Insert 4 task-level fact records
@@ -26,7 +25,7 @@ def test_memory_compaction_basic(tmp_path):
             value={"detail": f"found item {i}"},
             confidence=0.9,
             source="test",
-            provenance={"root": root, "tenant": tenant},
+            provenance={"root": root, "task_id": task_id},
         )
         mem_store.record(rec)
 
@@ -80,7 +79,6 @@ def test_memory_compaction_insufficient_records(tmp_path):
     state_store = AgentStateStore(store_dir)
     mem_store = MemoryStore(state_store)
     root = str(tmp_path.resolve())
-    tenant = "compaction-test-tenant"
     task_id = "compaction-test-task"
 
     # Insert only 2 records
@@ -91,7 +89,7 @@ def test_memory_compaction_insufficient_records(tmp_path):
             scope_id=task_id,
             key=f"gotcha_{i}",
             value=f"watch out {i}",
-            provenance={"root": root, "tenant": tenant},
+            provenance={"root": root, "task_id": task_id},
         )
         mem_store.record(rec)
 

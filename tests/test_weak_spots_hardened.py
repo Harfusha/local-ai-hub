@@ -14,7 +14,7 @@ class _FailingServices:
     def __init__(self, succeed_init: bool = True) -> None:
         self.should_succeed = succeed_init
 
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         if not self.should_succeed:
             return {"success": False, "error": "ollama embeddings unavailable"}
         batch = list(texts)

@@ -6,6 +6,7 @@ import pytest
 
 from local_ai_hub.agent_events import AgentStateStore, AppendResult
 from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStore
+from task_memory_support import repository_memory_id
 
 
 @pytest.mark.parametrize("replay", [False, True])
@@ -17,18 +18,19 @@ def test_memory_append_result_error_rolls_back_projection(
     root.mkdir()
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
+    repository_id = repository_memory_id(root, state)
     record = MemoryRecord.create(
         kind=MemoryKind.FINDING,
         scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
+        scope_id=repository_id,
         key="append-error",
         value="verified evidence",
         evidence_ids=("evidence-1",),
-        provenance={"root": str(root), "repository_id": "repo-atomicity", "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": repository_id},
     )
     identity = {
         "scope": AgentScope.REPOSITORY, "root": str(root),
-        "repository_id": "repo-atomicity", "tenant": "tenant-a",
+        "repository_id": repository_id,
     }
     if replay:
         memory.record(record, idempotency_key="append-error-operation")
@@ -74,7 +76,8 @@ def test_memory_append_result_error_rolls_back_projection(
     saved = memory.record(record, idempotency_key="append-error-operation")
     assert memory.get(saved.record_id, **identity) == saved
     assert memory.get(saved.record_id, **{**identity, "repository_id": "foreign-repo"}) is None
-    assert memory.get(saved.record_id, **{**identity, "tenant": "tenant-b"}) is None
+    with pytest.raises(TypeError):
+        memory.get(saved.record_id, **{**identity, "tenant": "tenant-b"})
     duplicate = memory.record(record, idempotency_key="append-error-operation")
     assert duplicate.record_id == saved.record_id
     with closing(sqlite3.connect(state.db_path)) as con:

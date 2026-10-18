@@ -45,7 +45,7 @@ def test_review_diff_consensus_explicit():
 
     # Callbacks for primary and secondary delegate calls
     delegate_calls = []
-    def fake_delegate(payload, tenant):
+    def fake_delegate(payload):
         delegate_calls.append(payload)
         if payload.get("task_type") == "reasoning":
             return {"success": True, "text": "SUMMARY: Secondary review looks fine.", "model": "qwen3.5:9b"}
@@ -54,7 +54,7 @@ def test_review_diff_consensus_explicit():
     services.delegate = fake_delegate
 
     # Call actual unbound review_diff
-    res = LocalAIServices.review_diff(services, {"root": ".", "consensus": True}, "test_tenant")
+    res = LocalAIServices.review_diff(services, {"root": ".", "consensus": True})
     assert res["success"] is True
     assert "consensus" in res
     assert res["consensus"]["enabled"] is True
@@ -83,14 +83,14 @@ def test_review_diff_auto_consensus_on_breaking_changes():
     }
 
     delegate_calls = []
-    def fake_delegate(payload, tenant):
+    def fake_delegate(payload):
         delegate_calls.append(payload)
         return {"success": True, "text": "SUMMARY: Audited all changed code; no additional issue.", "model": "model_x"}
 
     services.delegate = fake_delegate
 
     # Without explicit consensus flag, breaking_changes should auto-trigger consensus
-    res = LocalAIServices.review_diff(services, {"root": "."}, "test_tenant")
+    res = LocalAIServices.review_diff(services, {"root": "."})
     assert res["success"] is True
     assert "consensus" in res
     assert res["consensus"]["enabled"] is True

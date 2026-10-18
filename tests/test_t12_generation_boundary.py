@@ -128,8 +128,8 @@ def test_generate_rechecks_admission_after_stale_active_mode_snapshot(
             with service.inference_admission("delegate") as rejection:
                 assert rejection is None
                 return service._generate(
-                    "local-model", "task prompt", "system", 64, 0.0, "default",
-                    "delegate:general", 5, internal=True, use_cache=False,
+                    "local-model", "task prompt", "system", 64, 0.0,
+                    source="delegate:general", priority=5, internal=True, use_cache=False,
                 )
         finally:
             reset_observer(token)
@@ -190,8 +190,8 @@ def test_generate_pause_before_start_uses_central_retryable_gate_contract(
         expected = operational_mode.operational_mode_gate_error(snapshot, "delegate")
         assert expected is not None
         result = service._generate(
-            "local-model", "task prompt", "system", 64, 0.0, "default",
-            "delegate:general", 5, internal=True, use_cache=False,
+            "local-model", "task prompt", "system", 64, 0.0,
+            source="delegate:general", priority=5, internal=True, use_cache=False,
         )
         assert result == expected
         assert runtime.payloads == []
@@ -232,8 +232,8 @@ def test_generate_operational_mode_load_failure_fails_closed_with_central_contra
     monkeypatch.setattr(operational_mode, "load_operational_mode", unavailable)
     expected = operational_mode.operational_mode_gate_error(None, "delegate")
     result = service._generate(
-        "local-model", "task prompt", "system", 64, 0.0, "default",
-        "delegate:general", 5, internal=True, use_cache=False,
+        "local-model", "task prompt", "system", 64, 0.0,
+        source="delegate:general", priority=5, internal=True, use_cache=False,
     )
 
     assert expected is not None

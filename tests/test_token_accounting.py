@@ -143,7 +143,6 @@ def test_telemetry_reports_gross_protocol_net_and_breakdown(tmp_path: Path):
     try:
         store.record_tool_accounting({
             "tool": "local_ai_repo",
-            "tenant": "t",
             "agent": "codex",
             "gross_cloud_tokens_avoided_est": 1800,
             "gross_input_tokens_avoided_est": 1000,

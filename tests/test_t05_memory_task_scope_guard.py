@@ -1,5 +1,3 @@
-"""V14-H004/H058 store contracts; these do not assert a live HTTP leak."""
-
 from pathlib import Path
 
 import pytest
@@ -13,156 +11,127 @@ from local_ai_hub.agent_memory import (
     MemoryStore,
     _memory_matches_request_scope,
 )
+from task_memory_support import repository_memory_id
 
 
 @pytest.fixture
 def task_memory(tmp_path: Path):
-    store = MemoryStore(AgentStateStore(tmp_path / "memory.sqlite3"))
-    root = str(tmp_path / "repo-a")
+    state = AgentStateStore(tmp_path / "memory.sqlite3")
+    store = MemoryStore(state)
+    root = tmp_path / "repo-a"
+    root.mkdir()
+    other_root = tmp_path / "repo-b"
+    other_root.mkdir()
+    root_id = repository_memory_id(root, state)
+    other_id = repository_memory_id(other_root, state)
     records = {}
-    for name, provenance in {
-        "valid": {"root": root, "tenant": "tenant-a", "repository_id": "repo-a"},
-        "other_project": {"root": str(tmp_path / "repo-b"), "tenant": "tenant-a"},
-        "other_tenant": {"root": root, "tenant": "tenant-b"},
-        "missing_root": {"tenant": "tenant-a", "repository_id": "repo-a"},
-        "missing_tenant": {"root": root, "repository_id": "repo-a"},
-        "missing_both": {},
-    }.items():
+    for name, scope_id, provenance in (
+        ("valid", "shared-task", {"root": str(root), "repository_id": root_id, "task_id": "shared-task"}),
+        ("other_task", "other-task", {"root": str(root), "repository_id": root_id, "task_id": "other-task"}),
+        ("other_project", "shared-task", {"root": str(other_root), "repository_id": other_id, "task_id": "shared-task"}),
+        ("missing_root", "shared-task", {"repository_id": root_id, "task_id": "shared-task"}),
+    ):
         record = MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.TASK,
-            scope_id="shared-task",
+            scope_id=scope_id,
             key="scope-guard",
             value=name,
             status=MemoryStatus.CONFIRMED,
             source="user",
             provenance=provenance,
         )
-        # Lookup-only historical rows, independent of event-publication ownership.
         store._save_record(record)
         records[name] = record
-    return store, root, records
+    return store, root, other_root, records, root_id
 
 
-@pytest.mark.parametrize("identity", [
-    {"task_id": "shared-task"},
-    {"scope": AgentScope.TASK, "scope_id": "shared-task"},
-])
-@pytest.mark.parametrize("missing", ["root", "tenant", "both"])
-@pytest.mark.parametrize("repository_id", [None, "repo-a"])
-def test_task_lookup_requires_root_and_tenant(task_memory, identity, missing, repository_id):
-    store, root, records = task_memory
-    request = {
-        **identity,
-        "root": root if missing == "tenant" else " \t ",
-        "tenant": "tenant-a" if missing == "root" else " \t ",
-        "repository_id": repository_id,
-    }
+def test_task_lookup_requires_physical_root(task_memory):
+    store, root, _other_root, records, _root_id = task_memory
+    request = {"scope": AgentScope.TASK, "scope_id": "shared-task", "task_id": "shared-task"}
     assert store.find(**request, semantic=False) == []
     for record in records.values():
         assert store.get(record.record_id, **request) is None
-
-
-@pytest.mark.parametrize("semantic", [False, True])
-@pytest.mark.parametrize("identity", [
-    {"task_id": "shared-task"},
-    {"scope": AgentScope.TASK, "scope_id": "shared-task"},
-])
-def test_task_lookup_binds_both_provenance_identities(task_memory, identity, semantic):
-    store, root, records = task_memory
-    request = {**identity, "root": root, "tenant": "tenant-a"}
-    found = store.find(**request, query="scope-guard", semantic=semantic)
+    found = store.find(**request, root=str(root), semantic=False)
     assert [record.record_id for record in found] == [records["valid"].record_id]
-    assert store.get(records["valid"].record_id, **request) == records["valid"]
-    for name, record in records.items():
-        if name != "valid":
-            assert store.get(record.record_id, **request) is None
+    assert store.get(records["valid"].record_id, **request, root=str(root)) == records["valid"]
 
 
-@pytest.mark.parametrize("identity_change", [
-    {"tenant": "tenant-b"},
-    {"root": "another-project"},
-    {"task_id": "other-task"},
-    {"repository_id": "another-repository"},
-])
-def test_task_lookup_denies_cross_identity(task_memory, identity_change):
-    store, root, records = task_memory
-    request = {"task_id": "shared-task", "root": root, "tenant": "tenant-a", **identity_change}
-    assert store.get(records["valid"].record_id, **request) is None
-    assert records["valid"].record_id not in {
-        record.record_id for record in store.find(**request, semantic=False)
-    }
-
-
-def test_task_repository_id_is_an_additional_constraint(task_memory):
-    store, root, records = task_memory
-    request = {"task_id": "shared-task", "root": root, "tenant": "tenant-a", "repository_id": "repo-a"}
-    assert store.find(**request, semantic=False) == [records["valid"]]
-    assert store.get(records["missing_tenant"].record_id, **request) is None
-
-
-@pytest.mark.parametrize("missing", ["root", "tenant", "both"])
-def test_task_context_requires_root_and_tenant(task_memory, missing):
-    store, root, _ = task_memory
-    assert store.find_for_context(
-        root=root if missing == "tenant" else "",
-
-        task_id="shared-task",
+def test_task_lookup_preserves_task_and_repository_boundaries(task_memory):
+    store, root, other_root, records, root_id = task_memory
+    assert store.find(
+        scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
+        root=str(root), repository_id=root_id, semantic=False,
+    ) == [records["valid"]]
+    assert store.find(
+        scope=AgentScope.TASK, scope_id="other-task", task_id="other-task",
+        root=str(root), semantic=False,
+    ) == [records["other_task"]]
+    assert store.get(
+        records["other_project"].record_id, scope=AgentScope.TASK,
+        scope_id="shared-task", task_id="shared-task", root=str(root), repository_id=root_id,
+    ) is None
+    assert store.find(
+        scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
+        root=str(root), repository_id=repository_memory_id(other_root, store.state_store), semantic=False,
     ) == []
+    assert store.find_for_context(
+        root=str(other_root), task_id="shared-task",
+        coordination_id=repository_memory_id(other_root, store.state_store),
+    ) == [records["other_project"]]
 
 
-def test_task_context_accepts_matching_trusted_identity(task_memory):
-    store, root, records = task_memory
-    assert store.find_for_context(root=root,  task_id="shared-task") == [records["valid"]]
+def test_task_context_requires_root_and_matches_task(task_memory):
+    store, root, _other_root, records, _root_id = task_memory
+    assert store.find_for_context(root="", task_id="shared-task") == []
+    assert store.find_for_context(
+        root=str(root), task_id="shared-task",
+        coordination_id=repository_memory_id(root, store.state_store),
+    ) == [records["valid"]]
 
 
-@pytest.mark.parametrize("identity_request", [
-    {"root": "", "tenant": "tenant-a"},
-    {"root": "repo-a", "tenant": ""},
-    {"root": "", "tenant": ""},
-    {"root": "repo-b", "tenant": "tenant-a"},
-    {"root": "repo-a", "tenant": "tenant-b"},
-])
-def test_task_matcher_denies_incomplete_or_foreign_request(identity_request):
-    assert not _memory_matches_request_scope(
-        scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        provenance={"root": "repo-a", "tenant": "tenant-a"}, **identity_request,
-    )
-
-
-@pytest.mark.parametrize("provenance", [
-    None, {}, {"root": "repo-a"}, {"tenant": "tenant-a"},
-    {"root": " \t ", "tenant": "tenant-a"},
-    {"root": "repo-a", "tenant": " \t "},
-])
-def test_task_matcher_requires_nonempty_provenance(provenance):
-    assert not _memory_matches_request_scope(
-        scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root="repo-a",  provenance=provenance,
-    )
-
-
-def test_task_matcher_accepts_matching_identity():
+def test_task_matcher_requires_matching_root_and_actual_task_identity(task_memory):
+    _store, root, other_root, _records, _root_id = task_memory
+    provenance = {"root": str(root), "task_id": "shared-task"}
     assert _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root="repo-a/.",
-        provenance={"root": "repo-a", "tenant": "tenant-a"},
+        root=str(root), provenance=provenance,
+    )
+    assert not _memory_matches_request_scope(
+        scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
+        root=str(other_root), provenance=provenance,
+    )
+    assert not _memory_matches_request_scope(
+        scope=AgentScope.TASK, scope_id="other-task", task_id="shared-task",
+        root=str(root), provenance=provenance,
+    )
+    assert not _memory_matches_request_scope(
+        scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
+        root=str(root), provenance={"task_id": "shared-task"},
     )
 
 
-def test_unconfigured_store_preserves_unowned_global_lookup(task_memory):
-    store, _, records = task_memory
-    record = MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="legacy-global", value="safe")
+def test_retired_tenant_selectors_and_provenance_reject(task_memory):
+    store, root, _other_root, _records, _root_id = task_memory
+    with pytest.raises(TypeError):
+        store.find(root=str(root), task_id="shared-task", tenant="retired", semantic=False)
+    with pytest.raises(ValueError, match="retired memory identity field"):
+        _memory_matches_request_scope(
+            scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
+            root=str(root), provenance={"root": str(root), "tenant": None},
+        )
+
+
+def test_unconfigured_store_preserves_owner_global_lookup(task_memory):
+    store, _root, _other_root, records, _root_id = task_memory
+    record = MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-owner-fact", value="safe")
     store._save_record(record)
     assert store.get(record.record_id) == record
-    assert store.find(scope=AgentScope.GLOBAL, key="legacy-global", semantic=False) == [record]
-    assert store.get(records["missing_both"].record_id, task_id="shared-task") is None
+    assert store.find(scope=AgentScope.GLOBAL, key="global-owner-fact", semantic=False) == [record]
+    assert store.get(records["missing_root"].record_id, task_id="shared-task") is None
 
 
-@pytest.mark.parametrize("selector", ["query", "record_id"])
-def test_unscoped_find_cannot_return_task_identity(task_memory, selector):
-    store, _, records = task_memory
-    request = {"query": "scope-guard"} if selector == "query" else {
-        "record_id": records["missing_both"].record_id,
-    }
-    assert store.find(**request, semantic=False) == []
+def test_unscoped_find_cannot_return_task_memory(task_memory):
+    store, _root, _other_root, records, _root_id = task_memory
+    assert store.find(query="scope-guard", semantic=False) == []
+    assert store.find(record_id=records["valid"].record_id, semantic=False) == []

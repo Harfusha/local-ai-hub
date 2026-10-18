@@ -31,7 +31,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
         evidence_ids=("ev-current-1",),
         repository_revision="rev-1",
         path_refs=("src/example.py",),
-        provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": repository_memory_id(root, state)},
     )
     memory._save_record(record)
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
@@ -41,7 +41,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
     try:
         task = tasks.create(
             GoalContract(goal="use scoped memory"),
-            ScopeContext(task_id="memory-task"),
+            ScopeContext(repository_id=repository_memory_id(root, state), task_id="memory-task"),
             task_id="memory-task",
             repo_root=str(root),
         )
@@ -49,8 +49,10 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
         trace_context.reset_context(token)
 
     snapshot = task.checkpoint.state_data["memory_context"]
-    assert snapshot["schema_version"] == 1
-    assert snapshot["tenant_key"]
+    assert snapshot["schema_version"] == 2
+    assert snapshot["context"]["root"] == str(root)
+    assert snapshot["context"]["coordination_id"] == repository_memory_id(root, state)
+    assert "tenant_key" not in snapshot
     item = snapshot["items"][0]
     assert item["id"] == record.record_id
     assert item["scope"] == "repository"
@@ -60,10 +62,10 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
     assert item["provenance"]["evidence_ids"] == ["ev-current-1"]
 
 
-def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_path: Path):
+def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_secret(tmp_path: Path):
     class UnavailableCompiler:
         def compile(self, _request):
-            raise RuntimeError("tenant-a api_key=should-not-escape")
+            raise RuntimeError("private identity api_key=should-not-escape")
 
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     tasks = TaskStore(state)
@@ -76,7 +78,7 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_p
     try:
         task = tasks.create(
             GoalContract(goal="continue without unavailable memory"),
-            ScopeContext(task_id="fallback-task"),
+            ScopeContext(repository_id=repository_memory_id(root, state), task_id="fallback-task"),
             task_id="fallback-task",
             repo_root=str(root),
         )
@@ -84,12 +86,12 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_p
         trace_context.reset_context(token)
 
     snapshot = task.checkpoint.state_data["memory_context"]
-    assert snapshot["schema_version"] == 1
+    assert snapshot["schema_version"] == 2
     assert snapshot["items"] == []
     assert snapshot["warnings"] == [{"code": "memory_context_unavailable"}]
     assert snapshot["estimated_tokens"] == json_tokens(snapshot)
     assert json_tokens(snapshot) <= 512
-    assert "tenant-a" not in str(snapshot)
+    assert "private identity" not in str(snapshot)
     assert "api_key" not in str(snapshot)
 
 
@@ -107,7 +109,7 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
         value="valid before recheck",
         status=MemoryStatus.CONFIRMED,
         source="user",
-        provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": repository_memory_id(root, state)},
     )
     memory._save_record(record)
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
@@ -117,7 +119,7 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
     try:
         task = tasks.create(
             GoalContract(goal="recheck memory on resume"),
-            ScopeContext(task_id="stale-task"),
+            ScopeContext(repository_id=repository_memory_id(root, state), task_id="stale-task"),
             task_id="stale-task",
             repo_root=str(root),
         )
@@ -139,6 +141,8 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
     memory = MemoryStore(state)
     root = tmp_path / "repo"
     root.mkdir()
+    foreign_root = tmp_path / "foreign-repo"
+    foreign_root.mkdir()
     records = {
         "repo": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -148,7 +152,7 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
             value="shared across worktrees",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_memory_id(root, state)},
         ),
         "worktree_a": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -158,7 +162,7 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
             value="only worktree a",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "worktree_id": "worktree-a"},
         ),
         "worktree_b": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -168,17 +172,17 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
             value="only worktree b",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "worktree_id": "worktree-b"},
         ),
-        "foreign_tenant": MemoryRecord.create(
+        "foreign_repository": MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=repository_memory_id(root, state),
+            scope_id=repository_memory_id(foreign_root, state),
             key="foreign-guidance",
-            value="must not cross tenants",
+            value="must not cross repositories",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "repository_id": repository_memory_id(root, state), "tenant": "tenant-b"},
+            provenance={"root": str(foreign_root), "repository_id": repository_memory_id(foreign_root, state)},
         ),
     }
     for record in records.values():
@@ -190,13 +194,13 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
     try:
         task_a = tasks.create(
             GoalContract(goal="inspect worktree a"),
-            ScopeContext(repository_id=str(root), clone_id="clone-a", worktree_id="worktree-a", task_id="task-a"),
+            ScopeContext(repository_id=repository_memory_id(root, state), clone_id="clone-a", worktree_id="worktree-a", task_id="task-a"),
             task_id="task-a",
             repo_root=str(root),
         )
         task_b = tasks.create(
             GoalContract(goal="inspect worktree b"),
-            ScopeContext(repository_id=str(root), clone_id="clone-b", worktree_id="worktree-b", task_id="task-b"),
+            ScopeContext(repository_id=repository_memory_id(root, state), clone_id="clone-b", worktree_id="worktree-b", task_id="task-b"),
             task_id="task-b",
             repo_root=str(root),
         )
@@ -209,6 +213,6 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
     ids_b = {item["id"] for item in snapshot_b["items"]}
     assert ids_a == {records["repo"].record_id, records["worktree_a"].record_id}
     assert ids_b == {records["repo"].record_id, records["worktree_b"].record_id}
-    assert records["foreign_tenant"].record_id not in ids_a | ids_b
+    assert records["foreign_repository"].record_id not in ids_a | ids_b
     assert {item["scope"] for item in snapshot_a["items"]} == {"repository", "worktree"}
     assert {item["scope"] for item in snapshot_b["items"]} == {"repository", "worktree"}

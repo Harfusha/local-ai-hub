@@ -62,7 +62,7 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
         key="durable-marker",
         value="keep across derived database recovery",
         source="test",
-        provenance={"root": str(repository), "tenant": "t05-cache-recovery"},
+        provenance={"root": str(repository)},
     )
     memories._save_record(memory)
 
@@ -77,7 +77,10 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
     verifications.record(receipt)
 
     leases = ScopeLeaseStore(state_dir)
-    lease = leases.claim("t05", str(repository), ["src/durable.py"], purpose="persistence test")
+    lease = leases.claim(
+        owner="t05", root=str(repository), paths=["src/durable.py"],
+        purpose="persistence test",
+    )
     assert lease["success"] is True
 
     derived_name = "cache.sqlite3" if derived_db == "cache" else "code-index.sqlite3"
@@ -117,6 +120,8 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
 def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path):
     state = AgentStateStore(tmp_path / "agent_state.sqlite")
     memories = MemoryStore(state)
+    root = tmp_path / "repository"
+    root.mkdir()
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.WORKTREE,
@@ -124,7 +129,7 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         key="identity-marker",
         value="keep until owner deletes",
         source="test",
-        provenance={"tenant": "tenant-a"},
+        provenance={"root": str(root), "worktree_id": "t05-worktree"},
     )
     memories._save_record(record)
     related = MemoryRecord.create(
@@ -134,7 +139,7 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         key="related-marker",
         value="linked memory",
         source="test",
-        provenance={"tenant": "tenant-a"},
+        provenance={"root": str(root), "worktree_id": "t05-worktree"},
     )
     memories._save_record(related)
     memories.record_relation(record.record_id, "relates_to", related.record_id)
@@ -146,11 +151,14 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="another-worktree",
+        root=str(root),
+        worktree_id="another-worktree",
     ) is False
     assert memories.delete(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+        worktree_id="t05-worktree",
     ) is False
     assert memories.get(
         record.record_id,
@@ -161,6 +169,8 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+        root=str(root),
+        worktree_id="t05-worktree",
     ).value == "keep until owner deletes"
     assert memories.find_relations(source_entity=record.record_id) == original_relations
 
@@ -168,11 +178,15 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+        root=str(root),
+        worktree_id="t05-worktree",
     ) is True
     assert memories.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+        root=str(root),
+        worktree_id="t05-worktree",
     ) is None
     assert memories.find_relations(source_entity=record.record_id) == []
 
@@ -279,7 +293,7 @@ def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_pat
         key="crash-marker",
         value="keep after cache rebuild crash",
         source="test",
-        provenance={"root": str(state_dir), "tenant": "t05-cache-crash"},
+        provenance={"root": str(state_dir)},
     )
     memories._save_record(memory)
     verifications = VerificationStore(state, task_store=tasks)
@@ -342,7 +356,7 @@ def test_concurrent_derived_recovery_preserves_durable_agent_state(tmp_path, der
         key="concurrent-recovery-marker",
         value="durable memory survives concurrent derived recovery",
         source="test",
-        provenance={"root": str(state_dir), "tenant": "t05-concurrent-recovery"},
+        provenance={"root": str(state_dir)},
     )
     memories._save_record(memory)
 

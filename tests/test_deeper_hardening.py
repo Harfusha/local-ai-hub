@@ -95,7 +95,7 @@ def test_rag_cosine_rejects_mismatched_dimensions():
 
 
 def test_telemetry_removes_secret_values(tmp_path):
-    event = TelemetryStore._clean_event({"tenant": "Bearer secret-token", "action": "POST /sensitive?api_key=secret-token"})
+    event = TelemetryStore._clean_event({"action": "POST /sensitive?api_key=secret-token"})
 
     assert "secret-token" not in json.dumps(event)
 
@@ -120,6 +120,6 @@ def test_telemetry_recent_http_history_is_persistent(tmp_path):
     "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-a\n+b\n\n--- b/../../outside\n",
 ])
 def test_patch_parser_rejects_fuzzed_path_and_hunk(patch):
-    result = LocalAIServices.validate_patch(None, {"patch": patch}, "test")
+    result = LocalAIServices.validate_patch(None, {"patch": patch})
 
     assert result["success"] is False

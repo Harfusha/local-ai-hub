@@ -59,7 +59,6 @@ def test_http_lease_blocks_command_broker_across_linked_worktrees(tmp_path: Path
             headers={
                 "Content-Type": "application/json",
                 "Connection": "close",
-                "X-LocalAI-Tenant": "http-owner",
             },
             method="POST",
         )
@@ -84,7 +83,6 @@ def test_http_lease_blocks_command_broker_across_linked_worktrees(tmp_path: Path
         result = broker._run_private_transaction(
             "python -c \"from pathlib import Path; Path('owned.txt').write_text('after')\"",
             linked,
-            "agent",
             task_id="t06-namespace-task",
             paths=["owned.txt"],
             timeout=5,

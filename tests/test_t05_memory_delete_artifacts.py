@@ -22,7 +22,7 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
             key="delete-search-artifacts",
             value="sensitive searchable memory",
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
+            provenance={"root": str(root), "repository_id": str(root)},
         ),
         actor="user",
         idempotency_key="delete-search-artifacts",
@@ -82,7 +82,7 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         key="delete-replay-does-not-resurrect",
         value="deleted searchable memory",
         source="user",
-        provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
+        provenance={"root": str(root), "repository_id": str(root)},
     )
     store.record(record, actor="user", idempotency_key="delete-replay-record")
     assert store.set_embedding(record.record_id, [0.25, 0.75])
@@ -144,7 +144,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
             key="rollback-delete-primary",
             value="retain after failed deletion",
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
+            provenance={"root": str(root), "repository_id": str(root)},
         ),
         actor="user",
     )
@@ -156,7 +156,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
             key="rollback-delete-related",
             value="retain relation",
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
+            provenance={"root": str(root), "repository_id": str(root)},
         ),
         actor="user",
     )
@@ -190,6 +190,15 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
         return real_connect(database, *args, **kwargs)
 
     with monkeypatch.context() as patch:
+        with pytest.raises(TypeError):
+            store.delete(
+                record.record_id,
+                scope=AgentScope.REPOSITORY,
+                scope_id=str(root),
+                root=str(root),
+                repository_id=str(root),
+                tenant="retired",
+            )
         patch.setattr(sqlite3, "connect", connect_with_delete_failure)
         with pytest.raises(sqlite3.OperationalError, match=f"injected {fault_table} delete failure"):
             store.delete(
@@ -198,7 +207,6 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
                 scope_id=str(root),
                 root=str(root),
                 repository_id=str(root),
-                tenant="tenant-a",
             )
 
     assert store.state_store.events(stream_id) == events_before

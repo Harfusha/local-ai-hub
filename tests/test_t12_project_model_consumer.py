@@ -363,14 +363,14 @@ def test_local_task_project_profiles_and_prefixes_are_isolated_concurrently(tmp_
 
     service.runtime.request_stream = request_stream
 
-    def invoke(root: Path, tenant: str) -> dict:
+    def invoke(root: Path) -> dict:
         return service.delegate(
             {"root": str(root), "task": "Explain this project briefly.", "task_type": "general", "complexity": "fast"},
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        future_a = pool.submit(invoke, repo_a, "concurrent-a")
-        future_b = pool.submit(invoke, repo_b, "concurrent-b")
+        future_a = pool.submit(invoke, repo_a)
+        future_b = pool.submit(invoke, repo_b)
         result_a = future_a.result(timeout=5)
         result_b = future_b.result(timeout=5)
 
@@ -390,7 +390,7 @@ def test_batch_delegate_inherits_parent_root_for_items_without_project_root(tmp_
     parent_root = str(tmp_path / "parent")
     explicit_root = str(tmp_path / "item")
     captured: list[dict] = []
-    monkeypatch.setattr(service, "delegate", lambda item, _tenant: captured.append(dict(item)) or {"success": True})
+    monkeypatch.setattr(service, "delegate", lambda item: captured.append(dict(item)) or {"success": True})
 
     result = service.batch_delegate(
         {

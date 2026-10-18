@@ -22,8 +22,8 @@ class _Artifacts:
     def __init__(self) -> None:
         self.records: list[dict[str, str]] = []
 
-    def put(self, content: str, tenant: str, kind: str, *_args, **_kwargs) -> str:
-        self.records.append({"content": str(content), "tenant": tenant, "kind": kind})
+    def put(self, content: str, *, kind: str, **_kwargs) -> str:
+        self.records.append({"content": str(content), "kind": kind})
         return f"artifact-{len(self.records)}"
 
 
@@ -204,7 +204,6 @@ def test_public_cancel_stops_streamed_command_and_clears_active_record(
     tmp_path: Path,
 ) -> None:
     broker = _broker(tmp_path / "state")
-    tenant = "t15-stream-cancel"
     ready = threading.Event()
     chunks: list[tuple[str, str]] = []
     result: dict[str, object] = {}
@@ -246,7 +245,7 @@ def test_public_cancel_stops_streamed_command_and_clears_active_record(
 
     active = broker.stats()["active"]
     cancel_result = (
-        broker.cancel("", "", tenant, execution_id=str(active[0]["execution_id"]))
+        broker.cancel("", "", execution_id=str(active[0]["execution_id"]))
         if active
         else {"success": False}
     )

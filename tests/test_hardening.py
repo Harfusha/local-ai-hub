@@ -80,7 +80,7 @@ def test_patch_validation_checks_explicit_git_root(tmp_path):
         subprocess.run(command, cwd=root, check=True, capture_output=True)
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-missing\n+replacement\n"
 
-    result = LocalAIServices.validate_patch(None, {"patch": patch, "root": str(root)}, "test")
+    result = LocalAIServices.validate_patch(None, {"patch": patch, "root": str(root)})
 
     assert result["success"] is False
     assert result["applicability_checked"] is True

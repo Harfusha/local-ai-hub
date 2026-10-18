@@ -12,7 +12,7 @@ def test_restored_inference_gate_precedes_runtime_initialization(tmp_path, mode)
     set_operational_mode(tmp_path, mode)
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {"server": {"state_dir": str(tmp_path)}}
-    result = service._generate("model", "prompt", "system", 64, 0.0, "tenant", "mcp", 0)
+    result = service._generate("model", "prompt", "system", 64, 0.0, source="mcp", priority=0)
     assert result["success"] is False
     assert result["mode"] == mode
     assert result["error_code"] == "operational_mode_blocked"

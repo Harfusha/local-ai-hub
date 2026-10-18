@@ -258,7 +258,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
 
         services.delegate = fake_delegate
         result = LocalAIServices.review_diff(
-            services, {"root": ".", "consensus": True}, "test"
+            services, {"root": ".", "consensus": True}
         )
 
         chunk_count = result["diff"]["review_chunks"]

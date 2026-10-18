@@ -160,7 +160,6 @@ def test_second_opinion_uses_basic_qwen_by_default():
 
     result = service.second_opinion(
         {"question": "Why does this function fail?", "candidate": "It has a bug."},
-        "test-tenant",
     )
 
     assert result["model"] == "qwen2.5-coder:3b"

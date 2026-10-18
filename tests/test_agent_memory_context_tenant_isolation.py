@@ -154,8 +154,8 @@ def test_task_create_and_resume_keep_repository_and_global_memory(tmp_path: Path
 
     coordination_id = resolve_project_context(root, state.db_path.parent).coordination_id
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, repository_id=coordination_id, key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(foreign_root), root=foreign_root, repository_id="other-repo", key="repo-foreign"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=coordination_id, root=root, repository_id=coordination_id, key="repo-current"),
+        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id="other-repo", root=foreign_root, repository_id="other-repo", key="repo-foreign"),
         "global_one": _record(scope=AgentScope.GLOBAL, key="global-one"),
         "global_two": _record(scope=AgentScope.GLOBAL, key="global-two"),
     }
@@ -172,7 +172,7 @@ def test_task_create_and_resume_keep_repository_and_global_memory(tmp_path: Path
 
     task = tasks.create(
         GoalContract(goal="Use current repository and owner-global facts"),
-        ScopeContext(branch="main", task_id="memory-task"),
+        ScopeContext(repository_id=coordination_id, branch="main", task_id="memory-task"),
         task_id="memory-task",
         repo_root=str(root),
     )

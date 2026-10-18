@@ -93,7 +93,7 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
     service = object.__new__(LocalAIServices)
     service.config = {"transcription": {"allow_model_downloads": False, "device": "cpu"}}
     result = service.transcribe(
-        {"audio": str(audio)}, "task-17", cancel_event=cancel_event
+        {"audio": str(audio)}, cancel_event=cancel_event
     )
 
     assert result["success"] is False

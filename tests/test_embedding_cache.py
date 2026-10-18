@@ -101,8 +101,8 @@ def test_embed_reuses_cached_vectors_and_preserves_batch_order():
     service.embeddings = _EmbeddingBackend()
     service.embedding_cache = _Cache()
 
-    first = service.embed(["alpha", "beta"], "tenant")
-    second = service.embed(["beta", "alpha"], "tenant")
+    first = service.embed(["alpha", "beta"])
+    second = service.embed(["beta", "alpha"])
 
     assert first["embeddings"] == [[5.0, 1.0], [4.0, 1.0]]
     assert second["embeddings"] == [[4.0, 1.0], [5.0, 1.0]]
