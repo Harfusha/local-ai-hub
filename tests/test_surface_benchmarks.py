@@ -2099,28 +2099,24 @@ def test_measure_stage_regimes_attributes_preparation_errors_separately() -> Non
     assert "sensitive preparation error" not in str(measured)
 
 
-def test_rag_workspace_count_verifier_uses_normalized_scope_key(tmp_path: Path) -> None:
+def test_rag_workspace_count_verifier_uses_workspace_key(tmp_path: Path) -> None:
     database = tmp_path / "rag.sqlite3"
     connection = sqlite3.connect(database)
     try:
-        connection.execute("CREATE TABLE files (tenant TEXT, workspace TEXT)")
-        connection.execute("CREATE TABLE chunks (tenant TEXT, workspace TEXT)")
-        connection.execute("INSERT INTO files VALUES ('*', 'warm')")
-        connection.executemany("INSERT INTO chunks VALUES (?, ?)", [("*", "warm")] * 3)
+        connection.execute("CREATE TABLE files (workspace TEXT)")
+        connection.execute("CREATE TABLE chunks (workspace TEXT)")
+        connection.execute("INSERT INTO files VALUES ('warm')")
+        connection.executemany("INSERT INTO chunks VALUES (?)", [("warm",)] * 3)
         connection.commit()
     finally:
         connection.close()
 
-    class SharedScopeRagStore:
-        def _scope_key(self, tenant: str) -> str:
-            assert tenant == "t02-benchmark"
-            return "*"
-
+    class WorkspaceRagStore:
         def _connect(self) -> sqlite3.Connection:
             return sqlite3.connect(database)
 
     counts = surface_benchmarks._rag_workspace_document_counts(
-        SharedScopeRagStore(), "t02-benchmark", "warm",
+        WorkspaceRagStore(), "warm",
     )
 
     assert counts == {"files": 1, "chunks": 3}

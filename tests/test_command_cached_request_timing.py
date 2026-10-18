@@ -29,16 +29,16 @@ def test_cached_command_preserves_execution_timing_but_measures_current_request(
 
     monkeypatch.setattr(broker, "_execute", execute)
     monkeypatch.setattr(commands.time, "perf_counter", perf_counter)
-    first = broker.run("python -m pytest -q", str(tmp_path), "timing-test")
+    first = broker.run("python -m pytest -q", str(tmp_path))
     clock["step"] = 0.003
-    cached = broker.run("python -m pytest -q", str(tmp_path), "timing-test")
+    cached = broker.run("python -m pytest -q", str(tmp_path))
 
     assert first["cache_hit"] is False
     assert cached["cache_hit"] is True
     assert executions == [True]
     assert cached["phase_timings_ms"]["shell_startup_ms"] == 7.25
     assert cached["phase_timings_ms"]["stream_capture_ms"] == 12.5
-    for field in ("command_classification_ms", "tool_identity_ms"):
+    for field in ("command_classification_ms",):
         assert first["phase_timings_ms"][field] == 1.0
         assert cached["phase_timings_ms"][field] == 3.0
     # Cache reads may do additional clocked bookkeeping; at least one current

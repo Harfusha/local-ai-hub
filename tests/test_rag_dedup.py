@@ -11,7 +11,7 @@ class _Services:
     def __init__(self) -> None:
         self.embedded: list[str] = []
 
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         batch = list(texts)
         self.embedded.extend(batch)
         return {"success": True, "embeddings": [[1.0, 0.0] for _ in batch]}
@@ -119,7 +119,7 @@ def test_rag_index_skips_near_duplicate_chunks(tmp_path: Path):
         _Reranker(),
     )
 
-    res = store.index(str(root), "tenant-test")
+    res = store.index(str(root))
     assert res["success"] is True
     assert res["near_duplicates_skipped"] >= 1
 

@@ -37,7 +37,6 @@ def _seed_durable_rows(db_path: Path, artifact_dir: Path):
         source="test",
         provenance={
             "root": str(db_path.parent.resolve()),
-            "tenant": "test-owner",
             "task_id": task.task_id,
         },
     ), actor="test")
@@ -51,7 +50,7 @@ def _seed_durable_rows(db_path: Path, artifact_dir: Path):
         "repository_revision": "rev-migration",
         "mutation_generation": 0,
         "criteria": ["tests"],
-    }, "test-owner", "source_review")
+    }, kind="source_review")
     receipt = VerificationReceipt.create(
         task_id=task.task_id,
         criterion="tests",
@@ -84,7 +83,6 @@ def test_current_agent_state_reopens_without_changing_durable_rows(tmp_path: Pat
         scope=memory.scope,
         task_id=task.task_id,
         root=str(db_path.parent.resolve()),
-        tenant="test-owner",
     )
     assert restored_memory is not None
     assert restored_memory.value == memory.value

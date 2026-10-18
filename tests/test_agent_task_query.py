@@ -96,9 +96,12 @@ def live_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     config = tmp_path / "config.toml"
+    project_root = Path(__file__).resolve().parents[1]
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
-        f'state_dir = "{(tmp_path / "state").as_posix()}"\n',
+        f'state_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n"
+        f'\n[security]\nallowed_roots = ["{project_root.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -118,13 +121,15 @@ def live_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_http_task_query_searches_contract_checkpoint_and_owner_before_limit(live_api) -> None:
     from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
     from urllib.parse import urlencode
 
     app, client = live_api
     root = str(Path(__file__).resolve().parents[1])
     rootless = client.create_task("Root is required", task_id="query-rootless")
     assert rootless["success"] is False
-    assert rootless["error_code"] == "root_not_allowed"
+    assert rootless["error_code"] == "root_required"
     created = client.create_task(
         "goal-needle", acceptance_criteria=["criterion-needle"], task_id="query-match", root=root
     )
@@ -141,11 +146,15 @@ def test_http_task_query_searches_contract_checkpoint_and_owner_before_limit(liv
         },
     })["success"]
     assert client.create_task("Newest unrelated task", task_id="query-other", root=root)["success"]
+    repository_id = resolve_project_context(
+        root, configured_state_dir(app.config)
+    ).coordination_id
     app.agent_tasks.create(
         GoalContract(goal="Owner-only task"),
-        ScopeContext(repository_id=root, session_id="api-token-default"),
+        ScopeContext(repository_id=repository_id, session_id="session-query-owner"),
         task_id="query-owner",
         actor="distinct-owner",
+        repo_root=root,
     )
 
     for term in (

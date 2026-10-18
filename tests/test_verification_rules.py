@@ -60,11 +60,10 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
 
 def _bind_execution_record(
     verification: VerificationStore, receipt, proof: dict, root: Path,
-    *, tenant: str | None = None,
 ) -> None:
     canonical_root = str(root.resolve())
     record = {
-        "schema": "command_execution_record.v1",
+        "schema": "command_execution_record.v2",
         "command_id": receipt.command_id,
         "task_id": receipt.task_id,
         "owner": receipt.owner,
@@ -83,6 +82,7 @@ def _bind_execution_record(
         "caller_arguments_sha256": proof.get("caller_arguments_sha256", ""),
         "exit_code": 0,
         "cached": False,
+        "created_at_unix": 0,
         **{
             key: proof.get(key, "")
             for key in (
@@ -91,12 +91,14 @@ def _bind_execution_record(
             )
         },
     }
+    record["record_sha256"] = hashlib.sha256(
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     verification.set_command_execution_record_lookup(
         lambda command_id, **kwargs: record
         if command_id == receipt.command_id
         and kwargs.get("task_id") == receipt.task_id
         and kwargs.get("repository_root") == canonical_root
-        and kwargs.get("tenant") == (receipt.owner if tenant is None else tenant)
         else None
     )
 
@@ -244,7 +246,6 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
         "reason": "done",
     }
     handler._validate_payload = lambda _path, _payload: None
-    handler._tenant = lambda: "default"
     handler._agent = lambda: "agent"
     responses = []
     handler._send = lambda status, data: responses.append((status, data))
@@ -258,9 +259,9 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
     assert verification.calls[0]["configured_criteria"] == ("check",)
 
 
-@pytest.mark.parametrize("tenant", ["default", "codex:e498067d"])
+@pytest.mark.parametrize("session_id", ["session-a", "session-b"])
 def test_mcp_task_completion_enforces_project_verification_rules(
-    monkeypatch, tmp_path: Path, tenant: str,
+    monkeypatch, tmp_path: Path, session_id: str,
 ) -> None:
     root, state_dir = _project(tmp_path)
     (root / ".local-ai.toml").write_text(
@@ -276,7 +277,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
     )
     task_store.create(
         GoalContract(goal="verify configured rule", acceptance_criteria=("required_commands",)),
-        ScopeContext(task_id="task-mcp", repository_id=str(root), session_id=tenant),
+        ScopeContext(task_id="task-mcp", repository_id=str(root), session_id=session_id),
         task_id="task-mcp",
         repo_root=str(root),
     )
@@ -319,7 +320,6 @@ def test_mcp_task_completion_enforces_project_verification_rules(
             handler._require_authorized = lambda: True
             handler._read_json = lambda: payload
             handler._validate_payload = lambda _path, _payload: None
-            handler._tenant = lambda: tenant
             handler._agent = lambda: "agent"
             handler._send = lambda status, data: responses.append((status, data))
             handler.do_POST()
@@ -344,8 +344,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
             "mutation_generation": 0,
             "criteria": ["required_commands"],
         },
-        "agent",
-        "source_review",
+        kind="source_review",
     )
     project = resolve_project_context(root, state_dir)
     command = "python -m pytest -q"
@@ -383,8 +382,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         }
     command_evidence = artifact_store.put_json(
         command_proof,
-        "agent",
-        "command_verification",
+        kind="command_verification",
     )
     verification_store.record(
         VerificationReceipt.create(
@@ -411,19 +409,17 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         command_receipt,
         command_proof,
         root,
-        tenant="other-session",
     )
-    wrong_tenant = mcp_server.local_ai_coord(
+    first_completion_attempt = mcp_server.local_ai_coord(
         action="task_complete", task_id="task-mcp", root=str(root), reason="done"
     )
-    assert wrong_tenant["success"] is False
+    assert first_completion_attempt["success"] is False
     assert task_store.get("task-mcp").status.value == "planned"
     _bind_execution_record(
         verification_store,
         command_receipt,
         command_proof,
         root,
-        tenant=tenant,
     )
 
     completed = mcp_server.local_ai_coord(
@@ -514,8 +510,7 @@ def test_completion_handler_uses_persisted_receipts_and_completes_task(tmp_path:
             "mutation_generation": 0,
             "criteria": ["required_commands"],
         },
-        "agent",
-        "source_review",
+        kind="source_review",
     )
     project = resolve_project_context(root, state_dir)
     command = "python -m pytest -q"
@@ -552,8 +547,7 @@ def test_completion_handler_uses_persisted_receipts_and_completes_task(tmp_path:
         }
     command_evidence = artifact_store.put_json(
         command_proof,
-        "agent",
-        "command_verification",
+        kind="command_verification",
     )
     verification_store.record(
         VerificationReceipt.create(

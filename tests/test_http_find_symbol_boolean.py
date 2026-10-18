@@ -51,7 +51,6 @@ def test_post_find_symbol_rejects_string_boolean(monkeypatch) -> None:
     handler._begin_trace = lambda _path: None
     handler._read_json = lambda: {"root": "C:\\repo", "pattern": "Button", "include_body": "false"}
     handler._claim_recovery = lambda *_args: True
-    handler._tenant = lambda: "tenant-test"
     handler._agent = lambda: "agent-test"
     handler._send = lambda status, body, **_kwargs: responses.append((status, body))
 

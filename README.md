@@ -248,7 +248,7 @@ Capture a 14-day read-only baseline first. Compare the pilot with `/api/adoption
 
 ## Security and privacy
 
-The server binds to loopback by default. Non-loopback exposure fails closed unless remote access is explicitly enabled and an API token is configured. Multi-tenant scheduling is fairness, **not** security isolation.
+The server binds to `127.0.0.1` only; there is no remote-access override. Scheduler fairness and global queue/model concurrency are installation-wide.
 
 Observability is metadata-only: prompts, source code and model output are not stored in the telemetry database. Runtime indexes/RAG necessarily contain local repository-derived state and remain under the configured local state directory.
 

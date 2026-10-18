@@ -42,7 +42,7 @@ def test_http_get_rejects_noncanonical_wire_inputs(tmp_path, monkeypatch, payloa
     handler = object.__new__(http_server.Handler)
     handler._send = lambda status, body: response.update(status=status, body=body)
 
-    handler._handle_post_artifact_get(payload, "owner")
+    handler._handle_post_artifact_get(payload)
 
     assert "post_artifact_get_1" in select_http_routes("POST", "/api/artifact/get")
     assert response["status"] == 400
@@ -51,7 +51,7 @@ def test_http_get_rejects_noncanonical_wire_inputs(tmp_path, monkeypatch, payloa
 
 def test_http_get_forwards_canonical_small_page_unchanged(tmp_path, monkeypatch) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put("small page", "owner", "text")
+    artifact_id = store.put("small page", kind="text")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(artifacts=store))
     response = {}
     handler = object.__new__(http_server.Handler)
@@ -59,7 +59,6 @@ def test_http_get_forwards_canonical_small_page_unchanged(tmp_path, monkeypatch)
 
     handler._handle_post_artifact_get(
         {"artifact_id": artifact_id, "offset": 2, "max_chars": 1, "section": "", "binary": False},
-        "owner",
     )
 
     assert response["status"] == 200
@@ -92,7 +91,7 @@ def test_mcp_get_rejects_noncanonical_arguments_before_post(monkeypatch, argumen
 
 def test_mcp_get_forwards_small_page_exactly_and_schema_keeps_source_bounds(tmp_path, monkeypatch) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put("small page", "owner", "text")
+    artifact_id = store.put("small page", kind="text")
     posts = []
     monkeypatch.setattr(mcp_server, "MAX_TEXT", 6000)
 
@@ -101,8 +100,8 @@ def test_mcp_get_forwards_small_page_exactly_and_schema_keeps_source_bounds(tmp_
         if path == "/api/telemetry/tool-accounting":
             return {"success": True}
         return store.get(
-            payload["artifact_id"], payload["offset"], payload["max_chars"],
-            payload["section"], tenant="owner",
+            payload["artifact_id"], offset=payload["offset"],
+            max_chars=payload["max_chars"], section=payload["section"],
         )
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)

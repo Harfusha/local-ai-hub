@@ -15,13 +15,6 @@ from local_ai_hub.app import LocalAIApp
 
 
 TOKEN = "repository-analysis-baseline-secret"
-TENANT_KEY = "repository-analysis-baseline-tenant-key-0123456789"
-
-
-def _root_tenant(root):
-    return http_server._derive_root_tenant("baseline-tenant", str(root), TENANT_KEY)
-
-
 def _post(base_url, path, payload, *, token=TOKEN, raw_body=None):
     body = raw_body if raw_body is not None else json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -55,9 +48,7 @@ def public_http_hub(tmp_path):
             f'state_dir = "{state_dir.as_posix()}"',
             "[security]",
             f'api_token = "{TOKEN}"',
-            'api_token_tenant = "baseline-tenant"',
             f'allowed_roots = ["{tmp_path.as_posix()}"]',
-            f'tenant_derivation_key = "{TENANT_KEY}"',
         )),
         encoding="utf-8",
     )
@@ -117,7 +108,7 @@ def test_pre_extraction_public_http_route_baseline(
     base_url, app, root = public_http_hub
     calls = _install_service_spies(monkeypatch, app)
     canonical_root = str(root.resolve())
-    payload = {"root": str(root), "tenant": _root_tenant(root), **payload_fields}
+    payload = {"root": str(root), **payload_fields}
 
     status, response = _post(base_url, path, payload)
 
@@ -132,7 +123,7 @@ def test_public_http_baseline_authorization_precedes_route_service(
 ):
     base_url, app, root = public_http_hub
     calls = _install_service_spies(monkeypatch, app)
-    payload = {"root": str(root), "tenant": _root_tenant(root)}
+    payload = {"root": str(root)}
 
     status, response = _post(base_url, "/api/git/status", payload, token=None)
 
@@ -166,7 +157,7 @@ def test_public_http_baseline_maintenance_gate_precedes_body_and_service(
     status, response = _post(
         base_url,
         "/api/git/status",
-        {"root": str(root), "tenant": _root_tenant(root)},
+        {"root": str(root)},
         raw_body=b"not-json",
     )
 
@@ -205,7 +196,6 @@ def test_public_http_baseline_preserves_central_conversion_error(
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
     payload = {
         "root": str(root),
-        "tenant": _root_tenant(root),
         "max_lines": "invalid-integer",
     }
 
@@ -230,7 +220,7 @@ def test_public_http_baseline_preserves_tracker_unavailable_response(
     app.repo_state = SimpleNamespace(
         fingerprint=lambda _root: (_ for _ in ()).throw(RuntimeError("private tracker detail"))
     )
-    payload = {"root": str(root), "tenant": _root_tenant(root)}
+    payload = {"root": str(root)}
 
     status, response = _post(base_url, "/api/repo/state", payload)
 
@@ -254,7 +244,7 @@ def test_public_http_baseline_preserves_service_exception_translation(
         raise RuntimeError("private service detail")
 
     monkeypatch.setattr(app.services, "git_diff", fail_diff)
-    payload = {"root": str(root), "tenant": _root_tenant(root)}
+    payload = {"root": str(root)}
 
     status, response = _post(base_url, "/api/git/diff", payload)
 
@@ -276,7 +266,7 @@ def test_public_http_baseline_preserves_disabled_deterministic_response(
     base_url, app, root = public_http_hub
     calls = _install_service_spies(monkeypatch, app)
     monkeypatch.setattr(app, "deterministic", None)
-    payload = {"root": str(root), "tenant": _root_tenant(root)}
+    payload = {"root": str(root)}
 
     status, response = _post(base_url, "/api/git/status", payload)
 

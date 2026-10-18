@@ -829,6 +829,8 @@ class OllamaRuntime:
         inputs = contract.get("scenario_inputs")
         if not isinstance(inputs, dict):
             return {"success": False, "error_type": "invalid_scenario_inputs"}
+        if "tenant" in inputs:
+            return {"success": False, "error_type": "retired_scenario_field", "field": "scenario_inputs.tenant"}
 
         model = inputs.get("model")
         profile = inputs.get("profile")
@@ -845,17 +847,17 @@ class OllamaRuntime:
         for item in items:
             if not isinstance(item, dict):
                 return {"success": False, "error_type": "invalid_scenario_inputs"}
+            if "tenant" in item:
+                return {"success": False, "error_type": "retired_scenario_field", "field": "scenario_inputs.items.tenant"}
             item_id = item.get("id")
-            tenant = item.get("tenant", "benchmark")
             prompt = item.get("prompt")
             if (
                 not isinstance(item_id, str) or not item_id or len(item_id) > 128 or item_id in seen_ids
-                or not isinstance(tenant, str) or not tenant or len(tenant) > 128
                 or not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4096
             ):
                 return {"success": False, "error_type": "invalid_scenario_inputs"}
             seen_ids.add(item_id)
-            normalized_items.append({"id": item_id, "tenant": tenant, "prompt": prompt})
+            normalized_items.append({"id": item_id, "prompt": prompt})
 
         failure_probe_item_id: str | None = None
         if name == "batch":
@@ -1060,9 +1062,8 @@ class OllamaRuntime:
             try:
                 result = scheduler.submit(
                     request_model,
-                    item["tenant"],
-                    f"t12-{source_suffix}",
-                    execute,
+                    source=f"t12-{source_suffix}",
+                    execute=execute,
                     priority=2,
                     wait_timeout=timeout_seconds,
                     background=False,
@@ -1091,7 +1092,6 @@ class OllamaRuntime:
             )
             return {
                 "id": item["id"],
-                "tenant": item["tenant"],
                 "ok": bool(response_text) and not response.get("error") and not response.get("timed_out")
                 and not response.get("preempted") and response.get("success") is not False,
                 "response": response,

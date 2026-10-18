@@ -29,14 +29,14 @@ def test_browser_capture_artifacts_keep_full_dom_and_binary(tmp_path, monkeypatc
     monkeypatch.setattr(browser_bridge, "BrowserBridge", DummyBrowser)
     store = ArtifactStore(tmp_path)
     result = browser_bridge.capture_browser_page(
-        "http://localhost:3000", artifacts=store, tenant="unit", state_dir=tmp_path,
+        "http://localhost:3000", artifacts=store, state_dir=tmp_path,
     )
     assert result["success"]
     assert "screenshot_bytes" not in result
     assert len(result["dom_snapshot"]) <= 6000
     assert result["dom_preview_truncated"]
-    assert store.get_binary(result["screenshot_artifact_id"], tenant="unit")["success"]
-    assert store.get(result["dom_artifact_id"], tenant="unit", max_chars=len(dom) + 1)["text"] == dom
+    assert store.get_binary(result["screenshot_artifact_id"])["success"]
+    assert store.get(result["dom_artifact_id"], max_chars=len(dom) + 1)["text"] == dom
 
 
 def test_browser_capacity_failure_releases_slot(tmp_path, monkeypatch):
@@ -201,16 +201,16 @@ def test_installed_chrome_captures_dom_png_and_blocks_external_subresource(tmp_p
     store = ArtifactStore(tmp_path)
     try:
         result = browser_bridge.capture_browser_page(
-            f"http://127.0.0.1:{page.server_port}/", artifacts=store, tenant="browser-runtime",
+            f"http://127.0.0.1:{page.server_port}/", artifacts=store,
             state_dir=tmp_path, viewport={"width": 800, "height": 600},
         )
-        diagnostic = (store.get(result["diagnostic_artifact_id"], tenant="browser-runtime")["text"]
+        diagnostic = (store.get(result["diagnostic_artifact_id"])["text"]
                       if "diagnostic_artifact_id" in result else "")
         assert result["success"], (result, diagnostic)
         assert result["title"] == "Hub capture acceptance"
         assert "Current browser candidate" in result["dom_snapshot"]
         assert result["network_requests_denied"] >= 1
-        assert store.get_binary(result["screenshot_artifact_id"], tenant="browser-runtime")["success"]
+        assert store.get_binary(result["screenshot_artifact_id"])["success"]
         assert not list((tmp_path / "browser-captures").iterdir())
     finally:
         page.shutdown()

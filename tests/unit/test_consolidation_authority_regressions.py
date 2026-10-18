@@ -36,19 +36,23 @@ def test_explicit_standard_output_calls_remain_allowed(code):
     ({"artifact_id": "artifact", "binary": True}, "get_binary"),
     ({"artifact_id": "artifact", "slices": [{"offset": 0, "max_chars": 10}]}, "get_slices"),
 ])
-def test_artifact_handler_keeps_authorized_tenant(monkeypatch, payload, method):
+def test_artifact_handler_rejects_retired_tenant_selector(monkeypatch, payload, method):
     calls = []
 
     def retrieve(*args, **kwargs):
-        calls.append(kwargs["tenant"])
+        calls.append((args, kwargs))
         return {"success": True}
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(artifacts=SimpleNamespace(**{method: retrieve})))
     handler = object.__new__(http_server.Handler)
-    handler.headers = {"X-LocalAI-Tenant": "other-tenant"}
+    handler.headers = {}
     handler._send = lambda status, data: None
-    handler._handle_post_artifact_get(payload, "authorized-tenant")
-    assert calls == ["authorized-tenant"]
+    payload = {**payload, "tenant": None}
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+    handler._handle_post_artifact_get(payload)
+    assert responses[0][0] == 400
+    assert calls == []
 
 
 def test_binary_artifact_contract_keeps_identity_and_checksum_fields():

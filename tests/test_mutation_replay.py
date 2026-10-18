@@ -652,7 +652,7 @@ def test_failed_partial_publish_is_replayed_without_reexecution(tmp_path, path: 
 
 def test_rag_index_publish_failure_keeps_previous_snapshot(tmp_path) -> None:
     class _EmbeddingServices:
-        def embed(self, texts, _tenant, **_kwargs):
+        def embed(self, texts, **_kwargs):
             return {"success": True, "embeddings": [[1.0, 0.0] for _ in texts]}
 
     store = RAGStore(
@@ -671,13 +671,13 @@ def test_rag_index_publish_failure_keeps_previous_snapshot(tmp_path) -> None:
     root.mkdir()
     source = root / "one.py"
     source.write_text("def value():\n    return 'old snapshot'\n", encoding="utf-8")
-    first = store.index(str(root), "tenant")
+    first = store.index(root=str(root))
     assert first["success"] is True
     workspace = store.workspace_id(str(root))
     with closing(store._connect()) as con:
         old_file_hash = con.execute(
-            "SELECT content_hash FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (store._scope_key("tenant"), workspace, "one.py"),
+            "SELECT content_hash FROM files WHERE workspace=? AND path=?",
+            (workspace, "one.py"),
         ).fetchone()[0]
 
     with closing(store._connect()) as con:
@@ -689,19 +689,19 @@ def test_rag_index_publish_failure_keeps_previous_snapshot(tmp_path) -> None:
     source.write_text("def value():\n    return 'new snapshot'\n", encoding="utf-8")
 
     try:
-        second = store.index(str(root), "tenant", workspace=workspace)
+        second = store.index(root=str(root), workspace=workspace)
     except sqlite3.DatabaseError:
         second = {"success": False}
 
     assert second["success"] is False
     with closing(store._connect()) as con:
         rows = con.execute(
-            "SELECT text FROM chunks WHERE tenant=? AND workspace=?",
-            (store._scope_key("tenant"), workspace),
+            "SELECT text FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         file_hash = con.execute(
-            "SELECT content_hash FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (store._scope_key("tenant"), workspace, "one.py"),
+            "SELECT content_hash FROM files WHERE workspace=? AND path=?",
+            (workspace, "one.py"),
         ).fetchone()[0]
     assert rows
     assert all("old snapshot" in row[0] for row in rows)
@@ -1360,11 +1360,9 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     journal = RecoveryJournal(tmp_path)
     payload = dict(payload)
     task_root = str(tmp_path.resolve())
-    tenant = http_server._derive_root_tenant(
-        "tenant", task_root, "stable-journal-test-derivation-secret"
-    )
+    session_id = "session-journal-replay"
     task = SimpleNamespace(
-        context=SimpleNamespace(repository_id=task_root, session_id=tenant)
+        context=SimpleNamespace(repository_id=task_root, session_id=session_id)
     )
     if path == "/api/agent-state/tasks":
         payload["root"] = task_root
@@ -1381,8 +1379,6 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     app = SimpleNamespace(
         config={"security": {
             "allowed_roots": [task_root],
-            "tenant_derivation_key": "stable-journal-test-derivation-secret",
-            "api_token_principal": "tenant",
         }},
         recovery=journal,
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
@@ -1605,11 +1601,9 @@ def test_http_request_journal_replays_action_mutations_once(
     journal = RecoveryJournal(tmp_path)
     payload = dict(payload)
     task_root = str(tmp_path.resolve())
-    task_tenant = http_server._derive_root_tenant(
-        "tenant", task_root, "stable-journal-test-derivation-secret"
-    )
+    session_id = "session-journal-replay"
     task = SimpleNamespace(
-        context=SimpleNamespace(repository_id=task_root, session_id=task_tenant)
+        context=SimpleNamespace(repository_id=task_root, session_id=session_id)
     )
     if path == "/api/agent-state/tasks":
         payload["root"] = task_root
@@ -1625,8 +1619,6 @@ def test_http_request_journal_replays_action_mutations_once(
             "agent_state": {"retention_days": 30},
             "security": {
                 "allowed_roots": [task_root],
-                "tenant_derivation_key": "stable-journal-test-derivation-secret",
-                "api_token_principal": "tenant",
             },
         },
         recovery=journal,
@@ -1725,7 +1717,7 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
         http_server,
         "APP",
         SimpleNamespace(
-            config={"observability": {}, "security": {"api_token_principal": "tenant"}},
+            config={"observability": {}, "security": {}},
             recovery=journal,
             telemetry=telemetry,
             logger=logging.getLogger("test.typed-unknown-command"),
@@ -1743,7 +1735,7 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
         "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
         encoding="utf-8",
     )
-    client = HubClient(config_path=str(config), auto_start=False, tenant="tenant")
+    client = HubClient(config_path=str(config), auto_start=False)
     client.agent = "agent-a"
 
     try:
@@ -1809,7 +1801,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
         http_server,
         "APP",
         SimpleNamespace(
-            config={"observability": {}, "security": {"api_token_principal": "tenant"}},
+            config={"observability": {}, "security": {}},
             recovery=restarted,
             telemetry=telemetry,
             logger=logging.getLogger("test.restart-outcome-unknown"),
@@ -1830,7 +1822,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
         "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
         encoding="utf-8",
     )
-    client = HubClient(config_path=str(config), auto_start=False, tenant="tenant")
+    client = HubClient(config_path=str(config), auto_start=False)
     client.agent = "agent-a"
 
     try:

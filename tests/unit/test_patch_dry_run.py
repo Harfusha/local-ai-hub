@@ -132,7 +132,6 @@ def test_patch_and_verify_dry_run_mode(tmp_path: Path) -> None:
     result = broker.patch_and_verify(
         patch=patch,
         cwd=repo,
-        tenant="test-tenant",
         dry_run=True,
     )
 

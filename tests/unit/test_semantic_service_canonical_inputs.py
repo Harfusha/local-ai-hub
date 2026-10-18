@@ -16,7 +16,7 @@ def test_semantic_services_reject_retired_input_aliases_before_delegation(method
     calls = []
     services = SimpleNamespace(delegate=lambda *args: calls.append(args))
 
-    result = method(services, payload, "tenant")
+    result = method(services, payload)
 
     assert result["success"] is False
     assert alias in result["error"]
@@ -41,19 +41,19 @@ def test_semantic_services_translate_only_canonical_http_fields(
     calls = []
     expected = {"success": True, "answer": "done"}
 
-    def delegate(request, tenant):
-        calls.append((request, tenant))
+    def delegate(request):
+        calls.append(request)
         return expected
 
     services = SimpleNamespace(delegate=delegate)
 
-    result = method(services, payload, "tenant")
+    result = method(services, payload)
 
     assert result is expected
-    assert calls[0][0]["task"] == expected_task
-    assert calls[0][0]["context"] == expected_context
-    assert "problem" not in calls[0][0]
-    assert "code" not in calls[0][0]
+    assert calls[0]["task"] == expected_task
+    assert calls[0]["context"] == expected_context
+    assert "problem" not in calls[0]
+    assert "code" not in calls[0]
 
 @pytest.mark.parametrize(
     ("method", "payload", "alias"),
@@ -72,7 +72,7 @@ def test_semantic_services_reject_retired_dispatch_aliases_before_work(method, p
         resolution_calls.append(True)
         return None, "", "", ""
 
-    result = method(SimpleNamespace(_resolve_local_task_project=resolve_project), payload, "tenant")
+    result = method(SimpleNamespace(_resolve_local_task_project=resolve_project), payload)
 
     assert result["success"] is False
     assert alias in result["error"]

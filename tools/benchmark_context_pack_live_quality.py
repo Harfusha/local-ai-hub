@@ -311,7 +311,7 @@ def _new_app(config_path: Path) -> LocalAIApp:
 def _request(root: Path, request_id: str = "bench") -> ConsistencyRequest:
     return ConsistencyRequest(
         root=str(root), query=QUERY, phase="plan", focus=("tenant policy", "context identity"),
-        token_budget=512, tenant="benchmark-fixture", session_id=request_id,
+        token_budget=512, session_id=request_id,
     )
 
 

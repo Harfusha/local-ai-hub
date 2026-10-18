@@ -5,15 +5,13 @@ import pytest
 from local_ai_hub.http_server import _agent_question_scope
 
 
-def test_agent_question_scope_uses_authenticated_identity(tmp_path):
+def test_agent_question_scope_uses_authorized_repository_root(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
-
+    assert _agent_question_scope(payload={}, authorized_root=str(root)) == str(root.resolve())
     assert _agent_question_scope(
-        payload={},
-        authorized_root=str(root),
-        authorized_tenant="tenant-a",
-    ) == (str(root.resolve()), "tenant-a")
+        payload={"root": str(root)}, authorized_root=str(root)
+    ) == str(root.resolve())
 
 
 def test_agent_question_scope_rejects_spoofed_root(tmp_path):
@@ -21,40 +19,16 @@ def test_agent_question_scope_rejects_spoofed_root(tmp_path):
     other_root = tmp_path / "other"
     authorized_root.mkdir()
     other_root.mkdir()
-
     with pytest.raises(ValueError, match="root does not match authenticated scope"):
-        _agent_question_scope(
-            payload={"root": str(other_root)},
-            authorized_root=str(authorized_root),
-            authorized_tenant="tenant-a",
-        )
+        _agent_question_scope(payload={"root": str(other_root)}, authorized_root=str(authorized_root))
 
 
-def test_agent_question_scope_rejects_spoofed_tenant(tmp_path):
+@pytest.mark.parametrize("field", ["tenant", "tenant_key", "tenant_scope"])
+@pytest.mark.parametrize("value", [None, False, ""])
+def test_agent_question_scope_rejects_retired_identity_fields_by_presence(tmp_path, field, value):
     root = tmp_path / "repo"
     root.mkdir()
-
-    with pytest.raises(ValueError, match="tenant does not match authenticated scope"):
+    with pytest.raises(ValueError, match="retired"):
         _agent_question_scope(
-            payload={"root": str(root), "tenant": "tenant-b"},
-            authorized_root=str(root),
-            authorized_tenant="tenant-a",
-        )
-
-
-@pytest.mark.parametrize(
-    ("requested_tenant", "authorized_tenant"),
-    [(" tenant-a ", "tenant-a"), (7, "7")],
-)
-def test_agent_question_scope_rejects_tenant_normalization_and_coercion(
-    tmp_path, requested_tenant, authorized_tenant
-):
-    root = tmp_path / "repo"
-    root.mkdir()
-
-    with pytest.raises(ValueError, match="tenant does not match authenticated scope"):
-        _agent_question_scope(
-            payload={"tenant": requested_tenant},
-            authorized_root=str(root),
-            authorized_tenant=authorized_tenant,
+            payload={"root": str(root), field: value}, authorized_root=str(root)
         )

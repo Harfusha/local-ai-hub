@@ -266,7 +266,7 @@ class HardwareBenchmarkRunner:
             wait_timeout = 30.0
         try:
             scheduler_result_raw = self.scheduler.submit(
-                target_model, "benchmark", "benchmark", execute, priority=2, wait_timeout=wait_timeout,
+                target_model, source="benchmark", execute=execute, priority=2, wait_timeout=wait_timeout,
             )
             if isinstance(scheduler_result_raw, Mapping):
                 scheduler_result = scheduler_result_raw

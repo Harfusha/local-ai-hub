@@ -147,12 +147,13 @@ class DebugTraceStore:
         with self._lock:
             if self._initialized:
                 return
+            self._preflight_retired_schema()
             def _setup() -> None:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
                     con.execute("PRAGMA foreign_keys=ON")
                     con.execute("""CREATE TABLE IF NOT EXISTS traces (
-                        trace_id TEXT PRIMARY KEY, kind TEXT NOT NULL, tenant TEXT NOT NULL,
+                        trace_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
                         agent TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '',
                         source TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
                         request_id TEXT NOT NULL DEFAULT '', async_job_id TEXT NOT NULL DEFAULT '',
@@ -192,6 +193,32 @@ class DebugTraceStore:
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
+
+    def _preflight_retired_schema(self) -> None:
+        """Reject old tenant columns read-only before any trace-store writes."""
+        if not self.path.exists():
+            return
+        uri = f"{self.path.as_uri()}?mode=ro"
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+                tables = {
+                    str(row[0]) for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                for table in tables:
+                    quoted = '"' + table.replace('"', '""') + '"'
+                    columns = {str(row[1]) for row in con.execute(f"PRAGMA table_info({quoted})")}
+                    if {"tenant", "tenant_id", "tenant_key", "tenant_scope"}.intersection(columns):
+                        raise RuntimeError(
+                            "debug trace store contains retired tenant schema; explicit offline conversion required; database preserved"
+                        )
+        except RuntimeError:
+            raise
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(
+                "debug trace schema preflight failed; database preserved"
+            ) from exc
 
     @staticmethod
     def _encode(value: Any) -> str:
@@ -318,15 +345,15 @@ class DebugTraceStore:
         except sqlite3.Error:
             return False
 
-    def start(self, *, kind: str, tenant: str, agent: str = "", action: str = "", source: str = "", model: str = "", request_id: str = "", trace_id: str | None = None, initial_event: tuple[str, Any] | None = None) -> str:
+    def start(self, *, kind: str, agent: str = "", action: str = "", source: str = "", model: str = "", request_id: str = "", trace_id: str | None = None, initial_event: tuple[str, Any] | None = None) -> str:
         if not self.enabled:
             return ""
         trace_id = trace_id or uuid.uuid4().hex
         now = time.time()
         def _do_start() -> str:
             with closing(self._connect()) as con:
-                con.execute("""INSERT INTO traces(trace_id,kind,tenant,agent,action,source,model,request_id,state,created_at,updated_at,expires_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (trace_id, str(kind), str(tenant), str(agent), str(action), str(source), str(model), str(request_id), "queued", now, now, now + self.terminal_ttl_seconds))
+                con.execute("""INSERT INTO traces(trace_id,kind,agent,action,source,model,request_id,state,created_at,updated_at,expires_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (trace_id, str(kind), str(agent), str(action), str(source), str(model), str(request_id), "queued", now, now, now + self.terminal_ttl_seconds))
                 for content_field, encoding in (
                     ("request", "json"),
                     ("effective_payload", "json"),
@@ -1081,7 +1108,7 @@ class DebugTraceStore:
                     # Past-end pages are empty; avoid binding oversized offsets to SQLite.
                     rows = []
                 else:
-                    rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
+                    rows = con.execute(f"""SELECT trace_id,kind,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
                         {duration_sql} AS duration_ms,
                         CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
                         CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,

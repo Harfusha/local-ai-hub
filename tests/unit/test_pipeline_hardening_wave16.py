@@ -76,6 +76,7 @@ def test_solve_repo_uses_task_without_query_fallback(tmp_path):
             return "deterministic answer"
 
     class Services:
+        config = {"security": {"allowed_roots": [str(tmp_path)]}}
         router = SimpleNamespace(
             classify=lambda task, *_args: {
                 "semantic_required": False,
@@ -92,11 +93,12 @@ def test_solve_repo_uses_task_without_query_fallback(tmp_path):
 
     pipeline = LocalAgentPipeline({"server": {"state_dir": str(tmp_path)}}, Services(), None)
 
-    query_only = pipeline.solve_repo({"query": "legacy query"}, "tenant")
-    canonical_and_legacy = pipeline.solve_repo(
-        {"task": "canonical task", "query": "legacy query"}, "tenant"
+    query_only = pipeline.solve_repo({"root": str(tmp_path), "query": "legacy query"})
+    canonical = pipeline.solve_repo(
+        {"root": str(tmp_path), "task": "canonical task", "query": "legacy query"}
     )
 
-    assert query_only["canonical"]["task"] == ""
-    assert canonical_and_legacy["canonical"]["task"] == "canonical task"
-    assert observed_tasks == ["", "canonical task"]
+    assert query_only["success"] is False
+    assert "task must be a nonempty string" in query_only["error"]
+    assert canonical["canonical"]["task"] == "canonical task"
+    assert observed_tasks == ["canonical task"]

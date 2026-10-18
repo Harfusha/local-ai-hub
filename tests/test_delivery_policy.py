@@ -162,7 +162,7 @@ def test_async_delivery_maps_reason_payload_to_the_existing_job_contract(monkeyp
 
     class _Jobs:
         def submit(self, tenant, action, payload):
-            submitted.update(tenant=tenant, action=action, payload=payload)
+            submitted.update( action=action, payload=payload)
             return {"success": True, "job_id": "job-1", "state": "queued"}
 
     class _App:
@@ -189,7 +189,7 @@ def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
 
     class _Jobs:
         def submit(self, tenant, action, payload):
-            submitted.update(tenant=tenant, action=action, payload=payload)
+            submitted.update( action=action, payload=payload)
             return {"success": True, "job_id": "job-review", "state": "queued"}
 
     class _App:
@@ -222,7 +222,7 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
 
     class _Jobs:
         def submit(self, tenant, action, payload):
-            submitted.update(tenant=tenant, action=action, payload=payload)
+            submitted.update( action=action, payload=payload)
             return {"success": True, "job_id": "job-cold-review", "state": "queued"}
 
     class _App:

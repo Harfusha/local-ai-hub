@@ -99,8 +99,7 @@ def _task_with_test_receipt(tmp_path: Path, *, opaque_id: bool = False, require_
             "exit_code": 0,
             "result": {"success": True, "exit_code": 0},
         },
-        owner,
-        "command_verification",
+        kind="command_verification",
     )
     verifier.record(
         VerificationReceipt.create(

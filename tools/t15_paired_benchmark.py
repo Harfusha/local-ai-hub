@@ -44,7 +44,7 @@ for line in sys.stdin:
             fresh_state.mkdir(parents=True, exist_ok=True)
             fresh_config = {**config, "server":{"state_dir":str(fresh_state)}}
             active_broker = CommandBroker(fresh_config, Artifacts(), NullRepoState())
-        result = active_broker.run_project_command(request["alias"], fixture_root, tenant="t15-paired", force=request.get("force", False), log_callback=on_log if request.get("capture_logs") else None)
+        result = active_broker.run_project_command(request["alias"], fixture_root, force=request.get("force", False), log_callback=on_log if request.get("capture_logs") else None)
         elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
         print(json.dumps({"success":result.get("success"),"cache_hit":result.get("cache_hit"),"stdout":result.get("stdout"),"elapsed_ms":elapsed_ms,"callback_chunks":callback_chunks[0]}), flush=True)
     except Exception as error:

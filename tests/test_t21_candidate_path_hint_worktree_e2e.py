@@ -152,7 +152,7 @@ def test_registered_search_path_hints_use_candidate_worktree_config(
         encoding="utf-8",
     )
     client = HubClient(
-        tenant="t21-candidate-e2e",
+
         config_path=str(client_config),
         auto_start=False,
     )

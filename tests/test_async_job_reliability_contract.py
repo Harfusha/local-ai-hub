@@ -22,19 +22,19 @@ class _ArtifactStore:
         self.fail_put = fail_put
         self.artifact_id = artifact_id
         self.fail_get = fail_get
-        self.items: dict[tuple[str, str], str] = {}
+        self.items: dict[str, str] = {}
 
-    def put(self, _body: str, _tenant: str, _kind: str) -> str:
+    def put(self, _body: str, *, kind: str) -> str:
         if self.fail_put:
             raise OSError("artifact store unavailable")
         if self.artifact_id:
-            self.items[(_tenant, self.artifact_id)] = _body
+            self.items[self.artifact_id] = _body
         return self.artifact_id
 
-    def get(self, artifact_id: str, *, offset: int = 0, max_chars: int = 6000, tenant: str | None = None) -> dict[str, Any]:
-        if self.fail_get or (tenant, artifact_id) not in self.items:
+    def get(self, artifact_id: str, *, offset: int = 0, max_chars: int = 6000) -> dict[str, Any]:
+        if self.fail_get or artifact_id not in self.items:
             return {"success": False, "error": "artifact not found or expired"}
-        return {"success": True, "artifact_id": artifact_id, "offset": offset, "max_chars": max_chars}
+        return {"success": True, "artifact_id": artifact_id, "text": self.items[artifact_id][offset:offset + max_chars], "offset": offset, "max_chars": max_chars}
 
 
 @pytest.fixture
@@ -80,34 +80,33 @@ def _cancel_delayed_dispatch(manager: AsyncJobManager, job_id: str) -> None:
 def test_same_request_id_after_restart_reuses_completed_job(manager_factory) -> None:
     executions: list[tuple[str, str]] = []
 
-    def execute(action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
-        executions.append((action, tenant))
+    def execute(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        executions.append((action, str(payload.get("task_id", ""))))
         return {"success": True, "value": "committed-result"}
 
     first_manager = manager_factory(execute)
     payload = {"request_id": "t13-stable-request-001", "input": "mutating operation"}
-    first = first_manager.submit("tenant-a", "delegate", payload, dispatch_delay_seconds=30)
+    first = first_manager.submit("delegate", payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(first_manager, first["job_id"])
     first_manager._execute(first["job_id"])
     first_manager.close()
 
     restarted_manager = manager_factory(execute)
-    replay = restarted_manager.submit("tenant-a", "delegate", payload, dispatch_delay_seconds=30)
+    replay = restarted_manager.submit("delegate", payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(restarted_manager, replay["job_id"])
 
     assert replay["job_id"] == first["job_id"]
     assert replay["state"] == "done"
-    assert restarted_manager.result("tenant-a", first["job_id"])["result"]["value"] == "committed-result"
-    assert executions == [("delegate", "tenant-a")]
+    assert restarted_manager.result(first["job_id"])["result"]["value"] == "committed-result"
+    assert executions == [("delegate", "")]
 
 
 def test_same_request_id_with_different_payload_is_a_conflict(manager_factory) -> None:
     executions: list[str] = []
     manager = manager_factory(
-        lambda action, _payload, _tenant: executions.append(action) or {"success": True}
+        lambda action, _payload: executions.append(action) or {"success": True}
     )
     first = manager.submit(
-        "tenant-a",
         "batch",
         {"request_id": "t13-stable-request-002", "task": "first payload"},
         dispatch_delay_seconds=30,
@@ -115,7 +114,6 @@ def test_same_request_id_with_different_payload_is_a_conflict(manager_factory) -
     _cancel_delayed_dispatch(manager, first["job_id"])
 
     conflict = manager.submit(
-        "tenant-a",
         "batch",
         {"request_id": "t13-stable-request-002", "task": "different payload"},
         dispatch_delay_seconds=30,
@@ -131,14 +129,14 @@ def test_same_request_id_with_different_payload_is_a_conflict(manager_factory) -
 def test_restart_retries_running_job_with_same_request_id(manager_factory, monkeypatch) -> None:
     observed_request_ids: list[str] = []
 
-    def execute(_action: str, payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def execute(_action: str, payload: dict[str, Any]) -> dict[str, Any]:
         observed_request_ids.append(str(payload["request_id"]))
         return {"success": True, "value": "committed-result"}
 
     first_manager = manager_factory(execute)
     request_id = "t13-stable-request-003"
     submitted = first_manager.submit(
-        "tenant-a", "batch", {"request_id": request_id, "input": "mutating operation"}, dispatch_delay_seconds=30
+        "batch", {"request_id": request_id, "input": "mutating operation"}, dispatch_delay_seconds=30
     )
     _cancel_delayed_dispatch(first_manager, submitted["job_id"])
     con = first_manager._connect()
@@ -156,13 +154,13 @@ def test_restart_retries_running_job_with_same_request_id(manager_factory, monke
     dispatched: list[str] = []
     monkeypatch.setattr(restarted_manager, "_dispatch", lambda job_id: dispatched.append(job_id))
     assert restarted_manager.recover() == 1
-    assert restarted_manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
+    assert restarted_manager.status(submitted["job_id"])["state"] == "queued"
     assert dispatched == [submitted["job_id"]]
 
     restarted_manager._execute(submitted["job_id"])
 
     assert observed_request_ids == [request_id]
-    assert restarted_manager.result("tenant-a", submitted["job_id"])["result"]["value"] == "committed-result"
+    assert restarted_manager.result(submitted["job_id"])["result"]["value"] == "committed-result"
 
 
 @pytest.mark.parametrize(
@@ -172,7 +170,7 @@ def test_restart_retries_running_job_with_same_request_id(manager_factory, monke
 def test_retryable_executor_failure_requeues_only_with_request_id(manager_factory, request_id, expected_state) -> None:
     executed_payloads: list[dict[str, Any]] = []
 
-    def execute(_action: str, payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def execute(_action: str, payload: dict[str, Any]) -> dict[str, Any]:
         executed_payloads.append(payload)
         return {
             "success": False,
@@ -185,9 +183,9 @@ def test_retryable_executor_failure_requeues_only_with_request_id(manager_factor
     payload["_async_request_id_supplied"] = True
     if request_id is not None:
         payload["request_id"] = request_id
-    submitted = manager.submit("tenant-a", "batch", payload, dispatch_delay_seconds=30)
+    submitted = manager.submit("batch", payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, submitted["job_id"])
-    stored = manager._row("tenant-a", submitted["job_id"])
+    stored = manager._row(submitted["job_id"])
     assert stored is not None
     stored_payload = json.loads(str(stored["payload_json"]))
     assert stored_payload["request_id"]
@@ -195,7 +193,7 @@ def test_retryable_executor_failure_requeues_only_with_request_id(manager_factor
 
     manager._execute(submitted["job_id"])
 
-    status = manager.status("tenant-a", submitted["job_id"])
+    status = manager.status(submitted["job_id"])
     assert status["state"] == expected_state
     assert status["retryable"] is (expected_state == "queued")
     assert status["terminal"] is (expected_state == "outcome_unknown")
@@ -209,21 +207,20 @@ def test_retryable_executor_failure_requeues_only_with_request_id(manager_factor
 
 def test_reason_retry_without_caller_request_id_is_safe(manager_factory) -> None:
     manager = manager_factory(
-        lambda _action, _payload, _tenant: {"success": False, "retryable": True, "error": "transient"}
+        lambda _action, _payload: {"success": False, "retryable": True, "error": "transient"}
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "read-only"}, dispatch_delay_seconds=30)
+    submitted = manager.submit("reason", {"task": "read-only"}, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, submitted["job_id"])
 
     result = manager._execute(submitted["job_id"])
 
     assert result["retryable"] is True
-    assert manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
-    assert manager.status("tenant-a", submitted["job_id"])["attempts"] == 1
+    assert manager.status(submitted["job_id"])["state"] == "queued"
+    assert manager.status(submitted["job_id"])["attempts"] == 1
 
 def test_worker_exception_retry_limit_counts_started_attempts_once(manager_factory) -> None:
-    manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    manager = manager_factory(lambda _action, _payload: {"success": True})
     submitted = manager.submit(
-        "tenant-a",
         "batch",
         {"request_id": "t13-attempt-count-001", "tasks": [{"task": "bounded work"}]},
         dispatch_delay_seconds=30,
@@ -242,15 +239,15 @@ def test_worker_exception_retry_limit_counts_started_attempts_once(manager_facto
             con.close()
 
         manager._release_for_retry(submitted["job_id"], f"worker interrupted at attempt {attempt}")
-        status = manager.status("tenant-a", submitted["job_id"])
+        status = manager.status(submitted["job_id"])
         assert status["state"] == ("queued" if attempt < 3 else "outcome_unknown")
-        assert int(manager._row("tenant-a", submitted["job_id"])["attempts"]) == attempt
+        assert int(manager._row(submitted["job_id"])["attempts"]) == attempt
 
 
 def test_worker_retry_after_shutdown_does_not_reopen_state_db(manager_factory, monkeypatch) -> None:
-    manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    manager = manager_factory(lambda _action, _payload: {"success": True})
     submitted = manager.submit(
-        "tenant-a", "batch", {"request_id": "t13-shutdown-retry-001"}, dispatch_delay_seconds=30
+        "batch", {"request_id": "t13-shutdown-retry-001"}, dispatch_delay_seconds=30
     )
     _cancel_delayed_dispatch(manager, submitted["job_id"])
     con = manager._connect()
@@ -271,13 +268,13 @@ def test_worker_retry_after_shutdown_does_not_reopen_state_db(manager_factory, m
 def test_restart_does_not_replay_running_job_without_request_id(manager_factory, monkeypatch, recovery_path) -> None:
     executions: list[str] = []
 
-    def execute(action: str, _payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def execute(action: str, _payload: dict[str, Any]) -> dict[str, Any]:
         executions.append(action)
         return {"success": True}
 
     first_manager = manager_factory(execute)
     submitted = first_manager.submit(
-        "tenant-a", "batch", {"operations": [{"kind": "mutating"}]}, dispatch_delay_seconds=30
+        "batch", {"operations": [{"kind": "mutating"}]}, dispatch_delay_seconds=30
     )
     _cancel_delayed_dispatch(first_manager, submitted["job_id"])
     con = first_manager._connect()
@@ -298,7 +295,7 @@ def test_restart_does_not_replay_running_job_without_request_id(manager_factory,
     else:
         restarted_manager.tick()
 
-    status = restarted_manager.status("tenant-a", submitted["job_id"])
+    status = restarted_manager.status(submitted["job_id"])
     assert status["state"] == "outcome_unknown"
     assert status["terminal"] is True
     assert status["retryable"] is False
@@ -310,17 +307,16 @@ def test_recovery_does_not_replay_legacy_running_job_without_caller_provenance(m
     request_id = "legacy-caller-request-async-001"
     received_payloads: list[dict[str, Any]] = []
     manager = manager_factory(
-        lambda _action, payload, _tenant: received_payloads.append(payload) or {"success": True}
+        lambda _action, payload: received_payloads.append(payload) or {"success": True}
     )
     job_id = "legacy-running-async-job"
     now = time.time()
     with closing(manager._connect()) as con, con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) "
-            "VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) "
+            "VALUES(?,?,?,?,'running',?,?,?,?,?,?)",
             (
                 job_id,
-                "tenant-a",
                 "batch",
                 "legacy-request-hash",
                 json.dumps({"request_id": request_id, "input": "legacy"}),
@@ -342,25 +338,25 @@ def test_recovery_does_not_replay_legacy_running_job_without_caller_provenance(m
     assert recovered == 0
     assert dispatches == []
     assert received_payloads == []
-    assert manager.status("tenant-a", job_id)["state"] == "outcome_unknown"
+    assert manager.status(job_id)["state"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize("artifact_failure", ["raises", "empty_id", "unreadable"])
 def test_done_result_without_artifact_is_not_reported_as_success(manager_factory, artifact_failure) -> None:
     manager = manager_factory(
-        lambda _action, _payload, _tenant: {"success": True, "value": "computed"},
+        lambda _action, _payload: {"success": True, "value": "computed"},
         artifacts=_ArtifactStore(
             fail_put=artifact_failure == "raises",
             artifact_id="" if artifact_failure == "empty_id" else "async-result-artifact",
             fail_get=artifact_failure == "unreadable",
         ),
     )
-    submitted = manager.submit("tenant-a", "review", {"input": "small"}, dispatch_delay_seconds=30)
+    submitted = manager.submit("review", {"input": "small"}, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, submitted["job_id"])
     manager._execute(submitted["job_id"])
 
-    status = manager.status("tenant-a", submitted["job_id"])
-    result = manager.result("tenant-a", submitted["job_id"])
+    status = manager.status(submitted["job_id"])
+    result = manager.result(submitted["job_id"])
     assert status["state"] == "outcome_unknown"
     assert status["terminal"] is True
     assert status["retryable"] is False
@@ -372,7 +368,7 @@ def test_done_result_without_artifact_is_not_reported_as_success(manager_factory
 def test_tick_respects_persisted_dispatch_not_before_before_timer_registration(
     manager_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    manager = manager_factory(lambda _action, _payload: {"success": True})
     event_created = threading.Event()
     release_submit = threading.Event()
     paused_job_ids: list[str] = []
@@ -405,7 +401,7 @@ def test_tick_respects_persisted_dispatch_not_before_before_timer_registration(
     def submit_delayed_job() -> None:
         try:
             submitted.append(
-                manager.submit("tenant-a", "review", {"input": "race"}, dispatch_delay_seconds=1)
+                manager.submit("review", {"input": "race"}, dispatch_delay_seconds=1)
             )
         except Exception as exc:
             errors.append(exc)
@@ -439,14 +435,14 @@ def test_tick_respects_persisted_dispatch_not_before_before_timer_registration(
 def test_restart_recovery_defers_queued_job_until_persisted_dispatch_not_before(
     manager_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first_manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    first_manager = manager_factory(lambda _action, _payload: {"success": True})
     submitted = first_manager.submit(
-        "tenant-a", "review", {"input": "restart-delay"}, dispatch_delay_seconds=30
+        "review", {"input": "restart-delay"}, dispatch_delay_seconds=30
     )
     job_id = submitted["job_id"]
     _cancel_delayed_dispatch(first_manager, job_id)
 
-    restarted_manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    restarted_manager = manager_factory(lambda _action, _payload: {"success": True})
     dispatches: list[str] = []
     monkeypatch.setattr(restarted_manager, "_dispatch", dispatches.append)
 
@@ -481,10 +477,10 @@ def test_restart_recovery_defers_queued_job_until_persisted_dispatch_not_before(
 def test_recovery_distinguishes_unstarted_from_interrupted_reason_without_request_id(
     manager_factory, monkeypatch, attempts, expected_state, expected_recovered
 ) -> None:
-    execute = lambda _action, _payload, _tenant: {"success": True}
+    execute = lambda _action, _payload: {"success": True}
     first_manager = manager_factory(execute)
     submitted = first_manager.submit(
-        "tenant-a", "reason", {"task": "restart boundary"}, dispatch_delay_seconds=30
+        "reason", {"task": "restart boundary"}, dispatch_delay_seconds=30
     )
     _cancel_delayed_dispatch(first_manager, submitted["job_id"])
     con = first_manager._connect()
@@ -502,7 +498,7 @@ def test_recovery_distinguishes_unstarted_from_interrupted_reason_without_reques
     dispatched = []
     monkeypatch.setattr(restarted, "_dispatch", dispatched.append)
     assert restarted.recover() == expected_recovered
-    assert restarted.status("tenant-a", submitted["job_id"])["state"] == expected_state
+    assert restarted.status(submitted["job_id"])["state"] == expected_state
     assert dispatched == ([submitted["job_id"]] if expected_recovered else [])
 
 
@@ -510,9 +506,9 @@ def test_submit_reports_sqlite_commit_for_new_and_replayed_acceptance(manager_fa
     manager = manager_factory(lambda *_: {"success": True})
     payload = {"request_id": "durable-acceptance-001", "task": "persist before acknowledging"}
 
-    first = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    first = manager.submit("reason", payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, first["job_id"])
-    replay = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    replay = manager.submit("reason", payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, replay["job_id"])
 
     assert first["success"] is True
@@ -520,16 +516,16 @@ def test_submit_reports_sqlite_commit_for_new_and_replayed_acceptance(manager_fa
     assert first["durability"] == "sqlite_committed"
     assert replay["job_id"] == first["job_id"]
     assert replay["durability"] == "sqlite_committed"
-    assert manager.status("tenant-a", first["job_id"])["state"] == "queued"
+    assert manager.status(first["job_id"])["state"] == "queued"
 
 
 def test_coalesced_submit_reports_sqlite_commit(manager_factory) -> None:
     manager = manager_factory(lambda *_: {"success": True})
     payload = {"task": "coalesce after durable insert"}
 
-    first = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    first = manager.submit("reason", payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, first["job_id"])
-    coalesced = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    coalesced = manager.submit("reason", payload, dispatch_delay_seconds=30)
 
     assert coalesced["success"] is True
     assert coalesced["coalesced"] is True

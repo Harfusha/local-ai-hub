@@ -8,7 +8,7 @@ def test_large_artifact_uses_bounded_stream_and_keeps_capped_sections(tmp_path):
     body = "x" * (2 * 1024 * 1024)
     headings = "\n".join(f"## Late {index}" for index in range(60))
     text = f"# Beginning\n{body}\n{headings}\nlast line"
-    artifact_id = store.put(text, tenant="slice-sql", kind="log")
+    artifact_id = store.put(text, kind="log")
 
     statements = []
     connect = store._connect
@@ -20,7 +20,7 @@ def test_large_artifact_uses_bounded_stream_and_keeps_capped_sections(tmp_path):
 
     store._connect = traced_connect
     offset = len(text) // 2
-    page = store.get(artifact_id, offset=offset, max_chars=256, tenant="slice-sql")
+    page = store.get(artifact_id, offset=offset, max_chars=256)
 
     selects = [statement.lower() for statement in statements if statement.lstrip().lower().startswith("select")]
     assert not any("substr(" in statement for statement in selects)
@@ -34,7 +34,7 @@ def test_large_artifact_uses_bounded_stream_and_keeps_capped_sections(tmp_path):
 def test_sql_paged_artifact_preserves_unicode_and_nul_offsets(tmp_path):
     store = ArtifactStore(tmp_path)
     text = ("α🙂\x00\ufffd" * 150) + ("終" * 350)
-    artifact_id = store.put(text, tenant="slice-sql", kind="log")
+    artifact_id = store.put(text, kind="log")
 
     statements = []
     connect = store._connect
@@ -45,7 +45,7 @@ def test_sql_paged_artifact_preserves_unicode_and_nul_offsets(tmp_path):
         return connection
 
     store._connect = traced_connect
-    page = store.get(artifact_id, offset=255, max_chars=256, tenant="slice-sql")
+    page = store.get(artifact_id, offset=255, max_chars=256)
 
     selects = [statement.lower() for statement in statements if statement.lstrip().lower().startswith("select")]
     assert not any("substr(" in statement for statement in selects)
@@ -57,7 +57,7 @@ def test_sql_paged_artifact_preserves_unicode_and_nul_offsets(tmp_path):
 def test_missing_sidecar_fails_without_read_side_backfill(tmp_path):
     store = ArtifactStore(tmp_path)
     text = "legacy\n" + ("a\x00\ufffdb" * 100)
-    artifact_id = store.put(text, tenant="slice-sql", kind="log")
+    artifact_id = store.put(text, kind="log")
     connection = sqlite3.connect(store.path)
     try:
         connection.execute("DELETE FROM artifact_paging_metadata WHERE artifact_id=?", (artifact_id,))
@@ -74,7 +74,7 @@ def test_missing_sidecar_fails_without_read_side_backfill(tmp_path):
         return connection
 
     store._connect = traced_connect
-    page = store.get(artifact_id, offset=99, max_chars=256, tenant="slice-sql")
+    page = store.get(artifact_id, offset=99, max_chars=256)
 
     selects = [statement.lower() for statement in statements if statement.lstrip().lower().startswith("select")]
     assert not any("substr(" in statement for statement in selects)

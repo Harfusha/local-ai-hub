@@ -17,6 +17,41 @@ from .vision_contracts import (
 )
 
 
+_RETIRED_TENANT_FIELDS = frozenset({"tenant", "tenant_id", "tenant_key", "tenant_scope"})
+
+
+def _retired_field_error(value: Any) -> str:
+    pending = [(value, 0)]
+    seen: set[int] = set()
+    inspected = 0
+    while pending:
+        current, depth = pending.pop()
+        if depth > 16:
+            return "Vision request nesting exceeds the supported limit."
+        if isinstance(current, dict):
+            present = _RETIRED_TENANT_FIELDS.intersection(current)
+            if present:
+                return f"Retired vision request field: {sorted(present)[0]}"
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            inspected += len(current)
+            if inspected > 4096:
+                return "Vision request exceeds the supported field limit."
+            pending.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            inspected += len(current)
+            if inspected > 4096:
+                return "Vision request exceeds the supported field limit."
+            pending.extend((item, depth + 1) for item in current)
+    return ""
+
+
 @dataclass(frozen=True)
 class VisionInputs:
     images: list[str]
@@ -33,7 +68,6 @@ def prepare_vision_inputs(
     args: dict[str, Any],
     image_path: str,
     prompt: str,
-    tenant: str,
     artifacts: Any,
 ) -> VisionInputs | dict[str, Any]:
     """Resolve bounded image/artifact inputs and construct grounded UI context."""
@@ -45,6 +79,12 @@ def prepare_vision_inputs(
             "error": message,
             "error_code": code,
         }
+
+    if not isinstance(args, dict):
+        return input_error("Vision request must be an object.", "invalid_request")
+    field_error = _retired_field_error(args)
+    if field_error:
+        return input_error(field_error, "invalid_request")
 
     images: list[str] = []
 
@@ -134,7 +174,7 @@ def prepare_vision_inputs(
 
     def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
         try:
-            artifact = artifacts.get(artifact_id, max_chars=max_chars, tenant=tenant)
+            artifact = artifacts.get(artifact_id, max_chars=max_chars)
         except Exception:
             return "", {
                 "success": False,
@@ -173,7 +213,7 @@ def prepare_vision_inputs(
 
     def resolve_binary_artifact(artifact_id: str, max_bytes: int) -> tuple[str, dict[str, Any] | None]:
         try:
-            artifact = artifacts.get_binary(artifact_id, tenant=tenant)
+            artifact = artifacts.get_binary(artifact_id)
         except Exception:
             return "", {
                 "success": False,

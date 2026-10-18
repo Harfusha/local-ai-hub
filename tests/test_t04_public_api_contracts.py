@@ -18,14 +18,12 @@ def live_api(tmp_path, monkeypatch):
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         f'\n[security]\napi_token = "test-api-token"\n'
-        f'api_token_tenant = "test-principal"\n'
-        f'tenant_derivation_key = "test-derivation-key-material-32-bytes-min"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
     monkeypatch.setattr(http_server, "APP", app)
-    client = HubClient(config_path=str(config), auto_start=False, tenant="test-principal")
+    client = HubClient(config_path=str(config), auto_start=False)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -122,7 +120,7 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api, 
     unrelated = client.create_task("Newest unrelated task", task_id="query-other", root=root)
     assert unrelated["success"] is True
 
-    owner_client = type(client)(tenant="", config_path=str(tmp_path / "config.toml"), auto_start=False)
+    owner_client = type(client)(config_path=str(tmp_path / "config.toml"), auto_start=False)
     owner_client.agent = "distinct-owner"
     try:
         owner_task = owner_client.create_task("Owner-only task", task_id="query-owner", root=root)
@@ -296,15 +294,18 @@ def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch, tmp
     assert captured["payload"]["diff"] == "diff --git a/a.cs b/a.cs"
 
 
-def test_artifact_list_is_bounded_metadata_and_needs_no_id(live_api, monkeypatch):
+def test_artifact_list_is_bounded_shared_metadata_and_needs_no_id(live_api, monkeypatch):
     from types import SimpleNamespace
 
     from local_ai_hub import mcp_server
 
     app, client = live_api
-    with app.artifacts.batch(client.tenant or "http-default") as batch:
+    with app.artifacts.batch() as batch:
         for index in range(105):
-            batch.put(f"artifact-{index}", "test")
+            batch.put(f"artifact-{index}", kind="test")
+
+    with app.artifacts.batch() as batch:
+        shared_id = batch.put("shared installation artifact", kind="test")
 
     route_result = client.post("/api/artifact/list", {"limit": 1000})
     assert route_result["success"] is True
@@ -314,10 +315,7 @@ def test_artifact_list_is_bounded_metadata_and_needs_no_id(live_api, monkeypatch
     assert all(set(item) == expected_fields for item in artifacts)
     assert all(left["created_at"] >= right["created_at"] for left, right in zip(artifacts, artifacts[1:]))
 
-    with app.artifacts.batch("other-tenant") as batch:
-        foreign_id = batch.put("private artifact", "test")
-    assert [item["artifact_id"] for item in app.artifacts.list("other-tenant")] == [foreign_id]
-    assert foreign_id not in {item["artifact_id"] for item in artifacts}
+    assert shared_id in {item["artifact_id"] for item in artifacts}
 
     captured = {}
 

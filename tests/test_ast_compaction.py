@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from local_ai_hub.compact import compact_result, syntax_aware_truncate
 
 
@@ -17,6 +19,18 @@ def test_syntax_aware_truncate_json():
     truncated = syntax_aware_truncate(json_text, 35)
     # Should safely close bracket
     assert truncated.strip().endswith("}")
+
+
+def test_syntax_aware_truncate_json_keeps_only_leading_properties():
+    source = json.dumps({"first": "ok", "oversized": "x" * 80, "later": "must not leapfrog"})
+    truncated = syntax_aware_truncate(source, 24)
+    assert json.loads(truncated) == {"first": "ok"}
+
+
+def test_syntax_aware_truncate_deep_json_falls_back_within_limit():
+    source = "[" * 1100 + "0" + "]" * 1100
+    truncated = syntax_aware_truncate(source, 80)
+    assert len(truncated) <= 80
 
 
 def test_compact_result_preserves_error_distillation():

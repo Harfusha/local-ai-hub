@@ -34,9 +34,9 @@ def test_artifacts_store_null_state_dir():
         ArtifactStore("bad\x00path")
 
 
-def test_artifacts_tenant_identity_null_byte():
-    with pytest.raises(ValueError, match="null byte"):
-        ArtifactStore._tenant_identity("bad\x00tenant")
+def test_artifacts_reject_retired_owner_selector():
+    with pytest.raises(TypeError):
+        ArtifactStore.get(None, "artifact", tenant=None)
 
 
 def test_artifacts_get_and_binary_invalid_id(tmp_path: Path):

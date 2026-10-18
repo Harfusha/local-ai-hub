@@ -41,8 +41,8 @@ class _CachePairBroker:
     def __init__(self) -> None:
         self.calls = []
 
-    def run(self, command, root, *, tenant, force=False):
-        self.calls.append((command, root, tenant, force))
+    def run(self, command, root, *, force=False):
+        self.calls.append((command, root, force))
         return {"success": True, "cache_hit": not force}
 
 
@@ -65,8 +65,8 @@ def test_cache_pairs_use_same_command_and_account_for_each_outcome(
 
     assert len(result["pairs"]) == 8
     assert all(call[0] == benchmark.COMMAND for call in broker.calls)
-    assert sum(call[3] for call in broker.calls) == 9  # seed plus one forced miss per pair
-    assert sum(not call[3] for call in broker.calls) == 8
+    assert sum(call[2] for call in broker.calls) == 9  # seed plus one forced miss per pair
+    assert sum(not call[2] for call in broker.calls) == 8
     assert result["orders"] == benchmark._pair_orders(8, seed=41)
     assert result["cache_accounting"] == {
         "paired_operations": 16,
@@ -79,7 +79,6 @@ def test_cache_pairs_use_same_command_and_account_for_each_outcome(
     }
     assert result["fixture"] == {
         "command": benchmark.COMMAND,
-        "tenant": "t15-benchmark",
         "forced_seed_cache_hit": False,
         "seed_counted_in_pairs": False,
         "paired_runs": 8,
@@ -105,11 +104,11 @@ def test_concurrency_cache_seed_is_cold_and_warmed_for_reuse(
             self.seeded = False
             self.calls = []
 
-        def run(self, command, root, *, tenant, force=False):
+        def run(self, command, root, *, force=False):
             hit = self.seeded and not force
             if not force:
                 self.seeded = True
-            self.calls.append((command, root, tenant, force, hit))
+            self.calls.append((command, root, force, hit))
             return {"success": True, "cache_hit": hit}
 
     concurrency_broker = _ConcurrencySeedBroker()
@@ -119,7 +118,6 @@ def test_concurrency_cache_seed_is_cold_and_warmed_for_reuse(
     warm_result = concurrency_broker.run(
         benchmark.COMMAND,
         str(tmp_path),
-        tenant="t15-benchmark",
     )
 
     assert result["cache_hit"] is False
@@ -127,7 +125,6 @@ def test_concurrency_cache_seed_is_cold_and_warmed_for_reuse(
     assert concurrency_broker.calls[0] == (
         benchmark.COMMAND,
         str(tmp_path),
-        "t15-benchmark",
         False,
         False,
     )
@@ -137,8 +134,8 @@ def test_cache_pairs_reject_missing_cache_outcome(tmp_path) -> None:
     broker = _CachePairBroker()
     original_run = broker.run
 
-    def run_without_one_outcome(command, root, *, tenant, force=False):
-        result = original_run(command, root, tenant=tenant, force=force)
+    def run_without_one_outcome(command, root, *, force=False):
+        result = original_run(command, root, force=force)
         if len(broker.calls) == 2:
             result.pop("cache_hit")
         return result

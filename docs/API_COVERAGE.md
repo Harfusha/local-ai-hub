@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaining-bundle-20261015`.
-<!-- coverage-task-id: lead-remaining-bundle-20261015 -->
+Reproduce with `python tools/surface_inventory.py --check`.
+<!-- coverage-task-id:  -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -477,13 +477,8 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HubClient method | ensure_server | confirmed | src/local_ai_hub/client.py | op-33fa0bd0ca41 |
 | HubClient method | _terminal_preflight | confirmed | src/local_ai_hub/client.py | op-fcd240ef7344 |
 | HubClient method | _valid_request_id | confirmed | src/local_ai_hub/client.py | op-f3d1a0985411 |
-| HubClient method | _valid_tenant | confirmed | src/local_ai_hub/client.py | op-07d7b81c887f |
 | HubClient method | _identity_preflight | confirmed | src/local_ai_hub/client.py | op-b84ea840caeb |
-| HubClient method | _principal_tenant | confirmed | src/local_ai_hub/client.py | op-2a21a82139a6 |
-| HubClient method | _strict_root_path | confirmed | src/local_ai_hub/client.py | op-dc70e9b41823 |
-| HubClient method | _root_sandbox_enabled | confirmed | src/local_ai_hub/client.py | op-44f8bb91ed47 |
-| HubClient method | _root_scoped_tenant | confirmed | src/local_ai_hub/client.py | op-81855abdf57a |
-| HubClient method | _request_tenant | confirmed | src/local_ai_hub/client.py | op-95259001e22f |
+| HubClient method | _request_scope | confirmed | src/local_ai_hub/client.py | op-5d866ead2dca |
 | HubClient method | request | confirmed | src/local_ai_hub/client.py | op-571562cfd628 |
 | HubClient method | get | confirmed | src/local_ai_hub/client.py | op-a78443a5a2f8 |
 | HubClient method | _post_replay_safe | confirmed | src/local_ai_hub/client.py | op-9730f1f02cc6 |
@@ -553,6 +548,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id lead-remaini
 | HubClient target | POST /api/leases/claim_batch | confirmed | src/local_ai_hub/client.py | op-c5b2e5d89db3 |
 | HubClient target | POST /api/agent-state/blackboard | confirmed | src/local_ai_hub/client.py | op-25a64fbfedfd |
 | HubClient target | POST /api/leases/release | confirmed | src/local_ai_hub/client.py | op-1967f10cce9e |
+| HubClient target | POST /api/leases/renew | confirmed | src/local_ai_hub/client.py | op-d6d747088517 |
 | HubClient target | GET /api/leases?root={value} | conditional | src/local_ai_hub/client.py | op-f18de06ef38b |
 | HubClient target | POST /api/coord/worktree_lease | confirmed | src/local_ai_hub/client.py | op-540f5d4c5fe7 |
 | HubClient target | POST /api/coord/worktree_release | confirmed | src/local_ai_hub/client.py | op-388e499ae7a3 |

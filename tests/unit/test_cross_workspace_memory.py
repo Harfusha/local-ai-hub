@@ -5,7 +5,7 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 
 
-def test_global_memory_is_retrievable_across_project_roots_within_tenant(tmp_path):
+def test_owner_global_memory_is_retrievable_across_project_roots(tmp_path):
     first_root = tmp_path / "first-project"
     second_root = tmp_path / "second-project"
     first_root.mkdir()
@@ -18,22 +18,20 @@ def test_global_memory_is_retrievable_across_project_roots_within_tenant(tmp_pat
             scope=AgentScope.GLOBAL,
             key="shared-convention",
             value="Use the shared formatter.",
-            provenance={"tenant": "tenant-a"},
             source="user",
         ),
         actor="user",
     )
 
-    first_results = store.find_for_context(root=str(first_root), tenant="tenant-a")
-    second_results = store.find_for_context(root=str(second_root), tenant="tenant-a")
-    other_tenant_results = store.find_for_context(root=str(second_root), tenant="tenant-b")
+    first_results = store.find_for_context(root=str(first_root))
+    second_results = store.find_for_context(root=str(second_root))
 
     assert any(item.key == "shared-convention" for item in first_results)
     assert any(item.key == "shared-convention" for item in second_results)
-    assert all(item.key != "shared-convention" for item in other_tenant_results)
+    assert any(item.key == "shared-convention" for item in store.find_for_context())
 
 
-def test_explicit_unowned_global_memory_remains_shared_across_tenants(tmp_path):
+def test_explicit_owner_global_memory_remains_shared_without_project_context(tmp_path):
     project_root = tmp_path / "project"
     project_root.mkdir()
     store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
@@ -48,8 +46,34 @@ def test_explicit_unowned_global_memory_remains_shared_across_tenants(tmp_path):
         actor="user",
     )
 
-    tenant_results = store.find_for_context(root=str(project_root), tenant="tenant-a")
+    project_results = store.find_for_context(root=str(project_root))
     tenantless_results = store.find_for_context()
 
-    assert any(item.key == "unowned-global-memory" for item in tenant_results)
+    assert any(item.key == "unowned-global-memory" for item in project_results)
     assert any(item.key == "unowned-global-memory" for item in tenantless_results)
+
+
+def test_repository_memory_uses_coordination_identity_across_paths(tmp_path):
+    first_root = tmp_path / "first-project"
+    second_root = tmp_path / "second-project"
+    first_root.mkdir()
+    second_root.mkdir()
+    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            scope_id="repo-first",
+            key="repository-convention",
+            value="Keep this within the resolved repository identity.",
+            source="user",
+            provenance={"repository_id": "repo-first"},
+        ),
+        actor="user",
+    )
+
+    first = store.find_for_context(root=str(first_root), coordination_id="repo-first")
+    second = store.find_for_context(root=str(second_root), coordination_id="repo-second")
+
+    assert any(item.key == "repository-convention" for item in first)
+    assert all(item.key != "repository-convention" for item in second)

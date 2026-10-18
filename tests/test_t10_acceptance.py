@@ -1158,7 +1158,7 @@ def test_adaptive_retrieval_skips_optional_backends_when_builtin_confidence_is_h
     }
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "controller routing", "tenant", "workspace-1", 400, quality_first=True
+        str(tmp_path), "controller routing", workspace="workspace-1", max_tokens=400, quality_first=True
     )
 
     states = result["retrieval"]["backend_states"]
@@ -1209,7 +1209,7 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(t
     services.rag = None
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find local evidence", "tenant", None, 400, quality_first=True
+        str(tmp_path), "find local evidence", workspace=None, max_tokens=400, quality_first=True
     )
 
     assert result["retrieval"]["backend_states"]["serena"] == "skipped"
@@ -1270,7 +1270,7 @@ def test_adaptive_retrieval_passes_remaining_deadline_to_serena(
     monkeypatch.setattr(services_module.time, "perf_counter", advancing_clock)
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find local evidence", "tenant", None, 400, quality_first=True
+        str(tmp_path), "find local evidence", workspace=None, max_tokens=400, quality_first=True
     )
 
     assert result["retrieval"]["backend_selection"]["decision"] == "optional_backends_selected"

@@ -473,7 +473,7 @@ def test_13_mock_recorder_and_replayer(tmp_path: Path):
 def test_14_agent_eval_suite():
     services = LocalAIServices.__new__(LocalAIServices)
     # Run built-in dummy benchmark suite
-    res = services.eval_suite({"suite_name": "built_in_code_generation"}, tenant="default")
+    res = services.eval_suite({"suite_name": "built_in_code_generation"})
     assert res["success"] is True
     assert "summary" in res
     assert "total" in res["summary"]
@@ -629,7 +629,7 @@ def test_15_prompt_eval():
     services = LocalAIServices.__new__(LocalAIServices)
     template = "Fix the following error in {{language}}: {{error}}"
     variables = {"language": "Python", "error": "IndexError: list index out of range"}
-    res = services.prompt_eval({"template": template, "variables": variables}, tenant="default")
+    res = services.prompt_eval({"template": template, "variables": variables})
     assert res["success"] is True
     assert res["rendered_prompt"] == "Fix the following error in Python: IndexError: list index out of range"
     assert res["token_estimate"] > 0

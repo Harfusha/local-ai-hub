@@ -13,17 +13,23 @@ def test_token_router_route_text_hardening(tmp_path: Path):
     router = LosslessTokenRouter(config, services)
 
     # Non-string text should return error dict rather than crashing on text.splitlines()
-    res_none = router.route_text(None, "search query", "default")
+    res_none = router.route_text(None, "search query")
     assert not res_none["success"]
     assert res_none["error"] == "text must be a string"
 
-    res_bool = router.route_text(True, "search query", "default")
+    res_bool = router.route_text(True, "search query")
     assert not res_bool["success"]
 
-    # Boolean query, tenant, or path should be safely sanitized
-    res_sanitized = router.route_text("line 1\nline 2\nline 3", query=True, tenant=True, path=True)
+    # Boolean query and path are safely sanitized.
+    res_sanitized = router.route_text("line 1\nline 2\nline 3", query=True, path=True)
     assert res_sanitized["success"]
     assert res_sanitized["context"]
+
+    # Retired tenant contracts reject instead of shifting into another argument.
+    with pytest.raises(TypeError):
+        router.route_text("text", "query", "old-tenant")
+    with pytest.raises(TypeError):
+        router.route_text("text", "query", tenant=None)
 
 
 def test_token_router_parse_ranges_hardening():

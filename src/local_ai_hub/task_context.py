@@ -56,14 +56,16 @@ def _bounded_list(value: Any, limit: int = 64) -> tuple[str, ...]:
 def build_context_request(
     payload: Mapping[str, Any],
     *,
-    tenant: str = "",
-    identity: str = "",
     trusted_path_hints: list[ContextPathHintInput] | tuple[ContextPathHintInput, ...] | None = (),
     settings_digest: str | None = None,
     project_context: _ProjectContextInput | None = None,
 ) -> ContextRequest:
     """Build request from task fields plus explicitly trusted project context."""
     clean_payload = dict(payload) if isinstance(payload, Mapping) else {}
+    if {"tenant", "tenant_id", "tenant_key", "tenant_scope"}.intersection(clean_payload):
+        raise ValueError("retired task context field")
+    if "identity" in clean_payload:
+        raise ValueError("retired generic task context identity")
     repository_revision = _bounded_text(clean_payload.get("repository_revision"), 200)
     repo_revision = _bounded_text(clean_payload.get("repo_revision") or repository_revision, 200)
     request_root = _bounded_text(clean_payload.get("root"), 1000)
@@ -128,8 +130,6 @@ def build_context_request(
         include_kinds=_bounded_list(clean_payload.get("include_kinds")),
         changed_paths=_bounded_list(clean_payload.get("changed_paths"), 32),
         root=request_root,
-        tenant=_bounded_text(tenant, 200),
-        identity=_bounded_text(identity, 200),
         include_diagnostics=bool(clean_payload.get("include_diagnostics", False)),
         clone_id=_bounded_text(clean_payload.get("clone_id"), 200),
         worktree_id=_bounded_text(clean_payload.get("worktree_id"), 200),

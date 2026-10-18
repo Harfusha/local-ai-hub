@@ -25,7 +25,6 @@ def test_scheduler_init_and_submit_edge_cases():
         "scheduler": {
             "max_parallel": float("nan"),
             "max_queue": float("inf"),
-            "max_queued_per_tenant": True,
             "affinity_batch_seconds": float("nan"),
             "max_caller_wait_timeout_seconds": float("inf"),
         },
@@ -47,19 +46,18 @@ def test_scheduler_init_and_submit_edge_cases():
         assert scheduler.pending_count() == 0
         assert scheduler.inflight_count() == 0
 
-        for bad in ({"tenant": None}, {"tenant": " tenant "}, {"priority": float("nan")}, {"wait_timeout": float("nan")}):
-            args = dict(model="m1", tenant="tenant", source="test", execute=lambda: {"success": True})
+        for bad in ({"priority": float("nan")}, {"wait_timeout": float("nan")}):
+            args = dict(model="m1", source="test", execute=lambda: {"success": True})
             args.update(bad)
             with pytest.raises(ValueError):
                 scheduler.submit(**args)
-        res = scheduler.submit("m1", "tenant", "test", lambda: {"success": True}, wait_timeout=2.0)
+        res = scheduler.submit("m1", source="test", execute=lambda: {"success": True}, wait_timeout=2.0)
         assert res["success"] is True
 
         # Invalid model with null byte
         with pytest.raises(ValueError, match="invalid_model"):
             scheduler.submit(
                 model="bad\x00model",
-                tenant="default",
                 source="test",
                 execute=lambda: {"success": True},
             )

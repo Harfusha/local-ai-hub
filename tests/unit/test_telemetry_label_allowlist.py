@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub import telemetry
 from local_ai_hub.telemetry import TelemetryStore, _SAFE_TOOL_ACTIONS
 from local_ai_hub.operation_contracts import operation_actions
@@ -108,7 +110,7 @@ def test_phase_measurement_availability_distinguishes_unknown_from_measured_zero
         store.close()
 
 
-def test_legacy_events_gain_unknown_measurement_flags_without_losing_durations(tmp_path):
+def test_legacy_schema_requires_explicit_offline_conversion_and_preserves_durations(tmp_path):
     state_dir = tmp_path / "legacy-telemetry"
     store = TelemetryStore(state_dir, enabled=True)
     try:
@@ -127,16 +129,8 @@ def test_legacy_events_gain_unknown_measurement_flags_without_losing_durations(t
     finally:
         con.close()
 
-    upgraded = TelemetryStore(state_dir, enabled=True)
-    try:
-        con = upgraded._connect()
-        try:
-            row = con.execute(
-                "SELECT db_wait_ms, exec_ms, serialization_ms, db_wait_measured, "
-                "exec_measured, serialization_measured FROM events ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        finally:
-            con.close()
-        assert tuple(row) == (7.0, 8.0, 9.0, 0, 0, 0)
-    finally:
-        upgraded.close()
+    database = store.path
+    legacy_bytes = database.read_bytes()
+    with pytest.raises(RuntimeError, match="explicit offline conversion required"):
+        TelemetryStore(state_dir, enabled=True)
+    assert database.read_bytes() == legacy_bytes

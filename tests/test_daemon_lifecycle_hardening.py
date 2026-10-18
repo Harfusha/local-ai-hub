@@ -1039,7 +1039,6 @@ def test_daemon_stop_task_id_flows_through_service_and_http(
     task_id = "daemon-test"
     result = service.command(
         {"action": "stop_daemon", "daemon_id": daemon_id, "task_id": task_id},
-        tenant="agent",
     )
     assert result["success"] is True
     assert calls == [(daemon_id, task_id)]

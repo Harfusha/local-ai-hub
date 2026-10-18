@@ -16,11 +16,14 @@ CORE_SCHEMA = """CREATE TABLE artifacts (
     mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT,
     identity_json TEXT
 )"""
+CURRENT_SCHEMA = """CREATE TABLE artifacts (
+    artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, kind TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
+    size_bytes INTEGER, checksum TEXT, identity_json TEXT
+)"""
 
 
-def _current_marker(connection: sqlite3.Connection) -> None:
-    connection.execute("CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    connection.execute("INSERT INTO artifact_schema_meta VALUES ('tenant_storage', 'sha256-v1')")
+def _current_paging(connection: sqlite3.Connection) -> None:
     connection.execute(
         """CREATE TABLE artifact_paging_metadata (
             artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL,
@@ -30,16 +33,20 @@ def _current_marker(connection: sqlite3.Connection) -> None:
     )
 
 
+def _legacy_tenant_marker(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    connection.execute("INSERT INTO artifact_schema_meta VALUES ('tenant_storage', 'sha256-v1')")
+    _current_paging(connection)
+
+
 def test_canonical_database_reopens_without_changing_durable_artifact_identity(tmp_path) -> None:
     db_path = tmp_path / "artifacts.sqlite3"
-    tenant = hashlib.sha256(b"owner").hexdigest()
     with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute(CORE_SCHEMA)
-        _current_marker(connection)
+        connection.execute(CURRENT_SCHEMA)
+        _current_paging(connection)
         connection.execute(
-            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
-            "VALUES ('art_fixed', 9999999999, ?, ?, 'text', 'preserved')",
-            (tenant, tenant),
+            "INSERT INTO artifacts(artifact_id, created_at, kind, text) "
+            "VALUES ('art_fixed', 9999999999, 'text', 'preserved')"
         )
         section_json = '{"artifact_id":"art_fixed","names":[],"truncated":false}'
         checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
@@ -52,11 +59,11 @@ def test_canonical_database_reopens_without_changing_durable_artifact_identity(t
         connection.commit()
 
     store = ArtifactStore(tmp_path)
-    assert store.get("art_fixed", tenant="owner")["text"] == "preserved"
+    assert store.get("art_fixed")["text"] == "preserved"
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute(
-            "SELECT artifact_id, tenant, tenant_identity, text FROM artifacts WHERE artifact_id='art_fixed'"
-        ).fetchone() == ("art_fixed", tenant, tenant, "preserved")
+            "SELECT artifact_id, text FROM artifacts WHERE artifact_id='art_fixed'"
+        ).fetchone() == ("art_fixed", "preserved")
         assert connection.execute(
             "SELECT checksum FROM artifacts WHERE artifact_id='art_fixed'"
         ).fetchone() == (core_checksum,)
@@ -78,28 +85,28 @@ def test_incompatible_existing_database_is_rejected_without_modification(tmp_pat
     with closing(sqlite3.connect(db_path)) as connection:
         if schema_kind == "artifacts_v2":
             connection.execute(CORE_SCHEMA.replace("artifacts", "artifacts_v2", 1))
-            _current_marker(connection)
+            _legacy_tenant_marker(connection)
             connection.execute(
                 "INSERT INTO artifacts_v2 VALUES ('art_keep', 9999999999, 'tenant', 'tenant', "
                 "'text', 'durable', NULL, NULL, NULL, NULL, NULL, NULL)"
             )
         elif schema_kind == "without_rowid":
             connection.execute(CORE_SCHEMA[:-1] + ") WITHOUT ROWID")
-            _current_marker(connection)
+            _legacy_tenant_marker(connection)
         elif schema_kind == "view":
             connection.execute(CORE_SCHEMA.replace("artifacts", "artifact_source", 1))
             connection.execute("CREATE VIEW artifacts AS SELECT * FROM artifact_source")
-            _current_marker(connection)
+            _legacy_tenant_marker(connection)
         elif schema_kind == "extra_column":
             connection.execute(CORE_SCHEMA.replace("identity_json TEXT", "identity_json TEXT, extension TEXT"))
-            _current_marker(connection)
+            _legacy_tenant_marker(connection)
         else:
             connection.execute(CORE_SCHEMA)
             if schema_kind == "missing_marker":
-                _current_marker(connection)
+                _legacy_tenant_marker(connection)
                 connection.execute("DELETE FROM artifact_schema_meta")
             elif schema_kind == "legacy_marker":
-                _current_marker(connection)
+                _legacy_tenant_marker(connection)
                 connection.execute(
                     "UPDATE artifact_schema_meta SET value='legacy-raw-v1' WHERE key='tenant_storage'"
                 )
@@ -109,7 +116,7 @@ def test_incompatible_existing_database_is_rejected_without_modification(tmp_pat
                 )
                 connection.execute("INSERT INTO artifact_schema_meta VALUES ('tenant_storage', 'sha256-v1', NULL)")
             else:
-                _current_marker(connection)
+                _legacy_tenant_marker(connection)
                 raw_tenant = "x" * 2_000_000 if schema_kind == "oversized_tenant" else "raw-owner"
                 connection.execute(
                     "INSERT INTO artifacts VALUES ('art_keep', 9999999999, ?, ?, "
@@ -138,15 +145,15 @@ def test_incompatible_existing_database_is_rejected_without_modification(tmp_pat
 
 def test_fresh_store_uses_current_canonical_tables(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put_bytes(b"image", "owner", "vision-image", "image/png")
-    result = store.get_binary(artifact_id, tenant="owner")
+    artifact_id = store.put_bytes(b"image", kind="vision-image", mime_type="image/png")
+    result = store.get_binary(artifact_id)
     assert result["success"] is True
     assert base64.b64decode(result["data_base64"]) == b"image"
     reopened = ArtifactStore(tmp_path)
-    assert reopened.get_binary(artifact_id, tenant="owner")["success"] is True
+    assert reopened.get_binary(artifact_id)["success"] is True
     with closing(sqlite3.connect(store.path)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert tables == {"artifacts", "artifact_schema_meta", "artifact_paging_metadata"}
+        assert tables == {"artifacts", "artifact_paging_metadata"}
 
 
 def test_formatting_equivalent_canonical_schema_is_accepted(tmp_path) -> None:
@@ -154,16 +161,12 @@ def test_formatting_equivalent_canonical_schema_is_accepted(tmp_path) -> None:
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
             "CREATE TABLE artifacts(artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, "
-            "tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', "
+            "kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', "
             "mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT, identity_json TEXT)"
-        )
-        connection.execute(
-            "CREATE TABLE artifact_schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
         )
         connection.execute(
             "CREATE TABLE artifact_paging_metadata(artifact_id TEXT PRIMARY KEY, char_count INTEGER NOT NULL, section_json TEXT NOT NULL, section_checksum TEXT NOT NULL, page_text TEXT, nul_mask BLOB)"
         )
-        connection.execute("INSERT INTO artifact_schema_meta VALUES('tenant_storage','sha256-v1')")
         connection.commit()
 
-    assert ArtifactStore(tmp_path).list() == []
+    assert ArtifactStore(tmp_path).list(limit=20) == []

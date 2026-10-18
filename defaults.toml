@@ -15,7 +15,7 @@ overload_wait_seconds = 0.05
 max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload has its own limit
 
 [security]
-# Fail closed if the HTTP hub is exposed beyond loopback. Multi-tenancy is scheduling/fairness, not authentication.
+# HTTP access is loopback-only. API tokens authorize operations for the single local owner.
 api_token = "" # optional token for trusted local integrations
 
 [browser_bridge]
@@ -207,8 +207,6 @@ model_vram_estimates_bytes = {}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
-max_queued_per_tenant = 128
-max_inflight_per_tenant = 4
 affinity_batch_jobs = 0 # 0 = drain current-model queue first
 affinity_batch_seconds = 0 # 0 = no time-based switch while current-model jobs remain
 max_other_model_wait_seconds = 120 # anti-starvation safety valve; 0 disables it
@@ -565,7 +563,6 @@ install_openvino_dependencies = true
 pull_models_during_setup = true
 
 [rag]
-scope = "shared" # shared across agent processes; set to "tenant" for retrieval isolation
 chunk_chars = 4500
 chunk_overlap_chars = 450
 embedding_batch_size = 12

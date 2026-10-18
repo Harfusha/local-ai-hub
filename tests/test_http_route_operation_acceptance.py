@@ -17,14 +17,6 @@ from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract
 
 
-def _root_tenant(root):
-    return http_server._derive_root_tenant(
-        "tenant-acceptance",
-        str(root),
-        "tenant-derivation-test-key-0123456789abcdef",
-    )
-
-
 def _urlopen_with_error_body(request):
     try:
         return urllib_request.urlopen(request)
@@ -45,9 +37,7 @@ def running_http_hub(tmp_path):
                 f'state_dir = "{state_dir.as_posix()}"',
                 "[security]",
                 'api_token = "acceptance-secret"',
-                'api_token_tenant = "tenant-acceptance"',
                 f'allowed_roots = ["{tmp_path.as_posix()}"]',
-                'tenant_derivation_key = "tenant-derivation-test-key-0123456789abcdef"',
                 "[agent_state]",
                 "enabled = true",
             ]
@@ -60,7 +50,7 @@ def running_http_hub(tmp_path):
         ScopeContext(
             repository_id=str(tmp_path),
             task_id="task-31",
-            session_id=_root_tenant(tmp_path),
+            session_id="session:http-route-acceptance",
         ),
         task_id="task-31",
         repo_root=str(tmp_path),
@@ -91,7 +81,7 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
         return {"success": True, "board_id": board_id, "section": section, "content": "value"}
 
     monkeypatch.setattr(app, "agent_blackboard", SimpleNamespace(get=get_board))
-    url = f"{base_url}/api/agent-state/blackboard?board_id=task-31&task_id=task-31&section=plan&root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    url = f"{base_url}/api/agent-state/blackboard?board_id=task-31&task_id=task-31&section=plan&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
     )
@@ -101,7 +91,7 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "GET"
-    assert url == f"{base_url}/api/agent-state/blackboard?board_id=task-31&task_id=task-31&section=plan&root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    assert url == f"{base_url}/api/agent-state/blackboard?board_id=task-31&task_id=task-31&section=plan&root={quote(str(tmp_path))}"
     assert status == 200
     assert calls == [("task-31", "plan")]
     assert result["success"] is True
@@ -132,7 +122,7 @@ def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
         }
 
     monkeypatch.setattr(app.agent_state, "event_page", event_page)
-    url = f"{base_url}/api/agent-state/events?stream_id=task%3Atask-31&after_seq=4&limit=9&root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    url = f"{base_url}/api/agent-state/events?stream_id=task%3Atask-31&after_seq=4&limit=9&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
     )
@@ -142,7 +132,7 @@ def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "GET"
-    assert url == f"{base_url}/api/agent-state/events?stream_id=task%3Atask-31&after_seq=4&limit=9&root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    assert url == f"{base_url}/api/agent-state/events?stream_id=task%3Atask-31&after_seq=4&limit=9&root={quote(str(tmp_path))}"
     assert status == 200
     assert calls == [("task:task-31", 4, 9)]
     assert result["success"] is True
@@ -153,7 +143,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     base_url, app = running_http_hub
     calls = []
     task = SimpleNamespace(
-        context=ScopeContext(repository_id=str(tmp_path), session_id=_root_tenant(tmp_path)),
+        context=ScopeContext(repository_id=str(tmp_path), session_id="session:http-route-acceptance"),
         to_dict=lambda: {"task_id": "task-77", "status": "active", "summary": "T08 task"}
     )
 
@@ -162,7 +152,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
         return [task]
 
     monkeypatch.setattr(app.agent_tasks, "list_tasks", list_tasks)
-    url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true&root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
     )
@@ -172,7 +162,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "GET"
-    assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true&root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true&root={quote(str(tmp_path))}"
     assert status == 200
     assert calls == [("active", 7, True, "")]
     assert result["success"] is True
@@ -376,7 +366,7 @@ def test_http_get_audit_dependencies_forwards_root(running_http_hub, monkeypatch
     monkeypatch.setattr(
         app, "deterministic", SimpleNamespace(audit_dependencies=audit_dependencies)
     )
-    url = f"{base_url}/api/audit_dependencies?root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    url = f"{base_url}/api/audit_dependencies?root={quote(str(tmp_path))}"
     request = urllib_request.Request(
         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
     )
@@ -386,7 +376,7 @@ def test_http_get_audit_dependencies_forwards_root(running_http_hub, monkeypatch
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "GET"
-    assert url == f"{base_url}/api/audit_dependencies?root={quote(str(tmp_path))}&tenant={quote(_root_tenant(tmp_path))}"
+    assert url == f"{base_url}/api/audit_dependencies?root={quote(str(tmp_path))}"
     assert status == 200
     assert calls == [str(tmp_path)]
     assert result["issues"] == ["missing-import"]
@@ -406,7 +396,6 @@ def test_http_get_affected_tests_forwards_root_and_repeated_paths(
     monkeypatch.setattr(app.services, "affected_tests", affected_tests)
     url = (
         f"{base_url}/api/affected_tests?root={quote(str(tmp_path))}"
-        f"&tenant={quote(_root_tenant(tmp_path))}"
         "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
     )
     request = urllib_request.Request(
@@ -420,7 +409,6 @@ def test_http_get_affected_tests_forwards_root_and_repeated_paths(
     assert request.get_method() == "GET"
     assert url == (
         f"{base_url}/api/affected_tests?root={quote(str(tmp_path))}"
-        f"&tenant={quote(_root_tenant(tmp_path))}"
         "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
     )
     assert status == 200
@@ -441,7 +429,6 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
     body = json.dumps(
         {
             "root": str(tmp_path),
-            "tenant": _root_tenant(tmp_path),
             "paths": ["src/agent_state.py"],
         }
     ).encode("utf-8")

@@ -20,7 +20,7 @@ def test_timeout_and_cancelled_repeatable_commands_are_not_cached(tmp_path, monk
     assert broker.classify(command)["cacheable"] is True
 
     monkeypatch.setattr(broker, "_unavailable_executable", lambda command, cwd: None)
-    def fixed_key(command, cwd, classification, *, tenant, timeout, tool_identity=None, phase_timings_ms=None, **_fingerprints):
+    def fixed_key(command, cwd, classification, *, timeout, tool_identity=None, phase_timings_ms=None, **_fingerprints):
         return "stable-key", {"fingerprint": "fixed", "changed_paths": []}
 
     monkeypatch.setattr(broker, "_key", fixed_key)
@@ -42,8 +42,8 @@ def test_timeout_and_cancelled_repeatable_commands_are_not_cached(tmp_path, monk
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), tenant="test")
-    second = broker.run(command, str(tmp_path), tenant="test")
+    first = broker.run(command, str(tmp_path))
+    second = broker.run(command, str(tmp_path))
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is False
@@ -91,7 +91,7 @@ def test_singleflight_waiter_preserves_owner_timeout_without_trusting_outcome(
     monkeypatch.setattr(broker, "_execute", execute)
 
     def run_as(name: str) -> None:
-        results[name] = broker.run(command, str(tmp_path), tenant="test")
+        results[name] = broker.run(command, str(tmp_path))
 
     owner = threading.Thread(target=run_as, args=("owner",))
     waiter = threading.Thread(target=run_as, args=("waiter",))

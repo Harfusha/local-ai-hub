@@ -206,7 +206,7 @@ def _hybrid_source_evidence(tmp_path: Path, *, pin_readme: bool) -> dict:
             "provenance": "project_config:pinned_context",
         })
     return services._hybrid_context_uncached(
-        str(tmp_path), query, "tenant", None, 1600,
+        str(tmp_path), query, workspace=None, max_tokens=1600,
         path_hints=path_hints,
     )
 

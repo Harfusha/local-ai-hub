@@ -41,10 +41,10 @@ def test_cached_command_rechecks_repo_after_immediate_file_change(tmp_path, monk
     monkeypatch.setattr(broker, "_execute", execute)
     command = "python -m pytest -q"
 
-    first = broker.run(command, str(repo), "tenant")
-    repeated = broker.run(command, str(repo), "tenant")
+    first = broker.run(command, str(repo))
+    repeated = broker.run(command, str(repo))
     source.write_text("value = 2\n", encoding="utf-8")
-    changed = broker.run(command, str(repo), "tenant")
+    changed = broker.run(command, str(repo))
 
     assert first["cache_hit"] is False
     assert repeated["cache_hit"] is True

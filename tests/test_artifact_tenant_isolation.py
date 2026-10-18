@@ -6,7 +6,7 @@ import pytest
 from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
 
 
-def test_legacy_artifact_schema_rejected_without_rewriting_tenant_identity(tmp_path):
+def test_legacy_tenant_artifact_schema_rejected_without_rewriting_data(tmp_path):
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as con:
         con.execute(
@@ -38,19 +38,19 @@ def test_legacy_artifact_schema_rejected_without_rewriting_tenant_identity(tmp_p
         ArtifactStore(tmp_path)
 
     with closing(sqlite3.connect(db_path)) as con:
-        identities = con.execute(
-            "SELECT tenant, tenant_identity FROM artifacts ORDER BY artifact_id"
-        ).fetchall()
-    assert identities == [
-        ("tenant-a", "tenant-a"),
-        ("tenant-b", "tenant-b"),
-    ]
+        rows = con.execute("SELECT artifact_id, text FROM artifacts ORDER BY artifact_id").fetchall()
+    assert rows == [("tenant-a-artifact", "a"), ("tenant-b-artifact", "b")]
 
 
-def test_current_artifact_schema_isolates_tenant_listing(tmp_path):
+def test_current_artifact_schema_is_owner_global_and_rejects_retired_inputs(tmp_path):
     store = ArtifactStore(tmp_path)
-    artifact_a = store.put("tenant a payload", "tenant-a", "text")
-    artifact_b = store.put("tenant b payload", "tenant-b", "text")
+    artifact_a = store.put("shared payload", kind="text")
+    artifact_b = store.put("shared payload", kind="text")
 
-    assert [item["artifact_id"] for item in store.list("tenant-a")] == [artifact_a]
-    assert [item["artifact_id"] for item in store.list("tenant-b")] == [artifact_b]
+    assert artifact_a == artifact_b
+    assert [item["artifact_id"] for item in store.list(limit=20)] == [artifact_a]
+    assert store.get(artifact_a)["text"] == "shared payload"
+    with pytest.raises(TypeError):
+        store.put("payload", "old-tenant", "text")
+    with pytest.raises(TypeError):
+        store.get(artifact_a, tenant=None)

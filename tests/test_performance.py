@@ -35,7 +35,7 @@ class Rag:
 class Scheduler:
     def foreground_busy(self): return False
     def background_allowed(self): return True
-    def submit(self, model, tenant, source, fn, **kwargs): return fn()
+    def submit(self, model, *, source, execute, **kwargs): return execute()
     def note_background_yield(self): pass
 
 

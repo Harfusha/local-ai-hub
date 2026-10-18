@@ -114,8 +114,6 @@ def _handler(monkeypatch, tmp_path, *, method, path, payload=None, peer="127.0.0
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-mode"))
     monkeypatch.setattr(http_server.Handler, "_validate_host_and_origin", lambda _self: True)
-    monkeypatch.setattr(http_server.Handler, "_tenant_binding_allowed", lambda _self: True)
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_agent", lambda _self: "agent")
     if method == "POST":
         monkeypatch.setattr(http_server.Handler, "_read_json", lambda _self: payload or {})
@@ -248,14 +246,9 @@ def test_safe_agent_api_reads_block_only_in_maintenance_before_database_call(
 ):
     calls = []
     if path == "/api/repo/profile":
-        tenant_key = "tenant-derivation-test-key-0123456789abcdef"
-        principal = "tenant-mode"
         payload = {
             **payload,
             "root": str(tmp_path),
-            "tenant": http_server._derive_root_tenant(
-                principal, str(tmp_path), tenant_key
-            ),
         }
 
     class JobControls:

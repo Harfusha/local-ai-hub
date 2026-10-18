@@ -58,7 +58,7 @@ def test_changed_repository_does_not_join_stale_singleflight(tmp_path: Path, mon
 
     def run(label: str) -> None:
         try:
-            results[label] = broker.run("python -m pytest -q", str(repo), "tenant")
+            results[label] = broker.run("python -m pytest -q", str(repo))
         except BaseException as exc:
             errors.append(exc)
 

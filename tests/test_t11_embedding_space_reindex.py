@@ -13,7 +13,7 @@ class SpaceEmbedder:
         self.space_id = space_id
         self.calls = 0
 
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         self.calls += 1
         return {
             "success": True,
@@ -40,12 +40,12 @@ def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_pa
 
     first_embedder = SpaceEmbedder("space-a")
     first = RAGStore(config, services=first_embedder)
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     assert first_embedder.calls == 1
 
     second_embedder = SpaceEmbedder("space-b")
     second = RAGStore(config, services=second_embedder)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     assert result["changed_files"] == 1
@@ -54,13 +54,13 @@ def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_pa
         spaces = {
             str(row[0])
             for row in con.execute(
-                "SELECT DISTINCT embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                (second._scope_key("tenant"), workspace),
+                "SELECT DISTINCT embedding_space FROM chunks WHERE workspace=?",
+                (workspace,),
             ).fetchall()
         }
     assert spaces == {"space-b"}
 
-    repeated = second.index(str(root), "tenant", workspace)
+    repeated = second.index(root=str(root), workspace=workspace)
     assert repeated["success"] is True
     assert repeated["changed_files"] == 0
     assert second_embedder.calls == 1
@@ -76,20 +76,20 @@ def test_embedding_space_rebuild_read_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -101,23 +101,23 @@ def test_embedding_space_rebuild_read_error_preserves_previous_index(
         return original_open(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", fail_indexed_file)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is True
     with closing(second._connect()) as con:
         new_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     assert new_rows == old_rows
     assert new_file == old_file
@@ -134,20 +134,20 @@ def test_embedding_space_rebuild_root_access_error_is_retryable_and_preserves_in
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -159,23 +159,23 @@ def test_embedding_space_rebuild_root_access_error_is_retryable_and_preserves_in
         return original_access(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, access_method, deny_root_access)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is True
     with closing(second._connect()) as con:
         new_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     assert new_rows == old_rows
     assert new_file == old_file
@@ -192,20 +192,20 @@ def test_embedding_space_rebuild_stat_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -220,23 +220,23 @@ def test_embedding_space_rebuild_stat_error_preserves_previous_index(
         return original_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", fail_indexed_file_stat)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is True
     with closing(second._connect()) as con:
         new_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     assert new_rows == old_rows
     assert new_file == old_file
@@ -255,20 +255,20 @@ def test_embedding_space_rebuild_direntry_stat_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -298,7 +298,7 @@ def test_embedding_space_rebuild_direntry_stat_error_preserves_previous_index(
         return entries
 
     monkeypatch.setattr(rag_module.os, "scandir", failing_scandir)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert stat_failed is True
     assert result["success"] is False
@@ -306,16 +306,16 @@ def test_embedding_space_rebuild_direntry_stat_error_preserves_previous_index(
     with closing(second._connect()) as con:
         new_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     assert new_rows == old_rows
     assert new_file == old_file
@@ -335,20 +335,20 @@ def test_embedding_space_rebuild_scandir_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -363,7 +363,7 @@ def test_embedding_space_rebuild_scandir_error_preserves_previous_index(
         return original_scandir(path)
 
     monkeypatch.setattr(rag_module.os, "scandir", failing_scandir)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert scan_failed is True
     assert result["success"] is False
@@ -371,16 +371,16 @@ def test_embedding_space_rebuild_scandir_error_preserves_previous_index(
     with closing(second._connect()) as con:
         new_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     assert new_rows == old_rows
     assert new_file == old_file
@@ -400,20 +400,20 @@ def test_embedding_space_rebuild_direntry_probe_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         old_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (first._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -450,7 +450,7 @@ def test_embedding_space_rebuild_direntry_probe_error_preserves_previous_index(
         return entries
 
     monkeypatch.setattr(rag_module.os, "scandir", wrapped_scandir)
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert probe_failed is True
     assert result["success"] is False
@@ -458,16 +458,16 @@ def test_embedding_space_rebuild_direntry_probe_error_preserves_previous_index(
     with closing(second._connect()) as con:
         new_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
-            "FROM chunks WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_file = con.execute(
-            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
         new_fts = con.execute(
-            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (second._scope_key("tenant"), workspace),
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     assert new_rows == old_rows
     assert new_file == old_file
@@ -483,20 +483,20 @@ def test_embedding_space_rebuild_prunes_newly_excluded_file_and_fts(tmp_path: Pa
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
 
     excluded_config = _config(tmp_path / "state")
     excluded_config["rag"]["ignore_dirs"] = ["excluded"]
     second = RAGStore(excluded_config, services=SpaceEmbedder("space-b"))
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     assert result["deleted_files"] == 1
     with closing(second._connect()) as con:
         for table in ("files", "chunks", "chunk_fts"):
             count = con.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=?",
-                (second._scope_key("tenant"), workspace),
+                f"SELECT COUNT(*) FROM {table} WHERE workspace=?",
+                (workspace,),
             ).fetchone()[0]
             assert count == 0
 
@@ -509,19 +509,19 @@ def test_embedding_space_rebuild_prunes_genuinely_deleted_file_and_fts(tmp_path:
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     source.unlink()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     assert result["deleted_files"] == 1
     with closing(second._connect()) as con:
         for table in ("files", "chunks", "chunk_fts"):
             count = con.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=?",
-                (second._scope_key("tenant"), workspace),
+                f"SELECT COUNT(*) FROM {table} WHERE workspace=?",
+                (workspace,),
             ).fetchone()[0]
             assert count == 0
 
@@ -529,7 +529,7 @@ class ConfigIdentityEmbedder:
     def __init__(self):
         self.calls = 0
 
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         self.calls += 1
         return {
             "success": True,
@@ -548,7 +548,7 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
     first_config["models"]["embedding_digest"] = "sha256:first"
     embedder = ConfigIdentityEmbedder()
     first = RAGStore(first_config, services=embedder)
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     first_space = first._embedding_space_id({"backend": "test"})
     assert embedder.calls == 1
 
@@ -556,7 +556,7 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
     second_config["models"]["embedding_digest"] = "sha256:second"
     second = RAGStore(second_config, services=embedder)
     second_space = second._embedding_space_id({"backend": "test"})
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert first_space != second_space
     assert result["success"] is True
@@ -566,8 +566,8 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
         spaces = {
             str(row[0])
             for row in con.execute(
-                "SELECT DISTINCT embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                (second._scope_key("tenant"), workspace),
+                "SELECT DISTINCT embedding_space FROM chunks WHERE workspace=?",
+                (workspace,),
             ).fetchall()
         }
     assert spaces == {second_space}

@@ -77,7 +77,7 @@ def _actual_broker_task(tmp_path: Path):
     result = broker.run(
         command,
         str(repo),
-        tenant=tenant,
+
         task_id=task_id,
         criterion="pytest",
         timeout=30,
@@ -129,7 +129,7 @@ def test_actual_broker_receipt_completes_agent_task(tmp_path: Path):
     tasks, verifier, broker, task_id, tenant, repo, receipt = _actual_broker_task(tmp_path)
     stored = broker.get_command_execution_record(
         receipt["command_id"],
-        tenant=tenant,
+
         task_id=task_id,
         repository_root=str(repo),
     )

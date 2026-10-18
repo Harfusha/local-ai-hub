@@ -1,5 +1,18 @@
 # HTTP API
 
+Patch and repair operations forward verification receipts produced by the command
+broker. A successful command without a receipt reports
+`verification_receipt_warning`; it does not mint fallback evidence or establish
+task completion. Completion still requires the persisted command, artifact,
+actual task owner, repository revision and receipt checks.
+
+Project RAG operations (`/api/rag/index`, `/api/rag/search`,
+`/api/rag/ingest_document`, `/api/rag/ingest_diagram`) require an explicit
+absolute authorized `root`. Each workspace is bound to that real repository
+root; supplying another project's workspace rejects before reading or writing
+its contents. Diagram files must remain inside that root without symlink or
+junction traversal. Owner-global docsets retain their separate namespace.
+
 `POST /api/route` uses the canonical string fields `query` and `text`; `task` and `context` are rejected rather than treated as aliases. The MCP `local_ai_task(action="route")` adapter translates its canonical `task` and `context` fields to `query` and `text` at the HTTP boundary. `POST /api/reason` uses `problem` and optional `context`; `task` is rejected as an alias. `POST /api/review` uses `code` and optional `instructions`; `context` is rejected as an alias. The corresponding `local_ai_task` adapters translate `task` and `context` at the HTTP boundary.
 
 Authenticated dashboard-only debug endpoints expose bounded execution history:
@@ -52,7 +65,7 @@ Model-backed endpoints `/api/delegate`, `/api/reason`, `/api/review`, `/api/seco
 
 For `/api/review/diff`, a positive `review.max_queue_age_ms` exceeded by the request's queue age takes precedence and returns a terminal 503 bypass. Otherwise, a positive latency budget with fewer than five telemetry samples selects async with reason `cold_start_review_diff`. Conversations reject `async` and `auto` and require `delivery="sync"`.
 
-`POST /api/delegate` and `POST /api/reason` accept `conversation:true` only with `delivery:"sync"`; initial and continued task text must be nonblank. A successful first turn returns an opaque `conversation_id`. Send the next message to `POST /api/conversations/continue` with `conversation_id`, `task`, and optional `context`. Each request resolves its tenant, and the server checks that tenant against the conversation owner; the ID itself is not authorization. The initial model, route, system prompt, output limit, and temperature stay pinned. Only one turn can be active; a concurrent continuation returns retryable in-progress status.
+`POST /api/delegate` and `POST /api/reason` accept `conversation:true` only with `delivery:"sync"`; initial and continued task text must be nonblank. A successful first turn returns an opaque `conversation_id`. Send the next message to `POST /api/conversations/continue` with `conversation_id`, `task`, and optional `context`. Conversation IDs are not authorization credentials; access still requires the configured route credentials. The initial model, route, system prompt, output limit, and temperature stay pinned. Only one turn can be active; a concurrent continuation returns retryable in-progress status.
 
 Conversations allow 12 user turns by default and a prompt limit from `model_conversations.max_prompt_tokens`, falling back to `token_saving.max_local_input_tokens` or 56,000 tokens. Defaults are 900 seconds idle TTL, 1,800 seconds active TTL, and capacity 1,000. State and transcripts stay in process memory, are not recovered after restart, and are lost when the process exits. Profiles and durable async jobs are not supported for conversations.
 

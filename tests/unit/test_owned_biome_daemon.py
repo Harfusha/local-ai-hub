@@ -58,7 +58,7 @@ def test_non_windows_owned_transport_is_typed_unsupported(tmp_path, monkeypatch)
 
     monkeypatch.setattr(biome.OwnedBiomeDaemon, "supported_here", staticmethod(lambda: False))
     pool = OwnedBiomeDaemonPool()
-    result = pool.run(sys.executable, str(tmp_path), "tenant-a", ["src/app.ts"])
+    result = pool.run(sys.executable, str(tmp_path), paths=["src/app.ts"])
     assert result["unsupported"] is True
     assert result["transport"] == "unsupported_unowned_platform"
     assert result["terminal"] is True and result["retryable"] is False
@@ -242,7 +242,7 @@ def test_blocked_fake_pipe_write_times_out_and_cleanup_closes_only_owned_stream(
     timer.start()
 
     with pytest.raises(TimeoutError, match="write timed out or cancelled"):
-        daemon.diagnostics("tenant-a", str(tmp_path), ["src/app.ts"],
+        daemon.diagnostics(str(tmp_path), paths=["src/app.ts"],
                            deadline=time.monotonic() + 2, should_stop=stop.is_set)
     timer.join()
     assert pipe.closed
@@ -319,9 +319,9 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
 
     call_deadlines = [time.monotonic() + 1, time.monotonic() + 2]
     for call_deadline in call_deadlines:
-        assert daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], deadline=call_deadline,
+        assert daemon.diagnostics(str(tmp_path), paths=[str(path)], deadline=call_deadline,
                                   should_stop=lambda: False) == []
-    session_key = ("tenant-a", os.path.normcase(str(tmp_path.resolve())))
+    session_key = os.path.normcase(str(tmp_path.resolve()))
     assert daemon._sessions[session_key]["deadline"] == call_deadlines[-1]
 
     assert len(pipes) == 1
@@ -336,13 +336,13 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
     sent_before_invalid = len(pipes[0].sent)
     path.write_bytes(b"const invalid = '\xff';\n")
     with pytest.raises(UnicodeDecodeError):
-        daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], deadline=time.monotonic() + 1,
+        daemon.diagnostics(str(tmp_path), paths=[str(path)], deadline=time.monotonic() + 1,
                            should_stop=lambda: False)
     assert len(pipes[0].sent) == sent_before_invalid
 
     path.write_bytes(b"x" * 2_000_001)
     with pytest.raises(ValueError, match="source budget"):
-        daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], deadline=time.monotonic() + 1,
+        daemon.diagnostics(str(tmp_path), paths=[str(path)], deadline=time.monotonic() + 1,
                            should_stop=lambda: False)
     methods_after_oversized_change = [item.get("method") for item in pipes[0].sent]
     assert methods_after_oversized_change.count("textDocument/didChange") == 1

@@ -48,7 +48,6 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
         scope_id=str(root),
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
     )
     reopened = MemoryStore(AgentStateStore(store.state_store.db_path))
     assert reopened.get(
@@ -57,7 +56,7 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
         scope_id=str(root),
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
+
         include_expired=True,
     ) is None
     with closing(connect_sqlite(store.state_store.db_path)) as con:
@@ -98,7 +97,6 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         scope_id=str(root),
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
     )
 
     with pytest.raises(ValueError, match="memory record was deleted and cannot be replayed"):
@@ -108,7 +106,7 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         scope=AgentScope.REPOSITORY,
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
+
         include_expired=True,
     ) is None
     events = store.state_store.events(stream_id)
@@ -210,7 +208,6 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
         scope_id=str(root),
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
     ) == record
     assert store.find_relations(source_entity=record.record_id)
     with closing(connect_sqlite(db_path)) as con:

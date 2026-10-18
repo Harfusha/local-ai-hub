@@ -40,8 +40,10 @@ def test_artifact_list_does_not_normalize_items_alias(monkeypatch) -> None:
     actual = mcp_server.local_ai_artifact(action="list")
 
     assert "artifacts" not in actual
+    assert actual["success"] is False
+    assert actual["failure_kind"] == "output_contract_violation"
     error = validate_operation_output("local_ai_artifact", "list", actual)
-    assert error is not None, "noncanonical `items` response must fail the artifact list output contract"
+    assert error is None, "rejected noncanonical response must retain the canonical failure envelope"
 
 
 def test_oversized_artifact_page_error_keeps_failure_contract(monkeypatch) -> None:

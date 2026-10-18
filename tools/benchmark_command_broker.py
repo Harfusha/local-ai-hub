@@ -127,8 +127,7 @@ def _measure_cache_pairs(
     paired_runs: int,
     order_seed: int,
 ) -> dict[str, Any]:
-    tenant = "t15-benchmark"
-    seed_result = broker.run(COMMAND, root, tenant=tenant, force=True)
+    seed_result = broker.run(COMMAND, root, force=True)
     _require_success(seed_result, "paired cache seed")
     if _require_cache_outcome(seed_result, "paired cache seed") is not False:
         raise RuntimeError("paired cache seed must report an observed miss")
@@ -140,7 +139,7 @@ def _measure_cache_pairs(
             force = operation == "miss"
             elapsed, result = _timed(
                 lambda force=force: broker.run(
-                    COMMAND, root, tenant=tenant, force=force
+                    COMMAND, root, force=force
                 )
             )
             _require_success(result, f"paired cache {operation}")
@@ -172,7 +171,6 @@ def _measure_cache_pairs(
         "order_summary": _pair_order_summary(pairs),
         "fixture": {
             "command": COMMAND,
-            "tenant": tenant,
             "forced_seed_cache_hit": False,
             "seed_counted_in_pairs": False,
             "paired_runs": paired_runs,
@@ -195,7 +193,7 @@ def _measure_cache_pairs(
 
 
 def _seed_concurrency_cache(broker: CommandBroker, root: str) -> dict[str, Any]:
-    seed = broker.run(COMMAND, root, tenant="t15-benchmark")
+    seed = broker.run(COMMAND, root)
     _require_success(seed, "concurrency cache seed")
     if _require_cache_outcome(seed, "concurrency cache seed") is not False:
         raise RuntimeError("concurrency cache seed did not report a cache miss")
@@ -505,7 +503,7 @@ def run_benchmark(
             def warm_hit(_index: int) -> tuple[float, bool]:
                 elapsed, result = _timed(
                     lambda: concurrency_broker.run(
-                        COMMAND, str(root), tenant="t15-benchmark"
+                        COMMAND, str(root)
                     )
                 )
                 _require_success(result, "concurrent warm command")
@@ -544,7 +542,6 @@ def run_benchmark(
                         lambda: broker.run(
                             SINGLEFLIGHT_COMMAND,
                             str(root),
-                            tenant="t15-benchmark",
                             force=True,
                         )
                     )

@@ -26,20 +26,20 @@ from .process_utils import canonical_root
 
 _LEASE_DURABLE_SCHEMA = {
     "leases": [
-        ("lease_id", "TEXT", 1, 1), ("tenant", "TEXT", 1, 0),
+        ("lease_id", "TEXT", 1, 1), ("owner", "TEXT", 1, 0),
         ("root_id", "TEXT", 1, 0), ("root_path", "TEXT", 1, 0),
         ("path", "TEXT", 1, 2), ("purpose", "TEXT", 1, 0),
         ("created_at", "REAL", 1, 0), ("expires_at", "REAL", 1, 0),
     ],
     "lease_waits": [
-        ("tenant", "TEXT", 1, 2), ("blocked_by", "TEXT", 1, 3),
+        ("owner", "TEXT", 1, 2), ("blocked_by", "TEXT", 1, 3),
         ("root_id", "TEXT", 1, 1), ("requested_path", "TEXT", 1, 4),
         ("updated_at", "REAL", 1, 0),
     ],
 }
 _LEASE_REQUIRED_UNIQUE = {
     "leases": (("lease_id", "path"),),
-    "lease_waits": (("root_id", "tenant", "blocked_by", "requested_path"),),
+    "lease_waits": (("root_id", "owner", "blocked_by", "requested_path"),),
 }
 _LEASE_COMPLETE_GROUPS = (("leases", "lease_waits"),)
 
@@ -168,7 +168,7 @@ class ScopeLeaseStore:
                         con.execute(
                             """CREATE TABLE IF NOT EXISTS leases (
                                 lease_id TEXT NOT NULL,
-                                tenant TEXT NOT NULL,
+                                owner TEXT NOT NULL,
                                 root_id TEXT NOT NULL,
                                 root_path TEXT NOT NULL,
                                 path TEXT NOT NULL,
@@ -181,15 +181,15 @@ class ScopeLeaseStore:
                         con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
                         con.execute(
                             """CREATE TABLE IF NOT EXISTS lease_waits (
-                                tenant TEXT NOT NULL,
+                                owner TEXT NOT NULL,
                                 blocked_by TEXT NOT NULL,
                                 root_id TEXT NOT NULL,
                                 requested_path TEXT NOT NULL,
                                 updated_at REAL NOT NULL,
-                                PRIMARY KEY(root_id, tenant, blocked_by, requested_path)
+                                PRIMARY KEY(root_id, owner, blocked_by, requested_path)
                             )"""
                         )
-                        con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_owner ON lease_waits(owner)")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
                         con.execute("COMMIT")
                     except BaseException:
@@ -216,16 +216,16 @@ class ScopeLeaseStore:
 
     def claim(
         self,
-        tenant: str,
+        *,
+        owner: str,
         root: str,
         paths: list[str],
         ttl_seconds: int = 900,
         purpose: str = "agent edit",
-        *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
-        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
-            return {"success": False, "error": "invalid tenant"}
+        if not isinstance(owner, str) or not owner.strip() or owner != owner.strip() or "\x00" in owner:
+            return {"success": False, "error": "invalid owner"}
         if not isinstance(root, str) or not root.strip() or root != root.strip() or "\x00" in root:
             return {"success": False, "error": "invalid root"}
         if not isinstance(purpose, str) or not purpose.strip() or "\x00" in purpose:
@@ -237,17 +237,8 @@ class ScopeLeaseStore:
         for p in paths:
             if not isinstance(p, str) or not p.strip() or "\x00" in p:
                 return {"success": False, "error": f"invalid lease path: {p}"}
-        if (not root or root == ".") and paths:
-            first_abs = next((str(p) for p in paths if PureWindowsPath(str(p)).is_absolute() or Path(str(p)).is_absolute() or bool(PureWindowsPath(str(p)).drive)), None)
-            if first_abs:
-                try:
-                    candidate = Path(first_abs).resolve()
-                    for parent in [candidate.parent, *candidate.parents]:
-                        if any((parent / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", ".local-ai")):
-                            root = str(parent)
-                            break
-                except Exception:
-                    pass
+        if not Path(root).is_absolute() and not PureWindowsPath(root).is_absolute():
+            return {"success": False, "error": "root must be an absolute repository root"}
         root_path, physical_root_id = self._root(root)
         if coordination_id is None:
             return {"success": False, "error": "project coordination id is required"}
@@ -273,36 +264,36 @@ class ScopeLeaseStore:
                 con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (now - 7200,))
                 if coordination_id is _COORDINATION_ID_UNSET:
                     existing = con.execute(
-                        "SELECT lease_id,tenant,path,purpose,expires_at FROM leases WHERE root_id=? AND tenant<>?",
-                        (root_id, tenant),
+                        "SELECT lease_id,owner,path,purpose,expires_at FROM leases WHERE root_id=? AND owner<>?",
+                        (root_id, owner),
                     ).fetchall()
                 else:
                     existing = con.execute(
-                        "SELECT lease_id,tenant,path,purpose,expires_at FROM leases "
-                        "WHERE tenant<>? AND (root_id=? OR (root_id=? AND root_path=?))",
-                        (tenant, root_id, physical_root_id, root_path),
+                        "SELECT lease_id,owner,path,purpose,expires_at FROM leases "
+                        "WHERE owner<>? AND (root_id=? OR (root_id=? AND root_path=?))",
+                        (owner, root_id, physical_root_id, root_path),
                     ).fetchall()
                 conflicts = []
                 for requested in rels:
                     for row in existing:
                         if _overlap(requested, row[2]):
                             conflicts.append({
-                                "requested": requested, "held_path": row[2], "tenant": row[1],
+                                "requested": requested, "held_path": row[2], "owner": row[1],
                                 "lease_id": row[0], "purpose": row[3], "expires_at": row[4],
                             })
                 if conflicts:
-                    conflicting_tenants = {c["tenant"] for c in conflicts if c.get("tenant")}
+                    conflicting_owners = {c["owner"] for c in conflicts if c.get("owner")}
 
                     # Build wait-for graph from persistent waits and proposed contention
                     wait_rows = con.execute(
-                        "SELECT tenant, blocked_by FROM lease_waits WHERE root_id=? AND updated_at>?",
+                        "SELECT owner, blocked_by FROM lease_waits WHERE root_id=? AND updated_at>?",
                         (root_id, now - 3600),
                     ).fetchall()
                     graph: dict[str, set[str]] = {}
                     for u, v in wait_rows:
                         graph.setdefault(u, set()).add(v)
-                    for b in conflicting_tenants:
-                        graph.setdefault(tenant, set()).add(b)
+                    for b in conflicting_owners:
+                        graph.setdefault(owner, set()).add(b)
 
                     # Cycle detection via DFS
                     def detect_cycle(start_node: str) -> list[str] | None:
@@ -325,7 +316,7 @@ class ScopeLeaseStore:
 
                         return dfs(start_node)
 
-                    cycle = detect_cycle(tenant)
+                    cycle = detect_cycle(owner)
                     if cycle:
                         con.execute("ROLLBACK")
                         return {
@@ -339,8 +330,8 @@ class ScopeLeaseStore:
                     # No deadlock: record wait edges and return standard contention error
                     for c in conflicts:
                         con.execute(
-                            "INSERT OR REPLACE INTO lease_waits(tenant, blocked_by, root_id, requested_path, updated_at) VALUES(?,?,?,?,?)",
-                            (tenant, c["tenant"], root_id, c["requested"], now),
+                            "INSERT OR REPLACE INTO lease_waits(owner, blocked_by, root_id, requested_path, updated_at) VALUES(?,?,?,?,?)",
+                            (owner, c["owner"], root_id, c["requested"], now),
                         )
                     con.execute("COMMIT")
                     return {
@@ -351,10 +342,10 @@ class ScopeLeaseStore:
                     }
 
                 # Successfully acquire all requested paths atomically
-                con.execute("DELETE FROM lease_waits WHERE tenant=? AND root_id=?", (tenant, root_id))
+                con.execute("DELETE FROM lease_waits WHERE owner=? AND root_id=?", (owner, root_id))
                 con.executemany(
-                    "INSERT INTO leases(lease_id,tenant,root_id,root_path,path,purpose,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-                    [(lease_id, tenant, root_id, root_path, p, purpose[:300], now, expires) for p in rels],
+                    "INSERT INTO leases(lease_id,owner,root_id,root_path,path,purpose,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+                    [(lease_id, owner, root_id, root_path, p, purpose[:300], now, expires) for p in rels],
                 )
                 con.execute("COMMIT")
                 return {"success": True, "lease_id": lease_id, "root": root_path, "paths": rels, "expires_at": expires}
@@ -363,17 +354,17 @@ class ScopeLeaseStore:
 
     def claim_batch(
         self,
-        tenant: str,
+        *,
+        owner: str,
         root: str,
         paths: list[str],
         ttl_seconds: int = 900,
         purpose: str = "agent edit",
-        *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
         """Atomic multi-path batch lease claim with rollback and cycle detection."""
         return self.claim(
-            tenant=tenant,
+            owner=owner,
             root=root,
             paths=paths,
             ttl_seconds=ttl_seconds,
@@ -381,23 +372,23 @@ class ScopeLeaseStore:
             coordination_id=coordination_id,
         )
 
-    def release(self, tenant: str, lease_id: str) -> dict[str, Any]:
-        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
-            return {"success": False, "error": "invalid tenant"}
+    def release(self, *, owner: str, lease_id: str) -> dict[str, Any]:
+        if not isinstance(owner, str) or not owner.strip() or owner != owner.strip() or "\x00" in owner:
+            return {"success": False, "error": "invalid owner"}
         if not isinstance(lease_id, str):
             return {"success": False, "error": "lease_id must be a string"}
         if not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id:
             return {"success": False, "error": "invalid lease_id"}
 
-        return self._release_matching(tenant, lease_id)
+        return self._release_matching(owner, lease_id)
 
-    def release_tenant(self, tenant: str) -> dict[str, Any]:
-        """Release all advisory leases for one exact tenant during owner cleanup."""
-        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
-            return {"success": False, "error": "invalid tenant"}
-        return self._release_matching(tenant, None)
+    def release_owner(self, *, owner: str) -> dict[str, Any]:
+        """Release this writer's advisory leases; owner is an actual task/execution ID."""
+        if not isinstance(owner, str) or not owner.strip() or owner != owner.strip() or "\x00" in owner:
+            return {"success": False, "error": "invalid owner"}
+        return self._release_matching(owner, None)
 
-    def _release_matching(self, tenant: str, lease_id: str | None) -> dict[str, Any]:
+    def _release_matching(self, owner: str, lease_id: str | None) -> dict[str, Any]:
 
         def write() -> int:
             with closing(self._connect()) as con:
@@ -405,33 +396,33 @@ class ScopeLeaseStore:
                 released_scopes: list[tuple[str, str]] = []
                 if lease_id is not None:
                     p_rows = con.execute(
-                        "SELECT root_id,path FROM leases WHERE lease_id=? AND tenant=?",
-                        (lease_id, tenant),
+                        "SELECT root_id,path FROM leases WHERE lease_id=? AND owner=?",
+                        (lease_id, owner),
                     ).fetchall()
                     released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
                     cur = con.execute(
-                        "DELETE FROM leases WHERE lease_id=? AND tenant=?",
-                        (lease_id, tenant),
+                        "DELETE FROM leases WHERE lease_id=? AND owner=?",
+                        (lease_id, owner),
                     )
                 else:
                     p_rows = con.execute(
-                        "SELECT DISTINCT root_id,path FROM leases WHERE tenant=?",
-                        (tenant,),
+                        "SELECT DISTINCT root_id,path FROM leases WHERE owner=?",
+                        (owner,),
                     ).fetchall()
                     released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
-                    cur = con.execute("DELETE FROM leases WHERE tenant=?", (tenant,))
+                    cur = con.execute("DELETE FROM leases WHERE owner=?", (owner,))
                 count = int(cur.rowcount or 0)
                 # Keep wait dependencies scoped to the released project namespace.
                 roots = {scope_id for scope_id, _ in released_scopes}
                 for scope_id in roots:
                     con.execute(
-                        "DELETE FROM lease_waits WHERE tenant=? AND root_id=?",
-                        (tenant, scope_id),
+                        "DELETE FROM lease_waits WHERE owner=? AND root_id=?",
+                        (owner, scope_id),
                     )
                 for scope_id, path in released_scopes:
                     con.execute(
                         "DELETE FROM lease_waits WHERE blocked_by=? AND root_id=? AND requested_path=?",
-                        (tenant, scope_id, path),
+                        (owner, scope_id, path),
                     )
                 con.execute("COMMIT")
                 return count
@@ -454,10 +445,10 @@ class ScopeLeaseStore:
         result = retry_busy(write, retries=4)
         return {"success": True, **result}
 
-    def renew(self, tenant: str, lease_id: str, ttl_seconds: int = 900) -> dict[str, Any]:
+    def renew(self, *, owner: str, lease_id: str, ttl_seconds: int = 900) -> dict[str, Any]:
         """Atomically extend the expiration TTL of an existing held lease."""
-        if not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant:
-            return {"success": False, "error": "invalid tenant"}
+        if not isinstance(owner, str) or not owner.strip() or owner != owner.strip() or "\x00" in owner:
+            return {"success": False, "error": "invalid owner"}
         if not isinstance(lease_id, str):
             return {"success": False, "error": "lease_id must be a string"}
         if not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id:
@@ -472,15 +463,15 @@ class ScopeLeaseStore:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 rows = con.execute(
-                    "SELECT path FROM leases WHERE lease_id=? AND tenant=? AND expires_at>?",
-                    (lease_id, tenant, now),
+                    "SELECT path FROM leases WHERE lease_id=? AND owner=? AND expires_at>?",
+                    (lease_id, owner, now),
                 ).fetchall()
                 if not rows:
                     con.execute("ROLLBACK")
-                    return {"success": False, "error": "lease not found, expired, or belongs to another tenant"}
+                    return {"success": False, "error": "lease not found, expired, or belongs to another owner"}
                 con.execute(
-                    "UPDATE leases SET expires_at=? WHERE lease_id=? AND tenant=?",
-                    (new_expires, lease_id, tenant),
+                    "UPDATE leases SET expires_at=? WHERE lease_id=? AND owner=?",
+                    (new_expires, lease_id, owner),
                 )
                 con.execute("COMMIT")
                 paths = [r[0] for r in rows]
@@ -507,29 +498,29 @@ class ScopeLeaseStore:
                     root_path, physical_root_id = self._root(root)
                     if coordination_id is _COORDINATION_ID_UNSET:
                         return con.execute(
-                            "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
+                            "SELECT lease_id,owner,root_path,path,purpose,expires_at FROM leases "
                             "WHERE (root_id=? OR root_path=?) AND expires_at>? ORDER BY expires_at",
                             (physical_root_id, root_path, now),
                         ).fetchall()
                     root_id = f"project:{coordination_id}"
                     return con.execute(
-                        "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
+                        "SELECT lease_id,owner,root_path,path,purpose,expires_at FROM leases "
                         "WHERE (root_id=? OR (root_id=? AND root_path=?)) AND expires_at>? ORDER BY expires_at",
                         (root_id, physical_root_id, root_path, now),
                     ).fetchall()
                 if coordination_id is not _COORDINATION_ID_UNSET:
                     return con.execute(
-                        "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
+                        "SELECT lease_id,owner,root_path,path,purpose,expires_at FROM leases "
                         "WHERE root_id=? AND expires_at>? ORDER BY expires_at",
                         (f"project:{coordination_id}", now),
                     ).fetchall()
                 return con.execute(
-                    "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases WHERE expires_at>? ORDER BY expires_at",
+                    "SELECT lease_id,owner,root_path,path,purpose,expires_at FROM leases WHERE expires_at>? ORDER BY expires_at",
                     (now,),
                 ).fetchall()
         rows = retry_busy(read, retries=3)
         return [
-            {"lease_id": r[0], "tenant": r[1], "root": r[2], "path": r[3], "purpose": r[4], "expires_at": r[5]}
+            {"lease_id": r[0], "owner": r[1], "root": r[2], "path": r[3], "purpose": r[4], "expires_at": r[5]}
             for r in rows
         ]
 
@@ -556,23 +547,23 @@ class ScopeLeaseStore:
                         root_ids = (f"project:{coordination_id}", physical_root_id)
                     placeholders = ",".join("?" for _ in root_ids)
                     return con.execute(
-                        f"SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits "
+                        f"SELECT owner, blocked_by, requested_path, updated_at FROM lease_waits "
                         f"WHERE root_id IN ({placeholders}) AND updated_at>? ORDER BY updated_at DESC",
                         (*root_ids, now - 3600),
                     ).fetchall()
                 if coordination_id is not _COORDINATION_ID_UNSET:
                     return con.execute(
-                        "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits "
+                        "SELECT owner, blocked_by, requested_path, updated_at FROM lease_waits "
                         "WHERE root_id=? AND updated_at>? ORDER BY updated_at DESC",
                         (f"project:{coordination_id}", now - 3600),
                     ).fetchall()
                 return con.execute(
-                    "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits WHERE updated_at>? ORDER BY updated_at DESC",
+                    "SELECT owner, blocked_by, requested_path, updated_at FROM lease_waits WHERE updated_at>? ORDER BY updated_at DESC",
                     (now - 3600,),
                 ).fetchall()
         rows = retry_busy(read, retries=3)
         return [
-            {"tenant": r[0], "blocked_by": r[1], "requested_path": r[2], "updated_at": r[3]}
+            {"owner": r[0], "blocked_by": r[1], "requested_path": r[2], "updated_at": r[3]}
             for r in rows
         ]
 
@@ -581,46 +572,46 @@ class ScopeLeaseStore:
         path: str,
         root: str = "",
         *,
-        tenant: str | None = None,
+        owner: str | None = None,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
         """Check if a specific file or directory path is leased or in conflict."""
         if not isinstance(path, str):
             return {
                 "leased": False, "conflict": False, "path": "",
-                "error": "path must be a string", "tenant": None,
+                "error": "path must be a string", "owner": None,
                 "lease_id": None, "expires_at": None, "purpose": None,
             }
         if not isinstance(root, str) or root != root.strip() or "\x00" in root:
             return {
                 "leased": False, "conflict": False, "path": path,
-                "error": "invalid root", "tenant": None,
+                "error": "invalid root", "owner": None,
                 "lease_id": None, "expires_at": None, "purpose": None,
             }
-        if tenant is not None and (not isinstance(tenant, str) or not tenant.strip() or "\x00" in tenant):
+        if owner is not None and (not isinstance(owner, str) or not owner.strip() or owner != owner.strip() or "\x00" in owner):
             return {
                 "leased": False, "conflict": False, "path": path,
-                "error": "invalid tenant", "tenant": None,
+                "error": "invalid owner", "owner": None,
                 "lease_id": None, "expires_at": None, "purpose": None,
             }
         if coordination_id is not _COORDINATION_ID_UNSET and coordination_id is not None and not _is_canonical_coordination_id(coordination_id):
             return {
                 "leased": False, "conflict": False, "path": path,
-                "error": "invalid project coordination id", "tenant": None,
+                "error": "invalid project coordination id", "owner": None,
                 "lease_id": None, "expires_at": None, "purpose": None,
             }
         if not path:
-            return {"leased": False, "conflict": False, "path": "", "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+            return {"leased": False, "conflict": False, "path": "", "owner": None, "lease_id": None, "expires_at": None, "purpose": None}
         try:
             root_path, physical_root_id = self._root(root)
             rel_path = _norm_rel(path, root=root_path)
         except Exception as exc:
-            return {"leased": False, "conflict": False, "path": path, "error": str(exc), "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+            return {"leased": False, "conflict": False, "path": path, "error": str(exc), "owner": None, "lease_id": None, "expires_at": None, "purpose": None}
 
         if coordination_id is _COORDINATION_ID_UNSET:
             root_id = physical_root_id
         elif coordination_id is None:
-            return {"leased": False, "conflict": False, "path": rel_path, "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+            return {"leased": False, "conflict": False, "path": rel_path, "owner": None, "lease_id": None, "expires_at": None, "purpose": None}
         else:
             root_id = f"project:{coordination_id}"
 
@@ -630,13 +621,13 @@ class ScopeLeaseStore:
             with closing(self._connect()) as con:
                 if coordination_id is _COORDINATION_ID_UNSET:
                     rows = con.execute(
-                        "SELECT lease_id, tenant, path, purpose, expires_at FROM leases "
+                        "SELECT lease_id, owner, path, purpose, expires_at FROM leases "
                         "WHERE root_id=? AND expires_at>?",
                         (root_id, now),
                     ).fetchall()
                 else:
                     rows = con.execute(
-                        "SELECT lease_id, tenant, path, purpose, expires_at FROM leases "
+                        "SELECT lease_id, owner, path, purpose, expires_at FROM leases "
                         "WHERE (root_id=? OR (root_id=? AND root_path=?)) AND expires_at>?",
                         (root_id, physical_root_id, root_path, now),
                     ).fetchall()
@@ -651,20 +642,20 @@ class ScopeLeaseStore:
                 "leased": False,
                 "conflict": False,
                 "path": rel_path,
-                "tenant": None,
+                "owner": None,
                 "lease_id": None,
                 "expires_at": None,
                 "purpose": None,
             }
 
-        held_lease_id, held_tenant, held_path, held_purpose, held_expires_at = matched
-        conflict = bool(tenant is not None and held_tenant != tenant)
+        held_lease_id, held_owner, held_path, held_purpose, held_expires_at = matched
+        conflict = bool(owner is not None and held_owner != owner)
         return {
             "leased": True,
             "conflict": conflict,
             "path": rel_path,
             "held_path": held_path,
-            "tenant": held_tenant,
+            "owner": held_owner,
             "lease_id": held_lease_id,
             "expires_at": held_expires_at,
             "purpose": held_purpose,

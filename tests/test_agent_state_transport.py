@@ -33,13 +33,20 @@ enabled = true
     client = HubClient(config_path=str(cfg_path), auto_start=False)
 
     # Pre-populate a task
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(tmp_path, configured_state_dir(app.config)).coordination_id
     app.agent_tasks.create(
         GoalContract(goal="Test Task"),
-        ScopeContext(task_id="task-1"),
+        ScopeContext(task_id="task-1", repository_id=repository_id),
         task_id="task-1",
+        repo_root=str(tmp_path),
     )
     # Save a memo
-    app.memory.put(str(tmp_path), "known", "memo_value", "test", ttl_seconds=3600)
+    app.memory.put(
+        str(tmp_path), "known", "memo_value", ttl_seconds=3600,
+        metadata={"source": "test"},
+    )
 
     # We mock or run directly via app or client
     # For transport test without network server, we can mock client request/get/post through app handlers or test client directly
@@ -214,7 +221,6 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
     c_res2 = mcp_mod.local_ai_coord(
         action="memory_record",
         record={"key": "k", "value": "v", "expires_at": 12345.0},
-        ttl_seconds=77,
     )
     assert c_res2["success"] is True
     memory_payload = next(
@@ -222,7 +228,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         if call[0] == "COORD" and call[1] == "memory_record"
     )
     assert memory_payload["record"]["expires_at"] == 12345.0
-    assert memory_payload["ttl_seconds"] == 77
+    assert "ttl_seconds" not in memory_payload
 
     c_res2_default = mcp_mod.local_ai_coord(
         action="memory_record",
@@ -243,9 +249,8 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         scope="task",
         scope_id="task-1",
         task_id="task-1",
-        root="repo-root",
+        root=str(tmp_path),
         repository_id="repository-1",
-        tenant="tenant-1",
         clone_id="clone-1",
         worktree_id="worktree-1",
         branch="branch-1",
@@ -256,7 +261,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         if call[0] == "COORD" and call[1] == "memory_get"
     )
     assert {key: memory_get_payload[key] for key in (
-        "record_id", "scope", "scope_id", "task_id", "repository_id", "tenant",
+        "record_id", "scope", "scope_id", "task_id", "repository_id",
         "clone_id", "worktree_id", "branch",
     )} == {
         "record_id": "mem-task-1",
@@ -264,19 +269,21 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         "scope_id": "task-1",
         "task_id": "task-1",
         "repository_id": "repository-1",
-        "tenant": "tenant-1",
         "clone_id": "clone-1",
         "worktree_id": "worktree-1",
         "branch": "branch-1",
     }
 
-    c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e", "operation_class": "test", "signature_hash": "fixture"})
+    c_res3 = mcp_mod.local_ai_coord(
+        action="incident_decision", root=str(tmp_path),
+        fingerprint={"error_class": "e", "operation_class": "test", "signature_hash": "fixture"},
+    )
     assert c_res3["success"] is True
 
     c_res4 = mcp_mod.local_ai_coord(
         action="context_compile",
         task_id="t1",
-        root="repo-root",
+        root=str(tmp_path),
         clone_id="clone-1",
         worktree_id="worktree-1",
         branch="branch-1",
@@ -358,25 +365,25 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
 def test_http_agent_state_routes(running_app_client):
     from local_ai_hub import http_server
     client, app = running_app_client
+    previous_app = http_server.APP
     http_server.APP = app
-
-    # Test handler dispatch directly via dummy mock or test client
-    # 1. Incidents endpoint
-    assert app.agent_incidents.state_store.enabled is True
-    # 2. Verification endpoint
-    assert app.agent_verification.state_store.enabled is True
-    # 3. Context endpoint
-    assert app.agent_context.state_store.enabled is True
-    # 4. Learning endpoint
-    assert app.agent_learning.state_store.enabled is True
+    try:
+        assert app.agent_incidents.state_store.enabled is True
+        assert app.agent_verification.state_store.enabled is True
+        assert app.agent_context.state_store.enabled is True
+        assert app.agent_learning.state_store.enabled is True
+    finally:
+        http_server.APP = previous_app
 
 
-def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypatch):
+def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypatch, tmp_path):
     import local_ai_hub.mcp_server as mcp_mod
+    captured = {}
 
     class ContextClient:
         def post(self, path, payload, **kwargs):
             assert path == "/api/agent-state/context"
+            captured.update(payload)
             task_context = {
                 "success": True,
                 "complete": True,
@@ -414,9 +421,9 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
     result = mcp_mod.local_ai_coord(
         action="context_compile",
         task_id="task-1",
-        root="repo-root",
+        root=str(tmp_path),
         max_response_tokens=3200,
-        response_profile="standard",
+        response_profile="compact",
     )
 
     assert result["success"] is True
@@ -426,6 +433,7 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
     assert result["evidence_ids"] == ["E1", "E2"]
     assert result["task_context"]["context_id"] == "taskctx-1"
     assert result["task_context"]["next_action"] == "use_compiled_context"
+    assert captured["include_diagnostics"] is False
 
 
 def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch):
@@ -442,7 +450,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     repo_one = tmp_path / "repo-one"
@@ -455,28 +464,32 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
     repo_two_id = resolve_project_context(repo_two, state_dir).coordination_id
     assert repo_one_id
     assert repo_two_id
-    for task_id, root, tenant in (
-        ("task-one", repo_one, "api-token-default"),
-        ("task-two", repo_two, "api-token-default"),
-        ("task-rich", repo_one, "api-token-default"),
+    for task_id, root, session_id in (
+        ("task-one", repo_one, "session-one"),
+        ("task-two", repo_two, "session-two"),
+        ("task-rich", repo_one, "session-rich"),
     ):
         created = app.agent_tasks.create(
             GoalContract(goal="Memory scope fixture"),
-            ScopeContext(task_id=task_id, repository_id=str(root), session_id=tenant),
+            ScopeContext(
+                task_id=task_id,
+                repository_id=repo_one_id if root == repo_one else repo_two_id,
+                session_id=session_id,
+            ),
             task_id=task_id,
+            repo_root=str(root),
         )
-        assert created.context.repository_id == str(root)
-        assert created.context.session_id == tenant
+        assert created.context.repository_id == (repo_one_id if root == repo_one else repo_two_id)
+        assert created.context.session_id == session_id
         assert app.agent_tasks.get(task_id) is not None
     rich_record = MemoryRecord.create(
         kind="finding",
         scope=AgentScope.TASK,
-        scope_id=http_server._task_memory_scope_id("api-token-default", "task-rich"),
+        scope_id="task-rich",
         key="rich",
         value="rich-task",
         provenance={
             "root": str(repo_one),
-            "tenant": "api-token-default",
             "repository_id": repo_one_id,
             "clone_id": "clone-rich",
             "worktree_id": "worktree-rich",
@@ -484,14 +497,12 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
         },
     )
     records = (
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("api-token-default", "task-one"), key="shared", value="task-one", provenance={"root": str(repo_one), "repository_id": repo_one_id, "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("api-token-default", "task-two"), key="shared", value="task-two", provenance={"root": str(repo_two), "repository_id": repo_two_id, "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task", provenance={"root": str(repo_one), "repository_id": repo_one_id, "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one", provenance={"tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two", provenance={"tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-one", key="shared", value="task-one", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-two", key="shared", value="task-two", provenance={"root": str(repo_two), "repository_id": repo_two_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="api-token-default", key="tenant-shared", value="tenant-one", provenance={"tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-1"}),
         MemoryRecord.create(
             kind="finding",
             scope=AgentScope.SESSION,
@@ -501,18 +512,16 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             provenance={
                 "root": str(repo_one),
                 "repository_id": repo_one_id,
-                "tenant": "api-token-default",
                 "clone_id": "clone-session",
                 "worktree_id": "worktree-session",
                 "branch": "branch-session",
             },
         ),
         rich_record,
-        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": repo_one_id, "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one), "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": repo_two_id, "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": repo_one_id, "tenant": "legacy-tenant"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": repo_two_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-owner-scope", value="global-value", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
     )
     for record in records:
         app.agent_memory.record(record, actor="user")
@@ -526,10 +535,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
         query = urllib.parse.urlencode(params)
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory?{query}",
-            headers={
-                "Connection": "close",
-                **({"X-LocalAI-Tenant": str(params["tenant"])} if params.get("tenant") else {}),
-            },
+            headers={"Connection": "close"},
             method="GET",
         )
         with urllib.request.urlopen(request) as response:
@@ -546,17 +552,17 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             return json.loads(response.read().decode("utf-8"))
 
     try:
-        task_result = get(scope="task", scope_id="task-one", key="shared", root=str(repo_one), tenant="api-token-default")
+        task_result = get(scope="task", scope_id="task-one", key="shared", root=str(repo_one), )
         assert [item["value"] for item in task_result["records"]] == ["task-one"]
         for scope_arguments in ({}, {"scope": "session"}, {"scope": "session", "root": str(repo_one)}):
             with pytest.raises(urllib.error.HTTPError) as conflicting_session:
-                get(scope_id="session-one", session_id="session-two", tenant="api-token-default", **scope_arguments)
+                get(scope_id="session-one", session_id="session-two", **scope_arguments)
             assert conflicting_session.value.code == 400
-        session_result = get(scope="session", scope_id="session-one", key="shared", tenant="api-token-default")
+        session_result = get(scope="session", scope_id="session-one", key="shared", )
         assert [item["value"] for item in session_result["records"]] == ["session-one"]
-        task_without_scope = get(task_id="task-one", key="shared", root=str(repo_one), tenant="api-token-default")
+        task_without_scope = get(task_id="task-one", key="shared", root=str(repo_one), )
         assert [item["value"] for item in task_without_scope["records"]] == ["task-one"]
-        session_without_scope = get(session_id="session-one", key="shared", tenant="api-token-default")
+        session_without_scope = get(session_id="session-one", key="shared", )
         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
         repo_without_scope = get(root=str(repo_one), key="shared")
         assert [item["value"] for item in repo_without_scope["records"]] == ["repo-one"]
@@ -564,14 +570,13 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
         assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
         repository_id_without_scope = get(repository_id=repo_one_id, key="shared", root=str(repo_one))
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
-        tenant_without_scope = get(tenant="api-token-default", key="tenant-shared")
-        assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
+        other_session = get(session_id="session-two", key="shared")
+        assert [item["value"] for item in other_session["records"]] == ["session-two"]
         global_record = next(record for record in records if record.scope is AgentScope.GLOBAL)
         global_for_principal = post({
             "action": "get",
             "record_id": global_record.record_id,
             "scope": "global",
-            "tenant": "api-token-default",
             "root": str(repo_one),
             "repository_id": repo_one_id,
         })
@@ -580,7 +585,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "action": "delete",
             "record_id": global_record.record_id,
             "scope": "global",
-            "tenant": "api-token-default",
             "root": str(repo_one),
             "repository_id": repo_one_id,
         })
@@ -592,7 +596,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "scope_id": "task-rich",
             "task_id": "task-rich",
             "root": str(repo_one),
-            "tenant": "api-token-default",
             "repository_id": repo_one_id,
             "clone_id": "clone-rich",
             "worktree_id": "worktree-rich",
@@ -607,14 +610,13 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
                 "session_id": "session-one",
             })
         assert ambiguous.value.code == 400
-        with pytest.raises(urllib.error.HTTPError) as tenant_ambiguous:
+        with pytest.raises(urllib.error.HTTPError) as retired_selector:
             post({
                 "action": "find",
                 "scope": "session",
-                "tenant": "tenant-1",
-                "key": "tenant-shared",
+                "tenant": None,
             })
-        assert tenant_ambiguous.value.code == 403
+        assert retired_selector.value.code == 400
         with pytest.raises(urllib.error.HTTPError) as invalid_scope:
             get(scope="not-a-scope", key="shared")
         assert invalid_scope.value.code == 400
@@ -640,7 +642,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "scope_id": "session-rich",
             "session_id": "session-rich",
             "root": str(repo_one),
-            "tenant": "api-token-default",
             "clone_id": "clone-session",
             "worktree_id": "worktree-session",
             "branch": "branch-session",
@@ -655,7 +656,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "scope": "task",
             "scope_id": "task-one",
             "root": str(repo_one),
-            "tenant": "api-token-default",
         })
         assert direct["record"]["value"] == "task-one"
         direct_without_scope = post({
@@ -663,7 +663,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "record_id": records[0].record_id,
             "task_id": "task-one",
             "root": str(repo_one),
-            "tenant": "api-token-default",
         })
         assert direct_without_scope["record"]["value"] == "task-one"
         with pytest.raises(urllib.error.HTTPError) as mismatch:
@@ -673,7 +672,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
                 "scope": "task",
                 "scope_id": "task-two",
                 "root": str(repo_one),
-                "tenant": "api-token-default",
             })
         assert mismatch.value.code == 404
         with pytest.raises(urllib.error.HTTPError) as task_mismatch_without_scope:
@@ -682,7 +680,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
                 "record_id": records[0].record_id,
                 "task_id": "task-two",
                 "root": str(repo_one),
-                "tenant": "api-token-default",
             })
         assert task_mismatch_without_scope.value.code == 404
 
@@ -702,7 +699,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
                 scope_id="task-rich",
                 task_id="task-rich",
                 root=str(repo_one),
-                tenant="api-token-default",
                 repository_id=repo_one_id,
                 clone_id="clone-rich",
                 worktree_id="worktree-rich",
@@ -718,14 +714,14 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             )
             assert mcp_ambiguous["success"] is False
             # Mixed identities without a root reject before record lookup.
-            assert mcp_ambiguous["status_code"] == 400
+            assert "root" in mcp_ambiguous["error"].lower()
         finally:
             mcp_server.CLIENT = previous_mcp_client
             mcp_client.close()
         quarantined = post({
             "action": "quarantine", "record_id": rich_record.record_id,
             "scope": "task", "scope_id": "task-rich", "task_id": "task-rich",
-            "root": str(repo_one), "tenant": "api-token-default",
+            "root": str(repo_one),
             "repository_id": repo_one_id, "reason": "fixture quarantine",
         })
         assert quarantined["success"] is True
@@ -737,7 +733,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
                 "scope": "task",
                 "scope_id": "another-task",
                 "root": str(repo_one),
-                "tenant": "api-token-default",
             })
         assert delete_mismatch.value.code == 404
         deleted = post({
@@ -747,7 +742,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "scope_id": "task-one",
             "task_id": "task-one",
             "root": str(repo_one),
-            "tenant": "api-token-default",
         })
         assert deleted["success"] is True
         assert deleted["deleted"] is True
@@ -804,16 +798,23 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
     repo_root = tmp_path / "verification-repo"
     repo_root.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(
+        repo_root, configured_state_dir(app.config)
+    ).coordination_id
     app.agent_tasks.create(
         GoalContract(goal="Verification receipt fixture"),
-        ScopeContext(task_id="route-task", repository_id=str(repo_root), session_id="api-token-default"),
+        ScopeContext(task_id="route-task", repository_id=repository_id, session_id="session-route"),
         task_id="route-task",
+        repo_root=str(repo_root),
     )
     previous = http_server.APP
     http_server.APP = app
@@ -866,16 +867,25 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(
+        repo_root, configured_state_dir(app.config)
+    ).coordination_id
     scoped_record = MemoryRecord.create(
         kind="finding",
         scope=AgentScope.WORKTREE,
         scope_id="worktree-one",
         key="private-delete",
         value="preserve me",
+        provenance={"root": str(repo_root), "repository_id": repository_id, "worktree_id": "worktree-one"},
     )
     global_record = MemoryRecord.create(
         kind="finding",
@@ -908,6 +918,7 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
                 "record_id": scoped_record.record_id,
                 "scope": "worktree",
                 "scope_id": "worktree-one",
+                "root": str(repo_root),
                 "worktree_id": "worktree-one",
             })
         assert denied.value.code == 403
@@ -915,6 +926,9 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
             scoped_record.record_id,
             scope=AgentScope.WORKTREE,
             scope_id="worktree-one",
+            root=str(repo_root),
+            repository_id=repository_id,
+            worktree_id="worktree-one",
         ).value == "preserve me"
         deleted = post({"action": "delete", "record_id": global_record.record_id, "scope": "global"})
         assert deleted["deleted"] is True
@@ -937,10 +951,24 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    repo_root = tmp_path / "context-repo"
+    repo_root.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(
+        repo_root, configured_state_dir(app.config)
+    ).coordination_id
+    app.agent_tasks.create(
+        GoalContract(goal="Context diagnostics transport"),
+        ScopeContext(repository_id=repository_id, task_id="transport-task", session_id="session-context"),
+        task_id="transport-task",
+        repo_root=str(repo_root),
+    )
     previous = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -950,6 +978,8 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
         payload = json.dumps({
             "action": "compile",
             "task_id": "transport-task",
+            "root": str(repo_root),
+            "session_id": "session-context",
             "token_budget": 120,
             "include_diagnostics": True,
         }).encode("utf-8")
@@ -983,10 +1013,28 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11499\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    repo_root = tmp_path / "context-repo"
+    repo_root.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(
+        repo_root, configured_state_dir(app.config)
+    ).coordination_id
+    app.agent_tasks.create(
+        GoalContract(goal="Context scope transport"),
+        ScopeContext(
+            repository_id=repository_id, clone_id="clone-http",
+            worktree_id="worktree-http", branch="branch-http",
+            task_id="transport-task", session_id="session-http",
+        ),
+        task_id="transport-task",
+        repo_root=str(repo_root),
+    )
     previous = http_server.APP
     http_server.APP = app
     seen = {}
@@ -1010,10 +1058,11 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
         payload = json.dumps({
             "action": "compile",
             "task_id": "transport-task",
+            "root": str(repo_root),
             "clone_id": "clone-http",
             "worktree_id": "worktree-http",
             "branch": "branch-http",
-            "repository_id": "repository-http",
+            "repository_id": repository_id,
             "session_id": "session-http",
             "repository_revision": "revision-http",
         }).encode("utf-8")
@@ -1030,7 +1079,7 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
             "clone_id": "clone-http",
             "worktree_id": "worktree-http",
             "branch": "branch-http",
-            "repository_id": "repository-http",
+            "repository_id": repository_id,
             "session_id": "session-http",
             "repository_revision": "revision-http",
         }
@@ -1281,10 +1330,14 @@ def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
     app = LocalAIApp(str(cfg_path))
     repo = tmp_path / "repo"
     repo.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(repo, configured_state_dir(app.config)).coordination_id
     app.agent_tasks.create(
         GoalContract(goal="Receipt schema fixture"),
-        ScopeContext(task_id="route-task", repository_id=str(repo), session_id="api-token-default"),
+        ScopeContext(task_id="route-task", repository_id=repository_id, session_id="api-token-default"),
         task_id="route-task",
+        repo_root=str(repo),
     )
     previous = http_server.APP
     http_server.APP = app

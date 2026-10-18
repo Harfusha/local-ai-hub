@@ -38,7 +38,6 @@ def test_cancelled_dispatched_job_does_not_start_execute() -> None:
     job = Job(
         id=1,
         model="fixture-model",
-        tenant="tenant-a",
         source="test",
         priority=5,
         execute=lambda: (started.append(True) or {"success": True}),
@@ -50,7 +49,6 @@ def test_cancelled_dispatched_job_does_not_start_execute() -> None:
     scheduler._inflight = 1
     scheduler._inflight_jobs = {job.id: job}
     scheduler._inflight_background = 0
-    scheduler._inflight_by_tenant = {job.tenant: 1}
     scheduler._last_foreground_activity = 0.0
 
     scheduler._run_job(job)

@@ -103,7 +103,7 @@ def test_project_alias_worktree_override_and_env_values_use_real_broker(
     state_dir = tmp_path / "state"
     try:
         result = _broker(state_dir).run_project_command(
-            "probe", str(linked), tenant="t15-root-parity", force=True
+            "probe", str(linked),  force=True
         )
 
         serialized = json.dumps(result, default=str)
@@ -225,7 +225,7 @@ def test_public_cancel_stops_streamed_command_and_clears_active_record(
                 broker.run(
                     invocation,
                     str(tmp_path),
-                    tenant=tenant,
+
                     timeout=45,
                     force=True,
                     log_callback=on_log,
@@ -276,7 +276,7 @@ def test_large_stdout_returns_bounded_inline_text_and_bounded_artifact(
         cwd=str(tmp_path),
     )
 
-    result = broker.run(invocation, str(tmp_path), tenant="t15-large-output", force=True)
+    result = broker.run(invocation, str(tmp_path),  force=True)
 
     command_artifact = next(record for record in artifacts.records if record["kind"] == "command")
     artifact = command_artifact["content"]

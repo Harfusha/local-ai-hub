@@ -43,11 +43,11 @@ def test_project_completion_rejects_skipped_memory_without_not_used_reason(
             key="stale-project-memory",
             value="stale evidence",
             status=MemoryStatus.STALE,
-            provenance={"root": str(project_root), "repository_id": repository_id, "tenant": "tenant-a"},
+            provenance={"root": str(project_root), "repository_id": repository_id},
         )
     )
     task_id = "project-completion-skipped-memory"
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         app.agent_tasks.create(
             GoalContract(
@@ -91,8 +91,7 @@ def test_project_completion_rejects_skipped_memory_without_not_used_reason(
             "mutation_generation": 0,
             "criteria": ["required_commands"],
         },
-        "agent",
-        "source_review",
+        kind="source_review",
     )
     command_evidence = app.artifacts.put_json(
         {
@@ -107,8 +106,7 @@ def test_project_completion_rejects_skipped_memory_without_not_used_reason(
             "exit_code": 0,
             "result": {"success": True, "exit_code": 0},
         },
-        "agent",
-        "command_verification",
+        kind="command_verification",
     )
     app.agent_verification.record(
         VerificationReceipt.create(

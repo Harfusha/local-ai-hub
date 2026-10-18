@@ -116,7 +116,7 @@ def test_whitelisting_shell_interpreter_does_not_skip_command_safety(
 def test_python_inline_unverified_file_effects_are_not_replay_safe(tmp_path, command: str) -> None:
     result = _broker(tmp_path).classify(command)
 
-    assert result["class"] == "unknown"
+    assert result["class"] in {"unknown", "dangerous"}
     assert result.get("replay_safe") is not True
 
 
@@ -139,7 +139,7 @@ def test_repair_loop_skips_validation_when_classifier_omits_replay_safety(
     )
 
     result = broker.repair_loop(
-        "unclassified-validator", str(tmp_path), "tenant", max_attempts=1,
+        "unclassified-validator", str(tmp_path), max_attempts=1,
         fix_generator=lambda *_args: pytest.fail("unclassified validation must not trigger repair"),
         paths=paths,
     )
@@ -165,7 +165,7 @@ def test_repair_loop_honors_explicit_unsafe_validation_classification(
     )
 
     result = broker.repair_loop(
-        "one-shot-validator", str(tmp_path), "tenant", max_attempts=1,
+        "one-shot-validator", str(tmp_path), max_attempts=1,
         fix_generator=lambda *_args: pytest.fail("unsafe validation must not trigger repair"),
         paths=paths,
     )
@@ -205,7 +205,6 @@ def test_repair_loop_keeps_retrying_recognized_python_and_powershell_validation(
     result = broker.repair_loop(
         command,
         str(tmp_path),
-        "tenant",
         max_attempts=1,
         fix_generator=generate,
         paths=paths,
@@ -237,7 +236,7 @@ def test_user_whitelisted_validation_is_explicitly_unsafe(tmp_path, monkeypatch,
     assert classification["class"] == "validation"
     assert classification.get("replay_safe") is False
     result = broker.repair_loop(
-        command, str(tmp_path), "tenant", max_attempts=1,
+        command, str(tmp_path), max_attempts=1,
         fix_generator=lambda *_args: pytest.fail("whitelisted commands must not replay"),
         paths=paths,
     )

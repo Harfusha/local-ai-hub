@@ -11,19 +11,14 @@ import pytest
 from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
 
 
-def _tenant_identity(label: str) -> str:
-    return hashlib.sha256(label.encode("utf-8")).hexdigest()
-
-
 def test_fresh_schema_uses_sidecar_and_preserves_nul_slices(tmp_path) -> None:
     text = "A\x00BCDEF\x00GHI"
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put(text, "owner", "text")
+    artifact_id = store.put(text, kind="text")
     db_path = tmp_path / "artifacts.sqlite3"
     result = store.get_slices(
         artifact_id,
-        [{"offset": 0, "max_chars": 7}, {"offset": 5, "max_chars": 6}],
-        tenant="owner",
+        slices=[{"offset": 0, "max_chars": 7}, {"offset": 5, "max_chars": 6}],
     )
     assert result["success"] is True
     assert result["slices"] == [
@@ -46,13 +41,11 @@ def test_fresh_schema_uses_sidecar_and_preserves_nul_slices(tmp_path) -> None:
 
 def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
-    tenant = _tenant_identity("owner")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
-            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
-            "VALUES(?,?,?,?,?,?)",
-            ("art_missing_paging", time.time(), tenant, tenant, "text", "unindexed"),
+            "INSERT INTO artifacts(artifact_id, created_at, kind, text) VALUES(?,?,?,?)",
+            ("art_missing_paging", time.time(), "text", "unindexed"),
         )
         connection.commit()
 
@@ -65,7 +58,7 @@ def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path
 @pytest.mark.parametrize("corruption", ["missing", "malformed", "inconsistent"])
 def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corruption) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put("# Heading\n\nbody", "owner", "text")
+    artifact_id = store.put("# Heading\n\nbody", kind="text")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         if corruption == "missing":
@@ -88,9 +81,9 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
             )
         connection.commit()
 
-    read_result = store.get(artifact_id, tenant="owner")
+    read_result = store.get(artifact_id)
     slices_result = store.get_slices(
-        artifact_id, [{"offset": 0, "max_chars": 10}], tenant="owner",
+        artifact_id, slices=[{"offset": 0, "max_chars": 10}],
     )
 
     for result in (read_result, slices_result):
@@ -101,7 +94,7 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
 def test_previous_paging_schema_is_rejected_without_mutation(tmp_path) -> None:
     text = "heading\n\nbody\x00tail"
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put(text, "owner", "text")
+    artifact_id = store.put(text, kind="text")
     db_path = tmp_path / "artifacts.sqlite3"
     previous_paging_schema = """CREATE TABLE artifact_paging_metadata (
         artifact_id TEXT PRIMARY KEY,
@@ -118,7 +111,7 @@ def test_previous_paging_schema_is_rejected_without_mutation(tmp_path) -> None:
             (old_sidecar_checksum, artifact_id),
         )
         durable_before = connection.execute(
-            "SELECT text, tenant, tenant_identity, checksum FROM artifacts WHERE artifact_id=?",
+            "SELECT text, checksum FROM artifacts WHERE artifact_id=?",
             (artifact_id,),
         ).fetchone()
         connection.execute("DROP TABLE artifact_paging_metadata")
@@ -133,7 +126,7 @@ def test_previous_paging_schema_is_rejected_without_mutation(tmp_path) -> None:
         ArtifactStore(tmp_path)
     with closing(sqlite3.connect(db_path)) as connection:
         durable_after = connection.execute(
-            "SELECT text, tenant, tenant_identity, checksum FROM artifacts WHERE artifact_id=?",
+            "SELECT text, checksum FROM artifacts WHERE artifact_id=?",
             (artifact_id,),
         ).fetchone()
         paging_columns = {
@@ -142,8 +135,8 @@ def test_previous_paging_schema_is_rejected_without_mutation(tmp_path) -> None:
         paging_after = connection.execute(
             "SELECT artifact_id, char_count, section_names FROM artifact_paging_metadata"
         ).fetchone()
-    assert durable_before[:3] == durable_after[:3]
-    assert durable_after[3] == old_sidecar_checksum
+    assert durable_before == durable_after
+    assert durable_after[1] == old_sidecar_checksum
     assert "section_names" in paging_columns
     assert "section_json" not in paging_columns
     assert paging_after == (artifact_id, len(text), "malformed derived data")
@@ -153,8 +146,8 @@ def test_core_and_sidecar_write_roll_back_together_on_failed_batch(tmp_path) -> 
     store = ArtifactStore(tmp_path)
     artifact_id = ""
     with pytest.raises(RuntimeError, match="abort batch"):
-        with store.batch("owner") as batch:
-            artifact_id = batch.put("batch payload", "text")
+        with store.batch() as batch:
+            artifact_id = batch.put("batch payload", kind="text")
             raise RuntimeError("abort batch")
 
     with closing(sqlite3.connect(tmp_path / "artifacts.sqlite3")) as connection:
@@ -166,14 +159,29 @@ def test_core_and_sidecar_write_roll_back_together_on_failed_batch(tmp_path) -> 
         ).fetchone() is None
 
 
-def test_binary_replacement_removes_stale_paging_sidecar(tmp_path, monkeypatch) -> None:
+def test_binary_replacement_removes_stale_paging_sidecar(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put("text payload", "owner", "text")
-    monkeypatch.setattr(
-        store, "_scoped_artifact_id", lambda connection, base_id, tenant_identity: artifact_id,
-    )
+    data = b"image bytes"
+    kind = "vision-image"
+    mime_type = "image/png"
+    checksum = hashlib.sha256(data).hexdigest()
+    artifact_id = "art_" + hashlib.sha256(
+        (kind + "\0" + mime_type + "\0" + checksum).encode("utf-8")
+    ).hexdigest()[:24]
+    section_json = json.dumps({"artifact_id": artifact_id, "names": [], "truncated": False}, separators=(",", ":"))
+    section_checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(tmp_path / "artifacts.sqlite3")) as connection:
+        connection.execute(
+            "INSERT INTO artifacts(artifact_id,created_at,kind,text) VALUES(?,?,?,?)",
+            (artifact_id, time.time(), "text", "stale text"),
+        )
+        connection.execute(
+            "INSERT INTO artifact_paging_metadata VALUES(?,?,?,?,?,?)",
+            (artifact_id, 10, section_json, section_checksum, "stale text", None),
+        )
+        connection.commit()
 
-    assert store.put_bytes(b"image bytes", "owner", "vision-image", "image/png") == artifact_id
+    assert store.put_bytes(data, kind=kind, mime_type=mime_type) == artifact_id
     with closing(sqlite3.connect(tmp_path / "artifacts.sqlite3")) as connection:
         assert connection.execute(
             "SELECT mime_type FROM artifacts WHERE artifact_id=?", (artifact_id,),
@@ -197,19 +205,12 @@ def test_new_core_schema_keeps_paging_fields_out_of_artifacts(tmp_path) -> None:
 def test_noncanonical_core_paging_schema_is_rejected(tmp_path) -> None:
     artifact_id = "art_durable_current_core"
     text = "head\x00middle\x00tail"
-    tenant = _tenant_identity("owner")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
-            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
-        )
-        connection.execute(
             """CREATE TABLE artifacts (
-                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL,
-                tenant_identity TEXT, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
+                kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
                 mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT,
                 identity_json TEXT, char_count INTEGER, section_names TEXT,
                 page_text TEXT, nul_mask BLOB
@@ -217,12 +218,12 @@ def test_noncanonical_core_paging_schema_is_rejected(tmp_path) -> None:
         )
         connection.execute(
             """INSERT INTO artifacts(
-                artifact_id, created_at, tenant, tenant_identity, kind, text,
+                artifact_id, created_at, kind, text,
                 char_count, section_names, page_text, nul_mask
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (artifact_id, time.time(), tenant, tenant, "text", text, 0, "[]", "stale", b""),
+            ) VALUES(?,?,?,?,?,?,?,?)""",
+            (artifact_id, time.time(), "text", text, 0, "[]", "stale", b""),
         )
         connection.commit()
 
     with pytest.raises(UnsupportedArtifactSchema, match="unsupported artifact"):
-        ArtifactStore(tmp_path).get(artifact_id, offset=4, max_chars=6, tenant="owner")
+        ArtifactStore(tmp_path).get(artifact_id, offset=4, max_chars=6)

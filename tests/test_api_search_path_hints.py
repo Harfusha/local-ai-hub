@@ -42,7 +42,6 @@ def test_api_search_forwards_path_hints_to_repo_search(monkeypatch):
         ],
     }
     handler._validate_payload = lambda _path, _payload: None
-    handler._tenant = lambda: "default"
     handler._agent = lambda: "agent"
     handler._send = lambda status, data: responses.append((status, data))
     monkeypatch.setattr(http_server, "APP", app)

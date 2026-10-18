@@ -65,11 +65,11 @@ def test_visual_diff_rejects_corrupt_crc_and_excessive_dimensions_before_model()
     assert calls == []
 
 
-def test_shared_vision_service_compares_tenant_scoped_artifacts(tmp_path):
+def test_shared_vision_service_compares_owner_global_artifacts(tmp_path):
     artifacts = ArtifactStore(tmp_path / 'artifacts')
     baseline, candidate = _png(b'\x00\x00\x00'), _png(b'\xff\xff\xff')
-    before = artifacts.put_bytes(baseline, 'tenant-a', 'before', 'image/png')
-    after = artifacts.put_bytes(candidate, 'tenant-a', 'after', 'image/png')
+    before = artifacts.put_bytes(baseline, kind='before', mime_type='image/png')
+    after = artifacts.put_bytes(candidate, kind='after', mime_type='image/png')
     calls = []
     def request(endpoint, payload, *, timeout):
         calls.append((endpoint, payload))
@@ -82,16 +82,17 @@ def test_shared_vision_service_compares_tenant_scoped_artifacts(tmp_path):
         repo_tools=None, max_output_tokens=1024,
     )
     args = {'baseline_screenshot_artifact_id': before, 'screenshot_artifact_id': after}
-    result = service.run(args, 'tenant-a')
+    result = service.run(args)
     assert result['success'] is True
     assert result['comparison']['bytes_identical'] is False
     payload = next(payload for endpoint, payload in calls if endpoint == '/api/generate')
     assert [base64.b64decode(item) for item in payload['images']] == [baseline, candidate]
     calls.clear()
-    denied = service.run(args, 'tenant-b')
-    assert denied['success'] is False
-    assert calls == []
-    cloud = service.run({**args, 'cloud_fallback': True}, 'tenant-a')
+    repeated = service.run(args)
+    assert repeated['success'] is True
+    assert calls
+    calls.clear()
+    cloud = service.run({**args, 'cloud_fallback': True})
     assert cloud['error_code'] == 'visual_comparison_local_only'
     assert calls == []
 

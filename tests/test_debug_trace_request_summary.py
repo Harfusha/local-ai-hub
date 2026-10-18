@@ -17,7 +17,7 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
     def test_command_list_row_has_redacted_summary_only(self):
         with tempfile.TemporaryDirectory() as state_dir:
             store = self._store(state_dir)
-            trace_id = store.start(kind="api_request", tenant="test", action="/api/command", request_id="req-1")
+            trace_id = store.start(kind="api_request", action="/api/command", request_id="req-1")
             store.update(trace_id, request={"action": "run", "command": "python tools/check_dashboard.py --api-token SUPERSECRET123"})
 
             item = store.list(limit=10)["items"][0]
@@ -30,7 +30,7 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
     def test_other_route_request_text_is_not_returned_in_list(self):
         with tempfile.TemporaryDirectory() as state_dir:
             store = self._store(state_dir)
-            trace_id = store.start(kind="api_request", tenant="test", action="/api/reason", request_id="req-2")
+            trace_id = store.start(kind="api_request", action="/api/reason", request_id="req-2")
             store.update(trace_id, request={"task": "private prompt content"})
 
             item = store.list(limit=10)["items"][0]
@@ -41,7 +41,7 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
     def test_list_row_exposes_compact_project_label(self):
         with tempfile.TemporaryDirectory() as state_dir:
             store = self._store(state_dir)
-            trace_id = store.start(kind="api_request", tenant="test", action="/api/search", request_id="req-project")
+            trace_id = store.start(kind="api_request", action="/api/search", request_id="req-project")
             store.update(trace_id, request={"root": "C:/workspace/hub", "query": "trace"})
 
             item = store.list(limit=10)["items"][0]
@@ -96,7 +96,7 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
     def test_enabled_observer_persists_complete_thinking_and_final_output(self):
         with tempfile.TemporaryDirectory() as state_dir:
             store = self._store(state_dir)
-            trace_id = store.start(kind="api_request", tenant="test", action="/api/review", request_id="req-thinking")
+            trace_id = store.start(kind="api_request", action="/api/review", request_id="req-thinking")
             observer = DebugTraceObserver(store, trace_id)
 
             observer.thinking_delta("private reasoning")

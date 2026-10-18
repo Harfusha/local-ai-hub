@@ -33,12 +33,12 @@ def test_slo_observation_validation_and_helpers() -> None:
     assert failing.is_successful() is False
 
 
-def test_rollback_trigger_and_promotion_decision_sanitization() -> None:
+def test_rollback_trigger_and_promotion_decision_preserve_canonical_inputs() -> None:
     rb = RollbackTrigger(
-        candidate_id=" cand-1\x00 ",
-        action=" rollback\x00 ",
-        reason=" reason\x00 ",
-        restored_version=" v1\x00 ",
+        candidate_id="cand-1",
+        action="rollback",
+        reason="reason",
+        restored_version="v1",
     )
     assert rb.candidate_id == "cand-1"
     assert rb.action == "rollback"
@@ -46,26 +46,41 @@ def test_rollback_trigger_and_promotion_decision_sanitization() -> None:
     assert rb.restored_version == "v1"
 
     pd = PromotionDecision(
-        candidate_id=" cand-2\x00 ",
+        candidate_id="cand-2",
         promoted=True,
-        approver=" user\x00 ",
-        version=" v2\x00 ",
+        approver="user",
+        version="v2",
     )
     assert pd.candidate_id == "cand-2"
     assert pd.approver == "user"
     assert pd.version == "v2"
 
 
+@pytest.mark.parametrize(
+    ("factory", "values", "error"),
+    (
+        (RollbackTrigger, {"candidate_id": 7}, TypeError),
+        (RollbackTrigger, {"candidate_id": "cand\x00id"}, ValueError),
+        (PromotionDecision, {"candidate_id": True, "promoted": True, "approver": "user", "version": "v2"}, TypeError),
+        (PromotionDecision, {"candidate_id": "cand", "promoted": 1, "approver": "user", "version": "v2"}, TypeError),
+        (PromotionDecision, {"candidate_id": "cand", "promoted": True, "approver": " user", "version": "v2"}, ValueError),
+    ),
+)
+def test_rollback_and_promotion_records_reject_noncanonical_inputs(factory, values, error) -> None:
+    with pytest.raises(error):
+        factory(**values)
+
+
 def test_improvement_candidate_validation_and_helpers() -> None:
     cand = ImprovementCandidate(
-        candidate_id=" cand-1\x00 ",
-        name=" candidate\x00 ",
-        baseline_version=" base\x00 ",
-        candidate_version=" v1\x00 ",
+        candidate_id="cand-1",
+        name="candidate",
+        baseline_version="base",
+        candidate_version="v1",
         status=CandidateStatus.CANDIDATE,
         slo_thresholds={"max_latency_ms": float("nan"), "min_success_rate": 0.95},
         metrics={"latency": float("inf"), "cost": 0.05},
-        approver=" user\x00 ",
+        approver="user",
         created_at=-10.0,
         updated_at=-5.0,
     )

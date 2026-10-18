@@ -81,7 +81,7 @@ def test_broker_keeps_negative_exit_evidence_without_false_incidents(tmp_path, m
     monkeypatch.setattr(broker, "_unavailable_executable", lambda *args, **kwargs: None)
     monkeypatch.setattr(broker, "_execute", lambda *args, **kwargs: dict(execution))
     monkeypatch.setattr(broker, "_needs_model_error_distillation", lambda result: False)
-    result = broker.run(command, str(tmp_path), tenant="test", record_verification=False)
+    result = broker.run(command, str(tmp_path), record_verification=False)
     assert result["success"] is False
     assert result["exit_code"] == execution["exit_code"]
     assert bool(incidents.captured) is expected_incident

@@ -217,7 +217,7 @@ def test_http_probe_strips_caller_headers_on_cross_origin_redirect(tmp_path):
         broker = _broker(tmp_path, allow_private_hosts=["127.0.0.1/32"])
         result = broker.http_probe(
             f"http://127.0.0.1:{source.server_port}/redirect",
-            headers={"X-API-Key": "secret", "X-Tenant": "private-tenant"},
+            headers={"X-API-Key": "secret", "X-Trace-Label": "private-label"},
         )
     finally:
         _stop(source, source_thread)
@@ -225,7 +225,7 @@ def test_http_probe_strips_caller_headers_on_cross_origin_redirect(tmp_path):
 
     assert result["success"] is True
     assert "x-api-key" not in received_headers
-    assert "x-tenant" not in received_headers
+    assert "x-trace-label" not in received_headers
 
 
 def test_http_probe_preserves_caller_headers_on_same_origin_redirect(tmp_path):
@@ -238,7 +238,7 @@ def test_http_probe_preserves_caller_headers_on_same_origin_redirect(tmp_path):
                 self.send_header("Location", "/health")
                 self.end_headers()
                 return
-            received_headers.append(self.headers.get("X-Tenant"))
+            received_headers.append(self.headers.get("X-Trace-Label"))
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
@@ -251,13 +251,13 @@ def test_http_probe_preserves_caller_headers_on_same_origin_redirect(tmp_path):
         broker = _broker(tmp_path, allow_private_hosts=["127.0.0.1/32"])
         result = broker.http_probe(
             f"http://127.0.0.1:{server.server_port}/redirect",
-            headers={"X-Tenant": "private-tenant"},
+            headers={"X-Trace-Label": "private-label"},
         )
     finally:
         _stop(server, thread)
 
     assert result["success"] is True
-    assert received_headers == ["private-tenant"]
+    assert received_headers == ["private-label"]
 
 
 def test_http_probe_bounds_response_and_redacts_sensitive_headers(tmp_path):
@@ -605,7 +605,7 @@ def test_webhook_replay_posts_bounded_json_with_hmac(tmp_path):
 
     body = received["body"]
     assert isinstance(body, bytes)
-    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    expected = hmac.new(credential_value.encode("utf-8"), body, hashlib.sha256).hexdigest()
     assert received["signature"] == f"sha256={expected}"
     assert json.loads(body.decode("utf-8")) == {"event": "ping"}
     assert result["success"] is True

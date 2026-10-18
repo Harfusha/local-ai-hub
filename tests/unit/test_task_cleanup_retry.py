@@ -48,7 +48,8 @@ def test_cleanup_reconciles_removed_worktree_after_completion_checkpoint_failure
     )
     task = store.create(
         GoalContract(goal="cleanup retry", acceptance_criteria=(), scope=AgentScope.TASK),
-        ScopeContext(repository_id=str(repo)), task_id="cleanup-retry", auto_worktree=True,
+        ScopeContext(repository_id="cleanup-coordination"), task_id="cleanup-retry",
+        repo_root=str(repo.resolve()), auto_worktree=True,
     )
     worktree = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
     worktree.mkdir()

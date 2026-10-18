@@ -1,23 +1,23 @@
-"""Server/client identity selection parity without changing tenant defaults."""
-from types import SimpleNamespace
+"""Retired HTTP identity configuration is rejected without weakening auth."""
+
+from pathlib import Path
 
 import pytest
 
-from local_ai_hub import http_server
-from local_ai_hub.http_identity import request_principal_tenant
+from local_ai_hub.config import ConfigError, validate_config
 
 
-@pytest.mark.parametrize(("config", "route", "expected"), [
-    ({}, "/api/repo/callers", "http-default"),
-    ({}, "/api/repo/impact", "http-default"),
-    ({}, "/api/agent-state/tasks", "api-token-default"),
-    ({"security": {"api_token": "unit-token"}}, "/api/repo/impact", "api-token-default"),
-    ({"security": {"api_token_tenant": "owner", "api_token_principal": "other"}}, "/api/search", "owner"),
-    ({"security": {"api_token_principal": "owner"}}, "/api/repo/callers", "owner"),
-    ({"browser_bridge": {"tenant": "browser-owner"}}, "/api/browser/capture", "browser-owner"),
-    ({"browser_bridge": {"tenant": "browser-owner"}}, "/api/vision/review", "browser-owner"),
-])
-def test_server_preserves_existing_principal_defaults(monkeypatch, config, route, expected):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config=config))
-    assert request_principal_tenant(config, route) == expected
-    assert http_server.Handler._principal_tenant(SimpleNamespace(path=route)) == expected
+@pytest.mark.parametrize("retired", ["users", "api_token_tenant", "api_token_principal"])
+@pytest.mark.parametrize("value", [None, False, ""])
+def test_retired_security_identity_config_rejects_presence(retired, value):
+    with pytest.raises(ConfigError, match=retired):
+        validate_config({"security": {"api_token": "secret", retired: value}})
+
+
+def test_http_identity_module_is_removed():
+    package_dir = Path(__file__).parents[2] / "src" / "local_ai_hub"
+    assert not (package_dir / "http_identity.py").exists()
+
+
+def test_api_token_and_permissions_remain_supported():
+    validate_config({"security": {"api_token": "secret", "api_token_permissions": ["read", "write"]}})

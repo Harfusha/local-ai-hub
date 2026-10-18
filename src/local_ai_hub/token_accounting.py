@@ -21,6 +21,8 @@ import hashlib
 import json
 import math
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -503,49 +505,45 @@ def finalize_tool_accounting(
     return event
 
 
-class TenantQuotaEnforcer:
-    """Enforces tenant token and duration quotas over a rolling sliding window."""
+class GlobalQuotaEnforcer:
+    """Enforces installation-wide token and duration quotas over a rolling window."""
 
     def __init__(self) -> None:
-        import threading
-        self._quotas: dict[str, dict[str, Any]] = {}
-        self._usage: dict[str, list[tuple[float, int, float]]] = {}
+        self._quota: dict[str, Any] | None = None
+        self._usage: list[tuple[float, int, float]] = []
         self._lock = threading.Lock()
 
     def set_quota(
         self,
-        tenant: str,
+        *,
         max_tokens: int | None = None,
         max_duration_ms: float | None = None,
         window_seconds: float = 3600.0,
     ) -> dict[str, Any]:
         with self._lock:
-            self._quotas[tenant] = {
+            self._quota = {
                 "max_tokens": max_tokens,
                 "max_duration_ms": max_duration_ms,
                 "window_seconds": max(1.0, float(window_seconds)),
             }
-            return {"success": True, "tenant": tenant, **self._quotas[tenant]}
+            return {"success": True, **self._quota}
 
-    def record_usage(self, tenant: str, tokens: int = 0, duration_ms: float = 0.0) -> dict[str, Any]:
-        import time
+    def record_usage(self, *, tokens: int = 0, duration_ms: float = 0.0) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            self._usage.setdefault(tenant, []).append((now, max(0, int(tokens)), max(0.0, float(duration_ms))))
-            return self._check_unlocked(tenant, now)
+            self._usage.append((now, max(0, int(tokens)), max(0.0, float(duration_ms))))
+            return self._check_unlocked(now)
 
-    def check_quota(self, tenant: str) -> dict[str, Any]:
-        import time
+    def check_quota(self) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            return self._check_unlocked(tenant, now)
+            return self._check_unlocked(now)
 
-    def _check_unlocked(self, tenant: str, now: float) -> dict[str, Any]:
-        quota = self._quotas.get(tenant)
+    def _check_unlocked(self, now: float) -> dict[str, Any]:
+        quota = self._quota
         if not quota:
             return {
                 "allowed": True,
-                "tenant": tenant,
                 "quota_configured": False,
                 "exceeded": False,
             }
@@ -553,9 +551,9 @@ class TenantQuotaEnforcer:
         window = quota["window_seconds"]
         cutoff = now - window
 
-        raw_items = self._usage.get(tenant, [])
+        raw_items = self._usage
         valid_items = [item for item in raw_items if item[0] >= cutoff]
-        self._usage[tenant] = valid_items
+        self._usage = valid_items
 
         total_tokens = sum(item[1] for item in valid_items)
         total_duration = sum(item[2] for item in valid_items)
@@ -569,7 +567,6 @@ class TenantQuotaEnforcer:
 
         return {
             "allowed": not exceeded,
-            "tenant": tenant,
             "quota_configured": True,
             "exceeded": exceeded,
             "tokens_used": total_tokens,
@@ -582,5 +579,5 @@ class TenantQuotaEnforcer:
         }
 
 
-GLOBAL_QUOTA_ENFORCER = TenantQuotaEnforcer()
+GLOBAL_QUOTA_ENFORCER = GlobalQuotaEnforcer()
 

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 _skill_ownership_spec = importlib.util.spec_from_file_location(
     "_local_ai_hub_skill_ownership", Path(__file__).with_name("skill_ownership.py")

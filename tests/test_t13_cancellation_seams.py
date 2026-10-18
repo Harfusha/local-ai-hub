@@ -113,7 +113,7 @@ def test_cancelled_new_conversation_discards_reserved_turn():
 
     services._generate = generate
     result = services._start_conversation(
-        tenant="tenant", prompt="p", route={"model": "small"}, system="s",
+         prompt="p", route={"model": "small"}, system="s",
         max_tokens=16, temperature=0.0, source="delegate:test", priority=1,
         cancel_event=cancel_event,
     )

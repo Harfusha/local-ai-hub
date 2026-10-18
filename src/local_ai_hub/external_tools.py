@@ -1016,7 +1016,8 @@ class ExternalCodeIntelligence:
                 res = self.code_index.find_symbol(root, query or "*", relative_path=path or None, limit=limit, substring_matching=True)
                 symbols = res.get("symbols", []) if isinstance(res, dict) else []
                 return {
-                    "success": True,
+                    **res,
+                    "success": res.get("success") is True,
                     "backend": "code_index",
                     "action": action,
                     "fallback_used": True,
@@ -1039,10 +1040,11 @@ class ExternalCodeIntelligence:
                     "matches_count": len(symbols),
                 }
             else:
-                res = self.code_index.search(root, query, limit=limit)
+                res = self.code_index.query(root, query, limit=limit)
                 symbols = res.get("symbols", []) if isinstance(res, dict) else []
                 return {
-                    "success": True,
+                    **res,
+                    "success": res.get("success") is True,
                     "backend": "code_index",
                     "action": action,
                     "fallback_used": True,

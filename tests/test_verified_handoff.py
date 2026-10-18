@@ -20,14 +20,14 @@ class _Artifacts:
     def __init__(self):
         self.items = {}
 
-    def put(self, text, tenant, kind, *args):
+    def put(self, text, *, kind):
         key = f"artifact-{len(self.items) + 1}"
-        self.items[key] = {"text": text, "tenant": tenant, "kind": kind}
+        self.items[key] = {"text": text, "kind": kind}
         return key
 
-    def get(self, artifact_id, max_chars=6000, section="", tenant=None):
+    def get(self, artifact_id, max_chars=6000, section=""):
         artifact = self.items.get(artifact_id)
-        if artifact is None or (tenant is not None and artifact["tenant"] != tenant):
+        if artifact is None:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
         text = artifact["text"][:max_chars]
         return {
@@ -40,10 +40,10 @@ class _Artifacts:
 
 
 class _Leases:
-    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", **kwargs):
+    def claim_batch(self, owner, root, paths, ttl_seconds=900, purpose="", **kwargs):
         return {"success": True, "lease_id": "lease-test", "paths": paths}
 
-    def release(self, tenant, lease_id="", **kwargs):
+    def release(self, owner, lease_id="", **kwargs):
         return {"success": True}
 
 

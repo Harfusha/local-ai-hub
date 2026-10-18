@@ -4,7 +4,7 @@
 
 ## HTTP authentication
 
-The HTTP server accepts loopback binds only. Protected routes require a configured credential and the permission assigned to that route. Set `security.api_token` for the service credential and optionally restrict its coarse roles with `security.api_token_permissions`. `security.supervisor_token` is limited to administrative scopes. `security.action_tokens` maps action names to individual credentials. `security.users` maps names to tables with a `token`, a non-empty list of exact `resource:read` or `resource:write` permissions, and an optional tenant label. Credential values must be unique across all four credential types. Diagnostic config views redact every token.
+The HTTP server accepts loopback binds only. Protected routes require a configured credential and the permission assigned to that route. Set `security.api_token` for the service credential and optionally restrict its coarse roles with `security.api_token_permissions`. `security.supervisor_token` is limited to administrative scopes. `security.action_tokens` maps action names to individual credentials. The removed `security.users`, `security.api_token_tenant`, and `security.api_token_principal` keys reject by presence, including empty values. Credential values must be unique across supported credential types. Diagnostic config views redact every token.
 
 ## Hardware
 

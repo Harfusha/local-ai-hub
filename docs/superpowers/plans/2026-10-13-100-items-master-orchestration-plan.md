@@ -1,5 +1,322 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
+## Active goal extension: single local owner, no tenancy — 2026-10-18
+
+**Offline preservation bundle source checkpoint:** The complete focused packet
+passed 110 tests in 2.34 seconds; log: operator temp
+`lah-single-owner-offline-repairs-7233f80e1fe34314a344fe9ad45f7eb7.log`.
+Compilation passed. Registered historical index transforms remain offline-only;
+canonical stores retain their current contracts. Artifact paging conversion
+preserves actual names/truncation and binds their checksum to the artifact ID.
+All supported AUTOINCREMENT tables retain their registered sequence high-water
+marks. RAG now refuses a corrupt nonempty SQLite header before SQLite can modify
+the original WAL/SHM; the byte-preservation regression passed.
+Main review corrected the Agent State historical-index classification and a
+transposed work-order SQL fingerprint; the exact source comparison now agrees.
+All eight inventoried durable-store dry plans report supported/no collisions,
+including 295,208 inventoried Agent State rows. Plans and manifests remain under
+the ignored preservation staging directory above. No conversion or cutover has
+been applied. Whole-suite and installed-runtime acceptance remain pending.
+
+**Unit regression checkpoint:** The assembled runtime/fixture bundle returned
+3,978 passes, 13 skips and one failure in 226.49 seconds; log: operator temp
+`lah-single-owner-integrated-unit-0adc8cdcae00498bb2a0cf8404eec0f9.log`.
+The remaining fixture incorrectly interpreted a logical repository ID as a
+physical root. Its root-mismatch assertion now supplies an actual conflicting
+`repo_root`; logical IDs retain their independent contract. This correction
+awaits validation with the offline conversion repair bundle.
+Static AST inspection found zero runtime tenant/principal function parameters;
+the only SQL candidate mentioning tenant provenance is the explicit startup
+refusal guard. Static inspection does not establish installed-runtime acceptance.
+
+Preservation drafts are retained under ignored local state at
+`state/single-owner-conversion-20261018-1d55c3d703/` (not applied). They pin 197
+JSON records, including explicit archival dispositions for 82 historical memory
+advice envelopes lacking coordination proof, and three writer mappings to the
+actual source task owner. No record collision was found in the bounded main
+Agent State inventory. The dry plan still refuses historical index contracts;
+additional-store plans also identified exact historical artifact paging and
+telemetry/index layouts that need offline-only handling. No live state or config
+was replaced. Root paths containing ordinary spaces must be preserved while
+noncanonical padding, control characters and symlink/reparse aliases still reject.
+
+**Repository identity bundle assembled:** HTTP task creation now derives the
+logical repository ID from the authorized physical root's project coordination
+identity. Supplied mismatches and unavailable project identities reject; SDK
+preflight never interprets logical IDs as filesystem paths. Explicit physical
+root confinement and clone/worktree/branch/task/session identities remain.
+The last focused diagnostic returned three failures and three passes; its
+remaining fixtures now preserve the receipt owner and target the actual lexical
+and unguarded adaptive dispatch paths. These changes await validation. No live
+configuration, durable conversion or running service has been changed.
+
+**Root repair checkpoint:** The focused known-failure run returned 83 passes
+and 11 failures in 124.08 seconds; log: operator temp
+`lah-single-owner-root-repairs-61f03c1c0bd54fada5ee684ec467c96a.log`.
+The preceding selector-only attempt ran no tests because two fixture node IDs
+had changed; its collection error is not validation evidence.
+Current source repairs require canonical JSON artifact persistence, reject
+missing/conflicting physical task roots before persisting receipt evidence, and
+publish a returned receipt only after its execution record is durable. Stored
+success exit codes require actual integers, never boolean or float substitutes.
+Task root matching follows filesystem case rules without merging distinct
+case-sensitive project paths. Remaining fixture repairs use real artifact stores,
+explicit broker revision evidence and current adaptive-context dispatch.
+All changes await integrated validation. No config/state conversion or service
+activation has occurred; the goal remains active.
+
+**Root regression bundle in assembly:** The full-scope diagnostic was deliberately
+interrupted with a task-owned console signal after collecting 93 failures,
+1,505 passes and 19 skips in 749.06 seconds; this is incomplete, not acceptance.
+Log: operator temp `lah-single-owner-full-381eda70630846bc8f726180254e0039.log`.
+Source fingerprint before that run:
+`d5d42d65a744e7961ee29f322279076ea81ab9b9d17068c44f7197b9ebcb0d25`
+(1,352 files); the mid-run comparison found zero changed recorded files.
+The new bundle updates remaining root SDK/jobs/command/memory fixtures without
+restoring removed arguments or synthesizing verification authority. Network
+fixtures preserve the current trace-header and HMAC credential names; unknown
+mutating transaction coverage opts into the actual unknown-command policy.
+Transaction coordination no longer inspects provider signatures to silently
+discard the project coordination identity. Missing canonical provider support
+must fail, while owner, paths, fences and current coordination binding remain.
+No tests run while this source bundle is being assembled.
+
+**Regression bundle 5 source complete, validation pending:** The traced unit run
+returned 3,950 passes, 12 failures and 13 skips in 301.34 seconds. Log: operator
+temp `lah-single-owner-unit-b92b7a3a884c4477bc4155aaed5a1ab9.log`.
+Global tracing inflated an isolated memory-peak test; do not relax its limit,
+and use normal allocation conditions for the next acceptance run. Allocation
+evidence identified additional unclosed fixture connections; explicit closing
+now preserves transaction semantics. The remaining direct SQLite contexts in
+the fencing fixtures were corrected as well.
+Production worktree cleanup now validates its repository against the exact
+server-managed v2 task scope, never a logical repository ID or cwd. Existing
+recovery and response-budget-before-mutation tests retain distinct logical IDs
+and physical roots. Converter fixes retain exact source/index contracts and
+source-pinned owner mappings. No configuration or durable conversion applied.
+
+**Regression bundle 4 in assembly:** A full unit run completed with 3,890 passes,
+67 failures, 13 skips and two setup errors in 229.32 seconds. Log: operator temp
+`lah-single-owner-unit-f1eb6bb2c3b342498a34d917bea31307.log`.
+Confirmed production repairs remove the empty first SQL predicate that generated
+`WHERE AND` during RAG search and honor an explicit plain API-token permission
+instead of inferring a weaker permission from the HTTP method. Read-only tokens
+must not authorize an explicitly requested write; regression coverage retains
+that check across both GET and POST. Converter and remaining fixture repairs are
+being assembled before further testing. Data conversion and runtime activation
+remain pending; no release acceptance is claimed.
+
+**Regression bundle 3 in assembly:** First complete-unit-scope diagnostic run
+with a 50-failure cap returned 1,799 passes, 41 failures, three skips and nine
+setup errors in 74.48 seconds. Log: operator temp
+`lah-single-owner-unit-4f0dfcce17e64a638966be7183182c8e.log`.
+Repairs update stale incident/artifact/job/RAG/generation fixtures, retain
+malformed-input and project-isolation assertions, restore tight text-cap behavior,
+and correct HTTP fixture configuration without retired routing keys.
+No claim of final validation is made. No tests run during bundle assembly.
+
+The offline converter now also supports explicit, raw-row-pinned archival of
+legacy memory advice when its coordination identity cannot be proven. Full old
+contents and the disposition reason remain in external provenance, with original
+databases unchanged. This is an opt-in manifest operation, never an automatic
+fallback or supported runtime contract. No real archival or conversion applied.
+
+**Regression bundle 2 in assembly:** The next whole-scope diagnostic run
+returned 44 failures, 875 passes, one skip and six setup errors in 420.72 seconds.
+Log: operator temp `lah-single-owner-pytest-ee4ff36be67d4378988476fd0d93e3a1.log`.
+This is not integrated acceptance. Current source repairs normalize both sides
+of Windows active-task root comparisons and stop a shared MCP TTL default from
+forcing memory expiry or invalidating unrelated coordination actions. Omitted
+TTL preserves each action's default; explicit values remain subject to validation.
+Task worktree creation and memory adoption no longer infer a physical root from
+logical repository IDs; resume uses the server-managed v2 scope exclusively.
+Artifact projection tests now require the canonical explicit failure envelope
+for a retired backend response rather than expecting an invalid wire envelope.
+Fixture repairs retain real broker receipts, exact roots and separate project,
+task, session and owner-global scopes. No tests run during assembly; after this
+bundle, validate the complete unit suite before continuing whole-suite regression.
+
+Offline conversion remains unapplied. Source-pinned writer schema classification
+and explicit JSON pointer dispositions are being corrected. Old memory snapshots
+without provable coordination identity remain preserved and block activation;
+neither an empty context nor a fabricated identity may bypass that proof.
+
+**Regression bundle 1 in assembly:** Whole-suite scope with `--maxfail=50`
+returned 50 failures / 385 passes in 119 seconds; this is diagnostic, not final
+acceptance. Exact log: operator temp
+`lah-single-owner-pytest-8c8442fae65840408a8105bcfe69ea69.log`.
+Confirmed production fixes: HTTP authorization no longer references removed
+`users`; config projection rejects retired users settings; command-record reader
+now accepts only the producer's v2 contract and rejects `tenant_identity`;
+patch/repair no longer invent receipts or fallback artifacts from command success.
+Missing requested receipts are reported without granting completion authority.
+Systematic fixture repairs cover keyword-only hybrid/artifact calls, actual
+root/coordination/task/session matching, strict legacy receipt refusal and
+real bounded broker-produced positive receipt evidence. No tests run while this
+repair bundle is being assembled. Canonical prompts now describe receipt forwarding.
+
+Private-copy preservation inventory: 228 tasks, 187 version-1 scope markers,
+41 absent markers, 144 currently existing marker roots and 43 historical missing
+roots; all 307 receipt metadata envelopes already use the current schema.
+Offline explicit scope upgrades now preserve exact canonical historical paths
+without inventing missing roots, while live writer/root checks remain strict.
+Absent markers remain absent. No durable conversion or service activation yet.
+
+**Integrated validation attempt and preservation-identity correction:** The
+assembled source passed compileall and `release_check --allow-installed`.
+Broker review `req_94b1497c8af4` and command `req_69fa9e592660` failed before
+transport write (`terminal=true`, `retryable=false`), so validation used native
+master commands. The first whole-scope pytest attempt accumulated failures and
+was explicitly stopped at about 4%; it is not a completed suite or acceptance
+receipt. The next run will retain whole-suite scope with a 50-failure cap for a
+single regression-fix batch. Logs: operator temp prefix
+`lah-single-owner-pytest-e8f4be1d47194816958543222546fbf0`.
+
+Correction to earlier inventory labels: `9814b91b16d127a6ed67195023ccbd8888588ccfd455e455466f6c6fb683539e`
+is the component-metadata fingerprint (names, sizes and component hashes), not
+the raw main-file hash. The raw main-file SHA-256 is
+`6fea03b368154f050fc969e162de240dac70632f97122b2ee8ce72a867e1e3a8`.
+An inspection initially refused because these two evidence identities were
+incorrectly compared; that refusal did not establish source drift. A subsequent
+private-copy inspection confirmed the exact preceding supported `lease_waits`
+definition. The offline source registry stores two exact accepted hashes for
+this historical definition; the converter is being corrected to use set
+membership, without expanding supported runtime or target contracts.
+No operator configuration, durable data, or service activation was changed.
+
+**SU4 normalized-pin source fix assembled:** Agent State source, archive and
+target expected-object checks now use the runtime's whitespace/case-normalized
+SQL hash representation. Generated FTS/internal object pins retain their distinct
+raw-SQL representation; no schema pins or accepted definitions were relaxed.
+Added an unexecuted regression fixture. No further source DB access was needed.
+Conversation/telemetry control guards now inspect only the declared envelope and
+one direct control layer, preserving opaque nested domain data. Unit non-Agent
+fixture migration is assembled; remaining root integration families continue.
+
+**SU4 source-pin normalization correction pending:** The subsequent dry plan
+reached the exact Agent State index check and exposed raw-SQL hashing against
+registry hashes of whitespace-normalized, case-folded SQL. Converter source and
+target checks are being aligned with the runtime's exact hash representation;
+definitions/pins must not be broadened to bypass this mismatch. Diagnostic:
+operator temp artifact `lah-single-owner-plan-d5a3ae82f3524d90af3a63b7d95ab591.json`.
+No further live inventories until the source package closes. The assigned memory
+fixture family and unit Agent OS fixtures have been rewritten; other historical
+root/unit families remain in progress. Validation and installed cutover pending.
+
+**SU4 current-data inventory checkpoint:** The canonical store path is
+`server.state_dir/agent_state.sqlite` (app constructor), not the historical
+`.sqlite3` filename. A private-copy dry inventory reached source-classification
+errors; these exposed and prompted fixes in both supported-table classifiers.
+Retained diagnostic metadata: operator temp artifact
+`lah-single-owner-plan-5df5da08a6b844eaad07a1176730c045.json`, input main-file
+SHA-256 `9814b91b16d127a6ed67195023ccbd8888588ccfd455e455466f6c6fb683539e`.
+This was inventory only, not an applied conversion or passing acceptance test.
+No original SQLite connection, source/config mutation or daemon cutover occurred.
+Final preservation/validation must use a fresh stopped-writer snapshot; this
+live inventory does not establish the final source identity or data acceptance.
+
+**SU4/SU6 conversion and fixture checkpoint:** Writer conversion now requires
+explicit source-row and actual task-row hashes (including blocked task rows),
+canonical version-2 physical-root scope, complete map usage and collision
+preflight. Main-file SHA and SQLite/WAL component provenance remain distinct.
+No owner, receipt authority or root is inferred from former tenant values.
+Standalone leases lacking trusted task facts refuse conversion. Source review
+also tightened direct ScopeContext parsing to its six canonical identities.
+All eight schemas were rendered using an in-memory defaults profile, without
+loading operator config or starting services/models. Canonical policies and API
+coverage documents were regenerated. Remaining historical fixture families are
+being rewritten to current scope/authorization contracts before any tests run.
+No test execution, durable conversion, service restart or acceptance claim.
+
+**SU3/SU5 repository RAG boundary source checkpoint:** HTTP project RAG index,
+search and document/diagram ingestion now pass through the existing authorized
+root binder. Repository context, tool-agent and preprocessing RAG search check
+the workspace's stored physical-root binding before revision/cache/content
+access. Explicit custom workspace labels remain supported within their bound
+root; populated unbound workspaces require explicit offline disposition.
+File indexing skips symlinks and Windows reparse points. Document/diagram
+ingestion is receiving required root arguments and diagram confinement; global
+docsets remain separate. These changes are source-only and unvalidated. No
+tests, durable conversion or running-instance activation have occurred.
+
+**SU2/SU5 preservation and zero-shims checkpoint:** Offline conversion now has private source-file snapshots, source/WAL/journal hash pins, exact JSON/TOML retired-setting paths, collision refusal, external removed-field provenance and partial-publication preservation. Artifact/memo/journal conversion supports the preceding source contracts; supplemental store registries retain exact DDL/index/FK definitions and refuse missing JSON/owner/scope transforms. AgentState source registry now includes all 65 current canonical object pins (59 literal DDL objects and six engine-generated objects), including the later cursor/search/outbox registry update. The one-time tool separately pins 68 preceding-source input objects to d40d268f60ba8b27686b652f76cb8edf80c699c4; supported runtime remains current-only. Registry and conversion fixtures are unexecuted; actual input compatibility and conversion remain unverified. No converter or fixture was executed. Installed settings were read only to confirm two retired scheduler keys; no credential values were printed and no settings were changed.
+
+**Additional source correction:** Writer fencing no longer performs startup ALTERs/backfills: final table/index DDL is declared once, existing incompatible data refuses before WAL, all schema checks have a two-second SQLite progress deadline. Removed acceptance of inactive AgentState migration/version tables. Stored receipt decoding now requires the current metadata schema and strict bit/generation values instead of treating missing/unknown metadata as defaults; removed unused legacy envelope helpers. Dedicated regression fixtures were authored, not run. Existing historical receipts and state remain untouched pending explicit offline dispositions and final validation. JSON dispositions now use exact store/table/column/key and raw-content pins; known provenance removals and task-scope conversion are explicit, with actual checkpoint/state_data paths rather than opaque goal metadata. Projection context is the direct six-field ScopeContext object, with declared omitted defaults and no schema_version; version 2 belongs to task-scope/compiled-memory envelopes. Receipt metadata is checked per row, and unrelated details/snapshot content remain opaque. Explicit JSON-disposition integration is assembled but unexecuted; remaining writer/scope/store conditions still reject instead of being inferred. Complete converter integration, legacy writer mapping, remaining supported-store transforms and generated coverage still need closure before tests. Existing state/configuration, old receipts and public targets are preserved; no tool was executed against durable stores.
+
+**Packaging and ingress source checkpoint:** Root and packaged defaults both remove rag.scope and obsolete multi-tenancy guidance. CORS no longer advertises retired tenant headers, including the browser preflight path; retired requested headers reject explicitly. Kept opaque project content outside tenancy-field rejection while preserving structured provenance/scope checks. Updated positive conversation, journal, speculative lint, SDK, trace, command-cache and Windows lease-path fixtures; negative retired-field cases stay explicit. No tests have run. Master remains d40d268f with preserved uncommitted bundle; this checkpoint does not claim integration/runtime acceptance.
+
+**SU4/SU6 surface assembly checkpoint:** The canonical install/update policy blocks and current configuration, HTTP, SDK, security, operations, installation and browser documentation have been updated; historical runtime evidence is not promoted. Rendered all eight source catalogue schemas using an in-memory feature profile without loading operator configuration or activating a model. Removed unused rag.scope from defaults and made that retired setting reject by presence. Updated CLI/doctor/release/benchmark producers to the ownerless contracts. Context HTTP endpoints explicitly reject generic identity by presence; bundle scope guards preserve opaque project document/value content even when the project's own domain mentions tenant. Source fixtures remain unexecuted. Offline SQLite conversion remains unfinished; no operator state/config conversion, installation, restart, final suite or runtime acceptance has occurred.
+
+**SU1/SU3/SU4 source assembly checkpoint — transport, context and operator surface:** Removed the HTTP principal-selection module and its api_token_tenant/api_token_principal fallback chain. security.users now rejects by presence; existing installed settings were not edited. HTTP dispatch and producer calls use ownerless work/jobs/conversations/browser/artifact/memo/lease/service contracts. Request-ID journaling is keyed by request ID plus action and exact payload fingerprint; legacy journal schemas refuse read-only before WAL/DDL. ContextRequest, task-context building and ContextLedger remove the generic identity selector while retaining actual root/task/session and structured repository identities. Source fixtures were updated, not executed.
+
+**Additional bounded source units:** Workspace memos, speculative-lint debounce, tool-agent scheduling/RAG calls, browser staged capabilities and global token quotas no longer partition by tenant. Browser protections retain random capabilities, origins, tab/window/request IDs, expiry, reservations and cancellation. Dashboard tenant columns/filter projections were removed while actual agent/project/session views remain. Bundle export/import now preserves RAG embedding-space and project-file owner rows under real workspace/root scopes. MCP work producers expose explicit task_id separately from work_id. HTTP integration is still under source review; generated surfaces, mixed fixtures, offline conversion and full integrated/runtime acceptance remain pending. No tests, installation, restart or data conversion were run for this checkpoint.
+
+**SU3/SU4 follow-through checkpoint — verification and orchestration:** Removed trusted_tenant from shared receipt evaluation and command-proof lookup; current command provenance is `command_execution_record.v2`. Verification completion now derives its physical root only from the server-managed version-2 task scope; session-as-tenant and flat/worktree/context-repository-ID root reconstruction are removed. A supplied project_root cannot override task scope. Swarm storage/API is tenant-free and retains actual swarm writer ownership; regenerated its DDL pin only after reproducing the previous source pin. WorkOrchestrator drops tenant partitions/admin bypass and has a distinct explicit optional payload.task_id; work IDs remain work-order/journal identity. Bound receipts require the matching real Agent OS task owner/root. Missing task association fails closed; MCP/SDK work producers must still expose and supply task_id for verified completion (no fake task/owner records were created).
+
+**SU3/SU5 remaining producer integration:** ContextLedger preserves actual session IDs in entries, pointers and materialization checks. Debug trace storage/start/projections have no tenant routing fields; captured semantic/debug content remains intact. Ruff/Biome process pools use actual executable/root identity and keyword-only paths; vision inputs and token-router APIs are tenant-free. All these module fixtures are source-only and unexecuted. HTTP dispatch/identity helpers, MCP/SDK work-task linkage, browser and other producer source changes have since been assembled. Remaining mandatory work includes complete offline store conversion and explicit collision/scope dispositions, remaining fixture and generated-coverage integration, final integrated tests, installation and actual runtime proof. Source broadening is not a passing validation receipt or release claim.
+
+**SU2/SU3/SU4 integration checkpoint — services, stores and writer ownership:** `services.py` now has no tenant arguments/routing; semantic, repository, multimodal, embedding, evaluation, proxy and command producers use the new provider contracts. Command streaming requires a real stream_id/task_id rather than an invented tenant stream; command.log identifies its emitting broker component. Pipeline root authorization and canonical task/mode inputs reject invalid values instead of selecting cwd/default authority. Bounded GPT-6 Luna implementations removed tenancy from command execution records/caches/cancellation (new v2 records retain actual task-owner and execution/repository/revision pins), telemetry events/errors, vision input/artifact paths, token routing and Ruff/Biome pool identities. Primary integrated direct HTTP/service/pipeline producers and ownerless artifact calls in browser capture, context ledger, receipt evidence retrieval and work orchestration. These are source changes, not validation receipts; remaining producer/test/schema/documentation sweeps still required.
+
+**RAG/artifact data-preservation review:** Removed RAG automatic corruption rename/WAL deletion, legacy table reset and fingerprint-triggered content deletion. Runtime preflight checks canonical schema and fingerprint read-only; incompatible stored content requires explicit offline conversion/rebuild. Full integrity checking belongs to the offline verifier, not an unbounded startup scan. ArtifactStore now uses owner-global content IDs, strict artifact/paging DDL and keyword-only selectors/kind; tenant-only metadata table/marker and collision routing are removed. Old schemas reject before WAL/setup, preserving the original database and sidecars. Artifact hardening/paging/binary/rollback fixtures were adapted; none executed. No durable data conversion has run.
+
+**Writer leases are retained, not replaced by human partitions:** Lease rows and wait edges use explicit actual writer `owner` identities (task/execution), never a constant installation owner or credential-derived namespace. Claim/batch/release/renew take named owner inputs; retired release_tenant has no alias. Root inference from arbitrary absolute paths is removed. HTTP derives repository coordination identity and rejects caller mismatch; MCP/SDK now send owner/purpose explicitly. Lease DDL pins were regenerated from literal source only after reproducing old hashes; removed the old alternate quoted-table DDL acceptance. Added unexecuted cross-repository conflict, wrong-writer mutation, retired-input and old-database preservation fixtures. Swarm/work-orchestrator lease consumers and all remaining mixed fixtures still need integration before acceptance.
+
+**SU2/SU3 jobs/conversations/query-focus source checkpoint:** Two bounded GPT-6 Luna implementation scopes removed tenancy from AsyncJobManager and ConversationStore. Jobs retain actual repository/task/session/clone/worktree/branch fields, reject retired identity fields (including nested structured batch tasks with depth/item/cycle bounds), and preflight existing schemas/payloads/results before WAL initialization. No stored data was converted. Conversation IDs/reservations/TTL/capacity remain; constructors are keyword-only and retired fields reject by presence in structured settings/messages. Main updated job HTTP invocations and the app executor callback to the new job contract, plus generation/conversation/delegate/reason/review/second-opinion producers. Remaining semantic/tool-agent/service/HTTP producers still require integration. Query expansion now uses actual repository/session focus, with owner-global scope when neither is supplied; cache identity includes current focus, without a manufactured tenant. Added unexecuted scope/rejection/store fixtures. RAG source removal is under bounded SQL/fixture review; provider dependencies, complete source sweep, offline converter, schema/doc generation, final tests and live activation remain open.
+
+**Tool-state note (source integration only):** Context/solve evidence for jobs/RAG: `req_f7fe6f647f4f` / `req_45665006974a`; conversations: `req_7e15395bb487` / `req_92c6600ee2a2`. Later command `req_1311034bbaf1` returned terminal `outcome_unknown` and was not repeated. Other command/review requests explicitly returned `request_not_sent`, terminal/nonretryable transport failures (`req_d016d700c7e3`, `req_aba2f2f94578`, `req_ee5401e83cde`). Used one bounded native source lookup and one native `git diff --check` fallback; no tests/imports/builds/install/restart/data conversion. Hub review produced no approval or passing validation evidence.
+
+**SU2/SU3 generation source checkpoint:** `_generate` no longer accepts or propagates a tenant. Source and priority are explicit keyword-only inputs; updated all 12 direct service callers and five pipeline callers, including adaptive relevance. Removed tenant metadata from this generation path's telemetry and artifact dispatch without replacing it by a constant identity. Added unexecuted retired-keyword/falsy/positional-identity guards. Artifact/telemetry provider contracts and remaining service/public producers still need coordinated source conversion; this is not an executable-completion claim.
+
+**SU2/SU3 watchdog/warmup and adaptive-context source checkpoint:** Watchdog inventory reads explicit version-2 task roots in bounded cursor pages, authorizes each root against current allowed_roots/API-token configuration and reaps within that root only. Reaping selects at most 64 expired tasks per root and keeps status/heartbeat/CAS fences, shutdown cancellation and a monotonic pass deadline; denied or failing roots cannot permanently starve later pages. No global reaper bypass or synthetic owner identity. Warmup uses canonical authorized roots and actual task/session IDs, rechecks authorization, task update/root/status and active nondegraded mode before cache prediction. Adaptive preloads receive the resolved repository coordination ID; hybrid context APIs and RAG calls remove tenant arguments in favor of explicit workspace keywords. Added source-only watchdog/warmup/pagination/input-boundary fixtures; tests remain unexecuted. Services generation, remaining producers/storage, async jobs/RAG integration, converter, generated contracts and final installed runtime validation still pending. No claim of complete removal, measured watchdog latency or deployment.
+
+**SU2/SU3 TaskStore scope/lifecycle source checkpoint:** Removed the final TaskStore tenant hash/helper and tenant arguments from active-task selection, reaping, zombie recovery and dataset export. Creation pins server-managed `_agent_task_scope={version:2,repo_root:...}` without trace/credential identity; old or extra-field contracts require offline conversion. Removed physical/context-root reconstruction fallbacks in active selection. Reaping still revalidates repository/task identity, original status, heartbeat expiry and cutoff through its expected-reap/CAS path. Scoped data exports retain root confinement, serialized byte bounds and explicit task filtering; format is canonical json/jsonl. Root paths reject scalar/whitespace/null-byte and symlink coercions; supplied task IDs and reaper timestamps reject invalid values. TaskStore startup preflights existing checkpoint scope/snapshot contracts without rewriting them. HTTP task membership/context compilation now use this server-managed physical root and preserve the task's independent repository ID/session; task context inputs no longer string-coerce invalid identity fields. Repo briefing now selects active tasks by its own root. Updated existing scope/race/tamper/export fixtures and added unexecuted retired-argument/version/data-preservation tests. App watchdog/root enumeration, warmup/service producers, other tenancy modules and final converter/validation/runtime activation remain unfinished; no lifecycle runtime claim.
+
+**SU2/SU3 question-store source checkpoint:** Removed the tenant column, index component, schema declaration, API arguments and SQL predicates/projections/parameters from `agent_questions` and TaskStore ask/answer. Canonical root and actual session remain required for ask/retrieval; stored session is retained on answer, and supplied task association must match for retrieval/answer. Question IDs/task IDs reject scalar/whitespace/null-byte coercion; row decoding requires the new exact 11-column shape. Idempotent identical answers, rejection of overwritten decisions, BEGIN IMMEDIATE transactions and complete-response budget preflight remain. Updated HTTP question scope and dispatch without tenant selector. Both original table/index SQL hashes were reproduced from AST literals before regenerating their new canonical pins; no SQLite connection or project-code import used for this generation. Updated existing question fixtures and added unexecuted retired-input/schema/task/budget/preservation tests. Old question databases require separate offline preservation/conversion and are not rewritten by runtime. Task ownership/reaping and remaining tenant-producing services still await conversion; no whole-bundle or live acceptance claim.
+
+**SU2/SU3 consistency and task-memory producer source checkpoint:** Removed tenant from `ConsistencyRequest`, its serialization and guard candidate provenance/idempotency keys; retired serialized inputs reject and invalid retired metadata cannot publish through a root fallback. Guard publication still requires canonical server-derived coordination ID. Converted task-memory collection, expiry diagnostics, compiler/materialization calls and advisory snapshots to a single `schema_version=2` contract carrying explicit root/coordination/task/session/clone/worktree/branch context. Removed tenant hashes, trace-derived ownership, tenant filters and the retired repository_root alias from this adoption path. Owner-global memory remains global; scoped records retain identity/root checks and current task ID comes from the actual task operation. Snapshot fitting, audit validation and `task_memory_wire` preserve context, reject old/tenant-key contracts and maintain the 512-token bound and used-memory-ID audit requirement. Added unexecuted retired-input/version/audit/wire tests. Task question storage, server-managed task scope/reaping, remaining request producers and old fixtures still await conversion; existing snapshots/data are not rewritten and no validation/runtime activation is claimed.
+
+**SU2/SU3 memory API/HTTP source checkpoint:** Removed remaining `MemoryStore` tenant parameters from get/find/delete/promote/quarantine, their SQL/provenance filters, and the embedding transport-only tenant argument. Retained scope identities, exact repository coordination ID, task roots, expiry, permission/approval rules and transactional mutation/event guards. Scoped task/clone/worktree/branch deletion still needs a root, and physical-root SQL no longer accepts `repository_id` as a root alias. Converted HTTP memory scope resolution, reads/finds/recording/deletion/promotion/quarantine identity dictionaries and provenance binding without tenant extraction. Removed cwd identity substitution and session-then-global retry lookup; owner-global defaults resolve once. Repository provenance requires server-resolved coordination ID and matching canonical project root; provided task/session attribution does not change an explicit repository scope. Added unexecuted public retired-argument and isolated scope/read/delete/provenance tests. Other services/task/consistency producers and older fixtures still need updating; this does not close the whole source bundle, authorize conversion, or prove runtime/validation.
+
+**SU2/SU3 memory-context source checkpoint:** Removed tenancy from memory context SQL, pure scope matching, task retrieval context keys, `find_for_context`, and excluded-memory diagnostics. Owner-global context remains shared; repository selection requires exact resolved coordination ID, and task/session/clone/worktree/branch selection preserves its identity and canonical root boundary. Removed `ContextRequest.tenant`, tenant context/cache serialization and tenant-based consumer filtering; the compiler now independently verifies declared scope/coordination/root identity. Updated compiler/consistency/task-retrieval callers for these contracts. `MemoryRecord` rejects tenant provenance and serialized top-level tenant fields by presence. Removed the tenant provenance index and its canonical schema pin. Memory-store initialization explicitly refuses existing tenant-bearing JSON before its own schema writes, requiring separate offline preservation/conversion; it does not delete or collapse records. Context lease display now expects actual `owner` authorship; the lease-provider contract still needs conversion. Added unexecuted in-memory scope SQL and tmp-path durable-preservation tests. Generic memory get/find/delete/promote/quarantine, remaining context/task producers, durable event history and HTTP dispatch still need conversion; no complete-memory, migration, validation or runtime acceptance claim.
+
+**SU1/SU3 HTTP binding source checkpoint:** Replaced 20 root/identity binding methods with authorized repository-only confinement across memory, task creation, incidents, swarms, direct repository operations, cross-project roots, context, task events, boards and workspace memory. Removed root-tenant HMAC and tenant-qualified task-memory scope helpers. Owner-global memory is no longer rewritten to a credential-derived session; actual session IDs are preserved and session-scoped access needs explicit matching identity. Task membership checks its repository rather than equating session with tenant; context can resolve its authoritative root from the stored task and still checks any supplied root/session. Both retired tenant headers reject, including empty values; JSON bodies and GET query inputs reject retired fields by presence. The installation now owns one bounded deque-based request-rate window instead of per-tenant buckets. Existing credential matching, action/resource permissions, allowed roots, task/board restrictions and native process controls remain. Added unexecuted scope/rate regression coverage and updated rate-limit fixture signatures. Direct memory/receipt/task dispatch, telemetry/services/jobs and durable stores still contain tenancy and must be converted before activation; no test, data conversion or restart occurred.
+
+**SU6 SDK fixture source checkpoint:** Replaced obsolete routing/principal-fallback expectations in `tests/test_client_tenant_override.py` with the new no-tenancy SDK contract covered in `tests/unit/test_single_owner_client.py`. Retained nine transport/security test functions for start-lock process identity, bounded/cancellable response waits, cancellation before send, one cold daemon start for concurrent clients, separate repository requests sharing a task/request ID, empty/outside root allowlists, invalid/symlink roots and required roots. Canonical memory scopes reject aliases, coercions and conflicting values before transport; no tenant adapter was retained to satisfy old tests. Tests remain unexecuted until the whole source bundle closes.
+
+**SU1 generic SDK source checkpoint:** `HubClient` no longer accepts constructor/request/get/post tenant arguments, stores a tenant property, derives principal/root tenants, emits tenant headers (including SSE), or partitions request coalescing by tenancy. The constructor is keyword-only so an old positional tenant cannot silently become a config path. Retired `LOCAL_AI_TENANT`, payload/query identity fields and coordination kwargs reject before transport; preflight failures explicitly identify requests as not sent. Root-only task/memory preflight retains allowed-root containment and matching repository hints; repository/clone/worktree/branch/task access still needs root, while owner-global memory has no synthetic partition. API token emission, request IDs, cancellation, bounded transport and replay logic remain. Added unexecuted SDK regression coverage. Older SDK fixtures/callers and server/store tenancy still require whole-bundle conversion; this is source progress only.
+
+**SU4 MCP source checkpoint:** Removed the public `local_ai_coord.tenant` parameter and its propagation into question, memory, incident and writer-lease requests. Incident operations validate explicit absolute repository roots before `_client_root` can substitute a workspace; record root overrides and retired identity fields reject. MCP startup no longer creates an agent/workspace-derived tenant or passes one to HubClient, and explicitly rejects `LOCAL_AI_TENANT`. Private tool accounting no longer emits a tenant field; context-ledger session evidence uses the actual supplied `session_id`. Updated existing incident-scope and incident/MCP forwarding fixtures and authored public retired-input/root rejection coverage without execution. Generic HubClient tenancy, other HTTP/storage routes, generated catalogs and data conversion remain unfinished; no deployable or passing-release claim.
+
+**SU4 incident-contract source checkpoint:** Canonical coordination contracts for incident decision and negative knowledge no longer accept tenant; each requires explicit nonempty repository root. HTTP credential verification no longer derives a tenant from global/action/supervisor/user credentials; token matching, permission checks and credential-based audit actors remain. Other transport binders still require removal before release. Integrated test and live-process evidence remain pending the entire source bundle.
+
+**SU1/SU2 incident-transport source checkpoint:** Incident HTTP binding and client POST now use the shared `repository_scope.py` directory/allowlist contract, without deriving or sending tenant identity for this route. API token headers and the existing operation/resource authorization remain in place. The server rejects both retired tenant headers by presence; payload/record/provenance/metadata tenant fields reject even when null or empty. Coordination incident wrappers no longer inject tenant fields or a relative-root default, and a record cannot override the outer repository root. `tests/unit/test_single_owner_repository_scope.py` adds unexecuted confinement and retired-field cases. Generic SDK tenant parameters and other HTTP routes still await removal; this partial source bundle is not ready for activation. No tests, data conversion or service restart performed.
+
+**SU2 incident-store source checkpoint:** `ToolOutcome.tenant`, `IncidentRecord.tenant_key`, the incident table column, scope-index component, SQL predicates/projections/window partitions and returned provenance have been removed. Supplied tenant fields in record/provenance/metadata reject, never map to a constant. Repository retry and negative-knowledge operations now require a canonical explicit root before state access; command/HTTP store calls and task-memory incident adoption use repository provenance only. Source review found that resolving or ignoring a fingerprint family could update other repositories; both mutations now include the selected record's repository key. Canonical table/index pins in `AgentStateStore` were regenerated using stdlib AST/string extraction after reproducing all five old source DDL hashes; only the incident table and scope index pins changed. No SQLite connection, project-code import, live data conversion or test execution was used for pin generation. `tests/unit/test_single_owner_incidents.py` adds isolated tmp-path coverage for repository separation, same-repository agent aggregation, tenant rejection and missing-root rejection (unexecuted). Remaining work includes incident HTTP/client root binding without tenancy, older incident/task/command fixtures, preservation/conversion proof and all broader no-tenancy store/transport work. This checkpoint does not claim SU2 complete or the partial source bundle deployable.
+
+**Binding specification:** `docs/superpowers/specs/2026-10-18-single-user-no-tenancy.md`. This extends the active completion goal and the entire unfinished source bundle. It supersedes every older requirement below that calls for tenant routing/isolation, principal-derived tenant identity, tenant-qualified receipts, or tenant database partitions. Historical evidence remains historical; no removal, conversion, or runtime acceptance is claimed yet.
+
+**Architecture:** One installation serves one human. Remove tenant identity rather than replacing it with a constant, empty identity, parameter adapter, or hidden partition. Preserve independently meaningful project/repository/clone/worktree/branch/task/session identities and the local owner's global scope. Keep API token checks, resource/capability permissions, command authorization, path confinement, task fences, and writer leases. Actor/agent identities remain only where they represent actual authorship, work ownership, or permission decisions, never a replacement tenancy key.
+
+**Integrated implementation ledger (tests execute only after all source steps close):**
+
+- [ ] SU1 — Configuration and identity: remove tenancy configuration/defaults, `api_token_tenant`/`api_token_principal` fallback chain, derivation keys and tenant-only principal routing in `config.py`, `http_identity.py`, `http_server.py`, `client.py`, `mcp_server.py`, and setup/install producers. Explicitly reject retired fields and headers; keep API tokens, allowed roots and scoped authorization. Preserve operator `config.toml` until explicit offline conversion.
+- [ ] SU2 — Scope and durable stores: remove tenant fields, predicates, columns, indexes and identity hashing from `agent_identity.py`, `agent_events.py`, `agent_memory.py`, `agent_tasks.py`, `agent_verification.py`, `agent_incidents.py`, `artifacts.py` and their schema validators. Missing required repository/task/etc. identity still rejects; global data belongs to the single operator. No dual reads/writes or runtime migrations.
+- [ ] SU3 — Runtime propagation: remove tenant context/state and arguments from app/services, jobs, async cancellation, caches/RAG, browser/vision, work orchestration, accounting/traces, and coordination. Keep independent workspace/repository filters, task ownership, cancellation ownership, model admission and authorization.
+- [ ] SU4 — Public surface: remove tenant inputs/outputs/headers from HTTP, MCP, Python/TypeScript SDKs, command producers, generated schemas/manifests and dashboard. Retired public fields fail explicitly rather than being ignored or translated. Wire-level tests must exercise rejection and preserved authorization.
+- [ ] SU5 — Offline preservation: implement a separately invoked one-time state/config conversion tool and explicit collision manifest. It must not be imported by or offered as fallback from supported runtime. Do not execute conversion before the preservation procedure below is verified against isolated fixtures.
+- [ ] SU6 — Documentation and fixtures: align configuration reference, setup/update instructions, both canonical install/update prompts and policy generators; replace tenant-isolation cases with genuine project/repository/clone/worktree/branch/task/session scope and credential-permission cases. Keep historical docs clearly archival. Preserve all existing dirty work.
+- [ ] SU7 — Final integrated acceptance after source closure: run compileall, release_check --allow-installed, unit/full suites, selftest/doctor and current-artifact install checks; verify retired-input rejection, all retained scopes and authorization, collision refusal and successful lossless offline conversion, then capture current-version daemon/HTTP/MCP/dashboard and actual process/RAM/CPU evidence. No release claim from historical results.
+
+**SU1/SU6 source checkpoint:** `config.py` now rejects supplied `security.api_token_tenant`, `security.api_token_principal`, `security.tenant_derivation_key`, `browser_bridge.tenant`, and `security.users.<name>.tenant` by presence, including null/empty/false values. Credentials and scoped permissions retain their validators. `tests/unit/test_single_owner_config.py` covers retired-input rejection and supported credentials (unexecuted). A canonical single-owner release requirement is now generated into tool policy and recorded at the start of both install/update prompts; the managed blocks were regenerated. Transport/runtime propagation, database contracts, remaining old documentation and fixture replacement are still incomplete. Operator configuration and durable stores have not been changed; do not activate this partial source bundle.
+
+**SU3 scheduler source checkpoint:** `scheduler.py` no longer stores `Job.tenant`, tenant queue/inflight counters, quotas, virtual runtimes, status partitions or fallback identities. Queue/admission/model-resource limits, foreground preemption, idle policy, cancellation, deadlines and dispatch accounting remain. Within an effective priority tier selection is oldest-first with deterministic job-ID ties; wait accounting measures requests rather than tenant rotation. `submit`/`enqueue` require keyword-only source/execute arguments and `Job` construction is keyword-only so retired positional inputs reject instead of shifting fields. Runtime callers in services/preprocessing/Ollama/benchmark and the model-free harness use the new contract. Root/packaged defaults and hardware overlays omit tenant quotas; config and scheduler constructors reject the retired settings by presence. The synthetic harness now emits `same_priority_wait_ms`, with no tenant benchmark buckets. New single-owner scheduler cases and several affected fixtures were authored/adapted but remain unexecuted. Remaining scheduler mocks/fixtures in reliability/backpressure/model-idle/T12 integration tests still require conversion before source closure; tenant-bearing benchmark scenario inputs elsewhere, dashboard consumers and the broader SU2/SU3/SU4 work also remain open. No live restart, configuration rewrite, DB conversion, test or benchmark execution occurred.
+
+**SU3 fixture/scenario continuation:** AST-guided edits converted scheduler calls and `Job` construction in the known model-availability, reliability, backpressure and T12 test modules, followed by manual repairs of scheduler-shaped service/benchmark mocks, global-queue harnesses and same-priority wait expectations. Source review corrected duplicate keyword-only separators and references to removed local variables introduced by the mechanical pass. Overload fixtures now reject the second submission under a lock; prompt-size grouping observes actual prompt ordering rather than tenant labels. This is source authoring/review, not executed test evidence. `OllamaRuntime.run_benchmark_scenario` now rejects supplied `scenario_inputs.tenant` and per-item tenant fields by presence (including null/empty/false), does not normalize a fallback tenant, and omits tenant from observations. The T12 scenario producer in `tools/benchmark_surfaces.py` and its runtime fixtures use only item ID/prompt identities; explicit retired-field regressions were added. Complete fixture coverage, dashboard consumers, all other tenancy subsystems and final integrated tests remain open. Canonical prompt regeneration ran as source generation. No inference, tests, benchmarks, durable conversion or restart were executed in this continuation.
+
+**Offline preservation procedure:** Inventory configured state stores and operator settings without mutating originals; classify disposable derived data separately. For durable SQLite, create consistent SQLite-backup snapshots (including committed WAL state), retain originals and provenance outside runtime, and export per-table schemas/counts/identifiers plus checksums. Derive each new uniqueness key from the explicit target schema, excluding only retired tenant components. Report every colliding record, including byte-identical records, and block conversion until an explicit per-record disposition is supplied; never select a winner, silently merge, deduplicate, rename, or delete. Embedded payload identities, artifact paths/checksums and receipt bindings require explicit conversion rules too. Build separate target databases from canonical new DDL; copy all retained fields and verify counts, IDs, referential links, artifact bytes and receipt provenance. At activation, stop the shared service, revalidate snapshot freshness, preserve complete rollback copies, and atomically replace only the validated targets. Configuration conversion removes only retired keys, keeps token values/permissions/operator settings, and records an explicit before/after diff. A failure leaves the old installation recoverable. Source implementation, isolated conversion proof and live activation remain separate acceptance gates.
+
+**Ruling:** The operator's source-bundle-first instruction overrides per-task TDD execution sequencing: author regression coverage with each change, execute it only after the complete integrated source bundle is assembled. Previous partial learning/truncation/policy changes remain part of that bundle; tenancy removal is mandatory before its final validation.
+
 **Critical audit P1 source disposition (2026-10-18; tests deferred):** Current source inspection confirms mitigations for F01/F02/F03 (no destructive DAG rollback; command steps require the broker and bounded deadlines; no `rolled_back=true` success claim), F04 (bounded deduplicated Git inventory sorted before iteration), F05 (artifact `source` schema declares path and line bounds), F30 (root and packaged defaults are byte-identical), and F41 (type generation is bounded, root-contained, returns stub text, and rejects the retired `diff` input). F25 denies unknown commands by default and returns `execution_authorized=false`; subsequent source review confirmed that explicit opt-in still requires task worktree, write-set, fence, and private Docker transaction checks (details below). These are source findings only, not behavioral validation. Full unit/release/runtime tests remain deferred until source-bundle closure.
 
 **Critical audit follow-up (2026-10-18; source-only):** F08 rejects batches over 16 before dispatch; F09 reports attempted/succeeded/failed database maintenance and only reports full success when none fail; F10 preflight rejects duplicate IDs and steps without exactly one callable or brokered argv command; F23 reports scan completeness and finding-limit truncation; F36 records bounded `lost_error_count` when error telemetry itself fails; F39 routes Windows command strings through `parse_windows_command_line`; F40 rechecks terminal job state after acquiring its waiter event to close the lost-wakeup window. F06 now exposes process liveness, data completeness and functional health dimensions, but runtime/browser acceptance remains open. F11 has source-path demotion for docs/plans in source-focused queries; retrieval quality still needs a bounded current-source gold evaluation. These source findings do not replace behavioral validation. Tests remain deferred until source-bundle closure.
@@ -7,6 +324,8 @@
 **Canonical-boundary corrective pass (2026-10-18; validation deferred):** After shared commit `7ffe9910`, current-source review found that `AgentEvent.from_dict` again defaulted missing serialized `correlation_id`/`seq`, and lease handlers could replace dispatch's authenticated tenant with a configured principal or raw request header. The corrective source requires all nine serialized fields and consumes only the validated dispatch identity. Added missing-field, explicit-empty round-trip, and claim/release/renew identity regressions; repaired the hardening fixture to include canonical `seq`. No tests/builds run in this continuation. Current registered-worktree evidence shows only master and the clean, same-HEAD `codex/f34-dashboard-health` checkout; old worktree counts are historical. Full source reconciliation and integrated runtime/release acceptance remain open.
 
 **F34 security-fixture follow-up (2026-10-18; final validation pending):** Commit `f2407c85` assembles credential-like test values dynamically in 12 test files while leaving the scanner unchanged. Candidate F34 is isolated from clean master `74569c78132a835592fd9a80876a2a8d96ef8773`; archived F31 worktree remains registered at `da2310de896e81e739c7f0bc845bb0639b424f8f`. The candidate includes a plan-only correction to this status record. `git diff --check` and targeted `py_compile` passed for the two files named in the prior audit report. Full `pytest -q` was launched after the candidate source bundle but did not return a terminal receipt before the wait was cancelled; outcome is unknown. The last candidate security-audit response still reports one HIGH and fourteen MEDIUM findings plus AST parse errors for those two files, despite the targeted syntax check passing; rerun the audit against final integrated bytes before acceptance. Gemini remains active per operator, so master integration is pending.
+
+**F34 integration status correction (2026-10-18):** Current master is `d40d268f60ba8b27686b652f76cb8edf80c699c4`; bounded `git merge-base --is-ancestor f2407c85 master` returns exit 0, and `git worktree list` contains only the master checkout. The prior candidate-isolated and registered-F31-worktree statements above are stale. Integration is confirmed; the recorded security findings and unknown pytest outcome remain unresolved acceptance evidence, so final audit and release checks stay deferred.
 
 **Archived branch source triage (2026-10-18; incomplete):** `gemini/wave-17-task-180` tip `a8f5dc5c` is an ancestor of master; its 48 commits from `77464e14` are already integrated. Current master also contains the canonical repository/coordination inputs, strict grant expiry and identity checks, bounded VRAM inputs, cache batch APIs, transaction cycle guards, and bounded circuit-breaker state, despite several archived refs not being ancestors. Patch-equivalent review found 125 archived tips diverged from master and 34 distinct unmatched patches; these still need item-level disposition. One concrete source gap so far: `sqlite_counts` lacked strict SQLite connection checks and explicit NUL rejection; candidate commit `d3451380` adds those guards and isolated `:memory:` unit cases. Its tests remain unexecuted until source-bundle closure. The older non-exported TypeScript extraction patch is intentionally not applied: current tests preserve public API scope.
 
@@ -16,7 +335,7 @@
 
 **Candidate security scan disposition (2026-10-17):** `req_3f2ce37ef31f` reported 1,144 visited files and 32 findings (18 high, 14 medium), all marked as test findings; high findings remain untriaged. Its shell examples at `tests/test_auto_fix_repair_loop.py:60` and `tests/test_cloud_model_accelerators.py:24` conflict with candidate commit `1c573f09`'s call-aware AST detector: those lines are safe argv calls, while actual `shell=True` calls are at lines 261 and 54. Treat the shell samples as stale/non-candidate-bound evidence; do not dismiss the high credential-like fixtures. Re-run candidate-bound audit only with the final integrated source bundle and record fresh provenance.
 
-**Candidate integration checkpoint (2026-10-17; tests deferred):** Primary `master` is at `72c8e060` with dirty edits in `src/local_ai_hub/code_index.py` and `src/local_ai_hub/http_route_registry.py`; Gemini remains active per operator, so master edits and cleanup stay on hold. Isolated `codex/f34-dashboard-health` includes master merges `0e6b1eda`/`5cd0af5e`, canonical memory-delete fix `1db7aa58`, F13 exact trigram source commit `2f3125e0`, and F14 response-budget source/tests commit `ba4055b3`. Current inventory: 2 registered repo worktrees; 390 local branches, with 388 already under `archived/` and the candidate as the sole unarchived non-master branch. No `C:\Users\Adam\lah-wt-*` directories remain; 214 immediate directories exist under `C:\Users\Adam\.codex\worktrees`, spanning other projects and not all registered to this repo, so they are not blanket cleanup targets. F13 tests/paired benchmark, remaining source reconciliation, integrated validation, runtime/package acceptance, candidate integration/archival, and owned-worktree cleanup remain open; tests/builds stay deferred until source-bundle closure. One current Hub status response: Hub and Ollama online, but status is `degraded=true`; it does not prove runtime health or daemon stability.
+**Current integration checkpoint (2026-10-18; source work active, tests deferred):** Primary `master` is at `d40d268f`. Current root has 13 intended dirty source, test, policy, and plan files; preserve these edits and Gemini's ongoing work. Local inventory shows one registered worktree (`C:\Users\Adam\.local-ai-hub` on `master`) and 391 local branches total; all non-master refs are already under `archived/`. The former `codex/f34-dashboard-health` ref is absent. Verified source candidates `f2407c85`, `a8f5dc5c`, `d3451380`, `1c573f09`, `87b6de56`, `8b08f608`, `1db7aa58`, `2f3125e0`, and `ba4055b3` are ancestors of current master. This inventory covers this repository's registration and local refs only; it does not establish Gemini's external checkout state. Remaining work: finish source reconciliation and the open audit requirements, then validate the integrated candidate, packaging/runtime, daemon, dashboard, scoped Agent OS memory, and process/RAM/CPU behavior. Tests/builds remain deferred until source-bundle closure. No worktree or branch cleanup is authorized while Gemini remains active.
 
 **Agent identity, task budget, cleanup recovery and skill-retention repair (2026-10-17; tests deferred):** Candidate source now filters preloaded memory only with the explicit tenant and binds context identity to `coordination_id`; response-budget preflight measures full task payloads even without memory projection. Worktree cleanup persists a path/repository-bound intent before deletion, reconciles retries against Git registration and requested branch state, and leaves partial branch deletion pending. Skill replacement retains the pinned prior tree in tracked quarantine instead of recursively deleting its path. Added regressions for each contract, including cleanup path tampering. GPT-6 Luna spec and quality reviews passed; no tests/builds run.
 
@@ -34,6 +353,10 @@
 **Canonical semantic input source pass (2026-10-17; tests deferred):** Candidate commits 96b49313, c6620667, fd3a9530, and 33819327 reject retired route/reason/review/delegate/speculative-draft/scaffold aliases and remove stale cross-repo action wording. Focused rejection tests were added but not executed. Candidate now includes merge commit a08da981, integrating committed master through ad5a9814. Primary has uncommitted generator.py and untracked user_data/, which remain untouched; full repair bundle and integrated validation remain open.
 
 **F16 routing-policy source repair (2026-10-17; tests deferred):** Generated policy and skill guidance now reuse fresh sufficient evidence, route exact file/symbol lookup directly, and preprocess only for missing or stale indexes. Removed mandatory first-operation/context ritual and obsolete 1.5B foreground assignment. AGENTS.md plus install/update prompts were regenerated from the canonical policy source. Regression assertions were authored but not run; setup sync parity and generated install behavior remain final-bundle checks.
+
+**F16 policy drift correction (2026-10-18; tests deferred):** Reconciled generated policy, the global discovery gate, and MCP documentation that had regressed to unconditional context-first/preprocess-first wording. Updated `features.py`, `generator.py`, both MCP repository descriptions and its operation guidance/docstring, `tool-orchestration` and `local-ai-orchestrator` prompts, and regenerated `AGENTS.md` plus install/update prompts. Added `tests/unit/test_repository_guidance_fresh_evidence.py`; all checks remain deferred until the complete source bundle is assembled.
+
+**Agent-learning canonical constructor repair (2026-10-18; tests deferred):** `ImprovementCandidate`, `RollbackTrigger`, and `PromotionDecision` constructors now reject coerced/noncanonical identity, status, metric-map, boolean, and mapping-key inputs instead of stripping NULs or defaulting invalid status to `candidate`. JSON `from_dict` remains the canonical string boundary; safe numeric fallback remains unchanged. Updated normalization expectations and added direct-constructor/factory rejection cases; no tests run.
 
 **Repository revision boundary fixture (2026-10-17; tests deferred):** Added cases requiring empty, whitespace, NUL, non-string and boolean `base` revisions to reject before execution. Current source already enforces this boundary; no tests were run.
 
@@ -194,7 +517,7 @@ The October 7 governing process takes precedence over historical per-task worktr
 
 **Selective integration through `36dc958f`:** `7adfbf50` validates adoption-metric paths and numeric buckets before state access and bounds UTC report days; `34e9951d` preserves valid Python inline signatures and positional-only arguments; `3ef2aa83` rejects non-finite queue-wait telemetry. History scan series `b1b3bd25`, `53ad2b7b`, `be7bbe29` replaces the unsupported history branch with one bounded managed Git capture and a pure provenance parser. Scope is changed text in the requested reachable HEAD commits, not all refs/full historical trees. Malformed hunks, merge/binary omissions, limits and unconfirmed capture cannot establish completeness. `c69deae2` separates reported GPU metrics from conservative same-pool pressure estimates; `b8f50890` validates RuntimeTuner input before profile mutation and uses configured/private state. `36dc958f` preserves existing Python test paths in affected-test selection. Primary spec/source-quality review required bounded reads, hunk accounting, path normalization, raw-metric preservation and truthful derived-pressure provenance. Regression source is authored but UNEXECUTED; no runtime, performance, whole-release or global branch-ancestry acceptance follows. The three finished history/VRAM/tuner worktrees had empty tracked/untracked/ignored inventories before unforced removal; recovery refs remain.
 
-**Gemini 101–127 selective source disposition:** 101/102/104/110/113/124 contribute the bounded adaptations above; 120's canonical JSON fast path and 125's grant expiry/delegation limits are being adapted independently. 103 adds unused SQLite aliases/error rephrasing; 105/127 rewrite durable identities/scopes and add convenience APIs without a demonstrated caller requirement. 106 weakens strict pagination; 107 replaces malformed CRDT state with invented values; 108 ignores malformed active fencing paths; 109 adds unsafe unlock targeting and unbounded process capture; 111 adds permissive state fallback and destructive reset APIs. 112 swallows context reset failures and rewrites identity; 114 silently defaults malformed context/budgets; 115 guesses model capabilities from names; 116 weakens priority ownership; 117/118 silently replace invalid output budgets. 119's cycle/depth guard returns the original cyclic/deep object, so it does not establish bounded serialization; its truncator can still exceed the requested character bound. 121 turns malformed exit codes into success zero; 122 turns malformed expiry into unlimited validity; 123 fabricates zero latency/cost and resets unknown lifecycle status; 125's broad patch downgrades unknown risks to READ and clears invalid counters; 126 rewrites task identity and defaults unknown lifecycle state. These mixed branches are preserved, not imported wholesale. No claim that all historical refs/worktrees are merged is made. Remaining original-plan/audit acceptance and archive classification remain open.
+**Gemini 101–127 selective source disposition:** 101/102/104/110/113/124 contribute the bounded adaptations above; 120's canonical JSON fast path and 125's grant expiry/delegation limits are being adapted independently. 103 adds unused SQLite aliases/error rephrasing; 105/127 rewrite durable identities/scopes and add convenience APIs without a demonstrated caller requirement. 106 weakens strict pagination; 107 replaces malformed CRDT state with invented values; 108 ignores malformed active fencing paths; 109 adds unsafe unlock targeting and unbounded process capture; 111 adds permissive state fallback and destructive reset APIs. 112 swallows context reset failures and rewrites identity; 114 silently defaults malformed context/budgets; 115 guesses model capabilities from names; 116 weakens priority ownership; 117/118 silently replace invalid output budgets. Commit `0703da5e` for 119 is already an ancestor of master; current `compact_result` returns explicit `<cycle>`/`<max-depth>` markers. Source inspection found a separate bound defect in `syntax_aware_truncate`: minimum prefix sizing and syntax-closing suffixes could exceed `max_chars`. The source now reserves suffix space and caps each closure; boundary regressions were added to `tests/unit/test_compact_edge_cases.py` (unexecuted). `ToolAwareLocalAgent._trim` also now includes its marker within `max_tool_chars`, with regression coverage added (unexecuted). 121 turns malformed exit codes into success zero; 122 turns malformed expiry into unlimited validity; 123 fabricates zero latency/cost and resets unknown lifecycle status; 125's broad patch downgrades unknown risks to READ and clears invalid counters; 126 rewrites task identity and defaults unknown lifecycle state. These mixed branches are preserved, not imported wholesale. No claim that all historical refs/worktrees are merged is made. Remaining original-plan/audit acceptance and archive classification remain open.
 
 **Hub review limitation at this checkpoint:** post-integration `review_diff` and the subsequent bounded policy/routing `solve` did not return before cancellation; their outcomes are UNKNOWN and provide no review approval. They were not repeated. Primary review used exact bounded source patches under the retained explicit terminal artifact failure; all validation stays deferred by operator instruction.
 

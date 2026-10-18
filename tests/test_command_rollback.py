@@ -421,7 +421,7 @@ def test_failed_mutating_run_discards_private_transaction_without_source_changes
     subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
     subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
     broker = CommandBroker(
-        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True}},
+        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True, "allow_unknown": True}},
         artifacts=None, repo_state=None,
     )
     broker.set_task_store(_FakeTaskStore(str(repo)))
@@ -1026,7 +1026,7 @@ def test_patch_and_verify_rollback_preserves_concurrent_foreign_changes(
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n"
 
     result = broker.patch_and_verify(
-        patch, str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True
+        patch, str(tmp_path), command="verify", task_id="task-owned", auto_rollback=True
     )
 
     assert result["success"] is False
@@ -1080,7 +1080,7 @@ def test_patch_rollback_conflict_is_outcome_unknown_and_preserves_foreign_state(
     monkeypatch.setattr(broker, "run", fail_after_target_edit)
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n"
     result = broker.patch_and_verify(
-        patch, str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True
+        patch, str(tmp_path), command="verify", task_id="task-owned", auto_rollback=True
     )
 
     assert result["success"] is False
@@ -1153,7 +1153,7 @@ def test_patch_rollback_conflict_uses_snapshot_and_never_overwrites_foreign_stat
     monkeypatch.setattr(commands_module.subprocess, "run", concurrent_apply_checks)
     result = broker.patch_and_verify(
         "--- a/owned.txt\n+++ b/owned.txt\n@@ -1,3 +1,3 @@\n start\n-before\n+after\n end\n",
-        str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True,
+        str(tmp_path), command="verify", task_id="task-owned", auto_rollback=True,
     )
 
     assert result["rolled_back"] is False
@@ -1210,7 +1210,7 @@ def test_patch_apply_timeout_returns_unknown_and_invalidates_caches(
     monkeypatch.setattr(commands_module.subprocess, "run", timeout_during_patch_apply)
     result = broker.patch_and_verify(
         "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n",
-        str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True,
+        str(tmp_path), command="verify", task_id="task-owned", auto_rollback=True,
     )
 
     assert result.get("outcome_unknown") is True
@@ -1276,7 +1276,7 @@ def test_patch_and_verify_preserves_run_uncertainty_after_compensation_succeeds(
 
     result = broker.patch_and_verify(
         "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n",
-        str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True,
+        str(tmp_path), command="verify", task_id="task-owned", auto_rollback=True,
     )
 
     assert result["success"] is False
@@ -1341,7 +1341,6 @@ def test_patch_validation_holds_and_releases_rollback_root_guard(
     result = broker.patch_and_verify(
         patch,
         str(root),
-        "tenant",
         command="python -c \"pass\"",
         task_id="task-owned",
         auto_rollback=True,
@@ -1378,7 +1377,7 @@ def test_patch_and_verify_rejects_symlink_write_path(
     patch = "--- a/linked/target.txt\n+++ b/linked/target.txt\n@@ -1 +1 @@\n-outside baseline\n+outside changed\n"
 
     result = broker.patch_and_verify(
-        patch, str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True
+        patch, str(tmp_path), command="verify", task_id="task-owned", auto_rollback=True
     )
 
     assert result["success"] is False
@@ -2472,8 +2471,8 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
         def __init__(self):
             self.records = []
 
-        def put_json(self, value, tenant, kind):
-            self.records.append((value, tenant, kind))
+        def put_json(self, value, *, kind):
+            self.records.append((value, kind))
             return "ev-command-proof"
 
     class _VerificationStore:
@@ -2519,8 +2518,7 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
 
     assert result["success"] is True
     assert len(artifacts.records) == 1
-    proof, tenant, kind = artifacts.records[0]
-    assert tenant == "agent"
+    proof, kind = artifacts.records[0]
     assert kind == "command_verification"
     assert proof["exit_code"] == 0
     assert "command" not in proof

@@ -10,7 +10,8 @@ headers, or request/response bodies.
 Configure the exact generated extension origin in `browser_bridge.allowed_origins`
 or authenticate the bridge request with the Hub API token. The default allow-list
 is empty and never grants a wildcard extension origin. The capability is one-use,
-short-lived, tenant-bound, origin-bound, and bound to the explicit tab/window.
+short-lived, origin-bound, and bound to the explicit tab/window. Agents and chats
+do not introduce a separate human identity or capability namespace.
 Capture aborts if the active tab changes before or after the screenshot, and
 returns explicit timeout, permission, closed-tab, or mismatch errors. Password
 input values/defaults are cleared only on a cloned DOM snapshot; the page itself

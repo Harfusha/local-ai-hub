@@ -30,7 +30,7 @@ def test_queued_preprocess_rechecks_mode_before_runtime_start(tmp_path):
     runtime = _Runtime()
 
     class _Scheduler:
-        def submit(self, _model, _tenant, _source, execute, **_kwargs):
+        def submit(self, _model, *, source, execute, **_kwargs):
             set_operational_mode(state_dir, "gaming")
             return execute()
 

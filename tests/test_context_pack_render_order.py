@@ -54,7 +54,7 @@ def test_fused_lexical_render_order_matches_provenance_before_rag_append(
             return "workspace-1"
 
         @staticmethod
-        def list_workspaces(_tenant):
+        def list_workspaces():
             return [{"workspace": "workspace-1"}]
 
         @staticmethod
@@ -76,7 +76,7 @@ def test_fused_lexical_render_order_matches_provenance_before_rag_append(
     services.evidence_store = None
     services.rag = FakeRag()
 
-    result = services._hybrid_context_uncached(str(tmp_path), "route", "tenant", None, 1000)
+    result = services._hybrid_context_uncached(str(tmp_path), "route", workspace=None, max_tokens=1000)
 
     context = result["context"]
     high_text = f"--- {high_path}:7-8 score=0.9 ---\nHIGH_RAW\n"

@@ -44,8 +44,8 @@ def test_trace_list_filters_by_minimum_duration_and_action(tmp_path: Path) -> No
         "server": {"state_dir": str(tmp_path)},
         "observability": {"debug_traces": {"enabled": True}},
     })
-    slow_id = store.start(kind="mcp", tenant="test", action="search")
-    fast_id = store.start(kind="mcp", tenant="test", action="index")
+    slow_id = store.start(kind="mcp", action="search")
+    fast_id = store.start(kind="mcp", action="index")
     with closing(store._connect()) as con:
         con.execute(
             "UPDATE traces SET created_at=?, updated_at=?, finished_at=? WHERE trace_id=?",

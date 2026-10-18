@@ -13,31 +13,37 @@ def store(tmp_path: Path) -> IncidentStore:
     return IncidentStore(state_store)
 
 
-def test_auto_mint_negative_knowledge_missing_module(store: IncidentStore):
+def test_auto_mint_negative_knowledge_missing_module(store: IncidentStore, tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
     outcome = ToolOutcome(
         tool_name="command",
         command="python -m myapp",
         error="ModuleNotFoundError: No module named 'fastapi'",
         exit_code=1,
         state_revision="rev-1",
+        repository_root=str(root),
     )
     incident = store.capture(outcome)
     assert incident is not None
     assert "fastapi" in (incident.root_cause or "")
     assert "install" in (incident.verified_fix or "")
 
-    decision = store.retry_decision(incident.fingerprint, incident.state_revision)
+    decision = store.retry_decision(incident.fingerprint, incident.state_revision, root=str(root))
     assert decision.action == "apply_verified_fix"
     assert "fastapi" in (decision.verified_fix or "")
 
 
-def test_auto_mint_negative_knowledge_sqlite_lock(store: IncidentStore):
+def test_auto_mint_negative_knowledge_sqlite_lock(store: IncidentStore, tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
     outcome = ToolOutcome(
         tool_name="command",
         command="python migrate.py",
         error="sqlite3.OperationalError: database is locked",
         exit_code=1,
         state_revision="rev-2",
+        repository_root=str(root),
     )
     incident = store.capture(outcome)
     assert incident is not None
@@ -55,9 +61,8 @@ def test_find_negative_knowledge_by_query(store: IncidentStore, tmp_path: Path):
         exit_code=1,
         state_revision="rev-3",
         repository_root=str(root),
-        tenant="agent",
     ))
-    results = store.find_negative_knowledge("requests", root=str(root), tenant="agent")
+    results = store.find_negative_knowledge("requests", root=str(root))
     assert len(results) >= 1
     assert "requests" in results[0]["root_cause"]
 
@@ -73,6 +78,7 @@ def test_command_broker_skips_unscoped_known_pitfalls(tmp_path: Path):
         error="ModuleNotFoundError: No module named 'numpy'",
         exit_code=1,
         state_revision="rev-4",
+        repository_root=str(tmp_path),
     ))
 
     cb = CommandBroker({"server": {"state_dir": str(tmp_path)}}, repo_state=None)

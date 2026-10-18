@@ -72,7 +72,7 @@ def test_autostart_launches_real_hub_child_and_returns_http_search_result(tmp_pa
         "[preprocessing]\nenabled = false\n",
         encoding="utf-8",
     )
-    client = HubClient(tenant="t04-real-child", config_path=str(config_path), auto_start=True)
+    client = HubClient(config_path=str(config_path), auto_start=True)
     assert client.config["llama_cpp"]["mode"] == "off"
     assert client.config["ollama"]["enabled"] is False
     assert client.config["smart_ollama"]["enabled"] is False

@@ -150,8 +150,8 @@ class _InlineScheduler:
     def status(self) -> dict:
         return {}
 
-    def submit(self, _model, _tenant, _source, work, **_kwargs):
-        return work()
+    def submit(self, _model, *, source, execute, **_kwargs):
+        return execute()
 
 
 class _NoopSemanticCache:
@@ -233,7 +233,6 @@ def test_local_task_resolves_project_model_and_prompt_without_cross_repo_cache_o
         for root in (repo_a, repo_b):
             result = service.delegate(
                 {"root": str(root), "task": "Explain this project briefly.", "task_type": "general", "complexity": "fast"},
-                tenant="test",
             )
             assert result["success"] is True, result
             assert result["route"]["model"] == "qwen3.5:9b"
@@ -272,7 +271,6 @@ def test_local_task_project_context_falls_back_for_missing_or_invalid_config(
     assert revision == ""
     result = service.delegate(
         {"root": str(root), "task": "Explain this project.", "task_type": "general", "complexity": "fast"},
-        tenant="test",
     )
     assert result["success"] is True, result
     assert result["route"]["model"] == "qwen2.5-coder:7b"
@@ -314,18 +312,15 @@ def test_reason_and_review_use_project_profile_through_delegate(tmp_path: Path) 
 
     reason = service.reason(
         {"root": str(root), "problem": "Explain the issue.", "complexity": "heavy"},
-        tenant="test",
     )
     review = service.review(
         {"root": str(root), "instructions": "Review this code.", "code": "print(1)", "complexity": "heavy"},
-        tenant="test",
     )
     batch = service.batch_delegate(
         {
             "root": str(root),
             "tasks": [{"task": "Explain this project.", "task_type": "general", "complexity": "fast"}],
         },
-        tenant="test",
     )
 
     assert reason["route"]["model"] == "qwen3.5:9b"
@@ -371,7 +366,6 @@ def test_local_task_project_profiles_and_prefixes_are_isolated_concurrently(tmp_
     def invoke(root: Path, tenant: str) -> dict:
         return service.delegate(
             {"root": str(root), "task": "Explain this project briefly.", "task_type": "general", "complexity": "fast"},
-            tenant=tenant,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -404,7 +398,6 @@ def test_batch_delegate_inherits_parent_root_for_items_without_project_root(tmp_
             "cwd": "ignored-parent-cwd",
             "tasks": [{"task": "one"}, {"task": "two", "root": explicit_root}],
         },
-        tenant="test",
     )
 
     assert result["success"] is True, result
@@ -444,7 +437,6 @@ def test_blank_root_falls_back_to_cwd_for_project_settings(tmp_path: Path) -> No
 
     result = service.delegate(
         {"root": "", "cwd": str(repo), "task": "Explain this project.", "task_type": "general", "complexity": "fast"},
-        tenant="test",
     )
 
     assert result["success"] is True, result
@@ -467,11 +459,10 @@ def test_conversation_prefix_is_sent_but_redacted_from_start_and_followup_traces
                 "root": str(repo), "task": "Start a short conversation.", "task_type": "general",
                 "complexity": "fast", "conversation": True,
             },
-            tenant="test",
         )
         assert started["success"] is True, started
         continued = service.continue_conversation(
-            {"conversation_id": started["conversation_id"], "task": "Continue briefly."}, tenant="test",
+            {"conversation_id": started["conversation_id"], "task": "Continue briefly."},
         )
     finally:
         reset_observer(observer_token)

@@ -24,7 +24,7 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
         value="private deleted value",
         status=MemoryStatus.CONFIRMED,
         source="user",
-        provenance={"root": str(root), "repository_id": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": str(root)},
     )
     idempotency_key = "deleted-memory-replay-once"
     store = MemoryStore(AgentStateStore(db_path))
@@ -36,7 +36,6 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
         scope_id=str(root),
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
     )
     with closing(connect_sqlite(db_path)) as con:
         payloads = [
@@ -60,7 +59,7 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
     relocated = replace(
         original,
         scope_id=str(other_root),
-        provenance={"root": str(other_root), "repository_id": str(other_root), "tenant": "tenant-a"},
+        provenance={"root": str(other_root), "repository_id": str(other_root)},
     )
     with pytest.raises(ValueError, match="deleted"):
         reopened.record(
@@ -74,12 +73,10 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
         scope=AgentScope.REPOSITORY,
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
     ) is None
     assert reopened.find(
         scope=AgentScope.REPOSITORY,
         root=str(root),
         repository_id=str(root),
-        tenant="tenant-a",
         semantic=False,
     ) == []

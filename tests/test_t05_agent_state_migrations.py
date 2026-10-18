@@ -130,7 +130,6 @@ def _assert_state_survives(db_path, task, event, memory):
         scope_id=task.task_id,
         task_id=task.task_id,
         root=memory.provenance["root"],
-        tenant=memory.provenance["tenant"],
     ).value == "durable memory"
     assert VerificationStore(state, task_store=tasks, artifact_store=_MigrationArtifactStore(task)).completion(task.task_id).complete is True
 

@@ -34,7 +34,7 @@ def test_cached_success_does_not_mint_command_verification_receipt(tmp_path: Pat
 
     broker._record_command_verification(
         {"success": True, "exit_code": 0},
-        tenant="tenant-a",
+
         task_id="task-a",
         criterion="pytest",
         command="pytest -q",
@@ -62,7 +62,7 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
     result = {"success": True, "exit_code": 0}
     broker._record_command_verification(
         result,
-        tenant="tenant-a",
+
         task_id="task-a",
         criterion="pytest",
         command="pytest -q",
@@ -83,18 +83,18 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
     assert len(artifacts.records) == 1
     assert len(verification.receipts) == 1
     scoped_record = broker.get_command_execution_record(
-        command_id, tenant="tenant-a", task_id="task-a", repository_root=str(tmp_path)
+        command_id,  task_id="task-a", repository_root=str(tmp_path)
     )
     assert scoped_record is not None
     assert scoped_record["repository_root"] == str(tmp_path.resolve())
     assert broker.get_command_execution_record(
-        command_id, tenant="other-tenant", task_id="task-a", repository_root=str(tmp_path)
+        command_id,  task_id="task-a", repository_root=str(tmp_path)
     ) is None
     assert broker.get_command_execution_record(
-        command_id, tenant="tenant-a", task_id="other-task", repository_root=str(tmp_path)
+        command_id,  task_id="other-task", repository_root=str(tmp_path)
     ) is None
     assert broker.get_command_execution_record(
-        command_id, tenant="tenant-a", task_id="task-a", repository_root=str(tmp_path.parent)
+        command_id,  task_id="task-a", repository_root=str(tmp_path.parent)
     ) is None
 
     record = broker._get_server_command_execution_record(command_id)

@@ -217,7 +217,7 @@ def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatc
 
 
 @pytest.mark.parametrize("action", ["claim", "release", "renew", "leases"])
-def test_registered_local_ai_coord_lease_actions_forward_explicit_tenant(monkeypatch, tmp_path, action):
+def test_registered_local_ai_coord_lease_actions_have_no_tenant_selector(monkeypatch, tmp_path, action):
     from local_ai_hub.features import FeatureSet
 
     root = str(tmp_path.resolve())
@@ -231,7 +231,7 @@ def test_registered_local_ai_coord_lease_actions_forward_explicit_tenant(monkeyp
         "load_operational_mode",
         lambda *args, **kwargs: mcp_server.OperationalModeSnapshot("active", 0, None),
     )
-    arguments = {"action": action, "root": root, "tenant": "fixed-principal"}
+    arguments = {"action": action, "root": root}
     if action == "claim":
         arguments["paths"] = ["src/example.py"]
     elif action in {"release", "renew"}:
@@ -241,7 +241,7 @@ def test_registered_local_ai_coord_lease_actions_forward_explicit_tenant(monkeyp
     contents, _structured = tool_result if isinstance(tool_result, tuple) else (tool_result, None)
     result = json.loads(contents[0].text)
 
-    assert backend.calls[0][2] == {"tenant": "fixed-principal"}
+    assert backend.calls[0][2] == {}
     assert result["success"] is True
 
 
@@ -510,7 +510,7 @@ def test_local_ai_coord_memory_promote_forwards_record_identity(monkeypatch, tmp
         "value": "", "query": "", "root": root, "scope": "task",
         "scope_id": "task-42", "task_id": "task-42", "session_id": "session-3",
         "clone_id": "", "worktree_id": "", "branch": "",
-        "repository_id": "", "tenant": "",
+        "repository_id": "",
     }]
 
 
@@ -526,17 +526,16 @@ def test_local_ai_coord_memory_reap_is_private(monkeypatch, tmp_path):
 
 def test_local_ai_coord_negative_knowledge_find_forwards_query_and_limit(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    tenant = "tenant-x"
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(
-        action='negative_knowledge_find', root=root, tenant=tenant,
+        action='negative_knowledge_find', root=root,
         query="retry exhausted", limit=12,
     )
     assert result["success"] is True, result
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/incidents",
-        {"action": "find", "root": root, "tenant": tenant,
+        {"action": "find", "root": root,
          "query": "retry exhausted", "limit": 12},
         {"timeout": mcp_server._timeout("quick")},
     )]
@@ -554,7 +553,7 @@ def test_local_ai_coord_negative_knowledge_record_forwards_verified_fix(monkeypa
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/incidents",
-        {**record, "action": "record", "root": root, "tenant": ""},
+        {**record, "action": "record", "root": root},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -947,7 +946,7 @@ def test_local_ai_coord_incident_decision_forwards_fingerprint_and_revision(monk
     assert result["success"] is True
     assert backend.calls == [{
         "action": "incident_decision", "fingerprint": fingerprint,
-        "state_revision": state_revision, "root": root, "tenant": "",
+        "state_revision": state_revision, "root": root,
     }]
 
 
@@ -957,7 +956,7 @@ def test_local_ai_coord_memory_find_forwards_query_and_scope(monkeypatch, tmp_pa
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "memory_find", "root": root,
          "query": "lease timeout", "scope": "task", "scope_id": "task-63",
-         "task_id": "task-63", "tenant": "tenant-3"}
+         "task_id": "task-63"}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -967,7 +966,6 @@ def test_local_ai_coord_memory_find_forwards_query_and_scope(monkeypatch, tmp_pa
         "query": "lease timeout", "root": root, "scope": "task",
         "scope_id": "task-63", "task_id": "task-63", "session_id": "",
         "clone_id": "", "worktree_id": "", "branch": "", "repository_id": "",
-        "tenant": "tenant-3",
     }]
 
 
@@ -985,7 +983,7 @@ def test_local_ai_coord_memory_get_forwards_record_identity(monkeypatch, tmp_pat
         "target_scope": "", "approver": "", "key": "", "value": "",
         "query": "", "root": root, "scope": "project", "scope_id": "project-4",
         "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
-        "branch": "", "repository_id": "", "tenant": "",
+        "branch": "", "repository_id": "",
     }]
 
 
@@ -1005,7 +1003,7 @@ def test_local_ai_coord_memory_record_forwards_record_and_ttl(monkeypatch, tmp_p
         "target_scope": "", "approver": "", "key": "", "value": "",
         "query": "", "root": root, "scope": "task", "scope_id": "task-65",
         "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
-        "branch": "", "repository_id": "", "tenant": "", "ttl_seconds": 3600,
+        "branch": "", "repository_id": "", "ttl_seconds": 3600,
     }]
 
 
@@ -1107,17 +1105,16 @@ def test_local_ai_coord_negative_knowledge_record_dispatch(monkeypatch, tmp_path
 
 def test_local_ai_coord_negative_knowledge_find_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    tenant = "tenant-x"
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="negative_knowledge_find", root=root, tenant=tenant, query="bad input"
+        action="negative_knowledge_find", root=root, query="bad input"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls[0][0] == "/api/agent-state/incidents"
     assert backend.calls[0][1]["action"] == "find"
     assert backend.calls[0][1]["query"] == "bad input"
-    assert backend.calls[0][1]["tenant"] == tenant
+    assert "tenant" not in backend.calls[0][1]
 
 
 def test_local_ai_coord_memory_record_dispatch(monkeypatch, tmp_path):

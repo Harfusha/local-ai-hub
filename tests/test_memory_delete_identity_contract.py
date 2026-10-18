@@ -26,7 +26,6 @@ def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Pa
         scope_id=record.scope_id,
         root=str(tmp_path / "other-repository"),
         repository_id="other-repository",
-        tenant="owner-tenant",
     ) is False
     assert store.delete(
         record.record_id,
@@ -34,7 +33,6 @@ def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Pa
         scope_id=record.scope_id,
         root=root,
         repository_id="repo-1",
-        tenant="other-tenant",
     ) is False
     assert store.get(
         record.record_id,
@@ -42,7 +40,6 @@ def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Pa
         scope_id=record.scope_id,
         root=root,
         repository_id="repo-1",
-        tenant="owner-tenant",
     ) == record
     assert store.delete(
         record.record_id,
@@ -50,6 +47,5 @@ def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Pa
         scope_id=record.scope_id,
         root=root,
         repository_id="repo-1",
-        tenant="owner-tenant",
     ) is True
     assert store.get(record.record_id, include_expired=True) is None

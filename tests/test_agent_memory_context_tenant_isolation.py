@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from local_ai_hub import trace_context
@@ -17,15 +18,12 @@ def _record(
     scope: AgentScope,
     scope_id: str = "",
     root: Path | None = None,
-    tenant: str = "",
     repository_id: str = "",
     key: str,
 ) -> MemoryRecord:
     provenance = {}
     if root is not None:
         provenance["root"] = str(root)
-    if tenant:
-        provenance["tenant"] = tenant
     if repository_id:
         provenance["repository_id"] = repository_id
     return MemoryRecord.create(
@@ -51,20 +49,20 @@ def _seed_memory_projections(memory: MemoryStore, records) -> None:
 
 
 @pytest.mark.parametrize("seed_projections", [False, True])
-def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global(tmp_path: Path, seed_projections):
+def test_context_memory_uses_repository_task_and_global_scopes(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
     root = tmp_path / "repo"
+    foreign_root = tmp_path / "other-repo"
     root.mkdir()
+    foreign_root.mkdir()
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id="repo-id", key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", repository_id="repo-id", key="repo-foreign"),
-        "repo_tenantless": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, key="repo-tenantless"),
-        "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-current"),
-        "task_foreign": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-b", key="task-foreign"),
-        "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
-        "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
-        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, repository_id="repo-id", key="repo-current"),
+        "repo_other_root": _record(scope=AgentScope.REPOSITORY, scope_id=str(foreign_root), root=foreign_root, repository_id="other-repo-id", key="repo-other-root"),
+        "task_current": _record(scope=AgentScope.TASK, scope_id="task-current", root=root, key="task-current"),
+        "task_other": _record(scope=AgentScope.TASK, scope_id="task-other", root=root, key="task-other"),
+        "global_one": _record(scope=AgentScope.GLOBAL, key="global-one"),
+        "global_two": _record(scope=AgentScope.GLOBAL, key="global-two"),
     }
     if seed_projections:
         _seed_memory_projections(memory, records.values())
@@ -72,49 +70,48 @@ def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_glo
         for record in records.values():
             memory.record(record, actor="user")
 
-    found = memory.find_for_context(root=str(root), task_id="shared-task", tenant="tenant-a", coordination_id="repo-id")
-
+    found = memory.find_for_context(
+        root=str(root), task_id="task-current", coordination_id="repo-id"
+    )
     assert _ids(found) == {
         records["repo_current"].record_id,
         records["task_current"].record_id,
-        records["global_current"].record_id,
-        records["global_tenantless"].record_id,
+        records["global_one"].record_id,
+        records["global_two"].record_id,
     }
 
 
-def test_find_for_context_without_tenant_returns_only_tenantless_global(tmp_path: Path):
+def test_owner_global_memory_is_available_without_repository_context(tmp_path: Path):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
-    root = tmp_path / "repo"
-    root.mkdir()
-    records = {
-        "repo_tenantless": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, key="repo-tenantless"),
-        "repo_owned": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id="repo-id", key="repo-owned"),
-        "task_tenantless": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, key="task-tenantless"),
-        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
-        "global_owned": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-owned"),
-    }
-    _seed_memory_projections(memory, records.values())
+    records = (
+        _record(scope=AgentScope.GLOBAL, key="global-one"),
+        _record(scope=AgentScope.GLOBAL, key="global-two"),
+        _record(scope=AgentScope.REPOSITORY, scope_id="repo", root=Path("repo"), key="repo-only"),
+    )
+    for record in records:
+        memory.record(record, actor="user")
 
-    assert _ids(memory.find_for_context(root=str(root), task_id="shared-task")) == {
-        records["global_tenantless"].record_id,
+    assert _ids(memory.find_for_context()) == {
+        records[0].record_id,
+        records[1].record_id,
     }
 
 
 @pytest.mark.parametrize("seed_projections", [False, True])
-def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_path: Path, seed_projections):
+def test_context_compiler_preserves_actual_repository_and_task_scope(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
     root = tmp_path / "repo"
+    other_root = tmp_path / "other-repo"
     root.mkdir()
+    other_root.mkdir()
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id="repo-id", key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", repository_id="repo-id", key="repo-foreign"),
-        "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-current"),
-        "task_foreign": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-b", key="task-foreign"),
-        "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
-        "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
-        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, repository_id="repo-id", key="repo-current"),
+        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(other_root), root=other_root, repository_id="other-id", key="repo-foreign"),
+        "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, key="task-current"),
+        "task_other": _record(scope=AgentScope.TASK, scope_id="different-task", root=root, key="task-other"),
+        "global": _record(scope=AgentScope.GLOBAL, key="global-owner-memory"),
     }
     if seed_projections:
         _seed_memory_projections(memory, records.values())
@@ -123,10 +120,9 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
             memory.record(record, actor="user")
     compiler = ContextCompiler(state, memory_store=memory)
 
-    compiled = compiler.compile(
-        ContextRequest(task_id="shared-task", root=str(root), tenant="tenant-a", coordination_id="repo-id")
-    )
-
+    compiled = compiler.compile(ContextRequest(
+        task_id="shared-task", root=str(root), coordination_id="repo-id"
+    ))
     memory_ids = {
         element.element_id
         for element in compiled.elements
@@ -135,23 +131,12 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
     assert memory_ids == {
         records["repo_current"].record_id,
         records["task_current"].record_id,
-        records["global_current"].record_id,
-        records["global_tenantless"].record_id,
+        records["global"].record_id,
     }
-
-    unscoped_compiled = compiler.compile(
-        ContextRequest(task_id="shared-task", root=str(root), tenant="")
-    )
-    unscoped_memory_ids = {
-        element.element_id
-        for element in unscoped_compiled.elements
-        if element.source_kind == "memory_record"
-    }
-    assert unscoped_memory_ids == {records["global_tenantless"].record_id}
 
 
 @pytest.mark.parametrize("seed_projections", [False, True])
-def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path: Path, seed_projections):
+def test_task_create_and_resume_keep_repository_and_global_memory(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     tasks = TaskStore(state)
     memory = MemoryStore(state)
@@ -162,16 +147,17 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
         incident_store=incidents,
     )
     root = tmp_path / "repo"
+    foreign_root = tmp_path / "other-repo"
     root.mkdir()
+    foreign_root.mkdir()
     from local_ai_hub.project_config import resolve_project_context
 
     coordination_id = resolve_project_context(root, state.db_path.parent).coordination_id
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id=coordination_id, key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", repository_id=coordination_id, key="repo-foreign"),
-        "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
-        "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
-        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, repository_id=coordination_id, key="repo-current"),
+        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(foreign_root), root=foreign_root, repository_id="other-repo", key="repo-foreign"),
+        "global_one": _record(scope=AgentScope.GLOBAL, key="global-one"),
+        "global_two": _record(scope=AgentScope.GLOBAL, key="global-two"),
     }
     if seed_projections:
         _seed_memory_projections(memory, records.values())
@@ -180,30 +166,28 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
             memory.record(record, actor="user")
     expected = {
         records["repo_current"].record_id,
-        records["global_current"].record_id,
-        records["global_tenantless"].record_id,
+        records["global_one"].record_id,
+        records["global_two"].record_id,
     }
 
-    token = trace_context.set_context(tenant="tenant-a")
-    try:
-        task = tasks.create(
-            GoalContract(goal="Use repo-current, global-current and global-tenantless facts"),
-            ScopeContext(branch="main", task_id="memory-task"),
-            task_id="memory-task",
-            repo_root=str(root),
-        )
-        created_ids = {item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]}
-        tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="tenant-start")
-        tasks.transition(task.task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="tenant-block")
-        resumed = tasks.resume(task.task_id, actor="test", idempotency_key="tenant-resume")
-    finally:
-        trace_context.reset_context(token)
+    task = tasks.create(
+        GoalContract(goal="Use current repository and owner-global facts"),
+        ScopeContext(branch="main", task_id="memory-task"),
+        task_id="memory-task",
+        repo_root=str(root),
+    )
+    created_ids = {item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]}
+    tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="scope-start")
+    tasks.transition(task.task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="scope-block")
+    resumed = tasks.resume(task.task_id, actor="test", idempotency_key="scope-resume")
 
     resumed_ids = {item["id"] for item in resumed.checkpoint.state_data["memory_context"]["items"]}
     assert created_ids == expected
     assert resumed_ids == expected
-    created_checkpoint = repr(task.checkpoint.state_data)
-    resumed_checkpoint = repr(resumed.checkpoint.state_data)
-    for foreign_key in ("repo-foreign", "global-foreign", "tenant-b"):
-        assert foreign_key not in created_checkpoint
-        assert foreign_key not in resumed_checkpoint
+    assert records["repo_foreign"].record_id not in repr(task.checkpoint.state_data)
+    assert records["repo_foreign"].record_id not in repr(resumed.checkpoint.state_data)
+
+
+def test_context_request_rejects_retired_tenant_argument():
+    with pytest.raises(TypeError):
+        ContextRequest(task_id="task", tenant="retired-label")

@@ -213,7 +213,7 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     assert hasattr(tstore, "_lock")
     assert isinstance(tstore._lock, type(threading.RLock()))
 
-    tenant_token = trace_context.set_context(tenant="tenant-a")
+    context_token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tstore.create(
             contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
@@ -221,7 +221,7 @@ def test_task_store_lock_and_retry(tmp_path: Path):
             repo_root=str(tmp_path),
         )
     finally:
-        trace_context.reset_context(tenant_token)
+        trace_context.reset_context(context_token)
 
     assert tstore.count() == 1
     assert tstore.count(TaskStatus.PLANNED) == 1
@@ -239,7 +239,7 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     tstore.heartbeat(task.task_id, ttl_seconds=10.0)
 
     # Advance time to expire heartbeat
-    reaped = tstore.reap_expired_heartbeats(now=time.time() + 100.0, repo_root=tmp_path, tenant="tenant-a")
+    reaped = tstore.reap_expired_heartbeats(now=time.time() + 100.0, repo_root=tmp_path)
     assert task.task_id in reaped
 
     after_reap = tstore.get(task.task_id)
@@ -358,7 +358,7 @@ def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     res = broker.repair_loop(
         command=f'"{sys.executable}" -B -m unittest target',
         cwd=canon_cwd,
-        tenant="test",
+
         fix_generator=mock_generator,
         max_attempts=1,
         task_id="task-1",

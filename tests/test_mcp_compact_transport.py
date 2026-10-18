@@ -113,7 +113,7 @@ def test_mcp_telemetry_tools_call_loopback_matches_declared_output_schema(tmp_pa
     server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = HubClient(tenant="mcp-telemetry-test", config_path=str(config), auto_start=False)
+    client = HubClient(config_path=str(config), auto_start=False)
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     request = t.CallToolRequest(
         method="tools/call",
@@ -227,7 +227,7 @@ def test_mcp_telemetry_loopback_redacts_nested_error_text_and_keeps_metrics(tmp_
     server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = HubClient(tenant="mcp-telemetry-privacy", config_path=str(config), auto_start=False)
+    client = HubClient(config_path=str(config), auto_start=False)
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
 
@@ -330,7 +330,7 @@ def test_python_direct_invocation_returns_dict() -> None:
 
 
 def test_mcp_call_tool_returns_compact_minified_json(monkeypatch) -> None:
-    monkeypatch.setattr(local_ai_mcp, "CLIENT", local_ai_mcp.HubClient(tenant="test", auto_start=False))
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", local_ai_mcp.HubClient(auto_start=False))
     monkeypatch.setattr(local_ai_mcp.CLIENT, "get", lambda path, timeout=None: {"hub_online": True, "scheduler": {}, "observability": {}})
 
     # Call via FastMCP call_tool (the MCP protocol entrypoint)
@@ -362,7 +362,7 @@ def test_mcp_status_remains_usable_when_hub_daemon_is_offline(tmp_path, monkeypa
         config_path = tmp_path / "offline.toml"
         state_dir = (tmp_path / "state").as_posix()
         config_path.write_text(f'[server]\nport = {port}\nstate_dir = "{state_dir}"\n', encoding="utf-8")
-        client = local_ai_mcp.HubClient(tenant="offline-test", config_path=str(config_path), auto_start=False)
+        client = local_ai_mcp.HubClient(config_path=str(config_path), auto_start=False)
         monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
         monkeypatch.setattr(
             client_module.subprocess,
@@ -408,7 +408,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         "[client]\nstartup_wait_seconds = 2\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.2\n",
         encoding="utf-8",
     )
-    received: list[tuple[dict[str, object], str]] = []
+    received: list[dict[str, object]] = []
     server_box: dict[str, object] = {}
     owned_children: list[object] = []
     retained_children: list[object] = []
@@ -417,16 +417,16 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     server_box.update(app=app, serve_errors=[])
     generated: list[str] = []
 
-    def fake_generate(model, prompt, system, max_tokens, temperature, tenant, source, priority, **kwargs):
+    def fake_generate(model, prompt, system, max_tokens, temperature, *, source, priority, **kwargs):
         generated.append(prompt)
         return {"success": True, "model": model, "text": f"HTTP result {len(generated)}"}
 
     app.services._generate = fake_generate
     original_delegate = app.services.delegate
 
-    def capture_delegate(payload, tenant):
-        received.append((dict(payload), tenant))
-        return original_delegate(payload, tenant)
+    def capture_delegate(payload):
+        received.append(dict(payload))
+        return original_delegate(payload)
 
     app.services.delegate = capture_delegate
 
@@ -455,7 +455,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         owned_children.append(child)
         return child
 
-    client = local_ai_mcp.HubClient(tenant="autostart-test", config_path=str(config_path), auto_start=True)
+    client = local_ai_mcp.HubClient(config_path=str(config_path), auto_start=True)
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
@@ -534,7 +534,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         assert payload["success"] is True, payload
         assert payload["text"].startswith("HTTP result ")
     assert sorted(received, key=lambda item: item[0]["task"]) == [
-        ({
+        {
             "task": task,
             "context": context,
             "complexity": "low",
@@ -546,7 +546,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
             "changed_paths": [],
             "repository_revision": "",
             "evidence_ids": [],
-        }, "http-default")
+        }
         for task, context in tasks
     ]
     assert len(owned_children) == 1, f"duplicate daemon starts: {start_events!r}"
@@ -554,7 +554,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
 
 
 def test_lowlevel_request_handler_returns_compact_minified_json(monkeypatch) -> None:
-    monkeypatch.setattr(local_ai_mcp, "CLIENT", local_ai_mcp.HubClient(tenant="test", auto_start=False))
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", local_ai_mcp.HubClient(auto_start=False))
     monkeypatch.setattr(local_ai_mcp.CLIENT, "get", lambda path, timeout=None: {"hub_online": True, "scheduler": {}, "observability": {}})
 
     req = t.CallToolRequest(method="tools/call", params=t.CallToolRequestParams(name="local_ai_status", arguments={"detail": "brief"}))
@@ -576,7 +576,7 @@ def test_lowlevel_request_handler_returns_compact_minified_json(monkeypatch) -> 
 
 
 def _capture_client(monkeypatch, response, *, capture_path_hints=False, capture_accounting=False):
-    client = local_ai_mcp.HubClient(tenant="test", auto_start=False)
+    client = local_ai_mcp.HubClient(auto_start=False)
     calls = []
 
     def post(path, payload, timeout=None, *, path_hints=None):
@@ -936,8 +936,8 @@ def test_context_compile_compatibility_stays_on_agent_state_route(monkeypatch) -
 
 def test_mcp_artifact_page_rejects_store_slice_larger_than_text_limit(monkeypatch, tmp_path) -> None:
     store = ArtifactStore(tmp_path / "artifacts")
-    artifact_id = store.put("small cap payload " * 100, "tenant-a", "text")
-    client = local_ai_mcp.HubClient(tenant="tenant-a", auto_start=False)
+    artifact_id = store.put("small cap payload " * 100, kind="text")
+    client = local_ai_mcp.HubClient(auto_start=False)
     artifact_calls = []
 
     def get_artifact(path, payload, timeout=None):
@@ -946,7 +946,6 @@ def test_mcp_artifact_page_rejects_store_slice_larger_than_text_limit(monkeypatc
             payload["artifact_id"],
             offset=payload["offset"],
             max_chars=payload["max_chars"] + 1,
-            tenant="tenant-a",
         )
 
     monkeypatch.setattr(local_ai_mcp, "MAX_TEXT", 128)
@@ -979,7 +978,7 @@ def test_in_memory_stdio_handles_eight_concurrent_status_calls(monkeypatch) -> N
     from mcp.shared.memory import create_connected_server_and_client_session
 
     calls = threading.Barrier(8)
-    client = local_ai_mcp.HubClient(tenant="concurrent-stdio-test", auto_start=False)
+    client = local_ai_mcp.HubClient(auto_start=False)
 
     def get(_path, timeout=None):
         calls.wait(timeout=4)

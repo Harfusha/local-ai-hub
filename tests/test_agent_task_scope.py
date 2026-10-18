@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub import trace_context
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_tasks import (
@@ -15,7 +14,7 @@ from local_ai_hub.agent_tasks import (
     TaskState,
     TaskStatus,
     TaskStore,
-    _task_scope_values,
+    _task_scope_root,
 )
 
 
@@ -24,59 +23,51 @@ def store(tmp_path: Path) -> TaskStore:
     return TaskStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
 
 
-def _create_task(store: TaskStore, root: Path | None, tenant: str, task_id: str) -> TaskState:
-    token = trace_context.set_context(tenant=tenant)
-    try:
-        task = store.create(
-            GoalContract(goal="scoped task", acceptance_criteria=("receipt",), scope=AgentScope.TASK),
-            ScopeContext(repository_id="not-a-path", task_id=task_id),
-            task_id=task_id,
-            repo_root=str(root) if root is not None else "",
-        )
-    finally:
-        trace_context.reset_context(token)
+def _create_task(store: TaskStore, root: Path | None, task_id: str, *, actor: str = "agent") -> TaskState:
+    task = store.create(
+        GoalContract(goal="scoped task", acceptance_criteria=("receipt",), scope=AgentScope.TASK),
+        ScopeContext(repository_id="logical-repository", task_id=task_id),
+        task_id=task_id, repo_root=str(root) if root is not None else "", actor=actor,
+    )
     return store.transition(
-        task.task_id,
-        TaskStatus.ACTIVE,
-        reason="start",
-        actor="agent",
+        task.task_id, TaskStatus.ACTIVE, reason="start", actor=actor,
         idempotency_key=f"start-{task_id}",
     )
 
 
-def test_reaper_filters_root_and_tenant_and_auto_recovers_only_match(store: TaskStore, tmp_path: Path):
+def test_reaper_filters_root_and_recovers_same_repository_agents(store: TaskStore, tmp_path: Path):
     root_a = tmp_path / "repo-a"
     root_b = tmp_path / "repo-b"
     root_a.mkdir()
     root_b.mkdir()
-    matching = _create_task(store, root_a, "tenant-a", "matching")
-    wrong_root = _create_task(store, root_b, "tenant-a", "wrong-root")
-    wrong_tenant = _create_task(store, root_a, "tenant-b", "wrong-tenant")
-    now = max(task.heartbeat_expires_at for task in (matching, wrong_root, wrong_tenant)) + 10
+    matching = _create_task(store, root_a, "matching")
+    wrong_root = _create_task(store, root_b, "wrong-root")
+    same_root_peer = _create_task(store, root_a, "same-root-peer", actor="peer-agent")
+    now = max(task.heartbeat_expires_at for task in (matching, wrong_root, same_root_peer)) + 10
 
     reaped = store.recover_zombie_tasks(
         now=now,
         repo_root=root_a,
-        tenant="tenant-a",
+
     )
 
-    assert reaped == ["matching"]
+    assert set(reaped) == {"matching", "same-root-peer"}
     assert store.get("matching").status is TaskStatus.WAITING
     assert store.get("wrong-root").status is TaskStatus.ACTIVE
-    assert store.get("wrong-tenant").status is TaskStatus.ACTIVE
+    assert store.get("same-root-peer").status is TaskStatus.WAITING
 
 
 def test_reaper_task_id_filter_is_narrow(store: TaskStore, tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
-    selected = _create_task(store, root, "tenant-a", "selected")
-    other = _create_task(store, root, "tenant-a", "other")
+    selected = _create_task(store, root, "selected")
+    other = _create_task(store, root, "other")
     now = max(selected.heartbeat_expires_at, other.heartbeat_expires_at) + 10
 
     reaped = store.reap_expired_heartbeats(
         now=now,
         repo_root=root,
-        tenant="tenant-a",
+
         task_id="selected",
     )
 
@@ -88,7 +79,7 @@ def test_reaper_task_id_filter_is_narrow(store: TaskStore, tmp_path: Path):
 def test_reaper_revalidates_scope_and_status_before_transition(store: TaskStore, tmp_path: Path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
-    task = _create_task(store, root, "tenant-a", "raced")
+    task = _create_task(store, root, "raced")
     now = task.heartbeat_expires_at + 10
     original_transition = store.transition
 
@@ -105,7 +96,7 @@ def test_reaper_revalidates_scope_and_status_before_transition(store: TaskStore,
 
     monkeypatch.setattr(store, "transition", change_status_before_reap)
 
-    reaped = store.reap_expired_heartbeats(now=now, repo_root=root, tenant="tenant-a")
+    reaped = store.reap_expired_heartbeats(now=now, repo_root=root)
 
     assert reaped == []
     assert store.get("raced").status is TaskStatus.WAITING
@@ -114,31 +105,32 @@ def test_reaper_revalidates_scope_and_status_before_transition(store: TaskStore,
 def test_reaper_fails_closed_without_task_provenance(store: TaskStore, tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
-    task = _create_task(store, None, "tenant-a", "unscoped")
+    task = _create_task(store, None, "unscoped")
     assert store.reap_expired_heartbeats(now=task.heartbeat_expires_at + 10) == []
     reaped = store.reap_expired_heartbeats(
         now=task.heartbeat_expires_at + 10,
         repo_root=root,
-        tenant="tenant-a",
+
     )
     assert reaped == []
     assert store.get("unscoped").status is TaskStatus.ACTIVE
 
 
-def test_malformed_scope_provenance_is_excluded(store: TaskStore, tmp_path: Path):
+def test_retired_scope_provenance_requires_explicit_conversion(store: TaskStore, tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
-    task = _create_task(store, root, "tenant-a", "malformed")
+    task = _create_task(store, root, "malformed")
     state_data = dict(task.checkpoint.state_data)
     state_data["_agent_task_scope"] = {"version": 2, "repo_root": str(root), "tenant_key": "a" * 64}
     malformed = replace(task, checkpoint=replace(task.checkpoint, state_data=state_data))
-    assert _task_scope_values(malformed) == ("", "")
+    with pytest.raises(RuntimeError, match="offline conversion"):
+        _task_scope_root(malformed)
 
 
 def test_checkpoint_cannot_replace_server_scope(store: TaskStore, tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
-    task = _create_task(store, root, "tenant-a", "immutable-scope")
+    task = _create_task(store, root, "immutable-scope")
     changed_scope = dict(task.checkpoint.state_data["_agent_task_scope"])
     changed_scope["repo_root"] = str(tmp_path)
     with pytest.raises(ValueError, match="_agent_task_scope is server-managed"):
@@ -155,13 +147,13 @@ def test_dataset_exports_only_scoped_tasks_and_optional_task_id(store: TaskStore
     other_root = tmp_path / "other"
     root.mkdir()
     other_root.mkdir()
-    matching = _create_task(store, root, "tenant-a", "match-1")
-    same_scope = _create_task(store, root, "tenant-a", "match-2")
-    wrong_root = _create_task(store, other_root, "tenant-a", "wrong-root")
-    wrong_tenant = _create_task(store, root, "tenant-b", "wrong-tenant")
+    matching = _create_task(store, root, "match-1")
+    same_scope = _create_task(store, root, "match-2")
+    wrong_root = _create_task(store, other_root, "wrong-root")
+    same_root_peer = _create_task(store, root, "same-root-peer", actor="peer-agent")
     completed = [
         replace(task, status=TaskStatus.COMPLETED, verification_receipts={"receipt": "rcpt-1"})
-        for task in (matching, same_scope, wrong_root, wrong_tenant)
+        for task in (matching, same_scope, wrong_root, same_root_peer)
     ]
     monkeypatch.setattr(store, "list_tasks", lambda **kwargs: completed)
     output = root / "exports" / "dataset.jsonl"
@@ -169,13 +161,17 @@ def test_dataset_exports_only_scoped_tasks_and_optional_task_id(store: TaskStore
     result = store.curate_training_dataset(
         "exports/dataset.jsonl",
         repo_root=root,
-        tenant="tenant-a",
+
         task_id="match-2",
     )
 
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert result["count"] == 1
     assert [row["task_id"] for row in rows] == ["match-2"]
+    all_root_tasks = store.curate_training_dataset("exports/all.jsonl", repo_root=root)
+    all_rows = [json.loads(line) for line in (root / "exports" / "all.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert all_root_tasks["count"] == 3
+    assert {row["task_id"] for row in all_rows} == {"match-1", "match-2", "same-root-peer"}
 
 
 def test_dataset_rejects_traversal_and_symlink_escape(store: TaskStore, tmp_path: Path):
@@ -186,7 +182,7 @@ def test_dataset_rejects_traversal_and_symlink_escape(store: TaskStore, tmp_path
     with pytest.raises(ValueError, match="repo_root"):
         store.curate_training_dataset(str(root / "dataset.jsonl"))
     with pytest.raises(ValueError, match="inside repo_root"):
-        store.curate_training_dataset("../outside.jsonl", repo_root=root, tenant="tenant-a")
+        store.curate_training_dataset("../outside.jsonl", repo_root=root)
 
     link = root / "escape"
     try:
@@ -194,7 +190,7 @@ def test_dataset_rejects_traversal_and_symlink_escape(store: TaskStore, tmp_path
     except (OSError, NotImplementedError):
         pytest.skip("directory symlinks are unavailable")
     with pytest.raises(ValueError, match="inside repo_root"):
-        store.curate_training_dataset("escape/dataset.jsonl", repo_root=root, tenant="tenant-a")
+        store.curate_training_dataset("escape/dataset.jsonl", repo_root=root)
 
 
 def test_dataset_enforces_serialized_byte_budget(store: TaskStore, tmp_path: Path, monkeypatch):
@@ -202,7 +198,7 @@ def test_dataset_enforces_serialized_byte_budget(store: TaskStore, tmp_path: Pat
 
     root = tmp_path / "repo"
     root.mkdir()
-    task = _create_task(store, root, "tenant-a", "large-sample")
+    task = _create_task(store, root, "large-sample")
     completed = replace(
         task,
         status=TaskStatus.COMPLETED,
@@ -215,7 +211,7 @@ def test_dataset_enforces_serialized_byte_budget(store: TaskStore, tmp_path: Pat
 
     with pytest.raises(ValueError, match="byte limit"):
         store.curate_training_dataset(
-            "dataset.jsonl", repo_root=root, tenant="tenant-a"
+            "dataset.jsonl", repo_root=root
         )
 
     assert not output.exists()

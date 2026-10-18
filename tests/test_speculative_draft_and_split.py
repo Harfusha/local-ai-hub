@@ -122,7 +122,6 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
             "file": "calc.py",
             "root": str(tmp_path),
         },
-        tenant="test",
     )
 
     assert res["success"] is True
@@ -141,7 +140,6 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
             "cwd": str(tmp_path),
             "verify_tests": True,
         },
-        tenant="test-tenant",
     )
 
     services.affected_tests.assert_called_once_with(
@@ -185,7 +183,6 @@ def test_speculative_draft_failures_never_run_or_claim_validation(tmp_path: Path
                 "root": str(case_root),
                 "verify_tests": True,
             },
-            tenant="test",
         )
 
         assert result["success"] is expected_success
@@ -231,7 +228,6 @@ def test_speculative_draft_broker_rejects_unpermitted_validation(tmp_path: Path)
             "root": str(tmp_path),
             "verify_tests": True,
         },
-        tenant="test",
     )
 
     assert result["verification"]["tests_passed"] is False

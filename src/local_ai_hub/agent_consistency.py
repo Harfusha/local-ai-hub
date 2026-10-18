@@ -378,7 +378,6 @@ class ConsistencyRequest:
     force_include_paths: tuple[str, ...] = ()
     base: str = "HEAD"
     staged: bool = False
-    tenant: str = ""
     memory_revision: str = ""
     session_id: str = ""
     project_config_digest: str = ""
@@ -386,13 +385,6 @@ class ConsistencyRequest:
     approval: str | bool = ""
 
     def __post_init__(self) -> None:
-        if (
-            type(self.tenant) is not str
-            or len(self.tenant) > 160
-            or self.tenant != self.tenant.strip()
-            or "\x00" in self.tenant
-        ):
-            raise ValueError("tenant must be a canonical string of at most 160 characters")
         if type(self.root) is not str or not self.root.strip() or "\x00" in self.root or len(self.root) > 400:
             raise ValueError("root must be a nonempty string without null bytes, at most 400 characters")
         object.__setattr__(self, "task_id", _text(self.task_id, 160))
@@ -441,7 +433,7 @@ class ConsistencyRequest:
             "directory_hints": list(self.directory_hints),
             "exclude_paths": list(self.exclude_paths), "force_include_paths": list(self.force_include_paths),
             "base": self.base, "staged": self.staged,
-            "tenant": self.tenant, "memory_revision": self.memory_revision, "session_id": self.session_id,
+            "memory_revision": self.memory_revision, "session_id": self.session_id,
             "project_config_digest": self.project_config_digest,
             "override_reason": self.override_reason, "approval": self.approval,
         }
@@ -450,6 +442,8 @@ class ConsistencyRequest:
     def from_dict(cls, data: Any) -> ConsistencyRequest:
         if not isinstance(data, Mapping):
             raise TypeError("consistency request data must be a mapping")
+        if "tenant" in data or "tenant_key" in data:
+            raise ValueError("retired consistency request identity field")
         return cls(
             root=data.get("root", ""),
             task_id=data.get("task_id", ""),
@@ -466,7 +460,6 @@ class ConsistencyRequest:
             force_include_paths=data.get("force_include_paths", ()),
             base=data.get("base", "HEAD"),
             staged=data.get("staged", False),
-            tenant=data.get("tenant", ""),
             memory_revision=data.get("memory_revision", ""),
             session_id=data.get("session_id", ""),
             project_config_digest=data.get("project_config_digest", ""),
@@ -852,6 +845,8 @@ class AgentConsistencyGuard:
         store = self.memory_store
         if not self._memory_store_enabled(store):
             return None
+        if isinstance(request, Mapping) and ("tenant" in request or "tenant_key" in request):
+            return None
         request_obj = self._request_from_metadata(request, root=root, task_id=task_id, phase=phase, changed_paths=path_refs)
         revision = self._revision(request_obj, repository_revision)
         try:
@@ -866,37 +861,27 @@ class AgentConsistencyGuard:
             bounded_symbols = tuple(dict.fromkeys(_text(item, 200) for item in _tuple(symbol_refs, 24) if _text(item, 200)))[:24]
             task = _text(related_task or (request_obj.task_id if request_obj else ""), 160)
             repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
-            tenant_value = request_obj.tenant if request_obj else ""
-            if (
-                type(tenant_value) is not str
-                or len(tenant_value) > 160
-                or tenant_value != tenant_value.strip()
-            ):
-                return None
-            tenant = tenant_value
-            if not repository_root or not tenant:
+            if not repository_root:
                 return None
             project = resolve_project_context(
                 repository_root,
                 configured_state_dir(getattr(self.repository_tools, "config", {}), create=False),
             )
             repository_id = project.coordination_id
-            if not repository_id:
+            if not isinstance(repository_id, str) or not repository_id or repository_id != repository_id.strip() or "\x00" in repository_id:
                 return None
-            root_token = hashlib.sha256(repository_root.encode("utf-8", "replace")).hexdigest()[:16] if repository_root else "noroot"
-            tenant_token = hashlib.sha256(tenant.encode("utf-8", "replace")).hexdigest()[:16] if tenant else "notenant"
+            root_token = hashlib.sha256(repository_root.encode("utf-8", "replace")).hexdigest()[:16]
             stable = _redact_memory_text(stable_key, 240) or hashlib.sha256(
                 json.dumps(_memory_value(value), sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()[:16]
             revision_token = revision or "unrevisioned"
-            record_key = f"consistency:{memory_kind.value}:{root_token}:{tenant_token}:{stable}:{revision_token}"
+            record_key = f"consistency:{memory_kind.value}:{root_token}:{stable}:{revision_token}"
             now = time.time()
             retention = float(_MEMORY_RETENTION_SECONDS) if retention_seconds is None else max(1.0, _safe_float(retention_seconds, float(_MEMORY_RETENTION_SECONDS)))
             expires_at = now + min(retention, float(_MEMORY_RETENTION_SECONDS))
             provenance = {
                 "root": repository_root[:400],
                 "repository_id": repository_id,
-                "tenant": tenant,
                 "guard": "agent_consistency",
                 "phase": _text(request_obj.phase if request_obj else phase, 80),
                 "stable_key": stable,
@@ -1753,7 +1738,7 @@ class AgentConsistencyGuard:
         memory_rows = list(_bounded_sequence(records, _MAX_ITEMS))
         if not memory_rows and self.memory_store is not None:
             finder = getattr(self.memory_store, "find_for_context", None)
-            if callable(finder) and request_obj is not None and request_obj.root and request_obj.tenant:
+            if callable(finder) and request_obj is not None and request_obj.root:
                 try:
                     from .project_config import resolve_project_context
                     from .state_paths import configured_state_dir
@@ -1765,7 +1750,7 @@ class AgentConsistencyGuard:
                     if project.coordination_id:
                         memory_rows = list(finder(
                             root=request_obj.root, task_id=request_obj.task_id,
-                            tenant=request_obj.tenant, coordination_id=project.coordination_id, limit=24,
+                            coordination_id=project.coordination_id, limit=24,
                         ))
                 except Exception:
                     memory_rows = []

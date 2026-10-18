@@ -81,7 +81,6 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
         scope_id=task.task_id,
         task_id=task.task_id,
         root=memory.provenance["root"],
-        tenant=memory.provenance["tenant"],
     )
     assert restored_memory is not None
     assert restored_memory.value == "preserve through cache clear"

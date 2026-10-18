@@ -41,7 +41,6 @@ def test_context_infers_guarded_when_focus_provided(monkeypatch):
 @pytest.fixture
 def context_http_hub(tmp_path, monkeypatch):
     token = "guarded-context-test-secret"
-    tenant_key = "guarded-context-test-tenant-key-0123456789"
     state_dir = tmp_path / "state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -52,9 +51,7 @@ def context_http_hub(tmp_path, monkeypatch):
             f'state_dir = "{state_dir.as_posix()}"',
             "[security]",
             f'api_token = "{token}"',
-            'api_token_tenant = "guarded-context-test"',
             f'allowed_roots = ["{tmp_path.as_posix()}"]',
-            f'tenant_derivation_key = "{tenant_key}"',
         )),
         encoding="utf-8",
     )

@@ -90,7 +90,6 @@ def _handler(path, token):
     handler.server = None
     handler.responses = []
     handler._validate_host_and_origin = lambda: True
-    handler._tenant_binding_allowed = lambda: True
     handler._send = lambda status, payload: handler.responses.append((status, payload))
     return handler
 

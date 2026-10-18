@@ -47,13 +47,14 @@ def test_rag_bm25_fts_fallback_when_embedding_fails(tmp_path: Path):
     (root / "token_service.py").write_text("def validate_secret_token(token):\n    return token.is_active()\n", encoding="utf-8")
     (root / "other.py").write_text("def placeholder(): pass\n", encoding="utf-8")
 
-    res = store.index_step(str(root), "tenant1", max_files=10)
+    workspace = store.workspace_id(str(root))
+    res = store.index_step(root=str(root), workspace=workspace, max_files=10)
     assert res["success"] is True
 
     # Now make embeddings fail completely
     services.should_succeed = False
 
-    search_res = store.search("validate_secret_token", "tenant1", store.workspace_id(str(root)), top_k=5)
+    search_res = store.search("validate_secret_token", workspace=workspace, top_k=5)
     assert search_res["success"] is True
     assert search_res.get("degraded") is True
     assert search_res.get("fallback") == "bm25_fts"

@@ -46,22 +46,22 @@ def test_registered_ask_and_answer_use_canonical_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
-        "action": "ask", "root": str(tmp_path), "tenant": "tenant-a",
+        "action": "ask", "root": str(tmp_path),
         "session_id": "session-a", "question_id": "q-1", "question": "Question?", "task_id": "task-a",
     }))
     asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
-        "action": "answer", "root": str(tmp_path), "tenant": "tenant-a",
+        "action": "answer", "root": str(tmp_path),
         "question_id": "q-1", "answer": "Answer.", "task_id": "task-a",
     }))
 
     assert client.calls == [
         ("coord", {
-            "action": "ask", "root": str(tmp_path), "tenant": "tenant-a",
+            "action": "ask", "root": str(tmp_path),
             "session_id": "session-a", "question_id": "q-1", "question": "Question?", "task_id": "task-a",
             "response_budget_tokens": mcp_server._response_budget("ask", {"tool": "ask"})[0],
         }),
         ("coord", {
-            "action": "answer", "root": str(tmp_path), "tenant": "tenant-a",
+            "action": "answer", "root": str(tmp_path),
             "question_id": "q-1", "answer": "Answer.", "task_id": "task-a",
             "response_budget_tokens": mcp_server._response_budget("answer", {"tool": "answer"})[0],
         }),

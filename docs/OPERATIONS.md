@@ -1,12 +1,59 @@
 # Operations
 
-Use `tools/hubctl.py status|watch`, `tools/doctor.py`, `tools/monitor.py`, and `tools/telemetry_report.py`. `tools/doctor.py` never auto-starts the hub, so an offline result is a real diagnostic state. Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex `cwd=install_dir` is not the caller's project root, and setup injects no project-root environment. Repository-scoped repo/RAG MCP actions now reject missing or `.` roots at the adapter boundary; preprocessing likewise requires an explicit absolute root. Always pass the caller's explicit project root. Release acceptance still requires installed-runtime and deployment proof for this source-level guard. T03/T04/T13 integration remains pending in this T19 candidate; treat this as release acceptance contract, not current runtime proof. Project-local entries use `target_root` as `cwd`; global entries use `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context; both MCP API and `HubClient` must send it explicitly. Never infer root from `install_dir` or process cwd. The current candidate does not validate caller roots against `allowed_roots` or derive tenant from root. HTTP uses the supplied `X-LocalAI-Tenant`/`X-Tenant-ID` label, falling back to `http-default`; labels are not authorization. On loopback, an empty API token leaves data/control routes unauthenticated. Non-loopback binds and remote control endpoints are unsupported; the HTTP server stays loopback-only. T13 root/auth integration remains pending and unverified.
+## Single-owner state conversion
+
+The supported runtime never reads a retired tenant contract. The separate
+`tools/convert_single_owner_state.py` utility inventories or converts explicitly
+selected stores into new targets; it is not a startup migration. Preserve a
+matched code/config/state backup before any cutover. Stop the shared service
+and all state writers before taking the final conversion snapshot.
+
+Pin each input and its SQLite WAL to the recorded hashes. Conversion must keep
+full removed metadata and source/target row evidence in external provenance.
+Previously separate rows with the same new key need an explicit disposition;
+identical contents do not authorize silent merging. Legacy writer identities
+need a source-pinned mapping to actual task owners and physical roots. Missing
+task facts, ambiguous roots, unsupported schemas or receipt metadata refuse
+conversion. Never manufacture receipt success, generation, owner or freshness.
+
+For SQLite input, `source_sha256` identifies the canonical component inventory
+(component name, size and raw SHA-256), including present WAL/SHM/journal files.
+It is distinct from the main database's raw hash in `source_components`.
+Explicit `upgrade_task_scope` dispositions may upgrade a pinned old marker
+while preserving its exact canonical historical root, including a deleted
+worktree path. They do not authorize that path for current execution. Missing
+markers stay missing; live writer mappings still require an existing real root.
+
+Legacy memory snapshots cannot acquire a fabricated coordination identity.
+An explicit, row-pinned `upgrade_memory_context_v2` requires separately persisted
+identity proof. When that proof is unavailable, a separately selected
+`archive_memory_context` disposition may remove only the old active advice node
+while retaining its complete typed contents, JSON pointer, source pin and reason
+in the external conversion provenance. The original database remains unchanged.
+This archival operation is never automatic and does not promote the archived
+advice or its receipt authority into the current runtime. Verify the provenance
+before using the target; publication without that file is not an accepted cutover.
+
+Review the dry plan and every disposition before applying to a separate target.
+Historical index changes require a registered complete source schema and the
+exact canonical target index; unknown predicates, expressions and constraints
+refuse conversion. A registered historical artifact paging layout converts its
+actual section names and truncation flag into artifact-bound metadata with a
+checksum of the exact serialized bytes. Telemetry column order may change only
+through the registered source layout, preserving values by column name. These
+rules belong to the offline utility, never to runtime schema adoption.
+Keep the original configuration and databases unchanged. Switch the stopped
+installation only after preservation checks and integrated validation pass;
+retain the matched backup for rollback. A generated target or passing source
+test does not establish that the running daemon uses the new version.
+
+Use `tools/hubctl.py status|watch`, `tools/doctor.py`, `tools/monitor.py`, and `tools/telemetry_report.py`. `tools/doctor.py` never auto-starts the hub, so an offline result is a real diagnostic state. Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex `cwd=install_dir` is not the caller's project root, and setup injects no project-root environment. Repository-scoped repo/RAG MCP actions now reject missing or `.` roots at the adapter boundary; preprocessing likewise requires an explicit absolute root. Always pass the caller's explicit project root. Release acceptance still requires installed-runtime and deployment proof for this source-level guard. Older T19 integration notes are historical; current source status and installed-runtime acceptance must be assessed separately. Project-local entries use `target_root` as `cwd`; global entries use `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context; both MCP API and `HubClient` must send it explicitly. Never infer root from `install_dir` or process cwd. Configured `allowed_roots` constrains authorized repository roots; retired tenant headers and fields reject explicitly. On loopback, an empty API token leaves data/control routes unauthenticated, so configure credentials where protection is required. Non-loopback binds and remote control endpoints are unsupported; there is no remote-access override. Installed-runtime acceptance remains separate.
 
 Offline clients return structured transport errors. `request_not_sent` means request body was not transmitted; `outcome_unknown` means delivery may have occurred and must not be replayed. T04 error classification remains pending integration in this candidate. Use supervisor status/restart for recovery; do not launch per-agent daemon processes.
 
 Open the dashboard with `python tools/hubctl.py dashboard`, which prints the configured URL. Default endpoint is `http://127.0.0.1:11435/dashboard`. Enter a configured API token in the dashboard toolbar for the browser session; never put it in the URL. After an update or reboot, check `python tools/hubctl.py service-status`, `python tools/hubctl.py status`, `/health`, and the dashboard before reopening agent clients.
 
-The server accepts only `127.0.0.1`; remote access and anonymous HTTP API access are unsupported. Configure one `security.api_token` for protected routes. Send it with `X-LocalAI-Token` or `Authorization: Bearer`. Optional permissions are `monitor`, `read`, `write`, and `admin`; optional `api_token_tenant` binds the token to one tenant. `/health` is public liveness, `/dashboard` is a public static shell, and `/ready` requires `monitor` permission.
+The server accepts only `127.0.0.1`; remote access and anonymous HTTP API access are unsupported. Configure one `security.api_token` for protected routes. Send it with `X-LocalAI-Token` or `Authorization: Bearer`. Optional `api_token_permissions` grants `monitor`, `read`, `write`, and `admin`; retired `api_token_tenant` and `api_token_principal` keys reject by presence. `/health` is public liveness, `/dashboard` is a public static shell, and `/ready` requires `monitor` permission.
 
 If Serena misbehaves, use the dashboard or `/api/code-intelligence/control` to rediscover its executable or reset its session. If derived indexes are corrupt, stop the hub, back up any needed state and remove only derived cache/index databases; they are rebuildable.
 
@@ -69,8 +116,8 @@ Service registration is external to the file snapshot. If service installation r
 | Gate | Required evidence | Pass condition |
 |---|---|---|
 | Clean host | Run one install command above per platform; inspect generated MCP entries and service manager. | One installation/config/state directory, one user service/supervisor, stdio proxies only; no per-agent/chat/worktree daemon. No `detached-fallback`. |
-| Multi-chat/worktree | Connect at least two clients from separate worktrees under one OS account. Send explicit caller `root` through MCP API and `HubClient`. | Same daemon/service handles both; each root passes `security.allowed_roots`; effective tenants derive from principal plus canonical root. |
-| Auth and isolation | Check loopback bind, token-protected routes, rootless principal scope, allowed/outside/missing/symlink roots, tenant metadata mismatch, and browser route tenant. | Remote/anonymous access rejected; empty `allowed_roots` denies root-scoped memory/task; tenant mismatch is terminal 403; labels cannot select another tenant. |
+| Multi-chat/worktree | Connect at least two clients from separate worktrees under one OS account. Send explicit caller `root` through MCP API and `HubClient`. | Same daemon/service handles both; each root passes `security.allowed_roots`; both clients use the same authorized repository-root boundary while retaining actual task/session IDs. |
+| Auth and isolation | Check loopback bind, token-protected routes, root authorization, allowed/outside/missing/symlink roots, retired tenant header/body/query fields, API-token permissions, and browser-route credentials. | Remote/anonymous access rejected; empty `allowed_roots` denies root-scoped memory/task; retired tenant selectors are rejected; configured credentials and route permissions control access. |
 | Update | Update a clean canonical tree, rerun installer once, inspect config/state and agent MCP configs. | Same service identity is reconciled, unrelated agent entries survive, version/config/state match, no duplicate service or supervisor. |
 | Restart and login | Run `hubctl.py restart`, then repeat status/health checks; log out/in or reboot on each host. | One service returns online; durable tasks/jobs/state reopen; in-memory conversations are documented as lost on restart; no duplicate daemon appears. |
 | Rollback | Stop service; snapshot code/config/state and each managed MCP config; restore matching release with same roots; reconcile the existing service once. | Restored code/config/state/proxies match; service registration remains singular; no older code opens newer state. |

@@ -4,7 +4,7 @@ Open `/dashboard` on the local Hub. The dashboard identifies its requests as the
 
 The dashboard has ten pages: Overview, Queue & requests, Agent OS, Projects, Commands, Models & RAG, Reliability & Logs, Configuration, Bundles, and Live events. Their controls cover telemetry and estimates, request/trace inspection, durable tasks/memory/incidents, registered projects, running-command statistics and worktrees, model/RAG statistics and the prompt arena, logs, runtime overrides, bundles, and event filtering. Controls also expose diagnostics, activity modes and maintenance actions. CodeGraphContext/KuzuDB are standalone external tools, not Hub services or dashboard backends.
 
-Agent OS requires an explicit repository selection and Refresh. Its reads and mutations carry that root; authorization and client/tenant isolation stay on the server. Actions remain disabled until scoped data loads. Task-scoped memory requires a Task ID; new memory defaults to repository scope. A failed incident/task/memory request is shown as unavailable rather than an empty list.
+Agent OS requires an explicit repository selection and Refresh. Its reads and mutations carry that root; authorization stays on the server. Actions remain disabled until scoped data loads. Task-scoped memory requires a Task ID; new memory defaults to repository scope. A failed incident/task/memory request is shown as unavailable rather than an empty list.
 
 Incident retrieval uses the supported `find` action. Retired resolve/ignore controls are absent; the current public incident contract supports scoped retrieval and recording prevention rules.
 

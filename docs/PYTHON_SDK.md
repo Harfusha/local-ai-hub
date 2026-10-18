@@ -32,7 +32,7 @@ Install multiple extras together, for example `python -m pip install ".[local-nl
 ```python
 from local_ai_hub.client import HubClient
 
-client = HubClient(tenant="example-agent", auto_start=False)
+client = HubClient(auto_start=False)
 try:
     result = client.status(detail="brief")
     if result.get("success") is False:
@@ -42,11 +42,11 @@ finally:
     client.close()
 ```
 
-`HubClient()` loads the normal Hub configuration and may start the configured local service when needed. Pass `config_path="..."` to select another config file, `tenant="..."` to set the request tenant, or `auto_start=False` when the application should only connect to an already-running service. `status()` returns a dictionary from the route selected by `detail`; `close()` releases the client's HTTP connection and does not stop the Hub service.
+`HubClient()` loads the normal Hub configuration and may start the configured local service when needed. Pass `config_path="..."` to select another config file, or `auto_start=False` when the application should only connect to an already-running service. Retired tenant constructor options reject, including falsey values. `status()` returns a dictionary from the route selected by `detail`; `close()` releases the client's HTTP connection and does not stop the Hub service.
 
 ## Requests and timeouts
 
-Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None, path_hints=None, tenant=None, cancel_event=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None, operational_action=None, requires_heavy_work=True, tenant=None, cancel_event=None)` exposes the lower-level request path; all options after `*` are keyword-only. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
+Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None, path_hints=None, cancel_event=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None, operational_action=None, requires_heavy_work=True, cancel_event=None)` exposes the lower-level request path; all options after `*` are keyword-only. Retired tenant fields reject before transport. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
 
 `post("/api/search", payload, path_hints=...)` and `post("/api/command", payload, path_hints=...)` accept up to 64 validated hints when payload has no explicit `path`; an explicit `path` removes hints.
 
@@ -105,7 +105,7 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `generate_tests_for_diff`, `cross_repo_contract` | `POST /api/repo/generate_tests_for_diff` (`root`, `diff`, `path`) and `POST /api/repo/cross_repo_contract` (`backend_root`, `frontend_root`). |
 | `diff_hunk_stage`, `flaky_detect`, `webhook_replay`, `mock_server` | `POST /api/command/diff_hunk_stage` (`cwd`, `root`, `patch`); `/api/command/flaky_detect` (`cwd`, `root`, `command`, `runs`, `timeout`); `/api/command/webhook_replay` (`url`, `payload`, `secret`, `signature_header`); `/api/command/mock_server` (`action`, `root`, `spec_path`, `port`). |
 | `eval_drift` | `POST /api/task/eval_drift`; body: `suite_name`. |
-| `ingest_diagram` | `POST /api/rag/ingest_diagram`; body: `workspace`, `image_path`, `caption`, `metadata`. |
+| `ingest_diagram` | `POST /api/rag/ingest_diagram`; body: absolute authorized `root`, root-bound `workspace`, confined `image_path`, optional `caption` and `metadata`. |
 | `curate_training_dataset` | `POST /api/agent-state/tasks`; body: `action=curate_dataset`, `output_path`, `min_receipts`, `format`. |
 | `coord` | Dispatches by action to the routes below. |
 
@@ -119,9 +119,9 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `incident_decision`, `negative_knowledge_record`, `negative_knowledge_find` | `POST /api/agent-state/incidents`; body: action and action fields. |
 | `context_compile` | `POST /api/agent-state/context`; body: action, task ID, token budget, changed paths, root, and optional context fields. |
 | `verify_receipt`, `verify_completion` | `POST /api/agent-state/verification`; body: action, receipt or task ID, and optional root. |
-| `claim`, `claim_batch` | `POST /api/leases/claim_batch`; body: `root`, `paths`, `ttl_seconds`, `purpose`. |
+| `claim`, `claim_batch` | `POST /api/leases/claim_batch`; body: `owner`, `root`, `paths`, optional `ttl_seconds`, `purpose`. Owner identifies the actual task or execution. |
 | `blackboard_*` | `POST /api/agent-state/blackboard`; body: action plus action arguments. |
-| `release`, `leases` | `POST /api/leases/release` with `lease_id`; `GET /api/leases?root=…` for `leases`. |
+| `release`, `renew`, `leases` | `POST /api/leases/release` with `owner` and `lease_id`; `/api/leases/renew` also accepts optional `ttl_seconds`; `GET /api/leases?root=…` for `leases`. |
 | `worktree_lease`, `worktree_claim`, `worktree_release` | `POST /api/coord/worktree_lease` or `/api/coord/worktree_release`; body uses root, branch, and worktree fields as applicable. |
 | `pubsub_publish`, `pubsub_poll` | `POST /api/coord/pubsub_publish` or `/api/coord/pubsub_poll`; body uses root, topic, message/publisher or cursor/limit fields. |
 | `simulate_merge` | `POST /api/coord/simulate_merge`; body: `root`, `source_branch`, `target_branch`. |
@@ -145,7 +145,7 @@ Each convenience method maps one client call to one endpoint. Calls through `pos
 
 Task resume: Sets task status to `ACTIVE` and preserves checkpoint metadata; does not restore workspace files.
 
-The older T19 receipt stated **8/8 successful workflows on first direct call; 8 HTTP requests total**. That is historical evidence, not acceptance for this merged revision. Polling now uses the integer `after_seq` cursor; the former `since_timestamp` example and assertions require updating. Do not infer that a count of returned messages proves cursor semantics or live cross-tenant isolation.
+The older T19 receipt stated **8/8 successful workflows on first direct call; 8 HTTP requests total**. That is historical evidence, not acceptance for this merged revision. Polling now uses the integer `after_seq` cursor; the former `since_timestamp` example and assertions require updating. Do not infer that a count of returned messages proves cursor semantics or current runtime behavior.
 
 Recovery: `context mode must be adaptive` requires a supported mode. `conversation not found` requires an existing conversation. If a continuation is already running (`in_progress=true`, `retryable=true`), wait for it to finish; do not send a duplicate request. Inspect current task or job state before retrying.
 

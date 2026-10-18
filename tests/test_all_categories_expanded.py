@@ -219,11 +219,11 @@ def test_curate_training_dataset(tmp_path: Path):
 
     contract = GoalContract(goal="curate test", acceptance_criteria=(), scope=AgentScope.TASK)
     ctx = ScopeContext(repository_id="repo1", branch="main", task_id="t-curate")
-    tenant_token = trace_context.set_context(tenant="tenant-a")
+    context_token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = task_store.create(contract, ctx, actor="agent1", repo_root=str(tmp_path))
     finally:
-        trace_context.reset_context(tenant_token)
+        trace_context.reset_context(context_token)
     task_id = task.task_id
 
     # Append verification receipt and transition
@@ -232,7 +232,7 @@ def test_curate_training_dataset(tmp_path: Path):
     task_store.complete(task_id, actor="agent1", reason="done", idempotency_key="comp_1")
 
     out_file = tmp_path / "dataset.jsonl"
-    cur_res = task_store.curate_training_dataset(str(out_file), min_receipts=1, format="jsonl", repo_root=tmp_path, tenant="tenant-a")
+    cur_res = task_store.curate_training_dataset(str(out_file), min_receipts=1, format="jsonl", repo_root=tmp_path)
     assert cur_res["success"] is True
     assert cur_res["dataset_count"] == 1
     assert out_file.is_file()
@@ -286,7 +286,7 @@ def test_mock_openapi_server(tmp_path: Path):
 
 
 class _MockRagServices:
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         batch = list(texts)
         return {"success": True, "embeddings": [[0.1, 0.2] for _ in batch]}
 
@@ -316,12 +316,17 @@ def test_rag_ingest_diagram(tmp_path: Path):
         _MockRagServices(),
         _MockReranker(),
     )
-    res = rag.ingest_diagram("test_ws", str(svg_file), caption="System Arch Overview")
+    res = rag.ingest_diagram(
+        root=str(tmp_path),
+        workspace="test_ws",
+        image_path=str(svg_file),
+        caption="System Arch Overview",
+    )
     assert res["success"] is True
     assert res["diagram_indexed"] is True
 
     # Search in workspace for text from diagram
-    search_res = rag.search("Authentication Token Validator", tenant="test", workspace="test_ws", top_k=5)
+    search_res = rag.search("Authentication Token Validator",  workspace="test_ws", top_k=5)
     assert search_res["success"] is True
     assert len(search_res["results"]) >= 1
     assert "architecture" in search_res["results"][0]["path"]

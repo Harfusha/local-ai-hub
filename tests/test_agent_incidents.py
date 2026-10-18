@@ -42,7 +42,9 @@ def test_incident_store_rejects_incomplete_table_without_losing_rows(tmp_path: P
     assert columns == {"incident_id", "operation_class", "preserved_note"}
     assert row == ("legacy-1", "command", "keep me")
 
-def failed_command_outcome(error: str, revision: str = "rev-1") -> ToolOutcome:
+def failed_command_outcome(
+    error: str, revision: str = "rev-1", *, root: str = ""
+) -> ToolOutcome:
     return ToolOutcome(
         tool_name="command",
         command="python -m pytest",
@@ -50,33 +52,44 @@ def failed_command_outcome(error: str, revision: str = "rev-1") -> ToolOutcome:
         exit_code=1,
         state_revision=revision,
         evidence_ids=("ev-fail-1",),
+        repository_root=root,
     )
 
 
-def test_same_error_signature_reuses_verified_fix_after_state_match(store: IncidentStore):
-    incident = store.capture(failed_command_outcome("locked database"))
+def test_same_error_signature_reuses_verified_fix_after_state_match(store: IncidentStore, tmp_path: Path):
+    root = str(tmp_path / "repo")
+    incident = store.capture(failed_command_outcome("locked database", root=root))
     assert incident is not None
     store.resolve(incident.incident_id, verified_fix="retry after busy backoff", confidence=0.95)
-    decision = store.retry_decision(incident.fingerprint, incident.state_revision)
+    decision = store.retry_decision(incident.fingerprint, incident.state_revision, root=root)
     assert decision.action == "apply_verified_fix"
     assert decision.verified_fix == "retry after busy backoff"
 
 
-def test_negative_knowledge_stops_repeat_until_state_changes(store: IncidentStore):
-    incident = store.capture(failed_command_outcome("invalid config", revision="rev-1"))
+def test_negative_knowledge_stops_repeat_until_state_changes(store: IncidentStore, tmp_path: Path):
+    root = str(tmp_path / "repo")
+    incident = store.capture(failed_command_outcome("invalid config", revision="rev-1", root=root))
     assert incident is not None
-    decision1 = store.retry_decision(incident.fingerprint, incident.state_revision)
+    decision1 = store.retry_decision(incident.fingerprint, incident.state_revision, root=root)
     assert decision1.action == "stop"
 
-    decision2 = store.retry_decision(incident.fingerprint, "changed_rev")
+    decision2 = store.retry_decision(incident.fingerprint, "changed_rev", root=root)
     assert decision2.action != "stop"
 
 
-def test_retry_decision_rejects_partial_or_invalid_scope(store: IncidentStore):
+def test_retry_decision_requires_explicit_repository_scope(store: IncidentStore, tmp_path: Path):
     fingerprint = IncidentFingerprint("runtime", "command", "missing")
-    assert store.retry_decision(fingerprint, "rev", root="C:/repo").action == "stop"
-    assert store.retry_decision(fingerprint, "rev", tenant="tenant-a").action == "stop"
-    assert store.retry_decision(fingerprint, "rev", root="", tenant="tenant-a").action == "stop"
+    root = str(tmp_path / "repo")
+    incident = store.capture(failed_command_outcome("same command failed", root=root))
+    assert incident is not None
+    assert store.retry_decision(incident.fingerprint, "rev-1", root=root).action == "stop"
+    assert store.retry_decision(incident.fingerprint, "rev-1", root=str(tmp_path / "other")).action == "proceed"
+    with pytest.raises(TypeError, match="root"):
+        store.retry_decision(fingerprint, "rev")
+    with pytest.raises(ValueError, match="root"):
+        store.retry_decision(fingerprint, "rev", root="")
+    with pytest.raises(TypeError):
+        store.retry_decision(fingerprint, "rev", tenant="retired-label")
 
 
 def test_policy_blocks_and_cancellations_do_not_produce_incidents(store: IncidentStore):

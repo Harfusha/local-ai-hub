@@ -1,5 +1,7 @@
 from contextvars import ContextVar
 
+import pytest
+
 from local_ai_hub.trace_context import (
     clear_context,
     current,
@@ -20,9 +22,9 @@ from local_ai_hub.trace_context import (
 def test_scoped_context_restores_outer_values_and_ignores_foreign_token() -> None:
     tokens = set_context(request_id="outer")
     try:
-        with scoped_context(request_id="inner", tenant="tenant-a"):
+        with scoped_context(request_id="inner", trace_id="trace-a"):
             assert current()["request_id"] == "inner"
-            assert current()["tenant"] == "tenant-a"
+            assert current()["trace_id"] == "trace-a"
         assert current()["request_id"] == "outer"
 
         foreign = ContextVar("foreign").set("value")
@@ -54,12 +56,16 @@ def test_scoped_metadata_restores_prior_value_and_none_reset_is_safe() -> None:
     assert efficiency_metadata() == {}
 
 
+def test_trace_metadata_rejects_retired_fields_by_presence() -> None:
+    with pytest.raises(ValueError, match="retired trace metadata field"):
+        set_metadata(tenant=None)
+
+
 def test_context_identifiers_are_sanitized_and_clear_context_resets_state() -> None:
     tokens = set_context(
         request_id="req-1\x00poison\r\nline2",
         trace_id=12345,  # type: ignore[arg-type]
         agent="agent-alpha\t",
-        tenant=None,  # type: ignore[arg-type]
     )
     observer_token = set_observer({"debug": True})
     metadata_token = set_metadata(parent_task="task-1")
@@ -71,12 +77,11 @@ def test_context_identifiers_are_sanitized_and_clear_context_resets_state() -> N
         assert state["request_id"].startswith("req-1")
         assert state["trace_id"] == "12345"
         assert state["agent"] == "agent-alpha"
-        assert state["tenant"] == ""
         assert observer() == {"debug": True}
 
         clear_context()
 
-        assert current() == {"request_id": "", "trace_id": "", "agent": "", "tenant": ""}
+        assert current() == {"request_id": "", "trace_id": "", "agent": ""}
         assert observer() is None
         assert efficiency_metadata() == {}
     finally:

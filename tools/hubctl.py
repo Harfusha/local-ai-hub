@@ -41,11 +41,11 @@ def _config_arg(explicit: Path | None = None) -> str | None:
 
 
 def client() -> HubClient:
-    return HubClient(tenant="hubctl", config_path=_config_arg())
+    return HubClient(config_path=_config_arg())
 
 
 def status(explicit_config: Path | None = None) -> dict:
-    c = HubClient(tenant="hubctl", config_path=_config_arg(explicit_config))
+    c = HubClient(config_path=_config_arg(explicit_config))
     if not c._online(timeout=2.0):
         return {"running": False}
     try:
@@ -61,7 +61,7 @@ def status(explicit_config: Path | None = None) -> dict:
 def _activity_mode_request(mode: str | None = None, *, config_path: str | None = None) -> dict[str, Any]:
     """Read or change activity mode through the authenticated Hub API only."""
     try:
-        c = HubClient(tenant="hubctl", config_path=config_path or _config_arg(), auto_start=False)
+        c = HubClient(config_path=config_path or _config_arg(), auto_start=False)
         if not c._online(timeout=2.0):
             config = load_config(config_path or _config_arg())
             server = config.get("server", {})
@@ -304,7 +304,7 @@ def main() -> int:
                     })
         c: HubClient | None = None
         try:
-            c = HubClient(tenant="hubctl", config_path=_config_arg(args.config), auto_start=False)
+            c = HubClient(config_path=_config_arg(args.config), auto_start=False)
             res = c.post("/api/agent-state/cleanup", {}, timeout=3.0)
         except Exception as e:
             res = {"success": False, "server_status": "offline", "detail": str(e)}

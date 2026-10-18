@@ -22,52 +22,35 @@ def make_guard(monkeypatch, tmp_path, namespace):
     return guard, writes
 
 
-def test_missing_tenant_cannot_write_repository_memory(monkeypatch, tmp_path):
-    guard, writes = make_guard(monkeypatch, tmp_path, "repository-current")
+def test_missing_coordination_identity_cannot_write_repository_memory(monkeypatch, tmp_path):
+    guard, writes = make_guard(monkeypatch, tmp_path, None)
     assert guard.record_finding(ConsistencyRequest(root=str(tmp_path)), finding="claim") is None
     assert writes == []
 
 
-@pytest.mark.parametrize("tenant", [123, False, " tenant-current ", "x" * 161])
-def test_noncanonical_tenant_is_rejected_at_request_boundary(tmp_path, tenant):
-    with pytest.raises(ValueError, match="tenant"):
-        ConsistencyRequest(root=str(tmp_path), tenant=tenant)
-
-
-def test_str_subclass_tenant_cannot_override_canonicality_checks(tmp_path):
-    class DeceptiveTenant(str):
-        def __len__(self):
-            return 1
-
-        def strip(self, *args, **kwargs):
-            return "tenant-current"
-
-    tenant = DeceptiveTenant(" " + "x" * 161 + " ")
-    with pytest.raises(ValueError, match="tenant"):
-        ConsistencyRequest(root=str(tmp_path), tenant=tenant)
-
-
-def test_invalid_tenant_is_rejected_before_path_hint_processing(monkeypatch, tmp_path):
-    def unexpected_path_processing(*args, **kwargs):
-        raise AssertionError("path hints processed before tenant validation")
-
-    monkeypatch.setattr(agent_consistency, "_repository_relative_hints", unexpected_path_processing)
-    with pytest.raises(ValueError, match="tenant"):
-        ConsistencyRequest(root=str(tmp_path), tenant=123, path_hints=["src"])
+@pytest.mark.parametrize("retired", ["tenant", "tenant_id", "tenant_key", "tenant_scope"])
+@pytest.mark.parametrize("value", [None, "", False])
+def test_retired_tenant_fields_are_rejected_at_request_boundary(tmp_path, retired, value):
+    with pytest.raises(TypeError):
+        ConsistencyRequest(root=str(tmp_path), **{retired: value})
 
 
 def test_invalid_project_identity_cannot_write_repository_memory(monkeypatch, tmp_path):
     guard, writes = make_guard(monkeypatch, tmp_path, None)
-    request = ConsistencyRequest(root=str(tmp_path), tenant="tenant-current")
+    request = ConsistencyRequest(root=str(tmp_path), task_id="task-current", session_id="session-current")
     assert guard.record_finding(request, finding="claim") is None
     assert writes == []
 
 
-def test_writer_uses_resolved_namespace_and_explicit_tenant(monkeypatch, tmp_path):
+def test_writer_uses_resolved_repository_identity_and_preserves_task_context(monkeypatch, tmp_path):
     guard, writes = make_guard(monkeypatch, tmp_path, "repository-current")
-    request = ConsistencyRequest(root=str(tmp_path), tenant="tenant-current")
+    request = ConsistencyRequest(
+        root=str(tmp_path), task_id="task-current", session_id="session-current"
+    )
     record = guard.record_finding(request, finding="claim")
     assert len(writes) == 1
     assert record.scope_id == "repository-current"
     assert record.provenance["repository_id"] == "repository-current"
-    assert record.provenance["tenant"] == "tenant-current"
+    assert request.to_dict()["task_id"] == "task-current"
+    assert request.to_dict()["session_id"] == "session-current"
+    assert "tenant" not in record.provenance

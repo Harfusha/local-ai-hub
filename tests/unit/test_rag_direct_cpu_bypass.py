@@ -9,7 +9,7 @@ from local_ai_hub.reranker import Reranker
 class _Embeddings:
     space_id = "direct-cpu-bypass-test"
 
-    def embed(self, texts, tenant, **kwargs):
+    def embed(self, texts, **kwargs):
         return {
             "success": True,
             "embeddings": [[1.0, 0.0] for _ in texts],
@@ -43,13 +43,19 @@ def _store_with_two_chunks(tmp_path):
         },
         _Embeddings(),
     )
-    tenant = store._scope_key("tenant-a")
+    root = tmp_path / "workspace-a-root"
+    root.mkdir(exist_ok=True)
+    (root / "binding.txt").write_text("", encoding="utf-8")
+    indexed = store.index_paths_step(
+        str(root), workspace="workspace-a", paths=["binding.txt"]
+    )
+    assert indexed["success"], indexed
     with closing(store._connect()) as con:
         con.executemany(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
             [
-                (tenant, "workspace-a", f"doc-{index}.txt", 0, f"hash-{index}",
+                ("workspace-a", f"doc-{index}.txt", 0, f"hash-{index}",
                  f"candidate {index}", json.dumps([1.0, 0.0]), _Embeddings.space_id)
                 for index in range(2)
             ],
@@ -117,8 +123,8 @@ def test_direct_rag_route_blocks_cpu_candidate_after_cold_gpu_load_failure(tmp_p
     )
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=False)
-    result = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=True)
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
     assert attempts == [("openvino", "GPU")]
     assert cpu_predictions == []
@@ -132,8 +138,8 @@ def test_direct_rag_route_blocks_cpu_candidate_after_gpu_prediction_failure(tmp_
     )
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=False)
-    result = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=True)
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
     assert attempts == [("openvino", "GPU")]
     assert cpu_predictions == []
@@ -169,8 +175,8 @@ def test_direct_search_bypasses_active_cpu_reranker_and_preserves_candidates(tmp
     reranker = _RerankerSpy("cpu")
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=False)
-    result = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=True)
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
     assert reranker.calls == 0
     assert [item["path"] for item in result["results"]] == [item["path"] for item in baseline["results"]]
@@ -181,8 +187,8 @@ def test_direct_search_still_uses_active_gpu_reranker(tmp_path):
     reranker = _RerankerSpy("cuda:0")
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=False)
-    result = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=True)
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
     assert reranker.calls == 1
     assert [item["path"] for item in result["results"]] == list(reversed([item["path"] for item in baseline["results"]]))
@@ -194,7 +200,7 @@ def test_direct_search_does_not_load_cold_cpu_reranker(tmp_path):
     reranker.device = "cpu"
     store.reranker = reranker
 
-    store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=True)
+    store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
     assert reranker.calls == 0
 
@@ -205,8 +211,8 @@ def test_direct_search_keeps_lazy_gpu_reranking(tmp_path):
     reranker.device = "cuda:0"
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=False)
-    result = store._search_uncached("candidate", "tenant-a", "workspace-a", top_k=2, use_reranker=True)
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
     assert reranker.calls == 1
     assert [item["path"] for item in result["results"]] == list(reversed([item["path"] for item in baseline["results"]]))

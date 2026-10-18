@@ -36,7 +36,7 @@ class _SyntheticEmbeddingServices:
         self.batch_sizes: list[int] = []
         self.embedded_items = 0
 
-    def embed(self, texts, _tenant, *, query: bool = False, **_kwargs):
+    def embed(self, texts, *, query: bool = False, **_kwargs):
         batch = list(texts)
         self.batch_sizes.append(len(batch))
         self.embedded_items += len(batch)
@@ -362,45 +362,46 @@ def test_parallel_parent_seed_is_idempotent_and_preserves_existing_child_row(tmp
     assert row["rag_hash"] == "child-rag-hash"
 
 
-def test_legacy_chunks_schema_without_embedding_space_is_rebuilt(tmp_path: Path) -> None:
+def test_tenant_shaped_rag_schema_requires_offline_conversion(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     db_path = state_dir / "rag.sqlite3"
     with closing(sqlite3.connect(db_path)) as con:
         con.execute(
             """CREATE TABLE chunks(
-                tenant TEXT NOT NULL,workspace TEXT NOT NULL,path TEXT NOT NULL,chunk_no INTEGER NOT NULL,
-                content_hash TEXT NOT NULL,text TEXT NOT NULL,embedding TEXT NOT NULL,
+                tenant TEXT NOT NULL, workspace TEXT NOT NULL, path TEXT NOT NULL,
+                chunk_no INTEGER NOT NULL, content_hash TEXT NOT NULL, text TEXT NOT NULL,
+                embedding TEXT NOT NULL, embedding_space TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(tenant,workspace,path,chunk_no)
             )"""
         )
         con.execute(
-            "INSERT INTO chunks VALUES('tenant','workspace','old.py',0,'old-hash','old text','[1.0,0.0]')"
+            "INSERT INTO chunks VALUES('legacy-owner','repo:one','old.py',0,'old-hash','old text','[1.0,0.0]','space')"
         )
         con.execute(
             """CREATE TABLE files(
-                tenant TEXT NOT NULL,workspace TEXT NOT NULL,path TEXT NOT NULL,mtime_ns INTEGER NOT NULL,
-                size INTEGER NOT NULL,content_hash TEXT NOT NULL,PRIMARY KEY(tenant,workspace,path)
+                tenant TEXT NOT NULL, workspace TEXT NOT NULL, path TEXT NOT NULL,
+                mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL, content_hash TEXT NOT NULL,
+                PRIMARY KEY(tenant,workspace,path)
             )"""
         )
 
-    store = RAGStore(
-        {
-            "server": {"state_dir": str(state_dir)},
-            "models": {},
-            "cpu_retrieval": {},
-            "workspace_cache": {},
-            "rag": {},
-            "features": {"reranker": False},
-        }
-    )
+    store_config = {
+        "server": {"state_dir": str(state_dir)},
+        "models": {},
+        "cpu_retrieval": {},
+        "workspace_cache": {},
+        "rag": {},
+        "features": {"reranker": False},
+    }
+    with pytest.raises(RuntimeError, match="explicit offline conversion required"):
+        RAGStore(store_config)
 
-    with closing(store._connect()) as con:
-        columns = {str(row[1]) for row in con.execute("PRAGMA table_info(chunks)")}
-        count = int(con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
-    assert "embedding_space" in columns
-    assert count == 0
-    assert store.index_reset is True
+    with closing(sqlite3.connect(db_path)) as con:
+        row = con.execute("SELECT tenant,workspace,path,text FROM chunks").fetchone()
+        columns = {str(item[1]) for item in con.execute("PRAGMA table_info(chunks)")}
+    assert row == ("legacy-owner", "repo:one", "old.py", "old text")
+    assert "tenant" in columns
 
 
 def test_incremental_same_size_edit_clears_card_and_rag_hash(tmp_path: Path, preprocessor_factory) -> None:

@@ -24,11 +24,10 @@ _ARTIFACT_TABLE = "artifacts"
 _ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
 _ARTIFACTS_SCHEMA_SQL = """CREATE TABLE artifacts (
     artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-    tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
+    kind TEXT NOT NULL,
     text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
     size_bytes INTEGER, checksum TEXT, identity_json TEXT
 )"""
-_ARTIFACT_SCHEMA_META_SQL = "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
 _ARTIFACT_PAGING_SCHEMA_SQL = """CREATE TABLE artifact_paging_metadata (
     artifact_id TEXT PRIMARY KEY,
     char_count INTEGER NOT NULL,
@@ -81,10 +80,8 @@ class ArtifactTextReadError(RuntimeError):
 
 
 class _ArtifactBatch:
-    def __init__(self, store: "ArtifactStore", tenant: str, cancel_check=None):
+    def __init__(self, store: "ArtifactStore", cancel_check=None):
         self._store = store
-        self._tenant = tenant
-        self._tenant_identity = store._tenant_identity(self._tenant)
         self._cancel_check = cancel_check
         self._connection: sqlite3.Connection | None = None
 
@@ -140,33 +137,33 @@ class _ArtifactBatch:
         if self._cancel_check is not None and self._cancel_check():
             raise ArtifactBatchCancelled("artifact batch cancelled")
 
-    def put(self, text: str, kind: str) -> str:
+    def put(self, text: str, *, kind: str) -> str:
         if self._connection is None:
             raise RuntimeError("artifact batch is not active")
         self._check_cancelled()
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
-        artifact_id = self._store._scoped_artifact_id(self._connection, f"art_{digest}", self._tenant_identity)
+        artifact_id = f"art_{digest}"
         section_map, sections_truncated = self._store._section_data(text)
         section_names = list(section_map)
         page_text, nul_mask = self._store._page_text_metadata(text)
         self._connection.execute(
-            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
-            (artifact_id, time.time(), self._tenant_identity, self._tenant_identity, kind, text),
+            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, kind, text) VALUES(?,?,?,?)",
+            (artifact_id, time.time(), kind, text),
         )
         self._store._write_paging_metadata(
             self._connection, artifact_id, text, section_names, page_text, nul_mask, sections_truncated,
         )
         return artifact_id
 
-    def put_json(self, value: dict[str, Any], kind: str) -> str:
+    def put_json(self, value: dict[str, Any], *, kind: str) -> str:
         if not isinstance(value, dict):
             raise ArtifactTransportError("invalid_json", "JSON artifact must be an object")
         text = json_dumps(value, ensure_ascii=False, sort_keys=True)
         if len(text.encode("utf-8")) > self._store.max_json_bytes:
             raise ArtifactTransportError("artifact_too_large", "JSON artifact size exceeds configured limit")
-        return self.put(text, kind)
+        return self.put(text, kind=kind)
 
-    def put_bytes(self, data: bytes, kind: str, mime_type: str) -> str:
+    def put_bytes(self, data: bytes, *, kind: str, mime_type: str) -> str:
         if self._connection is None:
             raise RuntimeError("artifact batch is not active")
         self._check_cancelled()
@@ -182,7 +179,7 @@ class _ArtifactBatch:
         base_id = "art_" + hashlib.sha256(
             (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
         ).hexdigest()[:24]
-        artifact_id = self._store._scoped_artifact_id(self._connection, base_id, self._tenant_identity)
+        artifact_id = base_id
         identity = {
             "artifact_id": artifact_id,
             "kind": str(kind),
@@ -196,12 +193,12 @@ class _ArtifactBatch:
         )
         self._connection.execute(
             f"""INSERT OR REPLACE INTO {self._store._table}(
-                artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
+                artifact_id, created_at, kind, text, mime_type,
                 encoding, blob, size_bytes, checksum, identity_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
             (
-                artifact_id, time.time(), self._tenant_identity, self._tenant_identity,
-                str(kind), "", normalized_mime, "base64", sqlite3.Binary(data), len(data), checksum,
+                artifact_id, time.time(), str(kind), "", normalized_mime,
+                "base64", sqlite3.Binary(data), len(data), checksum,
                 json_dumps(identity, ensure_ascii=False),
             ),
         )
@@ -211,7 +208,7 @@ class _ArtifactBatch:
 class ArtifactStore:
     """Store verbose local outputs and return compact references.
 
-    Tenant labels partition trusted-local data but do not authenticate callers.
+    Artifacts are installation-wide and identified by their exact content contract.
     """
 
     def __init__(
@@ -535,17 +532,6 @@ class ArtifactStore:
             "size_bytes": size_bytes,
         }
 
-    @staticmethod
-    def _tenant_identity(tenant: str) -> str:
-        """Hash a trusted-local namespace label without retaining its caller-controlled text."""
-        if not isinstance(tenant, str) or "\x00" in tenant:
-            raise ValueError("tenant label must be a string without null bytes")
-        return hashlib.sha256(tenant.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _is_tenant_identity(value: str) -> bool:
-        return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -554,7 +540,6 @@ class ArtifactStore:
                 return
             full_schema = {
                 "artifact_id": ("TEXT", 1, 0, None, 0), "created_at": ("REAL", 0, 1, None, 0),
-                "tenant": ("TEXT", 0, 1, None, 0), "tenant_identity": ("TEXT", 0, 0, None, 0),
                 "kind": ("TEXT", 0, 1, None, 0), "text": ("TEXT", 0, 1, "''", 0),
                 "mime_type": ("TEXT", 0, 0, None, 0), "encoding": ("TEXT", 0, 0, None, 0),
                 "blob": ("BLOB", 0, 0, None, 0), "size_bytes": ("INTEGER", 0, 0, None, 0),
@@ -562,7 +547,6 @@ class ArtifactStore:
             }
             canonical_sql = {
                 "artifacts": _normalize_artifact_create_sql(_ARTIFACTS_SCHEMA_SQL),
-                "artifact_schema_meta": _normalize_artifact_create_sql(_ARTIFACT_SCHEMA_META_SQL),
                 _ARTIFACT_PAGING_TABLE: _normalize_artifact_create_sql(_ARTIFACT_PAGING_SCHEMA_SQL),
             }
             def _validate_connection(con: sqlite3.Connection) -> None:
@@ -572,10 +556,10 @@ class ArtifactStore:
                         """SELECT name, type,
                                   CASE WHEN length(CAST(sql AS BLOB))<=8192 THEN sql END
                            FROM sqlite_master
-                           WHERE name IN ('artifacts', 'artifact_schema_meta', 'artifact_paging_metadata')"""
+                           WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'"""
                     )
                 }
-                if set(objects) != {"artifacts", "artifact_schema_meta", _ARTIFACT_PAGING_TABLE}:
+                if set(objects) != {"artifacts", _ARTIFACT_PAGING_TABLE}:
                     raise UnsupportedArtifactSchema("unsupported artifact database schema")
                 for name in objects:
                     object_type, statement = objects[name]
@@ -595,16 +579,6 @@ class ArtifactStore:
                 }
                 if actual != full_schema:
                     raise UnsupportedArtifactSchema("unsupported artifact database schema")
-                meta_columns = list(con.execute("PRAGMA table_xinfo(artifact_schema_meta)"))
-                actual_meta = {
-                    str(row[1]): (str(row[2]).upper(), int(row[5]), int(row[3]), row[4], int(row[6]))
-                    for row in meta_columns
-                }
-                if actual_meta != {
-                    "key": ("TEXT", 1, 0, None, 0),
-                    "value": ("TEXT", 0, 1, None, 0),
-                }:
-                    raise UnsupportedArtifactSchema("unsupported artifact schema metadata table")
                 paging_columns = list(con.execute(f"PRAGMA table_xinfo({_ARTIFACT_PAGING_TABLE})"))
                 actual_paging = {
                     str(row[1]): (str(row[2]).upper(), int(row[5]), int(row[3]), row[4], int(row[6]))
@@ -620,13 +594,6 @@ class ArtifactStore:
                 }
                 if actual_paging != canonical_paging_columns:
                     raise UnsupportedArtifactSchema("unsupported artifact paging metadata table")
-                marker = con.execute(
-                    """SELECT 1 FROM artifact_schema_meta
-                       WHERE key='tenant_storage' AND typeof(value)='text'
-                         AND length(CAST(value AS BLOB))=9 AND value='sha256-v1' LIMIT 1"""
-                ).fetchone()
-                if marker is None:
-                    raise UnsupportedArtifactSchema("unsupported artifact tenant storage marker")
                 deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
                 con.set_progress_handler(
                     lambda: int(time.monotonic() >= deadline), 1000,
@@ -634,14 +601,6 @@ class ArtifactStore:
                 missing_paging = None
                 stale_paging = None
                 try:
-                    invalid = con.execute(
-                        """SELECT 1 FROM artifacts WHERE CASE
-                             WHEN typeof(tenant)='text' AND length(CAST(tenant AS BLOB))=64
-                               AND typeof(tenant_identity)='text'
-                               AND length(CAST(tenant_identity AS BLOB))=64
-                             THEN tenant GLOB '*[^0-9a-f]*' OR tenant_identity != tenant
-                             ELSE 1 END LIMIT 1"""
-                    ).fetchone()
                     missing_paging = con.execute(
                         f"""SELECT 1 FROM artifacts AS a
                              LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
@@ -664,8 +623,6 @@ class ArtifactStore:
                     raise
                 finally:
                     con.set_progress_handler(None, 0)
-                if invalid is not None:
-                    raise UnsupportedArtifactSchema("invalid artifact tenant identity")
                 if missing_paging is not None or invalid_mime_type is not None or stale_paging is not None:
                     raise UnsupportedArtifactSchema("incomplete artifact paging metadata")
 
@@ -722,11 +679,7 @@ class ArtifactStore:
                         _validate_connection(con)
                     if fresh_database:
                         con.execute(_ARTIFACTS_SCHEMA_SQL)
-                        con.execute(_ARTIFACT_SCHEMA_META_SQL)
                         con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
-                        con.execute(
-                            "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
-                        )
                     con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
                     self._table = _ARTIFACT_TABLE
                     con.commit()
@@ -746,45 +699,35 @@ class ArtifactStore:
         )
         con.execute(f"DELETE FROM {self._table} WHERE created_at < ?", (cutoff,))
 
-    def _scoped_artifact_id(self, con: sqlite3.Connection, base_id: str, tenant_identity: str) -> str:
-        row = con.execute(
-            f"SELECT tenant_identity, tenant FROM {self._table} WHERE artifact_id=?",
-            (base_id,),
-        ).fetchone()
-        existing_identity = str((row[0] if row and row[0] else row[1]) if row else "")
-        if not row or existing_identity == tenant_identity:
-            return base_id
-        return f"{base_id}_{tenant_identity}"
-
-    def batch(self, tenant: str, *, cancel_check=None) -> _ArtifactBatch:
+    def batch(self, *, cancel_check=None) -> _ArtifactBatch:
         """Write a related artifact set in one transaction, including its final bundle."""
-        return _ArtifactBatch(self, tenant, cancel_check=cancel_check)
+        return _ArtifactBatch(self, cancel_check=cancel_check)
 
-    def put(self, text: str, tenant: str, kind: str) -> str:
-        with self.batch(tenant) as batch:
-            return batch.put(text, kind)
+    def put(self, text: str, *, kind: str) -> str:
+        with self.batch() as batch:
+            return batch.put(text, kind=kind)
 
     def put_bytes(
         self,
         data: bytes,
-        tenant: str,
+        *,
         kind: str,
         mime_type: str,
     ) -> str:
         """Store complete image bytes without interpreting or truncating them."""
-        with self.batch(tenant) as batch:
-            return batch.put_bytes(data, kind, mime_type)
+        with self.batch() as batch:
+            return batch.put_bytes(data, kind=kind, mime_type=mime_type)
 
-    def put_json(self, value: dict[str, Any], tenant: str, kind: str) -> str:
+    def put_json(self, value: dict[str, Any], *, kind: str) -> str:
         """Store a bounded JSON artifact, preserving full DOM payload semantics."""
-        with self.batch(tenant) as batch:
-            return batch.put_json(value, kind)
+        with self.batch() as batch:
+            return batch.put_json(value, kind=kind)
 
     @staticmethod
     def _binary_failure(message: str) -> dict[str, Any]:
         return {"success": False, "error": message[:160]}
 
-    def get_binary(self, artifact_id: str, tenant: str | None = None) -> dict[str, Any]:
+    def get_binary(self, artifact_id: str) -> dict[str, Any]:
         """Return one complete, integrity-checked binary artifact or a safe failure."""
         if not isinstance(artifact_id, str) or not artifact_id or "\x00" in artifact_id:
             return self._binary_failure("invalid artifact_id")
@@ -797,11 +740,7 @@ class ArtifactStore:
                               size_bytes, checksum, identity_json
                        FROM """ + self._table + " WHERE artifact_id=? AND created_at>=?"
                 )
-                params: list[Any] = [str(artifact_id), cutoff]
-                if tenant is not None:
-                    query += " AND tenant_identity=?"
-                    params.append(self._tenant_identity(tenant))
-                return con.execute(query, params).fetchone()
+                return con.execute(query, (str(artifact_id), cutoff)).fetchone()
 
         row = retry_busy(_do_get, retries=3)
         if not row:
@@ -928,14 +867,14 @@ class ArtifactStore:
         sections, _truncated = cls._section_data(text)
         return sections
 
-    def compact(self, result: dict[str, Any], tenant: str, kind: str, *, field: str = "text") -> dict[str, Any]:
+    def compact(self, result: dict[str, Any], *, kind: str, field: str = "text") -> dict[str, Any]:
         if field not in result or not isinstance(result.get(field), str):
             return result
         text = result[field]
         if len(text) <= self.max_inline_chars:
             result.setdefault("artifact", None)
             return result
-        artifact_id = self.put(text, tenant, kind)
+        artifact_id = self.put(text, kind=kind)
         head = int(self.max_inline_chars * 0.82)
         tail = self.max_inline_chars - head
         preview = text[:head] + "\n\n[... full local output stored as artifact ...]\n\n" + text[-tail:]
@@ -953,7 +892,9 @@ class ArtifactStore:
         }
         return result
 
-    def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "", tenant: str | None = None) -> dict[str, Any]:
+    def get(
+        self, artifact_id: str, *, offset: int = 0, max_chars: int = 6000, section: str = ""
+    ) -> dict[str, Any]:
         if not isinstance(artifact_id, str) or not artifact_id or "\x00" in artifact_id:
             return {"success": False, "error": "invalid artifact_id", "error_code": "artifact_read_invalid"}
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -967,7 +908,6 @@ class ArtifactStore:
                     "error_code": "artifact_read_invalid", "artifact_id": artifact_id}
         cutoff = time.time() - self.ttl_seconds
         deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
-        tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
         if len(section) > MAX_ARTIFACT_HEADING_CHARS:
             return {"success": False, "error": "artifact section name exceeds its limit",
                     "error_code": "artifact_section_invalid", "artifact_id": artifact_id}
@@ -976,7 +916,6 @@ class ArtifactStore:
             with closing(self._connect()) as con:
                 self._configure_read_deadline(con, deadline)
                 con.execute("BEGIN")
-                params: list[Any] = [artifact_id, cutoff]
                 query = (
                     f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.artifact_id, "
                     f"CASE WHEN length(CAST(p.section_json AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
@@ -984,10 +923,7 @@ class ArtifactStore:
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
                     "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
                 )
-                if tenant_identity is not None:
-                    query += " AND a.tenant_identity=?"
-                    params.append(tenant_identity)
-                row = con.execute(query, params).fetchone()
+                row = con.execute(query, (artifact_id, cutoff)).fetchone()
                 if row is None:
                     return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
                 rowid, kind, mime_type, text_type, paging_id, section_json, section_checksum = row
@@ -1091,8 +1027,8 @@ class ArtifactStore:
     def get_slices(
         self,
         artifact_id: str,
+        *,
         slices: list[dict[str, int]],
-        tenant: str | None = None,
     ) -> dict[str, Any]:
         """Fetch several bounded text spans in caller order with one SQLite read."""
         if not isinstance(slices, list) or not slices or len(slices) > MAX_ARTIFACT_SLICES:
@@ -1115,13 +1051,11 @@ class ArtifactStore:
 
         cutoff = time.time() - self.ttl_seconds
         deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
-        tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
 
         def _do_get_slices() -> dict[str, Any]:
             with closing(self._connect()) as con:
                 self._configure_read_deadline(con, deadline)
                 con.execute("BEGIN")
-                params: list[Any] = [artifact_id, cutoff]
                 query = (
                     f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.artifact_id, "
                     f"CASE WHEN length(CAST(p.section_json AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
@@ -1129,10 +1063,7 @@ class ArtifactStore:
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
                     "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
                 )
-                if tenant_identity is not None:
-                    query += " AND a.tenant_identity=?"
-                    params.append(tenant_identity)
-                row = con.execute(query, params).fetchone()
+                row = con.execute(query, (artifact_id, cutoff)).fetchone()
                 if row is None:
                     return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
                 rowid, kind, mime_type, text_type, paging_id, section_json, section_checksum = row
@@ -1194,9 +1125,9 @@ class ArtifactStore:
     def get_lines(
         self,
         artifact_id: str,
+        *,
         start_line: int = 1,
         end_line: int | None = None,
-        tenant: str | None = None,
     ) -> dict[str, Any]:
         """Fetch a specific 1-indexed range of lines from a stored text artifact."""
         if isinstance(start_line, bool) or not isinstance(start_line, int) or start_line < 1:
@@ -1220,11 +1151,7 @@ class ArtifactStore:
         def _do_get() -> tuple[Any, ...] | None:
             with closing(self._connect()) as con:
                 query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
-                params: list[Any] = [artifact_id, cutoff]
-                if tenant is not None:
-                    query += " AND tenant_identity=?"
-                    params.append(self._tenant_identity(tenant))
-                return con.execute(query, params).fetchone()
+                return con.execute(query, (artifact_id, cutoff)).fetchone()
 
         row = retry_busy(_do_get, retries=3)
         if not row:
@@ -1254,26 +1181,17 @@ class ArtifactStore:
             "text": "\n".join(sliced_lines),
         }
 
-    def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:
-        if not isinstance(tenant, str):
-            raise ValueError("tenant label must be a string")
+    def list(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError("artifact list limit must be a positive integer")
         self._init_db()
         with closing(self._connect()) as con:
             lim = max(1, min(limit, 100))
-            if tenant:
-                tenant_identity = self._tenant_identity(tenant)
-                rows = con.execute(
-                    "SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM artifacts WHERE tenant_identity=? ORDER BY created_at DESC LIMIT ?",
-                    (tenant_identity, lim),
-                ).fetchall()
-            else:
-                table = self._table
-                rows = con.execute(
-                    f"SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM {table} ORDER BY created_at DESC LIMIT ?",
-                    (lim,),
-                ).fetchall()
+            table = self._table
+            rows = con.execute(
+                f"SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM {table} ORDER BY created_at DESC LIMIT ?",
+                (lim,),
+            ).fetchall()
             return [
                 {
                     "artifact_id": str(r[0]),

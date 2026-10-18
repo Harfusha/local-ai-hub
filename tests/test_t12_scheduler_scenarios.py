@@ -640,7 +640,7 @@ def test_t12_scheduler_close_signals_running_job_cancellation() -> None:
     def submit() -> None:
         try:
             outcome.append(scheduler.submit(
-                "fast", "tenant", "test", execute, cancel_event=cancel_event
+                "fast", source="test", execute=execute, cancel_event=cancel_event
             ))
         except SchedulerCancelledError as exc:
             outcome.append({"cancelled": True, "state": exc.state})
@@ -701,7 +701,7 @@ def test_t12_preempt_hook_obeys_caller_deadline_before_dispatch() -> None:
     def submit() -> None:
         try:
             result = scheduler.submit(
-                "fast", "tenant", "deadline-preempt", lambda: execution_started.set() or {"success": True},
+                "fast", source="deadline-preempt", execute=lambda: execution_started.set() or {"success": True},
                 wait_timeout=0.05,
             )
             outcome.append({"result": result})
@@ -775,7 +775,7 @@ def test_t12_active_cancel_keeps_worker_admission_until_child_exits() -> None:
         try:
             first_outcome.append(
                 scheduler.submit(
-                    "fast", "tenant", "child-inference", first_execute,
+                    "fast", source="child-inference", execute=first_execute,
                     wait_timeout=5, cancel_event=cancel_first,
                 )
             )
@@ -788,7 +788,7 @@ def test_t12_active_cancel_keeps_worker_admission_until_child_exits() -> None:
 
     def second_submit() -> None:
         second_outcome.append(
-            scheduler.submit("fast", "tenant", "next-inference", second_execute, wait_timeout=5)
+            scheduler.submit("fast", source="next-inference", execute=second_execute, wait_timeout=5)
         )
 
     first_caller = threading.Thread(target=first_submit)
@@ -837,7 +837,6 @@ def test_t12_cancelled_dispatched_job_does_not_start_execute() -> None:
     job = Job(
         id=1,
         model="fixture-model",
-        tenant="tenant-a",
         source="test",
         priority=5,
         execute=lambda: (started.append(True) or {"success": True}),
@@ -849,7 +848,6 @@ def test_t12_cancelled_dispatched_job_does_not_start_execute() -> None:
     scheduler._inflight = 1
     scheduler._inflight_jobs = {job.id: job}
     scheduler._inflight_background = 0
-    scheduler._inflight_by_tenant = {job.tenant: 1}
     scheduler._last_foreground_activity = 0.0
 
     scheduler._run_job(job)

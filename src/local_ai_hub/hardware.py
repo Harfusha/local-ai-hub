@@ -359,7 +359,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "vision": "qwen3-vl:4b",
         },
         "features": {"reranker": True},
-        "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1, "max_loaded_models": 1},
+        "scheduler": {"max_parallel": 1, "max_loaded_models": 1},
         "ollama": {
             "num_parallel": 1,
             "kv_cache_type": "q4_0",
@@ -401,7 +401,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
-        "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
+        "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32},
         # Keep shared-memory systems serial. Intel inference is routed to the
         # optional llama.cpp SYCL server; no Ollama fallback is implied. AMD
         # integrated GPUs retain the existing Vulkan path when explicitly used.
@@ -464,7 +464,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
-        "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
+        "scheduler": {"max_parallel": 1},
         "ollama": {"num_parallel": 1},
         "background_gpu": {"parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 6, "reranker_batch_size": 2},
@@ -488,7 +488,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3.5:9b",
         },
-        "scheduler": {"max_parallel": 2, "max_inflight_per_tenant": 2},
+        "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2},
         "background_gpu": {"parallel": 2, "file_batch_size": 2, "module_batch_size": 2},
         "cpu_retrieval": {"embedding_batch_size": 12, "reranker_batch_size": 4},
@@ -502,7 +502,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },
-        "scheduler": {"max_parallel": 3, "max_inflight_per_tenant": 3},
+        "scheduler": {"max_parallel": 3},
         "ollama": {"num_parallel": 3},
         "background_gpu": {"parallel": 3, "file_batch_size": 3, "module_batch_size": 3},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
@@ -516,7 +516,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },
-        "scheduler": {"max_parallel": 4, "max_inflight_per_tenant": 4},
+        "scheduler": {"max_parallel": 4},
         "ollama": {"num_parallel": 4},
         "background_gpu": {"parallel": 4, "file_batch_size": 4, "module_batch_size": 4},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},

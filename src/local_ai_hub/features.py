@@ -290,8 +290,9 @@ class FeatureSet:
         """Guidance recipe lines reflecting active tools."""
         lines: list[str] = []
         if self.repo:
-            prep_hint = "preprocess once, " if self.preprocessing else ""
-            lines.append(f"- Recipe — Explore: {prep_hint}use the cheapest repository action, fetch only required evidence slices.")
+            lines.append(
+                "- Recipe — Explore: reuse fresh repository evidence; use bounded indexed/source lookup for exact file or symbol facts; use adaptive context when evidence is insufficient, and preprocess only for unindexed roots or stale evidence."
+            )
             lease_hint = " claim `local_ai_coord` leases for overlapping paths," if self.coord else ""
             contract_hint = " initialize an Agent OS contract," if self.agent_os else ""
             lines.append(f'- Recipe — Change: gather indexed evidence,{contract_hint} use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')

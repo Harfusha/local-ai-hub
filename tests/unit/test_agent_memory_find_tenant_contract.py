@@ -1,3 +1,6 @@
+"""Retired selectors fail before any memory storage access."""
+
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -6,23 +9,21 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryStore
 
 
-def test_memory_find_rejects_nonstring_tenant_before_store_access():
+@pytest.mark.parametrize("call", ["find", "find_for_context", "get", "task_retrieval_scope"])
+def test_memory_apis_reject_retired_tenant_keyword_before_storage(call, tmp_path, monkeypatch):
     store = object.__new__(MemoryStore)
-    store.state_store = SimpleNamespace(enabled=False)
-
-    with pytest.raises(ValueError, match="tenant"):
-        store.find(tenant=7)
-
-    with pytest.raises(ValueError, match="tenant"):
-        store.find_for_context(tenant=7)
-
-    with pytest.raises(ValueError, match="tenant"):
-        store.get("record-1", scope=AgentScope.REPOSITORY, tenant=7, repository_id="repo-1")
-
-
-def test_task_retrieval_scope_rejects_nonstring_tenant():
-    store = object.__new__(MemoryStore)
-
-    with pytest.raises(ValueError, match="tenant"):
-        with store.task_retrieval_scope("goal", root="C:/repo", tenant=7, task_id="task-1"):
-            pass
+    store.state_store = SimpleNamespace(enabled=True, db_path=Path(tmp_path) / "state.sqlite")
+    store.state_store.db_path.touch()
+    monkeypatch.setattr(
+        store, "_init_table", lambda: (_ for _ in ()).throw(AssertionError("storage reached"))
+    )
+    with pytest.raises(TypeError, match="tenant"):
+        if call == "find":
+            store.find(tenant=None)
+        elif call == "find_for_context":
+            store.find_for_context(tenant=False)
+        elif call == "get":
+            store.get("record-1", scope=AgentScope.REPOSITORY, tenant="")
+        else:
+            with store.task_retrieval_scope("goal", root=str(tmp_path), task_id="task-1", tenant=7):
+                pass

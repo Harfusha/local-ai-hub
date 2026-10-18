@@ -4,6 +4,7 @@ import io
 import socket
 import threading
 import time
+from collections import deque
 from email.message import Message
 from http import HTTPStatus
 from typing import Any, Mapping
@@ -38,18 +39,18 @@ class _MemoryConnection:
 
 
 class _AdmissionState:
-    """Reuse the HTTP server's per-tenant limiter without binding a socket."""
+    """Reuse the installation's bounded HTTP limiter without binding a socket."""
 
     def __init__(self, security: Mapping[str, Any]):
         self._rate_limit_requests = max(1, int(security.get("rate_limit_requests", 600)))
         self._rate_limit_window = max(1.0, float(security.get("rate_limit_window_seconds", 60.0)))
-        self._rate_windows: dict[str, list[float]] = {}
+        self._rate_window: deque[float] = deque()
         self._rate_lock = threading.Lock()
 
-    def check_rate_limit(self, tenant: str) -> bool:
+    def check_rate_limit(self) -> bool:
         from .http_server import LocalAIHTTPServer
 
-        return LocalAIHTTPServer.check_rate_limit(self, tenant)
+        return LocalAIHTTPServer.check_rate_limit(self)
 
 
 class InProcessTransport:

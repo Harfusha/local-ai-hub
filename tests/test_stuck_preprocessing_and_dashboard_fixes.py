@@ -31,7 +31,7 @@ def test_revision_scoped_error_markers() -> None:
 def test_command_broker_rejects_nonexistent_cwd(tmp_path: Path) -> None:
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}})
     bad_cwd = tmp_path / "does_not_exist_dir"
-    res = broker.run("pytest -q", cwd=str(bad_cwd), tenant="test")
+    res = broker.run("pytest -q", cwd=str(bad_cwd))
     assert res["success"] is False
     assert res["preflight"] is True
     assert res["terminal"] is True
@@ -50,19 +50,19 @@ def test_services_embed_defaults_background_on_low_priority() -> None:
     svc.runtime = mock_runtime
 
     # Priority 0 -> should default background=True
-    svc.embed(["test text"], tenant="test", priority=0)
+    svc.embed(["test text"],  priority=0)
     args, kwargs = mock_scheduler.submit.call_args
     assert kwargs.get("background") is True
     assert kwargs.get("priority") == 0
 
     # Priority 3 -> should default background=False
-    svc.embed(["test text"], tenant="test", priority=3)
+    svc.embed(["test text"],  priority=3)
     args, kwargs = mock_scheduler.submit.call_args
     assert kwargs.get("background") is False
     assert kwargs.get("priority") == 3
 
     # Explicit background=True with priority 5
-    svc.embed(["test text"], tenant="test", priority=5, background=True)
+    svc.embed(["test text"],  priority=5, background=True)
     args, kwargs = mock_scheduler.submit.call_args
     assert kwargs.get("background") is True
 

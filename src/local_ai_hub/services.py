@@ -28,6 +28,7 @@ from .artifacts import ArtifactStore
 from .budget import chars_for_tokens, estimate_tokens, fit_text
 from .cache import MemoryLRUCache, SQLiteCache, TieredCache, SingleFlightCache, SingleFlightGroup, stable_hash
 from .conversations import ConversationStore
+from .repository_scope import reject_retired_tenancy_fields
 from .features import rollout_feature_enabled
 from .normalizer import normalize_query, postprocess_model_output
 from .semantic_cache import SemanticGenerationCache
@@ -225,7 +226,6 @@ def _merge_review_segment_results(
     synthesis_task: str,
     max_output_tokens: int,
     complexity: str,
-    tenant: str,
     delegate: Any,
     priority: int = 5,
 ) -> tuple[str, dict[str, Any]]:
@@ -249,7 +249,6 @@ def _merge_review_segment_results(
                 "max_tokens": min(max_output_tokens, 1800),
                 "priority": int(priority),
             },
-            tenant,
         )
         if isinstance(merged, dict) and merged.get("success") is not False:
             output_error = _review_text_error(merged.get("text"))
@@ -753,7 +752,7 @@ class LocalAIServices:
             ttl_seconds=int(resilience.get("stale_generation_ttl_seconds", 30 * 86400)),
             max_entries=int(resilience.get("stale_generation_max_entries", 10000)),
         )
-        self._recent_focus_symbols: dict[str, list[str]] = {}
+        self._recent_focus_symbols: dict[tuple[str, str], list[str]] = {}
         self._focus_lock = threading.Lock()
         self._vram_model_lock = threading.RLock()
         self.fallback_count = 0
@@ -1085,10 +1084,9 @@ class LocalAIServices:
         system: str,
         max_tokens: int,
         temperature: float,
-        tenant: str,
+        *,
         source: str,
         priority: int,
-        *,
         measured_cloud_context_tokens: int = 0,
         semantic_query: str = "",
         semantic_context_fingerprint: str = "",
@@ -1261,7 +1259,7 @@ class LocalAIServices:
             def record_attempt_failures(*, recovered: bool) -> None:
                 for failed in attempt_failures:
                     self.telemetry.record_error(
-                        "ollama", f"{source}:model_attempt", failed["error"], tenant=tenant,
+                        "ollama", f"{source}:model_attempt", failed["error"],
                         error_type_override=failed["error_type"],
                         error_code_override=failed["error_code"],
                         retryable=failed["retryable"], recovered=recovered,
@@ -1270,7 +1268,7 @@ class LocalAIServices:
                 breaker_key = f"model:{candidate}"
                 if not self.breakers.allow(breaker_key):
                     errors.append(f"{candidate}: circuit open")
-                    self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate, success=False, degraded=True, error_type="circuit_open")
+                    self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate, success=False, degraded=True, error_type="circuit_open")
                     continue
 
                 def run(candidate_model: str = candidate) -> dict[str, Any]:
@@ -1452,7 +1450,7 @@ class LocalAIServices:
 
                 try:
                     result = self.scheduler.submit(
-                        candidate, tenant, source if index == 0 else f"{source}:fallback", run, priority=priority,
+                        candidate, source=source if index == 0 else f"{source}:fallback", execute=run, priority=priority,
                         wait_timeout=max(0.05, request_deadline - time.monotonic()),
                         cancel_event=cancel_event,
                     )
@@ -1505,7 +1503,7 @@ class LocalAIServices:
                     attempt_failures.append({"error": str(result.get("error", "model response interrupted")),
                                              "error_type": "model_attempt_interrupted", "error_code": "model_attempt_interrupted",
                                              "retryable": False})
-                    self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate,
+                    self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate,
                                                 success=False, degraded=index > 0, error_type="model_attempt_interrupted")
                     record_attempt_failures(recovered=False)
                     return {**result, "terminal": True, "retryable": False, "_cacheable": False}
@@ -1518,7 +1516,7 @@ class LocalAIServices:
                 self.breakers.failure(breaker_key)
                 attempt_error = str(result.get("error", "failed"))
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
-                self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")
+                self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")
                 attempt_failures.append({
                     "error": attempt_error,
                     "error_type": str(result.get("error_type", "")),
@@ -1624,7 +1622,6 @@ class LocalAIServices:
             result.pop(internal_key, None)
         effective_cache_hit = cache_hit or cache_layer in {"semantic", "single-flight", "stale-on-error"}
         self.telemetry.record_stage(
-            tenant=tenant,
             action=source,
             stage="cache_decision",
             success=True,
@@ -1649,7 +1646,7 @@ class LocalAIServices:
         except (TypeError, ValueError, OverflowError):
             cache_read_tokens = 0
         if (not internal) and bool(saving.get("compact_responses", True)):
-            result = self.artifacts.compact(result, tenant, source)
+            result = self.artifacts.compact(result, kind=source)
         result["latency"] = {
             "queue_wait_ms": round(max(0.0, queue_wait_ms), 1),
             "service_ms": round(max(0.0, service_ms), 1),
@@ -1676,7 +1673,7 @@ class LocalAIServices:
         success = bool(result.get("success", "error" not in result))
         error_type = "" if success else "model_request_failed"
         self.telemetry.record(
-            tenant=tenant, action=source, model=str(result.get("model", model)), cache_hit=effective_cache_hit, coalesced=coalesced,
+            action=source, model=str(result.get("model", model)), cache_hit=effective_cache_hit, coalesced=coalesced,
             cache_layer=cache_layer, input_tokens=prepared.estimated_tokens,
             cache_read_tokens=cache_read_tokens, output_tokens=full_output_tokens,
             task_type=source.split(":", 1)[1] if source.startswith("delegate:") else source.split(":", 1)[0],
@@ -1688,7 +1685,7 @@ class LocalAIServices:
         )
         if not success:
             self.telemetry.record_error(
-                "ollama", source, result.get("error", "model request failed"), tenant=tenant,
+                "ollama", source, result.get("error", "model request failed"),
                 error_type_override=str(result.get("error_type", "")),
                 error_code_override=str(result.get("error_code", "")),
                 retryable=True,
@@ -1738,7 +1735,6 @@ class LocalAIServices:
     def _start_conversation(
         self,
         *,
-        tenant: str,
         prompt: str,
         route: dict[str, Any],
         system: str,
@@ -1753,7 +1749,7 @@ class LocalAIServices:
             return self._conversation_cancelled("")
         if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
             return self._conversation_error("", "conversation prompt limit exceeded")
-        conversation = self.conversations.start_reserved(tenant, {
+        conversation = self.conversations.start_reserved({
             "model": route["model"], "system": system,
             "trace_system": system if trace_system is None else trace_system,
             "max_tokens": max_tokens,
@@ -1764,20 +1760,20 @@ class LocalAIServices:
             return self._conversation_error("", "conversation capacity reached")
         try:
             result = self._generate(
-                route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
+                route["model"], prompt, system, max_tokens, temperature, source=source, priority=priority,
                 internal=True, use_cache=False, trace_system_override=trace_system,
                 cancel_event=cancel_event,
             )
         except Exception:
-            self.conversations.discard(conversation.conversation_id, tenant)
+            self.conversations.discard(conversation.conversation_id)
             raise
         if not result.get("success", "error" not in result):
-            self.conversations.discard(conversation.conversation_id, tenant)
+            self.conversations.discard(conversation.conversation_id)
             return result
         if cancel_event is not None and cancel_event.is_set():
-            self.conversations.discard(conversation.conversation_id, tenant)
+            self.conversations.discard(conversation.conversation_id)
             return self._conversation_cancelled(conversation.conversation_id)
-        if not self.conversations.complete(conversation.conversation_id, tenant, prompt, str(result.get("text", ""))):
+        if not self.conversations.complete(conversation.conversation_id, prompt, str(result.get("text", ""))):
             return self._conversation_error(
                 conversation.conversation_id,
                 "conversation expired or was lost while model was running",
@@ -1787,8 +1783,9 @@ class LocalAIServices:
         return result
 
     def continue_conversation(
-        self, args: dict[str, Any], tenant: str, *, cancel_event: threading.Event | None = None,
+        self, args: dict[str, Any], *, cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         conversation_id = str(args.get("conversation_id", "")).strip()
         task = str(args.get("task", "")).strip()
         if not conversation_id:
@@ -1797,7 +1794,7 @@ class LocalAIServices:
             return self._conversation_error(conversation_id, "task is required")
         if cancel_event is not None and cancel_event.is_set():
             return self._conversation_cancelled(conversation_id)
-        conversation, error = self.conversations.reserve(conversation_id, tenant)
+        conversation, error = self.conversations.reserve(conversation_id)
         if error:
             return self._conversation_error(conversation_id, error)
         assert conversation is not None
@@ -1805,27 +1802,27 @@ class LocalAIServices:
         prompt = self._conversation_transcript(conversation.messages, user_prompt)
         settings = conversation.settings
         if estimate_tokens(prompt) + estimate_tokens(str(settings["system"])) > self._conversation_prompt_limit():
-            self.conversations.abort(conversation_id, tenant)
+            self.conversations.abort(conversation_id)
             return self._conversation_error(conversation_id, "conversation prompt limit exceeded")
         try:
             result = self._generate(
                 str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
-                float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
+                float(settings["temperature"]), source=str(settings["source"]), priority=int(settings["priority"]),
                 internal=True, use_cache=False,
                 trace_system_override=str(settings.get("trace_system", settings["system"])),
                 cancel_event=cancel_event,
             )
         except Exception:
-            self.conversations.abort(conversation_id, tenant)
+            self.conversations.abort(conversation_id)
             raise
         if not result.get("success", "error" not in result):
-            self.conversations.abort(conversation_id, tenant)
+            self.conversations.abort(conversation_id)
             return result
         if cancel_event is not None and cancel_event.is_set():
-            self.conversations.abort(conversation_id, tenant)
+            self.conversations.abort(conversation_id)
             return self._conversation_cancelled(conversation_id)
         if not self.conversations.complete(
-            conversation_id, tenant, user_prompt, str(result.get("text", "")),
+            conversation_id, user_prompt, str(result.get("text", "")),
         ):
             return self._conversation_error(
                 conversation_id,
@@ -1860,8 +1857,9 @@ class LocalAIServices:
         return project, project.config_digest, namespace, revision
 
     def delegate(
-        self, args: dict[str, Any], tenant: str, *, cancel_event: threading.Event | None = None,
+        self, args: dict[str, Any], *, cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if "prompt" in args:
             return {"success": False, "error": "delegate accepts task; prompt is not an alias"}
         if bool(args.get("conversation", False)):
@@ -1870,7 +1868,7 @@ class LocalAIServices:
             if str(args.get("delivery", "sync")).strip().lower() != "sync":
                 return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
-            return self.delegate_profile(args, tenant)
+            return self.delegate_profile(args)
         project_context, project_config_digest, project_namespace, project_revision = self._resolve_local_task_project(
             args.get("root") or args.get("cwd", "")
         )
@@ -1958,7 +1956,7 @@ class LocalAIServices:
                 )
                 system = str(project_payload.get("system", system))
             result = self._start_conversation(
-                tenant=tenant, prompt=prompt, route=route, system=system, max_tokens=max_tokens,
+                prompt=prompt, route=route, system=system, max_tokens=max_tokens,
                 temperature=temperature, source=source, priority=priority, trace_system=trace_system,
                 cancel_event=cancel_event,
             )
@@ -1966,7 +1964,7 @@ class LocalAIServices:
         format_val = args.get("format") or args.get("json_schema")
         result = self._generate(
             route["model"], prompt, system,
-            max_tokens, temperature, tenant, source, priority,
+            max_tokens, temperature, source=source, priority=priority,
             semantic_query=task, semantic_context_fingerprint=stable_hash(context),
             format=format_val,
             project_settings=project_settings,
@@ -1997,7 +1995,8 @@ class LocalAIServices:
             result["bypass_reason"] = reason
         return result
 
-    def delegate_profile(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def delegate_profile(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         profile_name = str(args.get("profile", "")).strip()
         if not self.profile_catalog.enabled:
             return {"success": False, "unsupported": True, "error": "Ollama subagent profiles disabled"}
@@ -2019,7 +2018,6 @@ class LocalAIServices:
                 profile.name,
                 task,
                 root,
-                tenant,
                 workspace=args.get("workspace"),
                 seed_context=str(args.get("context", "")),
                 priority=int(args.get("priority", 5)),
@@ -2040,9 +2038,7 @@ class LocalAIServices:
             self.profile_catalog.system_contract(profile, task, prompt=package.system),
             int(args.get("max_tokens", 0) or profile.max_tokens),
             profile.temperature,
-            tenant,
-            f"profile:{profile.name}",
-            int(args.get("priority", 5)),
+            source=f"profile:{profile.name}", priority=int(args.get("priority", 5)),
             semantic_query=task,
             semantic_context_fingerprint=stable_hash(context + candidate),
         )
@@ -2058,7 +2054,8 @@ class LocalAIServices:
         })
         return result
 
-    def review(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def review(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if "context" in args:
             return {"success": False, "error": "review accepts code; context is not an alias"}
         code = args.get("code", "")
@@ -2073,9 +2070,10 @@ class LocalAIServices:
         payload["context"] = code
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
-        return self.delegate(payload, tenant)
+        return self.delegate(payload)
 
-    def reason(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def reason(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if "task" in args:
             return {"success": False, "error": "reason accepts problem; task is not an alias"}
         problem = args.get("problem", "")
@@ -2086,7 +2084,7 @@ class LocalAIServices:
         payload["task"] = problem
         payload["operation"] = str(args.get("operation", "reason"))
         payload.setdefault("max_tokens", 4096)
-        return self.delegate(payload, tenant)
+        return self.delegate(payload)
 
     def distill_command_error(self, failure: dict[str, Any]) -> str:
         """Use the local task route only when command parsing found no coordinates."""
@@ -2098,12 +2096,13 @@ class LocalAIServices:
             "context": summary,
             "max_tokens": 120,
             "complexity": "simple",
-        }, "command-error-distill")
+        })
         if not result.get("success", "error" not in result):
             return ""
         return str(result.get("text", "")).strip()[:300]
 
-    def second_opinion(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def second_opinion(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         question = str(args.get("question", ""))
         candidate = str(args.get("candidate", ""))
         context = str(args.get("context", ""))
@@ -2128,15 +2127,16 @@ class LocalAIServices:
         result = self._generate(
             model, package.user, package.system,
             int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
-            tenant, "second-opinion", int(args.get("priority", 6)),
+            source="second-opinion", priority=int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
         )
         result = self._apply_semantic_quality(result, task=question, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
         return result
 
-    def speculative_draft(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def speculative_draft(self, args: dict[str, Any]) -> dict[str, Any]:
         """Draft code using fast model and verify against affected tests."""
+        reject_retired_tenancy_fields(args)
         aliases = {"prompt", "path", "cwd"} & args.keys()
         if aliases:
             return {"success": False, "error": "speculative_draft rejects aliases: " + ", ".join(sorted(aliases))}
@@ -2168,8 +2168,7 @@ class LocalAIServices:
             package.system + " Return the minimal valid code or diff only after grounding it in the supplied file and context.",
             int(args.get("max_tokens", 2048)),
             float(args.get("temperature", 0.1)),
-            tenant,
-            "speculative-draft",
+            source="speculative-draft",
             priority=5,
         )
 
@@ -2213,7 +2212,7 @@ class LocalAIServices:
         ):
             aff = self.affected_tests(str(resolved_root), changed_paths=[file_path])
             if aff.get("suggested_command"):
-                cmd_res = self.commands.run(aff["suggested_command"], str(resolved_root), tenant)
+                cmd_res = self.commands.run(aff["suggested_command"], str(resolved_root))
                 verification["tests_passed"] = bool(cmd_res.get("success"))
                 verification["test_summary"] = cmd_res.get("summary", "")
 
@@ -2226,8 +2225,7 @@ class LocalAIServices:
                 "You are an expert code reviewer. Return only valid JSON.",
                 512,
                 0.1,
-                tenant,
-                "speculative-review",
+                source="speculative-review",
                 priority=6,
             )
             review_text = review_res.get("text") or review_res.get("response") or ""
@@ -2246,8 +2244,9 @@ class LocalAIServices:
             "duration_ms": gen_result.get("duration_ms", 0),
         }
 
-    def speculative_lint(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def speculative_lint(self, args: dict[str, Any]) -> dict[str, Any]:
         """Run opt-in, read-only lint against only caller-supplied changed paths."""
+        reject_retired_tenancy_fields(args)
         root = str(args.get("root", args.get("cwd", ".")))
         try:
             paths = normalize_changed_paths(root, list(args.get("paths") or []))
@@ -2291,7 +2290,7 @@ class LocalAIServices:
             return {"success": False, "error": "speculative lint requires an allowed read-only command", "classification": classification, "terminal": True, "retryable": False}
         if not custom and ruff_executable and all(Path(path).suffix.lower() == ".py" for path in paths) and daemon_mode:
             result = self._lint_daemons.run(
-                ruff_executable, root, tenant, paths,
+                ruff_executable, root, paths=paths,
                 timeout=float(args.get("timeout", self.config.get("speculative_lint", {}).get("timeout_seconds", 120)) or 120),
                 should_stop=current_job_should_stop,
             )
@@ -2305,7 +2304,7 @@ class LocalAIServices:
                         "transport": "owned_foreground_lsp", "error": "Biome timeout must be a positive finite number",
                         "terminal": True, "retryable": False}
             result = self._biome_daemons.run(
-                biome_executable, root, tenant, paths,
+                biome_executable, root, paths=paths,
                 timeout=daemon_timeout,
                 should_stop=current_job_should_stop,
             )
@@ -2314,7 +2313,7 @@ class LocalAIServices:
         result = self.commands.run(
             command,
             str(Path(root).expanduser().resolve(strict=False)),
-            tenant=tenant,
+
             timeout=int(args.get("timeout", self.config.get("speculative_lint", {}).get("timeout_seconds", 120)) or 120),
             force=True,
             auto_fix=False,
@@ -2330,8 +2329,9 @@ class LocalAIServices:
         self._lint_daemons.close()
         self._biome_daemons.close()
 
-    def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def task_scaffold(self, args: dict[str, Any]) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""
+        reject_retired_tenancy_fields(args)
         aliases = {"spec", "task"} & args.keys()
         if aliases:
             return {"success": False, "error": "scaffold rejects aliases: " + ", ".join(sorted(aliases))}
@@ -2364,8 +2364,7 @@ class LocalAIServices:
             "You are a precise code scaffolder. Emit only valid source code.",
             max_tokens,
             float(args.get("temperature", 0.1)),
-            tenant,
-            "scaffold",
+            source="scaffold",
             priority=5,
         )
         if gen_result.get("success") is False:
@@ -2405,11 +2404,11 @@ class LocalAIServices:
     def vision(
         self,
         args: dict[str, Any],
-        tenant: str,
         *,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
+        reject_retired_tenancy_fields(args)
         from .vision_service import VisionService
 
         return VisionService(
@@ -2419,12 +2418,11 @@ class LocalAIServices:
             model_policy=self.model_policy,
             repo_tools=self.repo_tools,
             max_output_tokens=self._VISION_MAX_OUTPUT_TOKENS,
-        ).run(args, tenant, cancel_event=cancel_event)
+        ).run(args, cancel_event=cancel_event)
 
     def transcribe(
         self,
         args: dict[str, Any],
-        tenant: str,
         *,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
@@ -2442,6 +2440,7 @@ class LocalAIServices:
             }
         import stat
 
+        reject_retired_tenancy_fields(args)
         audio_path = str(args.get("audio", args.get("audio_path", "")))
         model = str(args.get("model") or "base")
         language_arg = args.get("language")
@@ -2677,7 +2676,7 @@ class LocalAIServices:
                 "error": "Whisper CLI failed before producing a transcript.",
             }
 
-    def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
+    def benchmark(self) -> dict[str, Any]:
         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
         models=[]
         for key in ("fast_code","heavy_code","reasoning","general"):
@@ -2693,7 +2692,7 @@ class LocalAIServices:
                 )
                 return self.runtime.request("/api/generate", payload)
             try:
-                raw=self.scheduler.submit(model, tenant, "benchmark", run, priority=2, wait_timeout=float(self.config.get("resilience",{}).get("scheduler_wait_timeout_seconds",330)))
+                raw=self.scheduler.submit(model, source="benchmark", execute=run, priority=2, wait_timeout=float(self.config.get("resilience",{}).get("scheduler_wait_timeout_seconds",330)))
             except Exception as exc:
                 raw={"error":str(exc)}
             elapsed=(time.perf_counter()-started)*1000
@@ -2745,7 +2744,7 @@ class LocalAIServices:
             vector = vector.tolist()
         return [float(value) for value in vector]
 
-    def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
+    def embed(self, texts: list[str], *, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
         backend = self.config["models"].get("embedding_backend", "sentence-transformers")
         model = str(self.config.get("models", {}).get("embedding", "qwen3-embedding:0.6b"))
         if not texts:
@@ -2766,7 +2765,7 @@ class LocalAIServices:
                 return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
 
             is_bg = background if background is not None else (priority <= 1)
-            return self.scheduler.submit(model, tenant, "embed", run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
+            return self.scheduler.submit(model, source="embed", execute=run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
 
         cache = getattr(self, "embedding_cache", None)
         cache_enabled = bool(getattr(self, "embedding_cache_enabled", self.config.get("cache", {}).get("embeddings", True)))
@@ -3755,7 +3754,7 @@ class LocalAIServices:
         task_store = getattr(self, "task_store", None)
         if task_store is not None:
             try:
-                active_task = task_store.get_active_task()
+                active_task = task_store.get_active_task(repo_root=resolved_root)
             except Exception:
                 active_task = None
 
@@ -4135,10 +4134,10 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.stop_daemon(daemon_id, task_id=task_id)
 
-    def lint_fix(self, root: str, command: str | None = None, paths: list[str] | None = None, tenant: str = "agent", timeout: int | None = None) -> dict[str, Any]:
+    def lint_fix(self, root: str, *, command: str | None = None, paths: list[str] | None = None, timeout: int | None = None) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.lint_fix(root, command=command, paths=paths, tenant=tenant, timeout=timeout)
+        return self.commands.lint_fix(root, command=command, paths=paths,  timeout=timeout)
 
     def http_probe(self, url: str, expected_status: int = 200, json_path: str | None = None, timeout: float = 5.0, headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.commands:
@@ -4558,6 +4557,7 @@ class LocalAIServices:
 
     def _apply_context_preloads(
         self, request: ConsistencyRequest, base: dict[str, Any],
+        *, coordination_id: str = "",
     ) -> tuple[dict[str, Any], tuple[GuardWarning, ...]]:
         compiler = self._context_preload_source()
         if compiler is None:
@@ -4568,7 +4568,8 @@ class LocalAIServices:
                 token_budget=max(1, int(request.token_budget)),
                 changed_paths=tuple(request.changed_paths or ()),
                 root=request.root,
-                tenant=request.tenant,
+                session_id=request.session_id,
+                coordination_id=coordination_id,
                 phase=request.phase,
                 focus=tuple(request.focus or ()),
                 preload_profile=request.preload_profile,
@@ -4681,9 +4682,7 @@ class LocalAIServices:
                         "Return JSON only. Use only supplied deterministic evidence IDs. Never invent repository facts, repeat source text, reveal secrets, or use the user prompt as evidence.",
                         min(512, max(64, int(request.token_budget) // 4)),
                         0.0,
-                        request.tenant or "context",
-                        "context-relevance",
-                        4,
+                        source="context-relevance", priority=4,
                         semantic_query="context relevance",
                         semantic_context_fingerprint=stable_hash(params),
                         internal=True,
@@ -4734,24 +4733,34 @@ class LocalAIServices:
         except Exception:
             return {"success": False, "degraded": True, "degraded_reason": "relevance_error", "warnings": []}
 
-    def schedule_task_context_warmup(self, task: Any, *, root: str, tenant: str,
+    def schedule_task_context_warmup(self, task: Any, *, root: str,
                                      changed_paths: list[str] | None = None) -> bool:
         """Optional prediction; reuse only the normal adaptive cache and its fences."""
-        if not root or not tenant or not (task.contract.acceptance_criteria or changed_paths):
+        if not isinstance(root, str) or not root or not (task.contract.acceptance_criteria or changed_paths):
             return False
         if not bool(self.config.get("preprocessing", {}).get("task_context_warmup", True)):
             return False
         if not Path(root).is_absolute() or not Path(root).is_dir() or len(root) > 400:
             return False
+        from .agent_tasks import _task_matches_scope
         from .operational_mode import load_operational_mode
+        from .repository_scope import RepositoryScopeError, authorized_repository_root
+
+        try:
+            canonical = authorized_repository_root(self.config, root)
+        except RepositoryScopeError:
+            return False
+        if not _task_matches_scope(task, canonical, task.task_id):
+            return False
 
         def allowed() -> bool:
-            return load_operational_mode(configured_state_dir(self.config, create=False)).mode == "active"
+            snapshot = load_operational_mode(configured_state_dir(self.config, create=False))
+            return snapshot.mode == "active" and not snapshot.degraded
 
         if not allowed():
             return False
         request = ConsistencyRequest(
-            root=canonical_root(root), tenant=tenant, task_id=task.task_id,
+            root=canonical, task_id=task.task_id,
             query=task.contract.goal, session_id=task.context.session_id,
             changed_paths=tuple(changed_paths or ())[:64], token_budget=4000,
         )
@@ -4761,9 +4770,14 @@ class LocalAIServices:
         def warm() -> None:
             if not allowed():
                 return
+            try:
+                if authorized_repository_root(self.config, root) != canonical:
+                    return
+            except RepositoryScopeError:
+                return
             store = getattr(self, "task_store", None)
             current = store.get(task.task_id) if store is not None else None
-            if current is None or current.updated_at != expected_updated:
+            if current is None or current.updated_at != expected_updated or not _task_matches_scope(current, canonical, task.task_id):
                 return
             if str(getattr(current.status, "value", current.status)) in {"completed", "cancelled", "failed", "abandoned"}:
                 return
@@ -4795,6 +4809,7 @@ class LocalAIServices:
                 "context": "", "evidence": [],
             }
         project_config_digest = ""
+        coordination_id = ""
         retrieval_weights: dict[str, float] = {}
         request_path_hints = tuple(getattr(request, "path_hints", ()))
         request_directory_hints = tuple(getattr(request, "directory_hints", ()))
@@ -4810,6 +4825,9 @@ class LocalAIServices:
                     configured_state_dir(getattr(self, "config", {}), create=False),
                 )
                 project_config_digest = str(project_context.config_digest or "")[:200]
+                resolved_identity = project_context.coordination_id
+                if isinstance(resolved_identity, str) and resolved_identity and resolved_identity == resolved_identity.strip() and "\x00" not in resolved_identity:
+                    coordination_id = resolved_identity
                 retrieval_weights = dict(project_context.settings.retrieval_weights)
                 from .context_identity import normalize_context_path_hints
                 from .task_context import _project_context_hint_groups
@@ -4853,7 +4871,6 @@ class LocalAIServices:
             "mode": mode,
             "task_id": request.task_id,
             "session_id": request.session_id,
-            "tenant": request.tenant,
             "workspace": request.workspace,
             "phase": request.phase,
             "query": request.query,
@@ -4879,9 +4896,8 @@ class LocalAIServices:
             base = self._hybrid_context(
                 request.root,
                 request.query,
-                request.tenant,
-                request.workspace or None,
-                request.token_budget,
+                workspace=request.workspace or None,
+                max_tokens=request.token_budget,
                 quality_first=mode == "adaptive",
                 context_identity=context_cache_identity,
                 path_hints=effective_path_hints if mode == "adaptive" else (),
@@ -4918,7 +4934,7 @@ class LocalAIServices:
                     })[:24]
                 normalized_evidence.append(evidence_item)
             base["evidence"] = merge_overlapping_evidence(normalized_evidence, root=request.root)
-        base, preload_warnings = self._apply_context_preloads(request, base)
+        base, preload_warnings = self._apply_context_preloads(request, base, coordination_id=coordination_id)
         guard = self.consistency_guard
         if guard is None:
             context_id = stable_hash({
@@ -5138,10 +5154,9 @@ class LocalAIServices:
         self,
         root: str,
         query: str,
-        tenant: str,
+        *,
         workspace: str | None,
         max_tokens: int,
-        *,
         quality_first: bool = False,
         context_identity: dict[str, Any] | None = None,
         path_hints: tuple[dict[str, str], ...] = (),
@@ -5204,7 +5219,7 @@ class LocalAIServices:
                     from .agent_consistency import ConsistencyRequest
 
                     memory_revision = self._adaptive_memory_revision(ConsistencyRequest(
-                        root=str(resolved_root), query=query, tenant=tenant,
+                        root=str(resolved_root), query=query,
                         workspace=workspace or "", token_budget=max_tokens,
                     ))
                 except Exception:
@@ -5256,7 +5271,9 @@ class LocalAIServices:
                 pass
         rag_enabled = self.rag is not None and self.config.get("features", {}).get("rag", True)
         try:
-            rag_revision = self.rag.revision(tenant, workspace or self.rag.workspace_id(root)) if rag_enabled else None
+            if rag_enabled:
+                self.rag.require_workspace_root(workspace=workspace or self.rag.workspace_id(root), root=root)
+            rag_revision = self.rag.revision(workspace=workspace or self.rag.workspace_id(root)) if rag_enabled else None
             rag_revision_available = not rag_enabled or bool(str(rag_revision or "").strip())
         except Exception:
             # RAG is optional. Its revision store failing must not prevent the
@@ -5264,7 +5281,7 @@ class LocalAIServices:
             rag_revision = None
             rag_revision_available = not rag_enabled
         compute = lambda: self._hybrid_context_uncached(
-            root, query, tenant, workspace, max_tokens, quality_first=quality_first,
+            root, query, workspace=workspace, max_tokens=max_tokens, quality_first=quality_first,
             rag_revision=str(rag_revision or ""), rag_revision_available=rag_revision_available,
             path_hints=path_hints, directory_hints=directory_hints,
             exclude_paths=exclude_paths, force_include_paths=force_include_paths,
@@ -5473,10 +5490,9 @@ class LocalAIServices:
         self,
         root: str,
         query: str,
-        tenant: str,
+        *,
         workspace: str | None,
         max_tokens: int,
-        *,
         quality_first: bool = False,
         rag_revision: str = "",
         rag_revision_available: bool = True,
@@ -5511,7 +5527,7 @@ class LocalAIServices:
                 candidate = self.rag.workspace_id(root)
                 known = {
                     str(item.get("workspace", ""))
-                    for item in self.rag.list_workspaces(tenant)
+                    for item in self.rag.list_workspaces()
                     if isinstance(item, dict)
                 }
                 if candidate in known:
@@ -5625,7 +5641,7 @@ class LocalAIServices:
                 and not (reranker_obj and active_device == "cpu")
             )
             rag_future = rag_pool.submit(
-                self.rag.search, query, tenant, target_workspace,
+                self.rag.search, query, workspace=target_workspace,
                 top_k=10, use_reranker=rag_use_reranker,
             )
         elif rag_ready and request_optional:
@@ -6327,9 +6343,10 @@ class LocalAIServices:
             },
         }
 
-    def delegate_repo(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def delegate_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if str(args.get("profile", "")).strip():
-            return self.delegate_profile(args, tenant)
+            return self.delegate_profile(args)
         root = str(args.get("root", "."))
         task = str(args.get("task", ""))
         requested_context_tokens = int(args.get("context_tokens", 0) or 0)
@@ -6344,7 +6361,7 @@ class LocalAIServices:
                 max_context_tokens = int(workflow.get("heavy_repo_context_tokens", 4200))
             else:
                 max_context_tokens = int(workflow.get("fast_repo_context_tokens", 2200))
-        packed = self._hybrid_context(root, task, tenant, args.get("workspace"), max_context_tokens)
+        packed = self._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=max_context_tokens)
         if not packed.get("success"):
             return packed
         payload = {
@@ -6357,7 +6374,7 @@ class LocalAIServices:
             # Packed local context is a diagnostic, not proof of cloud-side input
             # avoided: the agent may have used RG or another narrower tool.
         }
-        result = self.delegate(payload, tenant)
+        result = self.delegate(payload)
         result["repo_context"] = {
             "root": packed.get("root", root), "evidence": packed.get("evidence", []),
             "local_context_tokens": packed.get("estimated_tokens", 0), "semantic_used": bool(packed.get("semantic_used", False)),
@@ -6365,12 +6382,14 @@ class LocalAIServices:
         }
         return result
 
-    def solve_repo(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def solve_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if self.pipeline is None:
-            return self.delegate_repo(args, tenant)
-        return self.pipeline.solve_repo(args, tenant)
+            return self.delegate_repo(args)
+        return self.pipeline.solve_repo(args)
 
-    def route_context(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def route_context(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if self.token_router is None:
             return {"success": False, "error": "lossless token router unavailable"}
         if "task" in args or "context" in args:
@@ -6394,10 +6413,11 @@ class LocalAIServices:
             root = args.get("root", ".")
             if not isinstance(root, str):
                 return {"success": False, "error": "root must be a string"}
-            return self.token_router.route_file(root, path, query, tenant)
-        return self.token_router.route_text(text, query, tenant, path=label)
+            return self.token_router.route_file(root, path, query)
+        return self.token_router.route_text(text, query, path=label)
 
-    def review_diff(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def review_diff(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         diff = self.repo_diff(
             str(args.get("root", ".")), str(args.get("base", "HEAD")), bool(args.get("staged", False)),
             max_tokens=int(args.get("diff_tokens", self.config.get("token_saving", {}).get("max_diff_tokens", 8000))),
@@ -6585,7 +6605,7 @@ class LocalAIServices:
                 "priority": int(args.get("priority", 5)),
             }
             review_payloads.append(review_payload)
-            response = self.delegate(review_payload, tenant)
+            response = self.delegate(review_payload)
             if not isinstance(response, dict) or response.get("success") is False:
                 if len(review_chunks) == 1 and isinstance(response, dict):
                     return response
@@ -6629,7 +6649,7 @@ class LocalAIServices:
                     "Then list only actionable defects, or write `- None.` when there are none. Do not emit fragments or markdown fences."
                 )
                 try:
-                    retry_response = self.delegate(retry_payload, tenant)
+                    retry_response = self.delegate(retry_payload)
                 except Exception as exc:
                     return {
                         "success": False,
@@ -6679,7 +6699,6 @@ class LocalAIServices:
             "synthesis_task": synthesis_task,
             "max_output_tokens": max_output_tokens,
             "complexity": complexity,
-            "tenant": tenant,
             "delegate": self.delegate,
             "priority": int(args.get("priority", 5)),
         }
@@ -6705,7 +6724,7 @@ class LocalAIServices:
                         "Confirm genuine issues and flag false positives.\n\n"
                         + str(review_payload["task"])
                     )
-                    sec_result = self.delegate(sec_payload, tenant)
+                    sec_result = self.delegate(sec_payload)
                     if not isinstance(sec_result, dict) or sec_result.get("success") is False:
                         raise ValueError(f"Counter-review segment {len(secondary_results) + 1} failed.")
                     output_error = _review_text_error(sec_result.get("text"))
@@ -6752,7 +6771,8 @@ class LocalAIServices:
         }
         return result
 
-    def compress(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def compress(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         text = str(args.get("text", ""))
         instruction = str(args.get("instruction", "Compress this while preserving facts, identifiers, numbers, decisions, errors and uncertainty."))
         target_tokens = max(128, int(args.get("target_tokens", 900)))
@@ -6791,7 +6811,7 @@ class LocalAIServices:
             result = self._generate(
                 general_model, package.user,
                 package.system,
-                per_chunk_out, 0.1, tenant, "compress:map", int(args.get("priority", 4)),
+                per_chunk_out, 0.1, source="compress:map", priority=int(args.get("priority", 4)),
                 internal=True,
             )
             if not result.get("success"):
@@ -6811,7 +6831,7 @@ class LocalAIServices:
                 general_model,
                 package.user,
                 package.system,
-                target_tokens, 0.1, tenant, "compress:reduce", int(args.get("priority", 4)),
+                target_tokens, 0.1, source="compress:reduce", priority=int(args.get("priority", 4)),
                 internal=True,
             )
         else:
@@ -6821,10 +6841,11 @@ class LocalAIServices:
             "output_tokens_est": estimate_tokens(str(final.get("text", ""))),
             "chunks": len(chunks),
         }
-        return self.artifacts.compact(final, tenant, "compress")
+        return self.artifacts.compact(final, kind="compress")
 
-    def complete_code(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def complete_code(self, args: dict[str, Any]) -> dict[str, Any]:
         """Low-latency FIM (Fill-In-The-Middle) code completion for tab auto-complete."""
+        reject_retired_tenancy_fields(args)
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
@@ -6844,7 +6865,7 @@ class LocalAIServices:
         }
         cache_key = stable_hash({"complete_code": True, "model": model, "prompt": prompt, "max_tokens": max_tokens})
         def compute() -> dict[str, Any]:
-            res = self.scheduler.submit(model, tenant, "complete_code", lambda: self.runtime.request("/api/generate", payload, timeout=6.0))
+            res = self.scheduler.submit(model, source="complete_code", execute=lambda: self.runtime.request("/api/generate", payload, timeout=6.0))
             if isinstance(res, dict) and "error" in res:
                 return {"success": False, "error": res["error"], "validated": False}
             response_value = res.get("response") if isinstance(res, dict) else None
@@ -6878,22 +6899,35 @@ class LocalAIServices:
         "event": ["Event", "Emit", "Subscribe", "Publish", "Listener", "Handler"],
     }
 
-    def _record_symbol_focus(self, tenant: str, symbols: list[str]) -> None:
+    def _record_symbol_focus(self, symbols: list[str], *, root: str, session_id: str) -> None:
         if not symbols:
             return
         with self._focus_lock:
-            current = self._recent_focus_symbols.setdefault(tenant, [])
+            scope = (root, session_id)
+            current = self._recent_focus_symbols.setdefault(scope, [])
             for s in symbols:
                 if s and len(s) >= 3 and s not in current:
                     current.insert(0, s)
-            self._recent_focus_symbols[tenant] = current[:16]
+            self._recent_focus_symbols[scope] = current[:16]
             if len(self._recent_focus_symbols) > 256:
                 for k in list(self._recent_focus_symbols.keys())[:-128]:
                     self._recent_focus_symbols.pop(k, None)
 
-    def expand_query(self, query: str, tenant: str = "generic") -> list[str]:
-        """Expand natural language query terms with code synonyms, domain keywords, and recent conversation focus."""
-        cache_key = f"{tenant}:{query.strip().lower()}"
+    def expand_query(self, query: str, *, root: str = "", session_id: str = "") -> list[str]:
+        """Expand terms within the actual repository/session or owner-global scope."""
+        from .repository_scope import authorized_repository_root
+
+        if not isinstance(query, str):
+            raise ValueError("query must be a string")
+        if not isinstance(root, str) or root != root.strip() or "\x00" in root:
+            raise ValueError("root must be a canonical string")
+        if not isinstance(session_id, str) or session_id != session_id.strip() or "\x00" in session_id:
+            raise ValueError("session_id must be a canonical string")
+        scoped_root = authorized_repository_root(self.config, root) if root else ""
+        with self._focus_lock:
+            recent = list(self._recent_focus_symbols.get((scoped_root, session_id), []))
+        cache_key = stable_hash({"root": scoped_root, "session_id": session_id,
+                                 "query": query.strip().lower(), "focus": recent})
         if hasattr(self, "_query_expansion_l1"):
             cached = self._query_expansion_l1.get(cache_key)
             if cached is not None:
@@ -6903,25 +6937,24 @@ class LocalAIServices:
         for t in terms:
             if t in self.DOMAIN_SYNONYMS:
                 synonyms.extend(self.DOMAIN_SYNONYMS[t])
-        
+
         # Multi-turn context bonus: if query is brief/contextual, add recently investigated AST symbols
-        with self._focus_lock:
-            recent = list(self._recent_focus_symbols.get(tenant, []))
         if recent and len(terms) <= 4:
             synonyms.extend(recent[:4])
-            
+
         # Record newly identified proper-case or identifier symbols as focus
         explicit_symbols = [w for w in re.findall(r"\b[A-Z][A-Za-z0-9_]{3,}\b", query)]
         if explicit_symbols:
-            self._record_symbol_focus(tenant, explicit_symbols)
-            
+            self._record_symbol_focus(explicit_symbols, root=scoped_root, session_id=session_id)
+
         result = list(dict.fromkeys(synonyms))
         if hasattr(self, "_query_expansion_l1"):
             self._query_expansion_l1.set(cache_key, result)
         return result
 
-    def generate_tests(self, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def generate_tests(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Generate complete unit test code for a symbol or file."""
+        reject_retired_tenancy_fields(payload)
         symbol = str(payload.get("symbol", ""))
         code_context = str(payload.get("code", ""))
         framework = str(payload.get("framework", "auto")).lower()
@@ -7006,9 +7039,7 @@ class LocalAIServices:
             "You are an expert test engineer writing concise, robust unit tests.",
             512,
             0.1,
-            tenant,
-            "generate_tests",
-            4,
+            source="generate_tests", priority=4,
         )
         if not res.get("success"):
             return res
@@ -7020,8 +7051,9 @@ class LocalAIServices:
             "test_code": res.get("text", ""),
         }
 
-    def validate_patch(self, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def validate_patch(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate whether a diff patch applies cleanly and preserves valid syntax."""
+        reject_retired_tenancy_fields(payload)
         diff_text = str(payload.get("patch", payload.get("diff", "")))
         if not diff_text.strip():
             return {"success": False, "error": "empty patch"}
@@ -7170,8 +7202,9 @@ class LocalAIServices:
         }
 
     def command(
-        self, args: dict[str, Any], tenant: str, *, request_cancel_event: threading.Event | None = None,
+        self, args: dict[str, Any], *, request_cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
         raw_action = args.get("action", "run")
@@ -7215,7 +7248,16 @@ class LocalAIServices:
         if denied is not None:
             return denied
 
-        stream_id = str(args.get("stream_id") or (f"cmd:{args.get('task_id')}" if args.get("task_id") else "") or (f"cmd:{tenant}" if args.get("stream") else ""))
+        task_id = args.get("task_id", "")
+        stream_id = args.get("stream_id", "")
+        if any(not isinstance(value, str) or value != value.strip() or "\x00" in value for value in (task_id, stream_id)):
+            return {"success": False, "error": "task_id and stream_id must be canonical strings", "terminal": True, "retryable": False}
+        if "stream" in args and type(args["stream"]) is not bool:
+            return {"success": False, "error": "stream must be a boolean", "terminal": True, "retryable": False}
+        if not stream_id and task_id:
+            stream_id = f"cmd:{task_id}"
+        if args.get("stream", False) and not stream_id:
+            return {"success": False, "error": "stream requires stream_id or task_id", "terminal": True, "retryable": False}
         log_callback = None
         if stream_id and self.agent_state is not None and getattr(self.agent_state, "enabled", False):
             def _log_cb(st: str, line: str) -> None:
@@ -7225,7 +7267,7 @@ class LocalAIServices:
                         stream_id=stream_id,
                         kind="command.log",
                         payload={"stream": st, "chunk": line},
-                        actor=tenant,
+                        actor="command_broker",
                     ))
                 except Exception:
                     pass
@@ -7235,7 +7277,6 @@ class LocalAIServices:
             return self.commands.patch_and_verify(
                 str(args.get("patch", "")),
                 str(args.get("cwd", args.get("root", "."))),
-                tenant,
                 command=str(args.get("command", "")),
                 criterion=str(args.get("criterion", "")),
                 task_id=str(args.get("task_id", "")),
@@ -7248,13 +7289,12 @@ class LocalAIServices:
             paths_list = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else ([str(raw_paths)] if raw_paths else None)
             return self.commands.preflight(
                 str(args.get("cwd", args.get("root", "."))),
-                tenant,
                 paths=paths_list,
                 timeout=int(args.get("timeout", 10) or 10),
             )
         if action in {"repair_loop", "auto_fix"}:
             return self.commands.repair_loop(
-                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))),
                 timeout=int(args.get("timeout", 0) or 0) or None,
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
                 max_attempts=int(args.get("max_attempts", 3)),
@@ -7275,7 +7315,7 @@ class LocalAIServices:
             elif args.get("input") is not None:
                 fence_kwargs["stdin"] = args["input"]
             return self.commands.run(
-                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))),
                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
                 record_verification=bool(args.get("record_verification", True)),
@@ -7324,7 +7364,7 @@ class LocalAIServices:
                     "test_files": aff.get("test_files", []),
                 }
             run_res = self.commands.run(
-                cmd, root, tenant,
+                cmd, root,
                 timeout=int(args.get("timeout", 0) or 0) or None,
                 force=bool(args.get("force", False)),
                 task_id=str(args.get("task_id", "")),
@@ -7335,10 +7375,10 @@ class LocalAIServices:
             return run_res
         if action == "format":
             root = str(args.get("cwd", args.get("root", ".")))
-            return self.commands.format(root, paths=args.get("paths"), tenant=tenant, timeout=int(args.get("timeout", 0) or 0) or None)
+            return self.commands.format(root, paths=args.get("paths"),  timeout=int(args.get("timeout", 0) or 0) or None)
         if action == "cancel":
             return self.commands.cancel(
-                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))),
                 execution_id=str(args.get("execution_id", "")),
             )
         if action == "classify":
@@ -7358,7 +7398,7 @@ class LocalAIServices:
                 "deterministic": bool(scripts),
             }
         if action == "lint_fix":
-            return self.lint_fix(str(args.get("cwd", args.get("root", "."))), command=args.get("command"), paths=args.get("paths"), tenant=tenant, timeout=args.get("timeout"))
+            return self.lint_fix(str(args.get("cwd", args.get("root", "."))), command=args.get("command"), paths=args.get("paths"),  timeout=args.get("timeout"))
         if action == "spawn_daemon":
             daemon_command = args.get("argv") if args.get("argv") is not None else str(args.get("command", ""))
             return self.spawn_daemon(
@@ -7500,11 +7540,11 @@ class LocalAIServices:
         self,
         endpoint: str,
         payload: dict[str, Any],
-        tenant: str,
-        source: str,
         *,
+        source: str,
         diagnostic_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        reject_retired_tenancy_fields(payload)
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
         model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:7b"))
@@ -7578,7 +7618,7 @@ class LocalAIServices:
             if has_diagnostic_cap:
                 submit_kwargs["wait_timeout"] = request_timeout
             return self.scheduler.submit(
-                model, tenant, source, lambda: self.runtime.request(endpoint, clean, timeout=request_timeout),
+                model, source=source, execute=lambda: self.runtime.request(endpoint, clean, timeout=request_timeout),
                 **submit_kwargs,
             )
 
@@ -7597,7 +7637,8 @@ class LocalAIServices:
 
         return result
 
-    def batch_delegate(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def batch_delegate(self, args: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_tenancy_fields(args)
         tasks = args.get("tasks", [])
         if not isinstance(tasks, list) or not tasks:
             return {
@@ -7649,7 +7690,7 @@ class LocalAIServices:
             if inherited_root and not item.get("root") and not item.get("cwd"):
                 item["root"] = inherited_root
             try:
-                results[i] = self.delegate(item, tenant)
+                results[i] = self.delegate(item)
             except Exception as exc:
                 results[i] = {
                     "success": False,
@@ -7798,25 +7839,26 @@ class LocalAIServices:
                 if not online and runtime_status.get("last_error"):
                     detail += f"; {runtime_status['last_error']}"
             checks.append({"component": "Inference Backend (llama.cpp)", "status": "OK" if online else "FAIL", "detail": detail})
-        
+
         gpu = get_gpu_telemetry()
         checks.append({
             "component": "NVIDIA GPU",
             "status": "OK" if gpu.get("available") else "WARN",
             "detail": f"{gpu.get('gpu_name', 'N/A')} · {gpu.get('vram_used_mb', 0):.0f} / {gpu.get('vram_total_mb', 0):.0f} MB VRAM ({gpu.get('temperature_c', 0)}°C)"
         })
-        
+
         state_dir = Path(self.config["server"]["state_dir"])
         dbs = _active_sqlite_databases(state_dir)
         checks.append({"component": "SQLite Databases", "status": "OK", "detail": f"{len(dbs)} active databases in {state_dir.name}"})
-        
+
         prep_status = self.preprocessor.status() if self.preprocessor else {}
         checks.append({"component": "Preprocessor", "status": "OK" if prep_status.get("enabled") else "OFF", "detail": f"{len(prep_status.get('projects', []))} projects tracked"})
-        
+
         return {"success": True, "timestamp": time.time(), "checks": checks}
 
-    def eval_suite(self, payload: dict[str, Any], tenant: str = "default") -> dict[str, Any]:
+    def eval_suite(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Run bounded local agent benchmark evaluation test cases."""
+        reject_retired_tenancy_fields(payload)
         suite_name = str(payload.get("suite_name", "default"))
         requested_model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         benchmark_kind = str(payload.get("benchmark_kind", "text") or "text").strip().lower()
@@ -7967,8 +8009,9 @@ class LocalAIServices:
             "cases": results,
         }
 
-    def prompt_eval(self, payload: dict[str, Any], tenant: str = "default") -> dict[str, Any]:
+    def prompt_eval(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Evaluate and render dynamic prompt templates with variable substitution and token estimation."""
+        reject_retired_tenancy_fields(payload)
         template = str(payload.get("template", ""))
         variables = payload.get("variables", {}) if isinstance(payload.get("variables"), dict) else {}
         rendered = template
@@ -7985,11 +8028,12 @@ class LocalAIServices:
             "variables_applied": list(variables.keys()),
         }
 
-    def eval_drift(self, payload: dict[str, Any], tenant: str = "default") -> dict[str, Any]:
+    def eval_drift(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Track accuracy and regression drift across benchmark runs."""
+        reject_retired_tenancy_fields(payload)
         suite_name = str(payload.get("suite_name", "default"))
         history_file = Path(self.state_dir) / "eval_history.json"
-        
+
         history: dict[str, Any] = {}
         if history_file.is_file():
             try:
@@ -8000,11 +8044,11 @@ class LocalAIServices:
         if "current" in payload and isinstance(payload["current"], dict):
             current = payload["current"]
         else:
-            current = self.eval_suite(payload, tenant)
+            current = self.eval_suite(payload)
 
         current_summary = current.get("summary", {})
         curr_rate = float(current_summary.get("pass_rate", 0.0))
-        
+
         prev_entry = history.get(suite_name)
         if prev_entry:
             prev_rate = float(prev_entry.get("summary", {}).get("pass_rate", 0.0))

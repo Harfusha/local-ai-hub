@@ -34,7 +34,7 @@ def test_command_failure_attaches_auto_remediation(tmp_path: Path):
 
     # Run python validation command that fails with missing module
     cmd = f'{sys.executable} -m unittest non_existent_mod_99999'
-    res = broker.run(cmd, str(tmp_path), "tenant-1")
+    res = broker.run(cmd, str(tmp_path))
 
     assert res["success"] is False
     assert "remediation" in res
@@ -48,7 +48,7 @@ def test_command_failure_attaches_auto_remediation(tmp_path: Path):
     assert any("Remediation" in d["message"] for d in res.get("diagnostics", []))
 
     # Verify cached failure preserves remediation
-    cached = broker.run(cmd, str(tmp_path), "tenant-1")
+    cached = broker.run(cmd, str(tmp_path))
     assert cached.get("cache_hit") is True or cached.get("suppression_cache_hit") is True
     assert "remediation" in cached
     assert cached["remediation"]["incident_id"] == rem["incident_id"]

@@ -244,9 +244,30 @@ def _tail_latency(rows: list[tuple[Any, ...]], key_name: str) -> list[dict[str, 
     return sorted(result, key=lambda item: (-float(item["p99_duration_ms"]), -int(item["events"]), str(item[key_name])))
 
 
-def _safe_error_message(value: Any) -> str:
+def _safe_error_message(value: Any, *, error_type_override: str = "") -> str:
     """Return a bounded reason from an allowlist; never persist exception text."""
-    if isinstance(value, TimeoutError):
+    typed_reasons = {
+        "SchedulerTimeoutError": "model request timed out",
+        "MCPSoftTimeoutError": "operation timed out",
+        "TimeoutError": "operation timed out",
+        "OperationalError": "database operation failed",
+        "IntegrityError": "database integrity constraint failed",
+        "DatabaseError": "database operation failed",
+        "ConnectionError": "connection failed",
+        "ConnectionResetError": "connection failed",
+        "ConnectionRefusedError": "connection failed",
+        "JSONDecodeError": "invalid JSON",
+        "FileNotFoundError": "file not found",
+        "PermissionError": "permission denied",
+        "ValueError": "invalid value or argument",
+        "TypeError": "invalid type",
+    }
+    error_type = error_type_override or (type(value).__name__ if isinstance(value, BaseException) else "Error")
+    if isinstance(value, sqlite3.Error) and is_busy_error(value):
+        reason = "database busy or locked"
+    elif error_type in typed_reasons:
+        reason = typed_reasons[error_type]
+    elif isinstance(value, TimeoutError):
         reason = "operation timed out"
     elif isinstance(value, ConnectionError):
         reason = "connection failed"
@@ -275,7 +296,6 @@ def _safe_error_message(value: Any) -> str:
         reason = "operation failed"
     else:
         reason = "unexpected failure"
-    error_type = type(value).__name__ if isinstance(value, BaseException) else "Error"
     safe_type = _safe_error_metadata(error_type, 48) or "Error"
     return f"{safe_type}: {reason}"[:96]
 
@@ -350,6 +370,67 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH, *, preserve_ro
     text = _POSIX_ROOT_PATH_RE.sub(redact_posix_file, text)
     text = _LONG_TOKEN_RE.sub("<token>", text)
     return " ".join(text.split())[:limit]
+
+
+_RETIRED_TENANT_FIELDS = frozenset({"tenant", "tenant_id", "tenant_key", "tenant_scope"})
+_TELEMETRY_METADATA_CONTAINERS = frozenset({"context", "metadata", "metrics", "provenance", "scope"})
+
+
+def _retired_tenant_field(value: Any) -> str:
+    seen: set[int] = set()
+    inspected = 0
+
+    def inspect_mapping(mapping: dict[str, Any]) -> str:
+        nonlocal inspected
+        fields = _RETIRED_TENANT_FIELDS.intersection(mapping)
+        if fields:
+            return f"Retired telemetry field: {sorted(fields)[0]}"
+        identity = id(mapping)
+        if identity in seen:
+            return ""
+        seen.add(identity)
+        inspected += len(mapping)
+        if inspected > 4096:
+            return "Telemetry event exceeds the supported field limit."
+        # Inspect exactly one direct metadata/control layer. Nested domain values,
+        # captured content and arbitrary structured output remain opaque.
+        for key, item in mapping.items():
+            if isinstance(key, str) and key in _TELEMETRY_METADATA_CONTAINERS and isinstance(item, dict):
+                error = inspect_direct_mapping(item)
+                if error:
+                    return error
+        return ""
+
+    def inspect_direct_mapping(mapping: dict[str, Any]) -> str:
+        nonlocal inspected
+        fields = _RETIRED_TENANT_FIELDS.intersection(mapping)
+        if fields:
+            return f"Retired telemetry field: {sorted(fields)[0]}"
+        identity = id(mapping)
+        if identity in seen:
+            return ""
+        seen.add(identity)
+        inspected += len(mapping)
+        if inspected > 4096:
+            return "Telemetry event exceeds the supported field limit."
+        return ""
+
+    if isinstance(value, dict):
+        return inspect_mapping(value)
+    if isinstance(value, (list, tuple, set)):
+        identity = id(value)
+        if identity in seen:
+            return ""
+        seen.add(identity)
+        inspected += len(value)
+        if inspected > 4096:
+            return "Telemetry event exceeds the supported field limit."
+        for item in value:
+            if isinstance(item, dict):
+                error = inspect_mapping(item)
+                if error:
+                    return error
+    return ""
 
 
 def _safe_error_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
@@ -438,7 +519,7 @@ class TelemetryStore:
     """
 
     _EVENT_COLUMNS = (
-        "created_at", "event_type", "tenant", "agent", "request_id", "trace_id",
+        "created_at", "event_type", "agent", "request_id", "trace_id",
         "action", "stage", "task_type", "complexity", "route", "model",
         "cache_hit", "coalesced", "cache_layer", "input_tokens", "cache_read_tokens", "output_tokens",
         "avoided_cloud_tokens", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms", "service_ms",
@@ -519,54 +600,85 @@ class TelemetryStore:
         return connect_sqlite(self.path, timeout_seconds=5.0)
 
     def _init_db_with_recovery(self) -> None:
+        self._reject_retired_schema()
+        if self.path.exists() and not self._schema_is_current():
+            raise RuntimeError(
+                "telemetry schema is unsupported; explicit offline conversion required; database preserved"
+            )
         try:
-            if not self._schema_is_current():
-                self._migrate_schema()
             self._init_db()
             with closing(self._connect()) as con:
                 if not quick_sanity_check(con):
                     raise sqlite3.DatabaseError("telemetry sanity check failed")
         except sqlite3.DatabaseError as exc:
-            if is_busy_error(exc):
-                return
-            self._discard_state_files()
-            self._init_db()
+            raise RuntimeError(
+                "telemetry database could not be opened safely; database preserved"
+            ) from exc
 
-    def _migrate_schema(self) -> None:
-        """Add new metadata columns in place; keep historical telemetry intact."""
+    def _reject_retired_schema(self) -> None:
+        """Refuse tenant-shaped durable data before any WAL, DDL, or recovery writes."""
         if not self.path.exists():
             return
-        declarations = {
-            "root": "TEXT NOT NULL DEFAULT ''",
-            "db_wait_ms": "REAL NOT NULL DEFAULT 0",
-            "exec_ms": "REAL NOT NULL DEFAULT 0",
-            "serialization_ms": "REAL NOT NULL DEFAULT 0",
-            "queue_age_ms": "REAL NOT NULL DEFAULT 0",
-            "bypass_reason": "TEXT NOT NULL DEFAULT ''",
-            "terminal": "INTEGER NOT NULL DEFAULT -1",
-            "retryable": "INTEGER NOT NULL DEFAULT -1",
-            "receipt_count": "INTEGER NOT NULL DEFAULT 0",
-            "db_wait_measured": "INTEGER NOT NULL DEFAULT 0",
-            "exec_measured": "INTEGER NOT NULL DEFAULT 0",
-            "serialization_measured": "INTEGER NOT NULL DEFAULT 0",
-        }
-        with closing(self._connect()) as con:
-            initialize_wal(con)
-            tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "events" in tables:
-                actual = {str(row[1]) for row in con.execute("PRAGMA table_info(events)")}
-                for column, declaration in declarations.items():
-                    if column not in actual:
-                        ddl = "ALTER" + " TABLE"
-                        con.execute(f'{ddl} events ADD COLUMN "{column}" {declaration}')
-            con.commit()
+        uri = f"{self.path.as_uri()}?mode=ro"
+        deadline = time.monotonic() + 2.0
+        interrupted = False
 
-    def _discard_state_files(self) -> None:
-        for suffix in ("", "-wal", "-shm"):
-            try:
-                Path(str(self.path) + suffix).unlink(missing_ok=True)
-            except OSError:
-                pass
+        def stop_long_scan() -> int:
+            nonlocal interrupted
+            if time.monotonic() >= deadline:
+                interrupted = True
+                return 1
+            return 0
+
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+                con.set_progress_handler(stop_long_scan, 5000)
+                tables = {
+                    str(row[0]) for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                for table in tables:
+                    quoted_table = '"' + table.replace('"', '""') + '"'
+                    columns = {str(row[1]) for row in con.execute(f"PRAGMA table_info({quoted_table})")}
+                    if _RETIRED_TENANT_FIELDS.intersection(columns):
+                        raise RuntimeError(
+                            "telemetry contains retired tenant schema; explicit offline conversion required; database preserved"
+                        )
+                    # Snapshot metrics are the supported structured telemetry envelope.
+                    # Opaque event/model/debug payloads are not interpreted as scope.
+                    structured = columns.intersection({"metrics_json"})
+                    for column in structured:
+                        quoted_column = '"' + column.replace('"', '""') + '"'
+                        rows = con.execute(f"SELECT substr({quoted_column},1,1048577) FROM {quoted_table} LIMIT 250001")
+                        for row_number, (raw,) in enumerate(rows, 1):
+                            if row_number > 250000:
+                                raise RuntimeError(
+                                    "telemetry structured-record preflight exceeded its bound; explicit offline conversion required; database preserved"
+                                )
+                            if not isinstance(raw, str):
+                                continue
+                            if len(raw) > 1048576:
+                                raise RuntimeError(
+                                    "telemetry structured-record preflight exceeded its bound; explicit offline conversion required; database preserved"
+                                )
+                            try:
+                                value = json.loads(raw)
+                            except (TypeError, ValueError):
+                                continue
+                            if _retired_tenant_field(value):
+                                raise RuntimeError(
+                                    "telemetry contains retired tenant records; explicit offline conversion required; database preserved"
+                                )
+        except RuntimeError:
+            raise
+        except sqlite3.DatabaseError as exc:
+            if interrupted:
+                raise RuntimeError(
+                    "telemetry schema preflight exceeded its time bound; database preserved"
+                ) from exc
+            # Preserve existing recovery behavior for unrelated corrupt databases.
+            return
 
     def _schema_is_current(self) -> bool:
         if not self.path.exists():
@@ -575,7 +687,7 @@ class TelemetryStore:
         expected_columns = {
             "events": {"id", *self._EVENT_COLUMNS},
             "errors": {
-                "id", "created_at", "request_id", "tenant", "agent", "component",
+                "id", "created_at", "request_id", "agent", "component",
                 "operation", "error_type", "fingerprint", "safe_message", "retryable", "recovered",
             },
             "snapshots": {"id", "created_at", "name", "metrics_json"},
@@ -593,7 +705,7 @@ class TelemetryStore:
             },
         }
         try:
-            with closing(self._connect()) as con:
+            with closing(sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=1.0)) as con:
                 tables = {
                     str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
                     if not str(row[0]).startswith("sqlite_")
@@ -615,7 +727,6 @@ class TelemetryStore:
                 """CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at REAL NOT NULL,
-                    tenant TEXT NOT NULL DEFAULT 'default',
                     action TEXT NOT NULL DEFAULT 'unknown',
                     model TEXT,
                     cache_hit INTEGER NOT NULL DEFAULT 0,
@@ -701,7 +812,6 @@ class TelemetryStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at REAL NOT NULL,
                     request_id TEXT NOT NULL DEFAULT '',
-                    tenant TEXT NOT NULL DEFAULT '',
                     agent TEXT NOT NULL DEFAULT '',
                     component TEXT NOT NULL,
                     operation TEXT NOT NULL,
@@ -758,6 +868,9 @@ class TelemetryStore:
 
     @staticmethod
     def _clean_event(event: dict[str, Any]) -> dict[str, Any]:
+        retired = _retired_tenant_field(event)
+        if retired:
+            raise ValueError(retired)
         created = float(event.get("created_at", time.time()))
         queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
         event_type = _safe_metadata(event.get("event_type", "inference"), 40)
@@ -778,7 +891,6 @@ class TelemetryStore:
         return {
             "created_at": created,
             "event_type": event_type,
-            "tenant": _safe_metadata(event.get("tenant", "default")),
             "agent": _safe_metadata(event.get("agent", ""), 80),
             "request_id": _safe_metadata(event.get("request_id", ""), 96),
             "trace_id": _safe_metadata(event.get("trace_id", ""), 96),
@@ -843,8 +955,11 @@ class TelemetryStore:
         }
 
     def _publish_live(self, kind: str, payload: dict[str, Any]) -> None:
+        retired = _retired_tenant_field(payload)
+        if retired:
+            raise ValueError(retired)
         allowed = {
-            "created_at", "event_type", "tenant", "agent", "request_id", "trace_id",
+            "created_at", "event_type", "agent", "request_id", "trace_id",
             "action", "stage", "task_type", "complexity", "route", "model",
             "cache_hit", "coalesced", "cache_layer", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms",
             "service_ms", "load_duration_ms", "success", "status_code", "degraded",
@@ -899,10 +1014,13 @@ class TelemetryStore:
             return True
 
     def record_live(self, kind: str = "live", **event: Any) -> None:
+        retired = _retired_tenant_field(event)
+        if retired:
+            raise ValueError(retired)
         if not self.enabled:
             return
         ctx = current_trace_context()
-        for key in ("request_id", "trace_id", "agent", "tenant"):
+        for key in ("request_id", "trace_id", "agent"):
             if not event.get(key) and ctx.get(key):
                 event[key] = ctx[key]
         self._publish_live(kind, self._clean_event(event))
@@ -976,7 +1094,7 @@ class TelemetryStore:
                 continue
             active_requests.append({
                 "request_id": request_id[:12], "agent": str(event.get("agent") or "")[:40],
-                "tenant": str(event.get("tenant") or "")[:80], "action": str(event.get("action") or "")[:100],
+                "action": str(event.get("action") or "")[:100],
                 "age_ms": max(0, int((now_wall - float(event.get("created_at", now_wall) or now_wall)) * 1000)),
             })
         active_requests.sort(key=lambda item: int(item.get("age_ms", 0)), reverse=True)
@@ -1063,8 +1181,11 @@ class TelemetryStore:
         }
 
     def record(self, **event: Any) -> bool:
+        retired = _retired_tenant_field(event)
+        if retired:
+            raise ValueError(retired)
         ctx = current_trace_context()
-        for key in ("request_id", "trace_id", "agent", "tenant"):
+        for key in ("request_id", "trace_id", "agent"):
             if not event.get(key) and ctx.get(key):
                 event[key] = ctx[key]
         return self._enqueue("event", self._clean_event(event))
@@ -1086,6 +1207,9 @@ class TelemetryStore:
         """
         if not isinstance(event, dict):
             raise TypeError("tool accounting event must be an object")
+        retired = _retired_tenant_field(event)
+        if retired:
+            raise ValueError(retired)
         tool_name = event.get("tool")
         if isinstance(tool_name, str) and tool_name[:160] == "local_ai_telemetry":
             return False
@@ -1100,7 +1224,6 @@ class TelemetryStore:
         gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
         accepted = self.record(
             event_type="tool_accounting",
-            tenant=str(event.get("tenant", ""))[:160],
             agent=str(event.get("agent", ""))[:80],
             action=str(event.get("tool", "unknown"))[:160],
             success=True,
@@ -1138,22 +1261,22 @@ class TelemetryStore:
         error: Any,
         *,
         request_id: str = "",
-        tenant: str = "",
         agent: str = "",
         error_type_override: str = "",
         error_code_override: str = "",
         retryable: bool = False,
         recovered: bool = False,
     ) -> str:
+        retired = _retired_tenant_field({"component": component, "operation": operation})
+        if retired:
+            raise ValueError(retired)
         if not self.enabled:
             return ""
         ctx = current_trace_context()
         request_id = request_id or str(ctx.get("request_id") or "")
-        tenant = tenant or str(ctx.get("tenant") or "")
         agent = agent or str(ctx.get("agent") or "")
         error_type = error_type_override or (type(error).__name__ if isinstance(error, BaseException) else "Error")
         safe_request_id = _safe_error_metadata(request_id, 96)
-        safe_tenant = _safe_error_metadata(tenant, 160)
         safe_agent = _safe_error_metadata(agent, 80)
         safe_component = _safe_error_metadata(component, 120)
         safe_operation = _safe_operation_metadata(operation)
@@ -1162,18 +1285,18 @@ class TelemetryStore:
         message = (
             f"{safe_error_type}: {_SAFE_ERROR_CODE_MESSAGES[error_code_override]}"
             if error_code_override in _SAFE_ERROR_CODE_MESSAGES
-            else _safe_error_message(error)
+            else _safe_error_message(error, error_type_override=safe_error_type)
         )[:96]
         fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
         payload = {
-            "created_at": time.time(), "request_id": safe_request_id, "tenant": safe_tenant, "agent": safe_agent,
+            "created_at": time.time(), "request_id": safe_request_id, "agent": safe_agent,
             "component": safe_component, "operation": safe_operation, "error_type": safe_error_type,
             "fingerprint": fp, "safe_message": message, "retryable": 1 if retryable else 0,
             "recovered": 1 if recovered else 0,
         }
         self._enqueue("error", payload)
         self.record(
-            event_type="error", tenant=safe_tenant, agent=safe_agent, request_id=safe_request_id,
+            event_type="error", agent=safe_agent, request_id=safe_request_id,
             action=(
                 safe_operation
                 if safe_component == "http" and safe_operation in _SAFE_HTTP_ROUTE_LABELS
@@ -1301,6 +1424,9 @@ class TelemetryStore:
             return result
 
     def record_snapshot(self, name: str, metrics: dict[str, Any]) -> None:
+        retired = _retired_tenant_field(metrics)
+        if retired:
+            raise ValueError(retired)
         if not self.enabled:
             return
         # Snapshot payloads are internal numeric/status metrics only. Bound size to
@@ -1469,8 +1595,8 @@ class TelemetryStore:
             self._insert_event_batch(con, events)
             if errors:
                 con.executemany(
-                    """INSERT INTO errors(created_at,request_id,tenant,agent,component,operation,error_type,fingerprint,safe_message,retryable,recovered)
-                       VALUES(:created_at,:request_id,:tenant,:agent,:component,:operation,:error_type,:fingerprint,:safe_message,:retryable,:recovered)""",
+                    """INSERT INTO errors(created_at,request_id,agent,component,operation,error_type,fingerprint,safe_message,retryable,recovered)
+                       VALUES(:created_at,:request_id,:agent,:component,:operation,:error_type,:fingerprint,:safe_message,:retryable,:recovered)""",
                     errors,
                 )
             if snapshots:
@@ -2559,17 +2685,17 @@ class TelemetryStore:
         limit = max(1, min(int(limit), 100))
         with closing(self._connect()) as con:
             rows = con.execute(
-                """SELECT id,created_at,event_type,tenant,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
+                """SELECT id,created_at,event_type,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
                           avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint
                    FROM events ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return [
             {
-                "id": r[0], "created_at": r[1], "event_type": r[2], "tenant": r[3], "agent": r[4], "request_id": r[5],
-                "action": r[6], "stage": r[7], "model": r[8], "cache_hit": bool(r[9]), "coalesced": bool(r[10]),
-                "input_tokens": r[11], "cache_read_tokens": r[12], "output_tokens": r[13], "net_cloud_token_delta_est": r[14], "duration_ms": r[15],
-                "queue_wait_ms": r[16], "wait_count": r[17], "wait_duration_ms": r[18], "success": bool(r[19]), "status_code": r[20], "cache_layer": r[21],
-                "fallback_used": bool(r[22]), "degraded": bool(r[23]), "error_type": r[24], "error_fingerprint": r[25],
+                "id": r[0], "created_at": r[1], "event_type": r[2], "agent": r[3], "request_id": r[4],
+                "action": r[5], "stage": r[6], "model": r[7], "cache_hit": bool(r[8]), "coalesced": bool(r[9]),
+                "input_tokens": r[10], "cache_read_tokens": r[11], "output_tokens": r[12], "net_cloud_token_delta_est": r[13], "duration_ms": r[14],
+                "queue_wait_ms": r[15], "wait_count": r[16], "wait_duration_ms": r[17], "success": bool(r[18]), "status_code": r[19], "cache_layer": r[20],
+                "fallback_used": bool(r[21]), "degraded": bool(r[22]), "error_type": r[23], "error_fingerprint": r[24],
             }
             for r in rows
         ]
@@ -2630,14 +2756,14 @@ class TelemetryStore:
         limit = max(1, min(int(limit), 200))
         with closing(self._connect()) as con:
             rows = con.execute(
-                """SELECT id,created_at,request_id,agent,tenant,action,status_code,duration_ms,success,error_type
+                """SELECT id,created_at,request_id,agent,action,status_code,duration_ms,success,error_type
                    FROM events WHERE event_type='http' ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return [
             {
                 "id": int(row[0]), "created_at": float(row[1]), "request_id": row[2], "agent": row[3],
-                "tenant": row[4], "action": row[5], "status_code": int(row[6] or 0),
-                "duration_ms": float(row[7] or 0), "success": bool(row[8]), "error_type": row[9],
+                "action": row[4], "status_code": int(row[5] or 0),
+                "duration_ms": float(row[6] or 0), "success": bool(row[7]), "error_type": row[8],
             }
             for row in rows
         ]
@@ -2678,7 +2804,7 @@ class TelemetryStore:
         except (TypeError, ValueError, OverflowError):
             cursor = None
         with closing(self._connect()) as con:
-            sql = """SELECT id, created_at, event_type, tenant, agent, action, duration_ms, success,
+            sql = """SELECT id, created_at, event_type, agent, action, duration_ms, success,
                           avoided_cloud_tokens, error_type
                    FROM events"""
             values: tuple[Any, ...] = ()
@@ -2696,13 +2822,12 @@ class TelemetryStore:
                 "id": int(row[0]),
                 "timestamp": float(row[1]),
                 "event_type": str(row[2]),
-                "tenant": str(row[3]),
-                "agent": str(row[4]),
-                "action": str(row[5]),
-                "duration_ms": float(row[6] or 0),
-                "success": bool(row[7]),
-                "net_tokens_saved": int(row[8] or 0),
-                "error_type": str(row[9] or ""),
+                "agent": str(row[3]),
+                "action": str(row[4]),
+                "duration_ms": float(row[5] or 0),
+                "success": bool(row[6]),
+                "net_tokens_saved": int(row[7] or 0),
+                "error_type": str(row[8] or ""),
             }
             for row in page_rows
         ]
@@ -2721,7 +2846,7 @@ class TelemetryStore:
         limit = max(1, min(int(limit), 500))
         with closing(self._connect()) as con:
             rows = con.execute(
-                """SELECT id, created_at, event_type, tenant, agent, action, duration_ms, success,
+                """SELECT id, created_at, event_type, agent, action, duration_ms, success,
                           avoided_cloud_tokens, error_type
                    FROM events ORDER BY id ASC LIMIT ?""", (limit,)
             ).fetchall()
@@ -2730,13 +2855,12 @@ class TelemetryStore:
                 "id": int(r[0]),
                 "timestamp": float(r[1]),
                 "event_type": str(r[2]),
-                "tenant": str(r[3]),
-                "agent": str(r[4]),
-                "action": str(r[5]),
-                "duration_ms": float(r[6] or 0),
-                "success": bool(r[7]),
-                "net_tokens_saved": int(r[8] or 0),
-                "error_type": str(r[9] or ""),
+                "agent": str(r[3]),
+                "action": str(r[4]),
+                "duration_ms": float(r[5] or 0),
+                "success": bool(r[6]),
+                "net_tokens_saved": int(r[7] or 0),
+                "error_type": str(r[8] or ""),
             }
             for r in rows
         ]

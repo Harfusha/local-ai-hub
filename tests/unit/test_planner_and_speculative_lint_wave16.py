@@ -58,10 +58,10 @@ def test_speculative_lint_normalize_changed_paths_booleans_and_types(tmp_path):
 def test_speculative_lint_queue_submit_root_guards():
     queue = SpeculativeLintQueue(None, {"speculative_lint": {"enabled": True}})
     # Boolean root
-    res_bool = queue.submit("tenant", True, ["foo.py"])
+    res_bool = queue.submit(True, ["foo.py"])
     assert res_bool["success"] is False
     assert "root" in res_bool.get("error", "").lower()
 
     # Null byte root
-    res_null = queue.submit("tenant", "bad\x00root", ["foo.py"])
+    res_null = queue.submit("bad\x00root", ["foo.py"])
     assert res_null["success"] is False

@@ -74,7 +74,6 @@ def test_context_compile_includes_leases_and_invalidates_changed_links(tmp_path:
             include_kinds=("active_lease",),
             changed_paths=("src/core.py",),
             root=str(repo),
-            tenant="current-agent",
         )
     )
 
@@ -134,7 +133,7 @@ def test_unavailable_code_intelligence_keeps_lexical_context_useful() -> None:
     services.learner = None
     services.evidence_store = None
 
-    result = services._hybrid_context_uncached("C:/repo", "route", "tenant", None, 512)
+    result = services._hybrid_context_uncached("C:/repo", "route", workspace=None, max_tokens=512)
 
     assert result["success"] is True
     assert result["context"] == "lexical route evidence"

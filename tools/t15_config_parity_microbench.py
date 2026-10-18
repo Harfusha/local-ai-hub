@@ -27,7 +27,7 @@ broker = CommandBroker(config, Artifacts(), RepoState())
 for line in sys.stdin:
     request = json.loads(line)
     started = time.perf_counter_ns()
-    result = broker.run_project_command("bench", fixture, tenant="t15-config-microbench", force=True)
+    result = broker.run_project_command("bench", fixture, force=True)
     elapsed = (time.perf_counter_ns() - started) / 1_000_000
     print(json.dumps({"success":result.get("success"),"stdout":result.get("stdout"),"elapsed_ms":elapsed}), flush=True)
 '''

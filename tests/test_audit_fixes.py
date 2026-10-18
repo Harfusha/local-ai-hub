@@ -85,29 +85,29 @@ def test_async_jobs_retry_state():
         tmp_path = Path(tmp)
         class _Scheduler:
             config = {"models": {"heavy_code": "test-model"}}
-            def enqueue(self, model, tenant, source, execute, priority=1, *, background=True):
+            def enqueue(self, model, source, execute, priority=1, *, background=True):
                 job = MagicMock()
                 job.done = threading.Event()
                 job.done.set()
                 return job
 
         class _Artifacts:
-            def put(self, content, tenant, kind):
+            def put(self, content, *, kind):
                 return "art-1"
 
         mgr = AsyncJobManager(
             {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 5.0, "max_attempts": 3}},
             _Scheduler(),
             _Artifacts(),
-            lambda a, p, t: {"success": False, "retryable": True, "error": "first failure"},
+            lambda a, p: {"success": False, "retryable": True, "error": "first failure"},
         )
-        submit = mgr.submit("tenant_a", "reason", {}, dispatch_delay_seconds=30.0)
+        submit = mgr.submit("reason", {}, dispatch_delay_seconds=30.0)
         assert submit["success"]
         job_id = submit["job_id"]
 
         res = mgr._execute(job_id)
         assert res["retryable"] is True
-        st = mgr.status("tenant_a", job_id)
+        st = mgr.status(job_id)
         assert st["state"] == "queued"
         assert st["attempts"] == 1
     finally:

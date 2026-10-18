@@ -1620,7 +1620,7 @@ def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_pa
         "fixtures",
         "access_classification",
         "cache_key",
-        "tenant_scope",
+        "scope_boundary",
         "provenance",
         "test_ids",
         "test_coverage",

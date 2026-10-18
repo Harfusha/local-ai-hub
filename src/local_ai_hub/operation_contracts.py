@@ -653,7 +653,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         properties={
             "action": {"type": "string"},
             "query": {"type": "string", "default": ""},
-            "root": {"type": "string", "default": "."},
+            "root": {"type": "string", "description": "Explicit absolute authorized repository root required for index, search, docset_index, ingest_document and ingest_diagram; never inferred from adapter cwd."},
             "top_k": {"type": "integer", "default": 6},
             "workspace": {"type": "string", "default": ""},
             "content": {"type": "string", "default": ""},
@@ -713,8 +713,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         ),
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[len(_COORD_BASE_ACTIONS):]},
         allowed={
-            "ask": ("root", "tenant", "session_id", "question_id", "question", "task_id"),
-            "answer": ("root", "tenant", "question_id", "answer", "task_id"),
+            "ask": ("root", "session_id", "question_id", "question", "task_id"),
+            "answer": ("root", "question_id", "answer", "task_id"),
             "task_cleanup_worktree": ("root", "task_id"),
             "task_zombie_reap": ("root", "task_id"),
             "context_compile": (
@@ -734,9 +734,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "worktree_release": ("root", "worktree_path", "worktree_id", "delete_branch", "branch"),
             "simulate_merge": ("root", "source_branch", "target_branch"),
             "curate_dataset": ("output_path", "min_receipts", "format"),
-            "negative_knowledge_record": ("root", "tenant", "record"),
-            "negative_knowledge_find": ("root", "tenant", "query", "limit"),
-            "incident_decision": ("root", "tenant", "fingerprint", "state_revision"),
+            "negative_knowledge_record": ("root", "record"),
+            "negative_knowledge_find": ("root", "query", "limit"),
+            "incident_decision": ("root", "fingerprint", "state_revision"),
             "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
             "blackboard_update": ("root", "task_id", "board_id", "section", "content", "author", "expected_version"),
             "blackboard_get": ("root", "task_id", "board_id", "section"),
@@ -763,9 +763,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "swarm_status": ("swarm_id",),
             "swarm_cancel": ("swarm_id",),
             "simulate_merge": ("source_branch",),
-            "negative_knowledge_record": ("record",),
-            "negative_knowledge_find": ("query",),
-            "incident_decision": ("fingerprint",),
+            "negative_knowledge_record": ("root", "record"),
+            "negative_knowledge_find": ("root", "query"),
+            "incident_decision": ("root", "fingerprint"),
         },
         non_empty={
             "ask": ("root", "session_id"),
@@ -780,7 +780,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "swarm_status": ("swarm_id",),
             "swarm_cancel": ("swarm_id",),
             "simulate_merge": ("source_branch",),
-            "negative_knowledge_find": ("root", "tenant", "query"),
+            "negative_knowledge_record": ("root",),
+            "negative_knowledge_find": ("root", "query"),
+            "incident_decision": ("root", "fingerprint"),
         },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "task_get", "task_list", "memory_get", "memory_find",
@@ -793,7 +795,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             **{name: {"type": "string", "default": ""} for name in (
                 "lease_id", "task_id", "key", "value", "query", "command", "task", "status", "reason",
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
-                "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id", "tenant",
+                "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id",
                 "repository_revision", "phase", "preload_profile", "since_hash",
                 "question_id", "question", "answer", "state_revision",
             )},
@@ -824,7 +826,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "publisher": {"type": "string", "default": "agent"},
             "topic": {"type": "string", "default": "default"},
             "after_ts": {"type": "number", "minimum": 0, "maximum": 1_000_000_000_000},
-            "ttl_seconds": {"type": "integer", "default": 0},
+            "ttl_seconds": {"type": "integer", "description": "Optional explicit lifetime; omitted values preserve the selected action's default."},
             "max_tokens": {"type": "integer", "default": 0},
             "receipt": {
                 "type": "object",
@@ -948,6 +950,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "root": {"type": "string", "default": ""},
             "task": {"type": "string", "default": ""},
             "work_id": {"type": "string", "default": ""},
+            "task_id": {"type": "string", "default": ""},
             "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
             "constraints": {"type": "array", "items": {"type": "string"}},
             "mode": {"type": "string", "enum": ["execute", "plan", "plan_only", "dry_run"], "default": "execute"},
@@ -1955,7 +1958,7 @@ def validate_operation_arguments(
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
             return "limit must be an integer from 1 to 1000 for action='task_sync'"
     if tool == "local_ai_coord" and action == "negative_knowledge_find":
-        for field in ("root", "tenant", "query"):
+        for field in ("root", "query"):
             value = arguments.get(field, properties.get(field, {}).get("default"))
             if (
                 not isinstance(value, str)

@@ -7,7 +7,6 @@ from typing import Any, Iterator, Mapping, Sequence
 _request_id: ContextVar[str] = ContextVar("local_ai_request_id", default="")
 _trace_id: ContextVar[str] = ContextVar("local_ai_trace_id", default="")
 _agent: ContextVar[str] = ContextVar("local_ai_agent", default="")
-_tenant: ContextVar[str] = ContextVar("local_ai_tenant", default="")
 _observer: ContextVar[Any | None] = ContextVar("local_ai_debug_observer", default=None)
 _efficiency_metadata: ContextVar[dict[str, Any] | None] = ContextVar("local_ai_token_efficiency", default=None)
 
@@ -26,19 +25,17 @@ def set_context(
     request_id: Any = "",
     trace_id: Any = "",
     agent: Any = "",
-    tenant: Any = "",
-) -> tuple[Token, Token, Token, Token]:
+) -> tuple[Token, Token, Token]:
     request = _sanitize_ident(request_id)
     trace = _sanitize_ident(trace_id or request)
     agent_id = _sanitize_ident(agent)
-    tenant_id = _sanitize_ident(tenant)
-    return (_request_id.set(request), _trace_id.set(trace), _agent.set(agent_id), _tenant.set(tenant_id))
+    return (_request_id.set(request), _trace_id.set(trace), _agent.set(agent_id))
 
 
-def reset_context(tokens: tuple[Token, Token, Token, Token] | Sequence[Token] | Token | None) -> None:
+def reset_context(tokens: tuple[Token, Token, Token] | Sequence[Token] | Token | None) -> None:
     if tokens is None:
         return
-    variables = (_request_id, _trace_id, _agent, _tenant)
+    variables = (_request_id, _trace_id, _agent)
     if isinstance(tokens, Token):
         for variable in variables:
             try:
@@ -57,9 +54,9 @@ def reset_context(tokens: tuple[Token, Token, Token, Token] | Sequence[Token] | 
 
 @contextmanager
 def scoped_context(
-    *, request_id: str | None = "", trace_id: str | None = "", agent: str | None = "", tenant: str | None = ""
+    *, request_id: str | None = "", trace_id: str | None = "", agent: str | None = ""
 ) -> Iterator[dict[str, Any]]:
-    tokens = set_context(request_id=request_id, trace_id=trace_id, agent=agent, tenant=tenant)
+    tokens = set_context(request_id=request_id, trace_id=trace_id, agent=agent)
     try:
         yield current()
     finally:
@@ -96,6 +93,11 @@ def set_metadata(metadata: Mapping[str, Any] | None = None, **fields: Any) -> To
     """Set payload-free token metadata for the current request context."""
     from .token_accounting import token_efficiency_metadata
 
+    retired = {"tenant", "tenant_id", "tenant_key", "tenant_scope"}
+    if isinstance(metadata, Mapping) and retired.intersection(metadata):
+        raise ValueError("retired trace metadata field")
+    if retired.intersection(fields):
+        raise ValueError("retired trace metadata field")
     value = dict(metadata) if isinstance(metadata, Mapping) else {}
     value.update(fields)
     return _efficiency_metadata.set(token_efficiency_metadata(value))
@@ -144,12 +146,8 @@ def current_agent() -> str:
     return _agent.get()
 
 
-def current_tenant() -> str:
-    return _tenant.get()
-
-
 def current() -> dict[str, Any]:
-    value = {"request_id": _request_id.get(), "trace_id": _trace_id.get(), "agent": _agent.get(), "tenant": _tenant.get()}
+    value = {"request_id": _request_id.get(), "trace_id": _trace_id.get(), "agent": _agent.get()}
     metadata = efficiency_metadata()
     if metadata:
         value["token_efficiency"] = metadata
@@ -161,6 +159,5 @@ def clear_context() -> None:
     _request_id.set("")
     _trace_id.set("")
     _agent.set("")
-    _tenant.set("")
     _observer.set(None)
     _efficiency_metadata.set(None)

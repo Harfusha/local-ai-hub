@@ -3556,14 +3556,6 @@ class CommandBroker:
         return payload
 
     def _transaction_namespace_kwargs(self, source: Path, fencing_store: Any) -> dict[str, str]:
-        lease_claim = self._transaction_leases.claim
-        fence_acquire = fencing_store.acquire
-        lease_supports_namespace = "coordination_id" in inspect.signature(lease_claim).parameters
-        fence_supports_namespace = "coordination_id" in inspect.signature(fence_acquire).parameters
-        if not lease_supports_namespace and not fence_supports_namespace:
-            return {}
-        if not lease_supports_namespace or not fence_supports_namespace:
-            raise RuntimeError("transaction lease and mutation fence namespace APIs do not match")
         try:
             from .project_config import resolve_project_context
 
@@ -3964,7 +3956,11 @@ class CommandBroker:
             if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
                 return None
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("schema") != "command_execution_record.v1":
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema") != "command_execution_record.v2"
+                or "tenant_identity" in payload
+            ):
                 return None
             record_digest = payload.pop("record_sha256", None)
             canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -3972,6 +3968,7 @@ class CommandBroker:
                 return None
             if (
                 payload.get("command_id") != command_id
+                or type(payload.get("exit_code")) is not int
                 or payload.get("exit_code") != 0
                 or payload.get("cached") is not False
             ):
@@ -3985,25 +3982,25 @@ class CommandBroker:
         self,
         command_id: str,
         *,
-        tenant: str,
         task_id: str,
         repository_root: str,
     ) -> dict[str, Any] | None:
         """Return durable broker provenance only for matching trusted scope."""
-        if not isinstance(tenant, str) or not tenant or not isinstance(task_id, str) or not task_id:
+        if not isinstance(task_id, str) or not task_id:
             return None
         if not isinstance(repository_root, str) or not repository_root:
             return None
         record = self._get_server_command_execution_record(command_id)
         if record is None:
             return None
+        if record.get("schema") != "command_execution_record.v2" or "tenant_identity" in record:
+            return None
         try:
             canonical_root = str(Path(repository_root).expanduser().resolve(strict=False))
         except (OSError, RuntimeError, ValueError):
             return None
         if (
-            record.get("tenant_identity") != self._tenant_identity(tenant)
-            or record.get("task_id") != task_id
+            record.get("task_id") != task_id
             or record.get("repository_root") != canonical_root
             or record.get("repository_root_sha256") != hashlib.sha256(canonical_root.encode("utf-8")).hexdigest()
         ):
@@ -4014,7 +4011,6 @@ class CommandBroker:
         self,
         result: dict[str, Any],
         *,
-        tenant: str,
         task_id: str,
         criterion: str,
         command: str,
@@ -4038,8 +4034,8 @@ class CommandBroker:
         ):
             return
         try:
-            if self.artifacts is None:
-                raise RuntimeError("artifact store unavailable")
+            if not callable(getattr(self.artifacts, "put_json", None)):
+                raise RuntimeError("canonical JSON artifact persistence is unavailable")
             from .agent_verification import (
                 VerificationReceipt,
                 classify_verification_command,
@@ -4116,14 +4112,19 @@ class CommandBroker:
                     return
             task_store = self.task_store or getattr(self.verification_store, "task_store", None)
             task = task_store.get(task_id) if task_store is not None else None
-            verified_owner = str(getattr(task, "owner", "") or tenant).strip()
+            verified_owner = str(getattr(task, "owner", "") or "").strip()
             state_data = getattr(getattr(task, "checkpoint", None), "state_data", {}) or {}
             mutation_generation = int(state_data.get("mutation_generation", 0) or 0)
             exit_code = result.get("exit_code")
             if type(exit_code) is not int or exit_code != 0 or not verified_owner:
                 return
+            from .agent_tasks import _task_scope_root
+            from .repository_scope import canonical_repository_root
 
-
+            scope_root = _task_scope_root(task)
+            canonical_root = str(canonical_repository_root(repository_root))
+            if not scope_root or Path(canonical_root) != Path(scope_root):
+                raise ValueError("verification root differs from the server-managed task scope")
             proof = {
                 "kind": "work_command_verification",
                 "task_id": task_id,
@@ -4153,12 +4154,7 @@ class CommandBroker:
                 proof["project_execution_binding_sha256"] = hashlib.sha256(
                     json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()
-            if hasattr(self.artifacts, "put_json"):
-                evidence_id = self.artifacts.put_json(proof, verified_owner, "command_verification")
-            elif hasattr(self.artifacts, "put"):
-                evidence_id = self.artifacts.put(json_dumps(proof), verified_owner, "command_verification", "application/json")
-            else:
-                evidence_id = ""
+            evidence_id = self.artifacts.put_json(proof, kind="command_verification")
             if not evidence_id:
                 raise RuntimeError("verification evidence was not persisted")
             receipt = VerificationReceipt.create(
@@ -4179,13 +4175,9 @@ class CommandBroker:
             )
             self.verification_store.record(receipt)
             receipt_data = receipt.to_dict()
-            result["verification_receipt"] = receipt_data
-            result["verification_evidence_id"] = str(evidence_id)
-            canonical_root = str(Path(repository_root or ".").expanduser().resolve(strict=False))
             record = {
-                "schema": "command_execution_record.v1",
+                "schema": "command_execution_record.v2",
                 "command_id": command_id,
-                "tenant_identity": self._tenant_identity(tenant),
                 "task_id": task_id,
                 "owner": verified_owner,
                 "criterion": criterion,
@@ -4212,6 +4204,8 @@ class CommandBroker:
             encoded_record = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
             record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
             self._persist_command_execution_record(command_id, record)
+            result["verification_receipt"] = receipt_data
+            result["verification_evidence_id"] = str(evidence_id)
         except Exception:
             result["verification_receipt_warning"] = (
                 "command succeeded but durable verification evidence was unavailable"
@@ -5579,7 +5573,6 @@ class CommandBroker:
         cwd: str,
         classification: dict[str, Any],
         *,
-        tenant: str = "agent",
         timeout: int = 60,
         tool_identity: dict[str, Any] | None = None,
         phase_timings_ms: dict[str, float] | None = None,
@@ -5598,7 +5591,7 @@ class CommandBroker:
         key_identity = {
             "command": command.strip(), "cwd": str(Path(cwd).resolve()), "class": classification.get("class"),
             "repo": state.get("fingerprint"), "env": env, "python": sys.version_info[:3], "tool": resolved_tool_identity,
-            "tenant": self._tenant_identity(tenant), "timeout_seconds": int(timeout),
+            "timeout_seconds": int(timeout),
         }
         if project_config_digest:
             key_identity["project_config_digest"] = project_config_digest
@@ -5617,7 +5610,6 @@ class CommandBroker:
         command: str,
         cwd: str,
         *,
-        tenant: str,
         timeout: int,
         tool_identity: dict[str, Any] | None = None,
         project_config_digest: str = "",
@@ -5631,7 +5623,6 @@ class CommandBroker:
             "command": cmd_str,
             "cwd": str(Path(cwd).resolve()),
             "tool": tool_identity if tool_identity is not None else self._tool_identity(command, cwd),
-            "tenant": self._tenant_identity(tenant),
             "timeout_seconds": int(timeout),
         }
         if project_config_digest:
@@ -6374,27 +6365,21 @@ class CommandBroker:
         return stable_hash({"command": command.strip(), "cwd": str(Path(cwd).resolve())})
 
     @staticmethod
-    def _tenant_identity(tenant: str) -> str:
-        """Return collision-resistant tenant identity without retaining its raw value."""
-        return stable_hash({"tenant": str(tenant)})
-
-    @staticmethod
     def _public_active(active: dict[str, Any]) -> dict[str, Any]:
-        """Expose bounded active-command metadata without tenant identity or raw tenant."""
-        return {key: value for key, value in active.items() if key not in {"tenant", "tenant_identity"}}
+        """Expose bounded active-command metadata."""
+        return dict(active)
 
-    def cancel(self, command: str, cwd: str, tenant: str, *, execution_id: str = "") -> dict[str, Any]:
+    def cancel(self, command: str, cwd: str, *, execution_id: str = "") -> dict[str, Any]:
         """Request bounded cancellation of one currently running broker command."""
         lookup = self._cancel_key(command, cwd)
-        tenant_key = self._tenant_identity(tenant)
         with self._lock:
             if execution_id:
                 matches = [
                     item for item, active in self._active_commands.items()
-                    if active.get("execution_id") == execution_id and active.get("tenant_identity") == tenant_key
+                    if active.get("execution_id") == execution_id
                 ]
             else:
-                matches = [item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)]
+                matches = [item for item, value in self._active_cancel_keys.items() if value == lookup]
             if len(matches) > 1:
                 return {
                     "success": False, "terminal": True, "retryable": False,
@@ -6902,7 +6887,7 @@ class CommandBroker:
         source: Path,
         task_id: str,
         transaction_parent: Path,
-        lease_tenant: str,
+        lease_owner: str,
         work_attempt_fence: WorkAttemptFence,
         namespace_kwargs: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
@@ -6960,7 +6945,7 @@ class CommandBroker:
                 before = {path: self._transaction_file_from_payload(files[path].get("before")) for path in paths}
                 after = {path: self._transaction_file_from_payload(files[path].get("after")) for path in paths}
                 lease = self._transaction_leases.claim(
-                    tenant=lease_tenant,
+                    owner=lease_owner,
                     root=str(source),
                     paths=list(paths),
                     ttl_seconds=300,
@@ -7105,7 +7090,7 @@ class CommandBroker:
                 }
             finally:
                 if lease is not None and lease.get("success"):
-                    self._transaction_leases.release(lease_tenant, str(lease.get("lease_id") or ""))
+                    self._transaction_leases.release(owner=lease_owner, lease_id=str(lease.get("lease_id") or ""))
         if not directory_fsync_supported:
             return {
                 "success": True,
@@ -7121,7 +7106,6 @@ class CommandBroker:
         self,
         command: str,
         source_root: str | Path,
-        tenant: str,
         *,
         task_id: str,
         paths: list[str],
@@ -7180,11 +7164,11 @@ class CommandBroker:
                 "error": str(exc)[:512],
             }
         if not attempt_key:
-            attempt_key = self._attempt_key(command, str(source), tenant=tenant, timeout=timeout)
+            attempt_key = self._attempt_key(command, str(source), timeout=timeout)
         if not command_key:
             try:
                 command_key, _transaction_state = self._key(
-                    command, str(source), self.classify(command), tenant=tenant, timeout=timeout,
+                    command, str(source), self.classify(command), timeout=timeout,
                 )
             except (OSError, ValueError, RuntimeError):
                 command_key = ""
@@ -7254,7 +7238,7 @@ class CommandBroker:
                 )
             return recovery
         lease = self._transaction_leases.claim(
-            tenant=transaction_name,
+            owner=transaction_name,
             root=str(source),
             paths=paths,
             ttl_seconds=min(7200, max(30, int(timeout) + 60)),
@@ -7666,7 +7650,7 @@ class CommandBroker:
                 self._active_transaction_roots.pop(transaction_id, None)
                 self._active_transaction_sources.pop(transaction_id, None)
             if not retain_lease:
-                self._transaction_leases.release(transaction_name, str(lease.get("lease_id") or ""))
+                self._transaction_leases.release(owner=transaction_name, lease_id=str(lease.get("lease_id") or ""))
 
 
     def _distill_error_with_model(self, result: dict[str, Any]) -> str:
@@ -7872,7 +7856,6 @@ class CommandBroker:
         self,
         alias: str,
         cwd: str,
-        tenant: str = "agent",
         *,
         args: Sequence[str] = (),
         timeout: int | None = None,
@@ -7911,7 +7894,6 @@ class CommandBroker:
         return self.run(
             resolved.command,
             cwd,
-            tenant,
             timeout=timeout,
             force=force,
             task_id=task_id,
@@ -7994,7 +7976,6 @@ class CommandBroker:
         self,
         result: dict[str, Any],
         *,
-        tenant: str,
         command: str | CommandInvocation,
         cwd: str,
         execution_id: str,
@@ -8020,7 +8001,7 @@ class CommandBroker:
             except Exception:
                 pass
 
-        compacted = self._compact(result, tenant, command)
+        compacted = self._compact(result, command)
         compacted["execution_id"] = execution_id
         if task_id:
             compacted["task_id"] = task_id
@@ -8030,7 +8011,6 @@ class CommandBroker:
             repaired = self.repair_loop(
                 command,
                 cwd,
-                tenant,
                 max_attempts=max_repair_attempts,
                 task_id=task_id,
                 criterion=criterion,
@@ -8107,7 +8087,6 @@ class CommandBroker:
         self,
         command: str | CommandInvocation,
         cwd: str,
-        tenant: str = "agent",
         *,
         timeout: int | None = None,
         force: bool = False,
@@ -8152,7 +8131,7 @@ class CommandBroker:
         auto_bound_task = False
         if not task_id and getattr(self, "task_store", None) is not None:
             try:
-                active_task = self.task_store.get_active_task(repo_root=cwd, tenant=tenant)
+                active_task = self.task_store.get_active_task(repo_root=cwd)
                 if active_task is not None:
                     can_bind = True
                     cmd_str = command if isinstance(command, str) else " ".join(command.argv if hasattr(command, "argv") else [])
@@ -8321,9 +8300,9 @@ class CommandBroker:
             tool_identity = self._tool_identity(command, cwd)
         suppressable = command_class not in {"mutating", "unknown"}
         attempt_key = (
-            self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint, cache_context=_cache_context)
+            self._attempt_key(command, cwd, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint, cache_context=_cache_context)
             if _cache_context
-            else self._attempt_key(command, cwd, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
+            else self._attempt_key(command, cwd, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
         )
         if not force and not bypass_cache and not _transaction_context and suppressable:
             suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
@@ -8331,7 +8310,7 @@ class CommandBroker:
                 self.suppressed += 1
                 result = dict(suppressed)
                 result.update({"suppression_cache_hit": True, "classification": classification})
-                return self._compact(result, tenant, command)
+                return self._compact(result, command)
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         if not cwd_path.is_dir():
             result = {
@@ -8357,7 +8336,7 @@ class CommandBroker:
             }
             if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
-            return self._compact(result, tenant, command)
+            return self._compact(result, command)
         declared_paths = paths if paths is not None else rollback_paths
         if rollback_on_failure:
             if not declared_paths:
@@ -8449,7 +8428,6 @@ class CommandBroker:
         try:
             key, state = self._key(
                 command, cwd, classification,
-                tenant=tenant,
                 timeout=effective_timeout,
                 tool_identity=tool_identity,
                 phase_timings_ms=phase_timings_ms,
@@ -8469,7 +8447,7 @@ class CommandBroker:
             }
             if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
-            return self._compact(result, tenant, command)
+            return self._compact(result, command)
         cache_lookup_started = time.perf_counter()
         cacheable = bool(classification["cacheable"]) and not is_mutating and not _transaction_context
         if cacheable and not force and not bypass_cache:
@@ -8482,10 +8460,10 @@ class CommandBroker:
                 try:
                     if _cache_context:
                         key, state = self._key(
-                            command, cwd, classification, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint, cache_context=_cache_context
+                            command, cwd, classification, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint, cache_context=_cache_context
                         )
                     else:
-                        key, state = self._key(command, cwd, classification, tenant=tenant, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
+                        key, state = self._key(command, cwd, classification, timeout=effective_timeout, tool_identity=tool_identity, project_config_digest=project_config_digest, project_env_fingerprint=project_env_fingerprint, argv_fingerprint=argv_fingerprint)
                 except ValueError:
                     cached = None
                 else:
@@ -8500,7 +8478,6 @@ class CommandBroker:
                 result.update({"cache_hit": True, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
                 self._record_command_verification(
                     result,
-                    tenant=tenant,
                     task_id=task_id,
                     criterion=criterion or f"command:{self._safe_label(command)}",
                     command=command,
@@ -8517,7 +8494,7 @@ class CommandBroker:
                     project_alias_required=project_alias_required,
                     repository_root=str(state.get("root") or cwd),
                 )
-                return self._compact(result, tenant, command)
+                return self._compact(result, command)
         phase_timings_ms["result_cache_lookup_ms"] = round((time.perf_counter() - cache_lookup_started) * 1000, 3)
 
         singleflight = not is_mutating and not bypass_cache and not _transaction_context
@@ -8542,7 +8519,6 @@ class CommandBroker:
                 try:
                     key, state = self._key(
                         command, cwd, classification,
-                        tenant=tenant,
                         timeout=effective_timeout,
                         tool_identity=tool_identity,
                         phase_timings_ms=phase_timings_ms,
@@ -8559,7 +8535,7 @@ class CommandBroker:
                         "preflight": True,
                         "terminal": True,
                         "retryable": False,
-                    }, tenant, command)
+                    }, command)
                 refreshed_for_inflight = True
         if singleflight and not owner:
             # A second agent should benefit from single-flight without being trapped
@@ -8605,10 +8581,10 @@ class CommandBroker:
                     for flag in ("timed_out", "cancelled", "aborted_interactive", "cleanup_unconfirmed"):
                         if owner_result.get(flag):
                             waiter_result[flag] = True
-                return self._compact(waiter_result, tenant, command)
+                return self._compact(waiter_result, command)
             result = dict(last_result)
             result.update({"cache_hit": False, "coalesced": True, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
-            return self._compact(result, tenant, command)
+            return self._compact(result, command)
 
         # Acquire rollback handles only after every preflight and early-return path.
         # Otherwise a rejected task can retain the root directory handle on Windows.
@@ -8635,16 +8611,15 @@ class CommandBroker:
         cancel_event = request_cancel_event if request_cancel_event is not None else threading.Event()
         execution_id = uuid.uuid4().hex
         execution_key = key if singleflight else f"mutation:{execution_id}"
-        tenant_identity = self._tenant_identity(tenant)
         with self._lock:
             self._active_commands[execution_key] = {
                 "command": self._safe_label(command), "cwd": Path(cwd).name or str(Path(cwd)),
                 "class": str(classification.get("class", "")),
-                "tenant_identity": tenant_identity, "started_at": started_wall,
+                "started_at": started_wall,
                 "timeout_seconds": effective_timeout, "execution_id": execution_id,
             }
             self._cancel_events[execution_key] = cancel_event
-            self._active_cancel_keys[execution_key] = (self._cancel_key(command, cwd), tenant_identity)
+            self._active_cancel_keys[execution_key] = self._cancel_key(command, cwd)
         git_snapshot = None
         if snapshot:
             try:
@@ -8672,7 +8647,7 @@ class CommandBroker:
                 or (rollback_on_failure and classification.get("class") == "unknown")
             ) and not _transaction_context:
                 result = self._run_private_transaction(
-                    command, cwd, tenant, task_id=task_id, paths=list(declared_paths or []),
+                    command, cwd, task_id=task_id, paths=list(declared_paths or []),
                     timeout=effective_timeout, docker_image=docker_image,
                     cancel_event=cancel_event, log_callback=log_callback,
                     command_key=key, attempt_key=attempt_key,
@@ -8777,7 +8752,6 @@ class CommandBroker:
                         exit_code=int(result.get("exit_code", 1)),
                         state_revision=str(state.get("fingerprint", "")),
                         repository_root=cwd,
-                        tenant=tenant,
                         timed_out=bool(result.get("timed_out")),
                         cancelled=bool(result.get("cancelled")),
                         metadata={"outcome_unknown": True, "rollback_error": result.get("rollback_error", "")} if result.get("outcome_unknown") else {},
@@ -8816,7 +8790,7 @@ class CommandBroker:
                     search_query = command
                     if not result.get("success") and result.get("error_distillation"):
                         search_query = f"{command} {result['error_distillation']}"
-                    pitfalls = self.incident_store.find_negative_knowledge(query=search_query, limit=3)
+                    pitfalls = self.incident_store.find_negative_knowledge(query=search_query, limit=3, root=cwd)
                     if pitfalls:
                         result["known_pitfalls"] = [
                             {"incident_id": p.get("incident_id"), "root_cause": p.get("root_cause"), "verified_fix": p.get("verified_fix")}
@@ -8839,7 +8813,6 @@ class CommandBroker:
             if not result.get("outcome_unknown"):
                 self._record_command_verification(
                     result,
-                    tenant=tenant,
                     task_id=task_id,
                     criterion=criterion or f"command:{self._safe_label(command)}",
                     command=command,
@@ -8908,7 +8881,6 @@ class CommandBroker:
 
         return self._finalize_run_result(
             result,
-            tenant=tenant,
             command=command,
             cwd=cwd,
             execution_id=execution_id,
@@ -8928,7 +8900,6 @@ class CommandBroker:
         self,
         patch: str,
         cwd: str | Path,
-        tenant: str,
         *,
         command: str = "",
         criterion: str = "",
@@ -9003,7 +8974,6 @@ class CommandBroker:
             return self._run_private_transaction(
                 command=command or criterion or "patch verification",
                 source_root=cwd_path,
-                tenant=tenant,
                 task_id=task_id,
                 paths=write_paths,
                 timeout=int(timeout or self.timeout),
@@ -9011,7 +8981,7 @@ class CommandBroker:
                 work_attempt_fence=_work_attempt_fence,
                 log_callback=log_callback,
                 operation=lambda transaction_root, transaction_id: self.patch_and_verify(
-                    patch, transaction_root, tenant,
+                    patch, transaction_root,
                     command=command, criterion=criterion, task_id=task_id,
                     record_verification=record_verification, timeout=timeout,
                     auto_rollback=auto_rollback, log_callback=log_callback,
@@ -9044,10 +9014,10 @@ class CommandBroker:
                 identity_timeout = max(1, int(timeout or self.timeout))
                 command_key, _state = self._key(
                     incident_command, str(cwd_path), classification,
-                    tenant=tenant, timeout=identity_timeout,
+                    timeout=identity_timeout,
                 )
                 attempt_key = self._attempt_key(
-                    incident_command, str(cwd_path), tenant=tenant, timeout=identity_timeout,
+                    incident_command, str(cwd_path), timeout=identity_timeout,
                 )
                 for cache, key in (
                     (self.success_cache, command_key),
@@ -9323,7 +9293,7 @@ class CommandBroker:
 
         # 7. Run validation command
         run_res = self.run(
-            test_cmd, str(cwd_path), tenant,
+            test_cmd, str(cwd_path),
             timeout=timeout, force=True, task_id=task_id, criterion=criterion,
             paths=write_paths,
             record_verification=record_verification,
@@ -9342,29 +9312,7 @@ class CommandBroker:
         )
         if run_res.get("success") and not run_outcome_unknown:
             rcpt_data = run_res.get("verification_receipt")
-            if (
-                record_verification
-                and not rcpt_data
-                and task_id
-                and self.verification_store is not None
-            ):
-                try:
-                    from .agent_verification import VerificationReceipt
-                    rcpt = VerificationReceipt.create(
-                        task_id=task_id,
-                        criterion=criterion or f"patch:{self._safe_label(test_cmd)}",
-                        passed=True,
-                        command_id=test_cmd,
-                        evidence_id=str(run_res.get("artifact_id") or ""),
-                        repository_revision=str(run_res.get("repository_revision") or ""),
-                        details={"exit_code": 0, "duration_ms": run_res.get("duration_ms", 0)},
-                    )
-                    self.verification_store.record(rcpt)
-                    rcpt_data = rcpt.to_dict()
-                except Exception:
-                    pass
-
-            return {
+            result = {
                 "success": True,
                 "applied": True,
                 "tests_passed": True,
@@ -9376,6 +9324,11 @@ class CommandBroker:
                 "verification_receipt": rcpt_data,
                 "message": "Patch applied and verified successfully",
             }
+            if record_verification and task_id and self.verification_store is not None and not rcpt_data:
+                result["verification_receipt_warning"] = (
+                    "command succeeded but broker did not provide a durable verification receipt"
+                )
+            return result
         else:
             rolled_back = False
             rollback_error = None
@@ -9414,7 +9367,6 @@ class CommandBroker:
     def preflight(
         self,
         cwd: str | Path,
-        tenant: str = "default",
         *,
         paths: list[str] | None = None,
         timeout: int = 10,
@@ -9504,7 +9456,6 @@ class CommandBroker:
         self,
         command: str,
         cwd: str | Path,
-        tenant: str,
         *,
         max_attempts: int = 3,
         task_id: str = "",
@@ -9521,7 +9472,8 @@ class CommandBroker:
         """Execute autonomous self-healing test loop on command failure.
 
         Synthesizes candidate diffs/patches, applies them with in-memory file backups,
-        re-tests, and if successful, mints a VerificationReceipt and keeps the fix.
+        re-tests, and keeps successful fixes. Durable verification receipts are only
+        forwarded from the command broker's execution result.
         If all attempts fail, cleanly rolls back all modified files to pristine state.
         """
         cwd_path = Path(cwd).resolve(strict=True) if _transaction_context else Path(canonical_root(cwd))
@@ -9603,7 +9555,6 @@ class CommandBroker:
             return self._run_private_transaction(
                 command=command,
                 source_root=cwd_path,
-                tenant=tenant,
                 task_id=task_id,
                 paths=list(paths or []),
                 timeout=int(timeout or self.timeout),
@@ -9611,7 +9562,7 @@ class CommandBroker:
                 work_attempt_fence=_work_attempt_fence,
                 log_callback=log_callback,
                 operation=lambda transaction_root, transaction_id: self.repair_loop(
-                    command, transaction_root, tenant,
+                    command, transaction_root,
                     max_attempts=max_attempts, task_id=task_id, criterion=criterion,
                     timeout=timeout, fix_generator=fix_generator,
                     initial_result=initial_result, log_callback=log_callback,
@@ -9621,7 +9572,7 @@ class CommandBroker:
                 ),
             )
         initial = initial_result or self.run(
-            command, str(cwd_path), tenant, timeout=timeout, force=True,
+            command, str(cwd_path), timeout=timeout, force=True,
             task_id=task_id, criterion=criterion, auto_fix=False,
             paths=paths, log_callback=log_callback,
             docker_image=docker_image, _transaction_context=_transaction_context,
@@ -9821,7 +9772,7 @@ class CommandBroker:
                     applied_paths.append(target)
 
                 re_result = self.run(
-                    command, str(cwd_path), tenant, timeout=timeout, force=True,
+                    command, str(cwd_path), timeout=timeout, force=True,
                     task_id=task_id, criterion=criterion, auto_fix=False,
                     paths=paths, log_callback=log_callback,
                     docker_image=docker_image, _transaction_context=_transaction_context,
@@ -9837,51 +9788,12 @@ class CommandBroker:
                 })
 
                 if re_result.get("success"):
-                    rcpt_dict = None
-                    if task_id and self.verification_store is not None:
-                        try:
-                            from .agent_verification import VerificationReceipt
-                            criterion_text = criterion or f"repair:{self._safe_label(command)}"
-                            evidence_id = str(re_result.get("artifact_id") or "")
-                            if not evidence_id:
-                                evidence_id = self.artifacts.put_json(
-                                    {
-                                        "schema": "local-ai-command-validation/v1",
-                                        "task_id": task_id,
-                                        "criterion": criterion_text,
-                                        "command_label": self._safe_label(command),
-                                        "exit_code": int(re_result.get("exit_code", 0) or 0),
-                                        "duration_ms": re_result.get("duration_ms"),
-                                        "repository_revision": str(
-                                            re_result.get("repository_revision")
-                                            or re_result.get("repo_state", {}).get("fingerprint", "")
-                                        ),
-                                        "attempt": attempt,
-                                        "repaired_paths": [
-                                            str(p.relative_to(cwd_path)) for p in applied_paths
-                                        ],
-                                    },
-                                    tenant,
-                                    "command_validation",
-                                )
-                                re_result["artifact_id"] = evidence_id
-                            rcpt = VerificationReceipt.create(
-                                task_id=task_id,
-                                criterion=criterion_text,
-                                passed=True,
-                                command_id=command,
-                                evidence_id=evidence_id,
-                                repository_revision=str(re_result.get("repository_revision") or re_result.get("repo_state", {}).get("fingerprint", "")),
-                                details={
-                                    "exit_code": 0,
-                                    "attempts": attempt,
-                                    "repaired_paths": [str(p.relative_to(cwd_path)) for p in applied_paths],
-                                },
-                            )
-                            self.verification_store.record(rcpt)
-                            rcpt_dict = rcpt.to_dict()
-                        except Exception:
-                            pass
+                    rcpt_dict = re_result.get("verification_receipt")
+                    receipt_warning = (
+                        "command succeeded but broker did not provide a durable verification receipt"
+                        if task_id and self.verification_store is not None and not rcpt_dict
+                        else None
+                    )
 
                     if self.incident_store is not None:
                         try:
@@ -9898,7 +9810,7 @@ class CommandBroker:
                             pass
 
                     original_files.clear()
-                    return {
+                    result = {
                         "success": True,
                         "repaired": True,
                         "attempts": attempt,
@@ -9906,6 +9818,9 @@ class CommandBroker:
                         "verification_receipt": rcpt_dict,
                         "result": re_result,
                     }
+                    if receipt_warning:
+                        result["verification_receipt_warning"] = receipt_warning
+                    return result
                 else:
                     for target, orig_content in list(original_files.items()):
                         if orig_content is None:
@@ -9937,9 +9852,8 @@ class CommandBroker:
         self,
         root: str,
         paths: list[str] | None = None,
-        tenant: str = "agent",
-        timeout: int | None = None,
         *,
+        timeout: int | None = None,
         task_id: str = "",
         _work_attempt_fence: Any = None,
     ) -> dict[str, Any]:
@@ -9998,7 +9912,6 @@ class CommandBroker:
         res = self.run(
             cmd,
             str(resolved_root),
-            tenant=tenant,
             timeout=timeout or 60,
             force=True,
             task_id=task_id,
@@ -10015,9 +9928,8 @@ class CommandBroker:
         root: str,
         command: str | None = None,
         paths: list[str] | None = None,
-        tenant: str = "agent",
-        timeout: int | None = None,
         *,
+        timeout: int | None = None,
         task_id: str = "",
         _work_attempt_fence: Any = None,
     ) -> dict[str, Any]:
@@ -10076,7 +9988,6 @@ class CommandBroker:
         res = self.run(
             cmd,
             str(resolved_root),
-            tenant=tenant,
             timeout=timeout or 120,
             force=True,
             task_id=task_id,
@@ -11748,7 +11659,7 @@ class CommandBroker:
             }
 
 
-    def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
+    def _compact(self, result: dict[str, Any], command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         argv = self._tokens(command)
         executable = Path(argv[0]).name.lower() if argv else ""
@@ -11823,21 +11734,21 @@ class CommandBroker:
             if combined_chars <= self.inline_chars and not result.get("artifact_id") and not failure_summary.get("path"):
                 if local_diagnostic_dispatch_enabled and self.artifacts is not None:
                     diagnostic = str(result["preview"])[:800]
-                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+                    result["artifact_id"] = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
                 elif not diagnostic_artifacts_enabled:
                     result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
                 elif self.artifacts is not None:
                     diagnostic = str(result["preview"])[:800]
-                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "command_diagnostic")
+                    result["artifact_id"] = self.artifacts.put(diagnostic, kind="command_diagnostic")
         if combined_chars > self.inline_chars:
             full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
             if local_diagnostic_dispatch_enabled and not diagnostic_artifacts_enabled and self.artifacts is not None:
                 diagnostic = str(result.get("preview", ""))[:800]
-                result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+                result["artifact_id"] = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
             elif not diagnostic_artifacts_enabled:
                 result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
             elif self.artifacts is not None:
-                artifact_id = self.artifacts.put(full, tenant, "command")
+                artifact_id = self.artifacts.put(full, kind="command")
                 result["artifact_id"] = artifact_id
                 if artifact_id and not capture_incomplete:
                     result["output_artifact_id"] = artifact_id

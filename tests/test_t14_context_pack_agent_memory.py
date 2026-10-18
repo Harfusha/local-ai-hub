@@ -33,7 +33,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         task_id = "task-context-pack-resume"
         task = app.agent_tasks.create(
             GoalContract(goal="Resume scoped context task", acceptance_criteria=("context pack",)),
-            ScopeContext(repository_id=str(root), task_id=task_id, session_id="tenant-a"),
+            ScopeContext(repository_id=str(root), task_id=task_id, session_id="session-a"),
             task_id=task_id,
             repo_root=str(root),
         )
@@ -56,9 +56,9 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             kind=MemoryKind.FACT,
             scope="repository",
             key="safe fact",
-            value="tenant-a fresh value",
+            value="repository fresh value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": coord_id},
+            provenance={"root": str(root), "repository_id": coord_id},
             repository_revision="revision-1",
             path_refs=("src/keep.py",),
         ))
@@ -68,22 +68,23 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             key="stale fact",
             value="old changed-path value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": coord_id},
+            provenance={"root": str(root), "repository_id": coord_id},
             repository_revision="revision-0",
             path_refs=("src/changed.py",),
         ))
         app.agent_memory.record(MemoryRecord.create(
             kind=MemoryKind.FACT,
-            scope="repository",
-            key="foreign fact",
-            value="tenant-b private value",
+            scope="session",
+            key="session-only fact",
+            value="session-b private value",
+            scope_id="session-b",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "tenant": "tenant-b", "repository_id": coord_id},
+            provenance={"root": str(root), "repository_id": coord_id},
             repository_revision="revision-1",
             path_refs=("src/keep.py",),
         ))
         assert app.agent_memory.mark_stale_for_revision(str(root), "revision-1", ["src/changed.py"]) == 1
-        assert app.agent_memory.get(stale.record_id, root=str(root), repository_id=coord_id, tenant="tenant-a").status is MemoryStatus.STALE
+        assert app.agent_memory.get(stale.record_id, root=str(root), repository_id=coord_id).status is MemoryStatus.STALE
 
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
             "success": True,
@@ -107,7 +108,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
             data=json.dumps(request_payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant-a"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -115,12 +116,12 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
 
         assert result["success"] is True
         assert result["task_context"]["complete"] is True
-        assert "tenant-a fresh value" in result["task_context"]["text"]
+        assert "repository fresh value" in result["task_context"]["text"]
         assert "old changed-path value" not in result["task_context"]["text"]
-        assert "tenant-b private value" not in result["task_context"]["text"]
+        assert "session-b private value" not in result["task_context"]["text"]
         assert len(result["task_context"]["text"]) <= 128 * 4
         assert len(compiled_requests) == 1
-        assert compiled_requests[0].tenant == "tenant-a"
+        assert compiled_requests[0].session_id == "session-a"
         assert compiled_requests[0].clone_id == "clone-current"
         assert compiled_requests[0].worktree_id == "worktree-current"
         assert compiled_requests[0].branch == "feature/context-pack"
@@ -136,7 +137,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         degraded_request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
             data=json.dumps(request_payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant-a"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(degraded_request) as response:
@@ -144,7 +145,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         assert degraded["success"] is True
         assert degraded["task_context"]["complete"] is True
         assert any(warning["code"] == "memory_context_unavailable" for warning in degraded["task_context"]["warnings"])
-        assert "tenant-a fresh value" not in degraded["task_context"]["text"]
+        assert "repository fresh value" not in degraded["task_context"]["text"]
 
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
             "success": False,
@@ -157,7 +158,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         unavailable_request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
             data=json.dumps(request_payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant-a"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
@@ -188,8 +189,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
                 "mutation_generation": 0,
                 "details": {"context_id": result["task_context"]["context_id"], "complete": True},
             },
-            task.owner,
-            "source_review",
+            kind="source_review",
         )
         receipt = app.agent_verification.record(VerificationReceipt.create(
             task_id=task_id,

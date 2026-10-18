@@ -24,33 +24,28 @@ from local_ai_hub.memory import WorkspaceMemoryStore
 from local_ai_hub.rag import RAGStore
 
 
-def test_workspace_memos_report_shared_scope_and_isolate_repositories(tmp_path):
+def test_workspace_memos_are_shared_within_and_isolated_between_repositories(tmp_path):
     store = WorkspaceMemoryStore(tmp_path / "state")
     repo_a = tmp_path / "customer-a" / "repo"
     repo_b = tmp_path / "customer-b" / "repo"
     repo_a.mkdir(parents=True)
     repo_b.mkdir(parents=True)
 
-    first = store.put(str(repo_a), "decision", "first", "identity-a")
-    second = store.put(str(repo_a), "decision", "second", "identity-b")
+    first = store.put(str(repo_a), "decision", "first")
+    second = store.put(str(repo_a), "decision", "second")
 
     assert first["scope"] == "workspace-shared"
     assert second["scope"] == "workspace-shared"
-    assert second["tenant"] == "identity-b"
     shared = store.get(str(repo_a), "decision")
     assert shared["success"] is True
     assert shared["value"] == "second"
-    assert shared["tenant"] == "identity-b"
     assert shared["scope"] == "workspace-shared"
     found = store.search(str(repo_a), "second")
     assert found["scope"] == "workspace-shared"
     assert found["results"][0]["scope"] == "workspace-shared"
-    wrong_label_delete = store.delete(str(repo_a), "decision", tenant="identity-a")
-    assert wrong_label_delete["scope"] == "workspace-shared"
-    assert wrong_label_delete["deleted"] is False
-    assert store.get(str(repo_a), "decision")["value"] == "second"
-    matching_label_delete = store.delete(str(repo_a), "decision", tenant="identity-b")
-    assert matching_label_delete["deleted"] is True
+    assert store.get(str(repo_b), "decision")["success"] is False
+    deleted = store.delete(str(repo_a), "decision")
+    assert deleted["deleted"] is True
     assert store.get(str(repo_a), "decision")["success"] is False
     assert store.get(str(repo_b), "decision")["success"] is False
     assert store.search(str(repo_b))["results"] == []
@@ -61,21 +56,20 @@ def test_workspace_memo_expected_version_rejects_stale_overwrite(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
 
-    created = store.put(str(root), "decision", "first", "identity-a", expected_version=0)
+    created = store.put(str(root), "decision", "first", expected_version=0)
     assert created["version"] == 1
     assert store.get(str(root), "decision")["version"] == 1
 
-    winning = store.put(str(root), "decision", "second", "identity-b", expected_version=1)
+    winning = store.put(str(root), "decision", "second", expected_version=1)
     assert winning["version"] == 2
 
-    stale = store.put(str(root), "decision", "stale", "identity-c", expected_version=1)
+    stale = store.put(str(root), "decision", "stale", expected_version=1)
     assert stale["success"] is False
     assert stale["version_conflict"] is True
     assert stale["expected_version"] == 1
     assert stale["current_version"] == 2
     current = store.get(str(root), "decision")
     assert current["value"] == "second"
-    assert current["tenant"] == "identity-b"
     assert current["version"] == 2
 
 
@@ -84,14 +78,14 @@ def test_workspace_memo_expected_version_serializes_across_processes(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     store = WorkspaceMemoryStore(state_dir)
-    assert store.put(str(root), "decision", "initial", "identity-base", expected_version=0)["version"] == 1
+    assert store.put(str(root), "decision", "initial", expected_version=0)["version"] == 1
 
     barrier = tmp_path / "release-writers"
     ready_paths = [tmp_path / f"writer-{index}-ready" for index in range(2)]
     write_script = (
         "import json, sys, time\n"
         "from pathlib import Path\n"
-        "source_dir, state_dir, root, barrier_path, ready_path, tenant, value = sys.argv[1:]\n"
+        "source_dir, state_dir, root, barrier_path, ready_path, value = sys.argv[1:]\n"
         "sys.path.insert(0, source_dir)\n"
         "ready = Path(ready_path)\n"
         "ready.touch()\n"
@@ -102,15 +96,15 @@ def test_workspace_memo_expected_version_serializes_across_processes(tmp_path):
         "    time.sleep(0.01)\n"
         "import local_ai_hub.memory as loaded_module\n"
         "assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
-        "result = loaded_module.WorkspaceMemoryStore(Path(state_dir)).put(root, 'decision', value, tenant, expected_version=1)\n"
+        "result = loaded_module.WorkspaceMemoryStore(Path(state_dir)).put(root, 'decision', value, expected_version=1)\n"
         "print(json.dumps(result, sort_keys=True))\n"
     )
     source_dir = os.environ.get("T05_ROOT_SOURCE_DIR", str(Path(__file__).resolve().parents[1] / "src"))
-    worker_values = [("identity-a", "writer-a"), ("identity-b", "writer-b")]
+    worker_values = ["writer-a", "writer-b"]
     workers = []
     outputs = []
     try:
-        for index, (tenant, value) in enumerate(worker_values):
+        for index, value in enumerate(worker_values):
             workers.append(subprocess.Popen(
                 [
                     sys.executable,
@@ -121,7 +115,6 @@ def test_workspace_memo_expected_version_serializes_across_processes(tmp_path):
                     str(root),
                     str(barrier),
                     str(ready_paths[index]),
-                    tenant,
                     value,
                 ],
                 stdout=subprocess.PIPE,
@@ -305,7 +298,7 @@ def test_workspace_memo_version_does_not_reset_after_delete_and_recreate(tmp_pat
     root = tmp_path / "repo"
     root.mkdir()
 
-    created = store.put(str(root), "decision", "first", "identity-a", expected_version=0)
+    created = store.put(str(root), "decision", "first", expected_version=0)
     assert created["version"] == 1
     deleted = store.delete(str(root), "decision")
     assert deleted["deleted"] is True
@@ -314,9 +307,9 @@ def test_workspace_memo_version_does_not_reset_after_delete_and_recreate(tmp_pat
     assert missing["success"] is False
     assert missing["version"] == 2
 
-    recreated = store.put(str(root), "decision", "recreated", "identity-b", expected_version=2)
+    recreated = store.put(str(root), "decision", "recreated", expected_version=2)
     assert recreated["version"] == 3
-    stale = store.put(str(root), "decision", "stale", "identity-c", expected_version=1)
+    stale = store.put(str(root), "decision", "stale", expected_version=1)
     assert stale["version_conflict"] is True
     assert stale["current_version"] == 3
     assert store.get(str(root), "decision")["value"] == "recreated"
@@ -327,7 +320,7 @@ def test_workspace_memo_expiry_preserves_last_committed_generation(tmp_path):
     store = WorkspaceMemoryStore(state_dir)
     root = tmp_path / "repo"
     root.mkdir()
-    created = store.put(str(root), "decision", "first", "identity-a", expected_version=0)
+    created = store.put(str(root), "decision", "first", expected_version=0)
     assert created["version"] == 1
 
     with closing(sqlite3.connect(state_dir / "workspace_memory.sqlite3")) as connection:
@@ -340,7 +333,7 @@ def test_workspace_memo_expiry_preserves_last_committed_generation(tmp_path):
     expired = store.get(str(root), "decision")
     assert expired["success"] is False
     assert expired["version"] == 1
-    recreated = store.put(str(root), "decision", "restored", "identity-b", expected_version=1)
+    recreated = store.put(str(root), "decision", "restored", expected_version=1)
     assert recreated["version"] == 2
     assert store.get(str(root), "decision")["value"] == "restored"
 
@@ -409,7 +402,7 @@ def test_workspace_memo_migration_backup_refreshes_when_stale(tmp_path):
 
     store = WorkspaceMemoryStore(state_dir)
     backup_path = db_path.with_name(db_path.name + ".pre-memo-version.bak")
-    store.put(str(root), "later", "new row", "writer")
+    store.put(str(root), "later", "new row")
     store._create_migration_backup()
 
     with closing(sqlite3.connect(backup_path)) as backup:
@@ -423,7 +416,7 @@ def test_workspace_memo_migration_backup_replaces_hard_link(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     store = WorkspaceMemoryStore(state_dir)
-    store.put(str(root), "decision", "kept", "owner")
+    store.put(str(root), "decision", "kept")
     backup_path = store.path.with_name(store.path.name + ".pre-memo-version.bak")
     os.link(store.path, backup_path)
     assert os.path.samefile(store.path, backup_path)
@@ -444,7 +437,7 @@ def test_workspace_memo_migration_backup_replaces_symlink_to_matching_copy(tmp_p
     root = tmp_path / "repo"
     root.mkdir()
     store = WorkspaceMemoryStore(state_dir)
-    store.put(str(root), "decision", "kept", "owner")
+    store.put(str(root), "decision", "kept")
     backup_path = store.path.with_name(store.path.name + ".pre-memo-version.bak")
     external_copy = tmp_path / "external-copy.sqlite3"
     with closing(sqlite3.connect(store.path)) as source, closing(
@@ -503,29 +496,26 @@ def test_workspace_memo_migration_backup_failure_leaves_schema_unchanged(tmp_pat
     assert row == ("kept",)
 
 @pytest.mark.parametrize(
-    ("key", "value", "tenant"),
+    ("key", "value"),
     [
-        (None, "valid", "identity"),
-        (123, "valid", "identity"),
-        ("valid", None, "identity"),
-        ("valid", 123, "identity"),
-        ("valid", "value", None),
-        ("valid", "value", 7),
-        ("valid", "value", "t" * 129),
+        (None, "valid"),
+        (123, "valid"),
+        ("valid", None),
+        ("valid", 123),
     ],
 )
-def test_workspace_memo_rejects_malformed_key_value_or_tenant(tmp_path, key, value, tenant):
+def test_workspace_memo_rejects_malformed_key_or_value(tmp_path, key, value):
     store = WorkspaceMemoryStore(tmp_path / "state")
 
     with pytest.raises(ValueError):
-        store.put(str(tmp_path), key, value, tenant)
+        store.put(str(tmp_path), key, value)
 
 
 def test_workspace_memo_delete_rejects_non_string_tenant_label(tmp_path):
     store = WorkspaceMemoryStore(tmp_path / "state")
-    store.put(str(tmp_path), "key", "value", "identity-a")
+    store.put(str(tmp_path), "key", "value")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError, match="unexpected keyword"):
         store.delete(str(tmp_path), "key", tenant=None)
 
 
@@ -542,7 +532,7 @@ def test_repository_memory_foreign_id_requires_matching_repository(tmp_path):
             value="repo-a value",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(repo_a), "repository_id": "repo-a", "tenant": "default"},
+            provenance={"root": str(repo_a), "repository_id": "repo-a"},
         ),
         actor="user",
         idempotency_key="repo-a-record",
@@ -555,16 +545,16 @@ def test_repository_memory_foreign_id_requires_matching_repository(tmp_path):
             value="repo-b value",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(repo_b), "repository_id": "repo-b", "tenant": "default"},
+            provenance={"root": str(repo_b), "repository_id": "repo-b"},
         ),
         actor="user",
         idempotency_key="repo-b-record",
     )
 
-    assert store.get(record_a.record_id, root=str(repo_a), repository_id="repo-a", tenant="default").value == "repo-a value"
-    assert store.get(record_a.record_id, root=str(repo_b), repository_id="repo-b", tenant="default") is None
-    assert store.get(record_b.record_id, root=str(repo_a), repository_id="repo-a", tenant="default") is None
-    assert store.get(record_b.record_id, root=str(repo_b), repository_id="repo-b", tenant="default").value == "repo-b value"
+    assert store.get(record_a.record_id, root=str(repo_a), repository_id="repo-a").value == "repo-a value"
+    assert store.get(record_a.record_id, root=str(repo_b), repository_id="repo-b") is None
+    assert store.get(record_b.record_id, root=str(repo_a), repository_id="repo-a") is None
+    assert store.get(record_b.record_id, root=str(repo_b), repository_id="repo-b").value == "repo-b value"
 
 
 def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_path):
@@ -578,7 +568,7 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
             value="format with tool X",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(tmp_path / "repo-a"), "repository_id": "repo-a", "tenant": "default"},
+            provenance={"root": str(tmp_path / "repo-a"), "repository_id": "repo-a"},
         ),
         actor="user",
         idempotency_key="repository-convention",
@@ -594,13 +584,12 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
         approver="user",
         root=str(tmp_path / "repo-a"),
         repository_id="repo-a",
-        tenant="default",
     )
-    records = store.find_for_context(root=str(tmp_path / "repo-b"), tenant="default")
+    records = store.find_for_context(root=str(tmp_path / "repo-b"))
     assert any(record.record_id == shared.record_id for record in records)
 
 
-def test_tenant_label_does_not_authenticate_http_request(monkeypatch):
+def test_tenant_header_does_not_replace_api_token_authentication(monkeypatch):
     monkeypatch.setattr(
         http_server,
         "APP",
@@ -629,13 +618,13 @@ def test_lease_conflicts_keep_owner_details_visible(tmp_path):
     conflict = leases.claim("identity-b", root, ["src/shared.py"], purpose="edit")
 
     assert conflict["success"] is False
-    assert conflict["conflicts"][0]["tenant"] == "identity-a"
+    assert conflict["conflicts"][0]["owner"] == "identity-a"
     assert conflict["conflicts"][0]["lease_id"] == held["lease_id"]
     assert conflict["conflicts"][0]["held_path"] == "src/shared.py"
 
 
 @pytest.mark.parametrize("label", ["http-default", "system", "admin", "*"])
-def test_privileged_lease_tenant_label_cannot_spoof_owner(tmp_path, label):
+def test_unknown_lease_owner_cannot_spoof_current_owner(tmp_path, label):
     leases = ScopeLeaseStore(tmp_path / "state")
     root = str(tmp_path / "repo")
     held_for_release = leases.claim("identity-a", root, ["src/release.py"])
@@ -658,10 +647,10 @@ def test_mixed_memory_identity_context_is_rejected():
     assert (scope, scope_id, ambiguous) == (None, None, True)
 
 
-def test_artifact_lookup_is_tenant_scoped_and_evidence_ids_are_repository_scoped(tmp_path):
+def test_artifacts_are_owner_global_and_evidence_ids_are_repository_scoped(tmp_path):
     artifacts = ArtifactStore(tmp_path / "artifacts")
-    artifact_id = artifacts.put("artifact payload", "identity-a", "text")
-    assert artifacts.get(artifact_id, tenant="identity-b")["success"] is False
+    artifact_id = artifacts.put("artifact payload", kind="text")
+    assert artifacts.get(artifact_id)["success"] is True
 
     evidence = EvidenceStore(tmp_path / "evidence")
     item = {"path": "src/module.py", "file_sha256": "a" * 64, "start_line": 1, "end_line": 1, "text": "value = 1"}
@@ -675,45 +664,9 @@ def test_artifact_lookup_is_tenant_scoped_and_evidence_ids_are_repository_scoped
     assert evidence.get(evidence_b, verify=False)["root"] == repo_b
 
 
-def test_tenant_scoped_rag_search_cache_keeps_index_results_isolated(tmp_path):
-    class QueryServices:
-        def embed(self, texts, _tenant, **_kwargs):
-            return {"success": True, "embeddings": [[1.0, 0.0] for _ in texts]}
+def test_retired_rag_tenant_scope_is_rejected():
+    from local_ai_hub.config import ConfigError, validate_config
 
-    store = RAGStore(
-        {
-            "server": {"state_dir": str(tmp_path / "state")},
-            "models": {},
-            "cpu_retrieval": {},
-            "workspace_cache": {},
-            "rag": {"scope": "tenant", "extensions": [".py"], "ignore_dirs": []},
-            "features": {"reranker": False},
-        },
-        QueryServices(),
-    )
-    workspace = "shared-workspace"
-    path = "src/data.py"
-    embedding_space = store._embedding_space_id()
-    with closing(store._connect()) as con:
-        for tenant, content_hash, text in (
-            ("identity-a", "hash-a", "identity a result"),
-            ("identity-b", "hash-b", "identity b result"),
-        ):
-            scope_key = store._scope_key(tenant)
-            con.execute(
-                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                (scope_key, workspace, path, 1, len(text), content_hash),
-            )
-            con.execute(
-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
-                (scope_key, workspace, path, 0, content_hash, text, "[1.0, 0.0]", embedding_space),
-            )
-        con.commit()
-
-    result_a = store.search("identity result", "identity-a", workspace, use_reranker=False)
-    result_b = store.search("identity result", "identity-b", workspace, use_reranker=False)
-
-    assert result_a["results"][0]["text"] == "identity a result"
-    assert result_b["results"][0]["text"] == "identity b result"
-    assert result_a["search_cache"]["revision"] != result_b["search_cache"]["revision"]
+    with pytest.raises(ConfigError, match="rag.scope was removed"):
+        validate_config({"rag": {"scope": "tenant"}})
 

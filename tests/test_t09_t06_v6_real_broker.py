@@ -56,7 +56,7 @@ def test_v6_real_broker_project_receipt_and_generic_replay_rejection(
         assert positive["success"] is True, positive
         assert positive.get("verification_receipt"), positive
         artifact = app.artifacts.get(
-            positive["verification_evidence_id"], max_chars=50_000, tenant="agent"
+            positive["verification_evidence_id"], max_chars=50_000
         )
         assert artifact["success"] is True, artifact
         proof = json.loads(artifact["text"])
@@ -112,7 +112,7 @@ def test_v6_real_broker_project_receipt_and_generic_replay_rejection(
         )
         generic = app.commands.run(
             f'{command_argv} -m pytest -q tests/test_smoke.py',
-            str(repo), tenant="agent", task_id=rejected_task_id, criterion="test", force=True,
+            str(repo),  task_id=rejected_task_id, criterion="test", force=True,
         )
         assert generic["success"] is True, generic
         assert "verification_receipt" not in generic, generic

@@ -27,7 +27,6 @@ def test_canonical_flaky_detect_post_reaches_registered_dispatch_without_running
     handler._require_authorized = lambda: True
     handler._begin_trace = lambda *_args, **_kwargs: None
     handler._claim_recovery = lambda *_args, **_kwargs: True
-    handler._tenant = lambda: "test-tenant"
     handler._read_json = lambda: {"root": ".", "command": "never-run-by-this-test"}
     handler._validate_payload = lambda *_args, **_kwargs: None
     handler._send = lambda status, payload: responses.append((status, payload))

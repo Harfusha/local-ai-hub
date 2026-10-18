@@ -26,9 +26,9 @@ def test_normalize_changed_paths_edge_cases(tmp_path: Path):
 
 def test_speculative_lint_queue_edge_cases(tmp_path: Path):
     async_jobs = SimpleNamespace(
-        cancel=lambda tenant, job_id: {"success": True},
-        submit=lambda tenant, task_type, payload, **kwargs: {"job_id": "job_123"},
-        status=lambda tenant, job_id: {"status": "running"},
+        cancel=lambda job_id: {"success": True},
+        submit=lambda task_type, payload, **kwargs: {"job_id": "job_123"},
+        status=lambda job_id: {"status": "running"},
     )
     config = {
         "speculative_lint": {
@@ -40,10 +40,10 @@ def test_speculative_lint_queue_edge_cases(tmp_path: Path):
     queue = SpeculativeLintQueue(async_jobs, config)
     assert queue.enabled is True
     (tmp_path / "f1.py").write_text("pass", encoding="utf-8")
-    res = queue.submit("tenant_a", str(tmp_path), ["f1.py"])
+    res = queue.submit(str(tmp_path), ["f1.py"])
     assert res["job_id"] == "job_123"
     assert res["paths"] == ["f1.py"]
-    assert queue.cancel("tenant_a", "job_123")["success"] is True
+    assert queue.cancel("job_123")["success"] is True
 
 
 def test_status_dependency_executor_edge_cases():

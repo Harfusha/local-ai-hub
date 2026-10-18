@@ -195,8 +195,8 @@ class AppendResult:
 class AgentStateStore:
     _append_publish_locks_guard = threading.Lock()
     _append_publish_locks: dict[str, Any] = {}
-    # PRAGMA user_version belongs to this database-wide core schema. Independent
-    # stores keep component versions in agent_state_schema_versions instead.
+    # PRAGMA user_version belongs to the canonical database-wide core schema.
+    # Runtime does not accept retired migration/version bookkeeping tables.
     _SCHEMA_VERSION = 1
     _SCHEMA_PREFLIGHT_TIMEOUT_SECONDS = 5.0
     _SCHEMA_OBJECT_SQL_MAX_BYTES = 8192
@@ -206,19 +206,12 @@ class AgentStateStore:
     ]
     _SNAPSHOT_COLUMNS = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
     _EXPECTED_OBJECT_SQL_HASHES = {
-        ("table", "agent_questions", "agent_questions"): "c072993f2caba4dd9b1c7b868a243f02ccbd9d6e71a7c38853f7d27b8b5b0a61",
-        ("index", "idx_agent_questions_session", "agent_questions"): "0b3b5075a62dc480a596b8ccd14d227b988c0e73236cbd1b70062a1ea46e9ae9",
-        ("index", "idx_lease_waits_tenant", "lease_waits"): "dd609992da24cef67dfdcaecef49c82b6451892d43863c9a1ff152701068273a",
+        ("table", "agent_questions", "agent_questions"): "6e32f781ef50c6664ce70e93dbb767a6889d1cffc80f766a83548209eaebd19c",
+        ("index", "idx_agent_questions_session", "agent_questions"): "895948e4ff978d089295a00870cb4109bc3b86498d592e089e5bdd16073ca6cd",
+        ('index', 'idx_lease_waits_owner', 'lease_waits'): '94c3e39e5224c63a4a855ea3843bd86cb490af2c1e993d567af26dc5ba9bc851',
         ("index", "idx_leases_root", "leases"): "a0ede5303197cc5172c5583f33a72ee1636083712d84e9d618a642a34671cc85",
-        ("table", "agent_state_migrations", "agent_state_migrations"): "c05fc94a41754f655038115d920ca125256bad65f5fd82bcc8ee4cdc8ce1c164",
-        ("table", "agent_state_schema_versions", "agent_state_schema_versions"): "a2884a575e1e67cfbc5b40c2e90370a89d5310197171332b6806c0b4e036a547",
-        ("table", "lease_waits", "lease_waits"): {
-            "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
-            # ScopeLeaseStore's namespace-key rebuild/rename quotes the table name.
-            # Same NOT NULL columns and root-inclusive PK; no SQL normalization widening.
-            "314dbe78e360c6c00133c85323b9349936d9cb2e87121e60c8ffb733b46d20aa",
-        },
-        ("table", "leases", "leases"): "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
+        ("table", "lease_waits", "lease_waits"): 'f2c1464f4eb093891578b4de6a56e3f36473ac056d700ce2afc7a5a0ec098aaa',
+        ("table", "leases", "leases"): '7a4ef9cfe8d7f31cef9ee8918b214495454dc551e5888a6125e03b95f93f2254',
         ("index", "idx_lease_waits_blocked", "lease_waits"): "366fe3b81e54f9032edecf9d798a2b2d23160bba578438a89591b929c1e87cab",
         ("table", "agent_swarms", "agent_swarms"): "5ccda29c6b858caae83c2ca78296c4ff939f7ae41cdab14054e67bf374592a81",
         ("table", "sqlite_sequence", "sqlite_sequence"): "9e042902d97481bf7dccaaff2183d686b3344691bb622fdfc017096ef4080c65",
@@ -229,14 +222,13 @@ class AgentStateStore:
         ("index", "idx_agent_incidents_fp", "agent_incidents"): "4b67662bd5955574d1cce114df205ba62a1e0f5165613b4edd16072d34339709",
         ("index", "idx_agent_incidents_lookup", "agent_incidents"): "f170ab3ca4813c2fde1ef264a4a148c1ad08c0a6ea7243119864d2f7d35e58d9",
         ("index", "idx_agent_incidents_recent", "agent_incidents"): "2dabb490a313b3f49ec8cf3bbec38e5dd7d7869db9dc9ea69474d96fe86260a8",
-        ("index", "idx_agent_incidents_scope", "agent_incidents"): "fcddf0dcdaa939754d8826b199dc730bfee46c1e3f9f1dc7742757a26b324fc3",
+        ("index", "idx_agent_incidents_scope", "agent_incidents"): "00d5a148686c8a351822ae7a5a15ad152b05b877f94720f691e56c399a2ddfb0",
         ("index", "idx_agent_klinks_path", "agent_knowledge_links"): "a765bbe0d7e69856c925200094c53bbd726cfaec770d274d4451b18b40e52b32",
         ("index", "idx_agent_memory_expires", "agent_memory_records"): "2b572d27d7aeff30fd4f5bac34028828f8cea53b3e7a33a365ecd2ac8d62bda6",
         ("index", "idx_agent_memory_provenance_branch", "agent_memory_records"): "d2bbcbdc38fffca0533cc1fb185773d0d7063c91e7318838a15bfb4a3ef919ff",
         ("index", "idx_agent_memory_provenance_clone_id", "agent_memory_records"): "1a9eb17c7d175eecbfadac0a08d55217eef4b0edf1c4c05d66a2eb5730a3682a",
         ("index", "idx_agent_memory_provenance_repository", "agent_memory_records"): "54eb35186ea96928612021440a3a8a41e69c7af684011efcc2dd7d97900f80fe",
         ("index", "idx_agent_memory_provenance_root", "agent_memory_records"): "368aa7550b0f3c86744f5c88741b5d6fa30fe1fd8a5f218561920cf5aff86c0e",
-        ("index", "idx_agent_memory_provenance_tenant", "agent_memory_records"): "38ea86fea71107fccefdd828775544796000b4f5553f3fa327049c5054aebd23",
         ("index", "idx_agent_memory_provenance_worktree_id", "agent_memory_records"): "ede3797ba9a084d4e4a1539166ce72e442830fd0f4a7148ee288bd29e476fa34",
         ("index", "idx_agent_memory_scope_identity", "agent_memory_records"): "e09ea6e01564f92238fa9aac558fff356d8663bb92a1b00a3cc8484d1316e23c",
         ("index", "idx_agent_memory_scope_key", "agent_memory_records"): "87c860ab42d5e672c4c6fc123fcca090dc52e6a0382a15855d4dde2b73e49448",
@@ -258,7 +250,7 @@ class AgentStateStore:
         ("table", "agent_change_intents", "agent_change_intents"): "52ed988b0a31f820b145261f7c586ea869369958b8adcd21d6bd1ad7e1f8a9ca",
         ("table", "agent_entity_relations", "agent_entity_relations"): "7cb3cdb25d201d7e2e264eb0d2b3dda5bb831ffd531d7aea2dab79df6db26590",
         ("table", "agent_events", "agent_events"): "1dfef49210889dc707aa8405b65262a5a86acbc14bd940ca338293dde150b2a2",
-        ("table", "agent_incidents", "agent_incidents"): "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
+        ("table", "agent_incidents", "agent_incidents"): "4b4e60c8124637cb345f05d386428fc7bcb9c23b518af0b17125f3a4bfaf85d7",
         ("table", "agent_knowledge_links", "agent_knowledge_links"): "729e5c852a59ef150c488ccfb998a8a4dab606a052d353d94360aa2793a62426",
         ("table", "agent_learning_candidates", "agent_learning_candidates"): "3b8650b155c972e370825d72cf2222c005401a696b7f996a991c1f9d552b5caa",
         ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "468df99dabe588d9475009d02108f2fdadfcf63e83a7aedf6d7a36a9ead965b5",

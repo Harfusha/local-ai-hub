@@ -24,7 +24,7 @@ from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attem
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
 from local_ai_hub.services import LocalAIServices
-from local_ai_hub.token_accounting import TenantQuotaEnforcer
+from local_ai_hub.token_accounting import GlobalQuotaEnforcer
 
 
 def test_command_broker_lint_fix_and_rejects_unsafe_daemon_command(tmp_path: Path, monkeypatch):
@@ -227,7 +227,7 @@ def test_agent_memory_semantic_find(tmp_path: Path):
         scope_id="repo-memory-search",
         root=str(tmp_path),
         repository_id="repo-memory-search",
-        tenant="tenant-a",
+
         semantic=True,
     )
     assert len(matches) > 0
@@ -325,22 +325,29 @@ def test_audit_dependencies_remediation(tmp_path: Path):
     assert "remediations" in res
 
 
-def test_tenant_quota_enforcer():
-    enforcer = TenantQuotaEnforcer()
-    enforcer.set_quota("tenant_x", max_tokens=500, max_duration_ms=1000.0, window_seconds=60)
+def test_global_quota_enforcer():
+    enforcer = GlobalQuotaEnforcer()
+    enforcer.set_quota(max_tokens=500, max_duration_ms=1000.0, window_seconds=60)
 
     # First usage under quota
-    res1 = enforcer.record_usage("tenant_x", tokens=300, duration_ms=200.0)
+    res1 = enforcer.record_usage(tokens=300, duration_ms=200.0)
     assert res1["allowed"] is True
     assert res1["tokens_used"] == 300
 
     # Second usage exceeds token quota
-    res2 = enforcer.record_usage("tenant_x", tokens=300, duration_ms=100.0)
+    res2 = enforcer.record_usage(tokens=300, duration_ms=100.0)
     assert res2["allowed"] is False
     assert res2["token_exceeded"] is True
 
-    chk = enforcer.check_quota("tenant_x")
+    chk = enforcer.check_quota()
     assert chk["allowed"] is False
+    assert "tenant" not in chk
+    with pytest.raises(TypeError):
+        enforcer.set_quota("retired", max_tokens=10)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        enforcer.record_usage("retired", tokens=1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        enforcer.check_quota("retired")  # type: ignore[call-arg]
 
 
 def test_incident_webhooks(tmp_path: Path):
@@ -376,7 +383,7 @@ def test_audio_transcription_service_without_whisper_is_not_false_success(tmp_pa
         repo_tools=MagicMock(),
         deterministic=None,
     )
-    res = srv.transcribe({"audio_path": str(dummy_audio)}, tenant="test")
+    res = srv.transcribe({"audio_path": str(dummy_audio)})
     assert res["success"] is False
     assert res["reason"] == "cli_missing"
     assert res["degraded"] is True
@@ -426,7 +433,7 @@ def test_audio_transcription_service(tmp_path: Path, monkeypatch):
         repo_tools=MagicMock(),
         deterministic=None,
     )
-    res = srv.transcribe({"audio_path": str(dummy_audio)}, tenant="test")
+    res = srv.transcribe({"audio_path": str(dummy_audio)})
     assert res["success"] is True
     assert "audio_path" in res
     assert res["text"] == "transcribed audio"

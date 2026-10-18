@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -20,10 +21,92 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterator, Sequence
 from uuid import uuid4
 
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, readonly_sqlite_connection
 
 
 MAX_TTL_SECONDS = 24 * 60 * 60
+
+
+_FENCE_TABLE_DDL = {
+    "writer_fence_counters": """CREATE TABLE IF NOT EXISTS writer_fence_counters (
+        resource TEXT PRIMARY KEY,
+        last_token INTEGER NOT NULL CHECK(last_token >= 0)
+    )""",
+    "writer_fence_leases": """CREATE TABLE IF NOT EXISTS writer_fence_leases (
+        lease_id TEXT PRIMARY KEY,
+        resource TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
+        expires_at REAL NOT NULL,
+        paths_json TEXT NOT NULL,
+        attempt_id TEXT NOT NULL DEFAULT '',
+        attempt_token INTEGER NOT NULL DEFAULT 0,
+        scope_id TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL CHECK(active IN (0, 1)),
+        work_id TEXT NOT NULL DEFAULT ''
+    )""",
+    "writer_fence_attempts": """CREATE TABLE IF NOT EXISTS writer_fence_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        resource TEXT NOT NULL,
+        scope_id TEXT NOT NULL DEFAULT '',
+        work_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
+        expires_at REAL NOT NULL,
+        active INTEGER NOT NULL CHECK(active IN (0, 1)),
+        UNIQUE(resource, work_id, fencing_token)
+    )""",
+}
+_FENCE_INDEX_DDL = {
+    "idx_writer_attempt_scope": "CREATE INDEX IF NOT EXISTS idx_writer_attempt_scope ON writer_fence_attempts(scope_id, work_id, active, expires_at)",
+    "idx_writer_fence_scope_live": "CREATE INDEX IF NOT EXISTS idx_writer_fence_scope_live ON writer_fence_leases(scope_id, active, expires_at)",
+    "idx_writer_attempt_current": "CREATE INDEX IF NOT EXISTS idx_writer_attempt_current ON writer_fence_attempts(resource, work_id, active, expires_at)",
+    "idx_writer_fence_live": "CREATE INDEX IF NOT EXISTS idx_writer_fence_live ON writer_fence_leases(resource, active, expires_at)",
+}
+
+
+def _fence_ddl_identity(sql: str) -> str:
+    value = " ".join(sql.upper().split()).rstrip(";")
+    value = value.replace(" IF NOT EXISTS ", " ")
+    return re.sub(r"\s*([(),])\s*", r"\1", value)
+
+
+def _validate_fence_schema(connection: sqlite3.Connection) -> None:
+    """Reject incompatible stored fences; runtime never repairs ownership."""
+    deadline = time.monotonic() + 2.0
+    connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    try:
+        rows = connection.execute(
+            "SELECT name, type, CASE WHEN length(CAST(sql AS BLOB)) <= 16384 THEN sql END "
+            "FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"
+        ).fetchmany(65)
+        if not rows:
+            return
+        expected = {**_FENCE_TABLE_DDL, **_FENCE_INDEX_DDL}
+        if len(rows) != len(expected) or {str(row[0]) for row in rows} != set(expected):
+            raise ValueError("writer fence schema requires explicit offline conversion")
+        for name, kind, sql in rows:
+            expected_kind = "table" if name in _FENCE_TABLE_DDL else "index"
+            if kind != expected_kind or not isinstance(sql, str) or len(sql) > 16384:
+                raise ValueError("invalid writer fence schema; offline conversion required")
+            if _fence_ddl_identity(sql) != _fence_ddl_identity(expected[name]):
+                raise ValueError("writer fence schema differs from the canonical contract; offline conversion required")
+        for table in ("writer_fence_leases", "writer_fence_attempts"):
+            if connection.execute(
+                f"SELECT 1 FROM {table} WHERE scope_id IS NULL OR scope_id='' LIMIT 1"
+            ).fetchone() is not None:
+                raise ValueError("writer fence has no scope; explicit offline conversion required")
+    finally:
+        connection.set_progress_handler(None, 0)
+
+
+def _preflight_fence_schema(path: Path) -> None:
+    if not path.is_file() or path.stat().st_size == 0:
+        return
+    with readonly_sqlite_connection(path) as connection:
+        _validate_fence_schema(connection)
+
+
 _COORDINATION_ID_UNSET = object()
 
 
@@ -198,92 +281,24 @@ class FencingLeaseStore:
         with self._init_lock:
             if self._initialized:
                 return
+            _preflight_fence_schema(self.path)
 
             def setup() -> None:
                 with closing(self._connect()) as con:
+                    _validate_fence_schema(con)
                     initialize_wal(con)
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS writer_fence_counters (
-                            resource TEXT PRIMARY KEY,
-                            last_token INTEGER NOT NULL CHECK(last_token >= 0)
-                        )"""
-                    )
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS writer_fence_leases (
-                            lease_id TEXT PRIMARY KEY,
-                            resource TEXT NOT NULL,
-                            owner_id TEXT NOT NULL,
-                            fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
-                            expires_at REAL NOT NULL,
-                            paths_json TEXT NOT NULL,
-                            attempt_id TEXT NOT NULL DEFAULT '',
-                            attempt_token INTEGER NOT NULL DEFAULT 0,
-                            scope_id TEXT NOT NULL DEFAULT '',
-                            active INTEGER NOT NULL CHECK(active IN (0, 1))
-                        )"""
-                    )
-                    lease_columns = {
-                        str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_leases)")
-                    }
-                    if "work_id" not in lease_columns:
-                        try:
-                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN work_id TEXT NOT NULL DEFAULT ''")
-                        except sqlite3.OperationalError:
-                            pass
-                    if "attempt_id" not in lease_columns:
-                        try:
-                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''")
-                        except sqlite3.OperationalError:
-                            pass
-                    if "attempt_token" not in lease_columns:
-                        try:
-                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_token INTEGER NOT NULL DEFAULT 0")
-                        except sqlite3.OperationalError:
-                            pass
-                    if "scope_id" not in lease_columns:
-                        try:
-                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
-                        except sqlite3.OperationalError:
-                            pass
-                    con.execute("UPDATE writer_fence_leases SET scope_id=resource WHERE scope_id='' ")
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS writer_fence_attempts (
-                            attempt_id TEXT PRIMARY KEY,
-                            resource TEXT NOT NULL,
-                            scope_id TEXT NOT NULL DEFAULT '',
-                            work_id TEXT NOT NULL,
-                            owner_id TEXT NOT NULL,
-                            fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
-                            expires_at REAL NOT NULL,
-                            active INTEGER NOT NULL CHECK(active IN (0, 1)),
-                            UNIQUE(resource, work_id, fencing_token)
-                        )"""
-                    )
-                    attempt_columns = {
-                        str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_attempts)")
-                    }
-                    if "scope_id" not in attempt_columns:
-                        try:
-                            con.execute("ALTER TABLE writer_fence_attempts ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
-                        except sqlite3.OperationalError:
-                            pass
-                    con.execute("UPDATE writer_fence_attempts SET scope_id=resource WHERE scope_id='' ")
-                    con.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_writer_attempt_scope "
-                        "ON writer_fence_attempts(scope_id, work_id, active, expires_at)"
-                    )
-                    con.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_writer_fence_scope_live "
-                        "ON writer_fence_leases(scope_id, active, expires_at)"
-                    )
-                    con.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_writer_attempt_current "
-                        "ON writer_fence_attempts(resource, work_id, active, expires_at)"
-                    )
-                    con.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_writer_fence_live "
-                        "ON writer_fence_leases(resource, active, expires_at)"
-                    )
+                    con.execute("BEGIN IMMEDIATE")
+                    try:
+                        _validate_fence_schema(con)
+                        for ddl in _FENCE_TABLE_DDL.values():
+                            con.execute(ddl)
+                        for ddl in _FENCE_INDEX_DDL.values():
+                            con.execute(ddl)
+                        con.execute("COMMIT")
+                    except BaseException:
+                        if con.in_transaction:
+                            con.execute("ROLLBACK")
+                        raise
 
             retry_busy(setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True

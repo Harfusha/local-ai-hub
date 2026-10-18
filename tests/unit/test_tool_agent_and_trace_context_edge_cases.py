@@ -10,7 +10,6 @@ from local_ai_hub.trace_context import (
     current,
     current_agent,
     current_request_id,
-    current_tenant,
     current_trace_id,
     has_context,
     is_trace_active,
@@ -32,7 +31,7 @@ class DummyPreprocessor:
 
 
 class DummyRag:
-    def search(self, query: str, tenant: str, workspace: str, limit: int, flag: bool) -> dict[str, Any]:
+    def search(self, query: str, workspace: str, limit: int, flag: bool) -> dict[str, Any]:
         return {"query": query, "results": []}
 
 
@@ -98,6 +97,20 @@ def test_tool_aware_local_agent_init_defensive() -> None:
     assert agent2.semantic_bypass_confidence == 1.0
 
 
+def test_tool_result_truncation_stays_within_configured_character_limit() -> None:
+    agent = ToolAwareLocalAgent(
+        {"local_tools": {"max_tool_result_chars": 800}},
+        DummyServices(),
+        DummyPreprocessor(),
+        DummyRag(),
+    )
+
+    result = agent._trim({"value": "x" * 2000})
+
+    assert len(result) <= agent.max_tool_chars
+    assert result.endswith("[…tool result truncated…]")
+
+
 def test_tool_aware_local_agent_inspection_and_clear_stats() -> None:
     agent = ToolAwareLocalAgent(
         {},
@@ -136,15 +149,15 @@ def test_tool_aware_local_agent_arguments_sanitization() -> None:
 def test_tool_aware_local_agent_execute_tool_sanitization() -> None:
     agent = ToolAwareLocalAgent({}, DummyServices(), DummyPreprocessor(), DummyRag())
     # Null byte in tool name
-    res = agent._execute_tool("preprocessed_context\x00", {"query": "test\x00"}, "C:/root", "tenant", "ws")
+    res = agent._execute_tool("preprocessed_context\x00", {"query": "test\x00"}, "C:/root", "ws")
     assert res.get("query") == "test"
 
     # Non-dict args
-    res2 = agent._execute_tool("preprocessed_context", None, "C:/root", "tenant", "ws")  # type: ignore[arg-type]
+    res2 = agent._execute_tool("preprocessed_context", None, "C:/root", "ws")  # type: ignore[arg-type]
     assert res2.get("query") == ""
 
     # Unknown tool
-    res3 = agent._execute_tool("nonexistent_tool", {}, "C:/root", "tenant", "ws")
+    res3 = agent._execute_tool("nonexistent_tool", {}, "C:/root", "ws")
     assert res3["success"] is False
     assert "unknown local tool" in res3["error"]
 
@@ -178,15 +191,13 @@ def test_trace_context_helpers() -> None:
     assert current_request_id() == ""
     assert current_trace_id() == ""
     assert current_agent() == ""
-    assert current_tenant() == ""
 
-    with scoped_context(request_id="req-99", trace_id="tr-88", agent="ag-77", tenant="ten-66"):
+    with scoped_context(request_id="req-99", trace_id="tr-88", agent="ag-77"):
         assert has_context() is True
         assert is_trace_active() is True
         assert current_request_id() == "req-99"
         assert current_trace_id() == "tr-88"
         assert current_agent() == "ag-77"
-        assert current_tenant() == "ten-66"
 
     assert has_context() is False
     assert is_trace_active() is False

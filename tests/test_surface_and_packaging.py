@@ -187,7 +187,7 @@ def test_repo_cache_stale_root_and_none_result_are_structured():
 def test_hybrid_context_missing_root_is_explicitly_degraded(tmp_path: Path):
     from local_ai_hub.services import LocalAIServices
     svc = object.__new__(LocalAIServices)
-    out = svc._hybrid_context(str(tmp_path / "gone"), "query", "tenant", None, 500)
+    out = svc._hybrid_context(str(tmp_path / "gone"), "query", workspace=None, max_tokens=500)
     assert out["success"] is False
     assert out["stale_root"] is True
     assert out["degraded"] is True

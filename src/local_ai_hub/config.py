@@ -99,9 +99,16 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
+
+    if "scope" in data.get("rag", {}):
+        raise ConfigError("rag.scope was removed; use actual workspace/repository scope")
+
+    for retired_key in ("max_queued_per_tenant", "max_inflight_per_tenant"):
+        if retired_key in data.get("scheduler", {}):
+            raise ConfigError(f"scheduler.{retired_key} was removed; Local AI Hub has a single local owner")
 
 
     work = data.get("work_orchestrator", {})
@@ -140,9 +147,8 @@ def validate_config(data: dict[str, Any]) -> None:
             raise ConfigError("browser_bridge.allowed_origins must be a list of non-empty strings")
         if any("*" in item for item in allowed_origins):
             raise ConfigError("browser_bridge.allowed_origins must contain exact origins; wildcards are not allowed")
-        bridge_tenant = browser_bridge.get("tenant", "http-default")
-        if not isinstance(bridge_tenant, str) or not bridge_tenant.strip() or len(bridge_tenant.strip()) > 256:
-            raise ConfigError("browser_bridge.tenant must be a non-empty string of at most 256 characters")
+        if "tenant" in browser_bridge:
+            raise ConfigError("browser_bridge.tenant was removed; Local AI Hub has a single local owner")
         _number(browser_bridge, "capability_ttl_seconds", minimum=1, maximum=3600)
         _number(browser_bridge, "max_payload_bytes", minimum=1024, maximum=64 * 1024 * 1024)
         _number(browser_bridge, "max_screenshot_bytes", minimum=1024, maximum=32 * 1024 * 1024)
@@ -292,9 +298,9 @@ def validate_config(data: dict[str, Any]) -> None:
             or any(not isinstance(item, str) or item.strip().lower() not in allowed_permissions for item in permissions)
         ):
             raise ConfigError("security.api_token_permissions must contain monitor, read, write, or admin")
-        token_tenant = security.get("api_token_tenant")
-        if token_tenant is not None and (not isinstance(token_tenant, str) or not token_tenant.strip()):
-            raise ConfigError("security.api_token_tenant must be a non-empty string")
+        for retired_key in ("api_token_tenant", "api_token_principal", "tenant_derivation_key", "users"):
+            if retired_key in security:
+                raise ConfigError(f"security.{retired_key} was removed; Local AI Hub has a single local owner")
         credential_values: list[str] = []
         for key in ("api_token", "supervisor_token"):
             credential = security.get(key)
@@ -312,44 +318,9 @@ def validate_config(data: dict[str, Any]) -> None:
             raise ConfigError("security.action_tokens must map action names to non-empty tokens")
         credential_values.extend(action_tokens.values())
 
-        users = security.get("users", {})
-        if not isinstance(users, dict):
-            raise ConfigError("security.users must be a table")
-        for username, user in users.items():
-            if not isinstance(username, str) or not username.strip() or len(username) > 128 or not isinstance(user, dict):
-                raise ConfigError("security.users entries must have a username and table value")
-            token = user.get("token")
-            if not isinstance(token, str) or not token or len(token) > 4096:
-                raise ConfigError("security.users tokens must be non-empty strings of at most 4096 characters")
-            scopes = user.get("permissions")
-            if (
-                not isinstance(scopes, list) or not scopes or len(scopes) > 128
-                or any(
-                    not isinstance(scope, str) or len(scope) > 128
-                    or len(scope.split(":")) != 2
-                    or not scope.split(":")[0]
-                    or not scope.split(":")[0].replace("_", "").isalnum()
-                    or scope.split(":")[1] not in {"read", "write"}
-                    for scope in scopes
-                )
-            ):
-                raise ConfigError("security.users permissions must be non-empty resource:read/write scopes")
-            tenant = user.get("tenant")
-            if tenant is not None and (
-                not isinstance(tenant, str) or not tenant.strip() or len(tenant) > 128
-            ):
-                raise ConfigError("security.users tenant must be a non-empty string of at most 128 characters")
-            credential_values.append(token)
-
         if len(credential_values) != len(set(credential_values)):
-            raise ConfigError("security credentials must be unique across API, supervisor, action, and user tokens")
+            raise ConfigError("security credentials must be unique across API, supervisor, and action tokens")
 
-        principal = security.get("api_token_principal")
-        if principal is not None and (not isinstance(principal, str) or not principal.strip() or len(principal.strip()) > 128):
-            raise ConfigError("security.api_token_principal must be a non-empty string of at most 128 characters")
-        derivation_key = security.get("tenant_derivation_key")
-        if derivation_key is not None and (not isinstance(derivation_key, str) or len(derivation_key) < 32 or len(derivation_key) > 256):
-            raise ConfigError("security.tenant_derivation_key must contain 32 to 256 characters")
         allowed_roots = security.get("allowed_roots", [])
         if (
             not isinstance(allowed_roots, list)

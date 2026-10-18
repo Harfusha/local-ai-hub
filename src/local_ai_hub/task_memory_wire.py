@@ -70,8 +70,13 @@ def task_memory_projection(value: Any) -> dict[str, Any] | None:
     memory = state.get("memory_context") if isinstance(state, dict) else None
     if not isinstance(memory, dict):
         return None
+    context = memory.get("context")
+    if (type(memory.get("schema_version")) is not int or memory.get("schema_version") != 2
+            or "tenant_key" in memory or "tenant" in memory or not isinstance(context, dict)
+            or "tenant" in context or "tenant_key" in context):
+        raise ValueError("retired memory snapshot contract requires explicit offline conversion")
     bundle = {key: copy.deepcopy(memory[key]) for key in (
-        "schema_version", "tenant_key", "instruction", "items", "warnings", "estimated_tokens",
+        "schema_version", "context", "instruction", "items", "warnings", "estimated_tokens",
     ) if key in memory}
     projected_task = {key: copy.deepcopy(task[key]) for key in (
         "task_id", "status", "owner", "lease_id", "created_at", "updated_at",

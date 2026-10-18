@@ -150,7 +150,6 @@ def test_run_affected_applies_project_mapping_and_path_hints_safely(
                 },
             ],
         },
-        tenant="test",
     )
 
     expected = [
@@ -280,7 +279,6 @@ def test_run_affected_fails_closed_when_uncertain_and_test_matrix_missing(
 
     result = services.command(
         {"action": "run_affected", "cwd": str(tmp_path), "paths": ["src/unknown.py"]},
-        tenant="test",
     )
 
     assert result["success"] is False

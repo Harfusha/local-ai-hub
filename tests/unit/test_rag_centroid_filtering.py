@@ -11,7 +11,7 @@ from local_ai_hub.rag import RAGStore
 class _Embeddings:
     space_id = "centroid-test-space"
 
-    def embed(self, texts, tenant, **kwargs):
+    def embed(self, texts, **kwargs):
         return {
             "success": True,
             "embeddings": [[1.0, 0.0] for _ in texts],
@@ -24,21 +24,27 @@ def _store(tmp_path):
 
 
 def _store_with_embeddings(tmp_path, embeddings):
-    return RAGStore(
+    store = RAGStore(
         {"server": {"state_dir": str(tmp_path)}, "models": {"embedding_dimension": 2}},
         embeddings,
     )
+    root = tmp_path / "workspace-a-root"
+    root.mkdir(exist_ok=True)
+    (root / "binding.txt").write_text("", encoding="utf-8")
+    indexed = store.index_paths_step(
+        str(root), workspace="workspace-a", paths=["binding.txt"]
+    )
+    assert indexed["success"], indexed
+    return store
 
 
 def _seed_direction_clusters(store, cluster_count=200, rows_per_cluster=60, embedding_space=None, path_prefix="cluster"):
-    tenant = store._scope_key("tenant-a")
     with closing(store._connect()) as con:
         con.executemany(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
             (
                 (
-                    tenant,
                     "workspace-a",
                     f"{path_prefix}/cluster-{cluster:03d}/chunk-{row:03d}.txt",
                     0,
@@ -78,15 +84,15 @@ def test_centroid_filter_is_opt_in_and_preserves_fine_scoring(tmp_path, monkeypa
 
     monkeypatch.setattr(rag_module, "_fine_cosine_scores", count_fine_scores)
     monkeypatch.setattr(store, "_build_centroid_index", count_build)
-    exact_result = store.search("nearest vector exact", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    exact_result = store.search("nearest vector exact", top_k=1, use_reranker=False, workspace="workspace-a")
     exact_scored = sum(fine_scored_rows)
     fine_scored_rows.clear()
 
     monkeypatch.setattr(rag_module, "_CENTROID_FILTER_ENABLED", True)
-    result = store.search("nearest vector", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    result = store.search("nearest vector", top_k=1, use_reranker=False, workspace="workspace-a")
     first_scored = sum(fine_scored_rows)
     fine_scored_rows.clear()
-    warm_result = store.search("nearest vector warm", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    warm_result = store.search("nearest vector warm", top_k=1, use_reranker=False, workspace="workspace-a")
 
     assert exact_result["success"] is True
     assert exact_result["results"][0]["path"] == "cluster/cluster-000/chunk-000.txt"
@@ -117,7 +123,7 @@ def test_small_workspace_keeps_exact_scoring(tmp_path, monkeypatch):
         return original_score(matrix, query_vector)
 
     monkeypatch.setattr(rag_module, "_fine_cosine_scores", count_scores)
-    result = store.search("nearest vector", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    result = store.search("nearest vector", top_k=1, use_reranker=False, workspace="workspace-a")
 
     assert result["success"] is True
     assert sum(scored_rows) == 100
@@ -142,7 +148,7 @@ def test_unavailable_numpy_falls_back_to_exact_scoring(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rag_module.importlib, "import_module", unavailable_numpy)
     monkeypatch.setattr(rag_module, "_fine_cosine_scores", count_scores)
-    result = store.search("nearest vector", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    result = store.search("nearest vector", top_k=1, use_reranker=False, workspace="workspace-a")
 
     assert result["success"] is True
     assert sum(scored_rows) == 120
@@ -152,22 +158,21 @@ def test_generation_change_rebuilds_cached_centroids(tmp_path, monkeypatch):
     monkeypatch.setattr(rag_module, "_CENTROID_FILTER_MIN_CHUNKS", 100)
     store = _store(tmp_path)
     _seed_direction_clusters(store, cluster_count=20, rows_per_cluster=6)
-    scope_key = store._scope_key("tenant-a")
-    first = store._centroid_index_for_search(scope_key, "workspace-a", _Embeddings.space_id, [1.0, 0.0])
+    first = store._centroid_index_for_search("workspace-a", _Embeddings.space_id, [1.0, 0.0])
     assert first is not None
     generation_before = first[0]
 
     other_store = _store_with_embeddings(tmp_path, _Embeddings())
     with closing(other_store._connect()) as con:
         con.execute(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (scope_key, "workspace-a", "cluster-000/new.txt", 0, "new-hash", "new nearest", "[1.0,0.0]", _Embeddings.space_id),
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ("workspace-a", "cluster-000/new.txt", 0, "new-hash", "new nearest", "[1.0,0.0]", _Embeddings.space_id),
         )
-        generation_after = other_store._bump_workspace_index_generation(con, scope_key, "workspace-a")
+        generation_after = other_store._bump_workspace_index_generation(con, "workspace-a")
         con.commit()
 
-    second = store._centroid_index_for_search(scope_key, "workspace-a", _Embeddings.space_id, [1.0, 0.0])
+    second = store._centroid_index_for_search("workspace-a", _Embeddings.space_id, [1.0, 0.0])
     assert second is not None
     assert generation_after > generation_before
     assert second[0] == generation_after
@@ -190,23 +195,19 @@ def test_candidate_filter_keeps_embedding_space_and_scope_path_filters(tmp_path,
         store, cluster_count=20, rows_per_cluster=6,
         embedding_space="space-b", path_prefix="allowed/00-space-b",
     )
-    tenant = store._scope_key("tenant-a")
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (tenant, "workspace-a", "outside/best.txt", 0, "other-space", "outside best", "[1.0,0.0]", "space-b"),
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ("workspace-a", "outside/best.txt", 0, "other-space", "outside best", "[1.0,0.0]", "space-b"),
         )
         con.execute(
-            "UPDATE chunks SET path='allowed/' || path WHERE tenant=? AND workspace=? AND embedding_space=? AND path LIKE 'cluster/%'",
-            (tenant, "workspace-a", "space-a"),
+            "UPDATE chunks SET path='allowed/' || path WHERE workspace=? AND embedding_space=? AND path LIKE 'cluster/%'",
+            ("workspace-a", "space-a"),
         )
         con.commit()
 
-    result = store.search(
-        "nearest vector", "tenant-a", "workspace-a", top_k=1,
-        use_reranker=False, scope_path="allowed",
-    )
+    result = store.search("nearest vector", top_k=1, use_reranker=False, scope_path="allowed", workspace="workspace-a")
     assert result["success"] is True
     assert result["results"][0]["path"] == "allowed/cluster/cluster-000/chunk-000.txt"
     assert "space-b" not in result["results"][0]["path"]
@@ -219,19 +220,15 @@ def test_large_scoped_query_keeps_nearest_outside_global_probe_buckets(tmp_path,
         store, cluster_count=200, rows_per_cluster=60,
         path_prefix="a-outside",
     )
-    tenant = store._scope_key("tenant-a")
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (tenant, "workspace-a", "z-allowed/nearest.txt", 0, "allowed-nearest", "scoped nearest", "[-1.0,0.0]", _Embeddings.space_id),
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ("workspace-a", "z-allowed/nearest.txt", 0, "allowed-nearest", "scoped nearest", "[-1.0,0.0]", _Embeddings.space_id),
         )
         con.commit()
 
-    result = store.search(
-        "nearest vector", "tenant-a", "workspace-a", top_k=1,
-        use_reranker=False, scope_path="z-allowed",
-    )
+    result = store.search("nearest vector", top_k=1, use_reranker=False, scope_path="z-allowed", workspace="workspace-a")
     assert result["success"] is True
     assert result["results"][0]["path"] == "z-allowed/nearest.txt"
 
@@ -240,10 +237,9 @@ def test_read_uncertainty_uses_exact_search_without_cold_centroid_build(tmp_path
     monkeypatch.setattr(rag_module, "_CENTROID_FILTER_MIN_CHUNKS", 1000)
     store = _store(tmp_path)
     _seed_direction_clusters(store, cluster_count=20, rows_per_cluster=60)
-    tenant = store._scope_key("tenant-a")
     with closing(store._connect()) as con:
         store._update_workspace_read_uncertainty(
-            con, tenant, "workspace-a", uncertain_paths={"unrelated/missing.txt"},
+            con, "workspace-a", uncertain_paths={"unrelated/missing.txt"},
         )
         con.commit()
 
@@ -255,10 +251,7 @@ def test_read_uncertainty_uses_exact_search_without_cold_centroid_build(tmp_path
         return original_build(*args, **kwargs)
 
     monkeypatch.setattr(store, "_build_centroid_index", count_build)
-    result = store.search(
-        "nearest vector", "tenant-a", "workspace-a", top_k=1,
-        use_reranker=False,
-    )
+    result = store.search("nearest vector", top_k=1, use_reranker=False, workspace="workspace-a")
     assert result["success"] is True
     assert result["results"][0]["path"] == "cluster/cluster-000/chunk-000.txt"
     assert build_count == []
@@ -282,6 +275,6 @@ def test_corrupt_vectors_fall_back_to_exact_search(tmp_path, monkeypatch):
         )
         con.commit()
 
-    result = store.search("nearest vector", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    result = store.search("nearest vector", top_k=1, use_reranker=False, workspace="workspace-a")
     assert result["success"] is True
     assert sum(scored_rows) == 120

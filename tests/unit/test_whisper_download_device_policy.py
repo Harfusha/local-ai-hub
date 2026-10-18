@@ -106,7 +106,9 @@ def test_transcribe_passes_verified_model_path_and_explicit_cpu_flags(tmp_path: 
     audio = tmp_path / "input.wav"
     audio.write_bytes(b"audio")
     service = LocalAIServices.__new__(LocalAIServices)
-    service.config = {"transcription": {"cache_dir": str(cache)}}
+    service.config = {"transcription": {
+        "cache_dir": str(cache), "device": "cpu", "allow_model_downloads": False,
+    }}
     seen: list[str] = []
 
     def fake_run_hidden(command: list[str], **kwargs: object) -> SimpleNamespace:
@@ -120,7 +122,7 @@ def test_transcribe_passes_verified_model_path_and_explicit_cpu_flags(tmp_path: 
         patch("local_ai_hub.services.shutil.which", return_value="fake-whisper"),
         patch("local_ai_hub.process_utils.run_hidden", side_effect=fake_run_hidden),
     ):
-        result = service.transcribe({"audio": str(audio)}, "test")
+        result = service.transcribe({"audio": str(audio)})
 
     assert result["success"] is True
     assert result["text"] == "hello"
@@ -133,12 +135,14 @@ def test_transcribe_does_not_invoke_cli_for_missing_model_without_opt_in(tmp_pat
     audio = tmp_path / "input.wav"
     audio.write_bytes(b"audio")
     service = LocalAIServices.__new__(LocalAIServices)
-    service.config = {"transcription": {"cache_dir": str(tmp_path / "cache")}}
+    service.config = {"transcription": {
+        "cache_dir": str(tmp_path / "cache"), "device": "cpu", "allow_model_downloads": False,
+    }}
     with (
         patch("local_ai_hub.services.shutil.which", return_value="fake-whisper"),
         patch("local_ai_hub.process_utils.run_hidden") as run_hidden,
     ):
-        result = service.transcribe({"audio": str(audio)}, "test")
+        result = service.transcribe({"audio": str(audio)})
     assert result["reason"] == "model_missing"
     assert result["terminal"] is True
     assert result["retryable"] is False

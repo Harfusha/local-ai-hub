@@ -31,10 +31,10 @@ def _safety_fixture(tmp_path: Path):
     coordination_id = resolve_project_context(str(root), str(tmp_path / "state")).coordination_id
     compiler = ContextCompiler(state_store=state, memory_store=memory)
     consistency_request = ConsistencyRequest(
-        root=str(root), task_id="task-memory-safety", tenant="tenant-a", query="reuse service"
+        root=str(root), task_id="task-memory-safety",  query="reuse service"
     )
     context_request = ContextRequest(
-        task_id="task-memory-safety", root=str(root), tenant="tenant-a", token_budget=1200, coordination_id=coordination_id
+        task_id="task-memory-safety", root=str(root),  token_budget=1200, coordination_id=coordination_id
     )
     return root, memory, guard, compiler, consistency_request, context_request
 

@@ -242,15 +242,16 @@ class ToolAwareLocalAgent:
     def _trim(self, value: Any) -> str:
         text = json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
         if len(text) > self.max_tool_chars:
-            return text[: self.max_tool_chars] + "\n[…tool result truncated…]"
+            marker = "\n[…tool result truncated…]"
+            content_limit = max(0, self.max_tool_chars - len(marker))
+            return text[:content_limit] + marker
         return text
 
-    def _execute_tool(self, name: str, args: dict[str, Any], root: str, tenant: str, workspace: str) -> dict[str, Any]:
+    def _execute_tool(self, name: str, args: dict[str, Any], root: str, workspace: str) -> dict[str, Any]:
         name = str(name or "").replace("\x00", "").strip()
         if not isinstance(args, dict):
             args = {}
         root = str(root or "").replace("\x00", "")
-        tenant = str(tenant or "").replace("\x00", "")
         workspace = str(workspace or "").replace("\x00", "")
         if name == "preprocessed_context":
             query = str(args.get("query", "")).replace("\x00", "")
@@ -326,7 +327,8 @@ class ToolAwareLocalAgent:
                         }
                 except Exception:
                     pass
-            result = self.rag.search(query, tenant, workspace, top_k, True)
+            self.rag.require_workspace_root(workspace=workspace, root=root)
+            result = self.rag.search(query, workspace=workspace, top_k=top_k, use_reranker=True)
             if isinstance(result.get("results"), list):
                 # RAG chunks are hints; send coordinates/score first and let the agent request exact source via search/file slice.
                 result = dict(result)
@@ -393,7 +395,6 @@ class ToolAwareLocalAgent:
         role: str,
         task: str,
         root: str,
-        tenant: str,
         max_tokens: int,
         priority: int,
         *,
@@ -570,7 +571,7 @@ class ToolAwareLocalAgent:
                     if trace_observer is not None:
                         trace_observer.tool_call({"name": name, "arguments": args, "call_id": call_id, "step": step})
                     try:
-                        result = self._execute_tool(name, args, root, tenant, workspace)
+                        result = self._execute_tool(name, args, root, workspace)
                     except Exception as exc:
                         result = {"success": False, "error": str(exc)}
                     if trace_observer is not None:
@@ -607,7 +608,7 @@ class ToolAwareLocalAgent:
         def scheduled_compute() -> dict[str, Any]:
             try:
                 return self.services.scheduler.submit(
-                    model, tenant, f"tool-agent:{role}", compute, priority=priority,
+                    model, source=f"tool-agent:{role}", execute=compute, priority=priority,
                     wait_timeout=float(self.config.get("resilience", {}).get("scheduler_wait_timeout_seconds", 330)),
                 )
             except Exception as exc:
@@ -625,7 +626,6 @@ class ToolAwareLocalAgent:
         profile_name: str,
         task: str,
         root: str,
-        tenant: str,
         *,
         workspace: str | None = None,
         seed_context: str = "",
@@ -657,7 +657,6 @@ class ToolAwareLocalAgent:
             profile.role,
             task,
             root,
-            tenant,
             profile.max_tokens,
             priority,
             workspace=workspace,

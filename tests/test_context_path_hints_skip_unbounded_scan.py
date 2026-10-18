@@ -49,7 +49,7 @@ def test_adaptive_path_hints_use_index_without_full_repository_walk(tmp_path: Pa
     )
 
     result = services._hybrid_context_uncached(
-        str(root), "find button", "tenant-a", None, 400,
+        str(root), "find button", workspace=None, max_tokens=400,
         quality_first=True,
         path_hints=({"path": "src/button.py", "provenance": "project_config:entry_point"},),
     )

@@ -35,10 +35,7 @@ def _seed_durable_state(db_path):
         key="t08-migration-memory",
         value="preserved memory",
         source="T08 migration recovery test",
-        provenance={
-            "root": str(db_path.parent / "memory-repo"),
-            "tenant": "t08-migration-tenant",
-        },
+        provenance={"root": str(db_path.parent / "memory-repo")},
     )
     MemoryStore(state).record(memory, actor="test")
     receipt = VerificationReceipt.create(
@@ -90,7 +87,6 @@ def test_current_schema_reopen_preserves_agent_state(tmp_path):
         scope_id=task.task_id,
         task_id=task.task_id,
         root=memory.provenance["root"],
-        tenant=memory.provenance["tenant"],
     ).value == "preserved memory"
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (1,)

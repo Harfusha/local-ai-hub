@@ -6,7 +6,7 @@ from local_ai_hub.projection import AgentProjector, _dense_text
 
 
 class _Artifacts:
-    def put(self, content: str, tenant: str, kind: str) -> str:
+    def put(self, content: str, *, kind: str) -> str:
         return "art-123"
 
 
@@ -30,7 +30,7 @@ def test_command_broker_output_projected_terse(tmp_path: Path):
         artifacts=_Artifacts(),
         repo_state=_MockRepoState(),
     )
-    raw_res = broker.run("python -c \"print('terse_test')\"", str(tmp_path), tenant="test_agent")
+    raw_res = broker.run("python -c \"print('terse_test')\"", str(tmp_path))
 
     assert raw_res["success"] is True
     assert raw_res["exit_code"] == 0
@@ -66,7 +66,7 @@ def test_command_broker_output_with_extra_fields(tmp_path: Path):
         artifacts=_Artifacts(),
         repo_state=_MockRepoState(),
     )
-    raw_res = broker.run("python -c \"print('extra_test')\"", str(tmp_path), tenant="test_agent")
+    raw_res = broker.run("python -c \"print('extra_test')\"", str(tmp_path))
 
     projector = AgentProjector({})
     projected = projector.project(
@@ -87,7 +87,7 @@ def test_command_broker_failure_terse(tmp_path: Path):
         artifacts=_Artifacts(),
         repo_state=_MockRepoState(),
     )
-    raw_res = broker.run("python -c \"import sys; sys.stderr.write('boom\\n'); sys.exit(2)\"", str(tmp_path), tenant="test_agent")
+    raw_res = broker.run("python -c \"import sys; sys.stderr.write('boom\\n'); sys.exit(2)\"", str(tmp_path))
 
     projector = AgentProjector({})
     projected = projector.project(raw_res, agent="generic", task_kind="command")
@@ -111,7 +111,7 @@ def test_command_keeps_moderate_success_output_inline(tmp_path: Path):
         repo_state=_MockRepoState(),
     )
     # A moderate successful result stays inline; artifacts are for bounded failure diagnostics or long output.
-    raw_res = broker.run(f'{sys.executable} -c "print(\'x\' * 800)"', str(tmp_path), tenant="test_agent")
+    raw_res = broker.run(f'{sys.executable} -c "print(\'x\' * 800)"', str(tmp_path))
 
     assert raw_res["success"] is True
     assert "artifact_id" not in raw_res

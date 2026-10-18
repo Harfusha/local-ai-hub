@@ -12,7 +12,6 @@ def test_stream_deadline_shuts_down_blocked_socket_and_reports_timeout(monkeypat
     client = HubClient.__new__(HubClient)
     client.base_url = "http://127.0.0.1:1"
     client.api_token = ""
-    client.tenant = "t04-test-tenant"
     client.agent = "t04-test-agent"
     client.max_request_timeout = 0.2
 

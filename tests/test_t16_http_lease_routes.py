@@ -60,7 +60,9 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
-    def request(method: str, path: str, *, tenant: str = "owner-a", payload: dict | None = None) -> dict:
+    def request(method: str, path: str, *, owner: str = "task-a", payload: dict | None = None) -> dict:
+        if payload is not None:
+            payload = {"owner": owner, **payload}
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = urllib.request.Request(
             base + path,
@@ -68,7 +70,6 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
             method=method,
             headers={
                 "X-LocalAI-Token": "lease-test-token",
-                "X-LocalAI-Tenant": tenant,
                 **({"Content-Type": "application/json"} if data is not None else {}),
             },
         )
@@ -80,17 +81,17 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
         claim_a = request("POST", "/api/leases/claim", payload={
             "root": str(worktree_a), "paths": ["src/shared.py"], "coordination_id": forged_id,
         })
-        claim_b = request("POST", "/api/leases/claim_batch", tenant="owner-b", payload={
+        claim_b = request("POST", "/api/leases/claim_batch", owner="task-b", payload={
             "root": str(worktree_b), "paths": ["src/shared.py"], "coordination_id": forged_id,
         })
-        claim_c = request("POST", "/api/leases/claim", tenant="owner-c", payload={
+        claim_c = request("POST", "/api/leases/claim", owner="task-c", payload={
             "root": str(unrelated), "paths": ["src/shared.py"], "coordination_id": forged_id,
         })
         assert claim_a["success"] is True
         assert claim_b["success"] is False
         assert claim_b["conflicts"]
         assert claim_c["success"] is True
-        assert request("POST", "/api/leases/claim", tenant="owner-malformed", payload={
+        assert request("POST", "/api/leases/claim",  payload={
             "root": str(malformed), "paths": ["src/shared.py"], "coordination_id": forged_id,
         })["success"] is False
 
@@ -99,23 +100,23 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
         state_a = request("GET", url_a)
         state_c = request("GET", url_c)
         assert [lease["lease_id"] for lease in state_a["leases"]] == [claim_a["lease_id"]]
-        assert [wait["tenant"] for wait in state_a["waits"]] == ["owner-b"]
+        assert [wait["owner"] for wait in state_a["waits"]] == ["task-b"]
         assert [lease["lease_id"] for lease in state_c["leases"]] == [claim_c["lease_id"]]
         assert state_c["waits"] == []
 
         app.leases = ScopeLeaseStore(state_dir)
         assert request("GET", url_a)["leases"] == state_a["leases"]
-        assert request("POST", "/api/leases/release", tenant="owner-b", payload={
+        assert request("POST", "/api/leases/release", owner="task-b", payload={
             "lease_id": claim_a["lease_id"],
         })["released_rows"] == 0
         assert request("GET", url_a)["leases"]
-        assert request("POST", "/api/leases/renew", tenant="owner-b", payload={
+        assert request("POST", "/api/leases/renew", owner="task-b", payload={
             "lease_id": claim_a["lease_id"], "ttl_seconds": 1200,
         })["success"] is False
-        assert request("POST", "/api/leases/renew", tenant="owner-a", payload={
+        assert request("POST", "/api/leases/renew", owner="task-a", payload={
             "lease_id": claim_a["lease_id"], "ttl_seconds": 1200,
         })["success"] is True
-        assert request("POST", "/api/leases/release", tenant="owner-a", payload={
+        assert request("POST", "/api/leases/release", owner="task-a", payload={
             "lease_id": claim_a["lease_id"],
         })["released_rows"] == 1
     finally:

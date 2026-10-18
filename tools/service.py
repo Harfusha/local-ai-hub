@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -528,7 +529,7 @@ def main() -> int:
         native_start()
         print("restarted")
         return 0
-    client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
+    client = HubClient(config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     status_path = STATE / "supervisor.status.json"
     try:
         status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {"state": "stopped"}

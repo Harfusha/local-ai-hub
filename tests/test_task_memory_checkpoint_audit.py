@@ -16,7 +16,7 @@ from task_memory_support import repository_memory_id
 
 @pytest.fixture
 def make_task(tmp_path):
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     count = 0
 
     def make(*, volatile=False, with_memory=True):
@@ -117,7 +117,7 @@ def test_volatile_usage_requires_same_source_check_policy_as_completion(make_tas
 
 def test_healthy_empty_resume_has_no_irrelevant_memory_audit_friction(make_task):
     tasks, memory, root, task, record = make_task()
-    assert memory.delete(record.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_memory_id(root, memory.state_store), repository_id=repository_memory_id(root, memory.state_store), root=str(root), tenant="tenant-a")
+    assert memory.delete(record.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_memory_id(root, memory.state_store), repository_id=repository_memory_id(root, memory.state_store), root=str(root))
     resumed = tasks.resume(task.task_id, actor="user", idempotency_key="empty-memory-attempt")
     bundle = resumed.checkpoint.state_data.get("memory_context")
     assert bundle is None or (bundle["items"] == [] and bundle["warnings"] == [] and not bundle["instruction"])

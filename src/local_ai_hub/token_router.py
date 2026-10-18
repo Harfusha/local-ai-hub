@@ -224,13 +224,19 @@ class LosslessTokenRouter:
             evidence.append({"path": path or "input", "start_line": safe_start, "end_line": safe_end, "score": round(score, 3), "raw": raw})
         return "\n\n".join(pieces), evidence
 
-    def route_text(self, text: str, query: str, tenant: str, *, path: str | None = None, force_local: bool = False) -> dict[str, Any]:
+    def route_text(
+        self, text: str, query: str, *, path: str | None = None, force_local: bool = False
+    ) -> dict[str, Any]:
+        return self._route_text(text, query, path=path, force_local=force_local)
+
+    def _route_text(
+        self, text: str, query: str, *, path: str | None,
+        force_local: bool = False, cache_namespace: str | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(text, str):
             return {"success": False, "context": "", "evidence": [], "routed": False, "estimated_tokens": 0, "error": "text must be a string"}
         if isinstance(query, bool) or not isinstance(query, str):
             query = ""
-        if isinstance(tenant, bool) or not isinstance(tenant, str):
-            tenant = ""
         if path is not None and (isinstance(path, bool) or not isinstance(path, str) or "\x00" in path):
             path = None
         clean_text = text.replace("\x00", "")
@@ -238,7 +244,18 @@ class LosslessTokenRouter:
         if not self.enabled or not lines:
             return {"success": True, "context": clean_text, "evidence": [], "routed": False, "estimated_tokens": estimate_tokens(clean_text)}
         mode = self._infer_mode(text, path)
-        scope = stable_hash({"text": stable_hash(text), "query": query, "path": path, "mode": mode, "app_version": __version__})
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        scope = stable_hash({
+            "text": stable_hash(text), "query": query, "path": path,
+            "cache_namespace": cache_namespace,
+            "mode": mode, "model": fast_model, "force_local": force_local,
+            "selector_profile": {
+                "max_ranges": self.max_ranges,
+                "context_lines": self.context_lines,
+                "max_output_tokens": self.max_output_tokens,
+            },
+            "app_version": __version__,
+        })
         cached = self.cache.get(scope)
         if isinstance(cached, dict):
             self.hits += 1
@@ -270,11 +287,10 @@ class LosslessTokenRouter:
                 f"Return JSON only: {{\"ranges\":[{{\"start\":N,\"end\":N,\"score\":0-1}}]}}; max {self.max_ranges} ranges.\n\n"
                 f"TASK:\n{query}\n\nNUMBERED INPUT:\n{numbered}"
             )
-            fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
             local = self.services._generate(
                 fast_model, selector_prompt,
                 "You are a lossless context router. Your sole job is selecting relevant original line coordinates. JSON only.",
-                self.max_output_tokens, 0.0, tenant, "lossless-route", 7,
+                self.max_output_tokens, 0.0, source="lossless-route", priority=7,
                 semantic_query="", semantic_context_fingerprint="", internal=True,
             )
             if local.get("success"):
@@ -297,20 +313,26 @@ class LosslessTokenRouter:
         self.cache.set(scope, result)
         return result
 
-    def route_file(self, root: str, relative_path: str, query: str, tenant: str) -> dict[str, Any]:
+    def route_file(
+        self, root: str, path: str, query: str, *, force_local: bool = False
+    ) -> dict[str, Any]:
         repo = Path(root).resolve()
-        path = (repo / relative_path).resolve()
+        candidate = (repo / path).resolve()
         try:
-            path.relative_to(repo)
+            candidate.relative_to(repo)
         except ValueError:
             return {"success": False, "error": "path escapes root"}
-        if not path.is_file():
-            return {"success": False, "error": f"file not found: {relative_path}"}
+        if not candidate.is_file():
+            return {"success": False, "error": f"file not found: {path}"}
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return {"success": False, "error": str(exc)}
-        return self.route_text(text, query, tenant, path=str(path.relative_to(repo)).replace("\\", "/"), force_local=False)
+        relative = str(candidate.relative_to(repo)).replace("\\", "/")
+        return self._route_text(
+            text, query, path=relative, force_local=force_local,
+            cache_namespace=str(repo),
+        )
 
     def stats(self) -> dict[str, Any]:
         return {"enabled": self.enabled, "hits": self.hits, "misses": self.misses, "fallbacks": self.fallbacks, "cache": self.cache.stats()}

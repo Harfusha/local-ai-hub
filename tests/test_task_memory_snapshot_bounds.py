@@ -93,7 +93,7 @@ def setup(tmp_path, monkeypatch):
 
 def lookup(setup, *, previous=None):
     tasks, _, _, _, root, context = setup
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         return tasks._task_memory_context("snapshot-task", GoalContract(goal="use verified fact"), context, root_override=str(root), previous=previous)
     finally:
@@ -276,7 +276,7 @@ def test_task_creation_continues_when_real_backend_is_blocked(setup, monkeypatch
     monkeypatch.setattr(compiler, "compile", blocked_compile)
     monkeypatch.setattr(tasks, "_task_memory_context", measured_lookup)
     monkeypatch.setattr(tasks, "_commit_create", delayed_commit)
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tasks.create(GoalContract(goal="use verified fact"), context, task_id="snapshot-task", repo_root=str(root))
         # The lookup owns the one-second deadline. Durable SQLite commits run
@@ -369,7 +369,7 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
         return result
 
     compiler.compile = observed_compile
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tasks.create(
             GoalContract(goal="Fix renderer theme cache invalidation"),

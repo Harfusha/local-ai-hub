@@ -87,7 +87,7 @@ def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch, reque
     request.addfinalizer(telemetry.close)
     trace_id = traces.start(
         kind="api_request",
-        tenant="test",
+
         action="/api/reason",
         request_id="request-1",
     )
@@ -138,7 +138,7 @@ def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch, reque
 
 def test_trace_detail_http_still_returns_bounded_pages(tmp_path, monkeypatch):
     traces = DebugTraceStore({"server": {"state_dir": str(tmp_path / "traces")}, "debug_traces": {"enabled": True}})
-    trace_id = traces.start(kind="api_request", tenant="test", action="/api/reason")
+    trace_id = traces.start(kind="api_request",  action="/api/reason")
     traces.event(trace_id, "output_delta", {"text": "x" * 6000})
     monkeypatch.setattr(
         http_server,

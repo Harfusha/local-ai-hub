@@ -107,9 +107,8 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     _files(root)
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
-    scope = store._scope_key("tenant")
     digest_key = store._workspace_project_config_key(
-        scope, workspace, store._project_root_identity(root)
+        workspace, store._project_root_identity(root)
     )
     rejected = ["private/secret.py", "payload.binx", "large.py"]
     with closing(store._connect()) as con:
@@ -121,34 +120,34 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
             stat = (root / rel).stat()
             file_hash = "hash-" + rel
             con.execute(
-                "INSERT INTO files VALUES(?,?,?,?,?,?)",
-                (scope, workspace, rel, stat.st_mtime_ns, stat.st_size, file_hash),
+                "INSERT INTO files VALUES(?,?,?,?,?)",
+                (workspace, rel, stat.st_mtime_ns, stat.st_size, file_hash),
             )
             con.execute(
-                "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
-                (scope, workspace, rel, 0, file_hash, "private source", "[]", "space"),
+                "INSERT INTO chunks VALUES(?,?,?,?,?,?,?)",
+                (workspace, rel, 0, file_hash, "private source", "[]", "space"),
             )
             con.execute(
-                "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
-                (scope, workspace, rel, 0, "private source"),
+                "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
+                (workspace, rel, 0, "private source"),
             )
         con.commit()
 
-    result = store.index_paths_step(str(root), "tenant", workspace, rejected)
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=rejected)
 
     assert result["success"] is True
     with closing(store._connect()) as con:
         assert con.execute(
-            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=?",
-            (scope, workspace),
+            "SELECT COUNT(*) FROM files WHERE workspace=?",
+            (workspace),
         ).fetchone()[0] == 0
         assert con.execute(
-            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
-            (scope, workspace),
+            "SELECT COUNT(*) FROM chunks WHERE workspace=?",
+            (workspace),
         ).fetchone()[0] == 0
         assert con.execute(
-            "SELECT COUNT(*) FROM chunk_fts WHERE tenant=? AND workspace=?",
-            (scope, workspace),
+            "SELECT COUNT(*) FROM chunk_fts WHERE workspace=?",
+            (workspace),
         ).fetchone()[0] == 0
 
 def test_project_rag_phase_skip_is_reported_without_indexing(
@@ -159,9 +158,9 @@ def test_project_rag_phase_skip_is_reported_without_indexing(
     root.mkdir()
     store = RAGStore(_config(tmp_path))
     pruned = []
-    store.prune_missing = lambda root, tenant, workspace, paths: pruned.append(paths) or 3
+    store.prune_missing = lambda root, workspace,  paths: pruned.append(paths) or 3
 
-    result = store.index(str(root), "tenant")
+    result = store.index(root=str(root))
 
     assert result["success"] is True
     assert result["skipped"] is True
@@ -211,9 +210,8 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     _files(root)
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
-    scope = store._scope_key("tenant")
     digest_key = store._workspace_project_config_key(
-        scope, workspace, store._project_root_identity(root)
+        workspace, store._project_root_identity(root)
     )
     source_stat = (root / "private" / "secret.py").stat()
     with closing(store._connect()) as con:
@@ -221,39 +219,39 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
             "INSERT INTO rag_meta(key,value) VALUES(?,?)", (digest_key, "old-policy-digest")
         )
         con.execute(
-            "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            (scope, workspace, "private/secret.py", source_stat.st_mtime_ns,
+            "INSERT INTO files VALUES(?,?,?,?,?)",
+            (workspace, "private/secret.py", source_stat.st_mtime_ns,
              source_stat.st_size, "secret-hash"),
         )
         con.execute(
-            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
-            (scope, workspace, "private/secret.py", 0, "secret-hash", "secret source", "[]", "space"),
+            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?)",
+            (workspace, "private/secret.py", 0, "secret-hash", "secret source", "[]", "space"),
         )
         con.commit()
 
-    result = store.index_paths_step(str(root), "tenant", workspace, [])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=[])
 
     assert result["success"] is True
     with closing(store._connect()) as con:
         assert con.execute(
-            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (scope, workspace, "private/secret.py"),
+            "SELECT COUNT(*) FROM files WHERE workspace=? AND path=?",
+            (workspace, "private/secret.py"),
         ).fetchone()[0] == 0
         assert con.execute(
-            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=? AND path=?",
-            (scope, workspace, "private/secret.py"),
+            "SELECT COUNT(*) FROM chunks WHERE workspace=? AND path=?",
+            (workspace, "private/secret.py"),
         ).fetchone()[0] == 0
-        assert store._workspace_index_generation(con, scope, workspace) == 1
+        assert store._workspace_index_generation(con, workspace) == 1
         assert con.execute("SELECT value FROM rag_meta WHERE key=?", (digest_key,)).fetchone()[0] == "test-config-digest"
 
     context.api.resolve_project_context = lambda root, _state_dir=None: SimpleNamespace(
         root=Path(root), settings=context.settings, config_digest="changed-policy-digest"
     )
-    result = store.index_paths_step(str(root), "tenant", workspace, [])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=[])
 
     assert result["success"] is True
     with closing(store._connect()) as con:
-        assert store._workspace_index_generation(con, scope, workspace) == 2
+        assert store._workspace_index_generation(con, workspace) == 2
         assert con.execute("SELECT value FROM rag_meta WHERE key=?", (digest_key,)).fetchone()[0] == "changed-policy-digest"
         metadata = [str(row[0]) + str(row[1]) for row in con.execute("SELECT key,value FROM rag_meta")]
         assert all("secret source" not in item and str(root) not in item for item in metadata)
@@ -266,30 +264,29 @@ def test_rag_skip_phase_prunes_rows_and_advances_workspace_identity(
     root.mkdir()
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
-    scope = store._scope_key("tenant")
     source = root / "secret.py"
     source.write_text("x\n", encoding="utf-8")
     stat = source.stat()
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            (scope, workspace, "secret.py", stat.st_mtime_ns, stat.st_size, "hash"),
+            "INSERT INTO files VALUES(?,?,?,?,?)",
+            (workspace, "secret.py", stat.st_mtime_ns, stat.st_size, "hash"),
         )
         con.execute(
-            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
-            (scope, workspace, "secret.py", 0, "hash", "secret", "[]", "space"),
+            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?)",
+            (workspace, "secret.py", 0, "hash", "secret", "[]", "space"),
         )
         con.commit()
 
-    result = store.index(str(root), "tenant")
+    result = store.index(root=str(root))
 
     assert result["skipped"] is True
     assert result["removed_paths"] == 1
     with closing(store._connect()) as con:
-        assert store._workspace_index_generation(con, scope, workspace) == 1
+        assert store._workspace_index_generation(con, workspace) == 1
         assert con.execute(
-            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
-            (scope, workspace),
+            "SELECT COUNT(*) FROM chunks WHERE workspace=?",
+            (workspace),
         ).fetchone()[0] == 0
 def test_rag_inventory_uses_live_project_config_api(tmp_path: Path):
     root = tmp_path / "project"

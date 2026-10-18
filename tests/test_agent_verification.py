@@ -73,7 +73,7 @@ def receipt_for(
         else:
             proof["criteria"] = [criterion]
         evidence_id = artifact_store.put_json(
-            proof, owner, "command_verification" if command_key else "source_review"
+            proof, kind="command_verification" if command_key else "source_review"
         )
     return VerificationReceipt.create(
         task_id=task_id,
@@ -432,7 +432,7 @@ def test_valid_receipt_allows_task_completion(stores: tuple[TaskStore, Verificat
     assert completed.verification_receipts["tests"] == receipt.receipt_id
 
 
-def test_verification_store_prunes_legacy_invalid_receipts(tmp_path: Path):
+def test_verification_store_rejects_legacy_receipts_without_deleting_them(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "legacy.sqlite3")
     VerificationStore(state_store)
     con = connect_sqlite(state_store.db_path)
@@ -444,16 +444,24 @@ def test_verification_store_prunes_legacy_invalid_receipts(tmp_path: Path):
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ("legacy-invalid", "task-legacy", "", "", "", "", "", 1.0, None, 1, "{}"),
         )
+        con.commit()
+        assert con.execute(
+            "SELECT details FROM agent_verification_receipts WHERE receipt_id=?",
+            ("legacy-invalid",),
+        ).fetchone() == ("{}",)
     finally:
         con.close()
 
-    VerificationStore(state_store)
+    verifier = VerificationStore(state_store)
+    with pytest.raises(ValueError, match="canonical metadata"):
+        verifier.completion("task-legacy")
+
     con = connect_sqlite(state_store.db_path)
     try:
         assert con.execute(
-            "SELECT 1 FROM agent_verification_receipts WHERE receipt_id=?",
+            "SELECT details FROM agent_verification_receipts WHERE receipt_id=?",
             ("legacy-invalid",),
-        ).fetchone() is None
+        ).fetchone() == ("{}",)
     finally:
         con.close()
 
@@ -1008,7 +1016,7 @@ def test_record_can_skip_task_projection_for_external_work_orders(tmp_path: Path
         receipt_state, task_store=task_store, artifact_store=artifact_store
     )
     receipt = receipt_for(
-        "work-order-1", "tests", owner="tenant", command_id="cmd-work-tests",
+        "work-order-1", "tests", owner="worker-external-work-order", command_id="cmd-work-tests",
         artifact_store=artifact_store,
     )
 
@@ -1100,7 +1108,7 @@ def test_positive_receipt_rejects_non_boolean_pass_and_nonzero_exit(
         proof["result"][field.split(".", 1)[1]] = value
     else:
         proof[field] = value
-    evidence_id = artifacts.put(json.dumps(proof), "agent", "command_verification")
+    evidence_id = artifacts.put(json.dumps(proof), kind="command_verification")
     receipt = VerificationReceipt.create(
         task.task_id,
         "tests",
@@ -1115,21 +1123,21 @@ def test_positive_receipt_rejects_non_boolean_pass_and_nonzero_exit(
         verifier.record(receipt)
 
 
-def test_positive_receipt_artifact_must_be_visible_to_receipt_tenant(tmp_path: Path):
+def test_positive_receipt_artifact_is_visible_in_owner_global_store(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     task_store = TaskStore(state_store)
     artifacts = ArtifactStore(tmp_path / "artifacts")
     verifier = VerificationStore(state_store, task_store=task_store, artifact_store=artifacts)
     task = task_store.create(
-        GoalContract(goal="tenant-bound proof", acceptance_criteria=("tests",)),
-        ScopeContext(task_id="tenant-bound-proof"),
-        task_id="tenant-bound-proof",
+        GoalContract(goal="owner-global proof", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="owner-global-proof"),
+        task_id="owner-global-proof",
     )
     proof = {
         "kind": "work_command_verification",
         "passed": True,
         "task_id": task.task_id,
-        "owner": "agent",
+        "owner": task.owner,
         "criterion": "tests",
         "command_id": "cmd-1",
         "repository_revision": "rev-1",
@@ -1137,19 +1145,20 @@ def test_positive_receipt_artifact_must_be_visible_to_receipt_tenant(tmp_path: P
         "exit_code": 0,
         "result": {"success": True, "exit_code": 0},
     }
-    evidence_id = artifacts.put(json.dumps(proof), "other-tenant", "command_verification")
+    evidence_id = artifacts.put(json.dumps(proof), kind="command_verification")
     receipt = VerificationReceipt.create(
         task.task_id,
         "tests",
         evidence_id=evidence_id,
         command_id="cmd-1",
         repository_revision="rev-1",
-        owner="agent",
+        owner=task.owner,
         evidence_type="test",
     )
 
-    with pytest.raises(ValueError, match="trusted evidence"):
-        verifier.record(receipt)
+    saved = verifier.record(receipt)
+
+    assert saved.receipt_id == receipt.receipt_id
 
 
 def test_completion_rereads_and_rejects_deleted_proof_artifact(
@@ -1399,8 +1408,7 @@ def test_project_lint_command_receipt_binds_runner_to_configured_alias(
             "exit_code": 0,
             "result": {"success": True, "exit_code": 0},
         },
-        "agent",
-        "command_verification",
+        kind="command_verification",
     )
     receipt = VerificationReceipt.create(
         task.task_id,
@@ -1894,6 +1902,7 @@ def test_structured_project_receipt_recomputes_argv_env_and_arguments(
         GoalContract(goal="structured project command", acceptance_criteria=("test",)),
         ScopeContext(task_id="structured-project-command"),
         task_id="structured-project-command",
+        repo_root=str(tmp_path.resolve()),
     )
     configured = SimpleNamespace(
         argv=("python", "-m", "pytest", "-q"),
@@ -1954,8 +1963,7 @@ def test_structured_project_receipt_recomputes_argv_env_and_arguments(
             "exit_code": 0,
             "result": {"success": True, "exit_code": 0},
         },
-        "agent",
-        "command_verification",
+        kind="command_verification",
     )
     verifier.record(
         VerificationReceipt.create(

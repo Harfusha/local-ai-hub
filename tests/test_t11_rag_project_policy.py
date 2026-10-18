@@ -9,7 +9,7 @@ from local_ai_hub.rag import RAGStore
 
 
 class RecordingEmbedder:
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         return {
             "success": True,
             "embeddings": [[1.0, float(index + 1)] for index in range(len(texts))],
@@ -38,12 +38,12 @@ def _project(tmp_path: Path, *, skip_rag: bool = False) -> tuple[Path, dict[str,
     return root, config
 
 
-def _stored_paths(store: RAGStore, tenant: str, workspace: str) -> set[str]:
+def _stored_paths(store: RAGStore, workspace: str) -> set[str]:
     with closing(store._connect()) as con:
         return {
             str(row[0])
             for row in con.execute(
-                "SELECT path FROM files WHERE tenant=? AND workspace=?", (store._scope_key(tenant), workspace)
+                "SELECT path FROM files WHERE workspace=?", (workspace)
             ).fetchall()
         }
 
@@ -55,16 +55,14 @@ def test_rag_ingest_uses_rag_policy_not_preprocess_exclusions(tmp_path: Path, en
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(str(root), "tenant", workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(str(root), "tenant", workspace, max_files=10)
+        result = store.index_step(root=str(root), max_files=10, workspace=workspace)
     else:
-        result = store.index_paths_step(
-            str(root), "tenant", workspace, ["preprocess-only.py", "general.py", "included.py"]
-        )
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["preprocess-only.py", "general.py", "included.py"])
 
     assert result["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == {"preprocess-only.py", "included.py"}
+    assert _stored_paths(store, workspace) == {"preprocess-only.py", "included.py"}
 
 
 @pytest.mark.parametrize("entrypoint", ["index", "index_step", "index_paths_step"])
@@ -74,15 +72,15 @@ def test_rag_skip_phase_is_respected_by_each_ingest_entrypoint(tmp_path: Path, e
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(str(root), "tenant", workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(str(root), "tenant", workspace, max_files=10)
+        result = store.index_step(root=str(root), max_files=10, workspace=workspace)
     else:
-        result = store.index_paths_step(str(root), "tenant", workspace, ["included.py"])
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["included.py"])
 
     assert result["success"] is True
     assert result.get("skipped") is True
-    assert _stored_paths(store, "tenant", workspace) == set()
+    assert _stored_paths(store, workspace) == set()
 
 def test_rag_index_paths_respects_hard_ignored_directory_with_force_include(tmp_path: Path) -> None:
     root = tmp_path / "repo"
@@ -99,16 +97,14 @@ def test_rag_index_paths_respects_hard_ignored_directory_with_force_include(tmp_
     }
     store = RAGStore(config, services=RecordingEmbedder())
     workspace = store.workspace_id(str(root))
-    assert store.index_paths_step(
-        str(root), "tenant", workspace, ["generated/keep.py"]
-    )["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == {"generated/keep.py"}
+    assert store.index_paths_step(root=str(root), workspace=workspace, paths=["generated/keep.py"])["success"] is True
+    assert _stored_paths(store, workspace) == {"generated/keep.py"}
 
     rag_config["ignore_dirs"] = ["generated"]
-    result = store.index_paths_step(str(root), "tenant", workspace, ["generated/keep.py"])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=["generated/keep.py"])
 
     assert result["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == set()
+    assert _stored_paths(store, workspace) == set()
 
 
 @pytest.mark.parametrize("entrypoint", ["index", "index_step", "index_paths_step"])
@@ -134,14 +130,11 @@ def test_rag_ingestion_applies_custom_extension_and_project_size_policy(
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(str(root), "tenant", workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(str(root), "tenant", workspace, max_files=10)
+        result = store.index_step(root=str(root), max_files=10, workspace=workspace)
     else:
-        result = store.index_paths_step(
-            str(root), "tenant", workspace,
-            ["view.tmpl", "asset.blob", "large.tmpl", "included.py"],
-        )
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["view.tmpl", "asset.blob", "large.tmpl", "included.py"])
 
     assert result["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == {"view.tmpl", "included.py"}
+    assert _stored_paths(store, workspace) == {"view.tmpl", "included.py"}

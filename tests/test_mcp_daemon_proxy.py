@@ -5,7 +5,7 @@ def test_stdio_builder_uses_daemon_client_and_preserves_request_identity(monkeyp
     from local_ai_hub import mcp_server
 
     assert not hasattr(mcp_server, "InProcessTransport")
-    client = mcp_server._build_mcp_client("tenant-stdio", None)
+    client = mcp_server._build_mcp_client(None)
     observed: dict[str, object] = {}
 
     def pooled_open(method, path, _body, headers, _timeout):
@@ -21,7 +21,7 @@ def test_stdio_builder_uses_daemon_client_and_preserves_request_identity(monkeyp
     assert observed["method"] == "GET"
     assert observed["path"] == path
     headers = observed["headers"]
-    assert headers["X-LocalAI-Tenant"] == "http-default"
+    assert "X-LocalAI-Tenant" not in headers
     assert headers["X-LocalAI-Request-ID"].startswith("req_")
 
 

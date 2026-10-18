@@ -78,7 +78,7 @@ def test_record_finding_and_metadata_preserve_single_string_paths_and_evidence(t
     req = guard._request_from_metadata(None, root=str(tmp_path), changed_paths="src/app.py")
     assert req is not None
     assert req.changed_paths == ("src/app.py",)
-    req = replace(req, tenant="tenant-test")
+    req = replace(req, session_id="chat-test")
 
     rec = guard.record_finding(
         req,

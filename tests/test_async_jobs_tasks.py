@@ -21,13 +21,16 @@ class _Job:
 class _Scheduler:
     config = {"models": {"heavy_code": "test-model"}}
 
-    def enqueue(self, model, tenant, source, execute, priority=1, *, background=True):
+    def enqueue(self, model, source, execute, priority=1, *, background=True):
         return _Job()
 
 
 class _Artifacts:
-    def put(self, _content, _tenant, _kind):
+    def put(self, _content, *, kind):
         return "art-123"
+
+    def get(self, _artifact_id, *, offset=0, max_chars=256):
+        return {"success": True, "text": "{}"}
 
 
 def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path, monkeypatch):
@@ -47,7 +50,7 @@ def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path, monkeypa
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
         scheduler,
         _Artifacts(),
-        lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task")},
+        lambda action, payload: {"success": True, "action": action, "task": payload.get("task")},
         task_store=task_store,
         verification_store=verification_store,
     )
@@ -55,7 +58,7 @@ def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path, monkeypa
     # background dispatcher from racing that explicit _execute() call.
     monkeypatch.setattr(manager, "_dispatch_background", lambda _job_id: None)
 
-    submitted = manager.submit("tenant-test", "reason", {"task": "do work", "task_id": task.task_id})
+    submitted = manager.submit("reason", {"task": "do work", "task_id": task.task_id})
     assert submitted["success"] is True
     assert submitted["task_id"] == task.task_id
 
@@ -82,7 +85,7 @@ def test_async_batch_persists_sixteen_ordered_partial_outcomes(tmp_path: Path):
         for index in range(16)
     ]
 
-    def execute(_action, payload, _tenant):
+    def execute(_action, payload):
         assert len(payload["tasks"]) == 16
         return {"success": True, "results": expected}
 
@@ -94,12 +97,12 @@ def test_async_batch_persists_sixteen_ordered_partial_outcomes(tmp_path: Path):
     )
     try:
         submitted = manager.submit(
-            "tenant-test", "batch", {"tasks": [{"task": f"task-{index}"} for index in range(16)]}
+            "batch", {"tasks": [{"task": f"task-{index}"} for index in range(16)]}
         )
         assert submitted["success"] is True
-        assert manager.wait("tenant-test", submitted["job_id"], 3)["state"] == "done"
+        assert manager.wait(submitted["job_id"], 3)["state"] == "done"
 
-        result = manager.result("tenant-test", submitted["job_id"])
+        result = manager.result(submitted["job_id"])
 
         assert result["success"] is True
         assert result["result"]["results"] == expected

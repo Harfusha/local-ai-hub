@@ -26,15 +26,18 @@ class _Scheduler:
         self.calls = []
         self.enqueued = threading.Event()
 
-    def enqueue(self, model, tenant, source, execute, priority=1, *, background=True):
-        self.calls.append({"model": model, "tenant": tenant, "source": source, "execute": execute, "priority": priority, "background": background})
+    def enqueue(self, model, source, execute, priority=1, *, background=True):
+        self.calls.append({"model": model, "source": source, "execute": execute, "priority": priority, "background": background})
         self.enqueued.set()
         return _Job()
 
 
 class _Artifacts:
-    def put(self, _content, _tenant, _kind):
+    def put(self, _content, *, kind):
         return "artifact-1"
+
+    def get(self, _artifact_id, *, offset=0, max_chars=256):
+        return {"success": True, "text": "{}"}
 
 
 def _manager(tmp_path):
@@ -43,7 +46,7 @@ def _manager(tmp_path):
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
         scheduler,
         _Artifacts(),
-        lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant},
+        lambda action, payload: {"success": True, "action": action, "task": payload.get("task")},
     )
     return manager, scheduler
 
@@ -51,7 +54,7 @@ def _manager(tmp_path):
 def _wait_for_terminal(manager, job_id, expected_state="done"):
     # These tests check persisted results, not a loaded Windows host's throughput.
     # Keep the real dispatch and one bounded wait; timeout semantics are tested below.
-    waited = manager.wait("tenant-a", job_id, 10)
+    waited = manager.wait(job_id, 10)
     assert waited["state"] == expected_state, waited
     return waited
 
@@ -63,6 +66,7 @@ def test_async_jobs_rejects_non_current_schema_without_deleting_rows(tmp_path):
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("CREATE TABLE async_jobs (job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL)")
         con.execute("INSERT INTO async_jobs(job_id, tenant) VALUES('stale', 'tenant-a')")
+        original_journal_mode = con.execute("PRAGMA journal_mode").fetchone()[0]
         con.commit()
 
     with pytest.raises(RuntimeError, match="unsupported async_jobs schema"):
@@ -71,8 +75,10 @@ def test_async_jobs_rejects_non_current_schema_without_deleting_rows(tmp_path):
     with closing(sqlite3.connect(db_path)) as con:
         columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
         rows = con.execute("SELECT job_id, tenant FROM async_jobs").fetchall()
+        journal_mode = con.execute("PRAGMA journal_mode").fetchone()[0]
     assert columns == ["job_id", "tenant"]
     assert rows == [("stale", "tenant-a")]
+    assert journal_mode == original_journal_mode
 
 def test_async_jobs_rejects_legacy_schema_without_mutating_rows(tmp_path):
     state_dir = tmp_path / "state"
@@ -103,11 +109,109 @@ def test_async_jobs_rejects_legacy_schema_without_mutating_rows(tmp_path):
     assert columns[-1] == "task_id"
     assert row == ("queued-job", "queued", "request-hash")
 
+
+@pytest.mark.parametrize("retired_value", [None, False, ""])
+def test_async_job_public_api_rejects_retired_tenant_fields_by_presence(tmp_path, retired_value):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        with pytest.raises(TypeError, match="retired async job field: tenant"):
+            manager.submit("reason", {"task": "rejected"}, tenant=retired_value)
+        with pytest.raises(TypeError, match="retired async job field: tenant"):
+            manager.status("unknown-job", tenant=retired_value)
+        with pytest.raises(TypeError, match="retired async job field: tenant"):
+            manager.wait("unknown-job", 1, tenant=retired_value)
+        with pytest.raises(TypeError, match="retired async job field: tenant"):
+            manager.result("unknown-job", tenant=retired_value)
+        with pytest.raises(TypeError, match="retired async job field: tenant"):
+            manager.cancel("unknown-job", tenant=retired_value)
+        with pytest.raises(ValueError, match="retired async job field: tenant"):
+            manager.submit("reason", {"task": "rejected", "tenant": retired_value})
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize("retired_value", [None, False, ""])
+def test_async_job_payload_rejects_nested_retired_fields_and_preserves_scope_ids(retired_value):
+    with pytest.raises(ValueError, match="retired async job field: tenant"):
+        AsyncJobManager._safe_payload({"tasks": [{"task": "child", "tenant": retired_value}]})
+    with pytest.raises(ValueError, match="retired async job field: tenant"):
+        AsyncJobManager._safe_payload({"tasks": [{"tasks": [{"tenant": retired_value}]}]})
+
+    clean = AsyncJobManager._safe_payload({
+        "task": "tenant in semantic prompt text is ordinary content",
+        "root": "C:/repo",
+        "task_id": "task-1",
+        "repository_id": "repo-1",
+        "session_id": "session-1",
+        "clone_id": "clone-1",
+        "worktree_id": "worktree-1",
+        "branch": "feature/example",
+    })
+    assert {key: clean[key] for key in ("root", "task_id", "repository_id", "session_id", "clone_id", "worktree_id", "branch")} == {
+        "root": "C:/repo",
+        "task_id": "task-1",
+        "repository_id": "repo-1",
+        "session_id": "session-1",
+        "clone_id": "clone-1",
+        "worktree_id": "worktree-1",
+        "branch": "feature/example",
+    }
+
+
+def test_async_job_task_validation_bounds_depth_and_rejects_cycles():
+    cyclic = []
+    cyclic.append({"tasks": cyclic})
+    with pytest.raises(ValueError, match="cyclic async task list"):
+        AsyncJobManager._safe_payload({"tasks": cyclic})
+
+    nested = {"task": "leaf"}
+    for _ in range(AsyncJobManager.TASK_VALIDATION_MAX_DEPTH + 1):
+        nested = {"tasks": [nested]}
+    with pytest.raises(ValueError, match="nesting exceeds supported limit"):
+        AsyncJobManager._safe_payload({"tasks": [nested]})
+
+    too_many = [{"task": "bounded"}] * (AsyncJobManager.TASK_VALIDATION_MAX_ITEMS + 1)
+    with pytest.raises(ValueError, match="exceeds supported item limit"):
+        AsyncJobManager._safe_payload({"tasks": too_many})
+
+
+@pytest.mark.parametrize(
+    ("payload_json", "result_json"),
+    [
+        pytest.param('{"task":"legacy","tenant":null}', "", id="payload"),
+        pytest.param('{"task":"clean"}', '{"control":{"tenant":false}}', id="result-control"),
+    ],
+)
+def test_startup_rejects_retired_fields_in_persisted_job_data_without_writes(
+    tmp_path, payload_json, result_json
+):
+    manager, _scheduler = _manager(tmp_path)
+    db_path = manager.path
+    manager.close()
+    now = time.time()
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,result_json,state,created_at,updated_at,expires_at) "
+            "VALUES('legacy','reason','hash',?,?,'failed',?,?,?)",
+            (payload_json, result_json, now, now, now + 600),
+        )
+        original_journal_mode = con.execute("PRAGMA journal_mode").fetchone()[0]
+        con.commit()
+
+    with pytest.raises(RuntimeError, match="offline conversion required"):
+        _manager(tmp_path)
+
+    with closing(sqlite3.connect(db_path)) as con:
+        row = con.execute("SELECT payload_json,result_json FROM async_jobs WHERE job_id='legacy'").fetchone()
+        journal_mode = con.execute("PRAGMA journal_mode").fetchone()[0]
+    assert row == (payload_json, result_json)
+    assert journal_mode == original_journal_mode
+
 def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
     manager, scheduler = _manager(tmp_path)
 
-    first = manager.submit("tenant-a", "reason", {"task": "same"})
-    second = manager.submit("tenant-a", "reason", {"task": "same"})
+    first = manager.submit("reason", {"task": "same"})
+    second = manager.submit("reason", {"task": "same"})
     assert first["job_id"] == second["job_id"]
     assert second["coalesced"] is True
     assert second["admission"]["state"] == "coalesced"
@@ -119,7 +223,7 @@ def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
 def test_async_execution_does_not_consume_model_scheduler_slot(tmp_path):
     manager, scheduler = _manager(tmp_path)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "run outside model slot"})
+        submitted = manager.submit("reason", {"task": "run outside model slot"})
         result = _wait_for_terminal(manager, submitted["job_id"])
         assert result["state"] == "done"
         assert scheduler.calls == []
@@ -131,7 +235,7 @@ def test_submit_returns_before_slow_async_execution(tmp_path):
     release = threading.Event()
     started = threading.Event()
 
-    def execute(_action, _payload, _tenant):
+    def execute(_action, _payload):
         started.set()
         release.wait(1.5)
         return {"success": True}
@@ -145,7 +249,7 @@ def test_submit_returns_before_slow_async_execution(tmp_path):
     )
     try:
         started_at = time.monotonic()
-        submitted = manager.submit("tenant-a", "reason", {"task": "slow dispatch"})
+        submitted = manager.submit("reason", {"task": "slow dispatch"})
         elapsed = time.monotonic() - started_at
 
         assert submitted["success"] is True
@@ -159,7 +263,7 @@ def test_submit_returns_before_slow_async_execution(tmp_path):
 def test_review_diff_is_supported_as_async_job(tmp_path):
     manager, _scheduler = _manager(tmp_path)
 
-    submitted = manager.submit("tenant-a", "review_diff", {"task": "review", "context": "diff"})
+    submitted = manager.submit("review_diff", {"task": "review", "context": "diff"})
 
     assert submitted["success"] is True
     manager.close()
@@ -167,10 +271,10 @@ def test_review_diff_is_supported_as_async_job(tmp_path):
 
 def test_wait_clamps_to_ninety_seconds_without_polling(tmp_path):
     manager, _scheduler = _manager(tmp_path)
-    submitted = manager.submit("tenant-a", "reason", {"task": "same"})
-    manager.cancel("tenant-a", submitted["job_id"])
+    submitted = manager.submit("reason", {"task": "same"})
+    manager.cancel(submitted["job_id"])
 
-    result = manager.wait("tenant-a", submitted["job_id"], 999)
+    result = manager.wait(submitted["job_id"], 999)
 
     assert result["wait_timeout_seconds"] == 90
     assert result["state"] == "cancelled"
@@ -183,8 +287,8 @@ def test_wait_rechecks_terminal_status_after_tick_evicts_old_event(tmp_path, mon
     now = time.time()
     with closing(manager._connect()) as con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?)",
-            (job_id, "tenant-a", "reason", "interleaved-hash", '{"task":"interleaved"}', now, now, now + 600),
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?, 'running',?,?,?)",
+            (job_id, "reason", "interleaved-hash", '{"task":"interleaved"}', now, now, now + 600),
         )
         con.commit()
 
@@ -207,29 +311,28 @@ def test_wait_rechecks_terminal_status_after_tick_evicts_old_event(tmp_path, mon
     original_status = manager.status
     status_calls = 0
 
-    def complete_after_running_snapshot(tenant, current_job_id):
+    def complete_after_running_snapshot(current_job_id):
         nonlocal status_calls
         status_calls += 1
         if status_calls == 1:
-            running = original_status(tenant, current_job_id)
+            running = original_status(current_job_id)
             artifact_id = manager.artifacts.put(
                 json.dumps({"success": True, "task": "interleaved"}),
-                tenant,
-                "async-job",
+                kind="async-job",
             )
             with closing(manager._connect()) as con:
                 con.execute(
-                    "UPDATE async_jobs SET state='done',artifact_id=?,updated_at=? WHERE job_id=? AND tenant=?",
-                    (artifact_id, time.time(), current_job_id, tenant),
+                    "UPDATE async_jobs SET state='done',artifact_id=?,updated_at=? WHERE job_id=?",
+                    (artifact_id, time.time(), current_job_id),
                 )
                 con.commit()
             manager.tick()
             return running
-        return original_status(tenant, current_job_id)
+        return original_status(current_job_id)
 
     monkeypatch.setattr(manager, "status", complete_after_running_snapshot)
     try:
-        result = manager.wait("tenant-a", job_id, 10)
+        result = manager.wait(job_id, 10)
 
         assert result["state"] == "done"
         assert status_calls >= 2
@@ -242,15 +345,15 @@ def test_wait_rechecks_terminal_status_after_tick_evicts_old_event(tmp_path, mon
 def test_recovery_requeues_persisted_job_once(tmp_path):
     manager, scheduler = _manager(tmp_path)
     seen_request_ids = []
-    manager.executor = lambda action, payload, tenant: (
+    manager.executor = lambda action, payload: (
         seen_request_ids.append(payload.get("request_id"))
-        or {"success": True, "action": action, "tenant": tenant}
+        or {"success": True, "action": action}
     )
     now = time.time()
     with closing(manager._connect()) as con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?)",
-            ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"resume","request_id":"persisted-recovery-1","_async_request_id_supplied":true}', now, now, now + 600),
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?, 'running',?,?,?)",
+            ("persisted", "reason", "persisted-hash", '{"task":"resume","request_id":"persisted-recovery-1","_async_request_id_supplied":true}', now, now, now + 600),
         )
         con.commit()
 
@@ -270,13 +373,13 @@ def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
     now = time.time()
     with closing(manager._connect()) as con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',1,?,?,?)",
-            ("unkeyed-persisted", "tenant-a", "reason", "unkeyed-persisted-hash", '{"task":"resume"}', now, now, now + 600),
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?, 'running',1,?,?,?)",
+            ("unkeyed-persisted", "reason", "unkeyed-persisted-hash", '{"task":"resume"}', now, now, now + 600),
         )
         con.commit()
 
     assert manager.recover() == 0
-    status = manager.status("tenant-a", "unkeyed-persisted")
+    status = manager.status("unkeyed-persisted")
     assert status["state"] == "outcome_unknown"
     assert status["terminal"] is True
     assert status["retryable"] is False
@@ -288,9 +391,9 @@ def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
 def test_completed_job_returns_artifact_backed_result(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "finish"})
+        submitted = manager.submit("reason", {"task": "finish"})
         _wait_for_terminal(manager, submitted["job_id"])
-        result = manager.result("tenant-a", submitted["job_id"])
+        result = manager.result(submitted["job_id"])
 
         assert result["success"] is True
         assert result["artifact_id"] == "artifact-1"
@@ -305,17 +408,17 @@ def test_malformed_executor_result_fails_job_without_retry(tmp_path):
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
         scheduler,
         _Artifacts(),
-        lambda _action, _payload, _tenant: "not a result object",
+        lambda _action, _payload: "not a result object",
     )
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "bad result"})
+        submitted = manager.submit("reason", {"task": "bad result"})
 
         _wait_for_terminal(manager, submitted["job_id"], "failed")
-        result = manager.result("tenant-a", submitted["job_id"])
+        result = manager.result(submitted["job_id"])
 
         assert result["success"] is False
         assert result["retryable"] is False
-        assert manager.status("tenant-a", submitted["job_id"])["state"] == "failed"
+        assert manager.status(submitted["job_id"])["state"] == "failed"
     finally:
         manager.close()
 
@@ -324,10 +427,10 @@ def test_async_job_trace_links_metadata_scheduler_and_terminal_state(tmp_path):
     config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
     store = DebugTraceStore(config)
     scheduler = _Scheduler()
-    manager = AsyncJobManager(config, scheduler, _Artifacts(), lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant}, debug_traces=store)
+    manager = AsyncJobManager(config, scheduler, _Artifacts(), lambda action, payload: {"success": True, "action": action, "task": payload.get("task")}, debug_traces=store)
 
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
+        submitted = manager.submit("reason", {"task": "trace me", "context": "full context"})
         _wait_for_terminal(manager, submitted["job_id"])
         detail = store.detail(submitted["trace_id"])
         assert detail["session"]["request"]["task"] == "trace me"
@@ -348,17 +451,17 @@ def test_recovered_async_job_reopens_terminal_trace(tmp_path, monkeypatch):
         config,
         _Scheduler(),
         _Artifacts(),
-        lambda action, payload, tenant: {"success": True, "action": action, "tenant": tenant},
+        lambda action, payload: {"success": True, "action": action},
         debug_traces=store,
     )
     try:
         now = time.time()
-        trace_id = store.start(kind="async_job", tenant="tenant-a", action="reason", source="async-job")
+        trace_id = store.start(kind="async_job", action="reason", source="async-job")
         store.update(trace_id, request={"task": "recover me", "request_id": "trace-recovery-1"})
         with closing(manager._connect()) as con:
             con.execute(
-                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',?,?,?,?)",
-                ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"recover me","request_id":"trace-recovery-1"}', now, now, now + 600, trace_id),
+                "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,'running',?,?,?,?)",
+                ("persisted", "reason", "persisted-hash", '{"task":"recover me","request_id":"trace-recovery-1"}', now, now, now + 600, trace_id),
             )
             con.commit()
         assert store.recover_incomplete(reason="hub restarted")["recovered_sessions"] == 1
@@ -380,14 +483,14 @@ def test_recovery_keeps_running_job_without_request_id_outcome_unknown(tmp_path)
     now = time.time()
     with closing(manager._connect()) as con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',1,?,?,?)",
-            ("unsafe-replay", "tenant-a", "reason", "unsafe-hash", '{"task":"resume"}', now, now, now + 600),
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?,'running',1,?,?,?)",
+            ("unsafe-replay", "reason", "unsafe-hash", '{"task":"resume"}', now, now, now + 600),
         )
         con.commit()
 
     try:
         assert manager.recover() == 0
-        status = manager.status("tenant-a", "unsafe-replay")
+        status = manager.status("unsafe-replay")
         assert status["state"] == "outcome_unknown"
         assert status["outcome_unknown"] is True
         assert status["retryable"] is False
@@ -397,7 +500,7 @@ def test_recovery_keeps_running_job_without_request_id_outcome_unknown(tmp_path)
 
 def test_legacy_retryable_job_without_request_id_is_not_requeued(tmp_path):
     manager, _scheduler = _manager(tmp_path)
-    manager.executor = lambda _action, _payload, _tenant: {
+    manager.executor = lambda _action, _payload: {
         "success": False,
         "retryable": True,
         "error": "transient failure without replay key",
@@ -405,14 +508,14 @@ def test_legacy_retryable_job_without_request_id_is_not_requeued(tmp_path):
     now = time.time()
     with closing(manager._connect()) as con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'queued',?,?,?)",
-            ("legacy-no-replay-key", "tenant-a", "reason", "legacy-hash", '{"task":"resume"}', now, now, now + 600),
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,'queued',?,?,?)",
+            ("legacy-no-replay-key", "reason", "legacy-hash", '{"task":"resume"}', now, now, now + 600),
         )
         con.commit()
 
     try:
         result = manager._execute("legacy-no-replay-key")
-        status = manager.status("tenant-a", "legacy-no-replay-key")
+        status = manager.status("legacy-no-replay-key")
         assert result["outcome_unknown"] is True
         assert status["state"] == "outcome_unknown"
         assert status["retryable"] is False
@@ -423,12 +526,12 @@ def test_legacy_retryable_job_without_request_id_is_not_requeued(tmp_path):
 def test_submit_persists_request_id_without_breaking_active_deduplication(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
-        first = manager.submit("tenant-a", "reason", {"task": "same"}, dispatch_delay_seconds=30.0)
-        second = manager.submit("tenant-a", "reason", {"task": "same"}, dispatch_delay_seconds=30.0)
+        first = manager.submit("reason", {"task": "same"}, dispatch_delay_seconds=30.0)
+        second = manager.submit("reason", {"task": "same"}, dispatch_delay_seconds=30.0)
 
         assert second["job_id"] == first["job_id"]
         assert second["coalesced"] is True
-        row = manager._row("tenant-a", first["job_id"])
+        row = manager._row(first["job_id"])
         assert row is not None
         request_id = manager._request_id(row["payload_json"])
         assert request_id
@@ -441,15 +544,15 @@ def test_async_jobs_tick_evicts_terminal_events(tmp_path):
         {"server": {"state_dir": str(tmp_path / "state")}},
         _Scheduler(),
         _Artifacts(),
-        lambda _action, _payload, _tenant: {"success": True},
+        lambda _action, _payload: {"success": True},
     )
-    res = mgr.submit("tenant-1", "reason", {"task": "hello"}, dispatch_delay_seconds=30)
+    res = mgr.submit("reason", {"task": "hello"}, dispatch_delay_seconds=30)
     assert res["success"] is True
     job_id = res["job_id"]
     assert job_id in mgr._events
 
     mgr._execute(job_id)
-    assert mgr.status("tenant-1", job_id)["state"] == "done"
+    assert mgr.status(job_id)["state"] == "done"
     assert job_id in mgr._events
 
     mgr.tick()
@@ -460,14 +563,14 @@ def test_async_jobs_tick_evicts_terminal_events(tmp_path):
 
 def test_close_releases_workers_and_rejects_new_jobs(tmp_path):
     manager, _scheduler = _manager(tmp_path)
-    submitted = manager.submit("tenant-a", "reason", {"task": "long-running"})
+    submitted = manager.submit("reason", {"task": "long-running"})
     assert submitted["success"] is True
     assert manager._dispatchers or manager._workers
 
     manager.close()
 
     assert not any(thread.is_alive() for thread in manager._workers)
-    rejected = manager.submit("tenant-a", "reason", {"task": "too-late"})
+    rejected = manager.submit("reason", {"task": "too-late"})
     assert rejected == {
         "success": False,
         "error": "async job manager is closed",
@@ -479,11 +582,11 @@ def test_close_releases_workers_and_rejects_new_jobs(tmp_path):
 def test_terminal_status_and_result_flags_are_consistent(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "terminal flags"})
+        submitted = manager.submit("reason", {"task": "terminal flags"})
         _wait_for_terminal(manager, submitted["job_id"])
 
-        status = manager.status("tenant-a", submitted["job_id"])
-        result = manager.result("tenant-a", submitted["job_id"])
+        status = manager.status(submitted["job_id"])
+        result = manager.result(submitted["job_id"])
 
         assert status["terminal"] is True
         assert status["in_progress"] is False
@@ -497,16 +600,16 @@ def test_terminal_status_and_result_flags_are_consistent(tmp_path):
 def test_cancelling_queued_job_is_idempotent(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "cancel twice"}, dispatch_delay_seconds=30)
+        submitted = manager.submit("reason", {"task": "cancel twice"}, dispatch_delay_seconds=30)
 
-        first = manager.cancel("tenant-a", submitted["job_id"])
-        second = manager.cancel("tenant-a", submitted["job_id"])
+        first = manager.cancel(submitted["job_id"])
+        second = manager.cancel(submitted["job_id"])
 
         assert first["success"] is True
         assert second["success"] is True
         assert first["state"] == second["state"] == "cancelled"
         assert first["terminal"] is second["terminal"] is True
-        assert manager.status("tenant-a", submitted["job_id"])["state"] == "cancelled"
+        assert manager.status(submitted["job_id"])["state"] == "cancelled"
     finally:
         manager.close()
 
@@ -534,7 +637,7 @@ def test_tick_does_not_dispatch_before_delayed_submit_is_registered(tmp_path):
     submitted = {}
     thread = threading.Thread(
         target=lambda: submitted.update(manager.submit(
-            "tenant-a", "reason", {"task": "delayed dispatch race"}, dispatch_delay_seconds=30,
+            "reason", {"task": "delayed dispatch race"}, dispatch_delay_seconds=30,
         )),
     )
 
@@ -556,7 +659,7 @@ def test_early_delayed_dispatch_callback_preserves_queued_cancellation(tmp_path,
     manager, _scheduler = _manager(tmp_path)
     timer_instances = []
     executions = []
-    manager.executor = lambda action, payload, tenant: executions.append((action, tenant)) or {"success": True}
+    manager.executor = lambda action, payload: executions.append(action) or {"success": True}
     real_threading = async_jobs_module.threading
 
     class ManualTimer:
@@ -606,22 +709,22 @@ def test_early_delayed_dispatch_callback_preserves_queued_cancellation(tmp_path,
     monkeypatch.setattr(async_jobs_module, "threading", ThreadingProxy())
     try:
         submitted = manager.submit(
-            "tenant-a", "reason", {"task": "early dispatch callback"}, dispatch_delay_seconds=30
+            "reason", {"task": "early dispatch callback"}, dispatch_delay_seconds=30
         )
         job_id = submitted["job_id"]
 
         timer_instances[0].fire()
 
         assert executions == []
-        assert manager.status("tenant-a", job_id)["state"] == "queued"
+        assert manager.status(job_id)["state"] == "queued"
         assert len(timer_instances) == 2
         assert manager._delayed_dispatch[job_id] is timer_instances[1]
 
-        cancelled = manager.cancel("tenant-a", job_id)
+        cancelled = manager.cancel(job_id)
         assert cancelled["state"] == "cancelled"
         timer_instances[1].fire()
         assert executions == []
-        assert manager.status("tenant-a", job_id)["state"] == "cancelled"
+        assert manager.status(job_id)["state"] == "cancelled"
     finally:
         manager.close()
 
@@ -629,14 +732,14 @@ def test_early_delayed_dispatch_callback_preserves_queued_cancellation(tmp_path,
 def test_expired_result_matches_expired_status(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "expiry parity"})
+        submitted = manager.submit("reason", {"task": "expiry parity"})
         _wait_for_terminal(manager, submitted["job_id"])
         with closing(manager._connect()) as con:
             con.execute("UPDATE async_jobs SET expires_at=? WHERE job_id=?", (time.time() - 1, submitted["job_id"]))
             con.commit()
 
-        status = manager.status("tenant-a", submitted["job_id"])
-        result = manager.result("tenant-a", submitted["job_id"])
+        status = manager.status(submitted["job_id"])
+        result = manager.result(submitted["job_id"])
 
         assert status["state"] == result["state"] == "expired"
         assert status["terminal"] is result["terminal"] is True
@@ -650,8 +753,8 @@ def test_expired_running_job_with_cancel_request_reconciles_as_cancelled(tmp_pat
     now = time.time()
     with closing(manager._connect()) as con:
         con.execute(
-            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
-            ("cancelled-on-restart", "tenant-a", "reason", "restart-hash", '{"task":"do not rerun"}', now - 1, 1, 1, now, now, now + 600),
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,'running',?,?,?,?,?,?)",
+            ("cancelled-on-restart", "reason", "restart-hash", '{"task":"do not rerun"}', now - 1, 1, 1, now, now, now + 600),
         )
         con.commit()
     manager.close()
@@ -659,7 +762,7 @@ def test_expired_running_job_with_cancel_request_reconciles_as_cancelled(tmp_pat
     reopened, scheduler = _manager(tmp_path)
     try:
         assert reopened.recover() == 0
-        status = reopened.status("tenant-a", "cancelled-on-restart")
+        status = reopened.status("cancelled-on-restart")
 
         assert status["state"] == "cancelled"
         assert status["terminal"] is True
@@ -686,15 +789,15 @@ def test_recovery_wakes_real_waiter_blocked_on_cancellation(tmp_path):
         job_id = "cancelled-while-waiting"
         with closing(manager._connect()) as con:
             con.execute(
-                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
-                (job_id, "tenant-a", "reason", "waiting-hash", '{"task":"wait for recovery"}', now - 1, 1, 1, now, now, now + 600),
+                "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,'running',?,?,?,?,?,?)",
+                (job_id, "reason", "waiting-hash", '{"task":"wait for recovery"}', now - 1, 1, 1, now, now, now + 600),
             )
             con.commit()
 
         event = ObservedEvent()
         manager._events[job_id] = event
         waited = []
-        waiter = threading.Thread(target=lambda: waited.append(manager.wait("tenant-a", job_id, 30)), daemon=True)
+        waiter = threading.Thread(target=lambda: waited.append(manager.wait(job_id, 30)), daemon=True)
         waiter.start()
 
         assert event.entered_wait.wait(1)
@@ -716,15 +819,15 @@ def test_tick_keeps_cancelled_job_cancelled_after_execution_lease_expires(tmp_pa
         now = time.time()
         with closing(manager._connect()) as con:
             con.execute(
-                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
-                ("cancelled-lease", "tenant-a", "reason", "lease-hash", '{"task":"must stay cancelled"}', now - 1, 1, 1, now, now, now + 600),
+                "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,'running',?,?,?,?,?,?)",
+                ("cancelled-lease", "reason", "lease-hash", '{"task":"must stay cancelled"}', now - 1, 1, 1, now, now, now + 600),
             )
             con.commit()
 
         manager.tick()
 
-        status = manager.status("tenant-a", "cancelled-lease")
-        result = manager.result("tenant-a", "cancelled-lease")
+        status = manager.status("cancelled-lease")
+        result = manager.result("cancelled-lease")
         assert status["state"] == result["state"] == "cancelled"
         assert status["terminal"] is result["terminal"] is True
         assert status["retryable"] is result["retryable"] is False
@@ -750,13 +853,13 @@ def test_tick_does_not_dispatch_during_delayed_submit_registration_gap(tmp_path,
     monkeypatch.setattr(manager, "_dispatch", lambda job_id: dispatched.append(job_id))
     try:
         submitted = manager.submit(
-            "tenant-a", "reason", {"task": "delayed-dispatch"},
+            "reason", {"task": "delayed-dispatch"},
             dispatch_delay_seconds=30,
         )
 
         assert submitted["success"] is True
         assert dispatched == []
-        assert manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
+        assert manager.status(submitted["job_id"])["state"] == "queued"
     finally:
         manager.close()
 
@@ -764,15 +867,15 @@ def test_tick_does_not_dispatch_during_delayed_submit_registration_gap(tmp_path,
 def test_wait_timeout_leaves_job_active_and_reports_timeout_budget(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "still queued"}, dispatch_delay_seconds=30)
+        submitted = manager.submit("reason", {"task": "still queued"}, dispatch_delay_seconds=30)
 
-        waited = manager.wait("tenant-a", submitted["job_id"], 1)
+        waited = manager.wait(submitted["job_id"], 1)
 
         assert waited["wait_timeout_seconds"] == 1
         assert waited["state"] == "queued"
         assert waited["terminal"] is False
         assert waited["retryable"] is True
-        assert manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
+        assert manager.status(submitted["job_id"])["state"] == "queued"
     finally:
         manager.close()
 
@@ -794,11 +897,11 @@ def test_tick_cannot_claim_delayed_submit_before_timer_registration(tmp_path, mo
     monkeypatch.setattr(manager, "_dispatch", dispatch_attempts.append)
     try:
         submitted = manager.submit(
-            "tenant-a", "reason", {"task": "delayed dispatch race"},
+            "reason", {"task": "delayed dispatch race"},
             dispatch_delay_seconds=30,
         )
         assert submitted["job_id"] in manager._delayed_dispatch
-        cancelled = manager.cancel("tenant-a", submitted["job_id"])
+        cancelled = manager.cancel(submitted["job_id"])
         assert cancelled["state"] == "cancelled"
         assert dispatch_attempts == []
         assert scheduler.calls == []

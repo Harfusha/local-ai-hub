@@ -235,8 +235,7 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
                 "exit_code": 0,
                 "result": {"success": True, "exit_code": 0},
             },
-            "agent",
-            "command_verification",
+            kind="command_verification",
         )
         app.agent_verification.record(
             VerificationReceipt.create(

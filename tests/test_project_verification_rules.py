@@ -185,7 +185,7 @@ def test_http_task_completion_uses_persisted_project_receipts(
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        '[security]\napi_token_principal = "agent"\n',
+        '[security]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
@@ -209,7 +209,7 @@ def test_http_task_completion_uses_persisted_project_receipts(
     command_result = app.commands.run_project_command(
         "test",
         str(project_root),
-        tenant="agent",
+
         task_id=task_id,
         criterion="test",
         timeout=60,
@@ -230,8 +230,7 @@ def test_http_task_completion_uses_persisted_project_receipts(
             "mutation_generation": 0,
             "criteria": ["required_commands"],
         },
-        "agent",
-        "source_review",
+        kind="source_review",
     )
     app.agent_verification.record(
         VerificationReceipt.create(
@@ -290,7 +289,6 @@ def test_http_task_completion_uses_persisted_project_receipts(
             headers={
                 "Content-Type": "application/json",
                 "X-LocalAI-Agent": "agent",
-                "X-LocalAI-Tenant": "agent",
             },
             method="POST",
         )

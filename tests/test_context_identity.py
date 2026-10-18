@@ -155,10 +155,10 @@ def test_context_ledger_materialize_normalizes_root_for_scope_check():
     class ArtifactStore:
         ttl_seconds = 60
 
-        def put(self, text, tenant, kind):
+        def put(self, text, *, kind):
             return "artifact-1"
 
-        def get(self, artifact_id, *, offset, max_chars, tenant):
+        def get(self, artifact_id, *, offset, max_chars):
             return {"success": True, "text": "same context"}
 
     ledger = ContextLedger()
@@ -169,18 +169,16 @@ def test_context_ledger_materialize_normalizes_root_for_scope_check():
         evidence_ids=(),
         context="same context",
         root="C:\\Repo",
-        identity="agent-1",
         artifact_store=store,
-        tenant="tenant-1",
+        session_id="session-1",
     )
 
     result = ledger.materialize(
         compiled["reuse_key"],
         store,
-        "tenant-1",
-        identity="agent-1",
         root="C:\\Repo",
         task_id="task-1",
+        session_id="session-1",
     )
 
     assert result["success"] is True

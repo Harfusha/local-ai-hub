@@ -303,7 +303,7 @@ class RuffLintDaemon:
 
 
 class RuffDaemonPool:
-    """Bounded tenant/project sessions. Retiring processes retain their slot."""
+    """Bounded repository/executable sessions. Retiring processes retain their slot."""
 
     def __init__(self, *, max_sessions: int = 4, idle_ttl: float = 300.0):
         self.max_sessions = max(1, min(16, int(max_sessions)))
@@ -312,9 +312,12 @@ class RuffDaemonPool:
         self._closed = False
         self._sessions: dict[tuple[str, str], dict[str, Any]] = {}
 
-    def run(self, executable: str, root: str, tenant: str, paths: list[str], *,
+    def run(self, executable: str, root: str, *, paths: list[str],
             timeout: float = 30, should_stop: Callable[[], bool] = lambda: False) -> dict[str, Any]:
-        key = (tenant, os.path.normcase(str(Path(root).resolve(strict=True))))
+        key = (
+            os.path.normcase(os.path.abspath(executable)),
+            os.path.normcase(str(Path(root).resolve(strict=True))),
+        )
         tick = time.monotonic()
         base = {"daemon_mode": True, "transport": "stdio_lsp", "read_only": True, "auto_fix": False}
         with self._lock:
@@ -374,7 +377,7 @@ class OwnedBiomeDaemonPool:
         self._closed = False
         self._servers: dict[str, dict[str, Any]] = {}
 
-    def run(self, executable: str, root: str, tenant: str, paths: list[str], *,
+    def run(self, executable: str, root: str, *, paths: list[str],
             timeout: float = 30, should_stop: Callable[[], bool] = lambda: False) -> dict[str, Any]:
         from .biome_owned_ipc import BiomeOwnershipError, OwnedBiomeDaemon
 
@@ -388,7 +391,9 @@ class OwnedBiomeDaemonPool:
             return {**base, "success": False, "unsupported": True,
                     "transport": "unsupported_unowned_platform", "terminal": True,
                     "retryable": False, "error": "owned Biome named-pipe transport is supported only on Windows"}
-        key = os.path.normcase(str(Path(executable).resolve(strict=True)))
+        executable_key = os.path.normcase(str(Path(executable).resolve(strict=True)))
+        root_key = os.path.normcase(str(Path(root).resolve(strict=True)))
+        key = (executable_key, root_key)
         now = time.monotonic()
         retiring: list[tuple[str, dict[str, Any]]] = []
         with self._lock:
@@ -420,9 +425,9 @@ class OwnedBiomeDaemonPool:
                 if len(self._servers) >= self.max_sessions:
                     return {**base, "success": False, "error": "Biome daemon capacity reached", "terminal": True,
                             "retryable": False}
-                entry = {"daemon": OwnedBiomeDaemon(key), "last_used": now, "busy": False, "retiring": False}
+                entry = {"daemon": OwnedBiomeDaemon(executable_key), "last_used": now, "busy": False, "retiring": False}
                 self._servers[key] = entry
-            if not entry["daemon"].has_session(tenant, root):
+            if not entry["daemon"].has_session(root):
                 current_sessions = sum(item["daemon"].session_count for item in self._servers.values())
                 if current_sessions >= self.max_sessions:
                     if entry["daemon"].session_count == 0:
@@ -435,7 +440,9 @@ class OwnedBiomeDaemonPool:
             entry["busy"] = True
         try:
             entry["daemon"].prune_sessions(self.idle_ttl, deadline=deadline)
-            diagnostics = entry["daemon"].diagnostics(tenant, root, paths, deadline=deadline, should_stop=should_stop)
+            diagnostics = entry["daemon"].diagnostics(
+                root, paths=paths, deadline=deadline, should_stop=should_stop
+            )
             return {**base, "success": not diagnostics, "exit_code": 1 if diagnostics else 0,
                     "diagnostics": diagnostics, "diagnostic_count": len(diagnostics)}
         except BiomeOwnershipError as exc:

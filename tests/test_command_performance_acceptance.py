@@ -45,7 +45,7 @@ def _timed_run(
     force: bool,
 ) -> tuple[dict, float]:
     starts = time.perf_counter()
-    result = broker.run(command, str(cwd), "tenant", force=force)
+    result = broker.run(command, str(cwd), force=force)
     return result, (time.perf_counter() - starts) * 1000
 
 
@@ -194,20 +194,20 @@ def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path
         if pair % 2 == 0:
             broker.repo_state.invalidate(str(worktree))
             starts = time.perf_counter()
-            cold = broker.run(command, str(worktree), "tenant", force=True)
+            cold = broker.run(command, str(worktree), force=True)
             cold_elapsed.append((time.perf_counter() - starts) * 1000)
             starts = time.perf_counter()
-            warm = broker.run(command, str(worktree), "tenant")
+            warm = broker.run(command, str(worktree))
             warm_elapsed.append((time.perf_counter() - starts) * 1000)
         else:
-            primed = broker.run(command, str(worktree), "tenant", force=True)
+            primed = broker.run(command, str(worktree), force=True)
             assert primed["success"] is True
             starts = time.perf_counter()
-            warm = broker.run(command, str(worktree), "tenant")
+            warm = broker.run(command, str(worktree))
             warm_elapsed.append((time.perf_counter() - starts) * 1000)
             broker.repo_state.invalidate(str(worktree))
             starts = time.perf_counter()
-            cold = broker.run(command, str(worktree), "tenant", force=True)
+            cold = broker.run(command, str(worktree), force=True)
             cold_elapsed.append((time.perf_counter() - starts) * 1000)
 
         assert cold["success"] is True
@@ -289,7 +289,7 @@ def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path
             f'"import sys; print(\'T15_EXPECTED_FAILURE_{attempt}\'); sys.exit(7)"'
         )
         starts = time.perf_counter()
-        result = broker.run(command, str(worktree), "tenant", force=True)
+        result = broker.run(command, str(worktree), force=True)
         failure_elapsed.append((time.perf_counter() - starts) * 1000)
         failure_observations.append(result)
         assert result["success"] is False

@@ -28,11 +28,11 @@ class _Recovery:
     def __init__(self):
         self.requests = []
 
-    def lookup(self, request_id, tenant, action):
+    def lookup(self, request_id, action):
         return None
 
-    def begin(self, request_id, tenant, action, **_identity):
-        self.requests.append((request_id, tenant, action))
+    def begin(self, request_id, action, **identity):
+        self.requests.append((request_id, action, identity))
         return {"claimed": True}
 
     def finish(self, *_args, **_kwargs):
@@ -52,7 +52,6 @@ class _App:
             },
             "security": {
                 "api_token": "test-secret",
-                "api_token_tenant": "tenant-a",
                 "allowed_roots": [str(state_dir.parent)],
                 "rate_limit_requests": 600,
                 "rate_limit_window_seconds": 60.0,
@@ -79,12 +78,12 @@ class _App:
         self.topology_calls.append(root)
         return {"success": True, "root": root, "source": "service"}
 
-    def delegate(self, payload, tenant):
-        self.delegate_calls.append((dict(payload), tenant))
-        return {"success": True, "tenant": tenant, "task": payload.get("task", "")}
+    def delegate(self, payload, **_kwargs):
+        self.delegate_calls.append(dict(payload))
+        return {"success": True, "task": payload.get("task", "")}
 
-    def cancel(self, tenant, work_id):
-        self.cancel_calls.append((tenant, work_id))
+    def cancel(self, work_id):
+        self.cancel_calls.append(work_id)
         return {"success": True, "cancelled": work_id}
 
     def close(self):
@@ -108,7 +107,6 @@ def inprocess_client(tmp_path, monkeypatch):
         f'state_dir = "{state_dir.as_posix()}"\n'
         "[security]\n"
         'api_token = "test-secret"\n'
-        'api_token_tenant = "tenant-a"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
         "rate_limit_requests = 600\n"
         "rate_limit_window_seconds = 60.0\n",
@@ -120,7 +118,6 @@ def inprocess_client(tmp_path, monkeypatch):
     transport = InProcessTransport(config_path=str(config_path))
     monkeypatch.setattr(transport, "_create_app", lambda: app)
     client = HubClient(
-        tenant="tenant-a",
         config_path=str(config_path),
         auto_start=True,
         inprocess_transport=transport,
@@ -159,7 +156,7 @@ def test_inprocess_transport_routes_to_services_without_http_or_spawn(inprocess_
     assert result["request_id"].startswith("req_")
     assert [Path(value) for value in app.topology_calls] == [Path(root)]
     event = app.telemetry.live_events[0]
-    assert event["tenant"] == "tenant-a"
+    assert "tenant" not in event
     assert event["agent"] == client.agent
     assert event["request_id"].startswith("req_")
 
@@ -244,10 +241,7 @@ def test_inprocess_transport_preserves_request_identity_and_cancel_route(inproce
         "cancelled": "work-17",
         "request_id": "stable-cancel-17",
     }
-    assert app.cancel_calls == [("tenant-a", "work-17")]
-    assert app.recovery.requests == [
-        ("stable-cancel-17", "tenant-a", "/api/work-orders")
-    ]
+    assert app.cancel_calls == ["work-17"]
 
 
 def test_inprocess_transport_keeps_http_rate_limit_across_requests(inprocess_client):
@@ -339,11 +333,11 @@ def test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service(
     release = threading.Event()
     finished = threading.Event()
 
-    def slow_cancel(tenant, work_id):
+    def slow_cancel(work_id):
         started.set()
         release.wait(2.0)
         finished.set()
-        return {"success": True, "tenant": tenant, "cancelled": work_id}
+        return {"success": True, "cancelled": work_id}
 
     app.work_orchestrator.cancel = slow_cancel
 
@@ -370,7 +364,7 @@ def test_inprocess_command_lifetime_interrupts_its_dispatched_handler(inprocess_
     cancel = threading.Event()
     result = {}
 
-    def command(payload, tenant, *, request_cancel_event=None):
+    def command(payload, *, request_cancel_event=None):
         assert isinstance(request_cancel_event, threading.Event)
         started.set()
         assert request_cancel_event.wait(2), "dispatched command did not receive its lifetime cancellation"
@@ -414,11 +408,11 @@ def test_inprocess_cancel_after_dispatch_reports_unknown_and_stops_waiting(inpro
     response = {}
     request_done = threading.Event()
 
-    def slow_cancel(tenant, work_id):
+    def slow_cancel(work_id):
         started.set()
         release.wait(2.0)
         finished.set()
-        return {"success": True, "tenant": tenant, "cancelled": work_id}
+        return {"success": True, "cancelled": work_id}
 
     def send_request():
         response["value"] = client.request(

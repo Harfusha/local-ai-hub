@@ -213,7 +213,7 @@ def test_run_t12_case_reports_live_metrics_and_persists_no_prompt_or_output(tmp_
             }
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             result = execute()
             result["_lah_scheduler_queue_wait_ms"] = 12.5
             return result
@@ -266,7 +266,7 @@ def test_run_t12_case_omits_unobserved_live_metrics(tmp_path: Path) -> None:
             return {"response": '{"answer":"42"}'}
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
     runner = HardwareBenchmarkRunner(
@@ -301,7 +301,7 @@ def test_run_t12_case_reports_model_reuse_only_from_zero_backend_load(tmp_path: 
             return {"response": '{"answer":"42"}', "load_duration": 0}
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
     runner = HardwareBenchmarkRunner(

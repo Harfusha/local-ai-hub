@@ -141,7 +141,7 @@ def test_consistency_request_and_pack_from_dict(tmp_path):
         query="test query\x00",
         phase="edit",
         workspace="ws\x001",
-        tenant="tenant-a",
+        session_id="chat-1",
         token_budget=True,  # type: ignore[arg-type]  # bool should not become budget 1
     )
     assert req.task_id == "task_1"
@@ -151,7 +151,9 @@ def test_consistency_request_and_pack_from_dict(tmp_path):
     d = req.to_dict()
     recovered = ConsistencyRequest.from_dict(d)
     assert recovered.task_id == "task_1"
-    assert recovered.tenant == "tenant-a"
+    assert recovered.session_id == "chat-1"
+    with pytest.raises(ValueError, match="retired consistency request identity field"):
+        ConsistencyRequest.from_dict({**d, "tenant": None})
 
     with pytest.raises(TypeError):
         ConsistencyRequest.from_dict(None)

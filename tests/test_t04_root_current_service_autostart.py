@@ -17,7 +17,7 @@ def test_thirty_cold_clients_share_service_start_and_readiness(tmp_path, monkeyp
         "[client]\nstartup_wait_seconds=2\nstartup_poll_seconds=0.01\n",
         encoding="utf-8",
     )
-    clients = [HubClient(tenant="", config_path=str(config_path), auto_start=True) for _ in range(count)]
+    clients = [HubClient(config_path=str(config_path), auto_start=True) for _ in range(count)]
     for client in clients:
         client.startup_wait = 2.0
         client.startup_poll = 0.01
@@ -70,4 +70,4 @@ def test_thirty_cold_clients_share_service_start_and_readiness(tmp_path, monkeyp
     assert Path(command[-2]) == Path(__file__).resolve().parents[1] / "tools" / "service.py"
     assert kwargs["env"]["LOCAL_AI_CONFIG"] == str(config_path)
     assert kwargs["timeout"] <= 2.0
-    assert ready_probes[service_owner[0]] == 1
+    assert ready_probes[service_owner[0]] == 1

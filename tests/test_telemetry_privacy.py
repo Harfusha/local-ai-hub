@@ -41,5 +41,5 @@ def test_error_telemetry_persists_classification_without_exception_text(tmp_path
     persisted = repr(row)
     assert prompt not in persisted
     assert source not in persisted
-    assert secret not in persisted
+    assert secret_value not in persisted
     assert path not in persisted

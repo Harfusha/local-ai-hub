@@ -30,15 +30,11 @@ def _http_get_handler(monkeypatch, *, app, path: str):
 def _scoped_app(tmp_path, **components):
     root = tmp_path / "repo"
     root.mkdir()
-    principal = "t18-test-principal"
-    derivation_key = "t18-test-derivation-key-material"
-    tenant = http_server._derive_root_tenant(principal, str(root.resolve()), derivation_key)
-    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id=tenant))
+    session_id = "session-t18-event-test"
+    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id=session_id))
     config = {
         "security": {
             "api_token": "t18-test-api-token",
-            "api_token_tenant": principal,
-            "tenant_derivation_key": derivation_key,
             "allowed_roots": [str(root.resolve())],
         }
     }
@@ -75,7 +71,7 @@ def test_event_page_provider_failure_returns_retryable_page_error(monkeypatch, t
     assert status == 503, handler.responses
     assert payload["success"] is False
     assert handler._authorization_root == str(root.resolve())
-    assert handler._authorization_tenant.startswith("root-")
+    assert handler._authorization_root == str(root.resolve())
     assert payload["next_seq"] == 7
     assert payload["error"]["code"] == "event_page_unavailable"
     assert payload["retryable"] is True

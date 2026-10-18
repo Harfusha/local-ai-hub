@@ -22,7 +22,7 @@ class _QueryServices:
     def __init__(self, dimension: int):
         self.dimension = dimension
 
-    def embed(self, texts, _tenant, *, query=False, **_kwargs):
+    def embed(self, texts, *, query=False, **_kwargs):
         vector = np.zeros(self.dimension, dtype=np.float32)
         vector[0] = 1.0
         return {"success": True, "embedding_space_id": "quality-space", "embeddings": [vector.tolist() for _ in texts]}
@@ -46,15 +46,14 @@ def _store(tmp_path, dimension: int = 2) -> RAGStore:
     )
 
 
-def _insert_vectors(store: RAGStore, tenant: str, workspace: str, vectors: np.ndarray) -> None:
-    scope_key = store._scope_key(tenant)
+def _insert_vectors(store: RAGStore, workspace: str, vectors: np.ndarray) -> None:
     with closing(store._connect()) as con:
         con.executemany(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
             [
                 (
-                    scope_key, workspace, f"src/{i // 32:04d}.py", i % 32,
+                    workspace, f"src/{i // 32:04d}.py", i % 32,
                     f"hash-{i}", f"fixture row {i}", sqlite3.Binary(vector.tobytes()), "quality-space",
                 )
                 for i, vector in enumerate(vectors)
@@ -65,9 +64,9 @@ def _insert_vectors(store: RAGStore, tenant: str, workspace: str, vectors: np.nd
 
 def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    tenant, workspace = "tenant", "golden-workspace"
+    workspace = "golden-workspace"
     vectors = np.asarray([[0.0, 1.0], [0.7, 0.714], [1.0, 0.0], [0.9, 0.436]], dtype=np.float32)
-    _insert_vectors(store, tenant, workspace, vectors)
+    _insert_vectors(store, workspace,  vectors)
 
     class _Cursor:
         def __init__(self, cursor):
@@ -100,7 +99,7 @@ def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeyp
 
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
-    result = store._search_uncached("golden target", tenant, workspace, top_k=3, use_reranker=False)
+    result = store._search_uncached("golden target", workspace,  top_k=3, use_reranker=False)
 
     assert result["success"] is True
     assert [row["chunk_no"] for row in result["results"][:3]] == [2, 3, 1]
@@ -109,15 +108,15 @@ def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeyp
 def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, monkeypatch):
     store = _store(tmp_path)
     store.config["rag"]["search_batch_size"] = 32
-    tenant, workspace = "tenant", "unique-score-workspace"
+    workspace = "unique-score-workspace"
     vectors = np.asarray([[1.0, float(i + 1)] for i in range(96)], dtype=np.float32)
-    _insert_vectors(store, tenant, workspace, vectors)
+    _insert_vectors(store, workspace,  vectors)
 
     def unexpected_lexsort(*_args, **_kwargs):
         raise AssertionError("unique-score batch should not need local candidate ordering")
 
     monkeypatch.setattr(np, "lexsort", unexpected_lexsort)
-    result = store._search_uncached("unique score query", tenant, workspace, top_k=4, use_reranker=False)
+    result = store._search_uncached("unique score query", workspace,  top_k=4, use_reranker=False)
 
     assert result["success"] is True
     assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
@@ -126,9 +125,9 @@ def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, mo
 def test_vector_search_reuses_norm_buffer_for_scores(tmp_path, monkeypatch):
     store = _store(tmp_path)
     store.config["rag"]["search_batch_size"] = 32
-    tenant, workspace = "tenant", "score-buffer-workspace"
+    workspace = "score-buffer-workspace"
     vectors = np.asarray([[1.0, 0.0]] * 31 + [[0.0, 0.0]], dtype=np.float32)
-    _insert_vectors(store, tenant, workspace, vectors)
+    _insert_vectors(store, workspace,  vectors)
 
     zeros = np.zeros
 
@@ -138,7 +137,7 @@ def test_vector_search_reuses_norm_buffer_for_scores(tmp_path, monkeypatch):
         return zeros(shape, *args, **kwargs)
 
     monkeypatch.setattr(np, "zeros", reject_batch_score_buffer)
-    result = store._search_uncached("score buffer query", tenant, workspace, top_k=4, use_reranker=False)
+    result = store._search_uncached("score buffer query", workspace,  top_k=4, use_reranker=False)
 
     assert result["success"] is True
     assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
@@ -148,10 +147,10 @@ def test_vector_search_reuses_norm_buffer_for_scores(tmp_path, monkeypatch):
 def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
     store = _store(tmp_path)
     vectors = np.asarray([[1.0, 0.0]] * 32, dtype=np.float32)
-    _insert_vectors(store, "tenant", "tie-workspace", vectors)
+    _insert_vectors(store, "tie-workspace", vectors)
 
     result = store._search_uncached(
-        "tie query", "tenant", "tie-workspace", top_k=16, use_reranker=False
+        "tie query", workspace="tie-workspace", top_k=16, use_reranker=False
     )
 
     assert result["success"] is True
@@ -160,7 +159,6 @@ def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
 
 def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tmp_path):
     store = _store(tmp_path, dimension=3)
-    tenant = "tenant"
     baseline_workspace = "credential-golden-baseline"
     candidate_workspace = "credential-golden-candidate"
     relevant = [
@@ -209,19 +207,17 @@ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tm
     ).hexdigest()
     vectors = np.asarray([row[2] for row in corpus], dtype=np.float32)
     revision_hashes = {f"{dataset_revision}:{index}" for index in range(len(corpus))}
-    scope_key = store._scope_key(tenant)
     for workspace in (baseline_workspace, candidate_workspace):
-        _insert_vectors(store, tenant, workspace, vectors)
+        _insert_vectors(store, workspace,  vectors)
         with closing(store._connect()) as con:
             for index, (path, content, _vector) in enumerate(corpus):
                 con.execute(
                     "UPDATE chunks SET path=?,chunk_no=0,content_hash=?,text=? "
-                    "WHERE tenant=? AND workspace=? AND content_hash=?",
+                    "WHERE workspace=? AND content_hash=?",
                     (
                         path,
                         f"{dataset_revision}:{index}",
                         content,
-                        scope_key,
                         workspace,
                         f"hash-{index}",
                     ),
@@ -231,8 +227,8 @@ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tm
     with closing(store._connect()) as con:
         for workspace in (baseline_workspace, candidate_workspace):
             rows = con.execute(
-                "SELECT content_hash,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                (scope_key, workspace),
+                "SELECT content_hash,embedding_space FROM chunks WHERE workspace=?",
+                (workspace),
             ).fetchall()
             assert {str(row[0]) for row in rows} == revision_hashes
             assert {str(row[1]) for row in rows} == {"quality-space"}
@@ -242,7 +238,7 @@ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tm
 
     def paired_metrics(workspace: str) -> tuple[list[str], float, float]:
         result = store._search_uncached(
-            "weekly credential rotation", tenant, workspace, top_k=10, use_reranker=False
+            "weekly credential rotation", workspace,  top_k=10, use_reranker=False
         )
         assert result["success"] is True
         result_paths = [row["path"] for row in result["results"]]
@@ -274,11 +270,11 @@ def test_document_ingest_does_not_report_zero_vector_as_embedded(tmp_path):
     store = _store(tmp_path)
 
     class _ZeroVectorServices:
-        def embed(self, texts, _tenant, **_kwargs):
+        def embed(self, texts, **_kwargs):
             return {"success": True, "embeddings": [[0.0, 0.0] for _ in texts]}
 
     store.services = _ZeroVectorServices()
-    result = store.ingest_document("zero-vector-workspace", "A searchable document.", title="Zero vector")
+    result = store.ingest_document(title="Zero vector", workspace="zero-vector-workspace", content="A searchable document.")
 
     assert result["success"] is True
     assert result["embedded"] is False
@@ -286,16 +282,16 @@ def test_document_ingest_does_not_report_zero_vector_as_embedded(tmp_path):
 
 def test_subthreshold_query_uses_degraded_lexical_fallback_instead_of_vector_ties(tmp_path):
     store = _store(tmp_path)
-    tenant, workspace = "tenant", "zero-query-workspace"
-    _insert_vectors(store, tenant, workspace, np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+    workspace = "zero-query-workspace"
+    _insert_vectors(store, workspace,  np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
 
     class _ZeroQueryServices:
-        def embed(self, texts, _tenant, *, query=False, **_kwargs):
+        def embed(self, texts, *, query=False, **_kwargs):
             vectors = [[1e-10, 0.0] for _ in texts] if query else [[1.0, 0.0] for _ in texts]
             return {"success": True, "embeddings": vectors}
 
     store.services = _ZeroQueryServices()
-    result = store._search_uncached("no lexical match", tenant, workspace, top_k=2, use_reranker=False)
+    result = store._search_uncached("no lexical match", workspace,  top_k=2, use_reranker=False)
 
     assert result["success"] is True
     assert result["degraded"] is True
@@ -376,22 +372,21 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
 
 def test_subthreshold_query_embedding_returns_degraded_empty_results(tmp_path):
     store = _store(tmp_path)
-    tenant, workspace = "tenant", "zero-query-workspace"
+    workspace = "zero-query-workspace"
     _insert_vectors(
         store,
-        tenant,
         workspace,
         np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
     )
 
     class _ZeroQueryServices(_QueryServices):
-        def embed(self, texts, _tenant, *, query=False, **kwargs):
+        def embed(self, texts, *, query=False, **kwargs):
             if query:
                 return {"success": True, "embeddings": [[1e-10, 0.0] for _ in texts]}
-            return super().embed(texts, _tenant, query=query, **kwargs)
+            return super().embed(texts, query=query, **kwargs)
 
     store.services = _ZeroQueryServices(2)
-    result = store._search_uncached("zero query", tenant, workspace, top_k=2, use_reranker=False)
+    result = store._search_uncached("zero query", workspace,  top_k=2, use_reranker=False)
 
     assert result["success"] is True
     assert result["results"] == []
@@ -410,7 +405,7 @@ def test_public_search_does_not_cache_empty_lexical_fallback(tmp_path):
             super().__init__(dimension)
             self.query_calls = 0
 
-        def embed(self, texts, _tenant, *, query=False, **kwargs):
+        def embed(self, texts, *, query=False, **kwargs):
             if query:
                 self.query_calls += 1
                 return {
@@ -418,13 +413,13 @@ def test_public_search_does_not_cache_empty_lexical_fallback(tmp_path):
                     "embedding_space_id": self.space_id,
                     "embeddings": [[1e-10, 0.0] for _ in texts],
                 }
-            return super().embed(texts, _tenant, query=query, **kwargs)
+            return super().embed(texts, query=query, **kwargs)
 
     services = _ZeroQueryServices(2)
     store.services = services
 
-    first = store.search("zero query", "tenant", "zero-query-cache", use_reranker=False)
-    second = store.search("zero query", "tenant", "zero-query-cache", use_reranker=False)
+    first = store.search("zero query", use_reranker=False, workspace="zero-query-cache")
+    second = store.search("zero query", use_reranker=False, workspace="zero-query-cache")
 
     assert first["success"] is True
     assert first["results"] == second["results"] == []
@@ -438,16 +433,15 @@ def test_public_search_does_not_cache_empty_lexical_fallback(tmp_path):
 
 def test_numpy_vector_parse_skips_integer_overflow(tmp_path):
     store = _store(tmp_path)
-    tenant, workspace = "tenant", "overflow-workspace"
-    scope_key = store._scope_key(tenant)
+    workspace = "overflow-workspace"
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
-            (scope_key, workspace, "src/overflow.py", 0, "overflow", "oversized vector", json.dumps([10 ** 1000, 0]), "quality-space"),
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
+            (workspace, "src/overflow.py", 0, "overflow", "oversized vector", json.dumps([10 ** 1000, 0]), "quality-space"),
         )
         con.commit()
 
-    result = store._search_uncached("overflow query", tenant, workspace, top_k=1, use_reranker=False)
+    result = store._search_uncached("overflow query", workspace,  top_k=1, use_reranker=False)
     assert result["success"] is True
     assert result["results"]
     assert np.isfinite(result["results"][0]["embedding_score"])
@@ -455,31 +449,30 @@ def test_numpy_vector_parse_skips_integer_overflow(tmp_path):
 
 def test_equal_scores_use_semantic_path_order_not_row_order(tmp_path):
     store = _store(tmp_path)
-    tenant, workspace = "tenant", "tie-workspace"
-    scope_key = store._scope_key(tenant)
+    workspace = "tie-workspace"
     with closing(store._connect()) as con:
         con.executemany(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
             [
-                (scope_key, workspace, path, 0, f"hash-{path}", "same content", sqlite3.Binary(np.asarray([1.0, 0.0], dtype=np.float32).tobytes()), "quality-space")
+                (workspace, path, 0, f"hash-{path}", "same content", sqlite3.Binary(np.asarray([1.0, 0.0], dtype=np.float32).tobytes()), "quality-space")
                 for path in ("z-last.py", "m-middle.py", "a-first.py")
             ],
         )
         con.commit()
 
-    result = store._search_uncached("no-match-query", tenant, workspace, top_k=3, use_reranker=False)
+    result = store._search_uncached("no-match-query", workspace,  top_k=3, use_reranker=False)
     assert [row["path"] for row in result["results"]] == ["a-first.py", "m-middle.py", "z-last.py"]
 
 
 def test_configured_candidate_count_has_hard_upper_bound(tmp_path):
     store = _store(tmp_path)
     store.config["rag"]["rerank_candidates"] = 100_000
-    tenant, workspace = "tenant", "bounded-workspace"
+    workspace = "bounded-workspace"
     vectors = np.zeros((600, 2), dtype=np.float32)
     vectors[:, 0] = 1.0
-    _insert_vectors(store, tenant, workspace, vectors)
+    _insert_vectors(store, workspace,  vectors)
 
-    result = store._search_uncached("no-match-query", tenant, workspace, top_k=600, use_reranker=False)
+    result = store._search_uncached("no-match-query", workspace,  top_k=600, use_reranker=False)
     assert len(result["results"]) <= 512
 
 
@@ -491,10 +484,10 @@ def test_search_uses_larger_bounded_vector_batches_when_configured(
     tmp_path, monkeypatch, dimension, configured_batch_size, expected_batch_size
 ):
     store = _store(tmp_path, dimension)
-    tenant, workspace = "tenant", "larger-batch-workspace"
+    workspace = "larger-batch-workspace"
     vector = np.zeros(dimension, dtype=np.float32)
     vector[0] = 1.0
-    _insert_vectors(store, tenant, workspace, vector.reshape(1, -1))
+    _insert_vectors(store, workspace,  vector.reshape(1, -1))
     if configured_batch_size is not None:
         store.config["rag"]["search_batch_size"] = configured_batch_size
     fetch_sizes = []
@@ -532,7 +525,7 @@ def test_search_uses_larger_bounded_vector_batches_when_configured(
 
     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
 
-    result = store._search_uncached("larger batch", tenant, workspace, top_k=1, use_reranker=False)
+    result = store._search_uncached("larger batch", workspace,  top_k=1, use_reranker=False)
 
     assert result["success"] is True
     assert fetch_sizes and max(fetch_sizes) == expected_batch_size
@@ -542,7 +535,7 @@ def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypa
     import local_ai_hub.rag as rag_module
 
     store = _store(tmp_path)
-    _insert_vectors(store, "tenant", "cursor-workspace", np.asarray([[1.0, 0.0]], dtype=np.float32))
+    _insert_vectors(store, "cursor-workspace", np.asarray([[1.0, 0.0]], dtype=np.float32))
     state = {"cursor": None, "cursor_open_during_dot": False, "fetches": 0}
     real_dot = np.dot
 
@@ -587,7 +580,7 @@ def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypa
         return real_dot(*args, **kwargs)
 
     monkeypatch.setattr(np, "dot", checked_dot)
-    result = store._search_uncached("cursor query", "tenant", "cursor-workspace", top_k=1, use_reranker=False)
+    result = store._search_uncached("cursor query", "cursor-workspace", top_k=1, use_reranker=False)
     assert result["success"] is True
     assert state["cursor_open_during_dot"] is False
     assert state["fetches"] >= 2
@@ -600,7 +593,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         pytest.skip("set RAG_BENCHMARK=1 to run bounded retrieval latency and memory measurements")
 
     dimension = 384
-    tenant, workspace = "benchmark-tenant", "benchmark-workspace"
+    workspace = "benchmark-workspace"
     metrics = []
     corpus_counts = (1024, 8192, 16384)
     for count in corpus_counts:
@@ -610,7 +603,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         vectors[0] = 0.0
         vectors[0, 0] = 1.0
         store = _store(tmp_path / str(count), dimension)
-        _insert_vectors(store, tenant, workspace, vectors)
+        _insert_vectors(store, workspace,  vectors)
 
         configured_batch_size = max(32, int(store.config.get("rag", {}).get("search_batch_size", 512)))
         batch_sizes = (configured_batch_size,)
@@ -620,18 +613,18 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
             peak_bytes = 0
             sample_count = 3
             for _ in range(2):
-                warmup = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+                warmup = store._search_uncached("benchmark query", workspace,  top_k=8, use_reranker=False)
                 assert warmup["success"] is True
                 assert warmup["results"][0]["chunk_no"] == 0
             for _ in range(sample_count):
                 started = time.perf_counter()
-                result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+                result = store._search_uncached("benchmark query", workspace,  top_k=8, use_reranker=False)
                 samples_ms.append((time.perf_counter() - started) * 1000.0)
                 assert result["success"] is True
                 assert result["results"][0]["chunk_no"] == 0
             for _ in range(sample_count):
                 tracemalloc.start()
-                memory_result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+                memory_result = store._search_uncached("benchmark query", workspace,  top_k=8, use_reranker=False)
                 _, sample_peak = tracemalloc.get_traced_memory()
                 tracemalloc.stop()
                 peak_bytes = max(peak_bytes, sample_peak)
@@ -651,7 +644,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
             return real_dot(matrix, query)
 
         monkeypatch.setattr(np, "dot", observe_dot)
-        probe = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+        probe = store._search_uncached("benchmark query", workspace,  top_k=8, use_reranker=False)
         monkeypatch.setattr(np, "dot", real_dot)
         assert probe["success"] is True
         assert probe["results"][0]["chunk_no"] == 0
