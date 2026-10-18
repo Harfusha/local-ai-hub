@@ -407,6 +407,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "solve": ("root", "task", "workspace", "mode", "max_tokens", "base", "staged"),
             "delegate": ("root", "task", "workspace", "profile", "max_tokens"),
             "investigate": ("root", "query", "path", "include_code"),
+            "secret_scan": ("root", "path", "staged"),
             "diagnose": ("root", "query"),
             "search": ("root", "query", "path", "include_code", "path_hints", "limit", "offset"),
             "code_index": ("root", "query", "limit", "offset", "include_code"),
