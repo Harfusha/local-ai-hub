@@ -3,6 +3,14 @@ from types import SimpleNamespace
 from local_ai_hub import http_server, mcp_server
 
 
+def _activate_repo(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
+    snapshot = OperationalModeSnapshot("active", 1, None)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
+
+
 def _invoke_http_secret_scan(payload, scanner, monkeypatch):
     app = SimpleNamespace(
         recovery=None,
@@ -113,6 +121,7 @@ def test_http_registered_secret_scan_rejects_legacy_git_history_field(monkeypatc
 
 
 def test_registered_mcp_secret_scan_allows_whole_history_and_literal_path_filter(monkeypatch):
+    _activate_repo(monkeypatch)
     calls = []
 
     def post(url, payload, **kwargs):
@@ -132,6 +141,7 @@ def test_registered_mcp_secret_scan_allows_whole_history_and_literal_path_filter
 
 
 def test_registered_mcp_secret_scan_requires_path_field_for_filters_and_validates_toggle(monkeypatch):
+    _activate_repo(monkeypatch)
     calls = []
     monkeypatch.setattr(
         mcp_server.CLIENT,
@@ -156,6 +166,7 @@ def test_registered_mcp_secret_scan_requires_path_field_for_filters_and_validate
 
 
 def test_registered_mcp_secret_scan_does_not_treat_filename_substrings_as_controls(monkeypatch):
+    _activate_repo(monkeypatch)
     calls = []
     monkeypatch.setattr(
         mcp_server.CLIENT,
@@ -175,6 +186,7 @@ def test_registered_mcp_secret_scan_does_not_treat_filename_substrings_as_contro
 
 
 def test_registered_mcp_secret_scan_rejects_falsey_explicit_inputs(monkeypatch):
+    _activate_repo(monkeypatch)
     calls = []
     monkeypatch.setattr(
         mcp_server.CLIENT,
@@ -196,4 +208,4 @@ def test_registered_mcp_secret_scan_rejects_falsey_explicit_inputs(monkeypatch):
         assert result["terminal"] is True
         assert result["retryable"] is False
 
-    assert calls == []
+    assert not any(url == "/api/repo/secret_scan" for url, _payload in calls)

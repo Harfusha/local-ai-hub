@@ -3151,6 +3151,9 @@ def _local_ai_repo_impl(
     in_progress, retryable and degraded states. Use when a non-trivial
     repository task needs indexed evidence or bounded Hub support; skip when
     the task is not repository-scoped and no independent Hub scope exists."""
+    secret_scan_query_supplied = query is not None
+    secret_scan_task_supplied = task is not None
+    secret_scan_path_supplied = path is not None
     if not FEATURES.repo:
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
     if not isinstance(phase, str) or phase not in REPO_PHASES:
@@ -3794,12 +3797,12 @@ def _local_ai_repo_impl(
     if action == "secret_scan":
         if not isinstance(staged, bool):
             return _context_input_error("staged must be boolean for secret_scan")
-        if query is not None or task is not None:
+        if secret_scan_query_supplied or secret_scan_task_supplied:
             return _context_input_error("secret_scan accepts path; query and task are not path aliases")
-        if path is not None and (not isinstance(path, str) or not path.strip()):
+        if secret_scan_path_supplied and (not isinstance(path, str) or not path.strip()):
             return _context_input_error("path must be a non-empty string for secret_scan")
         return _compact(CLIENT.post("/api/repo/secret_scan", {
-            "root": root, "path": path,
+            "root": root, "path": path if secret_scan_path_supplied else None,
             "scan_git_history": staged,
         }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
@@ -4790,7 +4793,7 @@ def local_ai_coord(
         task_result = CLIENT.coord(
             **task_kwargs,
         )
-        return _compact(task_result, "task_memory" if _task_memory_projection(task_result) is not None else "status")
+        return _compact(task_result, "task_memory")
     if action.startswith("memory_"):
         memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
@@ -5201,6 +5204,12 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if fitted is not None:
                 return fitted
         rejection = {"success": False, "error": "budget_too_small", "terminal": True, "retryable": False}
+        for key in (
+            "request_id", "outcome_unknown", "request_not_sent",
+            "mutation_applied", "operation_not_started",
+        ):
+            if key in value:
+                rejection[key] = value[key]
         if "task_id" in value:
             rejection["task_id"] = value["task_id"]
         elif "context_id" in value:
@@ -5383,8 +5392,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if not enabled:
             return ([mcp_types.TextContent(type="text", text=json_dumps(value))], value)
 
-        if (name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_")
-                and _task_memory_projection(value) is not None):
+        if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):
             memory_wire = _mcp_task_memory_wire(value, requested)
             if memory_wire is not None:
                 return memory_wire
