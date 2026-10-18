@@ -110,21 +110,21 @@ def test_async_admission_states_and_queued_result_are_explicit(tmp_path) -> None
         },
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
     try:
-        first = manager.submit("tenant-a", "reason", {"task": "first"}, dispatch_delay_seconds=30)
+        first = manager.submit("reason", {"task": "first"}, dispatch_delay_seconds=30)
         assert first["admission"]["state"] == "accepted"
         assert first["state"] == "queued"
-        assert manager.result("tenant-a", first["job_id"])["success"] is False
+        assert manager.result(first["job_id"])["success"] is False
 
-        second = manager.submit("tenant-a", "reason", {"task": "second"})
+        second = manager.submit("reason", {"task": "second"})
         assert second["admission"]["state"] == "rejected"
         assert second["state"] == "rejected"
         assert second["retryable"] is True
         assert second["terminal"] is False
     finally:
-        manager.cancel("tenant-a", first["job_id"])
+        manager.cancel(first["job_id"])
         manager.close()
 
 
@@ -140,14 +140,14 @@ def test_async_admission_degrades_with_context_pressure(tmp_path) -> None:
         },
         scheduler=_PressureScheduler(),
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "pressure"}, dispatch_delay_seconds=30)
+        submitted = manager.submit("reason", {"task": "pressure"}, dispatch_delay_seconds=30)
         assert submitted["admission"]["state"] == "degraded"
         assert submitted["admission"]["context_budget_factor"] == 0.5
     finally:
-        manager.cancel("tenant-a", submitted["job_id"])
+        manager.cancel(submitted["job_id"])
         manager.close()
 
 
@@ -156,17 +156,17 @@ def test_async_cancel_terminates_registered_process(tmp_path) -> None:
         {"server": {"state_dir": str(tmp_path / "state")}},
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "process"}, dispatch_delay_seconds=30)
+        submitted = manager.submit("reason", {"task": "process"}, dispatch_delay_seconds=30)
         manager.register_process(submitted["job_id"], process)
-        cancelled = manager.cancel("tenant-a", submitted["job_id"])
+        cancelled = manager.cancel(submitted["job_id"])
         process.wait(timeout=3)
         assert cancelled["admission"]["state"] == "accepted"
         assert process.poll() is not None
-        assert manager.status("tenant-a", submitted["job_id"])["state"] == "cancelled"
+        assert manager.status(submitted["job_id"])["state"] == "cancelled"
     finally:
         if process.poll() is None:
             process.kill()
@@ -179,7 +179,7 @@ def test_async_cleanup_uses_managed_process_tree_owner(tmp_path, monkeypatch) ->
         {"server": {"state_dir": str(tmp_path / "state")}},
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
 
     class _ManagedProcess:
@@ -221,7 +221,7 @@ def test_async_cleanup_does_not_assume_exited_leader_means_tree_stopped(tmp_path
         {"server": {"state_dir": str(tmp_path / "state")}},
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
 
     class _ExitedManagedProcess:
@@ -259,7 +259,7 @@ def test_async_cancel_reports_unknown_when_tree_cleanup_is_unconfirmed(tmp_path,
         {"server": {"state_dir": str(tmp_path / "state")}},
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
 
     class _ManagedProcess:
@@ -279,13 +279,13 @@ def test_async_cancel_reports_unknown_when_tree_cleanup_is_unconfirmed(tmp_path,
     monkeypatch.setattr(async_jobs, "terminate_tree", lambda *_args, **_kwargs: False)
     process = _ManagedProcess()
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "cleanup"}, dispatch_delay_seconds=30)
+        submitted = manager.submit("reason", {"task": "cleanup"}, dispatch_delay_seconds=30)
         manager.register_process(submitted["job_id"], process)
-        cancelled = manager.cancel("tenant-a", submitted["job_id"])
+        cancelled = manager.cancel(submitted["job_id"])
         assert cancelled["state"] == "outcome_unknown"
         assert cancelled["outcome_unknown"] is True
         assert cancelled["retryable"] is False
-        assert manager.status("tenant-a", submitted["job_id"])["state"] == "outcome_unknown"
+        assert manager.status(submitted["job_id"])["state"] == "outcome_unknown"
         assert manager._processes[submitted["job_id"]] == [process]
     finally:
         manager.close()
@@ -296,7 +296,7 @@ def test_async_worker_records_unknown_when_process_tree_cleanup_fails(tmp_path, 
         {"server": {"state_dir": str(tmp_path / "state")}},
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
 
     class _ManagedProcess:
@@ -315,9 +315,9 @@ def test_async_worker_records_unknown_when_process_tree_cleanup_fails(tmp_path, 
 
     monkeypatch.setattr(async_jobs, "terminate_tree", lambda *_args, **_kwargs: False)
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "cleanup"}, dispatch_delay_seconds=1.0)
+        submitted = manager.submit("reason", {"task": "cleanup"}, dispatch_delay_seconds=1.0)
         manager.register_process(submitted["job_id"], _ManagedProcess())
-        result = manager.wait("tenant-a", submitted["job_id"], timeout_seconds=3.0)
+        result = manager.wait(submitted["job_id"], timeout_seconds=3.0)
         assert result["state"] == "outcome_unknown"
         assert result["outcome_unknown"] is True
     finally:

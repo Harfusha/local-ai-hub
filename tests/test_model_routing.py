@@ -65,14 +65,14 @@ class ReviewDiffRoutingTests(unittest.TestCase):
 
         services._generate = generate
         allowed = LocalAIServices.delegate(
-            services, {"task": "Explain this function", "model": "qwen2.5-coder:7b"}, "test"
+            services, {"task": "Explain this function", "model": "qwen2.5-coder:7b"}
         )
         self.assertTrue(allowed["success"])
         self.assertEqual(generated_models, ["qwen2.5-coder:7b"])
 
         for invalid_model in ("qwen2.5-coder:0.5b", "qwen2.5-coder:9b"):
             rejected = LocalAIServices.delegate(
-                services, {"task": "Explain this function", "model": invalid_model}, "test"
+                services, {"task": "Explain this function", "model": invalid_model}
             )
             self.assertFalse(rejected["success"])
             self.assertTrue(rejected["terminal"])

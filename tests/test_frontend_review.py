@@ -314,7 +314,6 @@ def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path
             "computed_styles_artifact_id": "styles-1",
             "prompt": "Review CTA and tell coder how to fix it",
         },
-        "tenant-a",
     )
 
     assert result["success"] is True
@@ -356,7 +355,6 @@ def test_service_rejects_missing_or_oversized_dom_refs(tmp_path: Path) -> None:
 
     result = services.vision(
         {"image_artifact_id": "img-1", "dom_artifact_id": "dom-too-large"},
-        "tenant-a",
     )
 
     assert result["success"] is False
@@ -392,7 +390,6 @@ def test_service_rejects_malformed_frontend_bundle(tmp_path: Path) -> None:
 
     result = services.vision(
         {"image_artifact_id": "img-1", "bundle_artifact_id": "bundle-bad"},
-        "tenant-a",
     )
 
     assert result["success"] is False

@@ -13,7 +13,7 @@ def test_nine_admission_probes_cancel_while_one_worker_is_in_flight(tmp_path: Pa
     worker_started = threading.Event()
     release_worker = threading.Event()
 
-    def execute(_action: str, payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def execute(_action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("task_id") == "t02-inflight-sentinel":
             worker_started.set()
             release_worker.wait(timeout=5)
@@ -28,22 +28,22 @@ def test_nine_admission_probes_cancel_while_one_worker_is_in_flight(tmp_path: Pa
     snapshots: list[dict[str, Any]] = []
     try:
         sentinel = manager.submit(
-            "benchmark", "reason", {"task_id": "t02-inflight-sentinel"},
+            "benchmark", {"task_id": "t02-inflight-sentinel"},
         )
         assert sentinel.get("success") is True
         sentinel_id = str(sentinel["job_id"])
         assert worker_started.wait(timeout=3)
-        assert manager.status("benchmark", sentinel_id).get("state") == "running"
+        assert manager.status(sentinel_id).get("state") == "running"
 
         def probe(sample_id: str) -> dict[str, Any]:
             submitted = manager.submit(
-                "benchmark", "reason", {"task_id": f"t02-{sample_id}"},
+                "benchmark", {"task_id": f"t02-{sample_id}"},
                 dispatch_delay_seconds=30,
             )
             job_id = str(submitted.get("job_id", ""))
-            before = manager.status("benchmark", job_id) if job_id else {}
-            cancelled = manager.cancel("benchmark", job_id) if job_id else None
-            after = manager.status("benchmark", job_id) if job_id else {}
+            before = manager.status(job_id) if job_id else {}
+            cancelled = manager.cancel(job_id) if job_id else None
+            after = manager.status(job_id) if job_id else {}
             counters = manager.stats()
             with manager._lock:
                 in_flight = sum(thread.is_alive() for thread in manager._workers)

@@ -77,7 +77,6 @@ def test_repair_loop_replays_explicitly_safe_validation(tmp_path, monkeypatch) -
     result = broker.repair_loop(
         command,
         tmp_path,
-        "tenant",
         task_id="task-1",
         max_attempts=1,
         paths=["repair_candidate.txt"],
@@ -108,7 +107,6 @@ def test_repair_loop_does_not_replay_unclassified_validation(tmp_path, monkeypat
     result = broker.repair_loop(
         command,
         tmp_path,
-        "tenant",
         task_id="task-1",
         max_attempts=1,
         paths=["repair_candidate.txt"],
@@ -149,7 +147,6 @@ def test_repair_loop_honors_explicit_replay_unsafe_classification(tmp_path, monk
     result = broker.repair_loop(
         command,
         tmp_path,
-        "tenant",
         task_id="task-1",
         max_attempts=1,
         paths=["repair_candidate.txt"],
@@ -184,7 +181,6 @@ def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypat
     result = broker.repair_loop(
         "git add changed.py",
         str(tmp_path),
-        "tenant",
         task_id="task-1",
         max_attempts=2,
         paths=["changed.py"],
@@ -225,7 +221,6 @@ def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, 
     result = broker.repair_loop(
         command,
         str(tmp_path),
-        "tenant",
         task_id="task-1",
         max_attempts=3,
         paths=["changed.py"],
@@ -249,7 +244,6 @@ def test_repair_loop_skips_timed_out_or_running_command(tmp_path, monkeypatch, s
     result = broker.repair_loop(
         "python -m pytest -q",
         str(tmp_path),
-        "tenant",
         task_id="task-1",
         paths=["changed.py"],
         initial_result={"success": False, **status},
@@ -264,11 +258,14 @@ def test_repair_loop_skips_timed_out_or_running_command(tmp_path, monkeypatch, s
 
 def test_recovery_journal_replays_the_same_payload_after_response_loss(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "checkpoint", "task_id": "task-1", "state": "done"}
+    payload = {
+        "root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1",
+        "state": "done",
+    }
 
-    first = journal.begin("req-1", "tenant", "/api/tasks/checkpoint", identity="agent-a", payload=payload)
+    first = journal.begin("req-1", action="/api/agent-state/tasks", payload=payload)
     journal.finish("req-1", True, status_code=200, response={"success": True, "checkpoint_id": "cp-1"})
-    retry = journal.begin("req-1", "tenant", "/api/tasks/checkpoint", identity="agent-a", payload=payload)
+    retry = journal.begin("req-1", action="/api/agent-state/tasks", payload=payload)
 
     assert first["claimed"] is True
     assert retry["claimed"] is False
@@ -276,20 +273,21 @@ def test_recovery_journal_replays_the_same_payload_after_response_loss(tmp_path)
     assert retry["response"] == {"success": True, "checkpoint_id": "cp-1"}
 
 
-def test_begin_requires_identity_and_payload(tmp_path) -> None:
+def test_begin_requires_action_and_payload(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
 
     with pytest.raises(TypeError):
-        journal.begin("req-required", "tenant", "/api/work-orders", payload={"action": "submit"})
+        journal.begin("req-required", payload={"action": "submit"})
     with pytest.raises(TypeError):
-        journal.begin("req-required", "tenant", "/api/work-orders", identity="agent-a")
+        journal.begin("req-required", action="/api/work-orders")
 
 
 def test_recovery_journal_conflicts_when_request_payload_changes(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    journal.begin("req-1", "tenant", "/api/tasks/checkpoint", identity="agent-a", payload={"state": "done"})
+    base = {"root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1"}
+    journal.begin("req-1", action="/api/agent-state/tasks", payload={**base, "state": "done"})
 
-    retry = journal.begin("req-1", "tenant", "/api/tasks/checkpoint", identity="agent-a", payload={"state": "failed"})
+    retry = journal.begin("req-1", action="/api/agent-state/tasks", payload={**base, "state": "failed"})
 
     assert retry["claimed"] is False
     assert retry["state"] == "conflict"
@@ -303,7 +301,9 @@ def test_recovery_journal_rejects_invalid_request_ids_before_claim(tmp_path, req
     journal = RecoveryJournal(tmp_path)
 
     with pytest.raises(ValueError, match="request_id"):
-        journal.begin(request_id, "tenant", "/api/tasks/checkpoint", identity="agent-a", payload={"state": "done"})
+        journal.begin(request_id, action="/api/agent-state/tasks", payload={
+            "root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1", "state": "done",
+        })
 
     with closing(sqlite3.connect(journal.path)) as con:
         count = con.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
@@ -312,12 +312,13 @@ def test_recovery_journal_rejects_invalid_request_ids_before_claim(tmp_path, req
 
 def test_wait_for_preserves_unknown_after_process_interruption(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    journal.begin("req-1", "tenant", "/api/work-orders", identity="agent-a", payload={"action": "submit"})
+    payload = {"root": str(tmp_path.resolve()), "task_id": "task-1", "action": "submit"}
+    journal.begin("req-1", action="/api/work-orders", payload=payload)
     journal.mark_interrupted_on_startup()
 
     result = journal.wait_for(
-        "req-1", "tenant", "/api/work-orders", identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload({"action": "submit"}), timeout_seconds=0.01,
+        "req-1", action="/api/work-orders", payload_fingerprint=journal.fingerprint_payload(payload),
+        timeout_seconds=0.01,
     )
 
     assert result is not None
@@ -325,60 +326,60 @@ def test_wait_for_preserves_unknown_after_process_interruption(tmp_path) -> None
     assert result["outcome_unknown"] is True
 
 
-def test_lookup_requires_identity_and_payload_fingerprint(tmp_path) -> None:
+def test_lookup_requires_action_and_payload_fingerprint(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "submit"}
-    journal.begin("req-identity", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    payload = {"root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1"}
+    journal.begin("req-identity", action="/api/work-orders", payload=payload)
     journal.finish("req-identity", True, response={"secret": "stored"})
     fingerprint = journal.fingerprint_payload(payload)
 
     with pytest.raises(TypeError):
-        journal.lookup("req-identity", "tenant", "/api/work-orders", payload_fingerprint=fingerprint)
+        journal.lookup("req-identity", payload_fingerprint=fingerprint)
     with pytest.raises(TypeError):
-        journal.lookup("req-identity", "tenant", "/api/work-orders", identity="agent-a")
+        journal.lookup("req-identity", action="/api/work-orders")
 
     assert journal.lookup(
-        "req-identity", "tenant", "/api/work-orders", identity="agent-b", payload_fingerprint=fingerprint
+        "req-identity", action="/api/other", payload_fingerprint=fingerprint
     )["state"] == "conflict"
     assert journal.lookup(
-        "req-identity", "tenant", "/api/work-orders", identity="agent-a", payload_fingerprint="different"
+        "req-identity", action="/api/work-orders", payload_fingerprint="different"
     )["state"] == "conflict"
 
 
-def test_wait_for_requires_identity_and_payload_fingerprint(tmp_path) -> None:
+def test_wait_for_requires_action_and_payload_fingerprint(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "submit"}
-    journal.begin("req-wait-identity", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    payload = {"root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1"}
+    journal.begin("req-wait-identity", action="/api/work-orders", payload=payload)
     fingerprint = journal.fingerprint_payload(payload)
 
     with pytest.raises(TypeError):
-        journal.wait_for("req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0, payload_fingerprint=fingerprint)
+        journal.wait_for("req-wait-identity", timeout_seconds=0, payload_fingerprint=fingerprint)
     with pytest.raises(TypeError):
-        journal.wait_for("req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0, identity="agent-a")
+        journal.wait_for("req-wait-identity", action="/api/work-orders", timeout_seconds=0)
 
     journal.finish("req-wait-identity", True, response={"secret": "stored"})
-    identity_mismatch = journal.wait_for(
-        "req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0,
-        identity="agent-b", payload_fingerprint=fingerprint,
+    action_mismatch = journal.wait_for(
+        "req-wait-identity", action="/api/other", timeout_seconds=0,
+        payload_fingerprint=fingerprint,
     )
     payload_mismatch = journal.wait_for(
-        "req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0,
-        identity="agent-a", payload_fingerprint="different",
+        "req-wait-identity", action="/api/work-orders", timeout_seconds=0,
+        payload_fingerprint="different",
     )
-    assert identity_mismatch["state"] == "conflict"
+    assert action_mismatch["state"] == "conflict"
     assert payload_mismatch["state"] == "conflict"
-    assert identity_mismatch["error"]
+    assert action_mismatch["error"]
     assert payload_mismatch["error"]
 
 
 def test_trusted_lookup_metadata_never_returns_stored_response(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "submit"}
-    journal.begin("req-trace-metadata", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    payload = {"root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1"}
+    journal.begin("req-trace-metadata", action="/api/work-orders", payload=payload)
     journal.finish("req-trace-metadata", True, response={"secret": "stored"})
 
     metadata = journal.lookup_metadata(
-        "req-trace-metadata", "tenant", "/api/work-orders", identity="agent-a"
+        "req-trace-metadata", action="/api/work-orders"
     )
 
     assert metadata["state"] == "done"
@@ -389,10 +390,8 @@ def test_debug_trace_reconciliation_uses_trusted_journal_metadata(tmp_path, monk
     journal = RecoveryJournal(tmp_path)
     journal.begin(
         "req-trace-reconcile",
-        "tenant",
-        "/api/work-orders",
-        identity="agent-a",
-        payload={"action": "submit"},
+        action="/api/work-orders",
+        payload={"root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1"},
     )
     journal.finish("req-trace-reconcile", True, response={"success": True})
     reconciled: list[tuple[str, dict[str, Any]]] = []
@@ -407,8 +406,6 @@ def test_debug_trace_reconciliation_uses_trusted_journal_metadata(tmp_path, monk
     trace = {
         "trace_id": "trace-1",
         "request_id": "req-trace-reconcile",
-        "tenant": "tenant",
-        "agent": "agent-a",
         "action": "/api/work-orders",
         "state": "running",
     }
@@ -460,7 +457,7 @@ def test_invalid_work_order_body_is_rejected_before_mutation_dispatch(monkeypatc
         ),
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, request: submitted.append(dict(request)) or {"success": True},
+            submit=lambda request: submitted.append(dict(request)) or {"success": True},
         ),
     )
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -472,7 +469,6 @@ def test_invalid_work_order_body_is_rejected_before_mutation_dispatch(monkeypatc
     )
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
     monkeypatch.setattr(
         http_server.Handler,
@@ -492,19 +488,23 @@ def test_invalid_work_order_body_is_rejected_before_mutation_dispatch(monkeypatc
 
 
 @pytest.mark.parametrize(
-    ("tenant", "identity", "action"),
+    ("action", "identity_changes"),
     [
-        ("other-tenant", "agent-a", "/api/tasks/checkpoint"),
-        ("tenant", "agent-b", "/api/tasks/checkpoint"),
-        ("tenant", "agent-a", "/api/tasks/cleanup"),
+        ("/api/agent-state/tasks", {"task_id": "task-other"}),
+        ("/api/agent-state/task/cleanup", {}),
+        ("/api/agent-state/tasks", {"session_id": "session-other"}),
     ],
 )
-def test_recovery_journal_binds_id_to_tenant_identity_and_operation(tmp_path, tenant: str, identity: str, action: str) -> None:
+def test_recovery_journal_binds_request_to_operation_and_repository_task_session(
+    tmp_path, action: str, identity_changes: dict[str, str],
+) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"state": "done"}
-    journal.begin("req-1", "tenant", "/api/tasks/checkpoint", identity="agent-a", payload=payload)
+    payload = {
+        "root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1", "state": "done",
+    }
+    journal.begin("req-1", action="/api/agent-state/tasks", payload=payload)
 
-    retry = journal.begin("req-1", tenant, action, identity=identity, payload=payload)
+    retry = journal.begin("req-1", action=action, payload={**payload, **identity_changes})
 
     assert retry["claimed"] is False
     assert retry["state"] == "conflict"
@@ -512,12 +512,15 @@ def test_recovery_journal_binds_id_to_tenant_identity_and_operation(tmp_path, te
 
 def test_recovery_journal_claim_is_atomic_across_clients(tmp_path) -> None:
     journals = [RecoveryJournal(tmp_path), RecoveryJournal(tmp_path)]
-    payload = {"document_id": "doc-1", "content": "stable"}
+    payload = {
+        "root": str(tmp_path.resolve()), "task_id": "task-rag-1", "session_id": "session-rag-1",
+        "document_id": "doc-1", "content": "stable",
+    }
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(
             lambda journal: journal.begin(
-                "req-1", "tenant", "/api/rag/ingest_document", identity="agent-a", payload=payload
+                "req-1", action="/api/rag/ingest_document", payload=payload,
             ),
             journals,
         ))
@@ -528,10 +531,11 @@ def test_recovery_journal_claim_is_atomic_across_clients(tmp_path) -> None:
 
 def test_recovery_journal_process_crash_stays_explicitly_unknown(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
-    journal.begin("req-1", "tenant", "/api/work-orders", identity="agent-a", payload={"action": "submit"})
+    payload = {"root": str(tmp_path.resolve()), "task_id": "task-1", "session_id": "session-1", "action": "submit"}
+    journal.begin("req-1", action="/api/work-orders", payload=payload)
 
     restarted = RecoveryJournal(tmp_path)
-    retry = restarted.begin("req-1", "tenant", "/api/work-orders", identity="agent-a", payload={"action": "submit"})
+    retry = restarted.begin("req-1", action="/api/work-orders", payload=payload)
 
     assert retry["claimed"] is False
     assert retry["state"] == "abandoned"
@@ -544,11 +548,11 @@ def test_corrupt_journal_rebuild_never_claims_mutations(tmp_path) -> None:
     first_process = RecoveryJournal(tmp_path)
     assert (tmp_path / "recovery.unavailable").exists()
     with pytest.raises(sqlite3.DatabaseError, match="refusing mutation dispatch"):
-        first_process.begin("req-1", "tenant", "/api/command", identity="agent-a", payload={"command": "deploy"})
+        first_process.begin("req-1", action="/api/command", payload={"root": str(tmp_path.resolve()), "task_id": "task-1", "command": "deploy"})
 
     restarted_process = RecoveryJournal(tmp_path)
     with pytest.raises(sqlite3.DatabaseError, match="refusing mutation dispatch"):
-        restarted_process.begin("req-1", "tenant", "/api/command", identity="agent-a", payload={"command": "deploy"})
+        restarted_process.begin("req-1", action="/api/command", payload={"root": str(tmp_path.resolve()), "task_id": "task-1", "command": "deploy"})
 
 
 def test_unsupported_legacy_journal_is_preserved_and_fails_closed(tmp_path) -> None:
@@ -577,13 +581,16 @@ def test_unsupported_legacy_journal_is_preserved_and_fails_closed(tmp_path) -> N
     with closing(sqlite3.connect(path)) as con:
         assert con.execute("SELECT request_id,state FROM requests").fetchall() == [("req-legacy", "running")]
     with pytest.raises(sqlite3.DatabaseError, match="refusing mutation dispatch"):
-        journal.begin("req-new", "tenant", "/api/command", identity="agent-a", payload={"command": "safe"})
+        journal.begin("req-new", action="/api/command", payload={"root": str(tmp_path.resolve()), "task_id": "task-1", "command": "safe"})
 
 
 def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "submit", "work_id": "work-1"}
-    journal.begin("req-1", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    payload = {
+        "action": "submit", "work_id": "work-1", "root": str(tmp_path.resolve()),
+        "task_id": "task-disconnect-1", "session_id": "session-disconnect-1",
+    }
+    journal.begin("req-1", action="/api/work-orders", payload=payload)
 
     class _DisconnectedWriter:
         def write(self, _body: bytes) -> None:
@@ -611,11 +618,7 @@ def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch)
         pass
 
     replay = journal.lookup(
-        "req-1",
-        "tenant",
-        "/api/work-orders",
-        identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload(payload),
+        "req-1", action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload(payload),
     )
     assert replay is not None
     assert replay["state"] == "done"
@@ -635,14 +638,20 @@ def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch)
 )
 def test_failed_partial_publish_is_replayed_without_reexecution(tmp_path, path: str, payload: dict[str, Any]) -> None:
     journal = RecoveryJournal(tmp_path)
+    payload = {
+        **payload,
+        "root": str(tmp_path.resolve()),
+        "task_id": str(payload.get("task_id") or "task-replay-1"),
+        "session_id": "session-replay-1",
+    }
     calls: list[str] = []
-    claimed = journal.begin("req-1", "tenant", path, identity="agent-a", payload=payload)
+    claimed = journal.begin("req-1", action=path,payload=payload)
     assert claimed["claimed"] is True
 
     calls.append("publish began; later stage failed")
     failure = {"success": False, "error": "publish interrupted", "partial_publish": True}
     journal.finish("req-1", False, status_code=500, response=failure)
-    retry = journal.begin("req-1", "tenant", path, identity="agent-a", payload=payload)
+    retry = journal.begin("req-1", action=path,payload=payload)
 
     assert calls == ["publish began; later stage failed"]
     assert retry["claimed"] is False
@@ -898,14 +907,13 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
+            submit=lambda payload: submitted.append(payload) or {"success": True},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -930,14 +938,13 @@ def test_post_work_order_disabled_gate_prevents_dispatch(tmp_path, monkeypatch) 
         recovery=journal,
         work_orchestrator=SimpleNamespace(
             enabled=False,
-            submit=lambda _tenant, request: submitted.append(dict(request)) or {"success": True},
+            submit=lambda request: submitted.append(dict(request)) or {"success": True},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-disabled"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -972,14 +979,13 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, payload: submitted.append(dict(payload)) or {"success": True, "work_id": payload["work_id"]},
+            submit=lambda payload: submitted.append(dict(payload)) or {"success": True, "work_id": payload["work_id"]},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload_box["value"]))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1007,41 +1013,34 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     assert [status for status, _data in responses] == [200, 200, 409]
     assert responses[1][1] == responses[0][1]
     original = journal.lookup(
-        "req-1",
-        "tenant",
-        "/api/work-orders",
-        identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload(original_payload),
+        "req-1", action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload(original_payload),
     )
     changed = journal.lookup(
-        "req-1",
-        "tenant",
-        "/api/work-orders",
-        identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload(payload_box["value"]),
+        "req-1", action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload(payload_box["value"]),
     )
     assert original["response"] == responses[0][1]
-    assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+    assert changed == {"state": "conflict", "error": "request id already belongs to a different operation or payload"}
 
 
-def test_http_retry_rejects_changed_identity_before_dispatch(tmp_path, monkeypatch) -> None:
+def test_http_retry_agent_metadata_does_not_partition_request_journal(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
-    identity_box = {"value": "agent-a"}
-    payload = {"action": "submit", "work_id": "work-1"}
+    agent_box = {"value": "agent-a"}
+    payload = {
+        "action": "submit", "root": str(tmp_path.resolve()),
+        "task_id": "task-1", "session_id": "session-1", "work_id": "work-1",
+    }
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
         config={},
         recovery=journal,
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, request: submitted.append(dict(request)) or {"success": True},
+            submit=lambda request: submitted.append(dict(request)) or {"success": True},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-identity"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
-    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: identity_box["value"])
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1057,16 +1056,16 @@ def test_http_retry_rejects_changed_identity_before_dispatch(tmp_path, monkeypat
     def request() -> None:
         handler = object.__new__(http_server.Handler)
         handler.path = "/api/work-orders"
-        handler.headers = {"Content-Type": "application/json"}
+        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Agent": agent_box["value"]}
         http_server.Handler.do_POST(handler)
 
     request()
-    identity_box["value"] = "agent-b"
+    agent_box["value"] = "agent-b"
     request()
 
     assert submitted == [payload]
-    assert [status for status, _data in responses] == [200, 409]
-    assert "different identity" in responses[1][1]["error"]
+    assert [status for status, _data in responses] == [200, 200]
+    assert responses[1] == responses[0]
 
 def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch) -> None:
     from http.client import HTTPConnection
@@ -1083,7 +1082,7 @@ def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch)
     journal_begin_result: dict[str, Any] = {}
     submissions: list[dict[str, Any]] = []
 
-    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
+    def submit(value: dict[str, Any]) -> dict[str, Any]:
         submissions.append(dict(value))
         publish_started.set()
         if not release_publish.wait(10.0):
@@ -1211,7 +1210,6 @@ def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, mo
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-publish-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload_box["value"]))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     lost_response: list[tuple[int, dict[str, Any]]] = []
@@ -1254,11 +1252,7 @@ def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, mo
     assert responses[0] == lost_response[0]
     assert responses[1][1]["success"] is False
     stored = journal.lookup(
-        "req-publish-1",
-        "tenant",
-        "/api/coord/pubsub_publish",
-        identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload(original_payload),
+        "req-publish-1", action="/api/coord/pubsub_publish",payload_fingerprint=journal.fingerprint_payload(original_payload),
     )
     assert stored["response"] == lost_response[0][1]
 
@@ -1272,13 +1266,12 @@ def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, mo
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
+            submit=lambda payload: submitted.append(payload) or {"success": True},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1403,7 +1396,6 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1420,7 +1412,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     for _ in range(2):
         handler = object.__new__(http_server.Handler)
         handler.path = path
-        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant"}
+        handler.headers = {"Content-Type": "application/json"}
         http_server.Handler.do_POST(handler)
 
     assert calls == [expected_call], responses
@@ -1441,7 +1433,6 @@ def test_bundle_import_retry_uses_content_and_target_fingerprint(tmp_path, monke
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-bundle"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_body", lambda self, *, limit: bundle)
     responses: list[tuple[int, dict[str, Any]]] = []
 
@@ -1480,7 +1471,6 @@ def test_bundle_import_failure_finishes_journal_and_is_not_replayed(tmp_path, mo
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-bundle-failure"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_body", lambda self, *, limit: b"bundle")
     responses: list[tuple[int, dict[str, Any]]] = []
 
@@ -1516,14 +1506,13 @@ def test_debug_trace_failure_after_claim_does_not_block_post_dispatch(monkeypatc
         debug_traces=BrokenTraceStore(),
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, payload: submitted.append(dict(payload)) or {"success": True},
+            submit=lambda payload: submitted.append(dict(payload)) or {"success": True},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-trace-failure") or setattr(self, "_debug_trace_id", "trace-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1537,8 +1526,7 @@ def test_debug_trace_failure_after_claim_does_not_block_post_dispatch(monkeypatc
     assert submitted == [{"action": "submit", "work_id": "work-1"}]
     assert responses[0][0] == 200
     assert journal.lookup(
-        "req-trace-failure", "tenant", "/api/work-orders", identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload({"action": "submit", "work_id": "work-1"}),
+        "req-trace-failure", action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload({"action": "submit", "work_id": "work-1"}),
     )["state"] == "running"
 
 
@@ -1555,7 +1543,6 @@ def test_tool_accounting_retry_does_not_duplicate_event_batch(tmp_path, monkeypa
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-accounting"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"events": events})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1639,7 +1626,6 @@ def test_http_request_journal_replays_action_mutations_once(
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-action-family"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     monkeypatch.setattr(
@@ -1664,18 +1650,14 @@ def test_http_request_journal_replays_action_mutations_once(
     for _ in range(2):
         handler = object.__new__(http_server.Handler)
         handler.path = path
-        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant"}
+        handler.headers = {"Content-Type": "application/json"}
         http_server.Handler.do_POST(handler)
 
     if path in {"/api/agent-state/learning", "/api/agent-state/cleanup"}:
         assert [status for status, _data in responses] == [403, 403]
         assert calls == []
         assert journal.lookup(
-            "req-action-family",
-            "tenant",
-            path,
-            identity="agent-a",
-            payload_fingerprint=journal.fingerprint_payload(payload),
+            "req-action-family", action=path,payload_fingerprint=journal.fingerprint_payload(payload),
         ) is None
         return
 
@@ -1707,7 +1689,7 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
     }
     dispatches: list[dict[str, Any]] = []
 
-    def command(value: dict[str, Any], _tenant: str, *, request_cancel_event=None) -> dict[str, Any]:
+    def command(value: dict[str, Any], *, request_cancel_event=None) -> dict[str, Any]:
         assert isinstance(request_cancel_event, threading.Event)
         dispatches.append(dict(value))
         return dict(uncertain)
@@ -1755,11 +1737,7 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
 
     fingerprint = journal.fingerprint_payload(payload)
     stored = journal.lookup(
-        "t07-typed-unknown",
-        "tenant",
-        "/api/command",
-        identity="agent-a",
-        payload_fingerprint=fingerprint,
+        "t07-typed-unknown", action="/api/command",payload_fingerprint=fingerprint,
     )
     assert first["success"] is False
     assert first["outcome_unknown"] is True
@@ -1786,11 +1764,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
     }
     first_process = RecoveryJournal(tmp_path / "recovery")
     claim = first_process.begin(
-        request_id,
-        "tenant",
-        "/api/work-orders",
-        identity="agent-a",
-        payload=payload,
+        request_id, action="/api/work-orders",payload=payload,
     )
     assert claim["claimed"] is True
 
@@ -1807,7 +1781,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
             logger=logging.getLogger("test.restart-outcome-unknown"),
             work_orchestrator=SimpleNamespace(
                 enabled=True,
-                submit=lambda _tenant, value: dispatches.append(dict(value)) or {"success": True},
+                submit=lambda value: dispatches.append(dict(value)) or {"success": True},
             ),
         ),
     )
@@ -1845,7 +1819,7 @@ def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome
     journal = RecoveryJournal(tmp_path)
     request_id = "req-wait-observation-failure"
     payload = {"action": "submit", "root": str(tmp_path), "task": "observation failure contract"}
-    original = journal.begin(request_id, "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    original = journal.begin(request_id, action="/api/work-orders",payload=payload)
     assert original["claimed"] is True
     committed = {"success": True, "work_id": "committed-before-observation-error"}
 
@@ -1859,13 +1833,12 @@ def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", request_id))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
     monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     dispatched: list[dict[str, Any]] = []
     app.work_orchestrator = SimpleNamespace(
         enabled=True,
-        submit=lambda _tenant, value: dispatched.append(dict(value)) or {"success": True},
+        submit=lambda value: dispatched.append(dict(value)) or {"success": True},
     )
     responses: list[tuple[int, dict[str, Any]]] = []
     monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data: responses.append((status, data)))
@@ -1876,11 +1849,7 @@ def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome
     http_server.Handler.do_POST(handler)
 
     stored = journal.lookup(
-        request_id,
-        "tenant",
-        "/api/work-orders",
-        identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload(payload),
+        request_id, action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload(payload),
     )
     assert dispatched == []
     assert responses[0][0] == 409
@@ -1901,7 +1870,7 @@ def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expect
         config={},
         telemetry=SimpleNamespace(http_latency_estimate=lambda _path: {"samples": 5}),
         async_jobs=SimpleNamespace(
-            submit=lambda _tenant, _action, payload: submitted.append(dict(payload)) or {"job_id": "job-1"}
+            submit=lambda _action, payload: submitted.append(dict(payload)) or {"job_id": "job-1"}
         ),
         debug_traces=None,
     )
@@ -1912,7 +1881,7 @@ def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expect
     handler._trace_request_id = "server-generated-trace-id"
 
     status, _result = http_server.Handler._async_delivery(
-        handler, "/api/reason", {"delivery": "async", "task": "bounded task"}, "tenant-a"
+        handler, "/api/reason", {"delivery": "async", "task": "bounded task"}
     )
 
     assert status == 200
@@ -1927,7 +1896,7 @@ def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) ->
         config={},
         recovery=RecoveryJournal(tmp_path),
         async_jobs=SimpleNamespace(
-            submit=lambda _tenant, _action, payload: submitted.append(dict(payload)) or {"success": True}
+            submit=lambda _action, payload: submitted.append(dict(payload)) or {"success": True}
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
@@ -1938,7 +1907,6 @@ def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) ->
     )
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda _self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda _self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: "tenant-a")
     monkeypatch.setattr(
         http_server.Handler,
         "_read_json",

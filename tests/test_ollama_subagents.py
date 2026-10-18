@@ -149,12 +149,12 @@ def test_run_profile_routes_resolved_profile_and_metadata() -> None:
     agent.services = SimpleNamespace(runtime=SimpleNamespace(installed_models=lambda: ["qwen2.5-coder:7b"]))
     captured = {}
 
-    def fake_run(model, role, task, root, tenant, max_tokens, priority, **kwargs):
-        captured.update({"model": model, "role": role, "task": task, "root": root, "tenant": tenant, "max_tokens": max_tokens, "profile": kwargs["profile"]})
+    def fake_run(model, role, task, root, max_tokens, priority, *, profile=None, **kwargs):
+        captured.update({"model": model, "role": role, "task": task, "root": root, "max_tokens": max_tokens, "profile": profile})
         return {"success": True, "text": "návrh"}
 
     agent.run = fake_run
-    result = agent.run_profile("drafter", "Navrhni opravu", "C:\\repo", "tenant-a")
+    result = agent.run_profile("drafter", "Navrhni opravu", "C:\\repo")
 
     assert captured["model"] == "qwen2.5-coder:7b"
     assert captured["role"] == "drafter"
@@ -183,7 +183,7 @@ def test_run_profile_rejects_unavailable_model_without_fallback() -> None:
     agent.services = SimpleNamespace(runtime=SimpleNamespace(installed_models=lambda: ["other-model"]))
     agent.run = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("run must not start"))
 
-    result = agent.run_profile("qwen-explorer", "inspect", "C:\\repo", "tenant")
+    result = agent.run_profile("qwen-explorer", "inspect", "C:\\repo")
 
     assert result["success"] is False
     assert result["unsupported"] is True
@@ -203,7 +203,7 @@ def test_services_route_repo_profile_to_read_only_tool_agent() -> None:
             return {"success": True, "profile": args[0], "advisory_only": True}
 
     services.tool_agent = Agent()
-    result = services.delegate_profile({"profile": "qwen-explorer", "root": "C:\\repo", "task": "Najdi vstup"}, "tenant-a")
+    result = services.delegate_profile({"profile": "qwen-explorer", "root": "C:\\repo", "task": "Najdi vstup"})
 
     assert result["success"] is True
-    assert calls["args"][:4] == ("qwen-explorer", "Najdi vstup", "C:\\repo", "tenant-a")
+    assert calls["args"][:3] == ("qwen-explorer", "Najdi vstup", "C:\\repo")

@@ -26,13 +26,13 @@ class _MigrationArtifactStore:
     def __init__(self, task):
         self.task = task
 
-    def get(self, artifact_id, *, max_chars, tenant):
+    def get(self, artifact_id, *, max_chars):
         proof = {
             "passed": True,
             "kind": "work_source_review",
             "criteria": ["migration"],
             "task_id": self.task.task_id,
-            "owner": tenant,
+            "owner": self.task.owner,
             "repository_revision": "",
             "mutation_generation": 0,
         }
@@ -76,7 +76,6 @@ def _seed_state(db_path):
         source="test",
         provenance={
             "root": str(db_path.parent / "memory-repo"),
-            "tenant": "migration-tenant",
         },
     )
     # Seed durable projection directly; event-writer integration belongs to T08.

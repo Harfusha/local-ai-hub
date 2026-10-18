@@ -34,13 +34,13 @@ def make_task(tmp_path):
                 kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=repository_id,
                 key="parser identifiers", value="Parser identifier tokenization uses Unicode rules",
                 source="user", status=MemoryStatus.CONFIRMED, confidence=1.0,
-                provenance={"root": str(root), "repository_id": repository_id, "tenant": "tenant-a", "volatile": volatile},
+                provenance={"root": str(root), "repository_id": repository_id, "volatile": volatile},
             ), actor="user")
         tasks.set_memory_adoption(memory_store=memory, context_compiler=ContextCompiler(state, task_store=tasks, memory_store=memory))
         task_id = f"checkpoint-memory-{count}"
         task = tasks.create(
             GoalContract(goal="Fix parser identifier tokenization"),
-            ScopeContext(repository_id=str(root), task_id=task_id),
+            ScopeContext(repository_id=repository_id, task_id=task_id),
             task_id=task_id, repo_root=str(root),
         )
         return tasks, memory, root, task, record

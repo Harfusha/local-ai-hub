@@ -409,7 +409,7 @@ def test_public_run_failed_repair_keeps_execution_and_receipt_binding(
     assert result.get("cache_hit") is None
     assert result.get("coalesced") is None
     assert len(repair_calls) == 1
-    assert repair_calls[0][0][:3] == (command, str(worktree), "agent")
+    assert repair_calls[0][0][:2] == (command, str(worktree))
     initial_result = repair_calls[0][1]["initial_result"]
     assert initial_result["execution_id"] == result["execution_id"]
     assert initial_result["cache_hit"] is False

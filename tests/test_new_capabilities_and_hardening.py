@@ -173,7 +173,7 @@ def test_proxy_diagnostic_cap_bounds_scheduler_wait():
     services.scheduler.submit.return_value = {"response": "ok"}
     services.runtime = MagicMock()
 
-    services.proxy_request("/api/version", {}, "hub", "local_ai_task", diagnostic_timeout_seconds=20)
+    services.proxy_request("/api/version", {}, source="hub", diagnostic_timeout_seconds=20)
 
     assert services.scheduler.submit.call_args.kwargs["wait_timeout"] == 20
 
@@ -188,7 +188,7 @@ def test_proxy_normal_call_uses_configured_scheduler_wait_default():
     services.scheduler.submit.return_value = {"response": "ok"}
     services.runtime = MagicMock()
 
-    services.proxy_request("/api/version", {}, "hub", "local_ai_task")
+    services.proxy_request("/api/version", {}, source="hub")
 
     assert "wait_timeout" not in services.scheduler.submit.call_args.kwargs
 
@@ -200,10 +200,10 @@ def test_proxy_ignores_public_timeout_metadata():
     services.generation_cache = MagicMock()
     services.generation_cache.get_or_compute.side_effect = lambda _key, compute: (compute(), False, False)
     services.scheduler = MagicMock()
-    services.scheduler.submit.side_effect = lambda _model, _tenant, _source, run, **_kwargs: run()
+    services.scheduler.submit.side_effect = lambda _model, *, execute, **_kwargs: execute()
     services.runtime = MagicMock(return_value={"response": "ok"})
 
-    services.proxy_request("/api/version", {"_hub_timeout_seconds": 1}, "hub", "local_ai_task")
+    services.proxy_request("/api/version", {"_hub_timeout_seconds": 1}, source="hub")
 
     assert "wait_timeout" not in services.scheduler.submit.call_args.kwargs
     assert services.runtime.request.call_args.kwargs["timeout"] == 300
@@ -458,13 +458,11 @@ def test_13_mock_recorder_and_replayer(tmp_path: Path):
     ):
         res_rec = services.command(
             {"action": "record_mock", "command": "http://example.com/api", "task_id": task_id},
-            "test-agent",
         )
         assert res_rec["success"] is True
 
         res_rep = services.command(
             {"action": "replay_mock", "command": task_id, "task_id": task_id},
-            "test-agent",
         )
         assert res_rep["success"] is True
         assert res_rep["body"] == '{"mocked": true}'

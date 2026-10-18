@@ -1180,7 +1180,7 @@ def _run_model_quality_goldens(
     )
     code = _measure_quality_golden(
         lambda: services.delegate(
-            {"task": code_task, "max_tokens": 160, "temperature": 0.0}, "benchmark",
+            {"task": code_task, "max_tokens": 160, "temperature": 0.0},
         ),
         _code_generation_matches_golden,
         expected={"function": "generated_answer", "input": "value: int", "return": "value + 1"},
@@ -1196,7 +1196,6 @@ def _run_model_quality_goldens(
                 "prompt": "Describe the central shape and its color in English. Use the visible image as evidence.",
                 "max_tokens": 256,
             },
-            "benchmark",
         ),
         _vision_matches_golden,
         expected={"visible_shape": "square", "visible_color": "green"},
@@ -1215,7 +1214,7 @@ def _run_model_quality_goldens(
         }
     else:
         speech = _measure_quality_golden(
-            lambda: services.transcribe({"audio": str(speech_fixture), "model": "whisper"}, "benchmark"),
+            lambda: services.transcribe({"audio": str(speech_fixture), "model": "whisper"}),
             lambda result: _transcription_matches_golden(result, speech_expected_text),
             expected={
                 "transcript_sha256": hashlib.sha256(speech_expected_text.encode("utf-8")).hexdigest(),

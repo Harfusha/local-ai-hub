@@ -22,7 +22,7 @@ from local_ai_hub.telemetry import TelemetryStore
 
 
 _EVENT_TEST_ROOT = str(Path(__file__).resolve().parents[1])
-_EVENT_TEST_TENANT = "tenant-t18-event-test"
+_EVENT_TEST_SESSION_ID = "event-session-t18-test"
 
 
 def _install_event_route_app(monkeypatch, agent_state, extra_config=None):
@@ -31,12 +31,12 @@ def _install_event_route_app(monkeypatch, agent_state, extra_config=None):
         task_id: SimpleNamespace(
             context=SimpleNamespace(
                 repository_id=_EVENT_TEST_ROOT,
-                session_id=_EVENT_TEST_TENANT,
+                session_id=_EVENT_TEST_SESSION_ID,
             )
         )
         for task_id in task_ids
     }
-    config = {"security": {"api_token_tenant": _EVENT_TEST_TENANT}}
+    config = {}
     config.update(extra_config or {})
     monkeypatch.setattr(
         http_server,

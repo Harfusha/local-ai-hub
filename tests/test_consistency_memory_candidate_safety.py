@@ -98,7 +98,7 @@ def test_manual_active_memory_stays_eligible_for_context(tmp_path: Path):
         key="operator-fact",
         value="Keep the established API contract",
         status=MemoryStatus.ACTIVE,
-        provenance={"root": str(root), "tenant": "tenant-a", "repository_id": context_request.coordination_id},
+        provenance={"root": str(root), "repository_id": context_request.coordination_id},
     )
 
     saved = memory.record(record)

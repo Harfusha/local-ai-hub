@@ -26,7 +26,7 @@ def production_hub(tmp_path, monkeypatch):
     )
     app = LocalAIApp(str(config))
 
-    def fake_generate(model, prompt, system, max_tokens, temperature, tenant, source, priority, **kwargs):
+    def fake_generate(model, prompt, system, max_tokens, temperature, *, source, priority, **kwargs):
         return {"success": True, "model": model, "text": "initial answer"}
 
     app.services._generate = fake_generate

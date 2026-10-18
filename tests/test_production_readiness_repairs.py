@@ -20,7 +20,7 @@ def test_memory_http_contract_can_round_trip_repository_identity(tmp_path: Path)
         scope=AgentScope.REPOSITORY,
         key="root-fact",
         value="kept",
-        provenance={"root": str(root), "repository_id": "repo-1", "tenant": "default"},
+        provenance={"root": str(root), "repository_id": "repo-1"},
     )
     saved = store.record(record)
     loaded = store.get(saved.record_id, root=str(root), repository_id="repo-1")
@@ -37,7 +37,7 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope_id="repo-restart",
         key="restart-fact",
         value="persisted",
-        provenance={"root": str(tmp_path), "repository_id": "repo-restart", "tenant": "default"},
+        provenance={"root": str(tmp_path), "repository_id": "repo-restart"},
     ))
     assert first.find(
         scope=AgentScope.REPOSITORY,
@@ -100,7 +100,7 @@ def test_test_matrix_filters_fixture_json_from_stale_index(tmp_path: Path) -> No
 
 def test_command_broker_does_not_greenlight_compileall_missing_target(tmp_path: Path) -> None:
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}})
-    result = broker.run("python -m compileall definitely_missing_package", str(tmp_path), "test", timeout=30, force=True)
+    result = broker.run("python -m compileall definitely_missing_package", str(tmp_path), timeout=30, force=True)
     assert result["success"] is False
     assert result["target_missing"] is True
     assert result["allowed"] is True

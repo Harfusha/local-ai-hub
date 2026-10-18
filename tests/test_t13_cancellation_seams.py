@@ -16,13 +16,13 @@ def test_conversation_request_is_cancelled_and_drains_before_release():
     finished = threading.Event()
     results = []
 
-    def service(_payload, _tenant, *, cancel_event):
+    def service(_payload, *, cancel_event):
         started.set()
         assert cancel_event.wait(1.0)
         return {"success": False, "cancelled": True, "reason": "cancelled"}
 
     def invoke():
-        results.append(_invoke_cancellable_request(registry, service, {}, "tenant"))
+        results.append(_invoke_cancellable_request(registry, service, {}))
         finished.set()
 
     request = threading.Thread(target=invoke)
@@ -61,17 +61,17 @@ def test_conversation_drain_timeout_fails_closed_and_blocks_new_request():
     registry.finish(resumed_token, {"success": True})
 
 
-def test_cancellable_invocation_falls_back_for_legacy_callback():
+def test_cancellable_invocation_passes_cancel_event():
     registry = _ActiveTranscriptionRegistry()
     seen = []
 
     result = _invoke_cancellable_request(
-        registry, lambda payload, tenant: seen.append((payload, tenant)) or {"success": True},
-        {"task": "x"}, "tenant",
+        registry, lambda payload, *, cancel_event: seen.append((payload, cancel_event.is_set())) or {"success": True},
+        {"task": "x"},
     )
 
     assert result["success"] is True
-    assert seen == [({"task": "x"}, "tenant")]
+    assert seen == [({"task": "x"}, False)]
 
 
 def test_pause_gate_skips_legacy_uncancellable_callback():
@@ -80,7 +80,11 @@ def test_pause_gate_skips_legacy_uncancellable_callback():
     calls = []
 
     result = _invoke_cancellable_request(
-        registry, lambda *_args: calls.append("started") or {"success": True}, {}, "tenant",
+        registry,
+        lambda _payload, *, cancel_event: calls.append("started") or {
+            "success": False, "cancelled": cancel_event.is_set(),
+        },
+        {},
     )
 
     assert result["cancelled"] is True
@@ -93,11 +97,11 @@ def test_cancelled_new_conversation_discards_reserved_turn():
     calls = []
 
     class Conversations:
-        def start_reserved(self, _tenant, _settings):
+        def start_reserved(self, _settings):
             return SimpleNamespace(conversation_id="new-id")
 
-        def discard(self, conversation_id, tenant):
-            calls.append(("discard", conversation_id, tenant))
+        def discard(self, conversation_id):
+            calls.append(("discard", conversation_id))
 
         def complete(self, *_args):
             calls.append(("complete",))
@@ -120,7 +124,7 @@ def test_cancelled_new_conversation_discards_reserved_turn():
 
     assert result["cancelled"] is True
     assert result["conversation_id"] == "new-id"
-    assert calls == [("discard", "new-id", "tenant")]
+    assert calls == [("discard", "new-id")]
 
 
 def test_cancelled_continuation_aborts_reservation_without_commit():
@@ -136,11 +140,11 @@ def test_cancelled_continuation_aborts_reservation_without_commit():
     )
 
     class Conversations:
-        def reserve(self, _conversation_id, _tenant):
+        def reserve(self, _conversation_id):
             return conversation, None
 
-        def abort(self, conversation_id, tenant):
-            calls.append(("abort", conversation_id, tenant))
+        def abort(self, conversation_id):
+            calls.append(("abort", conversation_id))
 
         def complete(self, *_args):
             calls.append(("complete",))
@@ -156,10 +160,10 @@ def test_cancelled_continuation_aborts_reservation_without_commit():
 
     services._generate = generate
     result = services.continue_conversation(
-        {"conversation_id": "existing-id", "task": "next"}, "tenant",
+        {"conversation_id": "existing-id", "task": "next"},
         cancel_event=cancel_event,
     )
 
     assert result["cancelled"] is True
     assert result["conversation_id"] == "existing-id"
-    assert calls == [("abort", "existing-id", "tenant")]
+    assert calls == [("abort", "existing-id")]

@@ -96,7 +96,8 @@ def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_pa
             with urllib.request.urlopen(request) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read().decode("utf-8"))
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
 
     try:
         global_payload = {
@@ -237,7 +238,8 @@ def test_http_memory_rejects_retired_tenant_field(tmp_path, monkeypatch):
         )
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
-        assert error.value.code in {400, 422}
+        with error.value:
+            assert error.value.code in {400, 422}
     finally:
         server.shutdown()
         thread.join(timeout=5)

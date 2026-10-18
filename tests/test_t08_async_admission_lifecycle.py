@@ -81,7 +81,7 @@ def test_async_executor_tracks_job_until_service_returns_and_preserves_root(tmp_
     entered, release, drained = threading.Event(), threading.Event(), threading.Event()
     seen_payload: list[dict[str, Any]] = []
 
-    def executor(_action: str, payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def executor(_action: str, payload: dict[str, Any]) -> dict[str, Any]:
         seen_payload.append(dict(payload))
         entered.set()
         assert release.wait(3)
@@ -91,7 +91,6 @@ def test_async_executor_tracks_job_until_service_returns_and_preserves_root(tmp_
     _allow_active_mode(manager, monkeypatch)
     try:
         submitted = manager.submit(
-            "tenant-a",
             "delegate",
             {"task": "hold", "root": str(tmp_path), "cwd": str(tmp_path)},
         )
@@ -108,7 +107,7 @@ def test_async_executor_tracks_job_until_service_returns_and_preserves_root(tmp_
         assert payload["cwd"] == str(tmp_path)
 
         release.set()
-        assert manager.wait("tenant-a", job_id, 1.0)["state"] == "done"
+        assert manager.wait(job_id, 1.0)["state"] == "done"
         assert manager.wait_for_inference_actions({"delegate"}, 0.2)
         assert drained.is_set()
         assert seen_payload[0]["root"] == str(tmp_path)

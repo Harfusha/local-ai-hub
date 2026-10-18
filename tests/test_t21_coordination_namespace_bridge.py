@@ -26,9 +26,6 @@ def coordination_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     class LocalHandler(http_server.Handler):
         def _require_authorized(self) -> bool:
-            # Authentication is isolated in this namespace bridge fixture.
-            # Bind its test principal before production tenant checks run.
-            self._authenticated_principal_tenant = self.headers.get("X-LocalAI-Tenant", "owner-a")
             return True
 
         def _validate_payload(self, _path: str, _payload: dict) -> None:
@@ -89,7 +86,6 @@ def coordination_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         coordination_id_override: str | None = None,
         **kwargs,
     ):
-        tool_tenant = kwargs.pop("tenant", owner)
         client_type = CapturingHubClient
         if coordination_id_override is not None:
             class OverrideCoordinationIdClient(CapturingHubClient):
@@ -103,6 +99,8 @@ def coordination_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
         clients.append(client)
         monkeypatch.setattr(mcp_server, "CLIENT", client)
+        if action in {"claim", "release", "renew"}:
+            kwargs["owner"] = owner
         return mcp_server.local_ai_coord(
             action=action,
             root=str(context.root),
@@ -132,7 +130,7 @@ def _coordination_id(context) -> str:
 
 
 def _record_repository_memory(
-    env, context, *, owner: str, key: str, value: str = "shared repo rule",
+    env, context, *, key: str, value: str = "shared repo rule",
     record_fields: dict | None = None,
 ) -> dict:
     record = {
@@ -145,7 +143,6 @@ def _record_repository_memory(
     return env.coord(
         context,
         "memory_record",
-        owner=owner,
         scope="repository",
         key=key,
         value=value,
@@ -153,7 +150,7 @@ def _record_repository_memory(
     )
 
 
-def _find_repository_memory(env, context, *, owner: str, key: str) -> dict:
+def _find_repository_memory(env, context, *, key: str) -> dict:
     return env.app.agent_memory.find(
         scope="repository",
         repository_id=_coordination_id(context),
@@ -169,10 +166,10 @@ def test_repo_memory_bridges_same_git_common_and_namespace_worktrees(coordinatio
     worktree_b = env.project("worktree-b", common="repo-common", namespace="team")
     assert _coordination_id(worktree_a) == _coordination_id(worktree_b)
 
-    written = _record_repository_memory(env, worktree_a, owner="tenant-a", key="shared-rule")
+    written = _record_repository_memory(env, worktree_a, key="shared-rule")
     assert written["success"] is True
 
-    found = _find_repository_memory(env, worktree_b, owner="tenant-a", key="shared-rule")
+    found = _find_repository_memory(env, worktree_b, key="shared-rule")
     assert [record.value for record in found] == ["shared repo rule"]
 
 
@@ -191,31 +188,29 @@ def test_repo_memory_does_not_cross_repository_or_namespace(
     )
     assert _coordination_id(worktree_a) != _coordination_id(unrelated)
     assert _record_repository_memory(
-        env, worktree_a, owner="tenant-a", key="private-rule"
+        env, worktree_a, key="private-rule"
     )["success"] is True
 
     found = _find_repository_memory(
-        env, unrelated, owner="tenant-a", key="private-rule"
+        env, unrelated, key="private-rule"
     )
     assert found == []
 
 
-def test_repo_memory_rejects_a_different_tenant(coordination_bridge):
+def test_session_memory_remains_bound_to_actual_session_id(coordination_bridge):
     env = coordination_bridge
     repository = env.project("repo", common="repo-common", namespace="team")
     created = env.coord(
         repository,
         "memory_record",
-        owner="tenant-a",
         scope="session",
-        session_id="tenant-a",
-        key="tenant-rule",
+        session_id="session-a",
+        key="session-rule",
         value="private session rule",
         record={
             "kind": "finding",
             "scope": "session",
-            "scope_id": "tenant-a",
-            "key": "tenant-rule",
+            "key": "session-rule",
             "value": "private session rule",
         },
     )
@@ -223,10 +218,9 @@ def test_repo_memory_rejects_a_different_tenant(coordination_bridge):
 
     found = env.app.agent_memory.find(
         scope="session",
-        session_id="tenant-b",
+        session_id="session-b",
         root=str(repository.root),
-
-        key="tenant-rule",
+        key="session-rule",
         semantic=False,
     )
     assert found == []
@@ -281,7 +275,7 @@ def test_repository_memory_coord_wrapper_create_find_get_delete(coordination_bri
     env = coordination_bridge
     repository = env.project("repo-crud", common="repo-common", namespace="team")
     created = _record_repository_memory(
-        env, repository, owner="tenant-a", key="crud-rule", value="stored"
+        env, repository, key="crud-rule", value="stored"
     )
     assert created["success"] is True
     created_raw = env.clients[-1].last_coord_result
@@ -290,7 +284,6 @@ def test_repository_memory_coord_wrapper_create_find_get_delete(coordination_bri
     found = env.coord(
         repository,
         "memory_find",
-        owner="tenant-a",
         scope="repository",
         key="crud-rule",
     )
@@ -301,7 +294,6 @@ def test_repository_memory_coord_wrapper_create_find_get_delete(coordination_bri
     fetched = env.coord(
         repository,
         "memory_get",
-        owner="tenant-a",
         scope="repository",
         record_id=record_id,
     )
@@ -311,7 +303,6 @@ def test_repository_memory_coord_wrapper_create_find_get_delete(coordination_bri
     deleted = env.coord(
         repository,
         "memory_delete",
-        owner="tenant-a",
         scope="repository",
         record_id=record_id,
     )
@@ -321,7 +312,6 @@ def test_repository_memory_coord_wrapper_create_find_get_delete(coordination_bri
     missing = env.coord(
         repository,
         "memory_get",
-        owner="tenant-a",
         scope="repository",
         record_id=record_id,
     )
@@ -336,7 +326,6 @@ def test_repository_memory_coord_wrapper_preserves_correction_lineage(
     created = _record_repository_memory(
         env,
         repository,
-        owner="tenant-a",
         key="correction-rule",
         value="original",
         record_fields={"status": "confirmed"},
@@ -347,7 +336,6 @@ def test_repository_memory_coord_wrapper_preserves_correction_lineage(
     corrected = _record_repository_memory(
         env,
         repository,
-        owner="tenant-a",
         key="corrected-rule",
         value="corrected",
         record_fields={
@@ -362,7 +350,7 @@ def test_repository_memory_coord_wrapper_preserves_correction_lineage(
     assert corrected_record["supersedes_record_id"] == original_id
 
 
-def test_client_cannot_override_namespace_or_tenant_for_memory_find(
+def test_client_cannot_override_repository_scope_for_memory_find(
     coordination_bridge,
 ):
     env = coordination_bridge
@@ -370,15 +358,13 @@ def test_client_cannot_override_namespace_or_tenant_for_memory_find(
     attacker = env.project("attacker-repo", common="repo-common", namespace="public")
     assert _coordination_id(victim) != _coordination_id(attacker)
     created = _record_repository_memory(
-        env, victim, owner="tenant-victim", key="private-rule", value="secret"
+        env, victim, key="private-rule", value="secret"
     )
     assert created["success"] is True
 
     result = env.coord(
         attacker,
         "memory_find",
-        owner="tenant-attacker",
-
         scope="repository",
         key="private-rule",
         repository_id=_coordination_id(victim),
@@ -389,7 +375,7 @@ def test_client_cannot_override_namespace_or_tenant_for_memory_find(
     assert raw.get("records", []) == []
 
 
-def test_client_memory_requests_leave_repository_and_tenant_identity_to_server(
+def test_client_memory_requests_leave_repository_identity_to_server(
     monkeypatch,
 ):
     client = HubClient.__new__(HubClient)
@@ -404,7 +390,6 @@ def test_client_memory_requests_leave_repository_and_tenant_identity_to_server(
         "kind": "finding",
         "scope": "repository",
         "scope_id": "forged-scope",
-        "tenant": "tenant-victim",
         "repository_id": "forged-repository",
         "coordination_id": "forged-coordination",
         "key": "identity-rule",
@@ -430,7 +415,7 @@ def test_client_memory_requests_leave_repository_and_tenant_identity_to_server(
     assert isinstance(payload, dict)
     assert payload["root"] == "C:/repo"
     assert payload["scope"] == "repository"
-    assert {"tenant", "repository_id", "coordination_id", "scope_id"}.isdisjoint(payload)
+    assert {"repository_id", "coordination_id", "scope_id"}.isdisjoint(payload)
     assert payload["record"] == {
         "kind": "finding",
         "scope": "repository",
@@ -438,6 +423,23 @@ def test_client_memory_requests_leave_repository_and_tenant_identity_to_server(
         "value": "must use server identity",
     }
     assert record == original_record
+
+
+def test_client_rejects_retired_tenant_field_before_memory_transport(monkeypatch):
+    client = HubClient.__new__(HubClient)
+    transported = []
+    monkeypatch.setattr(client, "post", lambda *args, **kwargs: transported.append((args, kwargs)))
+
+    result = HubClient.coord(
+        client,
+        "memory_record",
+        root="C:/repo",
+        scope="repository",
+        record={"kind": "finding", "key": "x", "value": "y", "tenant": None},
+    )
+
+    assert result["success"] is False
+    assert transported == []
 
 def test_client_memory_record_namespace_comes_from_nested_repository_scope(
     monkeypatch,

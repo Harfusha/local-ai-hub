@@ -7,8 +7,10 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 
 
-def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Path):
-    root = str(tmp_path / "repository")
+def test_repository_memory_delete_requires_matching_root_and_repository_id(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    root = str(repository)
     store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
     record = store.record(MemoryRecord.create(
         kind=MemoryKind.FINDING,
@@ -16,7 +18,7 @@ def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Pa
         scope_id="repo-1",
         key="repository-delete-identity",
         value="repository private value",
-        provenance={"root": root, "repository_id": "repo-1", "tenant": "owner-tenant"},
+        provenance={"root": root, "repository_id": "repo-1"},
     ), actor="user")
 
     assert store.delete(record.record_id) is False
@@ -32,7 +34,7 @@ def test_repository_memory_delete_requires_matching_root_and_tenant(tmp_path: Pa
         scope=record.scope,
         scope_id=record.scope_id,
         root=root,
-        repository_id="repo-1",
+        repository_id="other-repository",
     ) is False
     assert store.get(
         record.record_id,

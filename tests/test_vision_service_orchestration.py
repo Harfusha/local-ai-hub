@@ -44,8 +44,8 @@ class _Artifacts:
     def __init__(self) -> None:
         self.put_calls: list[tuple[Any, ...]] = []
 
-    def put(self, *args: Any) -> str:
-        self.put_calls.append(args)
+    def put(self, text: str, *, kind: str) -> str:
+        self.put_calls.append((text, kind))
         return "vision-output-artifact"
 
 
@@ -78,7 +78,7 @@ def test_cancelled_before_input_preparation_skips_runtime_and_artifacts() -> Non
     artifacts = _Artifacts()
 
     result = _service(runtime, artifacts).run(
-        {"image": "data:image/png;base64,ZmFrZQ=="}, "tenant-a", cancel_event=event
+        {"image": "data:image/png;base64,ZmFrZQ=="}, cancel_event=event
     )
 
     assert result == VisionService.cancelled_result()
@@ -92,7 +92,7 @@ def test_cancellation_after_preflight_skips_generation_and_artifact_write() -> N
     artifacts = _Artifacts()
 
     result = _service(runtime, artifacts).run(
-        {"image": "data:image/png;base64,ZmFrZQ=="}, "tenant-a", cancel_event=event
+        {"image": "data:image/png;base64,ZmFrZQ=="}, cancel_event=event
     )
 
     assert result == VisionService.cancelled_result("local-vl")
@@ -106,7 +106,7 @@ def test_cancellation_after_generation_discards_output_before_artifact_write() -
     artifacts = _Artifacts()
 
     result = _service(runtime, artifacts).run(
-        {"image": "data:image/png;base64,ZmFrZQ=="}, "tenant-a", cancel_event=event
+        {"image": "data:image/png;base64,ZmFrZQ=="}, cancel_event=event
     )
 
     assert result == VisionService.cancelled_result("local-vl")
@@ -119,7 +119,7 @@ def test_success_preserves_runtime_phase_order_and_output_artifact() -> None:
     artifacts = _Artifacts()
 
     result = _service(runtime, artifacts).run(
-        {"image": "data:image/png;base64,ZmFrZQ==", "prompt": "Review UI"}, "tenant-a"
+        {"image": "data:image/png;base64,ZmFrZQ==", "prompt": "Review UI"}
     )
 
     assert result["success"] is True
@@ -128,7 +128,7 @@ def test_success_preserves_runtime_phase_order_and_output_artifact() -> None:
     assert [call[0] for call in runtime.calls] == ["/api/show", "/api/generate"]
     assert runtime.calls[0][2] <= 1.0
     assert len(artifacts.put_calls) == 1
-    assert artifacts.put_calls[0][1:] == ("tenant-a", "vision-output")
+    assert artifacts.put_calls[0][1] == "vision-output"
 
 
 def test_default_schema_keeps_closed_root_and_finding_objects() -> None:
@@ -162,7 +162,7 @@ def test_public_vision_boundary_observes_replaced_call_time_dependencies(tmp_pat
     )
 
     first = services.vision(
-        {"image": "data:image/png;base64,ZmFrZQ=="}, "tenant-a"
+        {"image": "data:image/png;base64,ZmFrZQ=="}
     )
     services.config = {
         **initial_config,
@@ -172,14 +172,14 @@ def test_public_vision_boundary_observes_replaced_call_time_dependencies(tmp_pat
     services.artifacts = replacement_artifacts
     services.model_policy = replacement_policy
     second = services.vision(
-        {"image": "data:image/png;base64,ZmFrZQ=="}, "tenant-a"
+        {"image": "data:image/png;base64,ZmFrZQ=="}
     )
     services.config = {
         **services.config,
         "features": {"vision": False},
     }
     third = services.vision(
-        {"image": "data:image/png;base64,ZmFrZQ=="}, "tenant-a"
+        {"image": "data:image/png;base64,ZmFrZQ=="}
     )
 
     assert first["success"] is True

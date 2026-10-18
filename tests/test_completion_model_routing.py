@@ -6,9 +6,11 @@ from local_ai_hub.services import LocalAIServices
 
 
 class CaptureScheduler:
-    def submit(self, model, _tenant, _label, operation):
+    def submit(self, model, *, source, execute, priority=5, wait_timeout=None, background=False, cancel_event=None):
         self.model = model
-        return operation()
+        self.source = source
+        self.priority = priority
+        return execute()
 
 
 class ImmediateCache:
@@ -36,7 +38,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services.runtime = CaptureRuntime()
         services.generation_cache = ImmediateCache()
 
-        result = services.complete_code({"prefix": "def answer():"}, "test")
+        result = services.complete_code({"prefix": "def answer():"})
 
         self.assertEqual(result["model"], "qwen2.5-coder:3b")
         self.assertEqual(services.runtime.model, "qwen2.5-coder:3b")
@@ -48,7 +50,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services.runtime = CaptureRuntime()
         services.generation_cache = ImmediateCache()
 
-        result = services.complete_code({"prefix": "def answer():"}, "test")
+        result = services.complete_code({"prefix": "def answer():"})
 
         self.assertEqual(result["model"], "qwen2.5-coder:3b")
 
@@ -59,7 +61,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services.runtime = CaptureRuntime({"response": "  "})
         services.generation_cache = ImmediateCache()
 
-        result = services.complete_code({"prefix": "def answer():"}, "test")
+        result = services.complete_code({"prefix": "def answer():"})
 
         self.assertFalse(result["success"])
         self.assertFalse(result.get("completion"))
@@ -71,7 +73,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services.runtime = CaptureRuntime({"response": None})
         services.generation_cache = ImmediateCache()
 
-        result = services.complete_code({"prefix": "def answer():"}, "test")
+        result = services.complete_code({"prefix": "def answer():"})
 
         self.assertFalse(result["success"])
         self.assertFalse(result.get("completion"))
@@ -83,7 +85,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services.runtime = CaptureRuntime({"response": "return 42"})
         services.generation_cache = ImmediateCache()
 
-        result = services.complete_code({"prefix": "def answer():"}, "test")
+        result = services.complete_code({"prefix": "def answer():"})
 
         self.assertTrue(result["success"])
         self.assertFalse(result["validated"])
@@ -95,7 +97,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services.runtime = CaptureRuntime({"error": "runtime unavailable"})
         services.generation_cache = ImmediateCache()
 
-        result = services.complete_code({"prefix": "def answer():"}, "test")
+        result = services.complete_code({"prefix": "def answer():"})
 
         self.assertFalse(result["success"])
         self.assertEqual(result["error"], "runtime unavailable")

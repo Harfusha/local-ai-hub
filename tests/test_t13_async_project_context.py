@@ -38,12 +38,12 @@ def test_async_reason_and_review_preserve_roots_and_reject_caller_project_prompt
     calls = []
 
     class Services:
-        def reason(self, payload, tenant):
-            calls.append(("reason", payload, tenant))
+        def reason(self, payload):
+            calls.append(("reason", payload))
             return {"success": True}
 
-        def review(self, payload, tenant):
-            calls.append(("review", payload, tenant))
+        def review(self, payload):
+            calls.append(("review", payload))
             return {"success": True}
 
     app = SimpleNamespace(async_jobs=_Admission(), services=Services())
@@ -60,25 +60,23 @@ def test_async_reason_and_review_preserve_roots_and_reject_caller_project_prompt
             app,
             action,
             {**shared, "task": "inspect", "context": "source"},
-            "tenant-a",
         )
         assert result["success"] is True
 
     assert [call[0] for call in calls] == ["reason", "review"]
-    for _action, payload, tenant in calls:
+    for _action, payload in calls:
         assert payload["root"] == shared["root"]
         assert payload["cwd"] == shared["cwd"]
         assert not {"project_context", "project_model_profile", "system_prefix"} & payload.keys()
         assert payload["priority"] == 1
-        assert tenant == "tenant-a"
 
 
 def test_async_batch_inherits_roots_without_trusting_caller_project_prompts():
     calls = []
 
     class Services:
-        def batch_delegate(self, payload, tenant):
-            calls.append((payload, tenant))
+        def batch_delegate(self, payload):
+            calls.append(payload)
             return {"success": True}
 
     app = SimpleNamespace(async_jobs=_Admission(), services=Services())
@@ -98,17 +96,15 @@ def test_async_batch_inherits_roots_without_trusting_caller_project_prompts():
                 {"task": "summarize"},
             ],
         },
-        "tenant-a",
     )
 
     assert result["success"] is True
-    payload, tenant = calls[0]
+    payload = calls[0]
     assert payload["tasks"] == [
         {"task": "inspect", "root": "C:/child"},
         {"task": "inspect child cwd", "cwd": "C:/child-cwd"},
         {"task": "summarize", "root": context["root"], "cwd": context["cwd"]},
     ]
-    assert tenant == "tenant-a"
 
 
 @pytest.mark.parametrize("tasks", ["task", {"task": "inspect"}, None, []])
@@ -116,12 +112,12 @@ def test_async_batch_rejects_non_list_tasks_without_dispatch(tasks):
     calls = []
 
     class Services:
-        def batch_delegate(self, payload, tenant):
-            calls.append((payload, tenant))
+        def batch_delegate(self, payload):
+            calls.append(payload)
             return {"success": True}
 
     app = SimpleNamespace(async_jobs=_Admission(), services=Services())
-    result = LocalAIApp._execute_async_task(app, "batch", {"tasks": tasks}, "tenant-a")
+    result = LocalAIApp._execute_async_task(app, "batch", {"tasks": tasks})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -133,15 +129,15 @@ def test_async_secondary_actions_keep_workspace_roots_and_drop_caller_prefixes()
     calls = []
 
     class Services:
-        def second_opinion(self, payload, _tenant):
+        def second_opinion(self, payload):
             calls.append(("second_opinion", payload))
             return {"success": True}
 
-        def compress(self, payload, _tenant):
+        def compress(self, payload):
             calls.append(("compress", payload))
             return {"success": True}
 
-        def route_context(self, payload, _tenant):
+        def route_context(self, payload):
             calls.append(("route", payload))
             return {"success": True}
 
@@ -154,7 +150,7 @@ def test_async_secondary_actions_keep_workspace_roots_and_drop_caller_prefixes()
         "context": "source",
     }
     for action in ("second_opinion", "compress", "route"):
-        result = LocalAIApp._execute_async_task(app, action, source, "tenant-a")
+        result = LocalAIApp._execute_async_task(app, action, source)
         assert result["success"] is True
 
     assert [action for action, _payload in calls] == ["second_opinion", "compress", "route"]
@@ -195,7 +191,7 @@ class _NoopSemanticCache:
 
 
 class _Artifacts:
-    def put(self, _content, _tenant, _kind):
+    def put(self, _content, *, kind):
         return "test-artifact"
 
     def get(self, _artifact_id, **_kwargs):
@@ -276,7 +272,7 @@ def test_async_reason_review_batch_resolve_project_config_through_t12_generate(t
         config,
         services.scheduler,
         _Artifacts(),
-        lambda action, payload, tenant: LocalAIApp._execute_async_task(app, action, payload, tenant),
+        lambda action, payload: LocalAIApp._execute_async_task(app, action, payload),
     )
     app.async_jobs = manager
     try:
@@ -287,10 +283,10 @@ def test_async_reason_review_batch_resolve_project_config_through_t12_generate(t
             ("batch", {"root": str(project_root), "tasks": [{"task": "Explain project", "complexity": "fast"}]}),
         )
         for action, payload in jobs:
-            submitted = manager.submit("test", action, payload)
+            submitted = manager.submit(action, payload)
             assert submitted["success"] is True
-            assert manager.wait("test", submitted["job_id"], timeout_seconds=5)["state"] == "done"
-            completed = manager.result("test", submitted["job_id"])
+            assert manager.wait(submitted["job_id"], timeout_seconds=5)["state"] == "done"
+            completed = manager.result(submitted["job_id"])
             assert completed["success"] is True
             outputs.append(completed["result"])
     finally:

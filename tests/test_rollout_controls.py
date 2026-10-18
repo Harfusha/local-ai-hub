@@ -89,7 +89,7 @@ def test_disabled_diagnostic_artifacts_do_not_persist_command_output(tmp_path: P
         artifacts,
     )
 
-    result = broker._compact({"success": False, "stdout": "", "stderr": "unclassified failure"}, "tenant", "pytest -q")
+    result = broker._compact({"success": False, "stdout": "", "stderr": "unclassified failure"}, "pytest -q")
 
     assert "artifact_id" not in result
     assert result["diagnostic_artifacts"] == {
@@ -149,7 +149,6 @@ def test_enabled_local_diagnostic_dispatch_persists_only_bounded_preview(tmp_pat
     )
     failure = broker._compact(
         {"success": False, "stdout": "RAW_COMMAND_OUTPUT_MUST_NOT_BE_STORED", "stderr": "unclassified failure"},
-        "tenant",
         "pytest -q",
     )
     services = object.__new__(LocalAIServices)

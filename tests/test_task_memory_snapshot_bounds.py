@@ -31,21 +31,21 @@ class Memory:
             scope=AgentScope.REPOSITORY, scope_id=str(root), expires_at=None,
             sensitivity="normal", source="user", confidence=1.0,
             created_at=1.0, updated_at=2.0, evidence_ids=(),
-            provenance={"root": str(root), "tenant": "tenant-a", "version": "v1", "repository_id": "snapshot-repository"},
+            provenance={"root": str(root), "version": "v1", "repository_id": "snapshot-repository"},
         )]
         self.observed = []
 
     @contextmanager
-    def task_retrieval_scope(self, goal, *, root, tenant, task_id):
+    def task_retrieval_scope(self, goal, *, root, task_id):
         assert guard_state.get() is None
-        token = guard_state.set((goal, root, tenant, task_id))
+        token = guard_state.set((goal, root, task_id))
         try:
             yield
         finally:
             guard_state.reset(token)
 
     def observe(self, stage):
-        self.observed.append((stage, guard_state.get(), trace_context.current().get("tenant"), threading.current_thread()))
+        self.observed.append((stage, guard_state.get(), trace_context.current(), threading.current_thread()))
 
     def diagnostic_summary(self, **kwargs):
         self.observe("diagnostics")
@@ -171,16 +171,18 @@ def test_relevance_guard_and_trace_context_cover_all_steps_and_reset_between_req
     before = asdict(context)
     snapshots = [lookup(setup), lookup(setup)]
     assert all(snapshot["items"][0]["id"] == "memory-1" for snapshot in snapshots)
-    expected = ("use verified fact", str(root), "tenant-a", "snapshot-task")
+    expected = ("use verified fact", str(root), "snapshot-task")
     assert {entry[0] for entry in memory.observed} >= {"compile", "diagnostics", "find", "second_find"}
-    assert all(entry[1] == expected and entry[2] == "tenant-a" for entry in memory.observed)
+    assert all(entry[1] == expected for entry in memory.observed)
+    assert all(entry[2]["request_id"] == "trace-request" for entry in memory.observed)
+    assert all("tenant" not in entry[2] for entry in memory.observed)
     assert len({entry[3].ident for entry in memory.observed}) == 1
     assert all(entry[3].daemon for entry in memory.observed)
     assert guard_state.get() is None
     assert asdict(context) == before
     mismatch = lookup(setup, previous={"tenant_key": "other-tenant"})
     assert mismatch["items"] == []
-    assert mismatch["warnings"] == [{"code": "memory_tenant_mismatch"}]
+    assert mismatch["warnings"] == [{"code": "memory_snapshot_requires_offline_conversion"}]
 
 
 def test_metadata_heavy_snapshot_budget_counts_entire_serialized_envelope(setup):
@@ -208,7 +210,7 @@ def test_negative_knowledge_preserves_version_expiry_and_skips_invalid_expired(s
     _, memory, _, incidents, _, _ = setup
     memory.records = []
     expiry = time.time() + 600
-    base = {"verified_fix": "confirmed reusable recovery", "error_class": "failure", "state_revision": "rev-7", "updated_at": 2.0, "confidence": 1.0, "provenance": {"repository_key": "r", "tenant_key": "t"}}
+    base = {"verified_fix": "confirmed reusable recovery", "error_class": "failure", "state_revision": "rev-7", "updated_at": 2.0, "confidence": 1.0, "provenance": {"repository_key": "r"}}
     incidents.find_negative_knowledge = lambda *args, **kwargs: [
         {**base, "incident_id": "fresh", "expires_at": expiry},
         {**base, "incident_id": "expired", "expires_at": time.time() - 1},
@@ -224,7 +226,8 @@ def test_negative_knowledge_preserves_version_expiry_and_skips_invalid_expired(s
 def test_empty_relevant_snapshot_is_silent(setup):
     setup[1].records = []
     assert lookup(setup) is None
-    assert lookup(setup, previous={"tenant_key": ""}) is None
+    retired = lookup(setup, previous={"tenant_key": ""})
+    assert retired["warnings"] == [{"code": "memory_snapshot_requires_offline_conversion"}]
 
 
 def test_unavailable_snapshot_accounts_for_entire_warning_envelope(setup, monkeypatch):
@@ -330,9 +333,9 @@ def test_negative_expiry_uses_full_scoped_incident_when_finder_omits_it(setup):
     expiry = time.time() + 600
     incidents.find_negative_knowledge = lambda *args, **kwargs: [{
         "incident_id": "full-incident", "verified_fix": "verified fix", "state_revision": "rev-9",
-        "provenance": {"repository_key": "r", "tenant_key": "t"},
+        "provenance": {"repository_key": "r"},
     }]
-    incidents.get = lambda record_id: SimpleNamespace(repository_key="r", tenant_key="t", expires_at=expiry)
+    incidents.get = lambda record_id: SimpleNamespace(repository_key="r", expires_at=expiry)
     snapshot = lookup(setup)
     assert snapshot["items"][0]["version"] == "rev-9"
     assert snapshot["items"][0]["validity"]["expires_at"] == expiry
@@ -352,13 +355,13 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
         kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=str(root),
         key="renderer theme cache invalidation", value="Renderer theme cache invalidation uses the theme revision",
         status=MemoryStatus.CONFIRMED, confidence=1.0, source="user",
-        provenance={"root": str(root), "tenant": "tenant-a", "repository_id": repository_id},
+        provenance={"root": str(root), "repository_id": repository_id},
     ), actor="user")
     for index in range(25):
         memory.record(MemoryRecord.create(
             kind=MemoryKind.CONVENTION, scope=AgentScope.REPOSITORY, scope_id=str(root),
             key=f"rule{index}", value="Keep files immutable", status=MemoryStatus.CONFIRMED,
-            confidence=1.0, source="user", provenance={"root": str(root), "tenant": "tenant-a", "repository_id": repository_id},
+            confidence=1.0, source="user", provenance={"root": str(root), "repository_id": repository_id},
         ), actor="user")
     compiled_ids = []
     compile_context = compiler.compile
@@ -392,7 +395,7 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
 def test_scorer_only_receives_scope_validated_compiled_records(setup, monkeypatch):
     _, memory, compiler, _, root, _ = setup
     valid = memory.records[0]
-    foreign = SimpleNamespace(**{**vars(valid), "record_id": "foreign", "scope_id": str(root.parent / "foreign"), "provenance": {"root": str(root.parent / "foreign"), "tenant": "tenant-a"}})
+    foreign = SimpleNamespace(**{**vars(valid), "record_id": "foreign", "scope_id": str(root.parent / "foreign"), "provenance": {"root": str(root.parent / "foreign")}})
     uncompiled = SimpleNamespace(**{**vars(valid), "record_id": "uncompiled"})
     memory.records = [valid, foreign, uncompiled]
     monkeypatch.setattr(compiler, "compile", lambda request: SimpleNamespace(elements=tuple(

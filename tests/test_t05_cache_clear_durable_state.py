@@ -39,7 +39,7 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
         key="durable-marker",
         value="preserve through cache clear",
         source="test",
-        provenance={"root": str(repository), "tenant": "t05-cache-clear"},
+        provenance={"root": str(repository)},
     )
     # Cache-clear acceptance needs durable memory, not T08 event-writer coverage.
     memories._save_record(memory)
@@ -55,7 +55,10 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
     verifications.record(receipt)
 
     leases = ScopeLeaseStore(state_dir)
-    lease = leases.claim("t05-clear", str(repository), ["src/durable.py"], purpose="cache clear isolation")
+    lease = leases.claim(
+        owner="t05-clear", root=str(repository), paths=["src/durable.py"],
+        purpose="cache clear isolation",
+    )
     assert lease["success"] is True
 
     assert cache.clear() == 1

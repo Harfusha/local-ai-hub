@@ -28,15 +28,15 @@ def test_persisted_pause_blocks_jobs_and_active_resume_dispatches_again(tmp_path
             },
             _Scheduler(),
             _Artifacts(),
-            lambda action, payload, tenant: {
-                "success": True, "action": action, "task": payload.get("task"), "tenant": tenant,
+            lambda action, payload: {
+                "success": True, "action": action, "task": payload.get("task"),
             },
         )
 
     manager = create_manager()
     try:
         set_operational_mode(state_dir, "gaming")
-        gaming = manager.submit("tenant", "reason", {"task": "must not launch"})
+        gaming = manager.submit("reason", {"task": "must not launch"})
         assert gaming["success"] is False
         assert gaming["operational_mode"] == "gaming"
 
@@ -44,7 +44,7 @@ def test_persisted_pause_blocks_jobs_and_active_resume_dispatches_again(tmp_path
         manager = create_manager()
         assert load_operational_mode(state_dir).mode == "gaming"
         set_operational_mode(state_dir, "maintenance")
-        maintenance = manager.submit("tenant", "reason", {"task": "still paused"})
+        maintenance = manager.submit("reason", {"task": "still paused"})
         assert maintenance["success"] is False
         assert maintenance["operational_mode"] == "maintenance"
 
@@ -52,10 +52,10 @@ def test_persisted_pause_blocks_jobs_and_active_resume_dispatches_again(tmp_path
         manager = create_manager()
         assert load_operational_mode(state_dir).mode == "maintenance"
         set_operational_mode(state_dir, "active")
-        resumed = manager.submit("tenant", "reason", {"task": "resume dispatch"})
+        resumed = manager.submit("reason", {"task": "resume dispatch"})
         assert resumed["success"] is True
         assert load_operational_mode(state_dir).mode == "active"
-        assert manager.wait("tenant", resumed["job_id"], timeout_seconds=2)["state"] == "done"
-        assert manager.result("tenant", resumed["job_id"])["success"] is True
+        assert manager.wait(resumed["job_id"], timeout_seconds=2)["state"] == "done"
+        assert manager.result(resumed["job_id"])["success"] is True
     finally:
         manager.close()

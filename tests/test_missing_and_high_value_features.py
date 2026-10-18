@@ -207,7 +207,7 @@ def test_agent_memory_semantic_find(tmp_path: Path):
         scope_id="repo-memory-search",
         key="oauth_configuration",
         value="User authentication uses JWT bearer tokens with 15 minutes expiration window",
-        provenance={"root": str(tmp_path), "repository_id": "repo-memory-search", "tenant": "tenant-a"},
+        provenance={"root": str(tmp_path), "repository_id": "repo-memory-search"},
     )
     rec2 = MemoryRecord.create(
         kind=MemoryKind.FACT,
@@ -215,7 +215,7 @@ def test_agent_memory_semantic_find(tmp_path: Path):
         scope_id="repo-memory-search",
         key="database_credentials",
         value="PostgreSQL connection string pool size set to 20 connections",
-        provenance={"root": str(tmp_path), "repository_id": "repo-memory-search", "tenant": "tenant-a"},
+        provenance={"root": str(tmp_path), "repository_id": "repo-memory-search"},
     )
     mem.record(rec1)
     mem.record(rec2)

@@ -14,26 +14,26 @@ from local_ai_hub.debug_traces import DebugTraceStore
 
 def test_leases_renew(tmp_path: Path) -> None:
     store = ScopeLeaseStore(tmp_path)
-    claim_res = store.claim("agent-1", str(tmp_path), ["src/main.py", "src/util.py"], ttl_seconds=100)
+    claim_res = store.claim("task-run-1", str(tmp_path), ["src/main.py", "src/util.py"], ttl_seconds=100)
     assert claim_res["success"] is True
     lease_id = claim_res["lease_id"]
     orig_expires = claim_res["expires_at"]
 
     time.sleep(0.05)
     # Renew the lease
-    renew_res = store.renew("agent-1", lease_id, ttl_seconds=500)
+    renew_res = store.renew("task-run-1", lease_id, ttl_seconds=500)
     assert renew_res["success"] is True
     assert renew_res["lease_id"] == lease_id
     assert renew_res["expires_at"] > orig_expires
     assert set(renew_res["paths"]) == {"src/main.py", "src/util.py"}
 
-    # Foreign tenant cannot renew
-    foreign_res = store.renew("agent-2", lease_id, ttl_seconds=500)
+    # A different lease owner cannot renew this writer's lease.
+    foreign_res = store.renew("task-run-2", lease_id, ttl_seconds=500)
     assert foreign_res["success"] is False
     assert "not found" in foreign_res["error"]
 
     # Non-existent lease
-    missing_res = store.renew("agent-1", "nonexistent_lease", ttl_seconds=500)
+    missing_res = store.renew("task-run-1", "nonexistent_lease", ttl_seconds=500)
     assert missing_res["success"] is False
 
 
@@ -42,10 +42,10 @@ def test_async_jobs_tombstone_purge(tmp_path: Path) -> None:
         "server": {"state_dir": str(tmp_path)},
         "async_jobs": {"enabled": True, "result_ttl_seconds": 10},
     }
-    mgr = AsyncJobManager(cfg, None, None, lambda act, pay, ten: {"success": True})
+    mgr = AsyncJobManager(cfg, None, None, lambda act, pay: {"success": True})
 
     # Submit a job
-    res = mgr.submit("tenant", "reason", {"task": "do something"})
+    res = mgr.submit("reason", {"task": "do something"})
     assert res["success"] is True
     job_id = res["job_id"]
 
@@ -56,21 +56,21 @@ def test_async_jobs_tombstone_purge(tmp_path: Path) -> None:
         con.commit()
 
     # Verify it exists
-    row = mgr._row("tenant", job_id)
+    row = mgr._row(job_id)
     assert row is not None
 
     # Run tick() which includes tombstone purge
     mgr.tick()
 
     # Verify it has been deleted
-    row = mgr._row("tenant", job_id)
+    row = mgr._row(job_id)
     assert row is None
     mgr.close()
 
 
 def test_artifacts_put_get(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path, ttl_hours=1)
-    art_id = store.put("sample content for artifact", "tenant-1", "text")
+    art_id = store.put("sample content for artifact", kind="text")
     assert art_id.startswith("art_")
 
     data = store.get(art_id)
@@ -135,7 +135,6 @@ def test_http_server_handles_type_error_as_400(monkeypatch) -> None:
     handler._close_trace_context = lambda *a, **kw: None
     handler._require_authorized = lambda: True
     handler._begin_trace = lambda p: None
-    handler._tenant = lambda: "default"
     handler._agent = lambda: "agent"
 
     # Simulate do_GET raising TypeError (e.g. from int(None))

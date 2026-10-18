@@ -5,8 +5,20 @@ from local_ai_hub.agent_consistency import ConsistencyRequest, GuardWarning
 from local_ai_hub.json_utils import dumps as json_dumps
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+_TEST_ROOT = None
+_TEST_STATE_DIR = None
+
+
+@pytest.fixture(autouse=True)
+def _isolated_guarded_context_paths(tmp_path):
+    global _TEST_ROOT, _TEST_STATE_DIR
+    _TEST_ROOT = tmp_path / "repository"
+    _TEST_ROOT.mkdir()
+    _TEST_STATE_DIR = tmp_path / "state"
 
 
 class _Deterministic:
@@ -25,6 +37,16 @@ class _RepoTools:
 
     def git_diff(self, root, base="HEAD", staged=False, max_tokens=10000):
         return {"success": True, "revision": "revision-1", "changed_paths": ["src/app.py"], "diff": ""}
+
+    def context_pack(self, root, query, *, max_tokens, top_k):
+        return {
+            "success": True,
+            "root": root,
+            "query": query,
+            "context": "fast facts",
+            "evidence": [],
+            "estimated_tokens": 2,
+        }
 
 
 class _Guard:
@@ -52,19 +74,42 @@ class _Guard:
         return self.warnings
 
 
-def _guarded_services(guard):
+def _guarded_services(guard, *, stub_retrieval=True):
     services = LocalAIServices.__new__(LocalAIServices)
-    services.config = {"deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5}}
+    services.config = {
+        "deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5},
+        "server": {"state_dir": str(_TEST_STATE_DIR)},
+    }
     services.deterministic = _Deterministic()
     services.repo_tools = _RepoTools()
+    services.code_index = None
+    services.rag = None
+    services.preprocessor = None
+    services.external_tools = None
     services.consistency_guard = guard
+    services.learner = None
     services._repo_cached = lambda _op, _root, _params, compute: compute()
+    if stub_retrieval:
+        # Guard-decision and persistence tests don't need optional retrieval
+        # backends; keep their dependency surface deterministic.
+        services._hybrid_context = lambda root, query, **_kwargs: {
+            "success": True,
+            "root": root,
+            "query": query,
+            "context": "fast facts",
+            "evidence": [],
+            "estimated_tokens": 2,
+        }
+    else:
+        # Exercise real preload integration without unrelated deterministic or
+        # optional backend behavior.
+        services.deterministic = None
     return services
 
 
 def _request(**overrides):
     values = {
-        "root": "C:/repo",
+        "root": str(_TEST_ROOT),
         "query": "find route",
         "task_id": "task-1",
         "phase": "implementation",
@@ -89,7 +134,7 @@ def test_guarded_context_uses_configured_preload_profile(tmp_path):
     preload = tmp_path / "review-notes.md"
     preload.write_text("configured review preload", encoding="utf-8")
     guard = _Guard()
-    services = _guarded_services(guard)
+    services = _guarded_services(guard, stub_retrieval=False)
     services.config["context"] = {
         "preloads": {"profiles": {"review": {"files": ["review-notes.md"]}}}
     }
@@ -735,7 +780,10 @@ def test_guarded_pack_stays_bounded_and_state_disabled_safe():
 def test_deterministic_context_continuation_uses_adaptive_mode():
     services = LocalAIServices.__new__(LocalAIServices)
     services.deterministic = _Deterministic()
-    services.config = {"deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5}}
+    services.config = {
+        "deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5},
+        "server": {"state_dir": str(_TEST_STATE_DIR)},
+    }
     services._repo_cached = lambda _op, _root, _params, compute: compute()
 
     result = services.fast_context("C:/repo", "find route", 2000)

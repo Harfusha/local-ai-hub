@@ -28,17 +28,19 @@ def _broker(tmp_path):
     )
 
 
-def test_non_mutating_policy_block_is_terminal_and_suppressed(tmp_path):
+def test_non_mutating_policy_block_is_terminal_and_rechecked(tmp_path):
     broker = _broker(tmp_path)
+    broker.config["commands"]["allow_validation"] = False
 
-    first = broker.run("unknown-tool", str(tmp_path))
-    second = broker.run("unknown-tool", str(tmp_path))
+    first = broker.run("pytest -q", str(tmp_path))
+    second = broker.run("pytest -q", str(tmp_path))
 
     assert first["policy_blocked"] is True
     assert first["terminal"] is True
     assert first["retryable"] is False
-    assert second["suppression_cache_hit"] is True
-    assert broker.stats()["blocked"] == 1
+    assert second["policy_blocked"] is True
+    assert second.get("suppression_cache_hit") is not True
+    assert broker.stats()["blocked"] == 2
 
 
 def test_missing_safe_executable_is_rejected_before_spawn(tmp_path, monkeypatch):

@@ -78,7 +78,6 @@ def test_command_broker_skips_unscoped_known_pitfalls(tmp_path: Path):
         error="ModuleNotFoundError: No module named 'numpy'",
         exit_code=1,
         state_revision="rev-4",
-        repository_root=str(tmp_path),
     ))
 
     cb = CommandBroker({"server": {"state_dir": str(tmp_path)}}, repo_state=None)

@@ -114,7 +114,7 @@ def test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race
     executor_started = threading.Event()
     release_executor = threading.Event()
 
-    def execute(_action: str, _payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def execute(_action: str, _payload: dict[str, Any]) -> dict[str, Any]:
         executor_started.set()
         release_executor.wait(timeout=2)
         return {"success": False, "error": "cancelled by test"}
@@ -137,7 +137,7 @@ def test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race
             injected_once = True
             injecting_tick = True
             try:
-                committed = manager._row("benchmark", job_id)
+                committed = manager._row(job_id)
                 assert committed is not None
                 assert committed["state"] == "queued"
                 with manager._lock:
@@ -157,13 +157,13 @@ def test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race
     monkeypatch.setattr(manager, "_event", tick_between_insert_and_timer_registration)
     try:
         submitted = manager.submit(
-            "benchmark", "reason", {"task": "T02 bounded queue probe"},
+            "reason", {"task": "T02 bounded queue probe"},
             dispatch_delay_seconds=30,
         )
         job_id = str(submitted.get("job_id", ""))
         with manager._lock:
             assert job_id in manager._delayed_dispatch
-        cancelled = manager.cancel("benchmark", job_id)
+        cancelled = manager.cancel(job_id)
 
         assert tick_injected.is_set()
         assert cancelled.get("state") == "cancelled"
@@ -209,17 +209,17 @@ def _async_jobs_lifecycle_snapshot(scratch_root: Path) -> dict[str, object]:
                         for row in connection.execute("PRAGMA table_info(async_jobs)").fetchall()
                     }
                     fields = (
-                        "job_id", "tenant", "action", "task_id", "state", "cancel_requested",
+                        "job_id", "action", "task_id", "state", "cancel_requested",
                         "dispatch_not_before", "lease_until", "created_at", "updated_at",
                     )
                     selected = [field for field in fields if field in available]
-                    if {"job_id", "tenant", "action"}.issubset(selected):
+                    if {"job_id", "action", "task_id"}.issubset(selected):
                         order_by = "created_at DESC" if "created_at" in selected else "job_id"
                         rows = connection.execute(
                             f"SELECT {', '.join(selected)} FROM async_jobs "
-                            "WHERE tenant = ? AND action = ? "
+                            "WHERE action = ? AND task_id = ? "
                             f"ORDER BY {order_by} LIMIT 50",
-                            ("benchmark", "reason"),
+                            ("reason", "benchmark-snapshot-task"),
                         ).fetchall()
                         queue_rows = [dict(zip(selected, row)) for row in rows]
             schema = {
@@ -251,11 +251,11 @@ def test_async_jobs_lifecycle_snapshot_includes_benchmark_queue_rows(tmp_path: P
         {"server": {"state_dir": str(tmp_path)}},
         scheduler=None,
         artifacts=None,
-        executor=lambda _action, _payload, _tenant: {"success": True},
+        executor=lambda _action, _payload: {"success": True},
     )
     try:
         submitted = manager.submit(
-            "benchmark", "reason", {"task": "T02 snapshot probe"},
+            "reason", {"task": "T02 snapshot probe", "task_id": "benchmark-snapshot-task"},
             dispatch_delay_seconds=30,
         )
         assert submitted.get("success") is True
@@ -266,7 +266,7 @@ def test_async_jobs_lifecycle_snapshot_includes_benchmark_queue_rows(tmp_path: P
         observed = next(item for item in snapshot["managers"] if item["database_path"] == str(manager.path))
         queue_rows = observed["benchmark_queue_rows"]
         row = next(item for item in queue_rows if item["job_id"] == job_id)
-        assert row["tenant"] == "benchmark"
+        assert row["action"] == "reason"
         assert row["state"] == "queued"
         assert row["cancel_requested"] == 0
         assert "payload_json" not in row
@@ -518,20 +518,19 @@ def test_queue_admission_failure_retains_phase_and_reason(tmp_path: Path, monkey
 
     def reject_benchmark_submission(
         self: AsyncJobManager,
-        tenant: str,
         action: str,
         payload: dict[str, object],
         *,
         dispatch_delay_seconds: float = 0.0,
     ) -> dict[str, object]:
-        if tenant == "benchmark":
+        if action == "reason":
             return {
                 "success": False,
                 "state": "rejected",
                 "error": "SENTINEL_PAYLOAD_SECRET",
                 "admission": {"state": "rejected", "reason": "resource_pressure", "pressure_level": "critical"},
             }
-        return original_submit(self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
+        return original_submit(self, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
 
     monkeypatch.setattr(AsyncJobManager, "submit", reject_benchmark_submission)
     result = run_benchmark(
@@ -592,15 +591,14 @@ def test_queue_admission_exception_redacts_exception_text(tmp_path: Path, monkey
 
     def raise_benchmark_submission(
         self: AsyncJobManager,
-        tenant: str,
         action: str,
         payload: dict[str, object],
         *,
         dispatch_delay_seconds: float = 0.0,
     ) -> dict[str, object]:
-        if tenant == "benchmark":
+        if action == "reason":
             raise RuntimeError("SENTINEL_EXCEPTION_SECRET")
-        return original_submit(self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
+        return original_submit(self, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
 
     monkeypatch.setattr(AsyncJobManager, "submit", raise_benchmark_submission)
     result = run_benchmark(
@@ -686,25 +684,25 @@ def test_model_quality_goldens_call_real_surface_contracts_and_keep_outputs_priv
     audio_fixture.write_bytes(b"synthetic fixture bytes")
 
     class FakeServices:
-        calls: list[tuple[str, dict[str, object], str]] = []
+        calls: list[tuple[str, dict[str, object]]] = []
 
-        def delegate(self, args: dict[str, object], tenant: str) -> dict[str, object]:
-            self.calls.append(("delegate", args, tenant))
+        def delegate(self, args: dict[str, object]) -> dict[str, object]:
+            self.calls.append(("delegate", args))
             return {
                 "success": True,
                 "text": "def generated_answer(value: int) -> int:\n    return value + 1\n",
             }
 
-        def vision(self, args: dict[str, object], tenant: str) -> dict[str, object]:
-            self.calls.append(("vision", args, tenant))
+        def vision(self, args: dict[str, object]) -> dict[str, object]:
+            self.calls.append(("vision", args))
             return {
                 "success": True,
                 "response": "{\"summary\":\"A green square on white.\"}",
                 "review": {"summary": "A green square on white."},
             }
 
-        def transcribe(self, args: dict[str, object], tenant: str) -> dict[str, object]:
-            self.calls.append(("transcribe", args, tenant))
+        def transcribe(self, args: dict[str, object]) -> dict[str, object]:
+            self.calls.append(("transcribe", args))
             return {"success": True, "engine": "whisper_cli", "text": "Turn left at the next street."}
 
     services = FakeServices()
@@ -715,7 +713,6 @@ def test_model_quality_goldens_call_real_surface_contracts_and_keep_outputs_priv
     )
 
     assert [item[0] for item in services.calls] == ["delegate", "vision", "transcribe"]
-    assert all(item[2] == "benchmark" for item in services.calls)
     assert str(audio_fixture) == services.calls[2][1]["audio"]
     assert goldens["code_generation"]["passed"] is True
     assert goldens["vision"]["passed"] is True
@@ -731,15 +728,15 @@ def test_inference_benchmark_runs_model_goldens_and_persists_metrics_only(
 
     calls: list[tuple[str, object]] = []
 
-    def delegate(_services, args: dict[str, object], tenant: str) -> dict[str, object]:
-        calls.append(("delegate", tenant))
+    def delegate(_services, args: dict[str, object]) -> dict[str, object]:
+        calls.append(("delegate", args))
         return {
             "success": True,
             "model": "test-code",
             "text": "def generated_answer(value: int) -> int:\n    return value + 1\n",
         }
 
-    def vision(_services, args: dict[str, object], tenant: str) -> dict[str, object]:
+    def vision(_services, args: dict[str, object]) -> dict[str, object]:
         calls.append(("vision", args["image"]))
         return {
             "success": True,
@@ -748,7 +745,7 @@ def test_inference_benchmark_runs_model_goldens_and_persists_metrics_only(
             "review": {"summary": "A green square on white."},
         }
 
-    def transcribe(_services, args: dict[str, object], tenant: str) -> dict[str, object]:
+    def transcribe(_services, args: dict[str, object]) -> dict[str, object]:
         calls.append(("transcribe", Path(str(args["audio"]))))
         return {"success": True, "model": "whisper", "engine": "whisper_cli", "text": "Turn left at the next street."}
 
@@ -1080,17 +1077,17 @@ def test_run_benchmark_retains_busy_scratch_without_cleanup_watcher(
         return {"success": True, "state": "done"}
 
     def inject_worker_after_admission(
-        self: AsyncJobManager, tenant: str, action: str, payload: dict[str, Any], *,
+        self: AsyncJobManager, action: str, payload: dict[str, Any], *,
         dispatch_delay_seconds: float = 0.0,
     ) -> dict[str, Any]:
         result = original_submit(
-            self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds,
+            self, action, payload, dispatch_delay_seconds=dispatch_delay_seconds,
         )
         if dispatch_delay_seconds and not observed.get("injected"):
             observed["injected"] = True
             observed["capture_dispatch"] = True
             injected = original_submit(
-                self, tenant, action, {"task_id": sentinel_task_id}, dispatch_delay_seconds=0.0,
+                self, action, {"task_id": sentinel_task_id}, dispatch_delay_seconds=0.0,
             )
             assert injected["success"] is True
             assert worker_start_attempted.wait(timeout=3)

@@ -40,10 +40,10 @@ class _Artifacts:
 
 
 class _Leases:
-    def claim_batch(self, owner, root, paths, ttl_seconds=900, purpose="", **kwargs):
+    def claim_batch(self, *, owner, root, paths, ttl_seconds=900, purpose="", coordination_id=None):
         return {"success": True, "lease_id": "lease-test", "paths": paths}
 
-    def release(self, owner, lease_id="", **kwargs):
+    def release(self, *, owner, lease_id=""):
         return {"success": True}
 
 
@@ -77,7 +77,7 @@ class _Services:
         diff = subprocess.run(["git", "-C", root, "diff"], capture_output=True, text=True, check=True).stdout
         return {"success": True, "diff": diff, "changed_files": ["a.txt"] if diff else []}
 
-    def delegate_repo(self, args, tenant):
+    def delegate_repo(self, args):
         self.delegate_calls += 1
         if self.delegate_calls == 1:
             plan = {
@@ -92,7 +92,7 @@ class _Services:
             return {"success": True, "text": json.dumps(plan)}
         return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}
 
-    def second_opinion(self, args, tenant):
+    def second_opinion(self, args):
         return {"success": True, "text": json.dumps({
             "passed": True,
             "summary": "model says tests pass",
@@ -100,7 +100,7 @@ class _Services:
             "risks": [],
         })}
 
-    def command(self, args, tenant):
+    def command(self, args):
         if args.get("action") == "discover":
             return {"success": True, "validation_commands": [self.validation_command]}
         self.commands_run.append(args.get("command"))
@@ -123,11 +123,11 @@ def _repo(root: Path) -> Path:
 def _wait(orch: WorkOrchestrator, work_id: str):
     deadline = time.time() + 8
     while time.time() < deadline:
-        result = orch.get("tenant", work_id, profile="debug")
+        result = orch.get(work_id, profile="debug")
         if result.get("status") in {"complete", "failed", "cancelled", "needs_agent", "partial"}:
             return result
         time.sleep(0.05)
-    raise AssertionError(orch.get("tenant", work_id, profile="debug"))
+    raise AssertionError(orch.get(work_id, profile="debug"))
 
 
 def _run_handoff(tmp_path, validation_command="git diff --check", command_id=""):
@@ -150,7 +150,7 @@ def _run_handoff(tmp_path, validation_command="git diff --check", command_id="")
         artifacts,
     )
     try:
-        submitted = orch.submit("tenant", {
+        submitted = orch.submit({
             "root": str(root.resolve()),
             "task": "change a.txt and verify tests",
             "acceptance_criteria": ["tests pass"],

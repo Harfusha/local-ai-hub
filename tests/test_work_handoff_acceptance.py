@@ -35,15 +35,15 @@ from local_ai_hub.work_orchestrator import WorkOrchestrator, _JournalEntry
 
 
 class _Leases:
-    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+    def claim_batch(self, *, owner, root, paths, ttl_seconds=900, purpose="", coordination_id=None):
         return {"success": True, "lease_id": f"lease-{len(paths)}", "paths": paths}
 
-    def release(self, tenant, lease_id=""):
+    def release(self, *, owner, lease_id=""):
         return {"success": True}
 
 
 class _Artifacts:
-    def put(self, text, tenant, kind):
+    def put(self, text, *, kind):
         return f"artifact-{kind}"
 
 
@@ -89,18 +89,18 @@ def test_path_leases_allow_disjoint_scopes_and_reject_overlap(tmp_path: Path) ->
     first: dict[str, object] = {}
     disjoint: dict[str, object] = {}
     try:
-        first = leases.claim_batch("tenant-a", str(root), ["src/a.py"])
-        disjoint = leases.claim_batch("tenant-b", str(root), ["src/b.py"])
-        overlapping = leases.claim_batch("tenant-b", str(root), ["src/a.py"])
+        first = leases.claim_batch(owner="writer-a", root=str(root), paths=["src/a.py"])
+        disjoint = leases.claim_batch(owner="writer-b", root=str(root), paths=["src/b.py"])
+        overlapping = leases.claim_batch(owner="writer-b", root=str(root), paths=["src/a.py"])
 
         assert first["success"] is True
         assert disjoint["success"] is True
         assert overlapping["success"] is False
     finally:
         if first.get("success"):
-            leases.release("tenant-a", first["lease_id"])
+            leases.release(owner="writer-a", lease_id=first["lease_id"])
         if disjoint.get("success"):
-            leases.release("tenant-b", disjoint["lease_id"])
+            leases.release(owner="writer-b", lease_id=disjoint["lease_id"])
 
 
 def test_edit_lease_conflict_leaves_workspace_and_journal_unchanged(tmp_path: Path) -> None:
@@ -111,17 +111,17 @@ def test_edit_lease_conflict_leaves_workspace_and_journal_unchanged(tmp_path: Pa
     held: dict[str, object] = {}
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
     try:
-        held = leases.claim_batch("other-tenant", str(root), ["owned.txt"])
+        held = leases.claim_batch(owner="other-writer", root=str(root), paths=["owned.txt"])
         assert held["success"] is True
         orchestrator.leases = leases
         with pytest.raises(RuntimeError, match="edit lease unavailable"):
-            orchestrator._apply_patch(root, patch, "tenant", "work-lease", [])
+            orchestrator._apply_patch(root, patch, "work-lease", [])
 
         assert target.read_text(encoding="utf-8") == "old\n"
         assert orchestrator._load_journal("work-lease") == []
     finally:
         if held.get("success"):
-            leases.release("other-tenant", held["lease_id"])
+            leases.release(owner="other-writer", lease_id=held["lease_id"])
         orchestrator.close()
 
 
@@ -129,8 +129,8 @@ def test_submit_retry_after_lost_ack_returns_same_work_order(tmp_path: Path) -> 
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     try:
         # Treat first reply as lost. Retry must replay accepted order, not reject it.
-        orchestrator.submit("tenant", _payload(root, "work-replay"))
-        replay = orchestrator.submit("tenant", _payload(root, "work-replay"))
+        orchestrator.submit(_payload(root, "work-replay"))
+        replay = orchestrator.submit(_payload(root, "work-replay"))
 
         assert replay["success"] is True
         assert replay["work_id"] == "work-replay"
@@ -150,7 +150,7 @@ def test_concurrent_idempotent_submits_create_one_work_order(tmp_path: Path) -> 
 
     def submit() -> None:
         barrier.wait(timeout=5)
-        results.append(orchestrator.submit("tenant", _payload(root, "work-concurrent-replay")))
+        results.append(orchestrator.submit(_payload(root, "work-concurrent-replay")))
 
     workers = [threading.Thread(target=submit) for _ in range(2)]
     try:
@@ -187,7 +187,7 @@ def test_wait_caps_requested_timeout_at_ninety_seconds(tmp_path: Path, monkeypat
             pass
 
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         monkeypatch.setattr(
             work_orchestrator_module,
             "time",
@@ -196,7 +196,7 @@ def test_wait_caps_requested_timeout_at_ninety_seconds(tmp_path: Path, monkeypat
         event = WaitRecorder()
         monkeypatch.setattr(orchestrator, "_event", lambda _work_id: event)
 
-        result = orchestrator.wait("tenant", work_id, timeout_seconds=10_000)
+        result = orchestrator.wait(work_id, timeout_seconds=10_000)
 
         assert result["status"] == "queued"
         assert result["in_progress"] is True
@@ -211,10 +211,10 @@ def test_queue_full_still_replays_existing_work_order(tmp_path: Path) -> None:
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path, max_pending=1)
     try:
         first = _payload(root, "work-one")
-        assert orchestrator.submit("tenant", first)["success"] is True
+        assert orchestrator.submit(first)["success"] is True
 
-        rejected = orchestrator.submit("tenant", _payload(root, "work-two"))
-        replay = orchestrator.submit("tenant", first)
+        rejected = orchestrator.submit(_payload(root, "work-two"))
+        replay = orchestrator.submit(first)
 
         assert rejected["error"] == "work-order queue is full"
         assert rejected["retryable"] is True
@@ -230,11 +230,11 @@ def test_replayed_work_id_rejects_different_request(tmp_path: Path) -> None:
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     try:
         assert orchestrator.submit(
-            "tenant", _payload(root, "work-conflict", "inspect repo")
+            _payload(root, "work-conflict", "inspect repo")
         )["success"] is True
 
         conflict = orchestrator.submit(
-            "tenant", _payload(root, "work-conflict", "delete repo")
+            _payload(root, "work-conflict", "delete repo")
         )
 
         assert conflict["success"] is False
@@ -259,7 +259,7 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
     target = root / "owned.txt"
     target.write_bytes(b"new\n")
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
         stale_attempt = fencing.claim_attempt(
             str(root), work_id, "crashed-writer", ttl_seconds=5
@@ -279,7 +279,7 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
             ],
         )
         orchestrator._recover()
-        waiting_row = orchestrator._row(work_id, "tenant")
+        waiting_row = orchestrator._row(work_id)
         assert waiting_row is not None and waiting_row["state"] == "executing"
         assert orchestrator._recovery_timer is not None
         assert target.read_text(encoding="utf-8") == "new\n"
@@ -313,7 +313,7 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
         fencing_store=FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0]),
     )
     try:
-        row = recovered._row(work_id, "tenant")
+        row = recovered._row(work_id)
         assert row is not None
         assert row["state"] == "queued"
         assert json.loads(str(row["result_json"] or "{}")) == {}
@@ -355,7 +355,7 @@ def test_partial_git_apply_failure_restores_all_preimages_and_clears_journal(
     try:
         with pytest.raises(ValueError, match="simulated partial apply failure"):
             orchestrator._apply_patch(
-                root, patch, "tenant", "work-apply-failure", journal
+                root, patch, "work-apply-failure", journal
             )
 
         assert first.read_text(encoding="utf-8") == "first before\n"
@@ -423,11 +423,11 @@ def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
     target = root / "owned.txt"
     target.write_text("before\n", encoding="utf-8")
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n"
-    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.submit(_payload(root, work_id))
     orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
 
     journal: list[_JournalEntry] = []
-    orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
+    orchestrator._apply_patch(root, patch, work_id, journal)
     assert target.read_text(encoding="utf-8") == "after\n"
     assert journal[0].postimage_existed is True
     assert journal[0].postimage_sha256 == hashlib.sha256(target.read_bytes()).hexdigest()
@@ -443,7 +443,7 @@ def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
         artifacts=_Artifacts(),
     )
     try:
-        row = recovered._row(work_id, "tenant")
+        row = recovered._row(work_id)
         assert row is not None and row["state"] == "queued"
         assert target.read_text(encoding="utf-8") == "before\n"
         assert recovered._load_journal(work_id) == []
@@ -464,7 +464,7 @@ def test_process_crash_after_patch_write_recovers_from_persisted_journal(
     now = [100.0]
     fencing_path = state_dir / "work_fencing.sqlite3"
     orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
-    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.submit(_payload(root, work_id))
     orchestrator.close()
 
     script = textwrap.dedent(r"""
@@ -481,13 +481,13 @@ def test_process_crash_after_patch_write_recovers_from_persisted_journal(
         WorkOrchestrator._ensure_workers = lambda _self: None
 
         class Leases:
-            def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+            def claim_batch(self, *, owner, root, paths, ttl_seconds=900, purpose="", coordination_id=None):
                 return {"success": True, "lease_id": "child-lease", "paths": paths}
-            def release(self, tenant, lease_id=""):
+            def release(self, *, owner, lease_id=""):
                 return {"success": True}
 
         class Artifacts:
-            def put(self, text, tenant, kind):
+            def put(self, text, *, kind):
                 return f"artifact-{kind}"
 
         root, state_dir, work_id = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
@@ -517,7 +517,7 @@ def test_process_crash_after_patch_write_recovers_from_persisted_journal(
         module.subprocess.run = exit_after_apply
         patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
         orchestrator._apply_patch(
-            root, patch, "tenant", work_id, [], lease_ttl_seconds=5
+            root, patch, work_id, [], lease_ttl_seconds=5
         )
         os._exit(74)
     """)
@@ -544,7 +544,7 @@ def test_process_crash_after_patch_write_recovers_from_persisted_journal(
         fencing_store=FencingLeaseStore(fencing_path, clock=lambda: now[0]),
     )
     try:
-        row = recovered._row(work_id, "tenant")
+        row = recovered._row(work_id)
         assert row is not None and row["state"] == "queued", dict(row) if row is not None else None
         assert target.read_text(encoding="utf-8") == "old\n"
         assert recovered._load_journal(work_id) == []
@@ -559,7 +559,7 @@ def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
     target = root / "owned.txt"
     target.write_text("new\n", encoding="utf-8")
     journal_entry = _fenced_journal_entry(root, "owned.txt", b"old\n", b"new\n")
-    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.submit(_payload(root, work_id))
     orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
     orchestrator._persist_journal(work_id, [journal_entry])
     orchestrator.close()
@@ -577,7 +577,7 @@ def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
         artifacts=_Artifacts(),
     )
     try:
-        row = recovered._row(work_id, "tenant")
+        row = recovered._row(work_id)
         assert row is not None
         assert row["state"] == "needs_agent"
         assert "could not be safely restored" in str(row["result_json"])
@@ -634,10 +634,10 @@ def test_rollback_refuses_unrecognized_same_path_postimage_and_keeps_journal(
         "-other original\n+other update\n"
     )
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
         journal: list[_JournalEntry] = []
-        orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
+        orchestrator._apply_patch(root, patch, work_id, journal)
         assert journal == orchestrator._load_journal(work_id)
 
         target.write_text("external update\n", encoding="utf-8")
@@ -650,7 +650,7 @@ def test_rollback_refuses_unrecognized_same_path_postimage_and_keeps_journal(
         assert other.read_text(encoding="utf-8") == "other update\n"
         assert foreign.read_text(encoding="utf-8") == "foreign external update\n"
         assert orchestrator._load_journal(work_id) == journal
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert row is not None and row["state"] == "executing"
     finally:
         orchestrator.close()
@@ -670,7 +670,7 @@ def test_rollback_accepts_chained_same_path_postimages(tmp_path: Path) -> None:
         ),
     ]
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
         orchestrator._persist_journal(work_id, entries)
 
@@ -697,7 +697,7 @@ def test_crash_recovery_conflict_fails_closed_without_partial_restore(tmp_path: 
             root, "other.txt", b"other original\n", b"other update\n"
         ),
     ]
-    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.submit(_payload(root, work_id))
     orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt", "other.txt"]})
     orchestrator._persist_journal(work_id, entries)
     orchestrator.close()
@@ -712,7 +712,7 @@ def test_crash_recovery_conflict_fails_closed_without_partial_restore(tmp_path: 
         artifacts=_Artifacts(),
     )
     try:
-        row = recovered._row(work_id, "tenant")
+        row = recovered._row(work_id)
         assert row is not None and row["state"] == "needs_agent"
         assert "could not be safely restored" in str(row["result_json"])
         assert target.read_text(encoding="utf-8") == "external update\n"
@@ -727,7 +727,7 @@ def test_restart_after_completion_keeps_workspace_and_clears_orphan_journal(tmp_
     work_id = "work-complete-before-journal-clear"
     target = root / "owned.txt"
     target.write_text("committed\n", encoding="utf-8")
-    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.submit(_payload(root, work_id))
     orchestrator._persist_journal(
         work_id, [_JournalEntry("owned.txt", True, b"before\n")]
     )
@@ -743,7 +743,7 @@ def test_restart_after_completion_keeps_workspace_and_clears_orphan_journal(tmp_
         artifacts=_Artifacts(),
     )
     try:
-        row = recovered._row(work_id, "tenant")
+        row = recovered._row(work_id)
         assert row is not None
         assert row["state"] == "complete"
         assert target.read_text(encoding="utf-8") == "committed\n"
@@ -756,13 +756,13 @@ def test_concurrent_continue_has_one_compare_and_swap_winner(tmp_path: Path) -> 
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     work_id = "work-continue"
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "needs_agent", {"needs_agent": True})
         original_row = orchestrator._row
         read_barrier = threading.Barrier(2)
 
-        def read_same_state(current_id: str, tenant: str = ""):
-            row = original_row(current_id, tenant)
+        def read_same_state(current_id: str):
+            row = original_row(current_id)
             if threading.current_thread().name.startswith("continue-"):
                 read_barrier.wait(timeout=5)
             return row
@@ -773,7 +773,7 @@ def test_concurrent_continue_has_one_compare_and_swap_winner(tmp_path: Path) -> 
             threading.Thread(
                 name=f"continue-{index}",
                 target=lambda answer=answer: results.append(
-                    orchestrator.continue_work("tenant", work_id, answer)
+                    orchestrator.continue_work(work_id, answer)
                 ),
             )
             for index, answer in enumerate(("answer A", "answer B"))
@@ -785,7 +785,7 @@ def test_concurrent_continue_has_one_compare_and_swap_winner(tmp_path: Path) -> 
 
         assert all(not worker.is_alive() for worker in workers)
         assert sum(bool(result.get("success")) for result in results) == 1
-        row = original_row(work_id, "tenant")
+        row = original_row(work_id)
         assert row is not None
         assert row["state"] == "queued"
         saved_answer = json.loads(str(row["payload_json"]))["agent_answer"]
@@ -798,15 +798,15 @@ def test_cancel_request_blocks_compare_and_swap_completion(tmp_path: Path) -> No
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     work_id = "work-cancel-finalize"
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "verifying", {"changed_files": ["owned.txt"]})
 
-        cancelled = orchestrator.cancel("tenant", work_id)
+        cancelled = orchestrator.cancel(work_id)
         completed = orchestrator._complete_if_not_cancelled(
             work_id, {"summary": "verified"}
         )
 
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert cancelled["status"] == "cancelling"
         assert completed is False
         assert row is not None
@@ -820,17 +820,17 @@ def test_completion_cas_wins_against_later_cancel(tmp_path: Path) -> None:
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     work_id = "work-complete-before-cancel"
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "verifying", {})
 
         completed = orchestrator._complete_if_not_cancelled(
             work_id, {"summary": "verified"}
         )
-        cancelled = orchestrator.cancel("tenant", work_id)
+        cancelled = orchestrator.cancel(work_id)
 
         assert completed is True
         assert cancelled["status"] == "complete"
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert row is not None
         assert row["state"] == "complete"
         assert row["cancel_requested"] == 0
@@ -842,14 +842,14 @@ def test_cancel_and_completion_race_has_one_durable_winner(tmp_path: Path) -> No
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     work_id = "work-cancel-complete-race"
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "verifying", {})
         start = threading.Barrier(3)
         results: dict[str, object] = {}
 
         def cancel() -> None:
             start.wait(timeout=5)
-            results["cancel"] = orchestrator.cancel("tenant", work_id)
+            results["cancel"] = orchestrator.cancel(work_id)
 
         def complete() -> None:
             start.wait(timeout=5)
@@ -867,7 +867,7 @@ def test_cancel_and_completion_race_has_one_durable_winner(tmp_path: Path) -> No
         assert all(not worker.is_alive() for worker in workers)
         cancel_result = results["cancel"]
         completed = results["complete"]
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert isinstance(cancel_result, dict)
         assert row is not None
         if cancel_result["status"] == "complete":
@@ -927,7 +927,7 @@ def test_recovery_reacquires_fence_after_writer_ttl_and_rejects_stale_commit(
     target = root / "owned.txt"
     target.write_bytes(b"new\n")
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
         stale_attempt = old_store.claim_attempt(
             str(root), work_id, "crashed-writer", ttl_seconds=5
@@ -954,7 +954,7 @@ def test_recovery_reacquires_fence_after_writer_ttl_and_rejects_stale_commit(
             fencing_store=recovered_store,
         )
         try:
-            row = recovered._row(work_id, "tenant")
+            row = recovered._row(work_id)
             assert row is not None and row["state"] == "queued"
             assert target.read_text(encoding="utf-8") == "old\n"
             assert recovered._load_journal(work_id) == []
@@ -983,7 +983,7 @@ def test_stale_attempt_cannot_complete_or_clear_successor_journal(tmp_path: Path
     target = root / "owned.txt"
     target.write_bytes(b"successor\n")
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "verifying", {"summary": "verification pending"})
         stale_attempt = fencing.claim_attempt(
             str(root), work_id, "old-execution", ttl_seconds=5
@@ -1035,7 +1035,7 @@ def test_stale_attempt_cannot_complete_or_clear_successor_journal(tmp_path: Path
         with pytest.raises(LeaseLostError):
             orchestrator._clear_journal(work_id, attempt=stale_attempt)
 
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert row is not None and row["state"] == "verifying"
         assert orchestrator._load_journal(work_id) == [successor_entry]
         assert target.read_bytes() == b"successor\n"
@@ -1076,20 +1076,20 @@ def test_recovery_defers_live_attempt_without_journal(tmp_path: Path, monkeypatc
     )
     work_id = "work-live-attempt-no-journal"
     try:
-        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator.submit(_payload(root, work_id))
         orchestrator._set_state(work_id, "planning", {"summary": "still running"})
         active = fencing.claim_attempt(str(root), work_id, "live-execution", ttl_seconds=5)
 
         orchestrator._recover()
 
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert row is not None and row["state"] == "planning"
         assert orchestrator._recovery_retry_requested is True
         assert orchestrator._recovery_timer is not None
 
         now[0] = 106.0
         orchestrator._recover()
-        row = orchestrator._row(work_id, "tenant")
+        row = orchestrator._row(work_id)
         assert row is not None and row["state"] == "queued"
     finally:
         orchestrator.close()
@@ -1099,9 +1099,9 @@ def test_invalid_patch_releases_advisory_lease(tmp_path: Path) -> None:
         def __init__(self):
             self.released: list[tuple[str, str]] = []
 
-        def release(self, tenant, lease_id=""):
-            self.released.append((tenant, lease_id))
-            return super().release(tenant, lease_id)
+        def release(self, *, owner, lease_id=""):
+            self.released.append((owner, lease_id))
+            return super().release(owner=owner, lease_id=lease_id)
 
     orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
     leases = RecordingLeases()
@@ -1112,10 +1112,10 @@ def test_invalid_patch_releases_advisory_lease(tmp_path: Path) -> None:
     try:
         with pytest.raises(ValueError):
             orchestrator._apply_patch(
-                root, invalid_patch, "tenant", "work-invalid-patch", []
+                root, invalid_patch, "work-invalid-patch", []
             )
 
-        assert leases.released == [("tenant", "lease-1")]
+        assert leases.released == [("work-invalid-patch", "lease-1")]
         assert target.read_bytes() == b"original\n"
     finally:
         orchestrator.close()
@@ -1159,7 +1159,6 @@ def test_real_command_broker_accepts_forwarded_work_attempt_fence(tmp_path: Path
             "record_verification": False,
             "writer_fence": attempt,
         },
-        "tenant",
     )
 
     assert result["success"] is True, result
@@ -1176,7 +1175,6 @@ def test_real_command_broker_accepts_forwarded_work_attempt_fence(tmp_path: Path
             "record_verification": False,
             "writer_fence": attempt,
         },
-        "tenant",
     )
 
     assert stale_result["success"] is False, stale_result
@@ -1267,11 +1265,11 @@ def test_recovery_retries_preimage_restore_after_crash_before_journal_clear(
     now = [100.0]
     fencing_path = state_dir / "work_fencing.sqlite3"
     orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
-    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.submit(_payload(root, work_id))
     orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
     journal: list[_JournalEntry] = []
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
-    orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
+    orchestrator._apply_patch(root, patch, work_id, journal)
     assert target.read_text(encoding="utf-8") == "new\n"
     rollback = orchestrator._rollback
 

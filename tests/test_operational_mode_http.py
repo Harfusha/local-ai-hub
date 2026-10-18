@@ -264,11 +264,8 @@ def test_safe_agent_api_reads_block_only_in_maintenance_before_database_call(
     )
     if path == "/api/repo/profile":
         app.config["security"].update(
-            api_token_tenant=principal,
             allowed_roots=[str(tmp_path)],
-            tenant_derivation_key=tenant_key,
         )
-        monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: principal)
     trace_calls = []
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda _self, trace_path: trace_calls.append(trace_path))
     app.services = SimpleNamespace(
@@ -563,7 +560,7 @@ def test_gaming_cancels_active_whisper_before_unload_and_blocks_new_transcriptio
     calls = []
     started = threading.Event()
 
-    def transcribe(_payload, _tenant, *, cancel_event):
+    def transcribe(_payload, *, cancel_event):
         calls.append(cancel_event)
         started.set()
         assert cancel_event.wait(timeout=2.0)

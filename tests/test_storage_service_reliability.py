@@ -327,7 +327,7 @@ def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     broker._transaction_docker_argv = lambda _ctx, _cwd, cmd, _img, **_kw: cmd
     install_test_work_attempt_fence(broker, FakeFencingLeaseStore(), work_id="task-1", owner_id="test")
 
-    def mock_run_private_transaction(command: str = "", source_root: str | Path = "", tenant: str = "agent", *args, **kwargs):
+    def mock_run_private_transaction(command: str = "", source_root: str | Path = "", *args, **kwargs):
         op = kwargs.get("operation")
         if callable(op):
             return op(project_dir, "a" * 32)
