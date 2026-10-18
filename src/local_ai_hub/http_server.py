@@ -8293,8 +8293,7 @@ class Handler(BaseHTTPRequestHandler):
                     bool(guarded)
                     or bool(str(payload.get("task_id", "")).strip())
                     or bool(str(payload.get("phase", "")).strip())
-                    or "changed_paths" in payload
-                    or "focus" in payload
+                    or bool(str(payload.get("session_id", "")).strip())
                 )
                 if not guarded_requested:
                     guard_fields = (
