@@ -2,6 +2,19 @@
 
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
+**Runtime-start preservation repair:** The first isolated supervised startup
+refused the converted Agent State because the converter had omitted its
+database-wide `PRAGMA user_version=1`. The source header remains version 1;
+the failed target had version 0. The isolated supervisor was stopped through
+its own configuration and verified no longer running. Production was untouched.
+The offline complete-schema registry now declares the canonical version;
+source classification requires it, and target initialization writes it before
+publication. A regression opens the generated target schema through the actual
+current `AgentStateStore` classifier/initializer. All 39 converter/complete-schema
+tests passed in 1.57 seconds. The failed target and provenance were preserved
+under `superseded-user-version-0/`, and a fresh version-1 target was converted
+from the unchanged original. Successful supervised startup remains pending.
+
 **Separate-target conversion completed, production cutover pending:** All eight
 inventoried durable stores now have verified separate targets and provenance
 under `state/single-owner-conversion-20261018-1d55c3d703/converted-state/`.

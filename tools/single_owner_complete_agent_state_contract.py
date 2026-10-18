@@ -7,6 +7,7 @@ objects are tracked separately and must be verified after engine creation.
 from __future__ import annotations
 
 COMPLETE_AGENT_STATE_DDL = {
+    "user_version": 1,
     "tables": {'agent_blackboard': '\n'
                      '                        CREATE TABLE IF NOT EXISTS agent_blackboard (\n'
                      '                            board_id TEXT NOT NULL,\n'
