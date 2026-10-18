@@ -276,7 +276,7 @@ def main() -> int:
         if install_dir.resolve() != ROOT.resolve():
             write_all_generated(cfg, install_dir, python_bin)
         if args.install or bool(cfg.get("setup", {}).get("install_agent_configs", False)):
-            setup_mod.configure_agents(install_dir, python_bin, None, None, cfg)
+            setup_mod.configure_agents(install_dir, python_bin, None, cfg)
         print(json.dumps({"success": True, "generated": res}, indent=2, ensure_ascii=False))
         return 0
     if args.action == "watch":
