@@ -305,7 +305,14 @@ class ActionRequest:
     details: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        act = str(self.action or "").replace("\x00", "").strip()
+        if (
+            type(self.action) is not str
+            or not self.action
+            or self.action != self.action.strip()
+            or "\x00" in self.action
+        ):
+            raise ValueError("action must be a canonical nonempty string")
+        act = self.action
         tgt = str(self.target or "").replace("\x00", "").strip()
         rc = self.risk_class
         if isinstance(rc, str):
@@ -428,9 +435,29 @@ class PolicyEngine:
         task: TaskState,
         grant: CapabilityGrant | None = None,
     ) -> PolicyDecision:
-        action_name = request.action.strip().lower().replace("-", "_")
-        auxiliary_policy = AUXILIARY_ACTION_POLICIES.get(action_name)
+        action_name = request.action
         auxiliary_marked = bool(request.details.get("auxiliary_action"))
+        if type(action_name) is not str:
+            return PolicyDecision(
+                allowed=False,
+                reason="unknown auxiliary action with invalid name type denied",
+                owner=POLICY_OWNER,
+                side_effect_class="unknown",
+            )
+
+        auxiliary_policy = AUXILIARY_ACTION_POLICIES.get(action_name)
+        normalized_action = action_name.strip().lower().replace("-", "_")
+        if (
+            normalized_action in AUXILIARY_ACTION_POLICIES
+            and normalized_action != action_name
+        ):
+            return PolicyDecision(
+                allowed=False,
+                reason=f"unknown auxiliary action '{action_name}' denied",
+                owner=POLICY_OWNER,
+                side_effect_class="unknown",
+            )
+
         side_effect_class = (
             auxiliary_policy[1]
             if auxiliary_policy

@@ -87,6 +87,57 @@ def test_unknown_auxiliary_action_fails_closed_even_when_marked_read(
     assert decision.side_effect_class == "unknown"
 
 
+@pytest.mark.parametrize(
+    "action",
+    ["spawn-daemon", "SPAWN_DAEMON"],
+)
+@pytest.mark.parametrize("marked", [False, True])
+def test_policy_rejects_noncanonical_auxiliary_action_names(
+    policy: PolicyEngine, action: str, marked: bool
+) -> None:
+    details = {"auxiliary_action": True} if marked else {}
+    decision = policy.authorize(
+        ActionRequest(
+            action=action,
+            risk_class=RiskClass.READ,
+            details=details,
+        ),
+        task=None,
+    )
+
+    assert decision.allowed is False
+    assert decision.side_effect_class == "unknown"
+    assert "unknown auxiliary action" in decision.reason
+
+
+@pytest.mark.parametrize("action", [" spawn_daemon ", "\x00spawn_daemon", None, 7])
+def test_action_request_rejects_malformed_action_values(action: object) -> None:
+    with pytest.raises(ValueError, match="action must be a canonical nonempty string"):
+        ActionRequest(action=action, risk_class=RiskClass.READ)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["spawn-daemon", "SPAWN_DAEMON", " spawn_daemon ", None, 7],
+)
+def test_broker_rejects_noncanonical_auxiliary_action_names(
+    tmp_path: Path, action: object
+) -> None:
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        artifacts=None,
+        repo_state=None,
+    )
+    broker.set_policy_engine(PolicyEngine())
+
+    result = broker.authorize_auxiliary_action(action)  # type: ignore[arg-type]
+
+    assert result["allowed"] is False
+    assert result["terminal"] is True
+    assert result["side_effect_class"] == "unknown"
+    assert "unknown auxiliary action" in result["reason"]
+
+
 def test_command_spawn_daemon_forwards_task_id_separately_from_name(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -230,8 +281,24 @@ def test_services_command_authorizes_run_before_broker_dispatch(
     assert dispatched == []
 
 
-def test_services_command_rejects_unknown_action_before_run_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "action",
+    [
+        "future_action",
+        "spawn-daemon",
+        "SPAWN_DAEMON",
+        " spawn_daemon ",
+        "",
+        "spawn_daemon\x00",
+        "repair",
+        "mock_server",
+        "test_flaky_detect",
+        None,
+        7,
+    ],
+)
+def test_services_command_rejects_noncanonical_action_before_run_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: object
 ) -> None:
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None, repo_state=None)
     broker.set_policy_engine(PolicyEngine())
@@ -246,13 +313,20 @@ def test_services_command_rejects_unknown_action_before_run_fallback(
     services.agent_state = None
 
     result = services.command(
-        {"action": "future_action", "command": "must-not-run", "cwd": str(tmp_path)},
+        {"action": action, "command": "must-not-run", "cwd": str(tmp_path)},
         "agent",
     )
 
     assert result["success"] is False
     assert result["policy_blocked"] is True
     assert result["policy"]["side_effect_class"] == "unknown"
+    if (
+        not isinstance(action, str)
+        or not action
+        or action != action.strip()
+        or "\x00" in action
+    ):
+        assert result["policy"]["requires_approval"] is False
     assert dispatched == []
 
 
