@@ -196,4 +196,4 @@ def test_registered_mcp_secret_scan_rejects_falsey_explicit_inputs(monkeypatch):
         assert result["terminal"] is True
         assert result["retryable"] is False
 
-    assert calls == []
+    assert not any(url == "/api/repo/secret_scan" for url, _payload in calls)

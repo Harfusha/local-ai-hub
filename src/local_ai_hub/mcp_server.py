@@ -793,6 +793,7 @@ _SECURITY_PROTECTED_KEYS = (
 
 _RELIABILITY_PROTECTED_KEYS = (
     *LIFECYCLE_PROTECTED_KEYS,
+    "request_id", "context_id",
     "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
     "mutation_applied", "operation_not_started",
@@ -1304,6 +1305,10 @@ def _compact(
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if isinstance(raw_value, dict) and isinstance(compacted, dict):
+        compacted.update({
+            key: raw_value[key] for key in ("request_id", "context_id") if key in raw_value
+        })
     if task_kind == "status" and isinstance(raw_value, dict) and "guide_cards" in raw_value:
         # Empty required-field arrays are meaningful in authored guide cards.
         # Generic empty-value pruning must not invalidate their wire schema.
@@ -3192,6 +3197,9 @@ def _local_ai_repo_impl(
         "git_history_search": ("task", "diff", "workspace", "max_tokens"),
         "generate_types": ("diff",),
     }
+    query_supplied = query is not None
+    task_supplied = task is not None
+    path_supplied = path is not None
     input_values = {
         "query": query, "diff": diff, "task": task, "workspace": workspace,
         "path": path, "task_id": task_id, "max_tokens": max_tokens, "relation": relation,
@@ -3794,12 +3802,12 @@ def _local_ai_repo_impl(
     if action == "secret_scan":
         if not isinstance(staged, bool):
             return _context_input_error("staged must be boolean for secret_scan")
-        if query is not None or task is not None:
+        if query_supplied or task_supplied:
             return _context_input_error("secret_scan accepts path; query and task are not path aliases")
-        if path is not None and (not isinstance(path, str) or not path.strip()):
+        if path_supplied and (not isinstance(path, str) or not path.strip()):
             return _context_input_error("path must be a non-empty string for secret_scan")
         return _compact(CLIENT.post("/api/repo/secret_scan", {
-            "root": root, "path": path,
+            "root": root, "path": path or None,
             "scan_git_history": staged,
         }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
