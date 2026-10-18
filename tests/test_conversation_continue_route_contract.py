@@ -142,9 +142,9 @@ def test_hub_client_continues_through_production_route_and_preserves_transcript(
     service_payloads = []
     continue_conversation = app.services.continue_conversation
 
-    def observe_service_boundary(payload):
+    def observe_service_boundary(payload, *, cancel_event=None):
         service_payloads.append(dict(payload))
-        return continue_conversation(payload)
+        return continue_conversation(payload, cancel_event=cancel_event)
 
     app.services.continue_conversation = observe_service_boundary
     started = _start_conversation(client)

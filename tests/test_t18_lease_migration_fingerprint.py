@@ -47,11 +47,12 @@ def test_scope_leases_ignore_archived_legacy_database_when_canonical_exists(tmp_
     assert leases.path == canonical
     assert archived.read_bytes() == b"archived legacy lease database"
 
-def test_exact_renamed_wait_schema_is_classified_without_mutation():
+def test_retired_tenant_wait_schema_is_rejected_without_mutation():
     with closing(sqlite3.connect(":memory:")) as con:
         con.execute(RENAMED_WAIT_DDL)
         before = list(con.execute("SELECT type,name,sql FROM sqlite_master"))
-        assert AgentStateStore._classify_schema(con)
+        with pytest.raises(RuntimeError, match="unsupported agent_state schema object definition: table lease_waits"):
+            AgentStateStore._classify_schema(con)
         assert list(con.execute("SELECT type,name,sql FROM sqlite_master")) == before
 
 
@@ -68,9 +69,9 @@ def test_changed_renamed_wait_constraints_remain_rejected(ddl):
             AgentStateStore._classify_schema(con)
 
 
-def test_renamed_wait_schema_does_not_allow_unknown_trigger():
+def test_canonical_wait_schema_does_not_allow_unknown_trigger():
     with closing(sqlite3.connect(":memory:")) as con:
-        con.execute(RENAMED_WAIT_DDL)
+        con.execute("""CREATE TABLE lease_waits (owner TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL, requested_path TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY(root_id, owner, blocked_by, requested_path))""")
         con.execute("CREATE TRIGGER unexpected AFTER INSERT ON lease_waits BEGIN SELECT 1; END")
         with pytest.raises(RuntimeError, match="unsupported agent_state schema object: trigger unexpected"):
             AgentStateStore._classify_schema(con)

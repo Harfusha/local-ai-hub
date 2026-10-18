@@ -4405,7 +4405,7 @@ def run_benchmark(
             try:
                 task_id = f"benchmark-{uuid.uuid4().hex}"
                 submitted = app.async_jobs.submit(
-                    "benchmark", "reason", {"task_id": task_id, "task": "T02 queue admission probe"},
+                    "reason", {"task_id": task_id, "task": "T02 queue admission probe"},
                     dispatch_delay_seconds=30.0,
                 )
                 if (
@@ -4413,7 +4413,7 @@ def run_benchmark(
                     and submitted.get("success") is True
                     and submitted.get("job_id")
                 ):
-                    cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
+                    cancelled = app.async_jobs.cancel(str(submitted["job_id"]))
                     error_reason = _queue_admission_error_reason(submitted, cancelled)
                     error_code = cancellation_failure_code(cancelled)
                 else:
@@ -4433,7 +4433,7 @@ def run_benchmark(
                 manager_stats: Any = None
                 if isinstance(job_id, str) and job_id:
                     try:
-                        observed_status = app.async_jobs.status("benchmark", job_id)
+                        observed_status = app.async_jobs.status(job_id)
                     except Exception as exc:
                         diagnostic_error_types["status"] = type(exc).__name__
                 try:

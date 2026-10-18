@@ -221,7 +221,7 @@ def test_hubctl_mode_uses_explicit_config_path(monkeypatch, capsys, tmp_path):
     result, calls = _run_hubctl(monkeypatch, ["mode", "gaming", "--config", str(config_path)])
 
     assert result == 0
-    assert ("client", {"tenant": "hubctl", "config_path": str(config_path), "auto_start": False}) in calls
+    assert ("client", {"config_path": str(config_path), "auto_start": False}) in calls
     assert "Mode set to gaming" in capsys.readouterr().out
 
 

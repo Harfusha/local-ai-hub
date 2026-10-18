@@ -62,7 +62,7 @@ def test_context_compile_includes_leases_and_invalidates_changed_links(tmp_path:
     leases = ScopeLeaseStore(tmp_path / "state")
     repo = tmp_path / "repo"
     repo.mkdir()
-    claimed = leases.claim("other-agent", str(repo), ["src/core.py"], purpose="refactor")
+    claimed = leases.claim(owner="other-agent", root=str(repo), paths=["src/core.py"], purpose="refactor")
     assert claimed["success"] is True
 
     compiler = ContextCompiler(state, lease_store=leases)
@@ -108,7 +108,7 @@ def test_deterministic_fast_fallback_remains_useful_and_explicit() -> None:
     assert result["continuation"] == {
         "available": True,
         "mode": "adaptive",
-        "hint": "Retry adaptive context when deterministic-only context is insufficient.",
+        "hint": "Retry the adaptive context pack when deterministic-only context is insufficient.",
     }
 
 

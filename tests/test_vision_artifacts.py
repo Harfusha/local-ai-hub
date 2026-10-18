@@ -299,8 +299,13 @@ def test_mcp_binary_artifact_response_is_metadata_only(monkeypatch: pytest.Monke
         lambda *_args, **_kwargs: {
             "success": True,
             "artifact_id": "art_image",
+            "kind": "vision-image",
             "mime_type": "image/png",
+            "encoding": "base64",
             "size_bytes": len(PNG),
+            "checksum": "sha256:fixture-checksum",
+            "sha256": "fixture-sha256",
+            "identity": {"artifact_id": "art_image"},
             "data_base64": base64.b64encode(PNG).decode("ascii"),
         },
     )

@@ -16,7 +16,7 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
     import urllib.error
     import urllib.request
 
-    from local_ai_hub import http_server
+    from local_ai_hub import http_server, mcp_server
 
     api_token = "t08-test-token"
     root = str(tmp_path.resolve())
@@ -35,9 +35,13 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
             goal="route receipt validation",
             acceptance_criteria=("focused test",),
         ),
-        ScopeContext(repository_id=root, task_id="route-task", session_id=session_id),
+        ScopeContext(
+            repository_id=mcp_server.canonical_workspace_id(root),
+            task_id="route-task",
+            session_id=session_id,
+        ),
         task_id="route-task",
-        actor=principal,
+        actor="route-agent",
         repo_root=root,
     )
     previous = http_server.APP
@@ -110,6 +114,7 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
         scope_id="worktree-one",
         key="private-delete",
         value="preserve me",
+        provenance={"root": root},
     )
     global_record = MemoryRecord.create(
         kind="finding",
@@ -154,6 +159,7 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
             scoped_record.record_id,
             scope=AgentScope.WORKTREE,
             scope_id="worktree-one",
+            root=root,
         ).value == "preserve me"
         deleted = post({"root": None, "action": "delete", "record_id": global_record.record_id, "scope": "global"})
         assert deleted["deleted"] is True

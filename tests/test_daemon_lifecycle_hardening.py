@@ -26,11 +26,11 @@ class _FakeTaskStore:
         path.mkdir(parents=True, exist_ok=True)
         probe = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, **hidden_run_kwargs()
+            capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs()
         )
         if probe.returncode != 0:
             subprocess.run(
-                ["git", "init"], cwd=str(path), capture_output=True, check=True,
+                ["git", "init"], cwd=str(path), capture_output=True, check=True, timeout=10,
                 **hidden_run_kwargs()
             )
         self.worktree = {
@@ -38,11 +38,11 @@ class _FakeTaskStore:
             "worktree_path": str(path),
             "repo_root": subprocess.run(
                 ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, check=True, **hidden_run_kwargs()
+                capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
             ).stdout.strip(),
             "branch": subprocess.run(
                 ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
-                capture_output=True, text=True, check=True, **hidden_run_kwargs()
+                capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
             ).stdout.strip(),
         }
 
@@ -1050,7 +1050,6 @@ def test_daemon_stop_task_id_flows_through_service_and_http(
     handler._require_authorized = lambda: True
     handler._read_json = lambda: {"action": "stop", "daemon_id": daemon_id, "task_id": task_id}
     handler._validate_payload = lambda _path, _payload: None
-    handler._tenant = lambda: "agent"
     handler._agent = lambda: "test-agent"
     handler._trace_request_id = "daemon-stop-route-test"
     responses: list[tuple[int, dict[str, Any]]] = []
@@ -1534,8 +1533,10 @@ def test_stop_daemon_leaves_no_child_process_orphan(
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii'); "
         "time.sleep(60)"
     )
+    parent_script = tmp_path / "daemon_parent.py"
+    parent_script.write_text(parent_code, encoding="utf-8")
     daemon = broker.spawn_daemon(
-        [sys.executable, "-c", parent_code, str(child_pid_file)],
+        [sys.executable, str(parent_script), str(child_pid_file)],
         str(tmp_path),
         name="explicit-tree-stop-test",
         task_id="daemon-test",
@@ -1590,8 +1591,10 @@ def test_daemon_job_stops_descendants_after_leader_exits(
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')"
     )
+    parent_script = tmp_path / "daemon_parent.py"
+    parent_script.write_text(parent_code, encoding="utf-8")
     daemon = broker.spawn_daemon(
-        [sys.executable, "-c", parent_code, str(child_pid_file)], str(tmp_path), name="orphan-child-test", task_id="daemon-test"
+        [sys.executable, str(parent_script), str(child_pid_file)], str(tmp_path), name="orphan-child-test", task_id="daemon-test"
     )
     assert daemon["success"] is True
     child_pid: int | None = None

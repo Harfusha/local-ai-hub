@@ -14,6 +14,7 @@ from local_ai_hub import http_server
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.project_config import resolve_project_context
 
 
 def _setup(tmp_path: Path, task_id: str) -> tuple[LocalAIApp, Path, str]:
@@ -38,9 +39,11 @@ def _setup(tmp_path: Path, task_id: str) -> tuple[LocalAIApp, Path, str]:
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
+    coordination_id = resolve_project_context(repo, state).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
     app.agent_tasks.create(
         GoalContract(goal="validate configured lint", acceptance_criteria=("lint",)),
-        ScopeContext(task_id=task_id, repository_id=str(repo)),
+        ScopeContext(task_id=task_id, repository_id=coordination_id),
         task_id=task_id,
         actor="agent",
         repo_root=str(repo),
@@ -129,7 +132,6 @@ def test_run_rejects_caller_supplied_project_receipt_identity(tmp_path: Path):
             app.commands.run(
                 configured_lint,
                 str(repo),
-                tenant="agent",
                 task_id=task_id,
                 criterion="lint",
                 force=True,

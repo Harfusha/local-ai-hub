@@ -378,6 +378,7 @@ def test_tenant_shaped_rag_schema_requires_offline_conversion(tmp_path: Path) ->
         con.execute(
             "INSERT INTO chunks VALUES('legacy-owner','repo:one','old.py',0,'old-hash','old text','[1.0,0.0]','space')"
         )
+        con.commit()
         con.execute(
             """CREATE TABLE files(
                 tenant TEXT NOT NULL, workspace TEXT NOT NULL, path TEXT NOT NULL,
@@ -385,6 +386,7 @@ def test_tenant_shaped_rag_schema_requires_offline_conversion(tmp_path: Path) ->
                 PRIMARY KEY(tenant,workspace,path)
             )"""
         )
+        con.commit()
 
     store_config = {
         "server": {"state_dir": str(state_dir)},

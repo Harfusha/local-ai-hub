@@ -28,7 +28,11 @@ class _Services:
         self.started.set()
         if self.block:
             assert self.release.wait(2)
-        result = {"success": True, "embeddings": [[float(len(text)), 1.0] for text in batch]}
+        result = {
+            "success": True,
+            "embedding_space_id": self.space_id or "test-embedding-space-v1",
+            "embeddings": [[float(len(text)), 1.0] for text in batch],
+        }
         if self.space_id:
             result["embedding_space_id"] = self.space_id
         return result
@@ -196,7 +200,7 @@ def test_index_step_cancellation_after_embedding_and_deletion_preserves_snapshot
     with closing(store._connect()) as con:
         before = con.execute(
             "SELECT path,chunk_no,content_hash,text,embedding FROM chunks WHERE workspace=? ORDER BY path,chunk_no",
-            (workspace),
+            (workspace,),
         ).fetchall()
 
     keep.write_text("def new_value():\n    return 2\n", encoding="utf-8")
@@ -209,7 +213,7 @@ def test_index_step_cancellation_after_embedding_and_deletion_preserves_snapshot
     with closing(store._connect()) as con:
         after = con.execute(
             "SELECT path,chunk_no,content_hash,text,embedding FROM chunks WHERE workspace=? ORDER BY path,chunk_no",
-            (workspace),
+            (workspace,),
         ).fetchall()
     assert after == before
 
@@ -245,7 +249,6 @@ def test_indexed_chunk_reuse_isolated_by_embedding_space(tmp_path):
     with closing(store._connect()) as con:
         spaces = con.execute(
             "SELECT DISTINCT embedding_space FROM chunks ORDER BY embedding_space",
-            (workspace,),
         ).fetchall()
     assert [row[0] for row in spaces] == ["model-a@revision-1", "model-b@revision-1"]
 
@@ -273,7 +276,7 @@ def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path)
         con.execute(
             "UPDATE chunks SET embedding='[99.0,99.0]',embedding_space='' "
             "WHERE workspace=? AND path='same.py'",
-            (workspace),
+            (workspace,),
         )
         con.commit()
 
@@ -285,7 +288,7 @@ def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path)
         row = con.execute(
             "SELECT text,embedding,embedding_space FROM chunks "
             "WHERE workspace=? AND path='same.py'",
-            (workspace),
+            (workspace,),
         ).fetchone()
     vector = struct.unpack(f"{len(row[1]) // 4}f", row[1]) if isinstance(row[1], bytes) else json.loads(row[1])
     assert row[2] == "space-current"
@@ -340,7 +343,7 @@ def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
                 row[0]: (row[1], row[2])
                 for row in con.execute(
                 "SELECT path,embedding_space,embedding FROM chunks WHERE workspace=?",
-                (workspace),
+                (workspace,),
                 ).fetchall()
             }
         assert rows["shared.py"][0] == "model-b@revision-2"
@@ -787,7 +790,11 @@ def test_independent_stores_publish_concurrently_without_partial_snapshot(tmp_pa
     class _ConcurrentServices:
         def embed(self, texts, **_kwargs):
             rendezvous.wait(timeout=3)
-            return {"success": True, "embeddings": [[float(len(text)), 1.0] for text in texts]}
+            return {
+                "success": True,
+                "embedding_space_id": "test-concurrent-embedding-space-v1",
+                "embeddings": [[float(len(text)), 1.0] for text in texts],
+            }
 
     store_one = _store(tmp_path, _ConcurrentServices())
     store_two = _store(tmp_path, _ConcurrentServices())
@@ -814,7 +821,7 @@ def test_independent_stores_publish_concurrently_without_partial_snapshot(tmp_pa
     with closing(store_one._connect()) as con:
         rows = con.execute(
             "SELECT path, text FROM chunks WHERE workspace=? ORDER BY path",
-            (workspace),
+            (workspace,),
         ).fetchall()
     assert {row[0] for row in rows} == {"one.py", "two.py"}
 
@@ -842,7 +849,7 @@ def test_index_step_reembeds_same_workspace_blank_space_chunk(tmp_path):
         con.execute(
             "UPDATE chunks SET embedding='[99.0,99.0]',embedding_space='' "
             "WHERE workspace=? AND path='same.py'",
-            (workspace),
+            (workspace,),
         )
         con.commit()
 
@@ -854,7 +861,7 @@ def test_index_step_reembeds_same_workspace_blank_space_chunk(tmp_path):
         row = con.execute(
             "SELECT text,embedding,embedding_space FROM chunks "
             "WHERE workspace=? AND path='same.py'",
-            (workspace),
+            (workspace,),
         ).fetchone()
     vector = struct.unpack(f"{len(row[1]) // 4}f", row[1]) if isinstance(row[1], bytes) else json.loads(row[1])
     assert row[2] == "space-current"
@@ -883,7 +890,7 @@ def test_full_index_reembeds_same_workspace_blank_space_chunk(tmp_path):
         con.execute(
             "UPDATE chunks SET embedding='[99.0,99.0]',embedding_space='' "
             "WHERE workspace=? AND path='same.py'",
-            (workspace),
+            (workspace,),
         )
         con.commit()
 
@@ -895,7 +902,7 @@ def test_full_index_reembeds_same_workspace_blank_space_chunk(tmp_path):
         row = con.execute(
             "SELECT text,embedding,embedding_space FROM chunks "
             "WHERE workspace=? AND path='same.py'",
-            (workspace),
+            (workspace,),
         ).fetchone()
     vector = struct.unpack(f"{len(row[1]) // 4}f", row[1]) if isinstance(row[1], bytes) else json.loads(row[1])
     assert row[2] == "space-current"
@@ -950,7 +957,7 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
                 row[0]: (row[1], row[2])
                 for row in con.execute(
                 "SELECT path,embedding_space,embedding FROM chunks WHERE workspace=?",
-                (workspace),
+                (workspace,),
                 ).fetchall()
             }
         assert rows["shared.py"][0] == "model-b@revision-2"

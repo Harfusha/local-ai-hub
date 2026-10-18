@@ -146,7 +146,15 @@ def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -
     agent_tasks = SimpleNamespace(
         get=lambda task_id: SimpleNamespace(
             task_id=task_id,
-            context=SimpleNamespace(repository_id=str(tmp_path), session_id=session_id),
+            context=SimpleNamespace(repository_id=str(tmp_path.resolve()), session_id=session_id),
+            checkpoint=SimpleNamespace(
+                state_data={
+                    "_agent_task_scope": {
+                        "version": 2,
+                        "repo_root": str(tmp_path.resolve()),
+                    }
+                }
+            ),
         )
     )
     state_store = SimpleNamespace(export_delta=lambda stream, after, limit: {

@@ -37,7 +37,7 @@ import mcp.client.stdio as stdio
 import pytest
 
 from local_ai_hub.operation_contracts import validate_operation_output
-from local_ai_hub.task_memory_wire import task_memory_original_tokens
+from local_ai_hub.task_memory_wire import task_memory_original_tokens, task_memory_projection
 from local_ai_hub.token_accounting import json_tokens
 
 
@@ -49,10 +49,16 @@ INSTRUCTION = (
 )
 
 
-def _memory(repository_id: str):
+def _memory(repository_id: str, *, root: str):
     # This is a wire snapshot: record provenance is sanitized before delivery.
     return {
-        "schema_version": 1, "tenant_key": "7" * 64, "instruction": INSTRUCTION,
+        "schema_version": 2,
+        "context": {
+            "root": root, "coordination_id": repository_id, "task_id": TASK_ID,
+            "session_id": "session-wire", "clone_id": "clone-wire",
+            "worktree_id": "worktree-wire", "branch": "test",
+        },
+        "instruction": INSTRUCTION,
         "items": [
             {"id": "M00000000000000000000000000000001", "origin": "memory_store",
              "content": "Use the lease owner and preserve dirty source changes.",
@@ -79,7 +85,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
     repo.mkdir()
     from local_ai_hub.project_config import resolve_project_context
     repository_id = resolve_project_context(repo, tmp_path).coordination_id
-    expected = _memory(repository_id)
+    expected = _memory(repository_id, root=str(repo))
     calls = []
     current_audit = None
     tasks = None
@@ -132,7 +138,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                     action = body["action"]
                     if action == "create":
                         task = tasks.create(GoalContract(goal="Verify renderer cache theme revision"),
-                            ScopeContext(repository_id=str(repo), task_id=TASK_ID), task_id=TASK_ID,
+                            ScopeContext(repository_id=repository_id, task_id=TASK_ID), task_id=TASK_ID,
                             repo_root=str(repo), actor="wire-owner")
                     elif action == "checkpoint":
                         try:
@@ -187,7 +193,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                 "success": True, "context_id": "memory-context-17", "request_id": request_id,
                 "task": {"task_id": TASK_ID, "status": "running", "owner": "wire-owner",
                          "context": {"task_id": TASK_ID, "clone_id": "clone-wire",
-                                     "session_id": "session-wire", "repository_id": "repo-wire",
+                                     "session_id": "session-wire", "repository_id": repository_id,
                                      "worktree_id": "worktree-wire", "branch": "test",
                                      "user_blob": "private context blob " * 4000},
                          "created_at": 1791763200.0, "updated_at": 1791849600.0 + len(calls),
@@ -518,14 +524,29 @@ def test_stdio_checkpoint_get_show_current_audit_and_resume_resets_it(tmp_path, 
     assert [call["body"]["action"] for call in calls] == ["checkpoint", "get", "resume"]
 
 
-def test_task_memory_wire_cannot_succeed_with_overlong_identity_at_tiny_budget():
-    from local_ai_hub import mcp_server
+@pytest.mark.parametrize("container,field", [
+    ("snapshot", "tenant_key"), ("snapshot", "tenant"),
+    ("context", "tenant_key"), ("context", "tenant"),
+])
+def test_task_memory_wire_rejects_retired_tenant_fields(container, field):
+    snapshot = _memory("coordination-test", root=str(Path.cwd()))
+    target = snapshot if container == "snapshot" else snapshot["context"]
+    target[field] = None
+    payload = {"task": {"checkpoint": {"state_data": {"memory_context": snapshot}}}}
+    with pytest.raises(ValueError, match="retired memory snapshot contract"):
+        task_memory_projection(payload)
 
+
+def test_task_memory_wire_cannot_succeed_with_overlong_identity_at_tiny_budget(tmp_path):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.project_config import resolve_project_context
+
+    repository_id = resolve_project_context(tmp_path, tmp_path).coordination_id
     contents, structured = mcp_server._mcp_budget_payload("local_ai_coord", {
         "action": "task_resume", "max_response_tokens": 128,
     }, {"success": True, "task_id": "t" * 2000, "task": {
         "task_id": "t" * 2000, "status": "running", "checkpoint": {
-            "state_data": {"memory_context": _memory("repository")}}}})
+            "state_data": {"memory_context": _memory(repository_id, root=str(tmp_path))}}}})
     assert structured["success"] is False
     assert structured["error"] == "budget_too_small"
     assert structured["terminal"] is True and structured["retryable"] is False

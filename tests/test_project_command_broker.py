@@ -218,7 +218,10 @@ def test_project_environment_invalidates_suppression_and_success_cache(
     blocked = broker.run_project_command("check", str(project_root))
     suppressed = broker.run_project_command("check", str(project_root))
     assert blocked["policy_blocked"] is True
-    assert suppressed["suppression_cache_hit"] is True
+    # Authorization is re-evaluated before cache lookup, so a blocked request
+    # cannot become a historical suppression-cache hit.
+    assert suppressed["policy_blocked"] is True
+    assert suppressed.get("suppression_cache_hit") is not True
 
     monkeypatch.setenv("T15_HOST_TOKEN", "second")
     fresh = broker.run_project_command("check", str(project_root))

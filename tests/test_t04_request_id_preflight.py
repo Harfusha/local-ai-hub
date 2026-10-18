@@ -32,6 +32,8 @@ def _run_work_order_post(monkeypatch, request_id: str, payload: dict[str, Any], 
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
+    # This helper isolates request-ID preflight from unrelated mode policy.
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         http_server.Handler,
         "_begin_trace",

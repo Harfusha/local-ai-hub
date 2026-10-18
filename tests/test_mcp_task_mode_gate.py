@@ -21,7 +21,7 @@ def test_gaming_allows_cheap_artifact_read(tmp_path, monkeypatch):
     set_operational_mode(tmp_path, "gaming")
     monkeypatch.setattr(mcp_server, "CFG", {"server": {"state_dir": str(tmp_path)}})
     calls = []
-    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: calls.append(args) or {"success": True, "items": []})
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: calls.append(args) or {"success": True, "artifacts": []})
 
     result = mcp_server.local_ai_artifact(action="list")
 

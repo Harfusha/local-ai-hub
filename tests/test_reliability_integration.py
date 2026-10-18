@@ -384,8 +384,8 @@ def test_singleflight_waiter_returns_retryable_in_progress_quickly():
 def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path):
     journal = RecoveryJournal(tmp_path / "state")
     payload = {"query": "needle"}
-    identity = "agent-a"
-    journal.begin("request-1", "tenant", "/api/search", identity=identity, payload=payload)
+    action = "/api/search"
+    journal.begin("request-1", action=action, payload=payload)
 
     def finish() -> None:
         time.sleep(0.02)
@@ -395,10 +395,8 @@ def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path
     worker.start()
     result = journal.wait_for(
         "request-1",
-        "tenant",
-        "/api/search",
+        action=action,
         timeout_seconds=0.5,
-        identity=identity,
         payload_fingerprint=journal.fingerprint_payload(payload),
     )
     worker.join(1)

@@ -82,18 +82,8 @@ def test_linked_worktrees_conflict_on_same_relative_path_across_owners(
     assert coordination_id
     assert _coordination_id(worktree_b, tmp_path / "project-state") == coordination_id
 
-    first = store.claim(
-        "owner-a",
-        str(worktree_a),
-        ["src/shared.py"],
-        coordination_id=coordination_id,
-    )
-    second = store.claim(
-        "owner-b",
-        str(worktree_b),
-        ["src/shared.py"],
-        coordination_id=coordination_id,
-    )
+    first = store.claim(owner="owner-a", root=str(worktree_a), paths=["src/shared.py"], coordination_id=coordination_id)
+    second = store.claim(owner="owner-b", root=str(worktree_b), paths=["src/shared.py"], coordination_id=coordination_id)
 
     assert first["success"] is True
     assert second["success"] is False
@@ -102,7 +92,7 @@ def test_linked_worktrees_conflict_on_same_relative_path_across_owners(
         first["lease_id"]
     ]
     assert store.list(coordination_id=None) == []
-    store.release("owner-a", str(first["lease_id"]))
+    store.release(owner="owner-a", lease_id=str(first["lease_id"]))
 
 
 def test_same_relative_alias_in_unrelated_git_common_dirs_does_not_conflict(
@@ -112,23 +102,13 @@ def test_same_relative_alias_in_unrelated_git_common_dirs_does_not_conflict(
     worktree_b, _ = _linked_worktrees(tmp_path, "repo-b")
     store = ScopeLeaseStore(tmp_path / "state")
 
-    first = store.claim(
-        "owner-a",
-        str(worktree_a),
-        ["src/shared.py"],
-        coordination_id=_coordination_id(worktree_a, tmp_path / "project-state"),
-    )
-    second = store.claim(
-        "owner-b",
-        str(worktree_b),
-        ["src/shared.py"],
-        coordination_id=_coordination_id(worktree_b, tmp_path / "project-state"),
-    )
+    first = store.claim(owner="owner-a", root=str(worktree_a), paths=["src/shared.py"], coordination_id=_coordination_id(worktree_a, tmp_path / "project-state"))
+    second = store.claim(owner="owner-b", root=str(worktree_b), paths=["src/shared.py"], coordination_id=_coordination_id(worktree_b, tmp_path / "project-state"))
 
     assert first["success"] is True
     assert second["success"] is True
-    store.release("owner-a", str(first["lease_id"]))
-    store.release("owner-b", str(second["lease_id"]))
+    store.release(owner="owner-a", lease_id=str(first["lease_id"]))
+    store.release(owner="owner-b", lease_id=str(second["lease_id"]))
 
 def test_local_namespace_override_splits_linked_worktree_lease_scope(
     tmp_path: Path,
@@ -143,23 +123,13 @@ def test_local_namespace_override_splits_linked_worktree_lease_scope(
     assert overridden_id
     assert inherited_id != overridden_id
 
-    first = store.claim(
-        "owner-a",
-        str(worktree_a),
-        ["src/shared.py"],
-        coordination_id=inherited_id,
-    )
-    second = store.claim(
-        "owner-b",
-        str(worktree_b),
-        ["src/shared.py"],
-        coordination_id=overridden_id,
-    )
+    first = store.claim(owner="owner-a", root=str(worktree_a), paths=["src/shared.py"], coordination_id=inherited_id)
+    second = store.claim(owner="owner-b", root=str(worktree_b), paths=["src/shared.py"], coordination_id=overridden_id)
 
     assert first["success"] is True
     assert second["success"] is True
-    store.release("owner-a", str(first["lease_id"]))
-    store.release("owner-b", str(second["lease_id"]))
+    store.release(owner="owner-a", lease_id=str(first["lease_id"]))
+    store.release(owner="owner-b", lease_id=str(second["lease_id"]))
 
     (worktree_a / ".local-ai.worktree.toml").write_text(
         'shared_namespace = "fence-override"\n', encoding="utf-8"
@@ -191,12 +161,7 @@ def test_missing_project_coordination_id_fails_closed(tmp_path: Path) -> None:
     assert _coordination_id(physical_root, tmp_path / "project-state") is None
     store = ScopeLeaseStore(tmp_path / "state")
 
-    result = store.claim(
-        "owner-a",
-        str(physical_root),
-        ["src/shared.py"],
-        coordination_id=None,
-    )
+    result = store.claim(owner="owner-a", root=str(physical_root), paths=["src/shared.py"], coordination_id=None)
 
     assert result["success"] is False
     assert "coordination" in str(result.get("error", "")).lower()
@@ -210,16 +175,11 @@ def test_namespace_bridge_preserves_legacy_active_leases_on_same_root(
     assert coordination_id
 
     scopes = ScopeLeaseStore(tmp_path / "legacy-state")
-    legacy = scopes.claim("owner-a", str(physical_root), ["src/shared.py"])
+    legacy = scopes.claim(owner="owner-a", root=str(physical_root), paths=["src/shared.py"])
     assert legacy["success"] is True
-    namespaced = scopes.claim(
-        "owner-b",
-        str(physical_root),
-        ["src/shared.py"],
-        coordination_id=coordination_id,
-    )
+    namespaced = scopes.claim(owner="owner-b", root=str(physical_root), paths=["src/shared.py"], coordination_id=coordination_id)
     assert namespaced["success"] is False
-    scopes.release("owner-a", str(legacy["lease_id"]))
+    scopes.release(owner="owner-a", lease_id=str(legacy["lease_id"]))
 
     now = [100.0]
     fences = FencingLeaseStore(
@@ -312,12 +272,7 @@ def test_shared_namespace_keeps_physical_root_containment(tmp_path: Path) -> Non
     store = ScopeLeaseStore(tmp_path / "state")
 
     with pytest.raises(ValueError, match="path|root|escape|unsafe"):
-        store.claim(
-            "owner-a",
-            str(physical_root),
-            ["../outside.txt"],
-            coordination_id=_coordination_id(physical_root, tmp_path / "project-state"),
-        )
+        store.claim(owner="owner-a", root=str(physical_root), paths=["../outside.txt"], coordination_id=_coordination_id(physical_root, tmp_path / "project-state"))
 
 
 def test_fencing_write_and_commit_share_namespace_but_bind_physical_roots(

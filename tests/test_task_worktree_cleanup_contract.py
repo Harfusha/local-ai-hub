@@ -10,6 +10,7 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
 from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
+from local_ai_hub.project_config import resolve_project_context
 
 
 def _repo(root: Path) -> Path:
@@ -25,12 +26,15 @@ def _repo(root: Path) -> Path:
 
 
 def _task(tmp_path: Path, repo: Path) -> tuple[TaskStore, object]:
-    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    state_dir = tmp_path / "agent-state"
+    tasks = TaskStore(AgentStateStore(state_dir / "agent-state.sqlite3"))
+    coordination_id = resolve_project_context(str(repo), state_dir).coordination_id
     task = tasks.create(
         GoalContract(goal="owned worktree cleanup", acceptance_criteria=["feature"]),
-        ScopeContext(repository_id=str(repo)),
+        ScopeContext(repository_id=coordination_id),
         actor="owner-a",
         auto_worktree=True,
+        repo_root=str(repo),
     )
     return tasks, task
 

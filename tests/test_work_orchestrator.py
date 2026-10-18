@@ -14,6 +14,11 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.work_orchestrator import WorkOrchestrator, _patch_changes, _patch_paths, _stable_toposort_steps
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import GoalContract, TaskStore
+from local_ai_hub.agent_verification import VerificationStore
+from local_ai_hub.project_config import resolve_project_context
 
 
 class FakeArtifacts:
@@ -98,6 +103,20 @@ def init_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "init"], check=True)
     return root
+
+
+def owned_verification_context(tmp_path: Path, root: Path, artifacts: FakeArtifacts, task_id: str):
+    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
+    tasks = TaskStore(state_store)
+    coordination_id = resolve_project_context(str(root), tmp_path / "project-state").coordination_id
+    tasks.create(
+        GoalContract(goal="verified work order", acceptance_criteria=["work order verified"]),
+        ScopeContext(repository_id=coordination_id),
+        task_id=task_id,
+        actor="work-order-owner",
+        repo_root=str(root),
+    )
+    return VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
 
 
 def wait_terminal(wo: WorkOrchestrator, wid: str, timeout=8):
@@ -284,9 +303,11 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
     root = init_repo(tmp_path)
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
     artifacts = FakeArtifacts(); services = FakeServices(patch)
-    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
+    task_id = "work-order-success"
+    verification_store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
-        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "compact"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "task_id": task_id, "acceptance_criteria": ["a.txt contains new"], "response_profile": "compact"})
         res = wait_terminal(wo, sub["work_id"])
         assert res["status"] == "complete", res
         assert (root / "a.txt").read_text(encoding="utf-8") == "new\n"
@@ -373,11 +394,15 @@ def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_p
             })}
 
     services = BlockingVerificationServices()
-    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    artifacts = FakeArtifacts()
+    task_id = "work-order-cancelled"
+    verification_store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
         submitted = wo.submit({
             "root": str(root.resolve()),
             "task": "change old to new",
+            "task_id": task_id,
             "acceptance_criteria": ["a.txt contains new"],
             "response_profile": "debug",
         })
@@ -441,11 +466,14 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
 
     services = NoChangeTestServices()
     artifacts = FakeArtifacts()
-    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
+    task_id = "work-order-final-validation"
+    verification_store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
         submitted = wo.submit({
             "root": str(root.resolve()),
             "task": "verify the existing test suite",
+            "task_id": task_id,
             "acceptance_criteria": ["pytest suite"],
             "response_profile": "debug",
         })
@@ -487,8 +515,12 @@ def test_work_worker_is_lazy_until_submit(tmp_path):
 
 def test_idle_worker_retires_cleanly_and_can_restart(tmp_path):
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
-    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", FakeServices(patch), None, FakeLeases(), FakeArtifacts())
     root = init_repo(tmp_path)
+    services = FakeServices(patch)
+    artifacts = FakeArtifacts()
+    task_id = "work-order-restarted-worker"
+    verification_store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
         wo.worker_idle_seconds = 0.05
         wo._ensure_workers()
@@ -498,7 +530,7 @@ def test_idle_worker_retires_cleanly_and_can_restart(tmp_path):
         assert wo.stats()["active_workers"] == 0
         with wo._lock:
             assert not wo._workers
-        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"]})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "task_id": task_id, "acceptance_criteria": ["a.txt contains new"]})
         final = wait_terminal(wo, sub["work_id"])
         assert final["status"] == "complete"
     finally:
@@ -542,9 +574,12 @@ def test_needs_agent_rolls_back_then_continue_replans_with_answer(tmp_path):
     root = init_repo(tmp_path)
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
     services = BlockingReviewServices(patch)
-    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    artifacts = FakeArtifacts()
+    task_id = "work-order-continued"
+    verification_store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
-        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "task_id": task_id, "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
         blocked = wait_terminal(wo, sub["work_id"])
         assert blocked["status"] == "needs_agent"
         assert blocked["rolled_back"] is True
@@ -597,9 +632,12 @@ class RepairServices(FakeServices):
 def test_validation_failure_uses_bounded_repair_then_revalidates(tmp_path):
     root = init_repo(tmp_path)
     services = RepairServices()
-    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    artifacts = FakeArtifacts()
+    task_id = "work-order-repair"
+    verification_store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
-        sub = wo.submit({"root": str(root.resolve()), "task": "make a.txt fixed", "acceptance_criteria": ["a.txt contains fixed"], "response_profile": "debug"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "make a.txt fixed", "task_id": task_id, "acceptance_criteria": ["a.txt contains fixed"], "response_profile": "debug"})
         final = wait_terminal(wo, sub["work_id"])
         assert final["status"] == "complete", final
         assert (root / "a.txt").read_text(encoding="utf-8") == "fixed\n"

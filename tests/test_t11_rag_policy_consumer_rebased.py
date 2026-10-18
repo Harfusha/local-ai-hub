@@ -107,6 +107,7 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     _files(root)
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
+    store.require_workspace_root(workspace=workspace, root=str(root))
     digest_key = store._workspace_project_config_key(
         workspace, store._project_root_identity(root)
     )
@@ -139,15 +140,15 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     with closing(store._connect()) as con:
         assert con.execute(
             "SELECT COUNT(*) FROM files WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0] == 0
         assert con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0] == 0
         assert con.execute(
             "SELECT COUNT(*) FROM chunk_fts WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0] == 0
 
 def test_project_rag_phase_skip_is_reported_without_indexing(
@@ -210,6 +211,7 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     _files(root)
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
+    store.require_workspace_root(workspace=workspace, root=str(root))
     digest_key = store._workspace_project_config_key(
         workspace, store._project_root_identity(root)
     )
@@ -264,6 +266,7 @@ def test_rag_skip_phase_prunes_rows_and_advances_workspace_identity(
     root.mkdir()
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
+    store.require_workspace_root(workspace=workspace, root=str(root))
     source = root / "secret.py"
     source.write_text("x\n", encoding="utf-8")
     stat = source.stat()
@@ -286,7 +289,7 @@ def test_rag_skip_phase_prunes_rows_and_advances_workspace_identity(
         assert store._workspace_index_generation(con, workspace) == 1
         assert con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0] == 0
 def test_rag_inventory_uses_live_project_config_api(tmp_path: Path):
     root = tmp_path / "project"

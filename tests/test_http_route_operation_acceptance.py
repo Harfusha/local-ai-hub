@@ -143,7 +143,16 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     base_url, app = running_http_hub
     calls = []
     task = SimpleNamespace(
-        context=ScopeContext(repository_id=str(tmp_path), session_id="session:http-route-acceptance"),
+        task_id="task-77",
+        context=ScopeContext(repository_id=str(tmp_path.resolve()), session_id="session:http-route-acceptance"),
+        checkpoint=SimpleNamespace(
+            state_data={
+                "_agent_task_scope": {
+                    "version": 2,
+                    "repo_root": str(tmp_path.resolve()),
+                }
+            }
+        ),
         to_dict=lambda: {"task_id": "task-77", "status": "active", "summary": "T08 task"}
     )
 

@@ -538,7 +538,7 @@ class ConfigIdentityEmbedder:
         }
 
 
-def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_path: Path):
+def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_rows(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
     (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
@@ -549,25 +549,22 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
     embedder = ConfigIdentityEmbedder()
     first = RAGStore(first_config, services=embedder)
     assert first.index(root=str(root), workspace=workspace)["success"] is True
-    first_space = first._embedding_space_id({"backend": "test"})
+    with closing(first._connect()) as con:
+        before_rows = con.execute(
+            "SELECT path,content_hash,text,embedding,embedding_space FROM chunks WHERE workspace=?",
+            (workspace,),
+        ).fetchall()
     assert embedder.calls == 1
 
     second_config = _config(tmp_path / "state")
     second_config["models"]["embedding_digest"] = "sha256:second"
-    second = RAGStore(second_config, services=embedder)
-    second_space = second._embedding_space_id({"backend": "test"})
-    result = second.index(root=str(root), workspace=workspace)
+    with pytest.raises(RuntimeError, match="fingerprint mismatch.*offline rebuild required"):
+        RAGStore(second_config, services=embedder)
 
-    assert first_space != second_space
-    assert result["success"] is True
-    assert result["changed_files"] == 1
-    assert embedder.calls == 2
-    with closing(second._connect()) as con:
-        spaces = {
-            str(row[0])
-            for row in con.execute(
-                "SELECT DISTINCT embedding_space FROM chunks WHERE workspace=?",
-                (workspace,),
-            ).fetchall()
-        }
-    assert spaces == {second_space}
+    with closing(first._connect()) as con:
+        after_rows = con.execute(
+            "SELECT path,content_hash,text,embedding,embedding_space FROM chunks WHERE workspace=?",
+            (workspace,),
+        ).fetchall()
+    assert after_rows == before_rows
+    assert embedder.calls == 1

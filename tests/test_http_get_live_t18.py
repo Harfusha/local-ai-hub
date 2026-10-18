@@ -65,14 +65,15 @@ def test_live_named_dispatch_follows_shared_gates_and_keeps_read_policy() -> Non
         for statement in prelude for node in ast.walk(statement)
         if isinstance(node, ast.Call) and (isinstance(node.func, ast.Name) or isinstance(node.func, ast.Attribute))
     ]
-    order = {"_require_authorized": "auth", "_http_mode_gate_error": "mode", "_begin_trace": "trace", "parse_qs": "parse"}
-    observed_order = tuple(name for _, name in sorted((line, order[name]) for line, name in prelude_calls if name in order))
-    assert observed_order in {
-        ("auth", "mode", "trace", "parse"),
-        ("trace", "auth", "mode", "parse"),
-        ("auth", "auth", "mode", "trace", "parse"),
-    }
-    assert max(line for line, name in prelude_calls if name in order) < dispatch
+    auth = max(line for line, name in prelude_calls if name == "_require_authorized")
+    mode = next(line for line, name in prelude_calls if name == "_http_mode_gate_error")
+    trace = next(line for line, name in prelude_calls if name == "_begin_trace")
+    parses = sorted(line for line, name in prelude_calls if name == "parse_qs")
+    retired_query_validation = next(
+        line for line, name in prelude_calls if name == "_reject_identity_fields"
+    )
+    assert retired_query_validation == parses[0]
+    assert parses[0] < auth < mode < trace < parses[-1] < dispatch
     assert "/api/live" not in http_server.HTTP_MODE_OPERATOR_GET_PATHS
     assert "/api/live" not in http_server.HTTP_MODE_GAMING_READ_GET_PATHS
     assert http_server._http_mode_policy("GET", "/api/live") == "blocked"

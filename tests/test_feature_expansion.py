@@ -80,7 +80,7 @@ def test_memory_store_thread_safe_init():
         store = WorkspaceMemoryStore(state_dir)
         assert hasattr(store, "_lock")
         assert store._initialized is True
-        res = store.put(str(state_dir), "key1", "val1", "tenant1")
+        res = store.put(str(state_dir), "key1", "val1")
         assert res["success"] is True
         get_res = store.get(str(state_dir), "key1")
         assert get_res["success"] is True
@@ -154,7 +154,7 @@ def test_repo_tools_iter_files_not_starved_by_assets():
 def test_async_jobs_missing_row_safety():
     with tempfile.TemporaryDirectory() as tmp:
         cfg = {"server": {"state_dir": tmp}}
-        mgr = AsyncJobManager(cfg, None, None, lambda act, payload, t: {"success": True})
+        mgr = AsyncJobManager(cfg, None, None, lambda act, payload: {"success": True})
         # Executing a nonexistent job_id should return gracefully and not crash
         res = mgr._execute("nonexistent_job_123")
         assert res["success"] is False

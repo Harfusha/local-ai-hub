@@ -228,7 +228,7 @@ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tm
         for workspace in (baseline_workspace, candidate_workspace):
             rows = con.execute(
                 "SELECT content_hash,embedding_space FROM chunks WHERE workspace=?",
-                (workspace),
+                (workspace,),
             ).fetchall()
             assert {str(row[0]) for row in rows} == revision_hashes
             assert {str(row[1]) for row in rows} == {"quality-space"}
@@ -274,7 +274,7 @@ def test_document_ingest_does_not_report_zero_vector_as_embedded(tmp_path):
             return {"success": True, "embeddings": [[0.0, 0.0] for _ in texts]}
 
     store.services = _ZeroVectorServices()
-    result = store.ingest_document(title="Zero vector", workspace="zero-vector-workspace", content="A searchable document.")
+    result = store.ingest_document(root=str(tmp_path), title="Zero vector", workspace="zero-vector-workspace", content="A searchable document.")
 
     assert result["success"] is True
     assert result["embedded"] is False

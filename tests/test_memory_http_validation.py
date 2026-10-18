@@ -54,17 +54,20 @@ def test_memory_store_clean_key_and_value(tmp_path):
 
     store = WorkspaceMemoryStore(tmp_path)
     with pytest.raises(ValueError, match="memo key must be 1..160 characters"):
-        store.put(".", "", "val", "tenant")
+        store.put(".", "", "val")
 
     with pytest.raises(ValueError, match="memo key must be 1..160 characters"):
-        store.put(".", "   ", "val", "tenant")
+        store.put(".", "   ", "val")
 
     with pytest.raises(ValueError, match="memo key must be 1..160 characters"):
-        store.put(".", "k" * 161, "val", "tenant")
+        store.put(".", "k" * 161, "val")
 
     with pytest.raises(ValueError, match="memo value must not be empty"):
-        store.put(".", "valid_key", "", "tenant")
+        store.put(".", "valid_key", "")
 
     with pytest.raises(ValueError, match="memo value must not be empty"):
-        store.put(".", "valid_key", "   ", "tenant")
+        store.put(".", "valid_key", "   ")
+
+    with pytest.raises(TypeError, match="tenant"):
+        store.put(".", "valid_key", "val", tenant="")
 

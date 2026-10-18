@@ -145,6 +145,7 @@ def test_affected_tests_cache_distinguishes_discovery_from_explicit_empty_paths(
     assert explicitly_empty["cache_hit"] is False
     assert engine.calls == [
         ("affected_tests", str(root), None, "HEAD"),
+        ("test_matrix", str(root)),
         ("affected_tests", str(root), [], "HEAD"),
     ]
 
@@ -170,6 +171,7 @@ def test_affected_tests_cache_preserves_explicit_path_order(tmp_path: Path) -> N
     assert second["cache_hit"] is False
     assert engine.calls == [
         ("affected_tests", str(root), ["b.py", "a.py"], "HEAD"),
+        ("test_matrix", str(root)),
         ("affected_tests", str(root), ["a.py", "b.py"], "HEAD"),
     ]
 

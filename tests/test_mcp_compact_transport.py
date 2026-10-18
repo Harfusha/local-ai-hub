@@ -533,7 +533,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         payload = json.loads(content.text)
         assert payload["success"] is True, payload
         assert payload["text"].startswith("HTTP result ")
-    assert sorted(received, key=lambda item: item[0]["task"]) == [
+    assert sorted(received, key=lambda item: item["task"]) == [
         {
             "task": task,
             "context": context,

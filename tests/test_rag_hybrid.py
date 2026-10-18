@@ -22,7 +22,11 @@ class _Services:
     def embed(self, texts, **_kwargs):
         batch = list(texts)
         self.calls.append(batch)
-        return {"success": True, "embeddings": [[float(len(text)), 1.0] for text in batch]}
+        return {
+            "success": True,
+            "embedding_space_id": "test-hybrid-embedding-space-v1",
+            "embeddings": [[float(len(text)), 1.0] for text in batch],
+        }
 
 
 class _Reranker:
@@ -433,11 +437,11 @@ def test_hybrid_fts_excludes_foreign_and_empty_embedding_spaces(tmp_path):
     with closing(store._connect()) as con:
         con.execute(
             "UPDATE chunks SET embedding_space='space-old' WHERE workspace=? AND path='foreign.py'",
-            (workspace),
+            (workspace,),
         )
         con.execute(
             "UPDATE chunks SET embedding_space='' WHERE workspace=? AND path='legacy.py'",
-            (workspace),
+            (workspace,),
         )
         con.executemany(
             "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
@@ -642,7 +646,7 @@ def test_project_policy_identity_does_not_commit_stale_concurrent_snapshot(
         digest = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()[0]
         remaining = con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0]
     assert digest == current_context.config_digest
     assert remaining == 0
@@ -698,11 +702,11 @@ def test_project_policy_identity_does_not_prune_on_transient_stat_error(
         digest = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()[0]
         file_count = con.execute(
             "SELECT COUNT(*) FROM files WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0]
         chunk_count = con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0]
         uncertain = con.execute(
             "SELECT value FROM rag_meta WHERE key=?", (uncertain_key,)
@@ -746,7 +750,7 @@ def test_project_policy_identity_prunes_confirmed_missing_path(tmp_path):
         digest = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()[0]
         remaining = con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchone()[0]
     assert digest == new_context.config_digest
     assert remaining == 0
@@ -788,7 +792,7 @@ def test_project_policy_identity_rejects_workspace_bound_to_another_root(tmp_pat
         ).fetchone()[0]
         paths = con.execute(
             "SELECT path FROM files WHERE workspace=?",
-            (workspace),
+            (workspace,),
         ).fetchall()
     assert bound_root == store._project_root_identity(root_a)
     assert [row[0] for row in paths] == ["from-a.py"]
@@ -825,7 +829,8 @@ def test_index_paths_step_retries_uncertain_only_publish_lock(tmp_path, monkeypa
     original_connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
 
-    result = store.index_paths_step(str(root), workspace="uncertain-lock-workspace", paths=["unreadable.py"])
+    workspace = "uncertain-lock-workspace"
+    result = store.index_paths_step(str(root), workspace=workspace, paths=["unreadable.py"])
 
     assert result["success"] is True
     assert result["read_uncertain_paths"] == ["unreadable.py"]
@@ -929,7 +934,7 @@ def test_cross_workspace_legacy_embeddings_are_recomputed_in_every_index_path(tm
         with closing(store._connect()) as con:
             row = con.execute(
                 "SELECT embedding,embedding_space FROM chunks WHERE workspace=? AND path='shared.py'",
-                (workspace),
+                (workspace,),
             ).fetchone()
         assert row is not None and row[1] == f"space-{mode}"
         vector = (

@@ -11,6 +11,7 @@ from local_ai_hub.commands import CommandBroker
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
+from local_ai_hub.project_config import resolve_project_context
 
 
 class _Artifacts:
@@ -49,13 +50,15 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _task_store(state_dir: Path, repo: Path, *, create: bool = False) -> TaskStore:
-    store = TaskStore(AgentStateStore(state_dir / "agent_state.sqlite3"))
+    store = TaskStore(AgentStateStore(state_dir / "agent_state.sqlite"))
     if create:
+        coordination_id = resolve_project_context(repo, state_dir).coordination_id
+        assert isinstance(coordination_id, str) and coordination_id
         store.create(
             GoalContract(goal="record actual command execution"),
             ScopeContext(
                 task_id="task-1",
-                repository_id=str(repo.resolve()),
+                repository_id=coordination_id,
                 session_id="session-t06",
             ),
             task_id="task-1",
@@ -134,6 +137,7 @@ def test_real_broker_execution_record_survives_broker_restart(tmp_path: Path) ->
 
 
 def test_self_consistent_client_receipt_has_no_broker_execution_record(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
     state_dir = tmp_path / "state"
     artifacts = _Artifacts()
     verification = _VerificationStore()
@@ -148,7 +152,7 @@ def test_self_consistent_client_receipt_has_no_broker_execution_record(tmp_path:
                          "evidence_id": evidence_id, "passed": True})
 
     assert broker.get_command_execution_record(
-        fabricated_id,  task_id="task-1", repository_root=str(tmp_path / "repo")
+        fabricated_id, task_id="task-1", repository_root=str(repo)
     ) is None
     assert not (state_dir / "command-transactions" / "execution-records").exists()
 
@@ -158,7 +162,7 @@ def test_cache_hit_cannot_mint_a_second_execution_record(tmp_path: Path) -> None
     state_dir = tmp_path / "state"
     artifacts = _Artifacts()
     verification = _VerificationStore()
-    broker = _new_broker(state_dir, artifacts, verification)
+    broker = _new_broker(state_dir, artifacts, verification, _task_store(state_dir, repo, create=True))
 
     first = _run_pytest(broker, repo)
     assert first["success"] is True, first

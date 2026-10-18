@@ -52,12 +52,16 @@ def test_live_status_named_dispatch_stays_after_auth_mode_trace_and_parse() -> N
         if isinstance(node, ast.Call) and (isinstance(node.func, ast.Name) or isinstance(node.func, ast.Attribute))
     ]
     ordered_calls = sorted(calls)
-    auth = next(line for line, name in ordered_calls if name == "_require_authorized")
+    auth = max(line for line, name in ordered_calls if name == "_require_authorized")
     mode = next(line for line, name in ordered_calls if name == "_http_mode_gate_error")
     trace = next(line for line, name in ordered_calls if name == "_begin_trace")
-    parse = next(line for line, name in ordered_calls if name == "parse_qs")
+    parses = sorted(line for line, name in ordered_calls if name == "parse_qs")
     dispatch = next(line for line, name in ordered_calls if name == "select_get_handler")
-    assert auth < mode < trace < parse < dispatch
+    retired_query_validation = next(
+        line for line, name in ordered_calls if name == "_reject_identity_fields"
+    )
+    assert retired_query_validation == parses[0]
+    assert parses[0] < auth < mode < trace < parses[-1] < dispatch
     assert "/api/live/status" in http_server.HTTP_MODE_OPERATOR_GET_PATHS
     assert not any(name in {"_claim_recovery", "begin"} for _, name in calls)
     dispatch_try = next(
@@ -83,4 +87,3 @@ def test_live_status_includes_concurrency_snapshot_for_managed_server(monkeypatc
     handler._handle_get_live_status({})
 
     assert responses == [(200, {**snapshot, "http_concurrency": concurrency})]
-

@@ -43,7 +43,7 @@ if not coordination_id:
 scopes = ScopeLeaseStore(state)
 if mode in {"claim", "busy", "independent", "reclaim"}:
     owner = {"claim": "owner-a", "busy": "owner-b", "independent": "owner-c", "reclaim": "owner-b"}[mode]
-    claim = scopes.claim(owner, str(root), ["src/owned.txt"], ttl_seconds=90, coordination_id=coordination_id)
+    claim = scopes.claim(owner=owner, root=str(root), paths=["src/owned.txt"], ttl_seconds=90, coordination_id=coordination_id)
     if mode == "busy":
         print(json.dumps({"coordination_id": coordination_id, "claim": claim}))
         raise SystemExit(0)
@@ -68,8 +68,8 @@ elif mode == "refresh_release":
     previous = json.loads(receipt.read_text(encoding="utf-8"))
     lease_id = str(previous["claim"]["lease_id"])
     scopes = ScopeLeaseStore(state)
-    renew = scopes.renew("owner-a", lease_id, ttl_seconds=120)
-    release = scopes.release("owner-a", lease_id)
+    renew = scopes.renew(owner="owner-a", lease_id=lease_id, ttl_seconds=120)
+    release = scopes.release(owner="owner-a", lease_id=lease_id)
     print(json.dumps({"renew": renew, "release": release}))
 elif mode == "stale":
     old = json.loads(receipt.read_text(encoding="utf-8"))
@@ -86,8 +86,8 @@ elif mode == "stale":
         stale_rejected = True
     else:
         raise AssertionError("expired old owner committed a stale write")
-    renew = scopes.renew("owner-a", str(old["successor_lease_id"]), ttl_seconds=120)
-    release = scopes.release("owner-a", str(old["successor_lease_id"]))
+    renew = scopes.renew(owner="owner-a", lease_id=str(old["successor_lease_id"]), ttl_seconds=120)
+    release = scopes.release(owner="owner-a", lease_id=str(old["successor_lease_id"]))
     print(json.dumps({"stale_rejected": stale_rejected, "wrong_owner_renew": renew, "wrong_owner_release": release}))
 else:
     raise AssertionError(f"unknown mode: {mode}")

@@ -3978,8 +3978,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"success": False, "error": "agent_state route has no root-scoped access contract", "terminal": True, "retryable": False}); return
         if path == "/api/agent-state/memory" and not self._bind_memory_query(query):
             return
-        if path in {"/api/agent-state/events", "/api/agent-state/events/stream"} and not self._bind_task_event_query(query):
-            return
+        if path in {"/api/agent-state/events", "/api/agent-state/events/stream"}:
+            if APP is None or not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+                self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
+                return
+            if not self._bind_task_event_query(query):
+                return
         if path == "/api/agent-state/blackboard" and not self._bind_task_board_query(query):
             return
         if path == "/api/agent-state/swarm" or path.startswith("/api/agent-state/swarm/"):

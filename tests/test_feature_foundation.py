@@ -14,26 +14,26 @@ from local_ai_hub.debug_traces import DebugTraceStore
 
 def test_leases_renew(tmp_path: Path) -> None:
     store = ScopeLeaseStore(tmp_path)
-    claim_res = store.claim("task-run-1", str(tmp_path), ["src/main.py", "src/util.py"], ttl_seconds=100)
+    claim_res = store.claim(owner="task-run-1", root=str(tmp_path), paths=["src/main.py", "src/util.py"], ttl_seconds=100)
     assert claim_res["success"] is True
     lease_id = claim_res["lease_id"]
     orig_expires = claim_res["expires_at"]
 
     time.sleep(0.05)
     # Renew the lease
-    renew_res = store.renew("task-run-1", lease_id, ttl_seconds=500)
+    renew_res = store.renew(owner="task-run-1", lease_id=lease_id, ttl_seconds=500)
     assert renew_res["success"] is True
     assert renew_res["lease_id"] == lease_id
     assert renew_res["expires_at"] > orig_expires
     assert set(renew_res["paths"]) == {"src/main.py", "src/util.py"}
 
     # A different lease owner cannot renew this writer's lease.
-    foreign_res = store.renew("task-run-2", lease_id, ttl_seconds=500)
+    foreign_res = store.renew(owner="task-run-2", lease_id=lease_id, ttl_seconds=500)
     assert foreign_res["success"] is False
     assert "not found" in foreign_res["error"]
 
     # Non-existent lease
-    missing_res = store.renew("task-run-1", "nonexistent_lease", ttl_seconds=500)
+    missing_res = store.renew(owner="task-run-1", lease_id="nonexistent_lease", ttl_seconds=500)
     assert missing_res["success"] is False
 
 

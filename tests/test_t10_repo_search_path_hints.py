@@ -210,7 +210,6 @@ def test_tool_repo_search_routes_request_hints_through_complete_service() -> Non
         "repo_search",
         {"query": "button", "top_k": 4, "path_hints": request_hints, "scope": "task"},
         "/tmp/repo",
-        "tenant",
         "workspace",
     )
 
@@ -327,7 +326,6 @@ def test_tool_repo_search_preserves_text_without_evidence_receipt() -> None:
         "repo_search",
         {"query": "needle", "top_k": 1},
         "/tmp/repo",
-        "tenant",
         "workspace",
     )
 

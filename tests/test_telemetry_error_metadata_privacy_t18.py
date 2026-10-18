@@ -72,10 +72,10 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
         try:
             errors = con.execute(
                 "SELECT component, operation, error_type, safe_message, fingerprint, "
-                "request_id, tenant, agent, retryable, recovered FROM errors ORDER BY rowid"
+                "request_id, agent, retryable, recovered FROM errors ORDER BY rowid"
             ).fetchall()
             events = con.execute(
-                "SELECT action, error_type, error_fingerprint, request_id, tenant, agent "
+                "SELECT action, error_type, error_fingerprint, request_id, agent "
                 "FROM events WHERE event_type='error' ORDER BY rowid"
             ).fetchall()
         finally:
@@ -90,7 +90,7 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
     assert errors[0][0].startswith("provider")
     assert errors[0][1].startswith("generate")
     assert all(row[2:4] == ("RuntimeError", "RuntimeError: operation failed") for row in errors)
-    assert all(row[8:] == (1, 1) for row in errors)
+    assert all(row[7:] == (1, 1) for row in errors)
     assert errors[0][4] == errors[1][4]
     assert errors[0][4] != errors[2][4]
     assert all("provider" in row[0] and "generate" in row[0] for row in events)

@@ -6,7 +6,10 @@ import urllib.request
 from pathlib import Path
 
 from local_ai_hub.agent_context import CompiledContext, ContextElement
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.project_config import resolve_project_context
 
 
 def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, monkeypatch):
@@ -19,6 +22,16 @@ def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, 
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    state_dir = tmp_path / "state"
+    coordination_id = resolve_project_context(tmp_path, state_dir).coordination_id
+    assert isinstance(coordination_id, str) and coordination_id
+    app.agent_tasks.create(
+        GoalContract(goal="compose task and repository context"),
+        ScopeContext(repository_id=coordination_id, task_id="task-1", session_id="session-1"),
+        task_id="task-1",
+        actor="agent",
+        repo_root=str(tmp_path),
+    )
     previous = http_server.APP
     seen = {}
     http_server.APP = app
@@ -52,6 +65,8 @@ def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, 
         payload = json.dumps({
             "action": "compile",
             "task_id": "task-1",
+            "session_id": "session-1",
+            "repository_id": coordination_id,
             "root": str(tmp_path),
             "token_budget": 200,
             "phase": "review",
@@ -74,6 +89,8 @@ def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, 
         assert "Agent goal" in result["text"]
         assert "Indexed evidence" in result["text"]
         assert result["evidence_ids"] == ["E1"]
+        assert seen["request"].session_id == "session-1"
+        assert seen["request"].repository_id == coordination_id
         assert result["context_id"] == result["task_context"]["context_id"]
         assert result["stale"] is False
         assert result["next_action"] == "use_compiled_context"

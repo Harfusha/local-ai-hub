@@ -141,7 +141,7 @@ def _offline_services() -> LocalAIServices:
     services.stale_generation_cache = _NoStaleCache()
     services.breakers = _Breakers()
     services.telemetry = _Telemetry()
-    services.artifacts = SimpleNamespace(compact=lambda result, *_args: result)
+    services.artifacts = SimpleNamespace(compact=lambda result, *, kind: result)
     services.tuner = None
     services.vram_balancer = None
     services.fallback_count = 0

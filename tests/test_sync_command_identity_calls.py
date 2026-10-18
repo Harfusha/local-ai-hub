@@ -26,5 +26,6 @@ def test_transaction_identity_calls_bind_current_required_scope(method_name):
         arguments = [object()] * (len(call.args) + 1)
         keywords = {keyword.arg: object() for keyword in call.keywords if keyword.arg}
         signature.bind(*arguments, **keywords)
-        assert "tenant" in keywords, "transaction identity must retain its tenant"
+        assert "tenant" not in keywords, "transaction identity must not partition by tenant"
+        assert call.args and ast.unparse(call.args[0]) == "command"
         assert "timeout" in keywords, "transaction identity must retain its timeout"

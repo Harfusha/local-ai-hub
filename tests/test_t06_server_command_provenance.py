@@ -10,10 +10,10 @@ from local_ai_hub.commands import CommandBroker
 
 class _Artifacts:
     def __init__(self) -> None:
-        self.records: list[tuple[dict[str, Any], str, str]] = []
+        self.records: list[tuple[dict[str, Any], str]] = []
 
-    def put_json(self, value: dict[str, Any], owner: str, kind: str) -> str:
-        self.records.append((value, owner, kind))
+    def put_json(self, value: dict[str, Any], *, kind: str) -> str:
+        self.records.append((value, kind))
         return "artifact-server-stub"
 
 
@@ -101,7 +101,8 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
     assert record is not None
     assert record["command_id"] == command_id
     assert record["task_id"] == "task-a"
-    assert record["tenant_identity"] == broker._tenant_identity("tenant-a")
+    assert record["schema"] == "command_execution_record.v2"
+    assert "tenant_identity" not in record
     assert record["command_sha256"] == "b" * 64
     assert record["evidence_id"] == "artifact-server-stub"
     assert "issuer" not in record
@@ -110,4 +111,5 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
     persisted = restarted._get_server_command_execution_record(command_id)
     assert persisted is not None
     assert persisted["task_id"] == "task-a"
-    assert persisted["tenant_identity"] == restarted._tenant_identity("tenant-a")
+    assert persisted["schema"] == "command_execution_record.v2"
+    assert "tenant_identity" not in persisted

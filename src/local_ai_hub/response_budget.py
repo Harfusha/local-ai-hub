@@ -503,6 +503,12 @@ def _budget_rejection(
                             value[key] = [str(item[index])[:160] for index in range(min(evidence_count, len(item)))]
                         elif key == "evidence_id":
                             value[key] = str(item)[:160]
+                        elif key == "summary" and command_failure and isinstance(item, str):
+                            # Keep the failure class even when the protected
+                            # artifact inventory leaves only a tiny envelope.
+                            # Bulk summary detail is expendable; classification
+                            # is useful to callers deciding whether to retry.
+                            value[key] = _bounded_string(item, 24)
                         elif key in _IDENTIFIER_KEYS:
                             value[key] = _bounded_string(str(item), 160)
                         else:
@@ -551,6 +557,8 @@ def _budget_rejection(
             minimal[key] = [str(part)[:160] for part in item[:1]]
         elif key == "evidence_id":
             minimal[key] = str(item)[:160]
+        elif key == "summary" and command_failure and isinstance(item, str):
+            minimal[key] = _bounded_string(item, 24)
         elif key in _IDENTIFIER_KEYS:
             minimal[key] = _bounded_string(str(item), 160)
         else:
