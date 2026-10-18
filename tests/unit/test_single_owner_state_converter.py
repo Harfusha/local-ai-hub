@@ -26,6 +26,19 @@ def test_sqlite_generated_target_objects_use_registered_sql_normalization(monkey
             _converter._verify_generated_agent_objects(connection)
 
 
+def test_converted_target_schema_is_accepted_by_current_event_store(tmp_path):
+    from local_ai_hub.agent_events import AgentStateStore
+
+    target = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(target)) as connection, connection:
+        _converter._initialize_target_schema(connection, "agent_state")
+        for statement in _converter._STORE_DDL["agent_state"][1]:
+            connection.execute(statement)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == AgentStateStore._SCHEMA_VERSION
+        AgentStateStore._classify_schema(connection)
+    AgentStateStore(target)._ensure_schema()
+
+
 def test_failed_conversion_closes_source_cursor_before_temporary_cleanup(tmp_path, monkeypatch):
     source = tmp_path / "memos.sqlite"
     with closing(sqlite3.connect(source)) as connection, connection:
@@ -278,6 +291,7 @@ def test_agent_state_legacy_writer_schema_classifies_and_maps_rows(tmp_path: Pat
     monkeypatch.setattr(_converter, "_SOURCE_AGENT_HASHES", {})
     database = sqlite3.connect(":memory:")
     request.addfinalizer(database.close)
+    database.execute("PRAGMA user_version=1")
     database.execute("CREATE TABLE leases (lease_id TEXT NOT NULL, tenant TEXT NOT NULL, root_id TEXT NOT NULL, root_path TEXT NOT NULL, path TEXT NOT NULL, purpose TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, PRIMARY KEY(lease_id,path))")
     database.execute("CREATE TABLE lease_waits (tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL, requested_path TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY(root_id,tenant,blocked_by,requested_path))")
     database.execute("CREATE TABLE agent_tasks_projection (task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, checkpoint TEXT NOT NULL)")

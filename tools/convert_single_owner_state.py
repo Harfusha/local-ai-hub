@@ -716,6 +716,8 @@ def _source_store_shape(connection: sqlite3.Connection) -> tuple[str, dict[str, 
     removed: dict[str, list[str]] = {}
     inventory_tables: list[dict[str, Any]] = []
     if store == "agent_state":
+        if connection.execute("PRAGMA user_version").fetchone()[0] != _COMPLETE_AGENT["COMPLETE_AGENT_STATE_DDL"]["user_version"]:
+            raise ConversionError("Agent State source user_version differs from the registered complete contract")
         source_objects = {(str(kind), str(name), str(tbl_name)): sql for kind, name, tbl_name, sql in
                           connection.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index')")}
         for identity, expected_hash in _SOURCE_AGENT_HASHES.items():
@@ -1714,6 +1716,15 @@ def _target_sequence_rows(path: Path, allowed_tables: set[str]) -> list[tuple[st
         return _sequence_rows(connection, allowed_tables)
 
 
+def _initialize_target_schema(connection: sqlite3.Connection, store: str) -> None:
+    for statement in _STORE_DDL[store][0].values():
+        connection.execute(statement)
+    if store == "agent_state":
+        connection.execute(
+            f"PRAGMA user_version={_COMPLETE_AGENT['COMPLETE_AGENT_STATE_DDL']['user_version']}"
+        )
+
+
 def convert_sqlite_store(source: Path, target: Path, *, collision_manifest: Path | None = None,
                         expected_sha256: str | None = None,
                         archive_manifest: Path | None = None,
@@ -1784,8 +1795,7 @@ def convert_sqlite_store(source: Path, target: Path, *, collision_manifest: Path
                 with closing(sqlite3.connect(target_path)) as target_connection:
                     target_connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                     target_connection.execute("PRAGMA foreign_keys=ON")
-                    for ddl in new.values():
-                        target_connection.execute(ddl)
+                    _initialize_target_schema(target_connection, store)
                     for item in tables:
                         if item.get("archive_only"):
                             continue
