@@ -138,6 +138,20 @@ def test_http_context_rejects_malformed_explicit_guarded_even_with_empty_paths(c
     assert calls == []
 
 
+def test_http_context_session_id_explicitly_activates_guarded_request(context_http_hub):
+    base_url, token, calls, root = context_http_hub
+
+    status, response = _post_context(
+        base_url,
+        token,
+        {"root": str(root), "query": "test context", "session_id": "session-test"},
+    )
+
+    assert status == 200, response
+    assert response["success"] is True
+    assert calls
+
+
 @pytest.mark.parametrize("field", ["changed_paths", "focus"])
 def test_http_context_keeps_activation_field_validation(context_http_hub, field):
     base_url, token, calls, root = context_http_hub

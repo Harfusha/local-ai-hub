@@ -617,11 +617,11 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
 
     rejected, rejected_structured = invoke(128)
     assert client.requests[-1]["response_budget_tokens"] == 128
-    assert rejected.get("mutation_applied") is False, {
-        key: rejected.get(key)
+    assert rejected_structured.get("mutation_applied") is False, {
+        key: rejected_structured.get(key)
         for key in ("error", "status_code", "request_id", "mutation_applied", "operation_not_started", "task_id", "context_id")
     }
-    assert rejected["operation_not_started"] is True
+    assert rejected_structured["operation_not_started"] is True
     assert rejected_structured["request_id"] == "request-wire"
 
     accepted, accepted_structured = invoke(adequate_budget)
