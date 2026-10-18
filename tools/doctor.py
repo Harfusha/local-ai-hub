@@ -474,7 +474,7 @@ report = {
         "evidence": (state_dir / "evidence.sqlite3").exists(),
         "learning": (state_dir / "learning.sqlite3").exists(),
         "recovery": (state_dir / "recovery.sqlite3").exists(),
-        "agent_state": (state_dir / "agent_state.sqlite3").exists(),
+        "agent_state": (state_dir / "agent_state.sqlite").exists() or (state_dir / "agent_state.sqlite3").exists(),
     },
     "skill_paths": {
         "agent_skills_standard": str(Path.home() / ".agents" / "skills" / "local-ai-orchestrator" / "SKILL.md"),
