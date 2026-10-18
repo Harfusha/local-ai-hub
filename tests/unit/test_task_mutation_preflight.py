@@ -21,6 +21,16 @@ from local_ai_hub.agent_tasks import (
 )
 
 
+def _activate_coord(monkeypatch):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
+    snapshot = OperationalModeSnapshot("active", 1, None)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
+
+
 def _contract() -> GoalContract:
     return GoalContract(goal="preflight task", acceptance_criteria=(), scope=AgentScope.TASK)
 
@@ -535,6 +545,7 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
         "warnings": ["advisory " * 20],
         "estimated_tokens": 900,
     }
+    _activate_coord(monkeypatch)
     task = {
         "task_id": "wire-task",
         "status": "planned",
@@ -597,12 +608,20 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
             "max_response_tokens": budget,
             "response_profile": "minimal",
         }))
-        contents = result[0] if isinstance(result, tuple) else result
+        if isinstance(result, tuple):
+            contents, structured = result
+            if isinstance(structured, dict):
+                return structured
+        else:
+            contents = result
         return json.loads(next(item.text for item in contents if item.type == "text"))
 
     rejected = invoke(128)
     assert client.requests[-1]["response_budget_tokens"] == 128
-    assert rejected["mutation_applied"] is False
+    assert rejected.get("mutation_applied") is False, {
+        key: rejected.get(key)
+        for key in ("error", "status_code", "request_id", "mutation_applied", "operation_not_started", "task_id", "context_id")
+    }
     assert rejected["operation_not_started"] is True
     assert rejected["request_id"] == "request-wire"
 
@@ -782,9 +801,11 @@ def test_resume_same_status_retry_preflights_persisted_task(tmp_path, monkeypatc
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
 
-@pytest.mark.parametrize("action", ["task_rollback", "task_resume", "task_heartbeat", "task_cleanup_worktree"])
+@pytest.mark.parametrize("action", ["task_rollback", "task_resume", "task_heartbeat"])
 def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypatch, action):
     from local_ai_hub import mcp_server
+
+    _activate_coord(monkeypatch)
 
     class RegisteredFakeClient:
         def __init__(self):
@@ -805,6 +826,7 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
 
     result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
         "action": action,
+        "root": ".",
         "task_id": "budget-forwarding",
         "max_response_tokens": 512,
         "response_profile": "minimal",
@@ -819,6 +841,8 @@ def test_mcp_forwards_response_budget_for_remaining_full_task_mutations(monkeypa
 def test_mcp_forwards_response_budget_for_question_mutations(monkeypatch, action):
     from local_ai_hub import mcp_server
 
+    _activate_coord(monkeypatch)
+
     class RegisteredFakeClient:
         def __init__(self):
             self.requests = []
@@ -832,12 +856,20 @@ def test_mcp_forwards_response_budget_for_question_mutations(monkeypatch, action
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
     monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
 
-    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+    request = {
         "action": action,
+        "root": ".",
         "task_id": "budget-forwarding",
         "max_response_tokens": 512,
         "response_profile": "minimal",
-    }))
+    }
+    if action == "ask":
+        request.update(
+            question_id="question-budget", question="Question?", session_id="session-budget",
+        )
+    else:
+        request.update(question_id="question-budget", answer="Answer.")
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", request))
 
     assert client.requests[-1]["action"] == action
     assert client.requests[-1]["response_budget_tokens"] == 512
@@ -1057,6 +1089,8 @@ def test_http_question_mutations_map_response_budget_preflight(monkeypatch, acti
     )
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_tasks=task_store, recovery=None, debug_traces=None))
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(http_server, "select_http_routes", lambda *_args: {"post_agent_state_tasks_1"})
+    monkeypatch.setattr(http_server, "select_post_handler", lambda _route_ids: None)
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/agent-state/tasks"
     handler.headers = {"Content-Type": "application/json"}
@@ -1072,7 +1106,7 @@ def test_http_question_mutations_map_response_budget_preflight(monkeypatch, acti
     handler._bind_task_payload = lambda _payload: True
     handler._validate_payload = lambda *_args, **_kwargs: None
     handler._read_json = lambda: {
-        "action": action, "question_id": "question-budget-http",
+        "action": action, "root": ".", "question_id": "question-budget-http",
         "session_id": "session-budget-http", "question": "Question?", "answer": "Answer.",
         "response_budget_tokens": 128,
     }

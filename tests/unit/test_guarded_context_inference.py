@@ -108,7 +108,7 @@ def _post_context(base_url, token, payload):
         ("focus", ["src/example.py"]),
     ],
 )
-def test_http_context_infers_guarded_from_activation_field(context_http_hub, field, value):
+def test_http_context_requires_guard_activation_fields_to_be_explicit(context_http_hub, field, value):
     base_url, token, calls, root = context_http_hub
 
     status, response = _post_context(
@@ -117,9 +117,11 @@ def test_http_context_infers_guarded_from_activation_field(context_http_hub, fie
         {"root": str(root), "query": "test context", field: value},
     )
 
-    assert status == 200, response
-    assert response["success"] is True
-    assert len(calls) == 1
+    assert status == 400, response
+    assert response["error"] == (
+        f"guard-related fields require guarded=true, task_id, or phase: {field}"
+    )
+    assert calls == []
 
 
 def test_http_context_rejects_malformed_explicit_guarded_even_with_empty_paths(context_http_hub):
@@ -143,7 +145,7 @@ def test_http_context_keeps_activation_field_validation(context_http_hub, field)
     status, response = _post_context(
         base_url,
         token,
-        {"root": str(root), "query": "test context", field: "not-a-list"},
+        {"root": str(root), "query": "test context", "guarded": True, field: "not-a-list"},
     )
 
     assert status == 400, response
@@ -151,7 +153,7 @@ def test_http_context_keeps_activation_field_validation(context_http_hub, field)
     assert calls == []
 
 
-def test_http_context_keeps_legacy_request_without_guard_fields(context_http_hub):
+def test_http_context_accepts_unscoped_request_without_guard_fields(context_http_hub):
     base_url, token, calls, root = context_http_hub
 
     status, response = _post_context(

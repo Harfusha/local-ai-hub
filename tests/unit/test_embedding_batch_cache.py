@@ -24,7 +24,9 @@ def test_sqlite_cache_get_many_single_query(tmp_path: Path):
 def test_tiered_cache_get_many(tmp_path: Path):
     db_path = tmp_path / "tiered.sqlite3"
     l2 = SQLiteCache(db_path, "tiered_ns")
-    cache = TieredCache(l2, l1_entries=10)
+    # Leave room in every hash shard so this promotion assertion is independent
+    # of Python's randomized key-to-shard assignment.
+    cache = TieredCache(l2, l1_entries=64)
     
     # Store directly in L2
     l2.set("k1", "v1")

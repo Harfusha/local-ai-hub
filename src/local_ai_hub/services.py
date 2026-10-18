@@ -1862,6 +1862,8 @@ class LocalAIServices:
     def delegate(
         self, args: dict[str, Any], tenant: str, *, cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if "prompt" in args:
+            return {"success": False, "error": "delegate accepts task; prompt is not an alias"}
         if bool(args.get("conversation", False)):
             if str(args.get("profile", "")).strip():
                 return self._conversation_error("", "conversations do not support profiles")
@@ -1893,8 +1895,6 @@ class LocalAIServices:
                 result["warnings"] = warnings
             return result
 
-        if "prompt" in args:
-            return {"success": False, "error": "delegate accepts task; prompt is not an alias"}
         task = args.get("task", "")
         context_value = args.get("context", "")
         if not isinstance(task, str):

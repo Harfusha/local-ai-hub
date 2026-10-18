@@ -66,7 +66,14 @@ def test_semantic_services_translate_only_canonical_http_fields(
     ],
 )
 def test_semantic_services_reject_retired_dispatch_aliases_before_work(method, payload, alias):
-    result = method(SimpleNamespace(), payload, "tenant")
+    resolution_calls = []
+
+    def resolve_project(_root):
+        resolution_calls.append(True)
+        return None, "", "", ""
+
+    result = method(SimpleNamespace(_resolve_local_task_project=resolve_project), payload, "tenant")
 
     assert result["success"] is False
     assert alias in result["error"]
+    assert resolution_calls == []
