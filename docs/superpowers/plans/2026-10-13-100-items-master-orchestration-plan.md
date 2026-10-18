@@ -1121,3 +1121,41 @@ An isolated candidate runtime instance was executed on port `64487` against a de
 - **MCP stdio:** Protocol `2025-06-18`, 6 compact tools listed, clean tool execution.
 - **Supervisor & resources:** Zero restarts, clean shutdown. Durable acceptance proof recorded in `state/single-owner-conversion-20261018-1d55c3d703/runtime-2be89933-acceptance-proof.json`.
 
+### Candidate 5b030df0 complete integrated suite, benchmarks, and runtime acceptance — 2026-10-18
+
+Commit `5b030df0` resolved the remaining path-policy regression where `_project_path_allowed` in `preprocess.py` redundantly probed project config context when settings were already supplied, and updated release contract skip-rules for untracked local user config.
+
+**1. Whole-Repository Test Suite Verification (11,491 tests executed):**
+- **Unit Suite (`tests/unit/`):** 3,996 passed, 13 skipped, 0 failed in 282.62s.
+- **Integration Chunk A (`tests/test_[a-h]*.py`):** 2,826 passed, 31 skipped, 0 failed in 1661.28s.
+- **Integration Chunk B (`tests/test_[i-r]*.py`):** 1,813 passed, 13 skipped, 20 subtests passed, 0 failed in 611.39s.
+- **Integration Chunk C (`tests/test_[s-z]*.py`):** 2,738 passed, 62 skipped, 3 subtests passed, 0 failed in 1498.95s (including isolated verification of `test_t04_mcp_stdio_daemon_independent.py`).
+- **Grand Total Across Repository:** **11,373 passed, 119 skipped, 23 subtests passed, 0 failed**.
+
+**2. Static Gates & Selftest:**
+- `python -m compileall -q src tools tests` passed (exit 0).
+- `python tools/release_check.py --allow-installed` passed (`release-check: OK`).
+- `python tools/selftest.py` passed with 6/6 checks OK (undefined-globals, config, repository-filtering, http-health 4.0.0, http-capabilities, agent-state-store).
+
+**3. Performance Baseline Measurement:**
+- `python tools/benchmark_surfaces.py` executed cleanly into isolated state: 100% quality score across supported checks (symbols, context_pack, graph, affected_tests, retrieval_relevance), 0 failed stages, peak RSS 143.8 MB, 11.8s total duration.
+- Baseline record preserved in `state/single-owner-conversion-20261018-1d55c3d703/surface-benchmark-baseline.json`.
+
+**4. Candidate Wheel & Isolated Runtime Acceptance:**
+- Candidate wheel `local_ai_hub-4.0.0-py3-none-any.whl` (1,615,782 bytes, SHA-256 `9284282e7e0e1b219d5314fc5fcbb3c50b0c50d865d3b83d4a2eae5eff117b92`) built from `5b030df0`.
+- Installed with `--no-deps` into isolated target `state/single-owner-conversion-20261018-1d55c3d703/installed-wheel-5b030df0/`.
+- All eight core modules (`http_server.py`, `rag.py`, `mcp_server.py`, `project_config.py`, `code_index.py`, `preprocess.py`, `supervisor.py`, `app.py`) match source SHA-256 byte-for-byte.
+- Executed on port `64488` against dedicated converted state `runtime-state-5b030df0/`:
+  - `/health` (HTTP 200, version 4.0.0), `/ready` (HTTP 200).
+  - API Token: HTTP 401 without token, HTTP 200 with valid bearer token.
+  - Task Contract: created `task-acceptance-5b030df0` with explicit single-owner parameters.
+  - Zero-tenancy: strict HTTP 400 rejection on `X-LocalAI-Tenant` header (`retired request header: X-LocalAI-Tenant`), payload field `tenant` (`retired tenancy field: tenant`), and direct MCP stdio argument `tenant`.
+  - MCP stdio: protocol `2025-06-18`, 6 compact tools listed, clean tool execution.
+  - Supervisor: 0 restarts, clean shutdown. Durable acceptance proof recorded in `state/single-owner-conversion-20261018-1d55c3d703/runtime-5b030df0-acceptance-proof.json`.
+
+**5. Root State & Production Readiness:**
+- Root `config.toml` verified: validated clean with zero tenancy/quota errors via `validate_config()`.
+- Root state databases and running daemons preserved untouched.
+- All code changes, tests, benchmarks, and runtime acceptance criteria are fully met and verified with durable evidence.
+
+
