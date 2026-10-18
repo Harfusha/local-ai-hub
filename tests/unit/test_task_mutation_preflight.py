@@ -36,10 +36,18 @@ def _contract() -> GoalContract:
     return GoalContract(goal="preflight task", acceptance_criteria=(), scope=AgentScope.TASK)
 
 
-def _memory() -> dict[str, object]:
+def _memory(*, task_id: str = "", root: str = "", coordination_id: str = "") -> dict[str, object]:
     return {
-        "schema_version": 1,
-        "tenant_key": "tenant-test",
+        "schema_version": 2,
+        "context": {
+            "root": root,
+            "coordination_id": coordination_id,
+            "task_id": task_id,
+            "session_id": "",
+            "clone_id": "",
+            "worktree_id": "",
+            "branch": "",
+        },
         "instruction": "Use task memory carefully",
         "items": [{"id": "memory-1", "content": "grounded fact", "origin": "memory_store"}],
         "warnings": [],
@@ -86,7 +94,7 @@ def _mock_auto_worktree(monkeypatch, tmp_path):
 
 def test_create_preflights_memory_before_task_persistence(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
     commits = []
     monkeypatch.setattr(store, "_commit_create", lambda *args, **kwargs: commits.append(args))
@@ -102,14 +110,14 @@ def test_create_preflights_memory_before_task_persistence(tmp_path, monkeypatch)
 
 def test_create_persists_when_full_memory_response_fits(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 64)
 
     task = store.create(
         _contract(), ScopeContext(), task_id="create-budget-fit", response_budget_tokens=128,
     )
 
-    assert task.checkpoint.state_data["memory_context"] == _memory()
+    assert task.checkpoint.state_data["memory_context"] == _memory(task_id=task.task_id)
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == 1
 
 
@@ -139,10 +147,10 @@ def test_task_without_memory_context_still_preflights_full_response_budget(tmp_p
 
 def test_malformed_memory_audit_still_rejects_checkpoint_before_persistence(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     task = store.create(_contract(), ScopeContext(), task_id="invalid-memory-audit")
     invalid_checkpoint = TaskCheckpoint(state_data={
-        "memory_context": _memory(),
+        "memory_context": _memory(task_id=task.task_id),
         "memory_audit": {"used_ids": ["missing-memory-id"]},
     })
 
@@ -160,7 +168,7 @@ def test_auto_worktree_create_preflights_before_git_mutation(tmp_path, monkeypat
     from local_ai_hub import process_utils
 
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     plan = SimpleNamespace(
         repo_root=str(tmp_path.resolve()),
         ttl_seconds=3600.0,
@@ -176,8 +184,8 @@ def test_auto_worktree_create_preflights_before_git_mutation(tmp_path, monkeypat
 
     with pytest.raises(CheckpointResponseBudgetError):
         store.create(
-            _contract(), ScopeContext(repository_id=str(tmp_path)), task_id="auto-create-budget",
-            auto_worktree=True, response_budget_tokens=128,
+            _contract(), ScopeContext(repository_id="auto-create-budget-coordination"), task_id="auto-create-budget",
+            auto_worktree=True, repo_root=str(tmp_path.resolve()), response_budget_tokens=128,
         )
 
     assert create_calls == []
@@ -188,7 +196,7 @@ def test_auto_worktree_create_consumes_preflighted_plan_after_budget_fits(tmp_pa
     from local_ai_hub import process_utils
 
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **_k: _memory(task_id=task_id, root=str(tmp_path.resolve())))
     plan = SimpleNamespace(
         repo_root=str(tmp_path.resolve()), ttl_seconds=3600.0, expires_at=9999999999.0,
         response_metadata=lambda: {"success": True, "worktree_id": "worktree_000000000000"},
@@ -204,8 +212,8 @@ def test_auto_worktree_create_consumes_preflighted_plan_after_budget_fits(tmp_pa
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 64)
 
     task = store.create(
-        _contract(), ScopeContext(repository_id=str(tmp_path)), task_id="auto-create-fit",
-        auto_worktree=True, response_budget_tokens=128,
+        _contract(), ScopeContext(repository_id="auto-create-fit-coordination"), task_id="auto-create-fit",
+        auto_worktree=True, repo_root=str(tmp_path.resolve()), response_budget_tokens=128,
     )
 
     assert task.checkpoint.state_data["worktree"] == plan.response_metadata()
@@ -228,6 +236,7 @@ def test_auto_worktree_preparation_failure_fails_closed_before_task_write(tmp_pa
     with pytest.raises(TaskWorktreeError) as raised:
         store.create(
             _contract(), ScopeContext(), task_id="auto-create-prepare-fail", auto_worktree=True,
+            repo_root=str(tmp_path.resolve()),
         )
 
     assert raised.value.mutation_applied is False
@@ -254,8 +263,8 @@ def test_auto_worktree_git_failure_keeps_started_operation_unknown(tmp_path, mon
 
     with pytest.raises(TaskWorktreeError) as raised:
         store.create(
-            _contract(), ScopeContext(repository_id=str(tmp_path)), task_id="auto-create-git-fail",
-            auto_worktree=True,
+            _contract(), ScopeContext(repository_id="auto-create-git-fail-coordination"), task_id="auto-create-git-fail",
+            auto_worktree=True, repo_root=str(tmp_path.resolve()),
         )
 
     assert raised.value.mutation_applied is None
@@ -269,8 +278,8 @@ def test_completion_returns_scheduled_worktree_cleanup_without_postcommit_write(
     _mock_auto_worktree(monkeypatch, tmp_path)
     monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
     created = store.create(
-        _contract(), ScopeContext(repository_id=str(tmp_path)),
-        task_id="complete-scheduled-cleanup", auto_worktree=True,
+        _contract(), ScopeContext(repository_id="complete-cleanup-coordination"),
+        task_id="complete-scheduled-cleanup", auto_worktree=True, repo_root=str(tmp_path.resolve()),
     )
     cleanup_calls = []
     monkeypatch.setattr(store, "cleanup_worktree", lambda *args, **kwargs: cleanup_calls.append(args))
@@ -288,8 +297,8 @@ def test_direct_completed_transition_schedules_existing_worktree_cleanup(tmp_pat
     _mock_auto_worktree(monkeypatch, tmp_path)
     monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
     created = store.create(
-        _contract(), ScopeContext(repository_id=str(tmp_path)),
-        task_id="transition-scheduled-cleanup", auto_worktree=True,
+        _contract(), ScopeContext(repository_id="transition-cleanup-coordination"),
+        task_id="transition-scheduled-cleanup", auto_worktree=True, repo_root=str(tmp_path.resolve()),
     )
     active = store.transition(
         created.task_id, TaskStatus.ACTIVE, reason="activate", actor=created.owner,
@@ -319,8 +328,8 @@ def test_idle_reaper_accepts_scheduled_worktree_before_expiry(tmp_path, monkeypa
     _mock_auto_worktree(monkeypatch, tmp_path)
     monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
     created = store.create(
-        _contract(), ScopeContext(repository_id=str(tmp_path)), task_id="scheduled-reaper",
-        auto_worktree=True,
+        _contract(), ScopeContext(repository_id="scheduled-reaper-coordination"), task_id="scheduled-reaper",
+        auto_worktree=True, repo_root=str(tmp_path.resolve()),
     )
     completed = store.complete(created.task_id, actor=created.owner)
     monkeypatch.setattr(
@@ -527,7 +536,7 @@ def test_sdk_mutation_coord_only_sends_budget_when_supplied(monkeypatch, action)
     assert sent[-1]["response_budget_tokens"] == 320
 
 
-def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_error_flags(monkeypatch):
+def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_error_flags(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
     from local_ai_hub.task_memory_wire import (
         normalize_task_memory_response,
@@ -537,7 +546,7 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     )
 
     memory_bundle = {
-        **_memory(),
+        **_memory(task_id="wire-task", root=str(tmp_path.resolve()), coordination_id="repo-coordination-wire"),
         "instruction": "grounded instruction " * 30,
         "items": [
             {"id": f"memory-{index}", "content": "evidence detail " * 45, "origin": "memory_store"}
@@ -555,12 +564,13 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
         "created_at": 1.0,
         "updated_at": 1.0,
         "heartbeat_expires_at": 0.0,
-        "context": {"repository_id": "C:/repo", "task_id": "wire-task"},
+        "context": {"repository_id": "repo-coordination-wire", "task_id": "wire-task"},
         "checkpoint": {
             "phase": "",
             "state_data": {
+                "_agent_task_scope": {"version": 2, "repo_root": str(tmp_path.resolve())},
                 "memory_context": memory_bundle,
-                "memory_audit": {"used_ids": ["memory-1"], "source_checked": True},
+                "memory_audit": {"used_ids": ["memory-1"], "source_checks": {}},
             },
         },
     }
@@ -640,7 +650,7 @@ def test_task_transition_preflights_before_event_or_state_write(tmp_path, monkey
     current = replace(
         created,
         status=TaskStatus.ACTIVE,
-        checkpoint=TaskCheckpoint(phase="existing", state_data={"memory_context": _memory()}),
+        checkpoint=TaskCheckpoint(phase="existing", state_data={"memory_context": _memory(task_id=created.task_id)}),
     )
     monkeypatch.setattr(store, "get", lambda task_id: current)
     monkeypatch.setattr(store, "_validate_memory_audit", lambda _task: None)
@@ -685,7 +695,6 @@ def test_zombie_reap_preflights_full_wire_response_before_database_access(tmp_pa
         store.reap_expired_heartbeats(
             auto_recover=True,
             repo_root=tmp_path,
-            tenant="tenant-test",
             task_id="zombie-budget",
             response_budget_tokens=128,
         )
@@ -721,11 +730,10 @@ def test_question_mutation_preflight_includes_http_request_id(monkeypatch):
 def test_zombie_reap_response_budget_requires_canonical_task_id(tmp_path, task_id):
     store = _store(tmp_path)
 
-    with pytest.raises(ValueError, match="canonical task_id"):
+    with pytest.raises(ValueError, match="canonical"):
         store.reap_expired_heartbeats(
             auto_recover=True,
             repo_root=tmp_path,
-            tenant="tenant-test",
             task_id=task_id,
             response_budget_tokens=128,
         )
@@ -733,14 +741,14 @@ def test_zombie_reap_response_budget_requires_canonical_task_id(tmp_path, task_i
 
 def test_rollback_preflights_before_restoring_checkpoint_files(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     task = store.create(_contract(), ScopeContext(), task_id="rollback-budget")
     target = tmp_path / "tracked.txt"
     target.write_text("before", encoding="utf-8")
     store.checkpoint(
         task.task_id,
         TaskCheckpoint(state_data={
-            "memory_context": _memory(), "memory_audit": {"used_ids": ["memory-1"]},
+            "memory_context": _memory(task_id=task.task_id), "memory_audit": {"used_ids": ["memory-1"]},
             "file_snapshots": {str(target): "before"},
         }),
         actor=task.owner,
@@ -749,7 +757,7 @@ def test_rollback_preflights_before_restoring_checkpoint_files(tmp_path, monkeyp
     store.checkpoint(
         task.task_id,
         TaskCheckpoint(state_data={
-            "memory_context": _memory(), "memory_audit": {"used_ids": ["memory-1"]},
+            "memory_context": _memory(task_id=task.task_id), "memory_audit": {"used_ids": ["memory-1"]},
             "file_snapshots": {str(target): "after"},
         }),
         actor=task.owner,
@@ -768,7 +776,7 @@ def test_rollback_preflights_before_restoring_checkpoint_files(tmp_path, monkeyp
 
 def test_heartbeat_preflights_before_event_or_state_write(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     task = store.create(_contract(), ScopeContext(), task_id="heartbeat-budget")
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
     before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
@@ -781,7 +789,7 @@ def test_heartbeat_preflights_before_event_or_state_write(tmp_path, monkeypatch)
 
 def test_resume_same_status_retry_preflights_persisted_task(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
     task = store.create(_contract(), ScopeContext(), task_id="resume-budget")
     task = store.transition(
         task.task_id, TaskStatus.ACTIVE, actor=task.owner, reason="start task",
@@ -889,7 +897,7 @@ def test_question_mutations_preflight_response_before_persistence(tmp_path, monk
     )
     if action == "answer":
         question = store.ask_question(
-            root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+            root=str(tmp_path), session_id="session-budget",
             question="Need an answer?", actor="agent",
         )
     monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", lambda payload, **kwargs: 129)
@@ -897,24 +905,24 @@ def test_question_mutations_preflight_response_before_persistence(tmp_path, monk
     with pytest.raises(CheckpointResponseBudgetError):
         if action == "ask":
             store.ask_question(
-                root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+                root=str(tmp_path), session_id="session-budget",
                 question="Need an answer?", actor="agent", response_budget_tokens=128,
             )
         else:
             store.answer_question(
-                question_id=question["question_id"], root=str(tmp_path), tenant="tenant-test",
+                question_id=question["question_id"], root=str(tmp_path),
                 answer="Here is the answer.", actor="operator", response_budget_tokens=128,
             )
 
     if action == "ask":
         assert write_calls == []
         assert store.ask_question(
-            root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+            root=str(tmp_path), session_id="session-budget",
             question_id="q_missing_after_preflight",
         ) is None
     else:
         current = store.ask_question(
-            root=str(tmp_path), tenant="tenant-test", session_id="session-budget",
+            root=str(tmp_path), session_id="session-budget",
             question_id=question["question_id"],
         )
         assert current["status"] == "pending"
@@ -928,12 +936,12 @@ def test_question_mutations_reject_noncanonical_budgets(tmp_path, action, budget
     with pytest.raises(ValueError, match="positive integer"):
         if action == "ask":
             store.ask_question(
-                root=str(tmp_path), tenant="tenant-test", session_id="session-invalid-budget",
+                root=str(tmp_path), session_id="session-invalid-budget",
                 question="Question?", response_budget_tokens=budget,
             )
         else:
             store.answer_question(
-                question_id="question-invalid-budget", root=str(tmp_path), tenant="tenant-test",
+                question_id="question-invalid-budget", root=str(tmp_path),
                 answer="Answer.", response_budget_tokens=budget,
             )
 
@@ -944,8 +952,8 @@ def test_cleanup_worktree_preflights_response_budget_before_git_mutation(tmp_pat
     store = _store(tmp_path)
     _mock_auto_worktree(monkeypatch, tmp_path)
     task = store.create(
-        _contract(), ScopeContext(repository_id=str(tmp_path)),
-        task_id="cleanup-budget", auto_worktree=True,
+        _contract(), ScopeContext(repository_id="cleanup-budget-coordination"),
+        task_id="cleanup-budget", auto_worktree=True, repo_root=str(tmp_path.resolve()),
     )
     git_calls = []
     monkeypatch.setattr(
@@ -992,12 +1000,10 @@ def test_http_mutations_map_preflight_errors(monkeypatch, action, failure, expec
     handler.path = "/api/agent-state/tasks"
     handler.headers = {"Content-Type": "application/json"}
     handler._authorization_root = "."
-    handler._authorization_tenant = "tenant-test"
     handler._authorization_actor = "agent"
     handler._require_authorized = lambda: True
     handler._begin_trace = lambda *_: None
     handler._claim_recovery = lambda *_: True
-    handler._tenant = lambda: "tenant-test"
     handler._agent = lambda: "agent"
     handler._request_task = lambda *_args, **_kwargs: SimpleNamespace(owner="agent")
     handler._bind_task_payload = lambda _payload: True
@@ -1047,12 +1053,10 @@ def test_http_cleanup_worktree_maps_response_budget_preflight(monkeypatch):
     handler.path = "/api/agent-state/tasks"
     handler.headers = {"Content-Type": "application/json"}
     handler._authorization_root = "."
-    handler._authorization_tenant = "tenant-test"
     handler._authorization_actor = "agent"
     handler._require_authorized = lambda: True
     handler._begin_trace = lambda *_: None
     handler._claim_recovery = lambda *_: True
-    handler._tenant = lambda: "tenant-test"
     handler._agent = lambda: "agent"
     handler._request_task = lambda *_args, **_kwargs: SimpleNamespace(owner="agent")
     handler._bind_task_payload = lambda _payload: True
@@ -1096,12 +1100,10 @@ def test_http_question_mutations_map_response_budget_preflight(tmp_path, monkeyp
     handler.path = "/api/agent-state/tasks"
     handler.headers = {"Content-Type": "application/json"}
     handler._authorization_root = str(tmp_path)
-    handler._authorization_tenant = "tenant-test"
     handler._authorization_actor = "agent"
     handler._require_authorized = lambda: True
     handler._begin_trace = lambda *_: None
     handler._claim_recovery = lambda *_: True
-    handler._tenant = lambda: "tenant-test"
     handler._agent = lambda: "agent"
     handler._request_task = lambda *_args, **_kwargs: SimpleNamespace(owner="agent")
     handler._bind_task_payload = lambda _payload: True

@@ -456,16 +456,36 @@ class WorkOrchestrator:
         return resolve_project_context(root, self.path.parent).coordination_id
 
     def _init_db(self) -> None:
+        expected_columns = {
+            "work_id", "root", "task", "state", "payload_json", "result_json",
+            "cancel_requested", "created_at", "updated_at",
+        }
+        if self.path.exists():
+            read_only_uri = self.path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(read_only_uri, uri=True, timeout=2.0)) as check:
+                check.execute("PRAGMA query_only=ON")
+                table = check.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_orders'"
+                ).fetchone()
+                if table:
+                    columns = {
+                        str(row[1])
+                        for row in check.execute("PRAGMA table_info(work_orders)").fetchall()
+                    }
+                    if columns != expected_columns:
+                        raise RuntimeError(
+                            "unsupported work_orders database schema; explicit offline conversion required"
+                        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as con:
             con.executescript("""
             CREATE TABLE IF NOT EXISTS work_orders(
-              work_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, root TEXT NOT NULL, task TEXT NOT NULL,
+              work_id TEXT PRIMARY KEY, root TEXT NOT NULL, task TEXT NOT NULL,
               state TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}',
               cancel_requested INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_work_orders_state_created ON work_orders(state, created_at);
-            CREATE INDEX IF NOT EXISTS idx_work_orders_tenant_updated ON work_orders(tenant, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_work_orders_updated ON work_orders(updated_at DESC);
             """)
 
     def _journal_path(self, work_id: str) -> Path:
@@ -636,12 +656,12 @@ class WorkOrchestrator:
         transient = ("planning", "executing", "verifying", "integrating")
         with closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT work_id,tenant,root,state,result_json FROM work_orders WHERE state IN (?,?,?,?)", transient
+                "SELECT work_id,root,state,result_json FROM work_orders WHERE state IN (?,?,?,?)", transient
             ).fetchall()
         now = time.time()
         for row in rows:
             work_id = str(row["work_id"])
-            tenant = str(row["tenant"])
+            lease_owner = f"work-recovery:{work_id}"
             state = str(row["state"])
             try:
                 prior_result = json.loads(str(row["result_json"] or "{}"))
@@ -671,9 +691,9 @@ class WorkOrchestrator:
                         raise RuntimeError("work journal lacks authoritative writer fencing metadata")
                     paths = normalize_paths([entry.path for entry in journal], root=root)
                     claim = self.leases.claim_batch(
-                        tenant,
-                        str(root),
-                        list(paths),
+                        owner=lease_owner,
+                        root=str(root),
+                        paths=list(paths),
                         ttl_seconds=900,
                         purpose=f"work-recovery:{work_id}",
                         coordination_id=coordination_id,
@@ -722,7 +742,7 @@ class WorkOrchestrator:
                             pass
                     if advisory_lease_id:
                         try:
-                            self.leases.release(tenant, advisory_lease_id)
+                            self.leases.release(owner=lease_owner, lease_id=advisory_lease_id)
                         except Exception:
                             pass
             else:
@@ -858,7 +878,9 @@ class WorkOrchestrator:
                     self._worker = worker
                 worker.start()
 
-    def submit(self, tenant: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "tenant" in payload:
+            return {"success": False, "error": "retired work-order field: tenant", "terminal": True}
         if not self.enabled:
             return {"success": False, "unsupported": True, "error": "work orchestrator disabled"}
         raw_root = str(payload.get("root", "")).strip()
@@ -873,6 +895,14 @@ class WorkOrchestrator:
         work_id = str(payload.get("work_id", "")).strip() or f"wo_{uuid.uuid4().hex[:20]}"
         if len(work_id) > 128 or any(ord(ch) < 32 for ch in work_id):
             return {"success": False, "error": "work_id must be at most 128 printable characters", "terminal": True}
+        raw_task_id = payload.get("task_id", "")
+        if raw_task_id is None:
+            raw_task_id = ""
+        if not isinstance(raw_task_id, str):
+            return {"success": False, "error": "task_id must be a string when supplied", "terminal": True}
+        task_id = raw_task_id.strip()
+        if len(task_id) > 128 or any(ord(ch) < 32 for ch in task_id):
+            return {"success": False, "error": "task_id must be at most 128 printable characters", "terminal": True}
         acceptance = _string_list(payload.get("acceptance_criteria"), limit=24, item_chars=2000)
         budgets = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
         mode = str(payload.get("mode", "execute") or "execute").strip().lower().replace("-", "_")
@@ -883,6 +913,7 @@ class WorkOrchestrator:
             profile = self.default_response_profile if self.default_response_profile in {"minimal", "compact", "standard", "debug"} else "compact"
         return_fields = _string_list(payload.get("return_fields"), limit=32, item_chars=80)
         normalized = {
+            "task_id": task_id,
             "acceptance_criteria": acceptance,
             "constraints": _string_list(payload.get("constraints"), limit=24, item_chars=2000),
             "mode": mode,
@@ -905,8 +936,8 @@ class WorkOrchestrator:
                 con.execute("BEGIN IMMEDIATE")
                 try:
                     existing = con.execute(
-                        "SELECT * FROM work_orders WHERE work_id=? AND tenant=?",
-                        (work_id, tenant),
+                        "SELECT * FROM work_orders WHERE work_id=?",
+                        (work_id,),
                     ).fetchone()
                     if existing is not None:
                         existing_payload = json.loads(str(existing["payload_json"] or "{}"))
@@ -930,8 +961,8 @@ class WorkOrchestrator:
                     if pending and int(pending[0]) >= self.max_pending:
                         con.execute("ROLLBACK")
                         return {"success": False, "error": "work-order queue is full", "retryable": True, "terminal": False}
-                    con.execute("INSERT INTO work_orders(work_id,tenant,root,task,state,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                                (work_id, tenant, str(root), task, "queued", json_dumps(normalized, separators=(",", ":")), now, now))
+                    con.execute("INSERT INTO work_orders(work_id,root,task,state,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                                (work_id, str(root), task, "queued", json_dumps(normalized, separators=(",", ":")), now, now))
                     con.execute("COMMIT")
                 except Exception:
                     con.execute("ROLLBACK")
@@ -941,11 +972,9 @@ class WorkOrchestrator:
         self._ensure_workers(); self._wake.set()
         return self._project({"success": True, "status": "queued", "work_id": work_id, "summary": "whole task accepted"}, normalized)
 
-    def _row(self, work_id: str, tenant: str = "") -> sqlite3.Row | None:
+    def _row(self, work_id: str) -> sqlite3.Row | None:
         def query() -> sqlite3.Row | None:
             with closing(self._connect()) as con:
-                if tenant and tenant not in {"admin", "system", "*"}:
-                    return con.execute("SELECT * FROM work_orders WHERE work_id=? AND tenant=?", (work_id, tenant)).fetchone()
                 return con.execute("SELECT * FROM work_orders WHERE work_id=?", (work_id,)).fetchone()
         return retry_busy(query, retries=5, base_delay_seconds=0.02)
 
@@ -963,12 +992,12 @@ class WorkOrchestrator:
                                 return_fields=payload.get("return_fields") or None,
                                 max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))
 
-    def status(self, tenant: str, work_id: str) -> dict[str, Any]:
-        row = self._row(work_id, tenant)
+    def status(self, work_id: str) -> dict[str, Any]:
+        row = self._row(work_id)
         return self._canonical(row) if row else {"success": False, "error": "work order not found", "work_id": work_id}
 
-    def get(self, tenant: str, work_id: str, *, profile: str = "", return_fields: list[str] | None = None, max_output_tokens: int = 0) -> dict[str, Any]:
-        row = self._row(work_id, tenant)
+    def get(self, work_id: str, *, profile: str = "", return_fields: list[str] | None = None, max_output_tokens: int = 0) -> dict[str, Any]:
+        row = self._row(work_id)
         if not row:
             return {"success": False, "error": "work order not found", "work_id": work_id}
         payload = json.loads(str(row["payload_json"] or "{}"))
@@ -978,58 +1007,58 @@ class WorkOrchestrator:
         result = json.loads(str(row["result_json"] or "{}"))
         return self._project({"success": str(row["state"]) not in {"failed", "cancelled"}, "status": str(row["state"]), "work_id": work_id, **result}, payload)
 
-    def wait(self, tenant: str, work_id: str, timeout_seconds: float = 90) -> dict[str, Any]:
+    def wait(self, work_id: str, timeout_seconds: float = 90) -> dict[str, Any]:
         started = time.perf_counter()
         deadline = time.monotonic() + max(0.0, min(float(timeout_seconds), 90.0))
         while time.monotonic() < deadline:
-            row = self._row(work_id, tenant)
+            row = self._row(work_id)
             if not row:
                 result = {"success": False, "error": "work order not found", "work_id": work_id}
-                self._record_wait(tenant, result, started)
+                self._record_wait(result, started)
                 return result
             if str(row["state"]) in _TERMINAL:
                 result = self._canonical(row)
-                self._record_wait(tenant, result, started)
+                self._record_wait(result, started)
                 return result
             event = self._event(work_id)
             event.wait(min(0.5, max(0.0, deadline - time.monotonic())))
             event.clear()
-        result = self.status(tenant, work_id)
+        result = self.status(work_id)
         result["in_progress"] = result.get("status") not in _TERMINAL
-        self._record_wait(tenant, result, started)
+        self._record_wait(result, started)
         return result
 
-    def _record_wait(self, tenant: str, result: dict[str, Any], started: float) -> None:
+    def _record_wait(self, result: dict[str, Any], started: float) -> None:
         if self.telemetry is None:
             return
         try:
             elapsed_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
             self.telemetry.record(
-                event_type="coordination", action="work_wait", tenant=tenant,
+                event_type="coordination", action="work_wait",
                 success=bool(result.get("success")), duration_ms=elapsed_ms,
                 wait_count=1, wait_duration_ms=elapsed_ms,
             )
         except Exception:
             pass
 
-    def cancel(self, tenant: str, work_id: str) -> dict[str, Any]:
-        row = self._row(work_id, tenant)
+    def cancel(self, work_id: str) -> dict[str, Any]:
+        row = self._row(work_id)
         if not row:
             return {"success": False, "error": "work order not found", "work_id": work_id}
         terminal_marks = ",".join("?" for _ in _TERMINAL)
         with closing(self._connect()) as con:
             changed = con.execute(
-                f"UPDATE work_orders SET cancel_requested=1,updated_at=? WHERE work_id=? AND tenant=? AND state NOT IN ({terminal_marks})",
-                (time.time(), work_id, tenant, *sorted(_TERMINAL)),
+                f"UPDATE work_orders SET cancel_requested=1,updated_at=? WHERE work_id=? AND state NOT IN ({terminal_marks})",
+                (time.time(), work_id, *sorted(_TERMINAL)),
             ).rowcount
         if not changed:
-            current = self._row(work_id, tenant)
+            current = self._row(work_id)
             return self._canonical(current) if current else {"success": False, "error": "work order not found", "work_id": work_id}
         self._wake.set(); self._event(work_id).set()
         return {"success": True, "status": "cancelling", "work_id": work_id}
 
-    def continue_work(self, tenant: str, work_id: str, answer: str) -> dict[str, Any]:
-        row = self._row(work_id, tenant)
+    def continue_work(self, work_id: str, answer: str) -> dict[str, Any]:
+        row = self._row(work_id)
         if not row:
             return {"success": False, "error": "work order not found", "work_id": work_id}
         if str(row["state"]) != "needs_agent":
@@ -1039,8 +1068,8 @@ class WorkOrchestrator:
             return {"success": False, "error": "answer is required", "work_id": work_id}
         with closing(self._connect()) as con:
             changed = con.execute(
-                "UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=? AND tenant=? AND state='needs_agent' AND cancel_requested=0",
-                (json_dumps(payload, separators=(",", ":")), time.time(), work_id, tenant),
+                "UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=? AND state='needs_agent' AND cancel_requested=0",
+                (json_dumps(payload, separators=(",", ":")), time.time(), work_id),
             ).rowcount
         if not changed:
             return {"success": False, "error": "work order state changed", "work_id": work_id}
@@ -1259,12 +1288,12 @@ class WorkOrchestrator:
             if not self._stop.is_set() and self._has_queued_work():
                 self._ensure_workers()
 
-    def _ask(self, tenant: str, root: str, task: str, context: str, max_tokens: int = 4096, *, review: bool = False) -> dict[str, Any]:
+    def _ask(self, root: str, task: str, context: str, max_tokens: int = 4096, *, review: bool = False) -> dict[str, Any]:
         if review:
-            return self.services.second_opinion({"question": task, "candidate": context, "context": "", "max_tokens": max_tokens, "complexity": "auto"}, tenant)
-        return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": "auto"}, tenant)
+            return self.services.second_opinion({"question": task, "candidate": context, "context": "", "max_tokens": max_tokens, "complexity": "auto"})
+        return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": "auto"})
 
-    def _plan(self, tenant: str, root: str, task: str, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    def _plan(self, root: str, task: str, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         acceptance = _string_list(payload.get("acceptance_criteria"), limit=24, item_chars=2000)
         if not acceptance:
             raise ValueError("work order requires explicit acceptance criteria")
@@ -1289,7 +1318,7 @@ class WorkOrchestrator:
             f"CONSTRAINTS:\n{json_dumps(payload.get('constraints') or [], ensure_ascii=False)}"
             + (f"\nAGENT ANSWER TO PRIOR BLOCKER:\n{str(payload.get('agent_answer',''))[:8000]}" if payload.get("agent_answer") else "")
         )
-        res = self._ask(tenant, root, prompt, json_dumps(context, ensure_ascii=False)[:14000], requested_max_tokens)
+        res = self._ask(root, prompt, json_dumps(context, ensure_ascii=False)[:14000], requested_max_tokens)
         parsed = _json_object(str(res.get("text", ""))) if isinstance(res, dict) and res.get("success", True) else None
         if not parsed or not isinstance(parsed.get("steps"), list):
             parsed = {"summary": task[:240], "needs_agent": False, "question": "", "steps": [
@@ -1537,7 +1566,7 @@ class WorkOrchestrator:
                     pass
 
     def _apply_patch(
-        self, root: Path, patch: str, tenant: str, work_id: str,
+        self, root: Path, patch: str, work_id: str,
         journal: list[_JournalEntry], *, permissions: dict[str, Any] | None = None,
         lease_ttl_seconds: int = 900, attempt: WorkAttemptFence | None = None,
     ) -> tuple[list[str], str]:
@@ -1557,9 +1586,9 @@ class WorkOrchestrator:
         if deletes and (not self.allow_delete or not bool(permissions.get("delete", True))):
             raise PermissionError(f"file deletion disabled: {sorted(deletes)[0]}")
         claim=self.leases.claim_batch(
-            tenant,
-            str(root),
-            paths,
+            owner=work_id,
+            root=str(root),
+            paths=paths,
             ttl_seconds=lease_ttl_seconds,
             purpose=f"work-order:{work_id}",
             coordination_id=coordination_id,
@@ -1576,7 +1605,7 @@ class WorkOrchestrator:
                 )
             except Exception as exc:
                 try:
-                    self.leases.release(tenant, lease_id)
+                    self.leases.release(owner=work_id, lease_id=lease_id)
                 except Exception:
                     pass
                 raise RuntimeError(f"work attempt fence unavailable: {exc}") from exc
@@ -1589,7 +1618,7 @@ class WorkOrchestrator:
             )
         except Exception as exc:
             try:
-                self.leases.release(tenant, lease_id)
+                self.leases.release(owner=work_id, lease_id=lease_id)
             except Exception:
                 pass
             if owns_attempt and attempt is not None:
@@ -1643,7 +1672,7 @@ class WorkOrchestrator:
             return paths, lease_id
         except Exception:
             try:
-                self.leases.release(tenant, lease_id)
+                self.leases.release(owner=work_id, lease_id=lease_id)
             except Exception:
                 pass
             raise
@@ -1713,7 +1742,7 @@ class WorkOrchestrator:
     def _execute_fenced(
         self, row: sqlite3.Row, attempt: WorkAttemptFence, attempt_ttl: int
     ) -> None:
-        work_id, tenant, root_s, task = str(row["work_id"]), str(row["tenant"]), str(row["root"]), str(row["task"])
+        work_id, root_s, task = str(row["work_id"]), str(row["root"]), str(row["task"])
         root=Path(root_s); payload=json.loads(str(row["payload_json"] or "{}")); started=time.monotonic()
         budget=payload["budget"]; llm_calls=0; replans=0; journal: list[_JournalEntry]=[]; lease_ids=[]; changed=[]; step_results=[]; validation=[]
         criteria = payload.get("acceptance_criteria") or []
@@ -1722,10 +1751,27 @@ class WorkOrchestrator:
         handoff_revision = ""
         mutation_generation = 0
         validated_generation = -1
+        task_owner = ""
+        task_id = str(payload.get("task_id", "") or "").strip()
+        task_store = getattr(self.verification_store, "task_store", None)
+        if task_store is not None and task_id:
+            try:
+                from .agent_tasks import _task_matches_scope, _task_scope_root
+
+                task_record = task_store.get(task_id)
+                expected_root = str(root.resolve(strict=False))
+                if (
+                    task_record is not None
+                    and _task_matches_scope(task_record, expected_root, task_id)
+                    and _task_scope_root(task_record) == expected_root
+                ):
+                    task_owner = str(getattr(task_record, "owner", "") or "").strip()
+            except Exception:
+                task_owner = ""
         def budget_ok() -> bool:
             return (time.monotonic()-started)<int(budget["max_seconds"]) and llm_calls<int(budget["max_llm_calls"])
         def validation_commands() -> list[str]:
-            discovered=self.services.command({"action":"discover","root":root_s},tenant)
+            discovered=self.services.command({"action":"discover","root":root_s})
             commands=[]
             for c in list(plan.get("validation_commands") or []) + list(discovered.get("validation_commands") or []):
                 c=str(c).strip()
@@ -1751,13 +1797,16 @@ class WorkOrchestrator:
                 ]
                 run_criterion = applicable[0] if applicable else criterion
                 attempt = self.fencing_store.renew_attempt(attempt, ttl_seconds=attempt_ttl)
-                r = self.services.command({
+                command_request = {
                     "action": "run", "command": command, "cwd": root_s,
-                    "timeout": min(300, remaining), "task_id": work_id,
+                    "timeout": min(300, remaining),
                     "criterion": run_criterion, "record_verification": False,
                     "writer_fence": attempt,
                     "paths": list(dict.fromkeys(changed)),
-                }, tenant)
+                }
+                if task_id:
+                    command_request["task_id"] = task_id
+                r = self.services.command(command_request)
                 self.fencing_store.assert_attempt_current(attempt)
                 command_id = str(r.get("execution_id") or r.get("command_id") or "").strip()
                 command_revision = str(r.get("repository_revision") or "").strip()
@@ -1775,10 +1824,12 @@ class WorkOrchestrator:
                     applicable and command_id and command_revision
                     and type(r.get("exit_code")) is int and r.get("exit_code") == 0
                 ):
+                    if not task_owner:
+                        raise RuntimeError("task owner/root scope unavailable for verification receipt")
                     for accepted_criterion in applicable:
                         proof = {
                             "kind": "work_command_verification", "passed": True,
-                            "task_id": work_id, "owner": tenant,
+                            "task_id": task_id, "owner": task_owner,
                             "criterion": accepted_criterion, "command": command,
                             "command_id": command_id, "repository_revision": command_revision,
                             "mutation_generation": mutation_generation,
@@ -1787,13 +1838,13 @@ class WorkOrchestrator:
                         }
                         with self._state_attempt_guard(work_id, attempt):
                             evidence_id = self.artifacts.put(
-                                json_dumps(proof, ensure_ascii=False), tenant, "command_verification"
+                                json_dumps(proof, ensure_ascii=False), kind="command_verification"
                             )
                             if not evidence_id:
                                 raise RuntimeError("verification receipt evidence was not persisted")
                             receipt = VerificationReceipt.create(
-                                task_id=work_id, criterion=accepted_criterion, passed=True,
-                                owner=tenant, evidence_id=str(evidence_id), command_id=command_id,
+                                task_id=task_id, criterion=accepted_criterion, passed=True,
+                                owner=task_owner, evidence_id=str(evidence_id), command_id=command_id,
                                 repository_revision=command_revision,
                                 mutation_generation=mutation_generation, evidence_type=evidence_type,
                                 details={"command": command, "exit_code": r.get("exit_code")},
@@ -1816,14 +1867,14 @@ class WorkOrchestrator:
                  "Make the smallest corrective change; preserve already-correct work and public APIs.\n"
                  f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}\n"
                  f"NEW EVIDENCE / FAILURE:\n{reason[:4000]}")
-            res=self._ask(tenant,root_s,req,json_dumps(current,ensure_ascii=False)[:18000],1800); llm_calls+=1; replans+=1
+            res=self._ask(root_s,req,json_dumps(current,ensure_ascii=False)[:18000],1800); llm_calls+=1; replans+=1
             patch=_diff_from_text(str(res.get("text","")))
             if not patch:
                 return False
             lease_ttl = attempt_ttl
             try:
                 attempt = self.fencing_store.renew_attempt(attempt, ttl_seconds=attempt_ttl)
-                paths,lease=self._apply_patch(root,patch,tenant,work_id,journal,permissions=payload.get("permissions",{}),lease_ttl_seconds=lease_ttl,attempt=attempt)
+                paths,lease=self._apply_patch(root,patch,work_id,journal,permissions=payload.get("permissions",{}),lease_ttl_seconds=lease_ttl,attempt=attempt)
             except Exception:
                 return False
             lease_ids.append(lease); changed.extend(x for x in paths if x not in changed)
@@ -1834,14 +1885,14 @@ class WorkOrchestrator:
             return
         self._set_state(work_id,"planning",{"summary":"collecting context and planning","progress":{"phase":"planning","completed":0}},attempt=attempt)
         context={"profile":self.services.repo_profile(root_s),"map":self.services.repo_map(root_s,80),"tests":self.services.test_matrix(root_s)}
-        plan=self._plan(tenant,root_s,task,payload,context); llm_calls+=1
+        plan=self._plan(root_s,task,payload,context); llm_calls+=1
         if bool(plan.get("needs_agent")):
             result={"summary":str(plan.get("summary",task))[:600],"needs_agent":True,"question":str(plan.get("question","Clarification required"))[:1200],"plan":plan}
             if not self._set_terminal_if_not_cancelled(work_id,"needs_agent",result,attempt=attempt):
                 raise InterruptedError("work order cancelled before agent handoff")
             return
         if payload.get("mode") in {"plan","plan_only","dry_run"}:
-            art=self.artifacts.put(json_dumps({"task":task,"plan":plan},ensure_ascii=False,indent=2),tenant,"work-plan")
+            art=self.artifacts.put(json_dumps({"task":task,"plan":plan},ensure_ascii=False,indent=2),kind="work-plan")
             handoff={"summary":str(plan.get("summary",task))[:600],"plan":plan,"artifact_id":art,"available_details":["plan"]}
             if not self._complete_if_not_cancelled(work_id,handoff,expected_state="planning",attempt=attempt):
                 raise InterruptedError("work order cancelled before completion")
@@ -1885,7 +1936,7 @@ class WorkOrchestrator:
                              "Do not edit generated/vendor/cache files. Make the smallest coherent change and include tests when appropriate.\n"
                              f"ORIGINAL TASK:\n{task}\nSTEP:\n{step['task']}\nACCEPTANCE:\n{json_dumps(step.get('acceptance',[]),ensure_ascii=False)}"
                              + (f"\nPREVIOUS PATCH ERROR:\n{last_error}" if last_error else ""))
-                        res=self._ask(tenant,root_s,req,json_dumps(fast,ensure_ascii=False)[:16000],1800); llm_calls+=1
+                        res=self._ask(root_s,req,json_dumps(fast,ensure_ascii=False)[:16000],1800); llm_calls+=1
                         patch=_diff_from_text(str(res.get("text","")))
                         if not patch:
                             last_error = "local worker returned no unified diff"
@@ -1894,7 +1945,7 @@ class WorkOrchestrator:
                             raise RuntimeError(last_error)
                         try:
                             lease_ttl = attempt_ttl
-                            paths,lease=self._apply_patch(root,patch,tenant,work_id,journal, permissions=perms, lease_ttl_seconds=lease_ttl, attempt=attempt)
+                            paths,lease=self._apply_patch(root,patch,work_id,journal, permissions=perms, lease_ttl_seconds=lease_ttl, attempt=attempt)
                             break
                         except Exception as exc:
                             last_error = str(exc)[:1000]
@@ -1922,7 +1973,7 @@ class WorkOrchestrator:
                            '{"passed":true,"summary":"...","criteria":[{"criterion":"...","passed":true}],"risks":[],"needs_agent":false,"question":""}. '
                            "Fail closed on missing validation, semantic mismatch, regression or unsupported assumption.\n"
                            f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}")
-                        vr=self._ask(tenant,root_s,q,json_dumps(diff,ensure_ascii=False)[:18000],1200,review=True); llm_calls+=1
+                        vr=self._ask(root_s,q,json_dumps(diff,ensure_ascii=False)[:18000],1200,review=True); llm_calls+=1
                         parsed=_json_object(str(vr.get("text",""))) or {"passed":False,"summary":"verifier returned invalid result","risks":["invalid verifier response"]}
                         outcome["verification"]=parsed
                         if parsed.get("needs_agent"):
@@ -1959,7 +2010,7 @@ class WorkOrchestrator:
                          "A mutating task cannot pass without successful validation evidence from the current mutation generation.\n"
                          f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(criteria,ensure_ascii=False)}\n"
                          f"VALIDATION:\n{json_dumps(validation,ensure_ascii=False)}")
-                final=self._ask(tenant,root_s,final_q,json_dumps(diff,ensure_ascii=False)[:22000],1200,review=True); llm_calls+=1
+                final=self._ask(root_s,final_q,json_dumps(diff,ensure_ascii=False)[:22000],1200,review=True); llm_calls+=1
                 verification=_json_object(str(final.get("text",""))) or {"passed":False,"summary":"invalid final verifier response","risks":["invalid verifier response"]}
                 if changed and validated_generation != mutation_generation:
                     verification["passed"]=False
@@ -1995,22 +2046,24 @@ class WorkOrchestrator:
                         and criterion in passed_model_criteria
                     ]
                     if review_criteria:
+                        if not task_owner:
+                            raise RuntimeError("task owner/root scope unavailable for source review receipt")
                         review_proof = {
-                            "kind": "work_source_review", "passed": True, "task_id": work_id,
-                            "owner": tenant, "criteria": review_criteria,
+                            "kind": "work_source_review", "passed": True, "task_id": task_id,
+                            "owner": task_owner, "criteria": review_criteria,
                             "verification": verification, "repository_revision": handoff_revision,
                             "mutation_generation": mutation_generation, "diff": diff,
                         }
                         review_evidence = self.artifacts.put(
-                            json_dumps(review_proof, ensure_ascii=False), tenant, "source_review"
+                            json_dumps(review_proof, ensure_ascii=False), kind="source_review"
                         )
                         if not review_evidence:
                             raise RuntimeError("verification receipt gate failed: source review evidence was not persisted")
                         from .agent_verification import VerificationReceipt
                         for review_criterion in review_criteria:
                             receipt = VerificationReceipt.create(
-                                task_id=work_id, criterion=review_criterion, passed=True,
-                                owner=tenant, evidence_id=str(review_evidence),
+                                task_id=task_id, criterion=review_criterion, passed=True,
+                                owner=task_owner, evidence_id=str(review_evidence),
                                 repository_revision=handoff_revision,
                                 mutation_generation=mutation_generation, evidence_type="source_review",
                                 details={"summary": str(verification.get("summary", ""))},
@@ -2029,8 +2082,10 @@ class WorkOrchestrator:
                         if previous is None or receipt.observed_at > previous.observed_at:
                             latest[receipt.criterion] = receipt
                     from .agent_verification import evaluate_completion_receipts
+                    if not task_owner:
+                        raise RuntimeError("task owner/root scope unavailable for completion receipt gate")
                     receipt_gate = evaluate_completion_receipts(
-                        work_id, criteria, persisted_receipts, owner=tenant,
+                        task_id, criteria, persisted_receipts, owner=task_owner,
                         repository_revision=handoff_revision,
                         mutation_generation=mutation_generation,
                         artifact_store=self.artifacts, require_repository_revision=True,
@@ -2055,7 +2110,7 @@ class WorkOrchestrator:
                 run_validations("replanned repair after final verification")
             changed = [str(x) for x in diff.get("changed_files", changed)] if isinstance(diff, dict) else changed
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
-            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-handoff")
+            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),kind="work-handoff")
             handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification","verification_receipts"]}
             if not self._complete_if_not_cancelled(work_id, handoff, attempt=attempt):
                 raise InterruptedError("work order cancelled before completion")
@@ -2084,13 +2139,13 @@ class WorkOrchestrator:
                 failure_diff = {"success": False, "error": "diff unavailable"}
             serialized_receipts = [receipt.to_dict() for receipt in verification_receipts]
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":failure_diff,"validation":validation,"verification":verification,"verification_receipts":serialized_receipts,"error":str(exc),"rolled_back":rolled,"llm_calls":llm_calls,"replans":replans}
-            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-failure")
+            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),kind="work-failure")
             failure={"summary":"whole task failed" + (" and was rolled back" if rolled else ""),"error":str(exc)[:1200],"changed_files":changed,"validation":{"passed":False,"commands":len(validation)},"verification":verification,"verification_receipts":serialized_receipts,"artifact_id":artifact,"available_details":["plan","steps","validation","verification","verification_receipts","failure_report"]}
             if not self._fail_if_not_cancelled(work_id,failure,attempt=attempt):
                 self._set_terminal_if_active(work_id,"cancelled",{"summary":"work order cancelled during failure recovery" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled},attempt=attempt)
         finally:
             for lid in lease_ids:
-                try: self.leases.release(tenant,lid)
+                try: self.leases.release(owner=work_id, lease_id=lid)
                 except Exception: pass
 
     def close(self) -> None:

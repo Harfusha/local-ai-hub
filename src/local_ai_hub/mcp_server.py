@@ -23,6 +23,9 @@ from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
 from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
+from local_ai_hub.repository_scope import (
+    RepositoryScopeError, canonical_repository_root, reject_retired_tenancy_fields,
+)
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
     LIFECYCLE_PROTECTED_KEYS,
@@ -116,8 +119,8 @@ class _MissingMCP:
 # produces a clear SystemExit instead of a confusing AttributeError later.
 AGENT_NAME = os.environ.get("LOCAL_AI_AGENT", "agent")
 _workspace = canonical_root(Path.cwd())
-_workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
-TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
+if "LOCAL_AI_TENANT" in os.environ:
+    raise SystemExit("LOCAL_AI_TENANT is retired; this installation has one local owner")
 CONFIG_PATH = os.environ.get("LOCAL_AI_CONFIG")
 _CURRENT_OPERATIONAL_CONTEXT: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
     "mcp_operational_context", default=("", True)
@@ -199,8 +202,8 @@ class _MCPHubClientAdapter:
             super().__setattr__(name, value)
 
 
-def _build_mcp_client(tenant: str, config_path: str | None) -> _MCPHubClientAdapter:
-    client = HubClient(tenant=tenant, config_path=config_path, auto_start=True)
+def _build_mcp_client(config_path: str | None) -> _MCPHubClientAdapter:
+    client = HubClient(config_path=config_path, auto_start=True)
     return _MCPHubClientAdapter(client)
 
 
@@ -249,8 +252,7 @@ def _operational_mode_rejection(
 
 
 try:
-    # CLIENT = HubClient(tenant=TENANT)
-    CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
+    CLIENT = _build_mcp_client(CONFIG_PATH)
     CFG = load_config(CONFIG_PATH, probe_hardware=False)
     atexit.register(CLIENT.close)
     FEATURES = FeatureSet.from_config(CFG)
@@ -451,7 +453,7 @@ def _task_delivery_contract() -> str:
         f"{_async_job_lifecycle_contract()}"
         " Start synchronously with HTTP POST `/api/delegate` or `/api/reason` or MCP `local_ai_task(action=delegate|explore|reason, conversation=true, delivery=sync)`; continue via HTTP `POST /api/conversations/continue` (`conversation_id`, `task`, optional `context`) or MCP `local_ai_task(action=continue, conversation_id=..., task=..., context=...)`."
         " `HubClient` has no dedicated start helper; use `HubClient.post` for `/api/delegate` or `/api/reason`. `HubClient.continue_conversation(conversation_id, prompt, context=...)` sends `conversation_id`, maps `prompt` to `task`, and includes optional `context`."
-        " Conversation IDs are tenant-scoped; model settings stay pinned and only one turn runs at a time. Defaults: 12 turns, prompt limit from `model_conversations.max_prompt_tokens` (fallback `token_saving.max_local_input_tokens`, default 56,000), idle/active TTLs of 900/1,800 seconds, and capacity 1,000. State is process-memory only and lost on restart."
+        " Conversation IDs identify reservations in this installation; model settings stay pinned and only one turn runs at a time. Defaults: 12 turns, prompt limit from `model_conversations.max_prompt_tokens` (fallback `token_saving.max_local_input_tokens`, default 56,000), idle/active TTLs of 900/1,800 seconds, and capacity 1,000. State is process-memory only and lost on restart."
     )
 def _desc_task() -> str:
     local_enabled = FEATURES.tasks and FEATURES.has_any_model()
@@ -520,7 +522,7 @@ def _desc_repo() -> str:
         )
     if LEAN_SCHEMAS:
         return (
-            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Reuse fresh sufficient evidence; use bounded indexed/source lookup directly for exact facts. When non-trivial work lacks sufficient fresh evidence, adaptive context fuses deterministic/indexed evidence, Serena, bounded lexical search and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
             " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
         )
@@ -533,12 +535,12 @@ def _desc_repo() -> str:
     _ = " -> RAG" if FEATURES.rag else ""
     return (
         "Primary bounded repository worker for repository navigation, symbols, and impact."
-        " CALL THIS FIRST before broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
+        " Reuse fresh evidence and bounded indexed/source lookup for exact facts; use adaptive context when non-trivial work lacks sufficient fresh evidence."
         f" Use the adaptive context orchestrator: deterministic, code_index, Serena, bounded lexical search, and RAG are fused when available;"
         " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
-        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths."
+        " Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. Use `context` in adaptive mode only when non-trivial planning, editing, review or testing lacks sufficient fresh evidence; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
@@ -546,9 +548,8 @@ def _desc_repo() -> str:
         f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
         " Codex separately decides whether to use native Codex subagents;"
         " Local AI Hub does not route or manage those agents."
-        " On first use of a stable absolute root call action=preprocess exactly once and continue immediately;"
-        " never poll/wait/force-refresh preprocessing."
-        f" Retrieval path: context first for quality; it fans out only bounded independent backends, fuses their ranked paths, and stops optional layers on timeout/degradation. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after evidence;"
+        " Preprocess only when a stable absolute root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait/poll/force-refresh it."
+        f" Retrieval path: reuse fresh evidence; use bounded deterministic/indexed/source lookup for exact facts and adaptive context only when evidence is insufficient. Context fans out only bounded independent backends, fuses their ranked paths, and stops optional layers on timeout/degradation. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after evidence;"
         " never fan out duplicate native searches or manually translate a task into a long grep-term list."
         " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
         " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
@@ -567,7 +568,7 @@ def _desc_rag() -> str:
     if LEAN_SCHEMAS:
         return (
             "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
-            " Document ingestion requires non-empty content; title and metadata are optional."
+            " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Document ingestion requires non-empty content; diagram files stay inside that root."
             " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
             " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
         )
@@ -588,7 +589,7 @@ def _desc_rag() -> str:
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
         " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
-        " Document ingestion requires non-empty content; title and metadata are optional."
+        " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Document ingestion requires non-empty content; diagram files stay inside that root."
     )
 
 
@@ -1945,7 +1946,7 @@ def _record_tool_accounting(
             tool_name=tool_name, arguments=arguments, response=response, measured=measured,
             schema_tokens_est=_tool_catalog_schema_tokens(), metadata=metadata,
         )
-        event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
+        event.update({"agent": AGENT_NAME, "created_at": time.time()})
         CONTEXT_LEDGER.record(
             tool=tool_name,
             operation=str(arguments.get("action") or "default"),
@@ -1954,7 +1955,7 @@ def _record_tool_accounting(
             saved_tokens=event["projected_response_saved_tokens_est"],
             cache_outcome=event["cache_outcome"],
             result_id=result_id_value,
-            session_id=TENANT,
+            session_id=arguments.get("session_id", ""),
         )
         _ACCOUNTING_REPORTER.record(event)
     except Exception:
@@ -3143,16 +3144,18 @@ def _local_ai_repo_impl(
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
-    Call this before broad repository reads/searches for any non-trivial repo
-    task. Use deterministic, code-index/search, semantic, context and
+    Reuse fresh repository evidence; use bounded indexed/source lookup for
+    exact facts and adaptive context when non-trivial work lacks sufficient
+    fresh evidence. Use deterministic, code-index/search, semantic, context and
     solve for repository evidence and implementation support. After needed
     evidence, route semantic generation, reasoning, review, independent second
     opinions and compression to local_ai_task; use local_ai_artifact for exact
     slices and local_ai_command for repeatable validation. Use review_diff and
     security_audit for targeted local checks. Never use this
     evidence path as a substitute for semantic local-model work. Codex manages
-    native Codex subagents separately. Preprocess once per stable absolute root;
-    never poll or force-refresh it. Reuse fresh evidence and respect
+    native Codex subagents separately. Reuse fresh evidence. Preprocess only
+    when the stable absolute root is unindexed or its evidence is stale; never
+    poll or force-refresh preprocessing. Respect
     in_progress, retryable and degraded states. Use when a non-trivial
     repository task needs indexed evidence or bounded Hub support; skip when
     the task is not repository-scoped and no independent Hub scope exists."""
@@ -4166,7 +4169,7 @@ def local_ai_rag(
     if not isinstance(action, str) or action not in valid_actions:
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
         return _invalid_action("local_ai_rag", action_label, valid_actions, "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
-    if action in {"index", "search", "docset_index"}:
+    if action in {"index", "search", "docset_index", "ingest_document", "ingest_diagram"}:
         explicit_root = str(root or "").strip()
         if not is_rooted_path(explicit_root):
             return {
@@ -4177,7 +4180,7 @@ def local_ai_rag(
     else:
         root = _client_root(root)
     effective_workspace = workspace.strip() or root
-    if action in {"index", "search"} and (
+    if action in {"index", "search", "ingest_document", "ingest_diagram"} and (
         not workspace.strip() or is_rooted_path(workspace.strip())
     ):
         effective_workspace = canonical_workspace_id(root)
@@ -4207,7 +4210,7 @@ def local_ai_rag(
                 "error": "content is required for ingest_document",
             }, "status")
         return _compact(CLIENT.post("/api/rag/ingest_document", {
-            "workspace": workspace or "default",
+            "root": root, "workspace": effective_workspace,
             "content": content,
             "title": title,
             "metadata": metadata if isinstance(metadata, dict) else None,
@@ -4221,7 +4224,7 @@ def local_ai_rag(
                 "error": "image_path is required for ingest_diagram",
             }, "status")
         return _compact(CLIENT.post("/api/rag/ingest_diagram", {
-            "workspace": workspace or "default",
+            "root": root, "workspace": effective_workspace,
             "image_path": image_path,
             "caption": caption,
             "metadata": metadata if isinstance(metadata, dict) else None,
@@ -4262,7 +4265,7 @@ def local_ai_command(
     env: dict[str, str] | None = None,
     stdin: str = "",
 ) -> dict[str, Any]:
-    """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded by actual execution, task and repository scope. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     cwd = cwd if cwd is not None else "."
     if not isinstance(action, str) or action not in operation_actions("local_ai_command", FEATURES):
         return _invalid_action(
@@ -4339,11 +4342,13 @@ def local_ai_coord(
     root: str = ".",
     paths: list[str] | None = None,
     lease_id: str = "",
+    owner: str = "",
+    purpose: str = "agent edit",
     key: str = "",
     value: str = "",
     query: str = "",
     command: str = "",
-    ttl_seconds: int = 0,
+    ttl_seconds: int | None = None,
     max_tokens: int = 0,
     task: str = "",
     task_id: str = "",
@@ -4378,7 +4383,6 @@ def local_ai_coord(
     branch: str = "",
     repository_id: str = "",
     session_id: str = "",
-    tenant: str = "",
     repository_revision: str = "",
     phase: str = "",
     focus: list[str] | None = None,
@@ -4413,7 +4417,7 @@ def local_ai_coord(
     output_path: str = "training_dataset.jsonl",
     min_receipts: int = 1,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE):
@@ -4428,14 +4432,23 @@ def local_ai_coord(
             "local_ai_coord",
             action,
             tuple(CoordAction.__args__),
-            "Unscoped memory maintenance and relations remain private until tenant-scoped storage is available.",
+            "Unscoped memory maintenance and relations remain private until explicit repository scope is supported.",
         )
+    if action in {"negative_knowledge_record", "negative_knowledge_find", "incident_decision"}:
+        try:
+            root = str(canonical_repository_root(root))
+            if isinstance(record, dict):
+                reject_retired_tenancy_fields(record)
+                if "root" in record:
+                    raise RepositoryScopeError("record cannot override root", "invalid_incident_root")
+        except RepositoryScopeError as exc:
+            return contract_error(str(exc), status_code=exc.status_code)
     if action == "task_sync":
         rejection = _subminimum_budget_rejection({"max_response_tokens": max_response_tokens})
         if rejection is not None:
             return rejection
     if action == "task_sync":
-        if status or key or task_id or ttl_seconds != 0 or max_tokens != 0 or record is not None:
+        if status or key or task_id or ttl_seconds is not None or max_tokens != 0 or record is not None:
             return contract_error("task_sync accepts only sync_action, stream_id, after_seq, limit, and events")
         sync_inputs = {
             name: value for name, value in {
@@ -4513,7 +4526,7 @@ def local_ai_coord(
             "include_diagnostics": include_diagnostics, "include_stale": include_stale,
             "clone_id": clone_id, "worktree_id": worktree_id, "branch": branch,
             "repository_id": repository_id, "session_id": session_id,
-            "tenant": tenant, "repository_revision": repository_revision,
+            "repository_revision": repository_revision,
             "phase": phase, "focus": focus, "preload_profile": preload_profile,
             "since_hash": since_hash, "sync_action": sync_action,
             "stream_id": stream_id, "events": events, "format": format,
@@ -4654,10 +4667,10 @@ def local_ai_coord(
         return contract_error("min_receipts must be an integer for action='curate_dataset'", status_code=400)
     coord_canonical_inputs: dict[str, dict[str, Any]] = {
         "ask": {
-            "root": root, "tenant": tenant, "session_id": session_id,
+            "root": root, "session_id": session_id,
             "question_id": question_id, "question": question, "task_id": task_id,
         },
-        "answer": {"root": root, "tenant": tenant, "question_id": question_id, "answer": answer, "task_id": task_id},
+        "answer": {"root": root, "question_id": question_id, "answer": answer, "task_id": task_id},
         "task_cleanup_worktree": {"root": root, "task_id": task_id},
         "task_zombie_reap": {"root": root, "task_id": task_id},
         "context_compile": {
@@ -4694,13 +4707,13 @@ def local_ai_coord(
             "min_receipts": min_receipts,
             "format": "jsonl" if format is None else format,
         },
-        "negative_knowledge_record": {"root": root, "tenant": tenant, "record": record},
+        "negative_knowledge_record": {"root": root, "record": record},
         "negative_knowledge_find": {
-            "root": root, "tenant": tenant, "query": query,
+            "root": root, "query": query,
             "limit": 100 if limit is None else limit,
         },
         "incident_decision": {
-            "root": root, "tenant": tenant, "fingerprint": fingerprint,
+            "root": root, "fingerprint": fingerprint,
             "state_revision": state_revision,
         },
     }
@@ -4754,7 +4767,7 @@ def local_ai_coord(
         ), "status")
     if action in {"ask", "answer"}:
         question_payload = {
-            "action": action, "root": root, "tenant": tenant,
+            "action": action, "root": root,
             "question_id": question_id, "task_id": task_id,
         }
         if action == "ask":
@@ -4774,8 +4787,10 @@ def local_ai_coord(
         task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
             "checkpoint": checkpoint, "status": status, "reason": reason,
-            "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
+            "root": root, "include_stale": include_stale,
         }
+        if ttl_seconds is not None:
+            task_kwargs["ttl_seconds"] = ttl_seconds
         if action in {
             "task_create", "task_checkpoint", "task_fail", "task_transition", "task_complete",
             "task_rollback", "task_resume", "task_heartbeat",
@@ -4808,9 +4823,9 @@ def local_ai_coord(
             target_scope=target_scope, approver=approver, key=key,
             value=value, query=query, root=(root if requested_root else ""), scope=scope, scope_id=scope_id,
             task_id=task_id, session_id=session_id, clone_id=clone_id,
-            worktree_id=worktree_id, branch=branch, repository_id=repository_id, tenant=tenant,
+            worktree_id=worktree_id, branch=branch, repository_id=repository_id,
         )
-        if ttl_seconds is not None and ttl_seconds > 0:
+        if ttl_seconds is not None:
             memory_kwargs["ttl_seconds"] = ttl_seconds
         return _compact(CLIENT.coord(**memory_kwargs), "task_memory")
     if action == "context_compile":
@@ -4847,41 +4862,28 @@ def local_ai_coord(
         }, timeout=_timeout("quick")), "verify")
     if action == "negative_knowledge_record":
         return _compact(CLIENT.post("/api/agent-state/incidents", {
-            **record, "action": "record", "root": root, "tenant": tenant,
+            **record, "action": "record", "root": root,
         }, timeout=_timeout("quick")), "task_memory")
     if action == "negative_knowledge_find":
         return _compact(CLIENT.post("/api/agent-state/incidents", {
-            "action": "find", "root": root, "tenant": tenant,
+            "action": "find", "root": root,
             "query": query, "limit": 100 if limit is None else limit,
         }, timeout=_timeout("quick")), "task_memory")
     if action == "incident_decision":
         return _compact(CLIENT.coord(
             action=action, fingerprint=fingerprint, state_revision=state_revision,
-            root=root, tenant=tenant,
+            root=root,
         ), "status")
-    lease_tenant_kwargs = {"tenant": tenant} if tenant else {}
     if action == "claim":
-        claim_root = root
-        if (not requested_root or requested_root == ".") and paths:
-            first_abs = next((str(p) for p in paths if os.path.isabs(str(p)) or ":" in str(p)), None)
-            if first_abs:
-                try:
-                    candidate = Path(first_abs).resolve()
-                    for parent in [candidate.parent, *candidate.parents]:
-                        if any((parent / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", ".local-ai")):
-                            claim_root = str(parent)
-                            break
-                except Exception:
-                    pass
         return _compact(CLIENT.post("/api/leases/claim_batch", {
-            "root": claim_root, "paths": paths or [], "ttl_seconds": ttl_seconds or 900, "purpose": value or "agent edit",
-        }, **lease_tenant_kwargs))
+            "owner": owner, "root": root, "paths": paths or [], "ttl_seconds": 900 if ttl_seconds is None else ttl_seconds, "purpose": purpose,
+        }))
     if action == "release":
-        return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}, **lease_tenant_kwargs))
+        return _compact(CLIENT.post("/api/leases/release", {"owner": owner, "lease_id": lease_id}))
     if action == "renew":
-        return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}, **lease_tenant_kwargs))
+        return _compact(CLIENT.post("/api/leases/renew", {"owner": owner, "lease_id": lease_id, "ttl_seconds": 900 if ttl_seconds is None else ttl_seconds}))
     if action == "leases":
-        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}", **lease_tenant_kwargs))
+        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
     if action.startswith("blackboard_"):
         sub = action[len("blackboard_"):]
         payload: dict[str, Any] = {
@@ -4970,6 +4972,7 @@ def local_ai_work(
     root: str = ".",
     task: str = "",
     work_id: str = "",
+    task_id: str = "",
     acceptance_criteria: list[str] | None = None,
     constraints: list[str] | None = None,
     mode: str = "execute",
@@ -4993,7 +4996,7 @@ def local_ai_work(
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
         return _invalid_action("local_ai_work", action_label, valid_actions, "Use submit for a closed task and one bounded wait/get for handoff.")
     payload: dict[str, Any] = {
-        "action": action, "root": _client_root(root), "task": task, "work_id": work_id,
+        "action": action, "root": _client_root(root), "task": task, "work_id": work_id, "task_id": task_id,
         "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
         "permissions": permissions or {}, "budget": budget or {}, "timeout_seconds": timeout_seconds, "answer": answer,
         "response_profile": response_profile, "return_fields": return_fields or [], "max_output_tokens": max_output_tokens,

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from .http_identity import request_principal_tenant
+from .repository_scope import (
+    RepositoryScopeError, authorized_repository_root, reject_retired_tenancy_fields,
+)
 
 from .json_utils import dumps as json_dumps
 
 import copy
 import contextvars
-import hashlib
-import hmac
 import errno
 import http.client
 import inspect
@@ -176,12 +176,13 @@ def _acquire_start_lock(path: Path, stale_seconds: float = 20.0) -> Any | None:
 class HubClient:
     def __init__(
         self,
-        tenant: str | None = None,
-        config_path: str | None = None,
         *,
+        config_path: str | None = None,
         auto_start: bool = True,
         inprocess_transport: _InProcessTransport | None = None,
     ):
+        if "LOCAL_AI_TENANT" in os.environ:
+            raise ValueError("LOCAL_AI_TENANT is retired; this installation has one local owner")
         self.config = load_config(config_path, probe_hardware=False)
         server = self.config["server"]
         self.base_url = f"http://127.0.0.1:{int(server.get('port', 11435))}"
@@ -189,8 +190,6 @@ class HubClient:
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
         self.api_token = str(self.config.get("security", {}).get("api_token", ""))
-        configured_tenant = tenant if tenant is not None else os.environ.get("LOCAL_AI_TENANT")
-        self.tenant = str(configured_tenant).strip() if configured_tenant is not None and str(configured_tenant).strip() else ""
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
         self.auto_start = bool(auto_start)
         self._inprocess_transport = inprocess_transport
@@ -812,14 +811,6 @@ class HubClient:
             and all(0x21 <= ord(char) <= 0x7E for char in request_id)
         )
 
-    @staticmethod
-    def _valid_tenant(tenant: Any) -> bool:
-        return (
-            isinstance(tenant, str)
-            and 1 <= len(tenant) <= 128
-            and tenant.isascii()
-            and all(0x21 <= ord(char) <= 0x7E for char in tenant)
-        )
 
     @staticmethod
     def _identity_preflight(error: str, error_code: str) -> dict[str, Any]:
@@ -830,205 +821,86 @@ class HubClient:
             "terminal": True,
             "retryable": False,
             "preflight": True,
+            "request_not_sent": True,
+            "operation_not_started": True,
         }
 
-    def _principal_tenant(self) -> str:
-        security = self.config.get("security", {})
-        configured = str(security.get("api_token_tenant", "") or "").strip()
-        if configured:
-            return configured
-        principal = str(security.get("api_token_principal", "") or "").strip()
-        return principal or "api-token-default"
 
-    @staticmethod
-    def _strict_root_path(raw_root: Any) -> Path:
-        if not isinstance(raw_root, str) or not raw_root.strip() or len(raw_root.strip()) > 4096:
-            raise ValueError("root is required")
-        candidate = Path(raw_root.strip()).expanduser()
-        if not candidate.is_absolute():
-            raise ValueError("root must be an absolute directory")
-        if any(path.is_symlink() for path in (candidate, *candidate.parents)):
-            raise ValueError("symlink roots are not allowed")
-        resolved = candidate.resolve(strict=True)
-        if not resolved.is_dir():
-            raise ValueError("root must resolve to an existing directory")
-        return resolved
 
-    def _root_sandbox_enabled(self) -> bool:
-        security = self.config.get("security", {})
-        if not isinstance(security, dict):
-            return False
-        allowed_roots = security.get("allowed_roots")
-        return bool(
-            (isinstance(allowed_roots, list) and allowed_roots)
-            or security.get("tenant_derivation_key")
-            or security.get("api_token")
-        )
 
-    def _root_scoped_tenant(self, roots: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
-        security = self.config.get("security", {})
+
+    def _request_scope(
+        self, path: str, payload: dict[str, Any] | None,
+        *, query: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Reject retired identity inputs and preserve repository confinement."""
+        data = payload if isinstance(payload, dict) else {}
+        query_values = query if query is not None else parse_qs(urlsplit(path).query, keep_blank_values=True)
         try:
-            if not roots:
-                raise ValueError("root is required")
-            canonical_roots = [self._strict_root_path(root) for root in roots]
-            canonical_root = canonical_roots[0]
-            if any(root != canonical_root for root in canonical_roots[1:]):
-                raise ValueError("root identity mismatch")
-            allowed_roots = security.get("allowed_roots", [])
-            if not isinstance(allowed_roots, list):
-                raise ValueError("allowed roots are invalid")
-            if not allowed_roots:
-                raise ValueError("allowed roots are unavailable")
-            allowed = False
-            for raw_allowed in allowed_roots:
-                try:
-                    canonical_allowed = self._strict_root_path(raw_allowed)
-                    canonical_root.relative_to(canonical_allowed)
-                    allowed = True
-                    break
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    continue
-            if not allowed:
-                raise ValueError("root is not allowed")
-            key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
-            if not key:
-                raise ValueError("tenant derivation key is unavailable")
-            principal = self._principal_tenant()
-            message = f"local-ai-root-tenant\0{principal}\0{canonical_root}".encode("utf-8")
-            digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
-            return f"root-{digest}", None
-        except (OSError, RuntimeError, TypeError, ValueError):
-            return None, self._identity_preflight(
-                "root is missing, invalid, or not allowed",
-                "root_not_allowed",
-            )
-
-    def _request_tenant(
-        self,
-        path: str,
-        payload: dict[str, Any] | None,
-        tenant_hint: str | None,
-        *,
-        query: dict[str, list[str]] | None = None,
-    ) -> tuple[str | None, dict[str, Any] | None]:
-        if tenant_hint is not None and not self._valid_tenant(tenant_hint):
-            return None, self._identity_preflight(
-                "tenant must be 1-128 visible ASCII characters without whitespace",
-                "tenant_binding_mismatch",
-            )
-
-        route = urlsplit(path).path.lower()
-        task_route = route == "/api/agent-state/tasks"
-        memory_route = route == "/api/agent-state/memory"
-        if not task_route and not memory_route:
-            principal = request_principal_tenant(self.config, route)
-            if tenant_hint is not None and tenant_hint != principal:
-                return None, self._identity_preflight(
-                    "tenant override cannot select request scope",
-                    "tenant_binding_mismatch",
-                )
-            return principal, None
-
-        request_payload = payload if isinstance(payload, dict) else {}
-        query_values = query or {}
-        tenant_hints: list[Any] = []
-        if tenant_hint is not None:
-            tenant_hints.append(tenant_hint)
-
-        if query is not None:
-            raw_roots = list(query_values.get("root", []))
-            roots = raw_roots if task_route else (
-                [raw_roots[0], *[root for root in raw_roots[1:] if root not in (None, "")]]
-                if raw_roots and raw_roots[0] not in (None, "")
-                else []
-            )
-            tenant_hints.extend(query_values.get("tenant", []))
-            scope = (query_values.get("scope") or [""])[0]
-            has_task_identity = any(
-                str((query_values.get(name) or [""])[0] or "").strip()
+            reject_retired_tenancy_fields(data)
+            reject_retired_tenancy_fields(query_values)
+            route = urlsplit(path).path.lower()
+            if route == "/api/agent-state/incidents":
+                if query is None:
+                    authorized_repository_root(self.config, data.get("root"))
+                else:
+                    for root in query_values.get("root", []):
+                        authorized_repository_root(self.config, root)
+                return None
+            if route not in {"/api/agent-state/tasks", "/api/agent-state/memory"}:
+                return None
+            if query is not None:
+                roots = list(query_values.get("root", []))
+                scopes = query_values.get("scope", [])
+                containers = [query_values]
+            else:
+                record = data.get("record") if isinstance(data.get("record"), dict) else {}
+                containers = [data, record]
+                for container in tuple(containers):
+                    provenance = container.get("provenance")
+                    if isinstance(provenance, dict):
+                        containers.append(provenance)
+                roots = [item["root"] for item in containers if "root" in item]
+                scopes = [item["scope"] for item in containers if "scope" in item]
+                if route == "/api/agent-state/tasks":
+                    if "root" not in data:
+                        raise RepositoryScopeError("root is required for tasks", "root_required")
+                    context = data.get("context")
+                    if isinstance(context, dict):
+                        for name in ("repository_id", "clone_id", "worktree_id", "branch", "task_id", "session_id"):
+                            if name in context and (
+                                not isinstance(context[name], str)
+                                or context[name] != context[name].strip()
+                                or "\x00" in context[name]
+                            ):
+                                raise RepositoryScopeError(
+                                    f"context.{name} must be a canonical string", "invalid_identity"
+                                )
+                    if "repo_root" in data:
+                        roots.append(data["repo_root"])
+            has_identity = any(
+                item.get(name) for item in containers
                 for name in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
             )
-        elif task_route:
-            context = request_payload.get("context") if isinstance(request_payload.get("context"), dict) else {}
-            roots = [request_payload.get("root")]
-            if context.get("repository_id"):
-                roots.append(context["repository_id"])
-            if request_payload.get("repo_root"):
-                roots.append(request_payload["repo_root"])
-            tenant_hints.append(request_payload.get("tenant"))
-            scope = ""
-            has_task_identity = True
-        else:
-            record = request_payload.get("record") if isinstance(request_payload.get("record"), dict) else {}
-            payload_provenance = request_payload.get("provenance") if isinstance(request_payload.get("provenance"), dict) else {}
-            record_provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
-            containers = (request_payload, record, payload_provenance, record_provenance)
-            roots = [item.get("root") for item in containers if item.get("root") not in (None, "")]
-            tenant_hints.extend(item.get("tenant") for item in containers if item.get("tenant") not in (None, ""))
-            scope = request_payload.get("scope") or record.get("scope") or ""
-            has_task_identity = any(
-                item.get(key)
-                for item in (request_payload, record)
-                for key in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
-            )
+            allowed_scopes = {"", "global", "repository", "clone", "worktree", "branch", "task", "session"}
+            if any(not isinstance(value, str) or value not in allowed_scopes for value in scopes):
+                raise RepositoryScopeError("scope must be a canonical scope value", "invalid_scope")
+            explicit_scopes = {value for value in scopes if value}
+            if len(explicit_scopes) > 1:
+                raise RepositoryScopeError("scope identity mismatch", "invalid_scope")
+            scope = next(iter(explicit_scopes), "")
+            if not roots and (
+                route == "/api/agent-state/tasks" or has_identity
+                or scope in {"repository", "clone", "worktree", "branch", "task"}
+            ):
+                raise RepositoryScopeError("root is required for repository or task access", "root_required")
+            canonical = [authorized_repository_root(self.config, root) for root in roots]
+            if canonical and any(root != canonical[0] for root in canonical[1:]):
+                raise RepositoryScopeError("root identity mismatch", "root_not_allowed", 403)
+        except RepositoryScopeError as exc:
+            return self._identity_preflight(str(exc), exc.code)
+        return None
 
-        principal = self._principal_tenant()
-        scoped_memory_scopes = {
-            "code", "task", "tasks", "repo", "repository", "project", "workspace",
-            "worktree", "worktrees", "clone", "branch", "branches",
-        }
-        if (
-            memory_route
-            and not roots
-            and (str(scope or "").strip().lower() in scoped_memory_scopes or has_task_identity)
-        ):
-            return None, self._identity_preflight(
-                "root is required for repository or task memory",
-                "root_required",
-            )
-        if not self._root_sandbox_enabled():
-            try:
-                if task_route and not roots:
-                    raise ValueError("root is required")
-                canonical_roots = [self._strict_root_path(root) for root in roots]
-                if any(root != canonical_roots[0] for root in canonical_roots[1:]):
-                    raise ValueError("root identity mismatch")
-            except (OSError, RuntimeError, TypeError, ValueError):
-                return None, self._identity_preflight(
-                    "root is missing, invalid, or not allowed",
-                    "root_not_allowed",
-                )
-            configured_principal = str(
-                self.config.get("security", {}).get("api_token_tenant", "")
-                or self.config.get("security", {}).get("api_token_principal", "")
-                or ""
-            ).strip()
-            is_rootless_global = str(scope or "").strip().lower() == "global" or (not roots and not has_task_identity)
-            effective_principal = configured_principal or (
-                principal if is_rootless_global else (self.tenant or principal)
-            )
-            for hint in tenant_hints:
-                if hint is not None and str(hint).strip() != effective_principal:
-                    return None, self._identity_preflight(
-                        "tenant does not match authenticated principal",
-                        "tenant_binding_mismatch",
-                    )
-            return effective_principal, None
-        effective_tenant = principal
-        if task_route:
-            effective_tenant, error = self._root_scoped_tenant(roots)
-            if error is not None:
-                return None, error
-        elif roots:
-            effective_tenant, error = self._root_scoped_tenant(roots)
-            if error is not None:
-                return None, error
-
-        for hint in tenant_hints:
-            if hint is not None and str(hint).strip() != effective_tenant:
-                error = "tenant does not match authenticated root scope" if roots or task_route else "tenant does not match authenticated principal"
-                return None, self._identity_preflight(error, "tenant_binding_mismatch")
-        return effective_tenant, None
 
     def request(
         self,
@@ -1040,7 +912,6 @@ class HubClient:
         request_id: str | None = None,
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
-        tenant: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         if cancel_event is None:
@@ -1056,7 +927,7 @@ class HubClient:
             }
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
-        request_tenant, identity_error = self._request_tenant(path, clean_payload, tenant)
+        identity_error = self._request_scope(path, clean_payload)
         if identity_error is not None:
             return identity_error
         preflight = self._terminal_preflight(path, clean_payload)
@@ -1072,8 +943,6 @@ class HubClient:
                 "Content-Type": "application/json",
                 "X-LocalAI-Agent": self.agent, "X-LocalAI-Request-ID": request_id,
             }
-            if request_tenant:
-                headers["X-LocalAI-Tenant"] = request_tenant
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
             try:
@@ -1203,7 +1072,7 @@ class HubClient:
         if not replay_safe:
             return execute()
 
-        key = f"POST|{request_tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
+        key = f"POST|{self.agent}|{path}|{body.decode('utf-8')}"
         if explicit_request_id:
             key += f"|explicit-request-id|{request_id}"
         if cancel_event is not None:
@@ -1234,11 +1103,10 @@ class HubClient:
         *,
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
-        tenant: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         query = parse_qs(urlsplit(path).query, keep_blank_values=True)
-        request_tenant, identity_error = self._request_tenant(path, None, tenant, query=query)
+        identity_error = self._request_scope(path, None, query=query)
         if identity_error is not None:
             return identity_error
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
@@ -1249,8 +1117,6 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
-        if request_tenant:
-            headers["X-LocalAI-Tenant"] = request_tenant
         if self.api_token:
             headers["X-LocalAI-Token"] = self.api_token
 
@@ -1358,7 +1224,7 @@ class HubClient:
             except Exception:
                 return self._uncertain_response(request_id)
 
-        key = f"GET|{request_tenant}|{self.agent}|{path}"
+        key = f"GET|{self.agent}|{path}"
         if cancel_event is not None:
             key += f"|cancel-event|{id(cancel_event)}"
         try:
@@ -1427,7 +1293,6 @@ class HubClient:
         *,
         request_id: str | None = None,
         path_hints: Sequence[PathHint | Mapping[str, str]] | None = None,
-        tenant: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         clean_payload = dict(payload or {})
@@ -1467,7 +1332,6 @@ class HubClient:
                 clean_payload,
                 timeout=timeout,
                 replay_safe=replay_safe,
-                tenant=tenant,
                 cancel_event=cancel_event,
             )
         return self.request(
@@ -1476,7 +1340,6 @@ class HubClient:
             timeout=timeout,
             replay_safe=replay_safe,
             request_id=request_id,
-            tenant=tenant,
             cancel_event=cancel_event,
         )
 
@@ -1537,6 +1400,18 @@ class HubClient:
                 "error": f"unknown coord action '{action}'",
             }
         act = action
+        try:
+            reject_retired_tenancy_fields(kwargs)
+        except RepositoryScopeError as exc:
+            return self._identity_preflight(str(exc), exc.code)
+        if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
+            try:
+                reject_retired_tenancy_fields(kwargs)
+                record = kwargs.get("record")
+                if isinstance(record, dict) and "root" in record:
+                    raise RepositoryScopeError("record cannot override root", "invalid_incident_root")
+            except RepositoryScopeError as exc:
+                return self._identity_preflight(str(exc), exc.code)
         if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export"}:
             validation_error = validate_operation_arguments("local_ai_coord", act, dict(kwargs))
             if validation_error:
@@ -1548,7 +1423,6 @@ class HubClient:
             payload = {
                 "action": act,
                 "root": kwargs.get("root", "."),
-                "tenant": kwargs.get("tenant", ""),
                 "session_id": kwargs.get("session_id", ""),
                 "task_id": kwargs.get("task_id", ""),
                 "question_id": kwargs.get("question_id", ""),
@@ -1567,10 +1441,8 @@ class HubClient:
         if act.startswith("memory_") and act != "memory_reap":
             mem_action = act.replace("memory_", "")
             payload = dict(kwargs)
-            # Repository and tenant identity come from the authenticated HTTP
-            # principal and the server-resolved project context. Never let an
-            # MCP caller replace either identity in a memory request.
-            for identity_field in ("tenant", "repository_id", "coordination_id"):
+            # The server resolves repository identity from the authorized root.
+            for identity_field in ("repository_id", "coordination_id"):
                 payload.pop(identity_field, None)
             record = payload.get("record")
             repository_scope = payload.get("scope") == "repository"
@@ -1578,7 +1450,7 @@ class HubClient:
                 payload.pop("scope_id", None)
             if isinstance(record, dict):
                 record = dict(record)
-                for identity_field in ("tenant", "repository_id", "coordination_id"):
+                for identity_field in ("repository_id", "coordination_id"):
                     record.pop(identity_field, None)
                 if repository_scope or record.get("scope") == "repository":
                     record.pop("scope_id", None)
@@ -1607,8 +1479,6 @@ class HubClient:
             }
             if "root" in kwargs:
                 payload["root"] = kwargs["root"]
-            if "tenant" in kwargs:
-                payload["tenant"] = kwargs["tenant"]
             return self.post("/api/agent-state/incidents", payload)
         if act == "context_compile":
             payload = dict(kwargs)
@@ -1652,24 +1522,25 @@ class HubClient:
             return self.post("/api/agent-state/incidents", {
                 **record,
                 "action": "record",
-                "root": kwargs.get("root", "."),
-                "tenant": kwargs.get("tenant", ""),
+                "root": kwargs.get("root"),
             })
         if act == "negative_knowledge_find":
             return self.post("/api/agent-state/incidents", {
                 "action": "find",
                 "query": kwargs.get("query"),
                 "limit": kwargs.get("limit", 100),
-                "root": kwargs.get("root", "."),
-                "tenant": kwargs.get("tenant", ""),
+                "root": kwargs.get("root"),
             })
         if act in ("claim", "claim_batch"):
+            if "value" in kwargs:
+                raise ValueError("lease claim accepts purpose; value is not an alias")
             return self.post("/api/leases/claim_batch", {
-                "root": kwargs.get("root", "."),
+                "owner": kwargs.get("owner"),
+                "root": kwargs.get("root"),
                 "paths": kwargs.get("paths") or [],
                 "ttl_seconds": kwargs.get("ttl_seconds", 900),
-                "purpose": kwargs.get("value", "agent edit"),
-            }, tenant=kwargs.get("tenant") or self.tenant or None)
+                "purpose": kwargs.get("purpose", "agent edit"),
+            })
         if act.startswith("blackboard_"):
             bb_action = act.replace("blackboard_", "")
             board_id = kwargs.get("board_id") or kwargs.get("task_id") or "default"
@@ -1686,11 +1557,11 @@ class HubClient:
                 payload["expected_version"] = kwargs["expected_version"]
             return self.post("/api/agent-state/blackboard", payload)
         if act == "release":
-            return self.post("/api/leases/release", {"lease_id": kwargs.get("lease_id", "")}, tenant=kwargs.get("tenant") or self.tenant or None)
+            return self.post("/api/leases/release", {"owner": kwargs.get("owner"), "lease_id": kwargs.get("lease_id", "")})
         if act == "renew":
-            return self.post("/api/leases/renew", {"lease_id": kwargs.get("lease_id", ""), "ttl_seconds": kwargs.get("ttl_seconds", 900)}, tenant=kwargs.get("tenant") or self.tenant or None)
+            return self.post("/api/leases/renew", {"owner": kwargs.get("owner"), "lease_id": kwargs.get("lease_id", ""), "ttl_seconds": kwargs.get("ttl_seconds", 900)})
         if act == "leases":
-            return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}", tenant=kwargs.get("tenant") or self.tenant or None)
+            return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}")
         if act == "worktree_lease":
             return self.post("/api/coord/worktree_lease", {
                 "root": kwargs.get("root", "."),
@@ -2044,8 +1915,6 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
-        if self.tenant:
-            headers["X-LocalAI-Tenant"] = self.tenant
         if self.api_token:
             headers["X-LocalAI-Token"] = self.api_token
             headers["Authorization"] = f"Bearer {self.api_token}"

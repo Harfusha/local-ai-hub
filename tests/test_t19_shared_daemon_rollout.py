@@ -204,7 +204,7 @@ def test_rollout_docs_state_adapter_multiplicity_root_and_transport_gates() -> N
 
 def test_mcp_stdio_adapter_does_not_construct_hub_backend_app() -> None:
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
-    assert "CLIENT = HubClient(tenant=TENANT)" in source
+    assert "CLIENT = HubClient()" in source
     assert "mcp.run()" in source
     for forbidden in ("LocalAIApp(", "HubServices(", "ProjectPreprocessor(", "CodeIndex(", "RAGStore(", "ModelRouter("):
         assert forbidden not in source

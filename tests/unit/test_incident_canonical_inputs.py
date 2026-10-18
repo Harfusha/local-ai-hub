@@ -51,7 +51,7 @@ def test_http_incident_aliases_rejected_even_with_canonical_fields():
         {"action": "find", "query": "timeout", "limit": 10, "key": "old"},
     ]
     for payload in payloads:
-        payload.update(root=".", tenant="tenant-x")
+        payload.update(root=".")
         try:
             http_server.Handler._validate_payload("/api/agent-state/incidents", payload)
         except http_server.RequestBodyError:
@@ -70,7 +70,7 @@ def test_http_incident_canonical_payload_shapes_are_accepted():
         {"action": "find", "query": "timeout", "limit": 25},
     ]
     for payload in payloads:
-        payload.update(root=".", tenant="tenant-x")
+        payload.update(root=".")
         http_server.Handler._validate_payload("/api/agent-state/incidents", payload)
 
 
@@ -78,7 +78,7 @@ def test_http_incident_accepts_windows_access_violation_exit_codes():
     for exit_code in (3221225477, -1073741819):
         http_server.Handler._validate_payload("/api/agent-state/incidents", {
             "action": "record", "operation_class": "command", "exit_code": exit_code,
-            "root": ".", "tenant": "tenant-x",
+            "root": ".",
         })
 
 
@@ -92,7 +92,7 @@ def test_http_incident_fields_reject_coercion_and_unbounded_find():
         {"action": "find", "query": "timeout", "limit": 101},
     ]
     for payload in invalid_payloads:
-        payload.update(root=".", tenant="tenant-x")
+        payload.update(root=".")
         try:
             http_server.Handler._validate_payload("/api/agent-state/incidents", payload)
         except http_server.RequestBodyError:
@@ -107,38 +107,38 @@ def test_mcp_incident_actions_send_canonical_scoped_payloads(monkeypatch, tmp_pa
     implementation = _implementation()
 
     implementation(
-        action="negative_knowledge_record", root=str(tmp_path), tenant="tenant-x",
+        action="negative_knowledge_record", root=str(tmp_path),
         record={"operation_class": "command", "message": "failed", "exit_code": 1},
     )
     implementation(
-        action="negative_knowledge_find", root=str(tmp_path), tenant="tenant-x",
+        action="negative_knowledge_find", root=str(tmp_path),
         query="timeout", limit=25,
     )
     implementation(
-        action="negative_knowledge_find", root=str(tmp_path), tenant="tenant-x",
+        action="negative_knowledge_find", root=str(tmp_path),
         query="default limit",
     )
     implementation(
-        action="incident_decision", root=str(tmp_path), tenant="tenant-x",
+        action="incident_decision", root=str(tmp_path),
         fingerprint=FINGERPRINT, state_revision="rev-7",
     )
 
     assert client.calls == [
         ("post", "/api/agent-state/incidents", {
             "operation_class": "command", "message": "failed", "exit_code": 1,
-            "action": "record", "root": str(tmp_path), "tenant": "tenant-x",
+            "action": "record", "root": str(tmp_path),
         }),
         ("post", "/api/agent-state/incidents", {
-            "action": "find", "root": str(tmp_path), "tenant": "tenant-x",
+            "action": "find", "root": str(tmp_path),
             "query": "timeout", "limit": 25,
         }),
         ("post", "/api/agent-state/incidents", {
-            "action": "find", "root": str(tmp_path), "tenant": "tenant-x",
+            "action": "find", "root": str(tmp_path),
             "query": "default limit", "limit": 100,
         }),
         ("coord", {
             "action": "incident_decision", "fingerprint": FINGERPRINT,
-            "state_revision": "rev-7", "root": str(tmp_path), "tenant": "tenant-x",
+            "state_revision": "rev-7", "root": str(tmp_path),
         }),
     ], client.calls
 
@@ -160,7 +160,7 @@ def test_mcp_incident_decision_rejects_ignored_outcome_alias(monkeypatch, tmp_pa
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     result = _implementation()(
-        action="incident_decision", root=str(tmp_path), tenant="tenant-x",
+        action="incident_decision", root=str(tmp_path),
         fingerprint=FINGERPRINT, state_revision="rev-7",
         tool_outcome={"error": "ignored legacy field"},
     )
@@ -175,11 +175,11 @@ def test_mcp_negative_knowledge_rejects_legacy_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     record_result = _implementation()(
-        action="negative_knowledge_record", root=str(tmp_path), tenant="tenant-x",
+        action="negative_knowledge_record", root=str(tmp_path),
         record={"operation_class": "command", "message": "failed"}, reason="legacy",
     )
     find_result = _implementation()(
-        action="negative_knowledge_find", root=str(tmp_path), tenant="tenant-x",
+        action="negative_knowledge_find", root=str(tmp_path),
         query="timeout", limit=10, key="legacy",
     )
 
@@ -195,13 +195,13 @@ def test_sdk_coord_forwards_canonical_incident_scope_and_revision():
 
     HubClient.coord(
         client, action="incident_decision", fingerprint=FINGERPRINT,
-        state_revision="rev-7", root="C:/repo", tenant="tenant-x",
+        state_revision="rev-7", root="C:/repo",
     )
 
     assert calls == [(
         "/api/agent-state/incidents", {
             "action": "decision", "fingerprint": FINGERPRINT,
-            "state_revision": "rev-7", "root": "C:/repo", "tenant": "tenant-x",
+            "state_revision": "rev-7", "root": "C:/repo",
         },
     )]
 
@@ -214,21 +214,21 @@ def test_sdk_coord_keeps_record_scope_outside_record_object():
     HubClient.coord(
         client, action="negative_knowledge_record",
         record={"operation_class": "command", "message": "failed"},
-        root="C:/repo", tenant="tenant-x",
+        root="C:/repo",
     )
     HubClient.coord(
         client, action="negative_knowledge_find", query="timeout", limit=25,
-        root="C:/repo", tenant="tenant-x",
+        root="C:/repo",
     )
 
     assert calls == [
         ("/api/agent-state/incidents", {
             "operation_class": "command", "message": "failed", "root": "C:/repo",
-            "tenant": "tenant-x", "action": "record",
+            "action": "record",
         }),
         ("/api/agent-state/incidents", {
             "action": "find", "query": "timeout", "limit": 25,
-            "root": "C:/repo", "tenant": "tenant-x",
+            "root": "C:/repo",
         }),
     ]
 
@@ -262,9 +262,11 @@ def test_incident_record_constraints_are_action_scoped_and_windows_bounded():
     }
     for exit_code in (3221225477, -1073741819):
         assert validate_operation_arguments("local_ai_coord", "negative_knowledge_record", {
+            "root": ".",
             "record": {"message": "failure", "exit_code": exit_code},
         }) is None
     assert validate_operation_arguments("local_ai_coord", "negative_knowledge_record", {
+        "root": ".",
         "record": {"message": "failure", "exit_code": True},
     }) is not None
 
@@ -275,11 +277,11 @@ def test_global_coord_record_schema_does_not_restrict_other_action_objects():
 
 
 def test_negative_knowledge_find_requires_nonempty_scope_and_query():
-    valid = {"root": ".", "tenant": "tenant-x", "query": "timeout", "limit": 100}
+    valid = {"root": ".", "query": "timeout", "limit": 100}
     assert validate_operation_arguments("local_ai_coord", "negative_knowledge_find", valid) is None
 
     for field, value in (
-        ("root", " "), ("tenant", ""), ("tenant", " tenant-x"),
+        ("root", " "), ("tenant", None), ("tenant", ""),
         ("query", "  "), ("query", "timeout\x00extra"),
     ):
         invalid = {**valid, field: value}
@@ -287,7 +289,7 @@ def test_negative_knowledge_find_requires_nonempty_scope_and_query():
 
 
 def test_http_incident_find_requires_exact_scope_and_bounded_inputs():
-    valid = {"action": "find", "root": ".", "tenant": "tenant-x", "query": "timeout", "limit": 100}
+    valid = {"action": "find", "root": ".", "query": "timeout", "limit": 100}
     http_server.Handler._validate_payload("/api/agent-state/incidents", valid)
     defaulted = {key: value for key, value in valid.items() if key != "limit"}
     http_server.Handler._validate_payload("/api/agent-state/incidents", defaulted)

@@ -28,18 +28,13 @@ def test_memory_delete_rejects_nonstring_scope_coercion(monkeypatch, tmp_path):
         "record-1",
         scope=_CanonicalScopeString(),
         repository_id="repo-1",
-        tenant="tenant-a",
     )
 
 
-def test_memory_delete_rejects_nonstring_tenant_coercion(monkeypatch, tmp_path):
+def test_memory_delete_rejects_retired_tenant_keyword_before_storage(monkeypatch, tmp_path):
     store = _store_that_must_not_reach_storage(monkeypatch, tmp_path)
-    assert not store.delete(
-        "record-1",
-        scope="repository",
-        repository_id="repo-1",
-        tenant=7,
-    )
+    with pytest.raises(TypeError, match="tenant"):
+        store.delete("record-1", scope="repository", repository_id="repo-1", tenant=None)
 
 
 @pytest.mark.parametrize(
@@ -60,7 +55,6 @@ def test_memory_delete_rejects_coercive_or_trimmed_canonical_ids(monkeypatch, tm
     assert not store.delete(
         "record-1",
         scope="repository",
-        tenant="tenant-a",
         **supplied,
     )
 
@@ -80,23 +74,14 @@ def _record_for_delete(tmp_path, scope, *, scope_id="", provenance=None):
     return store, record
 
 
-def test_memory_delete_global_requires_exact_tagged_tenant(tmp_path):
-    store, record = _record_for_delete(
-        tmp_path,
-        AgentScope.GLOBAL,
-        provenance={"tenant": "tenant-a"},
-    )
-
-    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b")
-    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL, tenant=" ")
-    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL)
-    assert store.delete(record.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a")
-
-
-def test_memory_delete_tenantless_global_remains_shared_across_transport_tenants(tmp_path):
+def test_memory_delete_global_remains_owner_global(tmp_path):
     store, record = _record_for_delete(tmp_path, AgentScope.GLOBAL)
+    assert store.delete(record.record_id, scope=AgentScope.GLOBAL)
 
-    assert store.delete(record.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b")
+
+def test_memory_delete_global_needs_no_transport_partition(tmp_path):
+    store, record = _record_for_delete(tmp_path, AgentScope.GLOBAL)
+    assert store.delete(record.record_id, scope=AgentScope.GLOBAL)
 
 
 @pytest.mark.parametrize("provenance", ["not-json", "[]", ""])
@@ -104,7 +89,7 @@ def test_memory_delete_global_rejects_malformed_provenance(tmp_path, provenance)
     store, record = _record_for_delete(
         tmp_path,
         AgentScope.GLOBAL,
-        provenance={"tenant": "tenant-a"},
+        provenance={},
     )
     con = sqlite3.connect(store.state_store.db_path)
     try:
@@ -116,7 +101,7 @@ def test_memory_delete_global_rejects_malformed_provenance(tmp_path, provenance)
     finally:
         con.close()
 
-    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a")
+    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL)
 
 
 def test_memory_delete_supplied_root_must_match_stored_root(tmp_path):
@@ -125,7 +110,6 @@ def test_memory_delete_supplied_root_must_match_stored_root(tmp_path):
         AgentScope.REPOSITORY,
         scope_id="repo-1",
         provenance={
-            "tenant": "tenant-a",
             "repository_id": "repo-1",
             "root": str(tmp_path / "actual-project"),
         },
@@ -135,14 +119,12 @@ def test_memory_delete_supplied_root_must_match_stored_root(tmp_path):
         record.record_id,
         scope=AgentScope.REPOSITORY,
         repository_id="repo-1",
-        tenant="tenant-a",
         root=str(tmp_path / "other-project"),
     )
     assert store.delete(
         record.record_id,
         scope=AgentScope.REPOSITORY,
         repository_id="repo-1",
-        tenant="tenant-a",
         root=str(tmp_path / "actual-project"),
     )
 
@@ -152,13 +134,12 @@ def test_memory_delete_root_cannot_fall_back_to_repository_id(tmp_path):
         tmp_path,
         AgentScope.REPOSITORY,
         scope_id="repo-1",
-        provenance={"tenant": "tenant-a", "repository_id": "repo-1"},
+        provenance={"repository_id": "repo-1"},
     )
 
     assert not store.delete(
         record.record_id,
         scope=AgentScope.REPOSITORY,
         repository_id="repo-1",
-        tenant="tenant-a",
         root=str(tmp_path / "repo-1"),
     )

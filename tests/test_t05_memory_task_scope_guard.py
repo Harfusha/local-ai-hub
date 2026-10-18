@@ -106,14 +106,14 @@ def test_task_context_requires_root_and_tenant(task_memory, missing):
     store, root, _ = task_memory
     assert store.find_for_context(
         root=root if missing == "tenant" else "",
-        tenant="tenant-a" if missing == "root" else "",
+
         task_id="shared-task",
     ) == []
 
 
 def test_task_context_accepts_matching_trusted_identity(task_memory):
     store, root, records = task_memory
-    assert store.find_for_context(root=root, tenant="tenant-a", task_id="shared-task") == [records["valid"]]
+    assert store.find_for_context(root=root,  task_id="shared-task") == [records["valid"]]
 
 
 @pytest.mark.parametrize("identity_request", [
@@ -138,14 +138,14 @@ def test_task_matcher_denies_incomplete_or_foreign_request(identity_request):
 def test_task_matcher_requires_nonempty_provenance(provenance):
     assert not _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root="repo-a", tenant="tenant-a", provenance=provenance,
+        root="repo-a",  provenance=provenance,
     )
 
 
 def test_task_matcher_accepts_matching_identity():
     assert _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root="repo-a/.", tenant="tenant-a",
+        root="repo-a/.",
         provenance={"root": "repo-a", "tenant": "tenant-a"},
     )
 

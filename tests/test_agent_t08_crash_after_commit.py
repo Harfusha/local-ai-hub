@@ -6,7 +6,7 @@ from pathlib import Path
 
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStatus, TaskStore
-from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+from local_ai_hub.agent_verification import VerificationStore
 import pytest
 
 def _event_field(event, name):
@@ -18,6 +18,7 @@ def test_process_exit_after_commit_before_publish_recovers_event(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
     script = """
 import os
+import subprocess
 import sys
 sys.path.insert(0, sys.argv[2])
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
@@ -120,7 +121,23 @@ os._exit(74)
 @pytest.mark.parametrize("phase", ["before_commit", "after_commit"])
 def test_process_exit_during_receipt_write_recovers_atomically(tmp_path, phase):
     db_path = tmp_path / "agent_state.sqlite3"
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = tmp_path / "receipt-repository"
+    repo_root.mkdir()
+    (repo_root / ".local-ai.toml").write_text(
+        '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n',
+        encoding="utf-8",
+    )
+    (repo_root / "test_receipt_crash.py").write_text(
+        "def test_receipt_crash_evidence():\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True)
+    subprocess.run(["git", "add", ".local-ai.toml", "test_receipt_crash.py"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize crash receipt fixture"], cwd=repo_root, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True
+    ).stdout.strip()
     task_id = f"task-receipt-hard-crash-{phase}"
     TaskStore(AgentStateStore(db_path)).create(
         GoalContract(
@@ -129,10 +146,12 @@ def test_process_exit_during_receipt_write_recovers_atomically(tmp_path, phase):
         ),
         ScopeContext(task_id=task_id),
         task_id=task_id,
+        actor="test-agent",
+        repo_root=str(repo_root.resolve()),
+        repository_revision=revision,
     )
 
     script = """
-import inspect
 import os
 import sys
 from pathlib import Path
@@ -140,28 +159,32 @@ sys.path.insert(0, sys.argv[3])
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import TaskStore
-from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+from local_ai_hub.agent_verification import VerificationStore
+from local_ai_hub.commands import CommandBroker
 
 store = AgentStateStore(sys.argv[1])
 task_store = TaskStore(store)
-task = task_store.get(sys.argv[4])
-owner = task.owner
-command_id = "cmd-hard-exit-tests"
 repository_revision = sys.argv[5]
-proof = {
-    "kind": "work_command_verification",
-    "passed": True,
-    "task_id": sys.argv[4],
-    "owner": owner,
-    "criterion": "tests",
-    "command_id": command_id,
-    "exit_code": 0,
-    "repository_revision": repository_revision,
-    "mutation_generation": 0,
-    "result": {"success": True, "exit_code": 0},
-}
-artifacts = ArtifactStore(Path(sys.argv[1]).parent)
-evidence_id = artifacts.put_json(proof, owner, "command_verification")
+repository_root = sys.argv[6]
+artifacts = ArtifactStore(Path(sys.argv[1]).parent / "artifacts")
+verification = VerificationStore(store, task_store=task_store, artifact_store=artifacts)
+class _RepoState:
+    def fingerprint(self, cwd):
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=cwd, check=True,
+            text=True, capture_output=True,
+        ).stdout.strip()
+        return {"fingerprint": revision, "root": str(cwd)}
+
+broker = CommandBroker(
+    {"server": {"state_dir": str(Path(sys.argv[1]).parent / "command-state")},
+     "commands": {"enabled": True, "allow_read": True, "allow_validation": True}},
+    artifacts,
+    _RepoState(),
+)
+broker.set_task_store(task_store)
+broker.set_verification_store(verification)
+verification.set_command_execution_record_lookup(broker.get_command_execution_record)
 if sys.argv[2] == "before_commit":
     original = VerificationStore.record_in_transaction
     def exit_before_commit(self, con, receipt, **kwargs):
@@ -171,19 +194,16 @@ if sys.argv[2] == "before_commit":
 else:
     store._publish = lambda _event: os._exit(73)
 
-receipt_kwargs = {
-    "command_id": command_id,
-    "repository_revision": repository_revision,
-}
-if "owner" in VerificationReceipt.__dataclass_fields__:
-    receipt_kwargs.update(owner=owner, mutation_generation=0, evidence_type="test")
-receipt = VerificationReceipt.create(
-    sys.argv[4], "tests", passed=True, evidence_id=evidence_id, **receipt_kwargs
+command = f'"{sys.executable}" -B -m pytest -q test_receipt_crash.py'
+result = broker.run(
+    command,
+    repository_root,
+    timeout=45,
+    task_id=sys.argv[4],
+    criterion="tests",
 )
-verification_kwargs = {"task_store": task_store}
-if "artifact_store" in inspect.signature(VerificationStore).parameters:
-    verification_kwargs["artifact_store"] = artifacts
-VerificationStore(store, **verification_kwargs).record(receipt)
+if not result.get("success") or not isinstance(result.get("verification_receipt"), dict):
+    os._exit(74)
 os._exit(74)
 """
     child = subprocess.run(
@@ -194,20 +214,15 @@ os._exit(74)
             script,
             str(db_path),
             phase,
-            str(repo_root / "src"),
+            str(Path(__file__).resolve().parents[1] / "src"),
             task_id,
-            subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=repo_root,
-                check=True,
-                text=True,
-                capture_output=True,
-            ).stdout.strip(),
+            revision,
+            str(repo_root.resolve()),
         ],
         cwd=repo_root,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=60,
         check=False,
     )
 

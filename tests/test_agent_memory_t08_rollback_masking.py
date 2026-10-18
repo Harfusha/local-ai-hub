@@ -27,7 +27,7 @@ def test_delete_preserves_primary_fts_error_when_rollback_also_fails(
             key="rollback-error-priority",
             value="keep original exception",
             source="user",
-            provenance={"root": str(root), "repository_id": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": str(root)},
         ),
         actor="user",
     )
@@ -66,7 +66,6 @@ def test_delete_preserves_primary_fts_error_when_rollback_also_fails(
                 scope_id=str(root),
                 root=str(root),
                 repository_id=str(root),
-                tenant="tenant-a",
             )
 
     rollback_warnings = [

@@ -213,13 +213,13 @@ def test_rag_reuses_source_text_without_read(tmp_path: Path, monkeypatch):
     embedding_space = "test-embedding-space"
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
-            (store._scope_key("tenant"), "old", "old.py", 0, fragment, text, "[1,0]", embedding_space),
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
+            ("old", "old.py", 0, fragment, text, "[1,0]", embedding_space),
         )
         con.commit()
     monkeypatch.setattr(Path, "read_bytes", lambda _self: (_ for _ in ()).throw(AssertionError("source text override must avoid read")))
     result = store.index_paths_step(
-        str(root), "tenant", "new", ["app.py"], content_overrides={"app.py": text},
+        str(root), workspace="new", paths=["app.py"], content_overrides={"app.py": text},
         _space_override=embedding_space,
     )
     assert result["success"] is True

@@ -77,11 +77,10 @@ class SpeculativeLintQueue:
         self.max_paths = _safe_int(cfg.get("max_paths"), 64, 1, 256)
         self.max_tracked_roots = _safe_int(cfg.get("max_tracked_roots"), 128, 1, 1024)
         self._lock = threading.RLock()
-        self._root_jobs: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._root_jobs: OrderedDict[str, str] = OrderedDict()
 
     def submit(
         self,
-        tenant: str,
         root: str,
         paths: list[str] | tuple[str, ...] | set[str] | frozenset[str],
         command: str = "",
@@ -106,13 +105,12 @@ class SpeculativeLintQueue:
         except (TypeError, ValueError, OSError, RuntimeError, OverflowError) as exc:
             return {"success": False, "error": f"invalid root or changed paths: {exc}",
                     "terminal": True, "retryable": False}
-        key = (tenant, os.path.normcase(normalized_root))
+        key = os.path.normcase(normalized_root)
         with self._lock:
             previous = self._root_jobs.get(key)
             if previous:
-                self.async_jobs.cancel(tenant, previous)
+                self.async_jobs.cancel(previous)
             result = self.async_jobs.submit(
-                tenant,
                 "speculative_lint",
                 {"root": normalized_root, "paths": normalized_paths, "command": str(command or "")[:4000]},
                 dispatch_delay_seconds=self.debounce_seconds,
@@ -125,18 +123,18 @@ class SpeculativeLintQueue:
         result.update({"read_only": True, "auto_fix": False, "paths": normalized_paths, "debounce_seconds": self.debounce_seconds})
         return result
 
-    def status(self, tenant: str, job_id: str) -> dict[str, Any]:
+    def status(self, job_id: str) -> dict[str, Any]:
         if not isinstance(job_id, str) or not job_id.strip():
             raise ValueError("job_id cannot be empty")
-        return self.async_jobs.status(tenant, job_id)
+        return self.async_jobs.status(job_id)
 
-    def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
+    def cancel(self, job_id: str) -> dict[str, Any]:
         if not isinstance(job_id, str) or not job_id.strip():
             raise ValueError("job_id cannot be empty")
-        result = self.async_jobs.cancel(tenant, job_id)
+        result = self.async_jobs.cancel(job_id)
         if isinstance(result, dict) and result.get("success") is True:
             with self._lock:
                 for key, tracked_job_id in tuple(self._root_jobs.items()):
-                    if key[0] == tenant and tracked_job_id == job_id:
+                    if tracked_job_id == job_id:
                         self._root_jobs.pop(key, None)
         return result

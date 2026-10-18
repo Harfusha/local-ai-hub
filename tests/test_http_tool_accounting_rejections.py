@@ -153,7 +153,7 @@ def test_disabled_tool_accounting_reports_telemetry_disabled(monkeypatch):
     )]
 
 
-def test_tool_accounting_binds_payload_tenant_to_authenticated_scope(monkeypatch):
+def test_tool_accounting_records_owner_global_events_without_tenant_metadata(monkeypatch):
     recorded = []
 
     class Telemetry:
@@ -164,13 +164,10 @@ def test_tool_accounting_binds_payload_tenant_to_authenticated_scope(monkeypatch
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/telemetry/tool-accounting"
     handler.headers = {"Content-Type": "application/json"}
-    handler._authorization_tenant = "tenant-a"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
     handler._read_json = lambda: {
         "events": [
-            {"tenant": "tenant-a", "tool": "allowed"},
-            {"tenant": "tenant-b", "tool": "spoofed"},
             {"tool": "implicit"},
         ]
     }
@@ -185,9 +182,9 @@ def test_tool_accounting_binds_payload_tenant_to_authenticated_scope(monkeypatch
         200,
         {
             "success": True,
-            "accepted": 2,
-            "rejected": 1,
-            "rejection_reasons": {"tenant_binding_mismatch": 1},
+            "accepted": 1,
+            "rejected": 0,
+            "rejection_reasons": {},
         },
     )]
-    assert [event["tenant"] for event in recorded] == ["tenant-a", "tenant-a"]
+    assert all("tenant" not in event for event in recorded)

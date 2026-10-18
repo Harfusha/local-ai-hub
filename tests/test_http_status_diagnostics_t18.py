@@ -56,7 +56,6 @@ def test_scoped_agent_state_status_needs_no_global_database_scan(monkeypatch):
     handler.headers = {}
     handler.server = None
     handler._authorization_root = "C:/project"
-    handler._authorization_tenant = "owner"
     handler._begin_trace = lambda _path: None
     handler._require_authorized = lambda: True
     responses = []

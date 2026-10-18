@@ -12,12 +12,15 @@ def test_reap_expired_leases_removes_zombies(tmp_path):
     Path(root).mkdir()
 
     # Claim lease with very short TTL
-    res = store.claim("agent_1", root, ["src/module.py"], ttl_seconds=30)
+    res = store.claim(
+        owner="task:reap-expired-zombie", root=root, paths=["src/module.py"],
+        ttl_seconds=30, purpose="test expired lease reaping",
+    )
     assert res["success"] is True
     lease_id = res["lease_id"]
 
     # Before expiry, lease is active
-    active = store.list(root)
+    active = store.list(root=root)
     assert any(item["lease_id"] == lease_id for item in active)
 
     # Simulate future time past expiration (e.g. now + 60s)
@@ -27,7 +30,7 @@ def test_reap_expired_leases_removes_zombies(tmp_path):
     assert reap_res["reaped_leases"] >= 1
 
     # Lease is now completely reaped from database
-    after_reap = store.list(root)
+    after_reap = store.list(root=root)
     assert not any(item["lease_id"] == lease_id for item in after_reap)
 
 
@@ -38,7 +41,10 @@ def test_reap_expired_leaves_active_leases_intact(tmp_path):
 
     now = time.time()
     # Claim lease with 1 hour TTL
-    res = store.claim("agent_2", root, ["src/active.py"], ttl_seconds=3600)
+    res = store.claim(
+        owner="task:reap-active-lease", root=root, paths=["src/active.py"],
+        ttl_seconds=3600, purpose="test active lease preservation",
+    )
     assert res["success"] is True
     lease_id = res["lease_id"]
 
@@ -48,5 +54,5 @@ def test_reap_expired_leaves_active_leases_intact(tmp_path):
     assert reap_res["reaped_leases"] == 0
 
     # Active lease is still present
-    active = store.list(root)
+    active = store.list(root=root)
     assert any(item["lease_id"] == lease_id for item in active)

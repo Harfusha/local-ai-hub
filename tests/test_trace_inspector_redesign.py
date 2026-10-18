@@ -125,7 +125,7 @@ def test_enabled_trace_store_preserves_complete_payload_and_token_usage(tmp_path
     from local_ai_hub.debug_traces import DebugTraceStore
 
     store = DebugTraceStore({"server": {"state_dir": str(tmp_path)}, "debug_traces": {"enabled": True}})
-    trace_id = store.start(kind="api_request", tenant="tenant-a", action="/api/test")
+    trace_id = store.start(kind="api_request",  action="/api/test")
     store.update(
         trace_id,
         request={"prompt": "Show my cache hit rate", "input_tokens": 8, "root": r"C:\\Users\\private\\project", "api_key": "stored-secret"},

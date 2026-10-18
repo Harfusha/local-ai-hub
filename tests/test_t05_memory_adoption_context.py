@@ -37,7 +37,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
     tasks.set_memory_adoption(memory_store=memory, context_compiler=compiler, incident_store=IncidentStore(state))
 
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tasks.create(
             GoalContract(goal="use scoped memory"),
@@ -72,7 +72,7 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_p
     root.mkdir()
     tasks.set_memory_adoption(memory_store=memory, context_compiler=UnavailableCompiler())
 
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tasks.create(
             GoalContract(goal="continue without unavailable memory"),
@@ -113,7 +113,7 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
     tasks.set_memory_adoption(memory_store=memory, context_compiler=compiler)
 
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tasks.create(
             GoalContract(goal="recheck memory on resume"),
@@ -186,7 +186,7 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
     tasks.set_memory_adoption(memory_store=memory, context_compiler=compiler)
 
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task_a = tasks.create(
             GoalContract(goal="inspect worktree a"),

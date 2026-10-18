@@ -98,7 +98,7 @@ def main() -> int:
     args = parser.parse_args()
 
     cfg = load_config(_config_arg())
-    client = HubClient(tenant="telemetry-report", config_path=_config_arg())
+    client = HubClient(config_path=_config_arg())
     try:
         telemetry = client.get(f"/api/telemetry/report?days={max(1, args.days)}")
     except Exception:

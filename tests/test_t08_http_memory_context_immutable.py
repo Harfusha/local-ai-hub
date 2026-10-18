@@ -51,7 +51,7 @@ def _public_task_client(tmp_path: Path, monkeypatch):
         handler.server = object()
         responses: list[tuple[int, dict]] = []
         handler._send = lambda status, data: responses.append((status, data))
-        token = trace_context.set_context(tenant="tenant-a")
+        token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
         try:
             http_server.Handler.do_POST(handler)
         finally:
@@ -109,7 +109,7 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
             handler.server = object()
             responses: list[tuple[int, dict]] = []
             handler._send = lambda status, data: responses.append((status, data))
-            token = trace_context.set_context(tenant="tenant-a")
+            token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
             try:
                 http_server.Handler.do_POST(handler)
             finally:

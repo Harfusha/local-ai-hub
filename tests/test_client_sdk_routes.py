@@ -36,8 +36,7 @@ def live_client(tmp_path, monkeypatch):
         '[agent_state]\nenabled = true\n'
         '[security]\n'
         'api_token = "sdk-isolated-http-token-long"\n'
-        'api_token_tenant = "sdk-test"\n'
-        'tenant_derivation_key = "sdk-test-root-key-0123456789-abcdef"\n'
+        'api_token_permissions = ["read", "write", "admin"]\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -45,7 +44,7 @@ def live_client(tmp_path, monkeypatch):
     monkeypatch.setattr(http_server, "APP", app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = HubClient(tenant="sdk-test", config_path=str(config), auto_start=False)
+    client = HubClient(config_path=str(config), auto_start=False)
     try:
         yield app, client
     finally:
@@ -73,8 +72,7 @@ def root_scoped_live_client(tmp_path, monkeypatch):
         '[agent_state]\nenabled = true\n'
         '[security]\n'
         'api_token = "sdk-root-isolated-http-token-long"\n'
-        'api_token_tenant = "sdk-root-test"\n'
-        'tenant_derivation_key = "t04-test-root-key-0123456789-abcdef"\n'
+        'api_token_permissions = ["read", "write", "admin"]\n'
         f'allowed_roots = ["{workspace.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -83,7 +81,7 @@ def root_scoped_live_client(tmp_path, monkeypatch):
     monkeypatch.setattr(http_server, "_completion_revision_or_stop", lambda *_args: ("test-revision", None))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = HubClient(tenant="sdk-root-test", config_path=str(config), auto_start=False)
+    client = HubClient(config_path=str(config), auto_start=False)
     try:
         yield app, client, workspace
     finally:
@@ -155,12 +153,16 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
         routes.append(("callers", actual_root, symbol, limit, offset))
         return {"success": True, "callers": ["Example.call"]}
 
-    def fast_context(actual_root, query, max_tokens):
-        routes.append(("context", actual_root, query, max_tokens))
-        return {"success": True, "context": ["indexed evidence"]}
+    def hybrid_context(root, query, *, max_tokens, quality_first, **kwargs):
+        routes.append(("context", root, query, max_tokens, quality_first))
+        return {
+            "success": True,
+            "context": "indexed evidence",
+            "context_source": "fixture-adaptive",
+        }
 
-    def cancel(tenant, job_id):
-        routes.append(("cancel", tenant, job_id))
+    def cancel(job_id):
+        routes.append(("cancel", job_id))
         return {"success": True, "job_id": job_id, "cancelled": True}
 
     def evidence(evidence_id, *, verify=True):
@@ -168,7 +170,7 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
         return {"success": True, "evidence_id": evidence_id, "verified": verify}
 
     app.services.callers = callers
-    app.services.fast_context = fast_context
+    app.services._hybrid_context = hybrid_context
     app.async_jobs.cancel = cancel
     app.evidence.get = evidence
 
@@ -194,12 +196,14 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
 
     assert caller_result["callers"] == ["Example.call"]
     assert context_result["delivery_mode"] == "adaptive"
+    assert context_result["context"] == "indexed evidence"
+    assert context_result["context_source"] == "fixture-adaptive"
     assert cancel_result["cancelled"] is True
     assert evidence_result["verified"] is False
     assert routes == [
         ("callers", root, "Example", 7, 0),
-        ("context", root, "find Example callers", 512),
-        ("cancel", "sdk-test", "job-123"),
+        ("context", root, "find Example callers", 512, True),
+        ("cancel", "job-123"),
         ("evidence", "E123", False),
     ]
 
@@ -334,7 +338,7 @@ def test_context_pack_rejects_invalid_mode_before_http(live_client, tmp_path, ht
     assert http_post_paths == []
     assert result["success"] is False
     assert result["status_code"] == 400
-    assert result["error"] == "context mode must be adaptive"
+    assert result["error"] == "context mode must be adaptive, full or fast"
     assert result["terminal"] is True
     assert result["retryable"] is False
 
@@ -391,11 +395,10 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
             "passed": True,
             "criteria": ["change_verified"],
         },
-        tenant="generic",
         kind="source_review",
     )
     assert evidence_id
-    assert app.artifacts.get(evidence_id, tenant="generic")["success"] is True
+    assert app.artifacts.get(evidence_id)["success"] is True
     receipt = client.verify_receipt(
         "sdk-route-task",
         "change_verified",
@@ -420,7 +423,7 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
 
 def test_continue_conversation_uses_real_http_handler_and_store(live_client, http_post_paths):
     app, client = live_client
-    conversation = app.services.conversations.start("sdk-test", {
+    conversation = app.services.conversations.start({
         "model": "test-model",
         "system": "test system",
         "max_tokens": 64,
@@ -460,7 +463,6 @@ def test_cancel_job_reaches_real_queue_through_sdk_handler(live_client, http_pos
         "context_budget_factor": 1.0,
     }
     submitted = app.async_jobs.submit(
-        "sdk-test",
         "reason",
         {"task": "cancel through SDK"},
         dispatch_delay_seconds=30,
@@ -472,7 +474,7 @@ def test_cancel_job_reaches_real_queue_through_sdk_handler(live_client, http_pos
     assert result["success"] is True
     assert result["state"] == "cancelled"
     assert result["terminal"] is True
-    assert app.async_jobs.status("sdk-test", submitted["job_id"])["state"] == "cancelled"
+    assert app.async_jobs.status(submitted["job_id"])["state"] == "cancelled"
 
 
 def test_get_evidence_fetches_real_store_record_through_sdk_handler(live_client, tmp_path, http_post_paths):
@@ -521,7 +523,7 @@ def test_context_pack_returns_indexed_evidence_from_real_fast_context(live_clien
 
     assert http_post_paths == ["/api/context/pack"]
     assert result["success"] is True
-    assert result["context_source"] == "deterministic-fast"
+    assert result["context_source"] == "adaptive-hybrid"
     assert result["semantic_used"] is False
     assert "context_sentinel" in result["context"]
     assert "grounded local value" in result["context"]

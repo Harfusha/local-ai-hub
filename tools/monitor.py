@@ -62,7 +62,7 @@ def main() -> int:
     ap.add_argument("--json-lines", action="store_true")
     ap.add_argument("--once", action="store_true")
     a = ap.parse_args()
-    c = HubClient(tenant="human-monitor", config_path=str(ROOT / "config.toml"))
+    c = HubClient(config_path=str(ROOT / "config.toml"))
     cursor = 0
 
     while True:

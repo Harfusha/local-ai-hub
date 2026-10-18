@@ -81,7 +81,7 @@ def test_generic_run_cannot_mint_project_lint_receipt(tmp_path: Path):
         result = app.commands.run(
             configured_lint,
             str(repo),
-            tenant="agent",
+
             task_id=task_id,
             criterion="lint",
             force=True,
@@ -108,7 +108,7 @@ def test_generic_pytest_help_cannot_mint_test_receipt(tmp_path: Path):
         result = app.commands.run(
             f'"{sys.executable}" -m pytest --help',
             str(repo),
-            tenant="agent",
+
             task_id=task_id,
             criterion="test",
             force=True,

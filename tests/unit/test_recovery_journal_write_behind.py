@@ -18,9 +18,7 @@ from local_ai_hub.resilience import RecoveryJournal
 def _claimed(journal: RecoveryJournal, request_id: str) -> None:
     result = journal.begin(
         request_id,
-        "tenant",
-        "/api/mutate",
-        identity="agent-a",
+        action="/api/mutate",
         payload={"value": request_id},
     )
     assert result["claimed"] is True
@@ -208,9 +206,7 @@ def test_byte_budget_covers_inflight_batch_and_refilled_queue(tmp_path: Path, mo
     try:
         replay = reopened.begin(
             "request-3",
-            "tenant",
-            "/api/mutate",
-            identity="agent-a",
+            action="/api/mutate",
             payload={"value": "request-3"},
         )
         assert replay["claimed"] is False
@@ -348,9 +344,7 @@ def test_saturated_queue_keeps_http_completion_nonblocking_and_fails_closed(
     try:
         replay = reopened.begin(
             "request-3",
-            "tenant",
-            "/api/mutate",
-            identity="agent-a",
+            action="/api/mutate",
             payload={"value": "request-3"},
         )
         assert replay["claimed"] is False
@@ -368,16 +362,12 @@ def test_pending_completion_replays_immediately_and_close_flushes(tmp_path: Path
 
     replay = journal.begin(
         "request-1",
-        "tenant",
-        "/api/mutate",
-        identity="agent-a",
+        action="/api/mutate",
         payload={"value": "request-1"},
     )
     conflict = journal.begin(
         "request-1",
-        "tenant",
-        "/api/mutate",
-        identity="agent-b",
+        action="/api/other",
         payload={"value": "request-1"},
     )
     journal.close()
@@ -432,9 +422,7 @@ def test_background_write_failure_preserves_unknown_boundary_and_blocks_new_clai
             _claimed(journal, "request-2")
         pending = journal.lookup(
             "request-1",
-            "tenant",
-            "/api/mutate",
-            identity="agent-a",
+            action="/api/mutate",
             payload_fingerprint=journal.fingerprint_payload({"value": "request-1"}),
         )
         assert pending is not None and pending["state"] == "running"
@@ -447,9 +435,7 @@ def test_background_write_failure_preserves_unknown_boundary_and_blocks_new_clai
     try:
         replay = reopened.begin(
             "request-1",
-            "tenant",
-            "/api/mutate",
-            identity="agent-a",
+            action="/api/mutate",
             payload={"value": "request-1"},
         )
         assert replay["state"] == "abandoned"

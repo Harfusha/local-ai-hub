@@ -85,7 +85,7 @@ def test_debug_traces_start(tmp_path: Path) -> None:
         "observability": {"debug_traces": {"enabled": True}},
     }
     store = DebugTraceStore(cfg)
-    trace_id = store.start(kind="test", tenant="t1", action="act")
+    trace_id = store.start(kind="test",  action="act")
     assert trace_id
     detail = store.detail(trace_id)
     assert detail["success"] is True

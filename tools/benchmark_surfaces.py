@@ -2843,16 +2843,15 @@ def _queue_admission_failure_diagnostic(
     }
 
 
-def _rag_workspace_document_counts(rag_store: Any, tenant: str, workspace: str) -> dict[str, int]:
-    scope_key = rag_store._scope_key(tenant)
+def _rag_workspace_document_counts(rag_store: Any, workspace: str) -> dict[str, int]:
     with closing(rag_store._connect()) as con:
         files = int(con.execute(
-            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=?",
-            (scope_key, workspace),
+            "SELECT COUNT(*) FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchone()[0])
         chunks = int(con.execute(
-            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
-            (scope_key, workspace),
+            "SELECT COUNT(*) FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchone()[0])
     return {"files": files, "chunks": chunks}
 
@@ -3559,7 +3558,7 @@ def run_benchmark(
             return original_rag_chunks(text, path=path)
 
         def benchmark_embed(
-            texts: list[str], tenant: str, query: bool = False, **_kwargs: Any,
+            texts: list[str], *, query: bool = False, **_kwargs: Any,
         ) -> dict[str, Any]:
             nonlocal rag_query_embedding_calls
             if query:
@@ -3574,7 +3573,7 @@ def run_benchmark(
 
         def index_rag_batch(workspace: str) -> dict[str, Any]:
             result = app.rag.index_paths_step(
-                str(rag_batch_root), "t02-benchmark", workspace, [rag_batch_rel],
+                str(rag_batch_root), workspace=workspace, paths=[rag_batch_rel],
             )
             if result.get("success") is not True or result.get("preempted") is True:
                 raise RuntimeError("RAGStore.index_paths_step failed synthetic batch")
@@ -3606,7 +3605,7 @@ def run_benchmark(
             )
             marker = rag_batch_path.read_text(encoding="utf-8")
             workspace_counts = _rag_workspace_document_counts(
-                app.rag, "t02-benchmark", workspace,
+                app.rag, workspace,
             )
             file_count = workspace_counts["files"]
             chunk_count = workspace_counts["chunks"]
@@ -3801,7 +3800,7 @@ def run_benchmark(
             def rag_search(query: str, regime: str) -> dict[str, Any]:
                 calls_before = rag_query_embedding_calls
                 result = app.rag.search(
-                    query, "t02-benchmark", rag_search_workspaces[regime], top_k=10,
+                    query, workspace=rag_search_workspaces[regime], top_k=10,
                     use_reranker=False, priority=3,
                 )
                 if result.get("success") is True:
@@ -3828,8 +3827,8 @@ def run_benchmark(
             def prepare_warm_rag_search(index: int) -> dict[str, Any]:
                 case = rag_search_cases[index]
                 result = app.rag.search(
-                    case["query"], "t02-benchmark",
-                    rag_search_workspaces["warm"], top_k=10, use_reranker=False, priority=3,
+                    case["query"], workspace=rag_search_workspaces["warm"],
+                    top_k=10, use_reranker=False, priority=3,
                 )
                 if result.get("success") is not True:
                     raise RuntimeError("RAG search warm preparation failed synthetic case")
@@ -3844,17 +3843,13 @@ def run_benchmark(
                 case = rag_search_cases[index]
                 workspace = rag_search_workspaces[regime]
                 clean_query = normalize_query(case["query"])
-                revision = app.rag.revision("t02-benchmark", workspace)
-                scope_key = app.rag._scope_key("t02-benchmark")
+                revision = app.rag.revision(workspace=workspace)
                 with closing(app.rag._connect()) as con:
-                    generation = app.rag._workspace_index_generation(con, scope_key, workspace)
+                    generation = app.rag._workspace_index_generation(con, workspace)
                 cache_identity_known = app.rag._embedding_space_cache_identity_known()
                 embedding_space = app.rag._embedding_space_id()
                 embedding_dimension = app.rag._embedding_dimension_cache_identity()
                 cache_key = cache_stable_hash({
-                    "tenant": "t02-benchmark",
-                    "scope": app.rag.scope,
-                    "effective_scope": scope_key,
                     "workspace": workspace,
                     "revision": revision,
                     "generation": generation,
@@ -5517,7 +5512,6 @@ def _t12_scenario_report(
         "items": [
             {
                 "id": f"t12-{name}-{index + 1}",
-                "tenant": f"t12-tenant-{index % 2 + 1}",
                 "prompt": 'Return exactly the JSON object {"answer":"READY"} and no extra text.',
             }
             for index in range(item_count)

@@ -80,15 +80,14 @@ def test_finalize_run_result_compacts_and_attaches_execution_id() -> None:
     broker.policy_engine = None
     observed = {}
 
-    def compact(result, tenant, command):
-        observed.update(result=result, tenant=tenant, command=command)
+    def compact(result, command):
+        observed.update(result=result, command=command)
         return {"success": result["success"]}
 
     broker._compact = compact
     source = {"success": True, "duration_ms": 125}
     finalized = broker._finalize_run_result(
         source,
-        tenant="tenant-a",
         command="python -m pytest -q",
         cwd="repo",
         execution_id="execution-1",
@@ -105,7 +104,6 @@ def test_finalize_run_result_compacts_and_attaches_execution_id() -> None:
 
     assert observed == {
         "result": source,
-        "tenant": "tenant-a",
         "command": "python -m pytest -q",
     }
     assert finalized == {"success": True, "execution_id": "execution-1"}
@@ -120,10 +118,9 @@ def test_finalize_run_result_charges_compute_and_external_call() -> None:
             charges.append((task_id, cost.compute_seconds, cost.external_calls))
 
     broker.policy_engine = PolicyEngine()
-    broker._compact = lambda result, tenant, command: dict(result)
+    broker._compact = lambda result, command: dict(result)
     broker._finalize_run_result(
         {"success": True, "duration_ms": 1250},
-        tenant="tenant-a",
         command="python -m pytest -q",
         cwd="repo",
         execution_id="execution-2",
@@ -144,7 +141,7 @@ def test_finalize_run_result_charges_compute_and_external_call() -> None:
 def test_finalize_run_result_routes_failed_autofix_once() -> None:
     broker = object.__new__(CommandBroker)
     broker.policy_engine = None
-    broker._compact = lambda result, tenant, command: dict(result)
+    broker._compact = lambda result, command: dict(result)
     calls = []
 
     def repair(*args, **kwargs):
@@ -154,7 +151,6 @@ def test_finalize_run_result_routes_failed_autofix_once() -> None:
     broker.repair_loop = repair
     finalized = broker._finalize_run_result(
         {"success": False, "error": "failed"},
-        tenant="tenant-a",
         command="python -m pytest -q",
         cwd="repo",
         execution_id="execution-3",
@@ -170,7 +166,7 @@ def test_finalize_run_result_routes_failed_autofix_once() -> None:
     )
 
     assert len(calls) == 1
-    assert calls[0][0][:3] == ("python -m pytest -q", "repo", "tenant-a")
+    assert calls[0][0][:2] == ("python -m pytest -q", "repo")
     assert calls[0][1]["initial_result"]["execution_id"] == "execution-3"
     assert finalized == {"success": True, "repaired": True, "execution_id": "execution-3"}
 

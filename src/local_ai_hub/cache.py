@@ -447,7 +447,7 @@ class SingleFlightGroup:
 
 
 class SQLiteCache:
-    """Persistent JSON L2 cache shared by all tenants/processes.
+    """Persistent JSON L2 cache shared by all processes.
 
     The database contains derived data only. A damaged DB is quarantined and
     recreated rather than taking foreground requests down with it.

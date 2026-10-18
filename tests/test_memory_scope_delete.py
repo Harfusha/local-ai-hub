@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 
 import pytest
@@ -10,7 +11,7 @@ from local_ai_hub import http_server
 from local_ai_hub.app import LocalAIApp
 
 
-def test_global_memory_delete_ignores_transport_tenant_but_keeps_root_scope(tmp_path):
+def test_retired_tenant_header_is_rejected_before_root_scoped_delete(tmp_path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 39129\nstate_dir = "{(tmp_path / "state").as_posix()}"\n',
@@ -37,9 +38,20 @@ def test_global_memory_delete_ignores_transport_tenant_but_keeps_root_scope(tmp_
             headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "codex", "Connection": "close"},
             method="POST",
         )
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(request)
+        assert rejected.value.code == 400
+        assert json.loads(rejected.value.read().decode("utf-8"))["error_code"] == "retired_tenant_header"
+        assert app.memory.get(str(root_a), "global-key")["success"] is True
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/memory/delete",
+            data=json.dumps({"root": str(root_a), "key": "global-key"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
         with urllib.request.urlopen(request) as response:
             deleted = json.loads(response.read().decode("utf-8"))
-
         assert deleted["deleted"] is True
         assert app.memory.get(str(root_a), "global-key")["success"] is False
         assert app.memory.get(str(root_b), "global-key")["value"] == "other root value"
@@ -51,28 +63,28 @@ def test_global_memory_delete_ignores_transport_tenant_but_keeps_root_scope(tmp_
         app.close()
 
 
-def test_tenant_memory_delete_requires_tenant_and_matches_provenance(tmp_path):
+def test_workspace_memory_delete_is_scoped_by_repository_root(tmp_path):
     from local_ai_hub.memory import WorkspaceMemoryStore
 
     store = WorkspaceMemoryStore(tmp_path / "state")
     root = tmp_path / "repo"
     root.mkdir()
-    store.put(str(root), "tenant-key", "value", "owner-tenant")
+    other_root = tmp_path / "other-repo"
+    other_root.mkdir()
+    store.put(str(root), "shared-key", "first repository")
+    store.put(str(other_root), "shared-key", "second repository")
 
-    missing_tenant = store.delete(str(root), "tenant-key", scope="tenant")
-    wrong_tenant = store.delete(str(root), "tenant-key", tenant="codex", scope="tenant")
-    matching_tenant = store.delete(str(root), "tenant-key", tenant="owner-tenant", scope="tenant")
+    deleted = store.delete(str(root), "shared-key")
 
-    assert missing_tenant["deleted"] is False
-    assert wrong_tenant["deleted"] is False
-    assert matching_tenant["deleted"] is True
-    assert store.get(str(root), "tenant-key")["success"] is False
+    assert deleted["deleted"] is True
+    assert store.get(str(root), "shared-key")["success"] is False
+    assert store.get(str(other_root), "shared-key")["value"] == "second repository"
 
 
 def test_memory_delete_rejects_unknown_scope():
     from local_ai_hub.http_server import Handler, RequestBodyError
 
-    with pytest.raises(RequestBodyError, match="scope must be 'global' or 'tenant'"):
+    with pytest.raises(RequestBodyError, match="scope is not supported by workspace memo deletion"):
         Handler._validate_payload("/api/memory/delete", {"key": "memo", "scope": "worktree"})
 
 

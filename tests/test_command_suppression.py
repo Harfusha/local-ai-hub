@@ -31,8 +31,8 @@ def _broker(tmp_path):
 def test_non_mutating_policy_block_is_terminal_and_suppressed(tmp_path):
     broker = _broker(tmp_path)
 
-    first = broker.run("unknown-tool", str(tmp_path), "tenant")
-    second = broker.run("unknown-tool", str(tmp_path), "tenant")
+    first = broker.run("unknown-tool", str(tmp_path))
+    second = broker.run("unknown-tool", str(tmp_path))
 
     assert first["policy_blocked"] is True
     assert first["terminal"] is True
@@ -47,8 +47,8 @@ def test_missing_safe_executable_is_rejected_before_spawn(tmp_path, monkeypatch)
     broker = _broker(tmp_path)
     monkeypatch.setattr(module.shutil, "which", lambda _name: None)
 
-    first = broker.run("rg needle", str(tmp_path), "tenant")
-    second = broker.run("rg needle", str(tmp_path), "tenant")
+    first = broker.run("rg needle", str(tmp_path))
+    second = broker.run("rg needle", str(tmp_path))
 
     assert first["preflight"] is True
     assert first["terminal"] is True
@@ -60,7 +60,7 @@ def test_missing_working_directory_is_rejected_before_fingerprint(tmp_path):
     broker = _broker(tmp_path)
     missing = tmp_path / "deleted-worktree"
 
-    result = broker.run(f'"{sys.executable}" -m pytest -q', str(missing), "tenant")
+    result = broker.run(f'"{sys.executable}" -m pytest -q', str(missing))
 
     assert result.get("preflight") is True, result
     assert result["terminal"] is True
@@ -77,14 +77,14 @@ def test_cancel_stops_active_command_and_clears_broker_state(tmp_path):
     broker = _broker(tmp_path)
     command = f'"{sys.executable}" -m pytest -q test_wait.py'
     result: dict = {}
-    worker = threading.Thread(target=lambda: result.setdefault("value", broker.run(command, str(tmp_path), "tenant", timeout=1)))
+    worker = threading.Thread(target=lambda: result.setdefault("value", broker.run(command, str(tmp_path), timeout=1)))
     worker.start()
     deadline = time.monotonic() + 2
     while not broker.stats()["active_count"] and time.monotonic() < deadline:
         time.sleep(0.02)
     try:
         assert broker.stats()["active_count"] == 1
-        cancelled = broker.cancel(command, str(tmp_path), "tenant")
+        cancelled = broker.cancel(command, str(tmp_path))
         assert cancelled["success"] is True
         assert cancelled["cancellation_requested"] is True
     finally:

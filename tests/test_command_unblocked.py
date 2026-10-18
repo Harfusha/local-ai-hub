@@ -54,7 +54,7 @@ def _register_task_worktree(broker, tmp_path):
     install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
     broker._transaction_docker_ready = lambda: (True, "")
     broker._run_private_transaction = (
-        lambda cmd, cwd, tenant, cancel_event=None, **kwargs: broker._execute(
+        lambda cmd, cwd, cancel_event=None, **kwargs: broker._execute(
             cmd, cwd, 30, cancel_event
         )
     )
@@ -74,7 +74,7 @@ def _default_broker(tmp_path):
 
 def test_command_is_not_blocked_by_default(tmp_path):
     broker = _default_broker(tmp_path)
-    res = broker.run(f'{sys.executable} -c "print(123)"', str(tmp_path), "tenant")
+    res = broker.run(f'{sys.executable} -c "print(123)"', str(tmp_path))
     assert res.get("policy_blocked") is not True
     assert res.get("success") is True
     assert "123" in res.get("stdout", "")
@@ -104,7 +104,7 @@ def test_mutating_command_bypasses_existing_singleflight(tmp_path, monkeypatch):
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    result = broker.run(command, str(tmp_path), "tenant", task_id="task-owned", paths=["changed.py"])
+    result = broker.run(command, str(tmp_path), task_id="task-owned", paths=["changed.py"])
 
     assert result["success"] is True
     assert result["coalesced"] is False
@@ -142,7 +142,7 @@ def test_concurrent_mutating_commands_keep_separate_active_entries(tmp_path, mon
     workers = [
         threading.Thread(
             target=broker.run,
-            args=(command, str(tmp_path), "tenant"),
+            args=(command, str(tmp_path)),
             kwargs={"task_id": "task-owned", "paths": ["changed.py"]},
         )
         for _ in range(2)
@@ -195,7 +195,7 @@ def test_concurrent_mutating_commands_require_exact_execution_id_for_cancel(tmp_
     workers = [
         threading.Thread(
             target=lambda: results.append(
-                broker.run(command, str(tmp_path), "tenant", task_id="task-owned", paths=["changed.py"])
+                broker.run(command, str(tmp_path), task_id="task-owned", paths=["changed.py"])
             )
         )
         for _ in range(2)
@@ -208,12 +208,12 @@ def test_concurrent_mutating_commands_require_exact_execution_id_for_cancel(tmp_
     execution_ids = {item["execution_id"] for item in active}
     assert len(execution_ids) == 2
 
-    ambiguous = broker.cancel(command, str(tmp_path), "tenant")
+    ambiguous = broker.cancel(command, str(tmp_path))
     assert ambiguous["success"] is False
     assert set(ambiguous["execution_ids"]) == execution_ids
 
     exact_id = next(iter(execution_ids))
-    cancelled = broker.cancel("", "", "tenant", execution_id=exact_id)
+    cancelled = broker.cancel("", "", execution_id=exact_id)
     assert cancelled["success"] is True
     assert cancelled["execution_id"] == exact_id
 
@@ -225,7 +225,7 @@ def test_concurrent_mutating_commands_require_exact_execution_id_for_cancel(tmp_
     assert {result["execution_id"] for result in results} == execution_ids
 
 
-def test_execution_id_cannot_cross_cancel_same_prefix_tenant(tmp_path, monkeypatch):
+def test_execution_id_cannot_cancel_unmatched_command(tmp_path, monkeypatch):
     broker = CommandBroker(
         {
             "server": {"state_dir": str(tmp_path / "state")},
@@ -237,9 +237,6 @@ def test_execution_id_cannot_cross_cancel_same_prefix_tenant(tmp_path, monkeypat
     _register_task_worktree(broker, tmp_path)
     started = threading.Event()
     release = threading.Event()
-    tenant_prefix = "tenant-" + "x" * 80
-    owner = tenant_prefix + "owner"
-    other = tenant_prefix + "other"
 
     def execute(*_args, **_kwargs):
         started.set()
@@ -249,7 +246,7 @@ def test_execution_id_cannot_cross_cancel_same_prefix_tenant(tmp_path, monkeypat
     monkeypatch.setattr(broker, "_execute", execute)
     worker = threading.Thread(
         target=broker.run,
-        args=("git add changed.py", str(tmp_path), owner),
+        args=("git add changed.py", str(tmp_path)),
         kwargs={"task_id": "task-owned", "paths": ["changed.py"]},
     )
     worker.start()
@@ -259,7 +256,7 @@ def test_execution_id_cannot_cross_cancel_same_prefix_tenant(tmp_path, monkeypat
     assert "tenant" not in active[0]
     assert "tenant_identity" not in active[0]
 
-    denied = broker.cancel("", "", other, execution_id=active[0]["execution_id"])
+    denied = broker.cancel("", "", execution_id="exec_unknown")
     assert denied["success"] is False
     assert denied["error"] == "no matching active command"
 
@@ -274,7 +271,7 @@ def test_non_cacheable_read_command_coalesces_existing_singleflight(tmp_path, mo
     classification = broker.classify(command)
     assert classification["class"] == "read"
     assert classification["cacheable"] is False
-    key, _ = broker._key(command, str(tmp_path), classification, tenant="tenant", timeout=broker.timeout)
+    key, _ = broker._key(command, str(tmp_path), classification, timeout=broker.timeout)
     completed = threading.Event()
     completed.set()
     broker._inflight[key] = completed
@@ -287,7 +284,7 @@ def test_non_cacheable_read_command_coalesces_existing_singleflight(tmp_path, mo
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    result = broker.run(command, str(tmp_path), "tenant")
+    result = broker.run(command, str(tmp_path))
 
     assert result["success"] is True
     assert result["coalesced"] is True
@@ -306,8 +303,8 @@ def test_mutating_policy_block_is_not_suppressed(tmp_path):
     )
     _register_task_worktree(broker, tmp_path)
 
-    first = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned")
-    second = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned")
+    first = broker.run("git add changed.py", str(tmp_path), task_id="task-owned")
+    second = broker.run("git add changed.py", str(tmp_path), task_id="task-owned")
 
     assert first["policy_blocked"] is True
     assert second["policy_blocked"] is True
@@ -327,8 +324,8 @@ def test_docker_sandbox_mutation_is_not_suppressed(tmp_path, monkeypatch):
     _register_task_worktree(broker, tmp_path)
     monkeypatch.setattr("local_ai_hub.commands.shutil.which", lambda name: "docker" if name == "docker" else None)
 
-    first = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned", sandbox="docker")
-    second = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned", sandbox="docker")
+    first = broker.run("git add changed.py", str(tmp_path), task_id="task-owned", sandbox="docker")
+    second = broker.run("git add changed.py", str(tmp_path), task_id="task-owned", sandbox="docker")
 
     assert first["policy_blocked"] is True
     assert "git add may mutate" in first["error"]
@@ -347,8 +344,8 @@ def test_unknown_command_policy_block_is_not_suppressed(tmp_path):
         _RepoState(),
     )
 
-    first = broker.run("unknown-tool", str(tmp_path), "tenant")
-    second = broker.run("unknown-tool", str(tmp_path), "tenant")
+    first = broker.run("unknown-tool", str(tmp_path))
+    second = broker.run("unknown-tool", str(tmp_path))
 
     assert first["policy_blocked"] is True
     assert second["policy_blocked"] is True
@@ -359,7 +356,7 @@ def test_unknown_command_policy_block_is_not_suppressed(tmp_path):
 def test_error_distillation_on_command_failure(tmp_path):
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     broker = _default_broker(tmp_path)
-    res = broker.run("git status --not-a-real-option", str(tmp_path), "tenant")
+    res = broker.run("git status --not-a-real-option", str(tmp_path))
     assert res.get("success") is False
     assert res.get("policy_blocked") is not True
     assert "error_distillation" in res
@@ -374,7 +371,7 @@ def test_model_error_distiller_only_runs_when_parser_has_no_diagnostic(tmp_path)
 
     # An empty pytest target is a classified validation that fails without a
     # structured diagnostic, so the model distiller is eligible to run.
-    res = broker.run(f'"{sys.executable}" -m pytest -q', str(tmp_path), "tenant")
+    res = broker.run(f'"{sys.executable}" -m pytest -q', str(tmp_path))
 
     assert res["success"] is False
     assert res["error_distillation"] == "local model summary"
@@ -391,7 +388,7 @@ def test_model_error_distiller_skips_structured_parser_result(tmp_path):
         "def test_parsed_failure():\n    assert False, 'parsed failure'\n",
         encoding="utf-8",
     )
-    res = broker.run(f'"{sys.executable}" -m pytest -q "{failing_test}"', str(tmp_path), "tenant")
+    res = broker.run(f'"{sys.executable}" -m pytest -q "{failing_test}"', str(tmp_path))
 
     assert res["success"] is False
     assert "parsed failure" in res["error_distillation"]
@@ -402,7 +399,7 @@ def test_failed_command_without_artifact_service_still_returns_diagnostics(tmp_p
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}})
 
-    res = broker.run("git status --not-a-real-option", str(tmp_path), "tenant")
+    res = broker.run("git status --not-a-real-option", str(tmp_path))
 
     assert res["success"] is False
     assert "option" in res["error_distillation"].lower()

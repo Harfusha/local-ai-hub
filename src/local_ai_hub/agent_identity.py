@@ -139,6 +139,9 @@ class ScopeContext:
     def from_dict(cls, data: Mapping[str, Any]) -> ScopeContext:
         if not isinstance(data, Mapping):
             raise TypeError("ScopeContext data must be a mapping")
+        allowed = {"repository_id", "clone_id", "worktree_id", "branch", "task_id", "session_id"}
+        if set(data) - allowed:
+            raise ValueError("ScopeContext contains unsupported fields; only canonical scope identities are accepted")
         return cls(
             repository_id=data.get("repository_id", ""),
             clone_id=data.get("clone_id", ""),

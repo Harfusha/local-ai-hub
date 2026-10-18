@@ -50,7 +50,6 @@ def _request(repo: Path, **changes) -> ConsistencyRequest:
         "changed_paths": (),
         "base": "HEAD",
         "staged": False,
-        "tenant": "repo",
         "override_reason": "",
         "approval": "",
     }
@@ -694,7 +693,7 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
     assert saved.path_refs == ("backend/users.py",)
     assert saved.symbol_refs == ("UserService",)
     assert saved.related_task == request.task_id
-    assert saved.provenance["tenant"] == request.tenant
+    assert "tenant" not in saved.provenance
     expected_repository_id = resolve_project_context(
         repository,
         configured_state_dir(repository_tools.config, create=False),
@@ -704,18 +703,6 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
     assert saved.expires_at is not None
     assert "secret source" not in json.dumps(saved.to_dict())
 
-    other_tenant = guard.record_finding(
-        _request(repository, tenant="other-tenant"),
-        finding={"summary": "UserService is reusable"},
-        evidence_ids=("ev-users",),
-        path_refs=("backend/users.py",),
-        symbol_refs=("UserService",),
-        confidence=0.91,
-    )
-    assert other_tenant is not None
-    assert other_tenant.record_id != saved.record_id
-    assert other_tenant.provenance["repository_id"] == saved.provenance["repository_id"]
-    assert other_tenant.provenance["tenant"] == "other-tenant"
     assert [
         record.record_id
         for record in memory.find(
@@ -723,18 +710,9 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
             key=saved.key,
             root=str(repository),
             repository_id=saved.provenance["repository_id"],
-            tenant=request.tenant,
             semantic=False,
         )
     ] == [saved.record_id]
-    assert memory.find(
-        scope="repository",
-        key=other_tenant.key,
-        root=str(repository),
-        repository_id=saved.provenance["repository_id"],
-        tenant=request.tenant,
-        semantic=False,
-    ) == []
 
 
 def test_guard_records_reuse_decision_and_rejected_approach(repository: Path):

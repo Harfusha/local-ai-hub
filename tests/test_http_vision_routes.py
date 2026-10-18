@@ -13,12 +13,12 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 
 
-def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = "test-api-token", request_id: str | None = None) -> dict:
+def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", token: str | None = "test-api-token", request_id: str | None = None, extra_headers: dict[str, str] | None = None) -> dict:
     headers = {
         "Content-Type": "application/json",
         "Origin": origin,
-        "X-LocalAI-Tenant": tenant,
     }
+    headers.update(extra_headers or {})
     if token:
         headers["X-LocalAI-Token"] = token
     if request_id:
@@ -36,7 +36,7 @@ def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture"
         return json.loads(error.read().decode("utf-8"))
 
 
-def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_scoped(tmp_path: Path) -> None:
+def test_browser_capability_capture_and_review_routes_are_explicit_and_origin_scoped(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -50,7 +50,6 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
                 'api_token = "test-api-token"',
                 '[browser_bridge]',
                 'enabled = true',
-                'tenant = "tenant-a"',
                 'allowed_origins = ["chrome-extension://fixture"]',
                 'max_payload_bytes = 200000',
             ]
@@ -93,17 +92,12 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         assert unsupported["success"] is False
         assert unsupported["error_code"] == "permission_denied"
 
-        cross_tenant = _post(
-            f"{base}/api/browser/capture",
-            {"capability": capability["capability"], "tab_id": 7, "window_id": 3, "capture_error": "closed_tab"},
-            tenant="tenant-b",
+        retired_header = _post(
+            f"{base}/api/browser/capability",
+            {"origin": "chrome-extension://fixture", "tab_id": 8, "window_id": 3},
+            extra_headers={"X-LocalAI-Tenant": "retired"},
         )
-        assert cross_tenant["success"] is False
-        assert cross_tenant["error_code"] in {
-            "capability_tenant_mismatch",
-            "capability_replayed",
-            "tenant_binding_mismatch",
-        }
+        assert retired_header["error_code"] == "retired_tenant_header"
 
         capability = _post(
             f"{base}/api/browser/capability",
@@ -188,10 +182,9 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         assert {item["artifact_id"] for item in app.artifacts.list(limit=100)} == artifacts_before_bad_provenance
 
         original_vision = app.services.vision
-        app.services.vision = lambda payload, tenant: {
+        app.services.vision = lambda payload: {
             "success": True,
             "bundle_artifact_id": payload.get("bundle_artifact_id"),
-            "tenant": tenant,
         }
         try:
             review = _post(
@@ -204,7 +197,6 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         assert review == {
             "success": True,
             "bundle_artifact_id": captured["bundle_artifact_id"],
-            "tenant": "tenant-a",
             "request_id": "t17-vision-review-route",
         }
     finally:
@@ -342,7 +334,7 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
         "\n".join([
             "[server]", 'bind = "127.0.0.1"', "port = 11499", f'state_dir = "{state_dir.as_posix()}"',
             "[security]", f'api_token = "{token}"',
-            "[browser_bridge]", "enabled = true", "allowed_origins = []", 'tenant = "tenant-a"',
+            "[browser_bridge]", "enabled = true", "allowed_origins = []",
         ]), encoding="utf-8"
     )
     app = LocalAIApp(str(config_path))
@@ -393,11 +385,11 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
         assert denied["success"] is False
 
         original_vision = app.services.vision
-        app.services.vision = lambda payload, tenant: {"success": True, "tenant": tenant}
+        app.services.vision = lambda payload: {"success": True}
         try:
             review = _post(
                 f"{base}/api/vision/review",
-                {"bundle_artifact_id": "tenant-a:frontend-review-bundle", "prompt": "Review"},
+                {"bundle_artifact_id": "frontend-review-bundle:artifact", "prompt": "Review"},
                 origin="chrome-extension://token-only", token=token,
                 request_id="t17-token-vision-review-route",
             )
@@ -405,15 +397,15 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
             app.services.vision = original_vision
         assert review == {
             "success": True,
-            "tenant": "tenant-a",
             "request_id": "t17-token-vision-review-route",
         }
         denied = _post(
             f"{base}/api/vision/review",
-            {"bundle_artifact_id": "tenant-a:frontend-review-bundle", "prompt": "Review"},
-            origin="chrome-extension://token-only", tenant="tenant-b", token=token,
+            {"bundle_artifact_id": "frontend-review-bundle:artifact", "prompt": "Review"},
+            origin="chrome-extension://token-only", token=token,
+            extra_headers={"X-LocalAI-Tenant": "retired"},
         )
-        assert denied["error_code"] == "tenant_binding_mismatch"
+        assert denied["error_code"] == "retired_tenant_header"
     finally:
         server.shutdown()
         server.server_close()

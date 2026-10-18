@@ -14,11 +14,71 @@ from pathlib import Path
 from typing import Any
 
 
+SINGLE_OWNER_CONTRACT = (
+    "Single-owner release contract: one Local AI Hub installation on one PC serves one human. "
+    "Agents, chats, projects and worktrees are not tenants. Remove tenant selection, propagation and storage partitions; "
+    "do not substitute a constant tenant, aliases, shims or old/new dual contracts. "
+    "Retired tenant fields and headers reject explicitly. Preserve project/repository/clone/worktree/branch/task/session "
+    "scopes, the owner's global scope, API token protection, command authorization, capabilities, path confinement and writer leases. "
+    "Scheduler jobs use model/source/priority metadata and global queue/model concurrency limits, never tenant buckets. "
+    "Synthetic benchmark scenario items use id/prompt fields; tenant fields reject explicitly and are not emitted. "
+    "Incident records use repository provenance only; repository retry and negative-knowledge lookup require an explicit root. "
+    "MCP coordination has no tenant argument; LOCAL_AI_TENANT is retired. Session evidence uses session_id, never an agent/workspace-derived tenant. "
+    "HubClient constructor options are keyword-only; constructor/request/get/post reject retired tenant arguments. "
+    "SDK requests retain API tokens without tenant headers; scope aliases and conflicting repository identities reject before transport. "
+    "HTTP root binding preserves owner-global memory and explicit session IDs; never rewrite global scope into a credential-derived session. "
+    "HTTP task creation derives context.repository_id from the authorized root's resolved project coordination ID; supplied IDs must match exactly. SDK preflight validates logical IDs without interpreting them as filesystem paths. "
+    "Task ownership checks repository identity, and request rate limiting uses one bounded installation window without tenant buckets. "
+    "Memory context and diagnostics select repository memories by the resolved coordination ID, never a physical-root identity fallback. "
+    "Retired tenant provenance blocks memory-store startup pending explicit offline conversion; runtime does not silently merge or rewrite records. "
+    "MemoryStore read/mutation APIs and HTTP memory dispatch have no tenant argument or filter; repository IDs never substitute for physical root predicates. "
+    "Memory mutations retain scope/provenance transaction checks; missing repository coordination identity rejects without cwd or session/global fallbacks. "
+    "Task-memory adoption uses snapshot schema_version=2 with explicit context (root, coordination_id, task_id, session_id, clone_id, worktree_id, branch). "
+    "The wire projection preserves this context; retired tenant-key snapshots require offline conversion, never runtime translation. "
+    "Agent questions use canonical repository root and actual session_id, with optional task association; answer_question preserves the stored session and rejects a supplied task mismatch. "
+    "Question storage/API have no tenant column or selector; answer idempotency, transaction boundaries and pre-mutation response budgeting remain required. "
+    "Server-managed task scope uses version=2 and repo_root only; reaping retains exact status/heartbeat/deadline checks and datasets stay inside that root. "
+    "Task repository IDs and actual sessions remain separate from the verified physical root; task lookup never reconstructs scope from retired metadata. "
+    "Automatic task worktrees require an explicit authorized physical root; logical repository IDs never substitute for a filesystem path. Resumed task memory uses only the server-managed v2 scope root. "
+    "Watchdog maintenance pages explicit repository roots, authorizes each root, and retains bounded task batches, cancellation and heartbeat/CAS fences. "
+    "Context warmup rechecks root authorization, task revision/scope/status and active mode; adaptive preloads receive the resolved repository coordination ID. "
+    "Hybrid context uses explicit workspace keywords without tenant routing; optional retrieval backends retain independent failure handling. "
+    "Project RAG search/index and document/diagram ingestion require an explicit authorized absolute root and a workspace bound to that physical root; custom labels remain valid within that binding. "
+    "Diagram files stay inside the root without symlink or junction traversal; named docsets retain their separate owner-global namespace. "
+    "Generation uses explicit keyword-only source and priority; telemetry and artifact dispatch must not manufacture a tenant identity. "
+    "Async jobs retain actual repository/task/session context and reject retired fields before queueing; old durable job schemas/payloads require offline conversion. "
+    "Conversations use their own IDs and reservation lifecycle without tenant ownership; query focus remains scoped by actual repository and session, with an owner-global scope. "
+    "Writer lease owner identifies an actual task/execution, not a human namespace; claim/release/renew use explicit owner and claim uses purpose. "
+    "Coordination ttl_seconds is optional: omission preserves action defaults (900 seconds for leases, no forced memory expiry); supplied values are forwarded for strict action validation. "
+    "Never derive a writer owner from credentials or substitute a constant installation owner; preserve writer conflicts, fences and repository coordination IDs. "
+    "Transaction lease and fence providers must accept the canonical coordination_id contract; missing provider support never selects a physical-root-only fallback. "
+    "Artifact put/put_json/put_bytes/compact use keyword-only kind, retrieval selectors are keyword-only, and artifact access has no owner selector. "
+    "Old artifact/RAG/telemetry/command storage requires explicit offline conversion or preservation-aware rebuild; runtime never silently deletes or rewrites it. "
+    "Receipt evaluation uses exact actual task owner/root and command_execution_record.v2, never session-as-tenant or caller-root authority fallbacks. "
+    "Broker receipt production requires canonical JSON artifact persistence and the server-managed task root; receipts are returned only after their command execution record is durable. "
+    "Patch and repair operations forward only actual broker verification receipts; missing receipts are reported and never synthesized from execution success or a command string. "
+    "Stored receipts require the current explicit metadata schema with strict passed flags and mutation generations; unsupported metadata is never promoted by defaults. "
+    "Writer fencing initializes only its final canonical DDL; runtime ALTERs, scope backfills and retired migration/version bookkeeping tables are unsupported. "
+    "Work orders keep work_id distinct from an explicit Agent OS task_id; verified bound completion requires the existing matching task and owner. "
+    "Context ledger reuse preserves actual session identity; debug trace routing metadata never becomes a filter over captured semantic payload content. "
+    "Request journaling uses request_id, action and exact payload fingerprint without credential identity partitions. "
+    "Context compilation and ledger reuse have no generic identity selector; actual root/task/session and structured project identities remain. "
+    "HTTP principal-selection helpers and security.users are removed; retired settings reject by presence without changing installed operator configuration. "
+    "API, supervisor and action tokens retain permissions; global quota limits aggregate installation usage without tenant buckets. "
+    "Browser capture binds random capabilities to actual origin/tab/window/request and expiry without human identity routing. "
+    "rag.scope is retired and rejects by presence; retrieval uses actual repository/workspace boundaries. "
+    "Retired HTTP tenant headers are neither advertised by CORS nor accepted in preflight selectors. "
+    "Preserve configuration and durable data; any necessary conversion is an explicit offline operation with collision refusal, "
+    "backups and verified record preservation, never a supported-runtime fallback. "
+    "Source removal, data conversion and installed-runtime acceptance require separate evidence."
+)
+
+
 T21_HANDOFF_CONTRACT = """Project configuration and PathHint core are integrated. `resolve_project_context(root, state_dir)` returns immutable effective settings and a `config_digest`; project configuration stays in the project or Git common directory, while `state_dir` stores only bounded, evidence-bound path hints. Maps merge by key, lists replace as a whole, and explicit excludes and hard boundaries take precedence over force includes. Overrides cannot bypass root containment, binary policy, configured size limits, or preprocessing exclusions; walkers check every directory and file.
 
-`verification_rules` maps exact task acceptance-criterion names to receipt requirements: `true` requires configured `lint` and `test` receipts, and an array names exact configured command aliases. `required_commands` is not a global switch; it applies only when the task criterion has that exact name. The root evaluator and persisted completion gate are integrated. The HTTP completion wrapper rejects invalid configuration or incomplete verification before checkpointing and completion. A positive HTTP case passed; the broader owner, tenant, revision, criterion, and memory-audit matrix remains open.
+`verification_rules` maps exact task acceptance-criterion names to receipt requirements: `true` requires configured `lint` and `test` receipts, and an array names exact configured command aliases. `required_commands` is not a global switch; it applies only when the task criterion has that exact name. The root evaluator and persisted completion gate are integrated. The HTTP completion wrapper rejects invalid configuration or incomplete verification before checkpointing and completion. A positive HTTP case passed; the broader work-ownership, repository/task scope, revision, criterion, and memory-audit matrix remains open.
 
-`shared_namespace` exposes a server-derived coordination identity and shares bounded hints across linked worktrees under one Git common directory. It does not replace the physical repository root. Memory and lease consumers have not adopted this identity yet.
+`shared_namespace` exposes a server-derived coordination identity and shares bounded hints across linked worktrees under one Git common directory. It does not replace the physical repository root. Repository memory uses the resolved coordination identity. Writer leases retain repository coordination and actual execution-owner boundaries; neither identity substitutes for the verified physical root.
 
 `ProjectContext.prioritize_paths(...)` ranks the complete candidate list in this order: literal `entry_points`, request-scoped `path_hints`, then saved hints matching scope, repository revision, and config digest. It preserves every candidate and returns `PathHintUsage`; `hint_helped` stays unknown until measured. When a hint does not help, consumers use their broader fallback. Telemetry exposes usage flags without candidate paths. Save only verified hints.
 
@@ -92,8 +152,9 @@ def _actions_note(actions: list[str]) -> str:
 def context_pack_guidance() -> str:
     """Compact contract for the guarded repository-context operation."""
     return (
-        ' CALL `local_ai_repo(action="context")` FIRST for every non-trivial repository task, before native '
-        "reads, grep, planning, edit, review or test. Its adaptive orchestrator fuses deterministic and "
+        " Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. "
+        'When non-trivial planning, editing, review or testing lacks sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once before native broad discovery. '
+        "Preprocess only when the root is unindexed or its evidence is stale; never wait, poll or force-refresh preprocessing. Its adaptive orchestrator fuses deterministic and "
         "indexed evidence with Serena, the built-in code index, bounded lexical search and RAG when available; "
         "it deduplicates, rewards cross-backend agreement, preserves file diversity and degrades per backend. "
         "Send the task/context, not a handmade list of grep terms. Reuse existing evidence and reuse candidates "
@@ -297,10 +358,11 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     public_contract_lines: list[str] = []
     if fs.rag:
         public_contract_lines.append(
-            '- For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. '
+            '- For `local_ai_rag` project search/index and document/diagram ingestion, an explicit absolute authorized `root` is required; the workspace must bind to that root. '
+            'For `action="ingest_document"`, non-empty `content` is required; `title` and `metadata` are optional. '
             'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. '
             'Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing '
-            '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. '
+            '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file within that root, without symlink/junction escapes; `caption` and `metadata` are optional. '
             'Success also returns `diagram_indexed` and the resolved image path.'
         )
     contract_notes: list[str] = []
@@ -467,7 +529,7 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 
 {repo_gate_section}
 
-Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files for discovery, call the hub first. Native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. Native fallback after a Hub failure requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -562,7 +624,9 @@ The active tool surface reflects your configuration:
     wf_steps: list[str] = []
     step_i = 1
     if fs.repo:
-        wf_steps.append(f"{step_i}. Establish the absolute root" + ("; preprocess once." if fs.preprocessing else "."))
+        wf_steps.append(
+            f"{step_i}. Establish the absolute root and reuse fresh evidence; preprocess only if the root is unindexed or evidence is stale."
+        )
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
@@ -705,12 +769,13 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         findings_target = "permitted scoped Agent OS memory or the existing operator-approved coordination file." if fs.agent_os else "the existing operator-approved coordination file."
         coord_memo_hint = (
             f"{memory_hint}"
-            " Workspace `memo_*` actions are unavailable through tenant-scoped endpoints; on terminal 403 do not retry or bypass scope."
+            " Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope."
             f" For overlapping edits use `local_ai_coord` leases; record concise findings in {findings_target}"
         )
 
     return (
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
+        f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
         "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.\n"
@@ -966,7 +1031,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         rag_actions = fs.supported_rag_actions()
         schemas["local_ai_rag"] = {
             "name": "local_ai_rag",
-            "description": "Fallback semantic retrieval after indexed evidence is insufficient; also supports managed docsets and document/diagram ingestion." + _actions_note(rag_actions),
+            "description": "Fallback semantic retrieval after indexed evidence is insufficient; project search/index and ingestion require an explicit absolute authorized root with a root-bound workspace. Diagram paths stay inside that root. Managed docsets have a separate owner-global namespace." + _actions_note(rag_actions),
             "parameters": operation_parameters_schema("local_ai_rag", fs),
         }
 

@@ -117,7 +117,7 @@ def test_client_get_non_object_json_uses_complete_invalid_response(tmp_path, mon
     assert result["request_id"].startswith("req_")
 
 
-def test_client_coord_memo_put_forwards_expected_version(tmp_path, monkeypatch):
+def test_client_coord_rejects_retired_memo_action(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
 
@@ -130,11 +130,34 @@ def test_client_coord_memo_put_forwards_expected_version(tmp_path, monkeypatch):
         "memo_put", root="repo", key="decision", value="accepted", expected_version=4
     )
 
-    assert result["success"] is True
-    assert calls == [(
-        "/api/memory/put",
-        {"root": "repo", "key": "decision", "value": "accepted", "ttl_seconds": 604800, "expected_version": 4},
-    )]
+    assert result["success"] is False
+    assert "retired coord action" in result["error"]
+    assert calls == []
+
+
+def test_client_workspace_memory_convenience_uses_agent_state_route(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_post(endpoint, payload, **kwargs):
+        calls.append((endpoint, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    assert client.record_memory(
+        "decision", "accepted", scope="repository", kind="fact", root="repo"
+    )["success"] is True
+    assert client.find_memory(scope="repository", key="decision", root="repo")["success"] is True
+    assert calls == [
+        ("/api/agent-state/memory", {
+            "action": "record", "key": "decision", "value": "accepted",
+            "scope": "repository", "kind": "fact", "root": "repo",
+        }),
+        ("/api/agent-state/memory", {
+            "action": "find", "limit": 100, "root": "repo",
+            "scope": "repository", "key": "decision",
+        }),
+    ]
 
 
 def test_client_reuses_one_http11_connection_for_sequential_requests(tmp_path, monkeypatch):
@@ -984,10 +1007,9 @@ def test_coord_pubsub_adapters_send_canonical_fields_without_numeric_coercion(tm
     ]
 
 
-def test_stream_events_sends_client_identity_and_caps_timeout(tmp_path, monkeypatch):
+def test_stream_events_sends_agent_identity_and_caps_timeout(tmp_path, monkeypatch):
     client = _client(tmp_path)
     client.api_token = "test-token"
-    client.tenant = "tenant-a"
     seen = {}
 
     class Response:
@@ -1007,7 +1029,7 @@ def test_stream_events_sends_client_identity_and_caps_timeout(tmp_path, monkeypa
     events = list(client.stream_events(stream_id="stream-a", timeout=100))
 
     assert events == [("update", {"value": 1})]
-    assert seen["headers"]["x-localai-tenant"] == client.tenant
+    assert "x-localai-tenant" not in seen["headers"]
     assert seen["headers"]["x-localai-agent"] == client.agent
     assert seen["headers"]["x-localai-token"] == "test-token"
     assert seen["headers"]["x-localai-request-id"].startswith("req_")
@@ -1205,13 +1227,12 @@ def test_continue_conversation_sends_task_over_real_http_and_keeps_transcript(tm
     from local_ai_hub.conversations import ConversationStore
 
     store = ConversationStore(idle_ttl_seconds=60, max_turns=4)
-    conversation = store.start("tenant-a", {"model": "fast", "system": "system"})
-    reserved, error = store.reserve(conversation.conversation_id, "tenant-a")
+    conversation = store.start({"model": "fast", "system": "system"})
+    reserved, error = store.reserve(conversation.conversation_id)
     assert reserved is conversation
     assert error == ""
     store.complete(
         conversation.conversation_id,
-        "tenant-a",
         "USER:\nfirst question",
         "first answer",
     )
@@ -1230,7 +1251,7 @@ def test_continue_conversation_sends_task_over_real_http_and_keeps_transcript(tm
                     "retryable": False,
                 }
             else:
-                current, error = self.server.store.reserve(conversation_id, "tenant-a")
+                current, error = self.server.store.reserve(conversation_id)
                 if error:
                     response = {"success": False, "error": error}
                 else:
@@ -1239,7 +1260,7 @@ def test_continue_conversation_sends_task_over_real_http_and_keeps_transcript(tm
                         for message in current.messages + [{"role": "user", "content": payload["task"]}]
                     )
                     self.server.store.complete(
-                        conversation_id, "tenant-a", payload["task"], "second answer"
+                        conversation_id, payload["task"], "second answer"
                     )
                     response = {
                         "success": True,

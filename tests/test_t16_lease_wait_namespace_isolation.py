@@ -112,19 +112,19 @@ def test_concurrent_canonical_wait_initialization_preserves_namespace_rows(tmp_p
     assert not any(worker.is_alive() for worker in workers), "canonical initialization worker did not finish"
     assert errors == [], errors
     assert set(results) == {"first", "second"}
-    assert all(len(waits) == 1 and waits[0]["tenant"] == "waiter" for waits in results.values())
+    assert all(len(waits) == 1 and waits[0]["owner"] == "waiter" for waits in results.values())
 
     con = sqlite3.connect(state_dir / "agent_state.sqlite")
     try:
         info = con.execute("PRAGMA table_info(lease_waits)").fetchall()
         primary_key = tuple(str(row[1]) for row in sorted(info, key=lambda row: int(row[5])) if int(row[5]) > 0)
         rows = con.execute(
-            "SELECT root_id,tenant,blocked_by,requested_path FROM lease_waits"
+            "SELECT root_id,owner,blocked_by,requested_path FROM lease_waits"
         ).fetchall()
     finally:
         con.close()
 
-    assert primary_key == ("root_id", "tenant", "blocked_by", "requested_path")
+    assert primary_key == ("root_id", "owner", "blocked_by", "requested_path")
     assert sorted(rows) == [
         ("project:first", "waiter", "blocker", "src/shared.py"),
         ("project:second", "waiter", "blocker", "src/shared.py"),

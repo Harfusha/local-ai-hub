@@ -56,7 +56,7 @@ def _install_event_route_app(monkeypatch, agent_state, extra_config=None):
 def _prepare_event_route(handler, path):
     parsed = urlsplit(path)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query.update(root=_EVENT_TEST_ROOT, tenant=_EVENT_TEST_TENANT)
+    query.update(root=_EVENT_TEST_ROOT)
     handler.path = f"{parsed.path}?{urlencode(query)}"
     if not hasattr(handler, "headers"):
         handler.headers = {}
@@ -930,7 +930,7 @@ def test_trace_detail_is_paginated_and_response_bytes_are_capped(tmp_path):
             "max_detail_response_bytes": 16384,
         },
     })
-    trace_id = store.start(kind="api_request", tenant="test")
+    trace_id = store.start(kind="api_request")
     for index in range(6):
         store.event(trace_id, "output_delta", {"text": f"{index}:" + "x" * 2500})
 
@@ -982,7 +982,6 @@ def test_agent_state_detail_reports_degraded_status_on_dependency_timeout(monkey
     handler.path = "/api/status?detail=agent_state"
     handler.command = "GET"
     handler._authorization_root = "C:/project"
-    handler._authorization_tenant = "owner"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
     responses = []
@@ -1016,11 +1015,9 @@ def test_agent_state_detail_includes_contract_counts(monkeypatch):
             agent_incidents=SimpleNamespace(list_incidents=lambda: [
                 SimpleNamespace(
                     repository_key=http_server._incident_scope_key("repository", _EVENT_TEST_ROOT),
-                    tenant_key=http_server._incident_scope_key("tenant", "owner"),
                 ),
                 SimpleNamespace(
                     repository_key=http_server._incident_scope_key("repository", _EVENT_TEST_ROOT),
-                    tenant_key=http_server._incident_scope_key("tenant", "owner"),
                 ),
             ]),
             agent_learning=SimpleNamespace(list_candidates=lambda: candidate_calls.append(True) or [object()]),
@@ -1030,7 +1027,6 @@ def test_agent_state_detail_includes_contract_counts(monkeypatch):
     handler.path = "/api/status?detail=agent_state"
     handler.command = "GET"
     handler._authorization_root = _EVENT_TEST_ROOT
-    handler._authorization_tenant = "owner"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
     responses = []

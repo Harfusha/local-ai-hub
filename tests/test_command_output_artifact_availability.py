@@ -11,8 +11,8 @@ class _Artifacts:
     def __init__(self) -> None:
         self.items: list[tuple[str, str, str]] = []
 
-    def put(self, content: str, tenant: str, kind: str) -> str:
-        self.items.append((content, tenant, kind))
+    def put(self, content: str, *, kind: str) -> str:
+        self.items.append((content, kind))
         return f"artifact-{len(self.items)}"
 
 
@@ -38,7 +38,7 @@ def test_command_without_full_log_artifact_does_not_publish_output_artifact_id()
     broker = _broker(diagnostic_artifacts=False, artifacts=artifacts)
 
     result = broker._compact(
-        {"success": True, "stdout": "x" * 40, "stderr": ""}, "tenant", "run"
+        {"success": True, "stdout": "x" * 40, "stderr": ""}, "run"
     )
 
     assert "output_artifact_id" not in result
@@ -52,11 +52,11 @@ def test_command_with_full_log_artifact_publishes_output_artifact_id() -> None:
     broker = _broker(diagnostic_artifacts=True, artifacts=artifacts)
 
     result = broker._compact(
-        {"success": True, "stdout": "x" * 40, "stderr": "y" * 40}, "tenant", "run"
+        {"success": True, "stdout": "x" * 40, "stderr": "y" * 40}, "run"
     )
 
     assert result["artifact_id"] == result["output_artifact_id"] == "artifact-1"
-    assert artifacts.items == [("$ run\n\nSTDOUT:\n" + "x" * 40 + "\n\nSTDERR:\n" + "y" * 40, "tenant", "command")]
+    assert artifacts.items == [("$ run\n\nSTDOUT:\n" + "x" * 40 + "\n\nSTDERR:\n" + "y" * 40, "command")]
 
 
 def test_long_skip_reasons_do_not_displace_final_pytest_summary_after_compaction() -> None:
@@ -77,12 +77,12 @@ def test_diagnostic_preview_artifact_does_not_claim_full_output() -> None:
     broker.inline_chars = 80
 
     result = broker._compact(
-        {"success": False, "stdout": "short output", "stderr": ""}, "tenant", "run"
+        {"success": False, "stdout": "short output", "stderr": ""}, "run"
     )
 
     assert result["artifact_id"] == "artifact-1"
     assert "output_artifact_id" not in result
-    assert artifacts.items == [("bounded diagnostic preview", "tenant", "command_diagnostic")]
+    assert artifacts.items == [("bounded diagnostic preview", "command_diagnostic")]
 
 
 @pytest.mark.parametrize("uncertain_flag", ["output_capture_unconfirmed", "cleanup_unconfirmed"])
@@ -91,7 +91,7 @@ def test_unconfirmed_capture_never_claims_complete_output_artifact(uncertain_fla
     broker = _broker(diagnostic_artifacts=True, artifacts=artifacts)
     result = broker._compact(
         {"success": False, "stdout": "x" * 40, "stderr": "", uncertain_flag: True},
-        "tenant", "run",
+        "run",
     )
     assert result["artifact_id"]
     assert "output_artifact_id" not in result
@@ -104,7 +104,6 @@ def test_partial_capture_artifact_does_not_claim_full_output() -> None:
 
     result = broker._compact(
         {"success": True, "stdout": "x" * 40, "stderr": "", "discarded_output_chars": 6},
-        "tenant",
         "run",
     )
 
@@ -125,7 +124,6 @@ def test_inline_compaction_preserves_capture_truncation() -> None:
             "discarded_output_chars": 6,
             "output_truncated": True,
         },
-        "tenant",
         "run",
     )
 

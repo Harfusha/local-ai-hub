@@ -18,13 +18,13 @@ from local_ai_hub.work_orchestrator import WorkOrchestrator, _patch_changes, _pa
 
 class FakeArtifacts:
     def __init__(self): self.data = {}
-    def put(self, text, tenant, kind):
+    def put(self, text, *, kind):
         key = f"a{len(self.data)+1}"
-        self.data[key] = {"text": text, "tenant": tenant, "kind": kind}
+        self.data[key] = {"text": text, "kind": kind}
         return key
-    def get(self, artifact_id, *, max_chars=50_000, tenant):
+    def get(self, artifact_id, *, max_chars=50_000):
         artifact = self.data.get(artifact_id)
-        if artifact is None or artifact["tenant"] != tenant:
+        if artifact is None:
             return {"success": False, "artifact_id": artifact_id}
         return {
             "success": True,
@@ -36,10 +36,10 @@ class FakeArtifacts:
 
 
 class FakeLeases:
-    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+    def claim_batch(self, owner, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
         self.coordination_id = coordination_id
         return {"success": True, "lease_id": "lease1", "paths": paths}
-    def release(self, tenant, lease_id=""):
+    def release(self, *, owner, lease_id=""):
         return {"success": True}
 
 
@@ -59,7 +59,7 @@ class FakeServices:
     def repo_diff(self, root, base="HEAD", staged=False, max_tokens=5000):
         cp = subprocess.run(["git", "-C", root, "diff"], capture_output=True, text=True, check=False)
         return {"success": True, "diff": cp.stdout}
-    def delegate_repo(self, args, tenant):
+    def delegate_repo(self, args):
         self.delegate_calls += 1
         if self.delegate_calls == 1:
             plan = {
@@ -74,12 +74,12 @@ class FakeServices:
             }
             return {"success": True, "text": json.dumps(plan)}
         return {"success": True, "text": self.patch}
-    def second_opinion(self, args, tenant):
+    def second_opinion(self, args):
         self.verify_calls += 1
         return {"success": True, "text": json.dumps({
             "passed": True, "summary": "verified", "criteria": [{"criterion":"a.txt contains new","passed":True}], "risks": []
         })}
-    def command(self, args, tenant):
+    def command(self, args):
         if args.get("action") == "discover":
             return {"success": True, "validation_commands": ["git diff --check"]}
         return {"success": self.validation_ok, "exit_code": 0 if self.validation_ok else 1, "error": "" if self.validation_ok else "failed"}
@@ -103,11 +103,11 @@ def init_repo(tmp_path: Path) -> Path:
 def wait_terminal(wo: WorkOrchestrator, wid: str, timeout=8):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        res = wo.get("tenant", wid, profile="debug")
+        res = wo.get(wid, profile="debug")
         if res.get("status") in {"complete", "failed", "cancelled", "needs_agent", "partial"}:
             return res
         time.sleep(0.05)
-    raise AssertionError(wo.get("tenant", wid, profile="debug"))
+    raise AssertionError(wo.get(wid, profile="debug"))
 
 
 
@@ -140,7 +140,7 @@ def test_planner_dag_is_stably_toposorted_and_cycles_fail_closed():
 
 def test_planner_rejects_unknown_step_kind_and_missing_acceptance(tmp_path):
     class UnknownKindServices(FakeServices):
-        def delegate_repo(self, args, tenant):
+        def delegate_repo(self, args):
             return {"success": True, "text": json.dumps({
                 "summary": "unknown planner kind",
                 "steps": [{"id": "s1", "kind": "unknown", "task": "inspect", "depends_on": [], "acceptance": []}],
@@ -149,16 +149,16 @@ def test_planner_rejects_unknown_step_kind_and_missing_acceptance(tmp_path):
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", UnknownKindServices(""), None, FakeLeases(), FakeArtifacts())
     try:
         with pytest.raises(ValueError, match="explicit acceptance criteria"):
-            wo._plan("tenant", str(tmp_path), "inspect", {"budget": {"max_steps": 16}, "acceptance_criteria": []}, {})
+            wo._plan(str(tmp_path), "inspect", {"budget": {"max_steps": 16}, "acceptance_criteria": []}, {})
         with pytest.raises(ValueError, match="unknown planner step kind"):
-            wo._plan("tenant", str(tmp_path), "inspect", {"budget": {"max_steps": 16}, "acceptance_criteria": ["inspect result"]}, {})
+            wo._plan(str(tmp_path), "inspect", {"budget": {"max_steps": 16}, "acceptance_criteria": ["inspect result"]}, {})
     finally:
         wo.close()
 
 
 def test_planner_enforces_edit_and_command_budgets_and_retains_acceptance(tmp_path):
     class BudgetPlanServices(FakeServices):
-        def delegate_repo(self, args, tenant):
+        def delegate_repo(self, args):
             return {"success": True, "text": json.dumps({
                 "summary": "bounded plan",
                 "steps": [
@@ -180,21 +180,21 @@ def test_planner_enforces_edit_and_command_budgets_and_retains_acceptance(tmp_pa
             invalid_budget = {"budget": {"max_steps": 2, "max_edits": 1, "max_commands": 1, "max_tokens": 1400}, "acceptance_criteria": ["result remains correct"]}
             invalid_budget["budget"][name] = value
             with pytest.raises(ValueError, match=f"{name} budget must be an integer"):
-                wo._plan("tenant", str(tmp_path), "bounded change", invalid_budget, {})
+                wo._plan(str(tmp_path), "bounded change", invalid_budget, {})
 
         with pytest.raises(ValueError, match="edit-step budget"):
-            wo._plan("tenant", str(tmp_path), "bounded change", base, {})
+            wo._plan(str(tmp_path), "bounded change", base, {})
 
         command_limited = {"budget": {"max_steps": 2, "max_edits": 1, "max_commands": 0}, "acceptance_criteria": ["result remains correct"]}
         with pytest.raises(ValueError, match="command budget"):
-            wo._plan("tenant", str(tmp_path), "bounded change", command_limited, {})
+            wo._plan(str(tmp_path), "bounded change", command_limited, {})
 
         step_limited = {"budget": {"max_steps": 1}, "acceptance_criteria": ["result remains correct"]}
         with pytest.raises(ValueError, match="more than the 1 step budget"):
-            wo._plan("tenant", str(tmp_path), "bounded change", step_limited, {})
+            wo._plan(str(tmp_path), "bounded change", step_limited, {})
 
         accepted = {"budget": {"max_steps": 2, "max_edits": 1, "max_commands": 1}, "acceptance_criteria": ["result remains correct"]}
-        plan = wo._plan("tenant", str(tmp_path), "bounded change", accepted, {})
+        plan = wo._plan(str(tmp_path), "bounded change", accepted, {})
         assert plan["acceptance_criteria"] == ["result remains correct"]
         assert all(step["acceptance"] == ["result remains correct"] for step in plan["steps"])
         assert plan["validation_commands"] == ["python -m pytest -q"]
@@ -204,7 +204,7 @@ def test_planner_enforces_edit_and_command_budgets_and_retains_acceptance(tmp_pa
 
 def test_planner_rejects_duplicate_ids_instead_of_sanitizing(tmp_path):
     class OddPlanServices(FakeServices):
-        def delegate_repo(self, args, tenant):
+        def delegate_repo(self, args):
             return {"success": True, "text": json.dumps({
                 "summary": "odd planner output",
                 "steps": [
@@ -217,7 +217,7 @@ def test_planner_rejects_duplicate_ids_instead_of_sanitizing(tmp_path):
     try:
         payload = {"budget": {"max_steps": 16}, "acceptance_criteria": ["keep explicit acceptance"], "constraints": []}
         with pytest.raises(ValueError, match="duplicate planner step ids"):
-            wo._plan("tenant", str(tmp_path), "inspect", payload, {})
+            wo._plan(str(tmp_path), "inspect", payload, {})
     finally:
         wo.close()
 
@@ -226,7 +226,7 @@ def test_work_id_is_bounded_before_persistence(tmp_path):
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
     root = init_repo(tmp_path)
     try:
-        result = wo.submit("tenant", {"root": str(root.resolve()), "task": "inspect", "work_id": "x" * 129})
+        result = wo.submit({"root": str(root.resolve()), "task": "inspect", "work_id": "x" * 129})
         assert result["success"] is False
         assert "128" in result["error"]
         assert wo.stats()["states"] == {}
@@ -258,9 +258,9 @@ def test_rename_cannot_bypass_create_delete_permissions(tmp_path):
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", FakeServices(patch), None, FakeLeases(), FakeArtifacts())
     try:
         with pytest.raises(PermissionError, match="creation disabled"):
-            wo._apply_patch(root, patch, "tenant", "wo1", [], permissions={"create": False, "delete": True})
+            wo._apply_patch(root, patch, "wo1", [], permissions={"create": False, "delete": True})
         with pytest.raises(PermissionError, match="deletion disabled"):
-            wo._apply_patch(root, patch, "tenant", "wo1", [], permissions={"create": True, "delete": False})
+            wo._apply_patch(root, patch, "wo1", [], permissions={"create": True, "delete": False})
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
         assert not (root / "renamed.txt").exists()
     finally:
@@ -286,7 +286,7 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
     artifacts = FakeArtifacts(); services = FakeServices(patch)
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
     try:
-        sub = wo.submit("tenant", {"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "compact"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "compact"})
         res = wait_terminal(wo, sub["work_id"])
         assert res["status"] == "complete", res
         assert (root / "a.txt").read_text(encoding="utf-8") == "new\n"
@@ -311,7 +311,7 @@ def test_work_order_rolls_back_when_validation_fails(tmp_path):
     artifacts = FakeArtifacts(); services = FakeServices(patch, validation_ok=False)
     wo = WorkOrchestrator(config(tmp_path), state_dir, services, None, FakeLeases(), artifacts)
     try:
-        sub = wo.submit("tenant", {"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
         res = wait_terminal(wo, sub["work_id"])
         assert res["status"] == "failed"
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
@@ -321,7 +321,7 @@ def test_work_order_rolls_back_when_validation_fails(tmp_path):
 
     restarted = WorkOrchestrator(config(tmp_path), state_dir, services, None, FakeLeases(), artifacts)
     try:
-        after_restart = restarted.get("tenant", sub["work_id"], profile="debug")
+        after_restart = restarted.get(sub["work_id"], profile="debug")
         assert after_restart["status"] == "failed", after_restart
         assert after_restart["error"] == res["error"]
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
@@ -335,7 +335,7 @@ def test_edit_retries_stop_at_configured_attempt_limit(tmp_path):
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
     wo.step_retry_limit = 1
     try:
-        submitted = wo.submit("tenant", {
+        submitted = wo.submit({
             "root": str(root.resolve()),
             "task": "change old to new",
             "acceptance_criteria": ["a.txt contains new"],
@@ -361,7 +361,7 @@ def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_p
             self.verification_started = threading.Event()
             self.release_verification = threading.Event()
 
-        def second_opinion(self, args, tenant):
+        def second_opinion(self, args):
             self.verify_calls += 1
             if self.verify_calls >= 2:
                 self.verification_started.set()
@@ -375,14 +375,14 @@ def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_p
     services = BlockingVerificationServices()
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
     try:
-        submitted = wo.submit("tenant", {
+        submitted = wo.submit({
             "root": str(root.resolve()),
             "task": "change old to new",
             "acceptance_criteria": ["a.txt contains new"],
             "response_profile": "debug",
         })
         assert services.verification_started.wait(timeout=5)
-        cancellation = wo.cancel("tenant", submitted["work_id"])
+        cancellation = wo.cancel(submitted["work_id"])
         services.release_verification.set()
         result = wait_terminal(wo, submitted["work_id"])
 
@@ -404,7 +404,7 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
             super().__init__("")
             self.validation_runs = []
 
-        def delegate_repo(self, args, tenant):
+        def delegate_repo(self, args):
             self.delegate_calls += 1
             if self.delegate_calls == 1:
                 return {"success": True, "text": json.dumps({
@@ -418,7 +418,7 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
                 })}
             return {"success": True, "text": "{}"}
 
-        def second_opinion(self, args, tenant):
+        def second_opinion(self, args):
             return {"success": True, "text": json.dumps({
                 "passed": True,
                 "summary": "suite verified",
@@ -426,7 +426,7 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
                 "risks": [],
             })}
 
-        def command(self, args, tenant):
+        def command(self, args):
             if args.get("action") == "discover":
                 return {"success": True, "validation_commands": ["pytest -q tests"]}
             self.validation_runs.append(args["command"])
@@ -443,7 +443,7 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
     artifacts = FakeArtifacts()
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
     try:
-        submitted = wo.submit("tenant", {
+        submitted = wo.submit({
             "root": str(root.resolve()),
             "task": "verify the existing test suite",
             "acceptance_criteria": ["pytest suite"],
@@ -464,7 +464,8 @@ def test_integrated_profile_contains_notebook_safe_limits():
     p = profile_overrides("integrated", {"gpus": [{"vendor":"intel","integrated":True}]})
     assert p["scheduler"]["max_parallel"] == 1
     assert p["scheduler"]["max_queue"] == 32
-    assert p["scheduler"]["max_queued_per_tenant"] == 12
+    assert "max_queued_per_tenant" not in p["scheduler"]
+    assert "max_inflight_per_tenant" not in p["scheduler"]
     assert p["async_jobs"]["max_pending"] == 16
     assert p["prewarm"]["enabled"] is False
     assert p["preprocessing"]["idle_grace_seconds"] == 30.0
@@ -497,7 +498,7 @@ def test_idle_worker_retires_cleanly_and_can_restart(tmp_path):
         assert wo.stats()["active_workers"] == 0
         with wo._lock:
             assert not wo._workers
-        sub = wo.submit("tenant", {"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"]})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"]})
         final = wait_terminal(wo, sub["work_id"])
         assert final["status"] == "complete"
     finally:
@@ -510,7 +511,7 @@ class BlockingReviewServices(FakeServices):
         self.prompts = []
         self.block_once = True
 
-    def delegate_repo(self, args, tenant):
+    def delegate_repo(self, args):
         self.prompts.append(str(args.get("task", "")))
         if "PLAN A CODING WORK ORDER" in str(args.get("task", "")):
             self.delegate_calls += 1
@@ -527,14 +528,14 @@ class BlockingReviewServices(FakeServices):
         self.delegate_calls += 1
         return {"success": True, "text": self.patch}
 
-    def second_opinion(self, args, tenant):
+    def second_opinion(self, args):
         if self.block_once:
             self.block_once = False
             return {"success": True, "text": json.dumps({
                 "passed": False, "summary": "need API-shape decision", "criteria": [], "risks": [],
                 "needs_agent": True, "question": "Preserve API shape?",
             })}
-        return super().second_opinion(args, tenant)
+        return super().second_opinion(args)
 
 
 def test_needs_agent_rolls_back_then_continue_replans_with_answer(tmp_path):
@@ -543,12 +544,12 @@ def test_needs_agent_rolls_back_then_continue_replans_with_answer(tmp_path):
     services = BlockingReviewServices(patch)
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
     try:
-        sub = wo.submit("tenant", {"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
         blocked = wait_terminal(wo, sub["work_id"])
         assert blocked["status"] == "needs_agent"
         assert blocked["rolled_back"] is True
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
-        resumed = wo.continue_work("tenant", sub["work_id"], "Yes, preserve API shape")
+        resumed = wo.continue_work(sub["work_id"], "Yes, preserve API shape")
         assert resumed["success"] is True
         final = wait_terminal(wo, sub["work_id"])
         assert final["status"] == "complete", final
@@ -563,7 +564,7 @@ class RepairServices(FakeServices):
         super().__init__("")
         self.run_calls = 0
 
-    def delegate_repo(self, args, tenant):
+    def delegate_repo(self, args):
         self.delegate_calls += 1
         if self.delegate_calls == 1:
             return {"success": True, "text": json.dumps({
@@ -578,7 +579,7 @@ class RepairServices(FakeServices):
             return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}
         return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-new\n+fixed\n"}
 
-    def command(self, args, tenant):
+    def command(self, args):
         if args.get("action") == "discover":
             return {"success": True, "validation_commands": ["git diff --check"]}
         self.run_calls += 1
@@ -586,7 +587,7 @@ class RepairServices(FakeServices):
             return {"success": False, "exit_code": 1, "error": "new evidence: expected fixed"}
         return {"success": True, "exit_code": 0, "error": ""}
 
-    def second_opinion(self, args, tenant):
+    def second_opinion(self, args):
         return {"success": True, "text": json.dumps({
             "passed": True, "summary": "verified after bounded repair",
             "criteria": [{"criterion":"a.txt contains fixed","passed":True}], "risks": []
@@ -598,7 +599,7 @@ def test_validation_failure_uses_bounded_repair_then_revalidates(tmp_path):
     services = RepairServices()
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
     try:
-        sub = wo.submit("tenant", {"root": str(root.resolve()), "task": "make a.txt fixed", "acceptance_criteria": ["a.txt contains fixed"], "response_profile": "debug"})
+        sub = wo.submit({"root": str(root.resolve()), "task": "make a.txt fixed", "acceptance_criteria": ["a.txt contains fixed"], "response_profile": "debug"})
         final = wait_terminal(wo, sub["work_id"])
         assert final["status"] == "complete", final
         assert (root / "a.txt").read_text(encoding="utf-8") == "fixed\n"
@@ -698,8 +699,8 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
             super().__init__(patch)
             self.run_args = []
 
-        def command(self, args, tenant):
-            result = super().command(args, tenant)
+        def command(self, args):
+            result = super().command(args)
             if args.get("action") == "run":
                 self.run_args.append(dict(args))
                 revision = subprocess.run(
@@ -712,15 +713,37 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
             return result
 
     class RecordingVerificationStore:
-        def __init__(self):
+        def __init__(self, task_store):
             self.records = []
+            self.task_store = task_store
 
         def record(self, receipt, *, update_task=True):
             self.records.append((receipt, update_task))
             return receipt
 
     artifacts = FakeArtifacts()
-    verification_store = RecordingVerificationStore()
+    from types import SimpleNamespace
+
+    task_id = "task-source-review-1"
+    task_owner = "repository-task-owner"
+
+    class TaskStore:
+        @staticmethod
+        def get(requested_task_id):
+            if requested_task_id != task_id:
+                return None
+            return SimpleNamespace(
+                task_id=task_id,
+                owner=task_owner,
+                checkpoint=SimpleNamespace(state_data={
+                    "_agent_task_scope": {
+                        "version": 2,
+                        "repo_root": str(root.resolve()),
+                    },
+                }),
+            )
+
+    verification_store = RecordingVerificationStore(TaskStore())
     services = RevisionServices(patch)
     wo = WorkOrchestrator(
         config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts,
@@ -735,17 +758,17 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
             proof = {
                 "kind": "work_source_review",
                 "passed": True,
-                "task_id": work_id,
-                "owner": "tenant",
+                "task_id": receipt.task_id,
+                "owner": receipt.owner,
                 "repository_revision": receipt.repository_revision,
                 "mutation_generation": 0,
                 "criteria": [receipt.criterion],
             }
-            evidence_id = artifacts.put(json.dumps(proof), "tenant", "source_review")
+            evidence_id = artifacts.put(json.dumps(proof), kind="source_review")
             transformed.append(VerificationReceipt.create(
-                task_id=work_id,
+                task_id=receipt.task_id,
                 criterion=receipt.criterion,
-                owner="tenant",
+                owner=receipt.owner,
                 evidence_id=evidence_id,
                 repository_revision=receipt.repository_revision,
                 mutation_generation=0,
@@ -757,9 +780,10 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
 
     wo._persist_handoff_receipts = stale_receipts
     try:
-        submitted = wo.submit("tenant", {
+        submitted = wo.submit({
             "root": str(root.resolve()),
             "task": "change old to new",
+            "task_id": task_id,
             "acceptance_criteria": ["a.txt contains new"],
             "response_profile": "debug",
         })
@@ -806,7 +830,7 @@ def test_local_service_forwards_receipt_opt_out_and_keeps_work_id():
         "task_id": "work-order-1",
         "criterion": "tests pass",
         "record_verification": False,
-    }, "tenant")
+    })
 
     assert result["success"] is True
     assert broker.kwargs["record_verification"] is False

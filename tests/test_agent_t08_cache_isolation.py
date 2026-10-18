@@ -15,7 +15,6 @@ def _get_task_memory(store, record_id, *, task_id, root):
         scope=AgentScope.TASK,
         scope_id=task_id,
         root=str(root),
-        tenant="t08-cache-test",
         task_id=task_id,
     )
 
@@ -50,7 +49,7 @@ def test_disposable_cache_rebuild_preserves_live_agent_state(tmp_path):
         key="cache-rebuild-probe",
         value={"preserved": True},
         source="T08 cache isolation regression",
-        provenance={"root": str(tmp_path.resolve()), "tenant": "t08-cache-test"},
+        provenance={"root": str(tmp_path.resolve())},
     )
     MemoryStore(state_store).record(memory, actor="test")
     receipt = VerificationReceipt.create(
@@ -115,7 +114,7 @@ def test_failed_disposable_cache_schema_rebuild_preserves_live_agent_state(
         key="cache-schema-failure-probe",
         value={"preserved": True},
         source="T08 cache schema failure regression",
-        provenance={"root": str(tmp_path.resolve()), "tenant": "t08-cache-test"},
+        provenance={"root": str(tmp_path.resolve())},
     )
     MemoryStore(state_store).record(memory, actor="test")
     receipt = VerificationReceipt.create(

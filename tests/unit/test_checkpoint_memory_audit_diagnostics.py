@@ -9,10 +9,25 @@ from local_ai_hub.operation_contracts import operation_parameters_schema
 
 
 def _task(audit=None):
-    state = {"memory_context": {"items": [{"id": "relevant"}], "warnings": []}}
+    state = {
+        "memory_context": {
+            "schema_version": 2,
+            "context": {
+                "root": "C:/repo",
+                "coordination_id": "repo-coordination",
+                "task_id": "task-audit",
+                "session_id": "",
+                "clone_id": "",
+                "worktree_id": "",
+                "branch": "",
+            },
+            "items": [{"id": "relevant"}],
+            "warnings": [],
+        }
+    }
     if audit is not None:
         state["memory_audit"] = audit
-    return SimpleNamespace(checkpoint=SimpleNamespace(state_data=state))
+    return SimpleNamespace(task_id="task-audit", checkpoint=SimpleNamespace(state_data=state))
 
 
 def test_checkpoint_error_names_required_nested_field_without_false_transition():

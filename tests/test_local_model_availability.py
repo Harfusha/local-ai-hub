@@ -226,7 +226,7 @@ def test_generate_persists_semantic_cache_result_once() -> None:
             return {"response": "A useful generated response."}
 
     class _InlineScheduler:
-        def submit(self, _model, _tenant, _source, execute, **_kwargs):
+        def submit(self, _model, *, source, execute, **_kwargs):
             return execute()
 
     class _RecordingSemanticCache(_NoSemanticCache):
@@ -305,7 +305,7 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
             return {"error": "Ollama unavailable"}
 
     class _InlineScheduler:
-        def submit(self, _model, _tenant, _source, execute, **_kwargs):
+        def submit(self, _model, *, source, execute, **_kwargs):
             return execute()
 
     services.runtime = _FailingRuntime()
@@ -327,7 +327,7 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
     assert requested_models == ["heavy"]
 
 
-def _scheduler_harness(*, max_queue: int = 4, max_queued_per_tenant: int = 2) -> AffinityScheduler:
+def _scheduler_harness(*, max_queue: int = 4) -> AffinityScheduler:
     scheduler = object.__new__(AffinityScheduler)
     scheduler.runtime = SimpleNamespace()
     scheduler.unload_others = True
@@ -345,7 +345,6 @@ def _scheduler_harness(*, max_queue: int = 4, max_queued_per_tenant: int = 2) ->
         "cancelled_pending": 0,
     }
     scheduler.max_queue = max_queue
-    scheduler.max_queued_per_tenant = max_queued_per_tenant
     scheduler.max_caller_wait_timeout = 0.05
     scheduler.default_caller_wait_timeout = 0.05
     scheduler._foreground_preempt_hook = None
@@ -353,46 +352,38 @@ def _scheduler_harness(*, max_queue: int = 4, max_queued_per_tenant: int = 2) ->
     scheduler._background_gpu_lease = False
     scheduler._foreground_generation = 0
     scheduler._last_foreground_activity = time.monotonic()
-    scheduler._inflight_by_tenant = {}
-    scheduler._tenant_vruntime = {}
     scheduler._active_model = "model"
-    scheduler.max_inflight_per_tenant = 1
     scheduler.background_idle_grace = 0.0
     return scheduler
 
 
-def test_scheduler_rejects_global_and_per_tenant_queue_overflow() -> None:
-    global_limited = _scheduler_harness(max_queue=1, max_queued_per_tenant=4)
-    global_limited.enqueue("model", "one", "test", lambda: {})
+def test_scheduler_rejects_global_queue_overflow() -> None:
+    global_limited = _scheduler_harness(max_queue=1)
+    global_limited.enqueue("model", source="test", execute=lambda: {})
     with pytest.raises(QueueFullError):
-        global_limited.enqueue("model", "two", "test", lambda: {})
-
-    tenant_limited = _scheduler_harness(max_queue=4, max_queued_per_tenant=1)
-    tenant_limited.enqueue("model", "one", "test", lambda: {})
-    with pytest.raises(QueueFullError):
-        tenant_limited.enqueue("model", "one", "test", lambda: {})
-    assert len(tenant_limited._pending) == 1
+        global_limited.enqueue("model", source="other-source", execute=lambda: {})
+    assert len(global_limited._pending) == 1
 
 
 def test_scheduler_pending_timeout_releases_queue_slot() -> None:
-    scheduler = _scheduler_harness(max_queue=1, max_queued_per_tenant=1)
+    scheduler = _scheduler_harness(max_queue=1)
 
     with pytest.raises(SchedulerTimeoutError) as timeout:
-        scheduler.submit("model", "one", "test", lambda: {}, wait_timeout=0.05)
+        scheduler.submit("model", source="test", execute=lambda: {}, wait_timeout=0.05)
 
     assert timeout.value.state == "pending"
     assert scheduler._pending == []
     assert scheduler._stats["cancelled_pending"] == 1
-    replacement = scheduler.enqueue("model", "one", "test", lambda: {})
+    replacement = scheduler.enqueue("model", source="test", execute=lambda: {})
     assert scheduler._pending == [replacement]
 
 
 def test_scheduler_priority_aging_eventually_serves_old_foreground_job() -> None:
     scheduler = _scheduler_harness()
     now = time.monotonic()
-    old = Job(1, "model", "old-tenant", "test", 0, lambda: {})
+    old = Job(id=1, model="model", source="test", priority=0, execute=lambda: {})
     old.created_at = now - 400
-    fresh = Job(2, "model", "fresh-tenant", "test", 9, lambda: {})
+    fresh = Job(id=2, model="model", source="test", priority=9, execute=lambda: {})
 
     selected = scheduler._choose_job_for_active_model(now, [fresh, old])
 
@@ -422,7 +413,7 @@ def test_scheduler_timeout_signals_running_job_and_keeps_capacity_until_exit() -
 
     def submit() -> None:
         try:
-            scheduler.submit("model", "one", "test", execute, wait_timeout=0.3, cancel_event=cancel_event)
+            scheduler.submit("model", source="test", execute=execute, wait_timeout=0.3, cancel_event=cancel_event)
         except BaseException as exc:
             submit_errors.append(exc)
 
@@ -439,7 +430,6 @@ def test_scheduler_timeout_signals_running_job_and_keeps_capacity_until_exit() -
             job.dispatched_at = time.monotonic()
             scheduler._inflight = 1
             scheduler._inflight_jobs[job.id] = job
-            scheduler._inflight_by_tenant[job.tenant] = 1
 
         runner = threading.Thread(target=scheduler._run_job, args=(job,), daemon=True)
         runner.start()
@@ -473,7 +463,7 @@ def test_scheduler_external_cancel_removes_pending_job_promptly() -> None:
     def submit() -> None:
         try:
             scheduler.submit(
-                "model", "one", "test", lambda: {},
+                "model", source="test", execute=lambda: {},
                 wait_timeout=0.8, cancel_event=cancel_event,
             )
         except BaseException as exc:
@@ -520,9 +510,9 @@ def test_scheduler_prepare_cancel_keeps_same_model_waiters_and_avoids_cooldown()
 
     first_cancel = threading.Event()
     second_cancel = threading.Event()
-    first = scheduler.enqueue("target", "one", "test", lambda: {})
-    second = scheduler.enqueue("target", "two", "test", lambda: {})
-    expired = scheduler.enqueue("target", "three", "test", lambda: {})
+    first = scheduler.enqueue("target", source="test", execute=lambda: {})
+    second = scheduler.enqueue("target", source="test", execute=lambda: {})
+    expired = scheduler.enqueue("target", source="test", execute=lambda: {})
     first.cancel_event = first_cancel
     second.cancel_event = second_cancel
     expired.cancel_event = threading.Event()

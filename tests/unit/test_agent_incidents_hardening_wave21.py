@@ -27,7 +27,6 @@ def test_tool_outcome_boolean_and_null_byte_coercion():
         timed_out=None,  # type: ignore[arg-type]
         affected_paths=("path\x00/a", ""),
         repository_root="C:\\repo\x00dir",
-        tenant="ten\x00ant1",
     )
     assert outcome.tool_name == "tool_test"
     assert outcome.command == "run --flag"
@@ -39,7 +38,13 @@ def test_tool_outcome_boolean_and_null_byte_coercion():
     assert outcome.cancelled is True
     assert outcome.timed_out is False
     assert outcome.repository_root == "C:\\repodir"
-    assert outcome.tenant == "tenant1"
+
+
+@pytest.mark.parametrize("field", ["tenant", "tenant_key"])
+@pytest.mark.parametrize("value", [None, False, ""])
+def test_tool_outcome_rejects_retired_metadata_fields(field, value):
+    with pytest.raises(ValueError, match="tenant fields were removed"):
+        ToolOutcome(tool_name="cmd", metadata={field: value})
 
 
 def test_tool_outcome_invalid_exit_code():
@@ -78,12 +83,12 @@ def test_incident_record_from_dict_and_roundtrip():
         expires_at=200.0,
         affected_paths=("src/main.py",),
         repository_key="repokey",
-        tenant_key="tenantkey",
     )
     data = rec.to_dict()
     assert isinstance(data, dict)
     assert data["incident_id"] == "inc_test123"
     assert data["status"] == "resolved"
+    assert "tenant_key" not in data
 
     recovered = IncidentRecord.from_dict(data)
     assert recovered.incident_id == "inc_test123"
@@ -91,10 +96,11 @@ def test_incident_record_from_dict_and_roundtrip():
     assert recovered.root_cause == "missing file"
     assert recovered.verified_fix == "create file"
     assert recovered.confidence == 0.9
+    with pytest.raises(ValueError, match="tenant fields were removed"):
+        IncidentRecord.from_dict({**data, "tenant": None})
     assert recovered.resolved is True
     assert recovered.ignored is False
     assert recovered.repository_key == "repokey"
-    assert recovered.tenant_key == "tenantkey"
 
     # Non-mapping input fallback
     fallback = IncidentRecord.from_dict("invalid")  # type: ignore[arg-type]
@@ -128,7 +134,6 @@ def test_incident_record_numeric_overflow_and_null_bytes():
         resolved=1,  # type: ignore[arg-type]
         ignored=0,  # type: ignore[arg-type]
         repository_key="repo\x00key",
-        tenant_key="tenant\x00key",
     )
     assert rec.incident_id == "inc_01"
     assert rec.attempts == 1
@@ -139,7 +144,6 @@ def test_incident_record_numeric_overflow_and_null_bytes():
     assert rec.resolved is True
     assert rec.ignored is False
     assert rec.repository_key == "repokey"
-    assert rec.tenant_key == "tenantkey"
 
 
 def test_retry_decision_invalid_action_and_from_dict():
@@ -189,7 +193,6 @@ def test_incident_store_corrupted_row_handling(tmp_path):
         "corrupted_affected_paths",
         0,  # ignored
         "repokey",
-        "tenantkey",
     )
     rec = store._row_to_record(corrupted_row)
     assert isinstance(rec, IncidentRecord)
@@ -202,6 +205,7 @@ def test_incident_store_corrupted_row_handling(tmp_path):
     assert rec.updated_at == 0.0
     assert rec.expires_at is None
     assert rec.resolved is True
+    assert rec.repository_key == "repokey"
 
 
 def test_incident_webhook_worker_logs_sender_failure(caplog):

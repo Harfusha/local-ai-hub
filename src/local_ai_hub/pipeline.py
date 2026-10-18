@@ -149,19 +149,24 @@ class LocalAgentPipeline:
         )
         return heavy_model if smart_required else fast_model
 
-    def solve_repo(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def solve_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .repository_scope import RepositoryScopeError, authorized_repository_root, reject_retired_tenancy_fields
+
+        try:
+            reject_retired_tenancy_fields(args)
+            root = authorized_repository_root(self.services.config, args.get("root"))
+        except RepositoryScopeError as exc:
+            return {"success": False, "error": str(exc), "error_code": exc.code, "terminal": True, "retryable": False}
         if not self.enabled:
-            return self.services.delegate_repo(args, tenant)
+            return self.services.delegate_repo(args)
         self.runs += 1
-        raw_root = args.get("root", ".") if isinstance(args, dict) else "."
-        if raw_root is None or isinstance(raw_root, bool) or not isinstance(raw_root, (str, Path)):
-            root = "."
-        else:
-            root = str(raw_root).replace("\x00", "").strip() or "."
-        task = str(args.get("task", "") if isinstance(args, dict) else "").strip()
-        mode = str(args.get("mode", self.default_mode) if isinstance(args, dict) else self.default_mode).lower()
-        if mode not in {"fast", "adaptive", "quality"}:
-            mode = self.default_mode
+        task = args.get("task", "")
+        if not isinstance(task, str) or not task.strip():
+            return {"success": False, "error": "task must be a nonempty string", "terminal": True, "retryable": False}
+        task = task.strip()
+        mode = args.get("mode", self.default_mode)
+        if not isinstance(mode, str) or mode not in {"fast", "adaptive", "quality"}:
+            return {"success": False, "error": "mode must be fast, adaptive or quality", "terminal": True, "retryable": False}
 
         route = self.services.router.classify(task, "", str(args.get("task_type", "auto") if isinstance(args, dict) else "auto"), str(args.get("complexity", "auto") if isinstance(args, dict) else "auto"))
         deterministic = self.services.deterministic_query(root, task, 30) if getattr(self.services, "deterministic", None) is not None else {"success": False, "confidence": 0.0}
@@ -219,7 +224,7 @@ class LocalAgentPipeline:
             )
             packed["context_source"] = "deterministic"
         else:
-            packed = self.services._hybrid_context(root, task, tenant, args.get("workspace"), budget)
+            packed = self.services._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=budget)
             if isinstance(packed, dict): packed["context_source"] = "hybrid"
         if not packed.get("success"):
             return packed
@@ -271,8 +276,8 @@ class LocalAgentPipeline:
                 {"app_version": __version__, "execution": self.execution_policy_fp, "role": "explorer", "task": task, "context": context_fp, "model": fast_model},
                 lambda: (
                     self.tool_agent.run(
-                        fast_model, "explorer", task, root, tenant,
-                        self.max_explorer_tokens, 7, workspace=args.get("workspace"),
+                        fast_model, "explorer", task, root,
+                        max_tokens=self.max_explorer_tokens, priority=7, workspace=args.get("workspace"),
                         seed_context=str(packed.get("context", "")),
                         bootstrap={"deterministic": deterministic, "code_index": graph},
                         system_suffix="Return compact JSON when possible: hypotheses[{claim,confidence,evidence_ids}], candidate_files, missing_evidence. Identify only the minimum relevant surface.",
@@ -281,7 +286,7 @@ class LocalAgentPipeline:
                         fast_model,
                         f"TASK:\n{task}\n\nREPO EVIDENCE:\n{packed.get('context','')}",
                         "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Return a concise flat list of at most 5 items. Never nest bullet points, never repeat section headers or categories, and do not quote large evidence blocks. Never invent unseen repository facts.",
-                        self.max_explorer_tokens, 0.05, tenant, "pipeline:explorer", 7,
+                        self.max_explorer_tokens, 0.05, source="pipeline:explorer", priority=7,
                         semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                     )
                 ),
@@ -300,7 +305,7 @@ class LocalAgentPipeline:
                 fast_model,
                 f"TASK:\n{task}\n\nREPO EVIDENCE:\n{packed.get('context','')}",
                 "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Return a concise flat list of at most 5 items. Never nest bullet points, never repeat section headers or categories, and do not quote large evidence blocks. Never invent unseen repository facts.",
-                self.max_explorer_tokens, 0.05, tenant, "pipeline:explorer-fallback", 7,
+                self.max_explorer_tokens, 0.05, source="pipeline:explorer-fallback", priority=7,
                 semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
             )
         if not explorer.get("success"):
@@ -308,7 +313,7 @@ class LocalAgentPipeline:
                 return _repetition_loop_failure(explorer, stage="explorer", mode=mode)
             # A failed explorer must not make the entire repo tool unusable; return the
             # single-model path which has its own runtime recovery/fallbacks.
-            fallback = self.services.delegate_repo(args, tenant)
+            fallback = self.services.delegate_repo(args)
             fallback["pipeline"] = {"mode": mode, "degraded": True, "failed_stage": "explorer"}
             return fallback
 
@@ -338,7 +343,7 @@ class LocalAgentPipeline:
             def compute_worker() -> dict[str, Any]:
                 if self.tool_agent is not None:
                     tool_result = self.tool_agent.run(
-                        worker_model, "worker", task, root, tenant, self.max_worker_tokens, 6,
+                        worker_model, "worker", task, root, max_tokens=self.max_worker_tokens, priority=6,
                         workspace=args.get("workspace"),
                         seed_context=f"EXPLORER STATE:\n{json_dumps(explorer.get('structured') or {'summary': explorer.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
@@ -354,7 +359,7 @@ class LocalAgentPipeline:
                     worker_model,
                     f"TASK:\n{task}\n\nEXPLORER STATE:\n{json_dumps(explorer.get('structured') or {'summary': explorer.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEXACT/RETRIEVED EVIDENCE:\n{packed.get('context','')}",
                     "You are the scoped implementation worker. Produce the smallest correct implementation/diagnosis plan, explicit file/symbol actions, edge cases and validation. Return a concise flat list. Never nest bullet points or repeat section headers. Do not repeat evidence. If evidence is insufficient, say exactly what is missing.",
-                    self.max_worker_tokens, 0.08, tenant, "pipeline:worker", 6,
+                    self.max_worker_tokens, 0.08, source="pipeline:worker", priority=6,
                     semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                 )
 
@@ -365,7 +370,7 @@ class LocalAgentPipeline:
             if not worker.get("success"):
                 if _is_repetition_loop(worker):
                     return _repetition_loop_failure(worker, stage="worker", mode=mode)
-                fallback = self.services.delegate_repo(args, tenant)
+                fallback = self.services.delegate_repo(args)
                 fallback["pipeline"] = {"mode": mode, "degraded": True, "failed_stage": "worker"}
                 return fallback
 
@@ -381,7 +386,7 @@ class LocalAgentPipeline:
                 def compute_refine() -> dict[str, Any]:
                     if self.tool_agent is not None:
                         refined = self.tool_agent.run(
-                            worker_model, "worker", task, root, tenant, max(700, int(self.max_worker_tokens * 0.8)), 6,
+                            worker_model, "worker", task, root, max_tokens=max(700, int(self.max_worker_tokens * 0.8)), priority=6,
                             workspace=args.get("workspace"),
                             seed_context=f"FIRST PASS:\n{json_dumps(first_state, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                             bootstrap={"deterministic": deterministic, "code_index": graph},
@@ -395,7 +400,7 @@ class LocalAgentPipeline:
                         worker_model,
                         f"TASK:\n{task}\n\nFIRST PASS:\n{json_dumps(first_state, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         "You are the second-pass verifier/refiner. Return a concise flat list. Never nest bullet points or repeat section headers. Correct concrete mistakes, remove unsupported claims and return only the improved final plan/actions/risks/validation. Do not restate evidence.",
-                        max(700, int(self.max_worker_tokens * 0.8)), 0.03, tenant, "pipeline:worker-refine", 6,
+                        max(700, int(self.max_worker_tokens * 0.8)), 0.03, source="pipeline:worker-refine", priority=6,
                         semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                     )
                 refined = self._stage(
@@ -425,7 +430,7 @@ class LocalAgentPipeline:
             def compute_critic() -> dict[str, Any]:
                 if self.tool_agent is not None:
                     tool_result = self.tool_agent.run(
-                        critic_model, "critic", task, root, tenant, self.max_critic_tokens, 6,
+                        critic_model, "critic", task, root, max_tokens=self.max_critic_tokens, priority=6,
                         workspace=args.get("workspace"),
                         seed_context=f"CANDIDATE STATE:\n{json_dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
@@ -439,7 +444,7 @@ class LocalAgentPipeline:
                     critic_model,
                     f"TASK:\n{task}\n\nCANDIDATE STATE:\n{json_dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                     "You are an independent skeptical critic. Terse technical output only: zero conversational filler, pleasantries, or preamble. Return only concrete correctness gaps, unsafe assumptions, missed edge cases or missing validation as a flat list without nested bullets. If no material issue is found, say NO_MATERIAL_ISSUE. Do not praise or restate.",
-                    self.max_critic_tokens, 0.05, tenant, "pipeline:critic", 6,
+                    self.max_critic_tokens, 0.05, source="pipeline:critic", priority=6,
                     semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                 )
 

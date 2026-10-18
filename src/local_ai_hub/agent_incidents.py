@@ -82,7 +82,6 @@ class ToolOutcome:
     metadata: dict[str, Any] = field(default_factory=dict)
     affected_paths: tuple[str, ...] = ()
     repository_root: str = ""
-    tenant: str = ""
 
     def __post_init__(self) -> None:
         tn = str(self.tool_name).replace("\x00", "").strip() if self.tool_name is not None else ""
@@ -100,8 +99,9 @@ class ToolOutcome:
         ap_paths = tuple(str(x).replace("\x00", "").strip() for x in ap_raw if str(x).replace("\x00", "").strip())
 
         meta = dict(self.metadata) if isinstance(self.metadata, Mapping) else {}
+        if "tenant" in meta or "tenant_key" in meta:
+            raise ValueError("incident tenant fields were removed")
         rr = str(self.repository_root).replace("\x00", "").strip() if self.repository_root is not None else ""
-        tnt = str(self.tenant).replace("\x00", "").strip() if self.tenant is not None else ""
         pb = bool(self.policy_blocked)
         canc = bool(self.cancelled)
         to = bool(self.timed_out)
@@ -115,7 +115,6 @@ class ToolOutcome:
         object.__setattr__(self, "affected_paths", ap_paths)
         object.__setattr__(self, "metadata", meta)
         object.__setattr__(self, "repository_root", rr)
-        object.__setattr__(self, "tenant", tnt)
         object.__setattr__(self, "policy_blocked", pb)
         object.__setattr__(self, "cancelled", canc)
         object.__setattr__(self, "timed_out", to)
@@ -141,7 +140,6 @@ class IncidentRecord:
     expires_at: float | None = None
     affected_paths: tuple[str, ...] = ()
     repository_key: str = ""
-    tenant_key: str = ""
 
     def __post_init__(self) -> None:
         iid = str(self.incident_id).replace("\x00", "").strip() if self.incident_id is not None else ""
@@ -194,7 +192,6 @@ class IncidentRecord:
         ap_paths = tuple(str(x).replace("\x00", "").strip() for x in ap_raw if str(x).replace("\x00", "").strip())
 
         rk = str(self.repository_key).replace("\x00", "").strip() if self.repository_key is not None else ""
-        tk = str(self.tenant_key).replace("\x00", "").strip() if self.tenant_key is not None else ""
 
         object.__setattr__(self, "incident_id", iid)
         object.__setattr__(self, "operation_class", op or "command")
@@ -211,7 +208,6 @@ class IncidentRecord:
         object.__setattr__(self, "resolved", bool(self.resolved))
         object.__setattr__(self, "ignored", bool(self.ignored))
         object.__setattr__(self, "repository_key", rk)
-        object.__setattr__(self, "tenant_key", tk)
 
     def is_resolved(self) -> bool:
         return self.resolved
@@ -253,7 +249,6 @@ class IncidentRecord:
             "affected_paths": list(self.affected_paths),
             "provenance": {
                 "repository_key": self.repository_key,
-                "tenant_key": self.tenant_key,
             },
         }
 
@@ -280,8 +275,9 @@ class IncidentRecord:
                 signature_hash=str(data.get("signature_hash", "")),
             )
         prov = data.get("provenance") if isinstance(data.get("provenance"), Mapping) else {}
+        if any(key in data or key in prov for key in ("tenant", "tenant_key")):
+            raise ValueError("incident tenant fields were removed")
         repo_k = prov.get("repository_key") or data.get("repository_key") or ""
-        ten_k = prov.get("tenant_key") or data.get("tenant_key") or ""
         return cls(
             incident_id=str(data.get("incident_id", "")),
             fingerprint=fp,
@@ -301,7 +297,6 @@ class IncidentRecord:
             expires_at=data.get("expires_at"),
             affected_paths=tuple(data.get("affected_paths") or ()),
             repository_key=str(repo_k),
-            tenant_key=str(ten_k),
         )
 
 
@@ -622,8 +617,7 @@ class IncidentStore:
                                 expires_at REAL,
                                 affected_paths TEXT NOT NULL DEFAULT '[]',
                                 ignored INTEGER NOT NULL DEFAULT 0,
-                                repository_key TEXT NOT NULL DEFAULT '',
-                                tenant_key TEXT NOT NULL DEFAULT ''
+                                repository_key TEXT NOT NULL DEFAULT ''
                             );
                             """
                         )
@@ -648,7 +642,7 @@ class IncidentStore:
                         con.execute(
                             """
                             CREATE INDEX IF NOT EXISTS idx_agent_incidents_scope
-                            ON agent_incidents (repository_key, tenant_key, ignored, updated_at DESC);
+                            ON agent_incidents (repository_key, ignored, updated_at DESC);
                             """
                         )
                 finally:
@@ -685,9 +679,6 @@ class IncidentStore:
         repository_key = _incident_scope_key(
             "repository", outcome.repository_root or meta.get("repository_root")
         )
-        tenant_key = _incident_scope_key(
-            "tenant", outcome.tenant or meta.get("tenant")
-        )
         auto_rc, auto_fix, auto_conf = _extract_root_cause_and_fix(outcome.error, outcome.tool_name, outcome.timed_out)
         eff_rc = meta_rc or auto_rc or None
         eff_fix = meta_fix or auto_fix or None
@@ -713,10 +704,10 @@ class IncidentStore:
                            affected_paths, ignored, resolved
                     FROM agent_incidents
                     WHERE error_class = ? AND operation_class = ? AND signature_hash = ?
-                      AND repository_key = ? AND tenant_key = ?
+                      AND repository_key = ?
                     ORDER BY updated_at DESC, incident_id DESC LIMIT 1
                     """,
-                    (err_class, op_class, sig_hash, repository_key, tenant_key),
+                    (err_class, op_class, sig_hash, repository_key),
                 ).fetchone()
 
         row = retry_busy(_fetch_existing, retries=5, base_delay_seconds=0.02)
@@ -745,7 +736,6 @@ class IncidentStore:
                 updated_at=now,
                 affected_paths=affected or old_aff,
                 repository_key=repository_key,
-                tenant_key=tenant_key,
             )
             event = AgentEvent.create(
                 stream_id=f"incident:{inc_id}",
@@ -775,7 +765,6 @@ class IncidentStore:
             updated_at=now,
             affected_paths=affected,
             repository_key=repository_key,
-            tenant_key=tenant_key,
         )
 
         event = AgentEvent.create(
@@ -821,7 +810,6 @@ class IncidentStore:
             expires_at=record.expires_at,
             affected_paths=record.affected_paths,
             repository_key=record.repository_key,
-            tenant_key=record.tenant_key,
         )
 
         event = AgentEvent.create(
@@ -840,12 +828,12 @@ class IncidentStore:
                     UPDATE agent_incidents
                     SET root_cause = COALESCE(?, root_cause), verified_fix = ?, confidence = ?,
                         resolved = 1, ignored = 0, updated_at = ?
-                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ?
+                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ? AND repository_key = ?
                     """,
                     (
                         resolved_rec.root_cause, resolved_rec.verified_fix, resolved_rec.confidence,
                         resolved_rec.updated_at, record.operation_class, record.error_class,
-                        record.fingerprint.signature_hash,
+                        record.fingerprint.signature_hash, record.repository_key,
                     ),
                 )
         return self.get(incident_id) or resolved_rec
@@ -937,11 +925,11 @@ class IncidentStore:
                 con.execute(
                     """
                     UPDATE agent_incidents SET ignored = ?, updated_at = ?
-                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ?
+                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ? AND repository_key = ?
                     """,
                     (
                         1 if ignored else 0, now, record.operation_class, record.error_class,
-                        record.fingerprint.signature_hash,
+                        record.fingerprint.signature_hash, record.repository_key,
                     ),
                 )
         return self.get(incident_id) or record
@@ -951,23 +939,18 @@ class IncidentStore:
         fingerprint: IncidentFingerprint,
         state_revision: str,
         *,
-        root: str | None = None,
-        tenant: str | None = None,
+        root: str,
     ) -> RetryDecision:
+        if not isinstance(root, str) or not root or root != root.strip() or "\x00" in root:
+            raise ValueError("root must be a canonical non-empty string")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return RetryDecision(action="proceed", reason="incident store disabled")
         self._init_table()
-        scope_clause = ""
-        scope_params: tuple[Any, ...] = ()
-        if root is not None or tenant is not None:
-            if root is None or tenant is None:
-                return RetryDecision(action="stop", reason="incident scope unavailable")
-            repository_key = _incident_scope_key("repository", root)
-            tenant_key = _incident_scope_key("tenant", tenant)
-            if not repository_key or not tenant_key:
-                return RetryDecision(action="stop", reason="incident scope unavailable")
-            scope_clause = " AND repository_key = ? AND tenant_key = ?"
-            scope_params = (repository_key, tenant_key)
+        repository_key = _incident_scope_key("repository", root)
+        if not repository_key:
+            return RetryDecision(action="stop", reason="incident scope unavailable")
+        scope_clause = " AND repository_key = ?"
+        scope_params = (repository_key,)
 
         def _fetch_decision() -> Any:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
@@ -1022,7 +1005,7 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, attempts, evidence_ids, root_cause, verified_fix,
                            confidence, resolved, created_at, updated_at, expires_at, affected_paths, ignored,
-                           repository_key, tenant_key
+                           repository_key
                     FROM agent_incidents
                     WHERE incident_id = ?
                     """,
@@ -1057,11 +1040,11 @@ class IncidentStore:
                     WITH ranked AS (
                         SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                                state_revision,
-                               SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key) AS attempts,
+                               SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash, repository_key) AS attempts,
                                evidence_ids, root_cause, verified_fix, confidence, resolved, created_at,
-                               updated_at, expires_at, affected_paths, ignored, repository_key, tenant_key,
+                               updated_at, expires_at, affected_paths, ignored, repository_key,
                                ROW_NUMBER() OVER (
-                                   PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
+                                   PARTITION BY operation_class, error_class, signature_hash, repository_key
                                    ORDER BY updated_at DESC, incident_id DESC
                                ) AS row_num
                         FROM agent_incidents
@@ -1069,7 +1052,7 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence,
                            resolved, created_at, updated_at, expires_at, affected_paths, ignored,
-                           repository_key, tenant_key
+                           repository_key
                     FROM ranked WHERE row_num = 1
                 """
                 params: list[Any] = []
@@ -1140,8 +1123,8 @@ class IncidentStore:
                         redacted_message, state_revision, attempts, evidence_ids,
                         root_cause, verified_fix, confidence, resolved,
                         created_at, updated_at, expires_at, affected_paths, ignored,
-                        repository_key, tenant_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        repository_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(incident_id) DO UPDATE SET
                         redacted_message = excluded.redacted_message,
                         state_revision = excluded.state_revision,
@@ -1155,8 +1138,7 @@ class IncidentStore:
                         updated_at = excluded.updated_at,
                         expires_at = excluded.expires_at,
                         affected_paths = excluded.affected_paths,
-                        repository_key = excluded.repository_key,
-                        tenant_key = excluded.tenant_key
+                        repository_key = excluded.repository_key
                     """,
                     (
                         record.incident_id,
@@ -1177,7 +1159,6 @@ class IncidentStore:
                         json_dumps(list(record.affected_paths)),
                         1 if record.ignored else 0,
                         record.repository_key,
-                        record.tenant_key,
                     ),
                 )
                 con.execute("COMMIT")
@@ -1210,10 +1191,9 @@ class IncidentStore:
             updated_at,
             expires_at,
         ) = row[:15]
-        affected_paths_raw = row[15] if len(row) > 15 else "[]"
-        ignored_val = row[16] if len(row) > 16 else 0
-        repository_key = str(row[17] or "") if len(row) > 17 else ""
-        tenant_key = str(row[18] or "") if len(row) > 18 else ""
+        if len(row) != 18:
+            raise ValueError("incident row must use the current single-owner schema")
+        affected_paths_raw, ignored_val, repository_key = row[15:]
         try:
             aff_paths = tuple(json.loads(affected_paths_raw) if affected_paths_raw else ())
         except Exception:
@@ -1246,7 +1226,6 @@ class IncidentStore:
             expires_at=expires_at,
             affected_paths=aff_paths,
             repository_key=repository_key,
-            tenant_key=tenant_key,
         )
 
     def find_regressions(self, paths: Collection[str], *, state_revision: str | None = None) -> list[dict[str, Any]]:
@@ -1264,7 +1243,7 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
                            SUM(attempts) OVER (
-                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key
                            ) AS attempts,
                            affected_paths, updated_at, ignored,
                            ROW_NUMBER() OVER (
@@ -1322,31 +1301,23 @@ class IncidentStore:
         query: str,
         limit: int = 100,
         *,
-        root: str | None = None,
-        tenant: str | None = None,
+        root: str,
     ) -> list[dict[str, Any]]:
         if not isinstance(query, str) or not query.strip() or "\x00" in query:
             raise ValueError("query must be a non-empty string without NUL bytes")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("limit must be an integer from 1 to 100")
-        if root is not None and (
+        if (
             not isinstance(root, str) or not root or root != root.strip() or "\x00" in root
         ):
             raise ValueError("root must be a canonical non-empty string")
-        if tenant is not None and (
-            not isinstance(tenant, str) or not tenant or tenant != tenant.strip() or "\x00" in tenant
-        ):
-            raise ValueError("tenant must be a canonical non-empty string")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
-        if root is None or tenant is None:
-            return []
         repository_key = _incident_scope_key("repository", root)
-        tenant_key = _incident_scope_key("tenant", tenant)
-        if not repository_key or not tenant_key:
+        if not repository_key:
             return []
-        scope_params = (repository_key, tenant_key)
+        scope_params = (repository_key,)
         con = connect_sqlite(self.state_store.db_path)
         try:
             cur = con.execute(
@@ -1355,17 +1326,17 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
                            SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                           updated_at, affected_paths, ignored, expires_at, repository_key, tenant_key,
+                           updated_at, affected_paths, ignored, expires_at, repository_key,
                            ROW_NUMBER() OVER (
-                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key
                                ORDER BY updated_at DESC, incident_id DESC
                            ) AS row_num
                     FROM agent_incidents
-                    WHERE repository_key = ? AND tenant_key = ?
+                    WHERE repository_key = ?
                 )
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
                        root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
-                       repository_key, tenant_key
+                       repository_key
                 FROM ranked
                 WHERE ignored = 0 AND row_num = 1
                   AND (expires_at IS NULL OR expires_at > ?)
@@ -1404,7 +1375,6 @@ class IncidentStore:
                 }
                 item["provenance"] = {
                     "repository_key": str(r[11] or ""),
-                    "tenant_key": str(r[12] or ""),
                 }
                 results.append(item)
                 if len(results) >= limit:

@@ -38,7 +38,24 @@ def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path
 def test_detailed_traces_default_to_off_without_explicit_opt_in(tmp_path):
     store = DebugTraceStore({"server": {"state_dir": str(tmp_path)}})
     assert store.enabled is False
-    assert store.start(kind="api_request", tenant="test", action="/api/test") == ""
+    assert store.start(kind="api_request", action="/api/test") == ""
+
+
+def test_trace_start_rejects_retired_tenant_argument(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    with pytest.raises(TypeError):
+        store.start(kind="api_request", tenant=None)
+
+
+def test_trace_context_tracks_request_trace_and_agent_only():
+    from local_ai_hub import trace_context
+
+    assert not hasattr(trace_context, "current_tenant")
+    tokens = trace_context.set_context(request_id="request-1", trace_id="trace-1", agent="agent-1")
+    try:
+        assert len(tokens) == 3
+    finally:
+        trace_context.reset_context(tokens)
 
 
 def test_initial_trace_event_commits_with_session_and_retains_complete_payload(tmp_path, monkeypatch):
@@ -53,7 +70,7 @@ def test_initial_trace_event_commits_with_session_and_retains_complete_payload(t
 
     monkeypatch.setattr(store, "_connect", counted_connect)
     payload = {"method": "POST", "path": "/" + "x" * 5000, "request_id": "request-1"}
-    trace_id = store.start(kind="api_request", tenant="tenant", initial_event=("request_received", payload))
+    trace_id = store.start(kind="api_request", initial_event=("request_received", payload))
     assert trace_id
     assert len(connections) == 1
     detail = store.detail(trace_id, full_payload=True)
@@ -68,7 +85,7 @@ def test_initial_trace_event_failure_does_not_leave_partial_session(tmp_path, mo
         raise sqlite3.OperationalError("injected event write failure")
 
     monkeypatch.setattr(store, "_append_event", failed_event)
-    assert store.start(kind="api_request", tenant="tenant", initial_event=("request_received", {})) == ""
+    assert store.start(kind="api_request", initial_event=("request_received", {})) == ""
     with closing(store._connect()) as connection:
         assert connection.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0] == 0
@@ -93,7 +110,6 @@ def test_http_trace_start_uses_one_transaction_for_initial_event(tmp_path, monke
     handler.headers = {}
     handler.command = "POST"
     handler._agent = lambda: "agent"
-    handler._tenant = lambda: "tenant"
     try:
         handler._begin_trace("/api/security_audit")
         assert handler._debug_trace_id
@@ -119,7 +135,7 @@ def test_trace_defaults_allow_large_retained_payloads(tmp_path):
 
 def test_trace_retention_days_override_terminal_ttl_and_are_reported(tmp_path):
     store = DebugTraceStore(_config(tmp_path, terminal_ttl_seconds=10, retention_days=2))
-    trace_id = store.start(kind="api_request", tenant="tenant")
+    trace_id = store.start(kind="api_request")
     store.finish(trace_id, state="done", response={"ok": True})
 
     with closing(sqlite3.connect(store.path)) as con:
@@ -133,7 +149,7 @@ def test_trace_retention_days_override_terminal_ttl_and_are_reported(tmp_path):
 
 def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="async_job", tenant="tenant", agent="codex", action="reason")
+    trace_id = store.start(kind="async_job", agent="codex", action="reason")
 
     store.event(trace_id, "model_request", {"prompt": "full prompt", "system": "full system"})
     store.event(trace_id, "output_delta", {"text": "part"})
@@ -150,9 +166,9 @@ def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
 
 def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    first = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason", model="m1")
+    first = store.start(kind="api_request", agent="codex", action="/api/reason", model="m1")
     store.event(first, "request_received", {"body": {"task": "inspect"}})
-    second = store.start(kind="async_job", tenant="tenant", agent="worker", action="reason", model="m2")
+    second = store.start(kind="async_job", agent="worker", action="reason", model="m2")
 
     detail = store.detail(first, since_seq=0)
     assert [event["event_type"] for event in detail["events"]] == ["request_received"]
@@ -165,7 +181,7 @@ def test_trace_detail_pages_in_sequence_order_with_stable_cursor(tmp_path):
     from local_ai_hub.json_utils import dumps as json_dumps
 
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    trace_id = store.start(kind="api_request", agent="codex", action="/api/reason")
     for index in range(5):
         store.event(trace_id, "output_delta", {"index": index})
 
@@ -191,7 +207,7 @@ def test_trace_detail_byte_budget_pages_at_event_boundaries(tmp_path):
     from local_ai_hub.json_utils import dumps as json_dumps
 
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
-    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    trace_id = store.start(kind="api_request", agent="codex", action="/api/reason")
     for index in range(8):
         store.event(trace_id, "output_delta", {"index": index, "text": "x" * 1500})
 
@@ -210,7 +226,7 @@ def test_trace_detail_required_bytes_follow_first_trimmed_event(tmp_path):
     from local_ai_hub.json_utils import dumps as json_dumps
 
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
-    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    trace_id = store.start(kind="api_request", agent="codex", action="/api/reason")
     store.event(trace_id, "output_delta", {"text": "a" * 800})
     store.event(trace_id, "output_delta", {"text": "b" * 800})
     store.event(trace_id, "output_delta", {"text": "c" * 5000})
@@ -246,7 +262,7 @@ def test_trace_detail_required_bytes_follow_first_trimmed_event(tmp_path):
 
 def test_trace_detail_reports_oversize_event_without_advancing_cursor(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
-    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    trace_id = store.start(kind="api_request", agent="codex", action="/api/reason")
     store.event(trace_id, "output_delta", {"text": "full-payload-" + "x" * 6000})
 
     blocked = store.detail(trace_id, since_seq=0, limit=10, max_bytes=4096)
@@ -263,7 +279,7 @@ def test_trace_detail_reports_oversize_event_without_advancing_cursor(tmp_path):
     assert recovered["response_bytes"] <= recovered["max_bytes"]
 def test_trace_list_skips_empty_project_before_root_fallback(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="api_request", tenant="tenant", action="/api/reason")
+    trace_id = store.start(kind="api_request", action="/api/reason")
     store.update(trace_id, request={"project": "", "root": r"C:\projects\alpha"})
 
     listed = store.list()
@@ -273,7 +289,7 @@ def test_trace_list_skips_empty_project_before_root_fallback(tmp_path):
 
 def test_trace_list_keeps_project_label_when_request_preview_is_truncated(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="api_request", tenant="tenant", action="/api/reason")
+    trace_id = store.start(kind="api_request", action="/api/reason")
     store.update(
         trace_id,
         request={"root": r"C:\work\project-alpha", "prompt": "x" * (store.CONTENT_PREVIEW_CHARS + 100)},
@@ -287,7 +303,7 @@ def test_trace_list_keeps_project_label_when_request_preview_is_truncated(tmp_pa
 @pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 2**100])
 def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset):
     store = DebugTraceStore(_config(tmp_path))
-    store.start(kind="async_job", tenant="tenant", action="reason")
+    store.start(kind="async_job", action="reason")
 
     listed = store.list(offset=offset)
 
@@ -300,7 +316,7 @@ def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset
 def test_debug_trace_list_route_handles_sqlite_oversized_offset(tmp_path, monkeypatch):
     offset = 2**100
     store = DebugTraceStore(_config(tmp_path))
-    store.start(kind="async_job", tenant="tenant", action="reason")
+    store.start(kind="async_job", action="reason")
     app = type("App", (), {"debug_traces": store})()
     monkeypatch.setattr(http_server, "APP", app)
 
@@ -326,7 +342,7 @@ def test_debug_trace_list_route_handles_sqlite_oversized_offset(tmp_path, monkey
 @pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
 def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     store.event(trace_id, "progress", {"index": 1})
 
     detail = store.detail(trace_id, since_seq=since_seq)
@@ -337,7 +353,7 @@ def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, si
 
 def test_trace_detail_supports_bounded_backward_event_pages(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     for index in range(5):
         store.event(trace_id, "progress", {"index": index})
 
@@ -363,7 +379,7 @@ def test_backward_page_size_trimming_does_not_claim_older_events(tmp_path):
             max_session_text_bytes=16 * 1024,
         )
     )
-    trace_id = store.start(kind="async_job", tenant="tenant")
+    trace_id = store.start(kind="async_job")
     store.event(trace_id, "progress", {"payload": "x" * 5000})
     encode = store._encode
     store._encode = lambda value: encode(value) + (" " * 6000 if isinstance(value, dict) and value.get("events") else "")
@@ -376,7 +392,7 @@ def test_backward_page_size_trimming_does_not_claim_older_events(tmp_path):
 
 def test_forward_page_size_trimming_preserves_cursor_for_omitted_events(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_detail_response_bytes=4096))
-    trace_id = store.start(kind="async_job", tenant="tenant")
+    trace_id = store.start(kind="async_job")
     store.event(trace_id, "progress", {"index": 1})
     store.event(trace_id, "progress", {"index": 2})
     encode = store._encode
@@ -391,7 +407,7 @@ def test_forward_page_size_trimming_preserves_cursor_for_omitted_events(tmp_path
 
 def test_trace_event_limit_evicts_whole_trace_without_trimming_payload(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=100, max_session_text_bytes=120))
-    trace_id = store.start(kind="api_request", tenant="tenant")
+    trace_id = store.start(kind="api_request")
     store.link(trace_id, request_id="req-1", async_job_id="job-1", scheduler_job_id="7")
     store.event(trace_id, "request_received", {"body": "x" * 1000})
     store.update(trace_id, request={"body": "y" * 1000})
@@ -401,11 +417,11 @@ def test_trace_event_limit_evicts_whole_trace_without_trimming_payload(tmp_path)
 
 def test_cleanup_deletes_terminal_traces_in_batches_and_protects_live_work(tmp_path):
     store = DebugTraceStore(_config(tmp_path, terminal_ttl_seconds=1, cleanup_batch_size=1))
-    old_done = store.start(kind="async_job", tenant="tenant")
+    old_done = store.start(kind="async_job")
     store.finish(old_done, state="done", response={"ok": True})
-    old_failed = store.start(kind="api_request", tenant="tenant")
+    old_failed = store.start(kind="api_request")
     store.finish(old_failed, state="failed", error="bad")
-    live = store.start(kind="async_job", tenant="tenant")
+    live = store.start(kind="async_job")
     store.update(live, state="running")
 
     future = time.time() + 100
@@ -419,8 +435,8 @@ def test_cleanup_deletes_terminal_traces_in_batches_and_protects_live_work(tmp_p
 
 def test_recover_incomplete_traces_marks_previous_processes_interrupted(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    queued = store.start(kind="api_request", tenant="tenant", action="/api/command")
-    running = store.start(kind="async_job", tenant="tenant", action="reason")
+    queued = store.start(kind="api_request", action="/api/command")
+    running = store.start(kind="async_job", action="reason")
     store.update(running, state="running")
 
     result = store.recover_incomplete(reason="hub restarted")
@@ -445,7 +461,7 @@ def test_dashboard_and_favicon_are_monitor_paths():
 
 def test_event_count_and_session_text_caps_evict_whole_trace(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_events_per_session=3, max_session_text_bytes=1024))
-    trace_id = store.start(kind="async_job", tenant="tenant")
+    trace_id = store.start(kind="async_job")
     store.event(trace_id, "one", {"text": "a"})
     store.event(trace_id, "two", {"text": "b"})
     store.event(trace_id, "three", {"text": "c"})
@@ -481,7 +497,7 @@ def test_http_trace_finisher_does_not_hide_a_failed_terminal_write(monkeypatch):
 
 def test_model_request_promotes_model_to_trace_summary(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="async_job", tenant="tenant")
+    trace_id = store.start(kind="async_job")
 
     from local_ai_hub.debug_traces import DebugTraceObserver
 
@@ -531,7 +547,7 @@ def test_trace_detail_http_clamps_page_parameters_and_maps_oversize(tmp_path, mo
     from types import SimpleNamespace
 
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
-    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    trace_id = store.start(kind="api_request", agent="codex", action="/api/reason")
     store.event(trace_id, "output_delta", {"text": "x" * 6000})
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         debug_traces=store,
@@ -644,7 +660,7 @@ def test_trace_detail_http_rebuilds_page_after_reconciliation(tmp_path, monkeypa
 
 def test_full_payload_detail_marks_content_beyond_preview_as_retrievable(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=2 * 1024 * 1024))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     output = "x" * 600_000
     store.update(trace_id, output=output)
 
@@ -664,7 +680,7 @@ def test_full_payload_content_pages_reconstruct_retained_session_and_event_data(
         max_event_bytes=4096,
         max_detail_response_bytes=4096,
     ))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     output = "start-秘密-😀-" + "x" * 5000 + "-end"
     response = {"message": "結果-" + "y" * 1500}
     event_payload = {"prompt": "入力-" + "z" * 1000}
@@ -708,7 +724,7 @@ def test_large_unicode_content_pages_use_indexed_chunks_at_late_offsets(tmp_path
         max_event_bytes=4 * 1024 * 1024,
         max_detail_response_bytes=4096,
     ))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     output = "秘密😀" * 100_000
     response = {"answer": "結果🛰️" * 30_000}
     event_payload = {"prompt": "入力🪷" * 25_000}
@@ -767,7 +783,7 @@ def test_large_unicode_content_pages_use_indexed_chunks_at_late_offsets(tmp_path
 
 def test_oversized_event_evicts_whole_trace_instead_of_truncating(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=256, max_session_text_bytes=1024))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     store.event(trace_id, "model_request", {"prompt": "p" * 2000})
 
     detail = store.detail(trace_id, full_payload=True)
@@ -776,7 +792,7 @@ def test_oversized_event_evicts_whole_trace_instead_of_truncating(tmp_path):
 
 def test_oversized_session_content_evicts_whole_trace_instead_of_truncating(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=1024))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     store.update(trace_id, output="o" * 6000, request={"body": "r" * 6000})
 
     detail = store.detail(trace_id, full_payload=True)
@@ -806,7 +822,7 @@ def test_http_trace_request_capture_preserves_complete_payload_when_enabled(tmp_
     assert all(secret in json.dumps(captured) for secret in ("header-secret", "secret-key", "database-secret", "github-secret", "inline-secret", "inline-key"))
 
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="api_request", tenant="local")
+    trace_id = store.start(kind="api_request")
     store.update(trace_id, request={
         "prompt": "ordinary prompt stays visible",
         "authorization": "Bearer store-secret",
@@ -841,6 +857,15 @@ def test_http_trace_request_metadata_keeps_complete_project_path():
     assert captured["root"] == r"C:\work\project-alpha"
     assert captured["prompt"] == "private prompt"
     assert r"C:\work\project-alpha" in captured["root"]
+
+
+def test_captured_semantic_payload_preserves_legacy_tenant_text(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", action="/api/reason")
+    store.update(trace_id, request={"prompt": "Explain the legacy tenant label in this quoted document."})
+
+    request = store.detail(trace_id, full_payload=True)["session"]["request"]
+    assert request["prompt"] == "Explain the legacy tenant label in this quoted document."
 
 
 def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
@@ -885,7 +910,7 @@ def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
 @pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
 def test_trace_detail_clamps_forward_cursor_without_replaying_events(tmp_path, since_seq):
     store = DebugTraceStore(_config(tmp_path))
-    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    trace_id = store.start(kind="async_job", action="reason")
     store.event(trace_id, "progress", {"index": 1})
 
     detail = store.detail(trace_id, since_seq=since_seq)

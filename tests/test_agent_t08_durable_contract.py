@@ -1179,14 +1179,13 @@ def test_expired_memory_delete_and_event_are_atomic(tmp_path):
     state_store = AgentStateStore(db_path)
     memory = MemoryStore(state_store)
     root = str(tmp_path.resolve())
-    tenant = "t08-expiry-tenant"
     record = MemoryRecord.create(
         kind=MemoryKind.FINDING,
         scope=AgentScope.TASK,
         scope_id="task-expired",
         key="expires",
         value={"keep_until": 1},
-        provenance={"root": root, "tenant": tenant},
+        provenance={"root": root},
         expires_at=time.time() + 10,
     )
     saved = memory.record(record)
@@ -1200,7 +1199,7 @@ def test_expired_memory_delete_and_event_are_atomic(tmp_path):
         memory.reap_expired(now=time.time() + 20)
     assert memory.get(
         saved.record_id, scope=AgentScope.TASK, scope_id="task-expired",
-        task_id="task-expired", root=root, tenant=tenant,
+        task_id="task-expired", root=root,
     ) is not None
     stream_id = "memory:" + "".join(
         f"{len(part)}:{part}" for part in (saved.scope.value, saved.scope_id, saved.key)
@@ -1214,7 +1213,7 @@ def test_expired_memory_delete_and_event_are_atomic(tmp_path):
     assert memory.reap_expired(now=time.time() + 20) == 1
     assert memory.get(
         saved.record_id, scope=AgentScope.TASK, scope_id="task-expired",
-        task_id="task-expired", root=root, tenant=tenant,
+        task_id="task-expired", root=root,
     ) is None
     assert [event.kind for event in state_store.events(stream_id)] == [
         "memory.recorded", "memory.expired"

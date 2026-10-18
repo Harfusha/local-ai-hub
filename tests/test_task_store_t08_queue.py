@@ -101,7 +101,7 @@ def _completed_with_trusted_review(tasks, tmp_path):
         "kind": "work_source_review", "passed": True, "criteria": ["review"],
         "task_id": task.task_id, "owner": task.owner,
         "repository_revision": "rev-1", "mutation_generation": 0,
-    }, task.owner, "source_review")
+    }, kind="source_review")
     receipt = verifier.record(VerificationReceipt.create(
         task.task_id, "review", evidence_id=evidence, owner=task.owner,
         repository_revision="rev-1", mutation_generation=0, evidence_type="source_review",
@@ -200,7 +200,7 @@ def test_mutation_generation_rejects_invalid_counter_without_reset(tasks, bad_ge
 def test_mutation_generation_preserves_server_owned_scope_and_memory(tasks, tmp_path, monkeypatch):
     memory_context = {"items": [{"id": "server-memory"}]}
     monkeypatch.setattr(tasks, "_task_memory_context", lambda *args, **kwargs: memory_context)
-    token = trace_context.set_context(tenant="trusted-owner")
+    token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         created = tasks.create(
             GoalContract(goal="owned generation"), ScopeContext(repository_id=str(tmp_path)),

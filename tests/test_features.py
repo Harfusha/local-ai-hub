@@ -263,7 +263,6 @@ enabled = true
             handler._require_authorized = lambda: True
             handler._begin_trace = lambda path: setattr(handler, "_trace_request_id", "config-toggle-test")
             handler._agent = lambda: "test-agent"
-            handler._tenant = lambda: "test"
             sent = []
 
             def send(status, body):

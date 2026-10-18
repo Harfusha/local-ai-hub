@@ -68,7 +68,7 @@ http_server.APP = app
 server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
 server_thread = threading.Thread(target=server.serve_forever, daemon=True)
 server_thread.start()
-client = HubClient(tenant="t04-root-path-hints", config_path=str(config_path), auto_start=False)
+client = HubClient(config_path=str(config_path), auto_start=False)
 mcp_server.CLIENT = client
 wire_payloads = []
 service_hints = []

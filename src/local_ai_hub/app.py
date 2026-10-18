@@ -308,6 +308,24 @@ _PREPROCESS_TABLES = frozenset({"file_refs", "module_cards", "project_cards", "e
 _DET_TABLES = frozenset({"files", "facts", "dependencies", "scripts", "project_state", "query_cache"})
 
 
+def _has_retired_bundle_tenant_field(value: Any) -> bool:
+    if isinstance(value, dict):
+        if any(key in value for key in (
+            "tenant", "tenant_id", "tenant_identity", "tenant_partition", "tenant_scope", "tenant_key",
+        )):
+            return True
+        # Record values and document bodies are opaque project content, not Hub
+        # scope selectors. A project's own domain model may legitimately say tenant.
+        return any(
+            _has_retired_bundle_tenant_field(item)
+            for key, item in value.items()
+            if key not in {"value", "text", "content", "blob"}
+        )
+    if isinstance(value, list):
+        return any(_has_retired_bundle_tenant_field(item) for item in value)
+    return False
+
+
 class BundleValidationError(ValueError):
     """Raised when bundle validation or scope verification fails."""
 
@@ -522,6 +540,39 @@ class LocalAIApp:
             self._prewarm_thread.start()
         self.async_jobs.recover()
 
+    def _reap_expired_task_scopes(self) -> list[str]:
+        """Reap bounded authorized repository scopes without a global bypass."""
+        from .repository_scope import RepositoryScopeError, authorized_repository_root
+
+        state = getattr(self, "agent_state", None)
+        if state is None or not state.enabled or self._shutdown.is_set():
+            return []
+        now = time.time()
+        deadline = time.monotonic() + 2.0
+        cursor = getattr(self, "_task_reap_after_root", "")
+        roots = state.tasks._expired_repository_roots(now=now, limit=16, after_root=cursor)
+        if not roots and cursor:
+            self._task_reap_after_root = ""
+            roots = state.tasks._expired_repository_roots(now=now, limit=16)
+        reaped: list[str] = []
+        for root in roots:
+            if self._shutdown.is_set() or time.monotonic() >= deadline:
+                break
+            self._task_reap_after_root = root
+            try:
+                authorized_root = authorized_repository_root(self.config, root)
+            except RepositoryScopeError:
+                self.logger.debug("watchdog: task root unavailable or outside allowed scope")
+                continue
+            try:
+                reaped.extend(state.tasks.reap_expired_heartbeats(
+                    now=now, repo_root=authorized_root,
+                    _deadline_monotonic=deadline, _cancel_event=self._shutdown,
+                ))
+            except Exception as exc:
+                self.logger.debug("watchdog: scoped task reaping failed: %s", type(exc).__name__)
+        return reaped
+
     def _watchdog_loop(self) -> None:
         cfg = self.config.get("resilience", {})
         interval = max(1.0, float(cfg.get("watchdog_interval_seconds", 5.0)))
@@ -538,7 +589,7 @@ class LocalAIApp:
                 self.preprocessor.ensure_running()
                 if getattr(self, "agent_state", None) is not None and getattr(self.agent_state, "enabled", False):
                     try:
-                        self.agent_state.tasks.reap_expired_heartbeats()
+                        self._reap_expired_task_scopes()
                     except Exception as exc:
                         self.logger.debug("watchdog: reap_expired_heartbeats failed: %s", type(exc).__name__)
                 sched = self.scheduler.status()
@@ -607,16 +658,16 @@ class LocalAIApp:
         self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="local-ai-watchdog", daemon=True)
         self._watchdog_thread.start()
 
-    def _execute_async_task(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def _execute_async_task(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.async_jobs.inference_admission(action) as rejection:
             if rejection is not None:
                 return rejection
             runner = getattr(self, "_execute_async_task_admitted", None)
             if callable(runner):
-                return runner(action, payload, tenant)
-            return LocalAIApp._execute_async_task_admitted(self, action, payload, tenant)
+                return runner(action, payload)
+            return LocalAIApp._execute_async_task_admitted(self, action, payload)
 
-    def _execute_async_task_admitted(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def _execute_async_task_admitted(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         from .async_jobs import report_job_progress
         report_job_progress(0.0, f"executing:{action}")
         async_payload = dict(payload)
@@ -624,33 +675,33 @@ class LocalAIApp:
         for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
             async_payload.pop(untrusted_context, None)
         if action == "delegate":
-            return self.services.delegate(async_payload, tenant)
+            return self.services.delegate(async_payload)
         if action == "reason":
             reason_payload = {key: value for key, value in async_payload.items() if key != "task"}
             reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
-            return self.services.reason(reason_payload, tenant)
+            return self.services.reason(reason_payload)
         if action == "review":
             review_payload = {key: value for key, value in async_payload.items() if key not in {"task", "context"}}
             review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
-            return self.services.review(review_payload, tenant)
+            return self.services.review(review_payload)
         if action == "review_diff":
             review_payload = dict(async_payload)
             review_payload["_async_job"] = True
-            return self.services.review_diff(review_payload, tenant)
+            return self.services.review_diff(review_payload)
         if action == "second_opinion":
             opinion_payload = dict(async_payload)
             opinion_payload.update({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1})
-            return self.services.second_opinion(opinion_payload, tenant)
+            return self.services.second_opinion(opinion_payload)
         if action == "compress":
             compress_payload = dict(async_payload)
             compress_payload.update({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1})
-            return self.services.compress(compress_payload, tenant)
+            return self.services.compress(compress_payload)
         if action == "route":
             route_payload = dict(async_payload)
             route_payload.pop("task", None)
             route_payload.pop("context", None)
             route_payload.update({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")})
-            return self.services.route_context(route_payload, tenant)
+            return self.services.route_context(route_payload)
         if action == "batch":
             raw_tasks = async_payload.get("tasks")
             if not isinstance(raw_tasks, list) or not raw_tasks:
@@ -670,9 +721,9 @@ class LocalAIApp:
                         if str(value or "").strip():
                             task_payload[key] = value
                 tasks.append(task_payload)
-            return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
+            return self.services.batch_delegate({"tasks": tasks, "priority": 1})
         if action == "speculative_lint":
-            return self.services.speculative_lint(async_payload, tenant)
+            return self.services.speculative_lint(async_payload)
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
 
     def capabilities(self) -> dict[str, Any]:
@@ -1346,7 +1397,6 @@ class LocalAIApp:
         self,
         root: str = "",
         *,
-        tenant: str | None = None,
         agent_state_record_ids: list[str] | None = None,
         agent_state_contexts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> bytes:
@@ -1362,39 +1412,43 @@ class LocalAIApp:
                 rec = None
                 if getattr(self, "agent_memory", None):
                     supplied_context = (agent_state_contexts or {}).get(rid, {})
+                    if "tenant" in supplied_context:
+                        raise BundleValidationError("agent memory context field 'tenant' is retired")
                     lookup_context = {
                         key: supplied_context[key]
                         for key in (
-                            "scope", "scope_id", "root", "repository_id", "tenant",
+                            "scope", "scope_id", "root", "repository_id",
                             "task_id", "session_id", "clone_id", "worktree_id", "branch",
                         )
                         if key in supplied_context
                     }
                     lookup_context.setdefault("root", root or None)
-                    lookup_context.setdefault("tenant", tenant)
                     scope_value = getattr(lookup_context.get("scope"), "value", lookup_context.get("scope"))
                     if scope_value == "repository" and not str(lookup_context.get("root") or "").strip():
                         raise BundleValidationError("repository memory requires provenance root")
                     if rid in (agent_state_contexts or {}):
                         rec = self.agent_memory.get(rid, **lookup_context)
                     else:
-                        rec = self.agent_memory.get(
-                            rid, scope=AgentScope.GLOBAL, tenant=tenant,
-                        )
-                        if rec is None and root and tenant:
+                        rec = self.agent_memory.get(rid, scope=AgentScope.GLOBAL)
+                        if rec is None and root:
+                            project = resolve_project_context(
+                                root, Path(self.agent_state.db_path).parent
+                            )
                             rec = self.agent_memory.get(
                                 rid, scope=AgentScope.REPOSITORY,
-                                root=root, tenant=tenant,
-                                repository_id=resolve_project_context(
-                                    root, Path(self.agent_state.db_path).parent
-                                ).coordination_id,
+                                root=root, repository_id=project.coordination_id,
                             )
                 if rec is not None:
                     scope_val = getattr(rec.scope, "value", rec.scope)
                     status_val = getattr(rec.status, "value", rec.status)
                     if (scope_val == "global" or scope_val == AgentScope.GLOBAL) and status_val not in ("active", "confirmed", MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
                         raise BundleValidationError(f"disallowed scope: unapproved global record {rid}")
-                    exported_agent_records.append({"type": "memory", "data": rec.to_dict()})
+                    record_data = rec.to_dict()
+                    if _has_retired_bundle_tenant_field(record_data):
+                        raise BundleValidationError(
+                            f"memory record {rid} contains retired tenant provenance; offline conversion required"
+                        )
+                    exported_agent_records.append({"type": "memory", "data": record_data})
                 else:
                     t = self.agent_tasks.get(rid) if getattr(self, "agent_tasks", None) else None
                     if t is not None:
@@ -1476,11 +1530,17 @@ class LocalAIApp:
                 tables["scripts"] = checked("scripts", [dict(r) for r in con.execute("SELECT * FROM scripts WHERE root=?", (root_path,)).fetchall()])
 
         if self.rag is not None:
-            scope_key = self.rag._scope_key("__preprocess__")
             with closing(self.rag._connect()) as con:
                 con.row_factory = sqlite3.Row
-                tables["rag_files"] = checked("rag_files", [dict(r) for r in con.execute("SELECT * FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)).fetchall()])
-                tables["rag_chunks"] = checked("rag_chunks", [dict(r) for r in con.execute("SELECT * FROM chunks WHERE tenant=? AND workspace=?", (scope_key, workspace)).fetchall()])
+                tables["rag_files"] = checked("rag_files", [dict(r) for r in con.execute("SELECT * FROM files WHERE workspace=?", (workspace,)).fetchall()])
+                tables["rag_chunks"] = checked("rag_chunks", [dict(r) for r in con.execute("SELECT * FROM chunks WHERE workspace=?", (workspace,)).fetchall()])
+                tables["rag_project_file_owners"] = checked(
+                    "rag_project_file_owners",
+                    [dict(r) for r in con.execute(
+                        "SELECT * FROM project_file_owners WHERE workspace=? AND root=?",
+                        (workspace, root_path),
+                    ).fetchall()],
+                )
 
         encoded_tables = self._bundle_encode(tables)
         canonical = json_dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1726,6 +1786,9 @@ class LocalAIApp:
         if not isinstance(data, dict):
             return {"success": False, "error": "bundle root must be an object"}
 
+        if _has_retired_bundle_tenant_field(data):
+            return {"success": False, "error": "bundle contains retired tenant fields; offline conversion required"}
+
         version = str(data.get("version", ""))
         if version != __version__:
             return {"success": False, "error": f"bundle version must match Local AI Hub {__version__}"}
@@ -1764,9 +1827,8 @@ class LocalAIApp:
                             source_root = provenance.get("root") if isinstance(provenance, dict) else None
                             if not source_root:
                                 return None, "repository memory provenance root is required for import"
-                            if any(not isinstance(provenance.get(field), str) or not provenance[field].strip()
-                                   for field in ("repository_id", "tenant")):
-                                return None, "repository memory requires repository_id and tenant"
+                            if not isinstance(provenance.get("repository_id"), str) or not provenance["repository_id"].strip():
+                                return None, "repository memory requires repository_id"
                             if target_root_path:
                                 if not source_root_path:
                                     return None, "project bundle root is required for repository memory import"
@@ -1883,6 +1945,7 @@ class LocalAIApp:
         allowed_tables = {
             "projects", "file_refs", "content_cards", "module_cards", "project_cards", "external_index_state",
             "deterministic_files", "deterministic_facts", "dependencies", "scripts", "rag_files", "rag_chunks",
+            "rag_project_file_owners",
         }
         for name, tbl_rows in tables.items():
             if name not in allowed_tables:
@@ -1897,7 +1960,38 @@ class LocalAIApp:
         ):
             return {"success": False, "error": "invalid RAG chunk embedding"}
 
+        rag_file_fields = {"workspace", "path", "mtime_ns", "size", "content_hash"}
+        rag_chunk_fields = {
+            "workspace", "path", "chunk_no", "content_hash", "text", "embedding", "embedding_space",
+        }
+        rag_owner_fields = {"workspace", "root", "path"}
+        if self.rag is not None and not {"rag_files", "rag_chunks", "rag_project_file_owners"} <= set(tables):
+            return {"success": False, "error": "bundle is missing required RAG tables"}
+        if any(set(row) != rag_file_fields for row in tables.get("rag_files", [])):
+            return {"success": False, "error": "incompatible RAG file schema; offline conversion required"}
+        if any(set(row) != rag_chunk_fields for row in tables.get("rag_chunks", [])):
+            return {"success": False, "error": "incompatible RAG chunk schema; offline conversion required"}
+        if any(set(row) != rag_owner_fields for row in tables.get("rag_project_file_owners", [])):
+            return {"success": False, "error": "incompatible RAG project ownership schema; offline conversion required"}
+
         orig_root = str(data.get("root", ""))
+        source_workspace = str(data.get("workspace", ""))
+        if not orig_root or source_workspace != self.rag.workspace_id(orig_root):
+            return {"success": False, "error": "bundle workspace does not match its source root"}
+        if any(
+            row["workspace"] != source_workspace
+            for row in (
+                *tables.get("rag_files", []),
+                *tables.get("rag_chunks", []),
+                *tables.get("rag_project_file_owners", []),
+            )
+        ):
+            return {"success": False, "error": "RAG rows do not match the bundle workspace"}
+        if any(
+            row["root"] != orig_root
+            for row in tables.get("rag_project_file_owners", [])
+        ):
+            return {"success": False, "error": "RAG project ownership does not match the bundle root"}
         root = str(target_root or orig_root)
         root_obj = Path(root).expanduser().resolve(strict=False) if root else None
         if root_obj is None or not root_obj.is_dir():
@@ -1912,6 +2006,16 @@ class LocalAIApp:
             if error:
                 return {"success": False, "error": error}
             prepared_project_agent_records = prepared or []
+        if self.rag is not None:
+            try:
+                self.rag._validate_existing_database(
+                    self.rag.db_path, self.rag.index_fingerprint
+                )
+            except (RuntimeError, sqlite3.DatabaseError) as exc:
+                return {
+                    "success": False,
+                    "error": f"RAG database cannot accept bundle import: {exc}",
+                }
         now = time.time()
 
         def rows(name: str) -> list[dict[str, Any]]:
@@ -2013,17 +2117,35 @@ class LocalAIApp:
             mark_import_phase(manifest, "deterministic")
 
         if self.rag is not None:
-            scope_key = self.rag._scope_key("__preprocess__")
             with capture_import_phase(manifest, "rag", phase_errors), self.rag._index_lock, closing(self.rag._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
-                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=?", (scope_key, workspace))
-                con.execute("DELETE FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace))
+                has_fts = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
+                ).fetchone() is not None
+                if has_fts:
+                    con.execute("DELETE FROM chunk_fts WHERE workspace=?", (workspace,))
+                con.execute("DELETE FROM chunks WHERE workspace=?", (workspace,))
+                con.execute("DELETE FROM files WHERE workspace=?", (workspace,))
+                con.execute(
+                    "DELETE FROM project_file_owners WHERE workspace=? AND root=?",
+                    (workspace, root_path),
+                )
                 for f in rows("rag_files"):
-                    con.execute("INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                                (scope_key, workspace, str(f.get("path", "")), int(f.get("mtime_ns", 0) or 0), int(f.get("size", 0) or 0), str(f.get("content_hash", ""))))
+                    con.execute("INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+                                (workspace, str(f.get("path", "")), int(f.get("mtime_ns", 0) or 0), int(f.get("size", 0) or 0), str(f.get("content_hash", ""))))
                 for c in rows("rag_chunks"):
-                    con.execute("INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                                (scope_key, workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("content_hash", "")), str(c.get("text", "")), c.get("embedding", "")))
+                    con.execute("INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
+                                (workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("content_hash", "")), str(c.get("text", "")), c.get("embedding", ""), str(c.get("embedding_space", ""))))
+                    if has_fts:
+                        con.execute(
+                            "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
+                            (workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("text", ""))),
+                        )
+                for owner in rows("rag_project_file_owners"):
+                    con.execute(
+                        "INSERT INTO project_file_owners(workspace,root,path) VALUES(?,?,?)",
+                        (workspace, root_path, str(owner.get("path", ""))),
+                    )
                 con.commit()
             if phase_errors:
                 return incomplete_result(manifest, phase_errors[0])

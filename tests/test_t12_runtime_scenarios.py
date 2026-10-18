@@ -19,18 +19,16 @@ class _MeasuredScheduler:
     def submit(
         self,
         model: str,
-        tenant: str,
+        *,
         source: str,
         execute,
         priority: int = 5,
         wait_timeout: float | None = None,
-        *,
         background: bool = False,
         cancel_event=None,
     ) -> dict[str, Any]:
         self.calls.append({
             "model": model,
-            "tenant": tenant,
             "source": source,
             "wait_timeout": wait_timeout,
             "background": background,
@@ -226,7 +224,7 @@ def test_t12_ollama_runtime_measures_deadline_stages_through_scheduler() -> None
         "scenario_inputs": {
             "model": "fixture-model",
             "profile": "balanced",
-            "items": [{"id": "item-1", "tenant": "tenant-a", "prompt": "Return OK"}],
+            "items": [{"id": "item-1", "prompt": "Return OK"}],
             "max_tokens": 8,
             "deadline_ms": 1000,
         },
@@ -281,7 +279,7 @@ def test_t12_runtime_omits_ollama_think_flag_for_llama_backend() -> None:
         "scenario_inputs": {
             "model": "llama-model",
             "profile": "balanced",
-            "items": [{"id": "deadline-1", "tenant": "tenant-a", "prompt": "Return READY"}],
+            "items": [{"id": "deadline-1", "prompt": "Return READY"}],
             "max_tokens": 8,
             "deadline_ms": 1000,
         },
@@ -317,8 +315,8 @@ def test_t12_runtime_overload_reports_observed_queueing() -> None:
             "model": "fixture-model",
             "profile": "balanced",
             "items": [
-                {"id": "a", "tenant": "tenant-a", "prompt": "first"},
-                {"id": "b", "tenant": "tenant-b", "prompt": "second"},
+                {"id": "a", "prompt": "first"},
+                {"id": "b", "prompt": "second"},
             ],
             "max_tokens": 8,
             "max_concurrency": 2,
@@ -353,7 +351,7 @@ def test_t12_tiered_runtime_measures_through_its_routed_request_path() -> None:
         "scenario_inputs": {
             "model": "smart-model",
             "profile": "high",
-            "items": [{"id": "item-1", "tenant": "tenant-a", "prompt": "Return OK"}],
+            "items": [{"id": "item-1", "prompt": "Return OK"}],
             "max_tokens": 8,
         },
     }
@@ -388,7 +386,7 @@ def test_t12_ollama_runtime_fails_closed_without_complete_measurements() -> None
         "scenario_inputs": {
             "model": "fixture-model",
             "profile": "balanced",
-            "items": [{"id": "item-1", "tenant": "tenant-a", "prompt": "Return OK"}],
+            "items": [{"id": "item-1", "prompt": "Return OK"}],
             "max_tokens": 8,
             "deadline_ms": 1000,
         },
@@ -419,7 +417,7 @@ def test_t12_runtime_does_not_issue_receipt_when_vram_admission_is_unavailable()
         "scenario_inputs": {
             "model": "fixture-model",
             "profile": "balanced",
-            "items": [{"id": "item-1", "tenant": "tenant-a", "prompt": "Return OK"}],
+            "items": [{"id": "item-1", "prompt": "Return OK"}],
             "max_tokens": 8,
         },
     }
@@ -439,10 +437,13 @@ def test_t12_runtime_does_not_issue_receipt_when_vram_admission_is_unavailable()
 def test_t12_scheduler_scenario_groups_by_prompt_size_and_reports_measured_batch() -> None:
     runtime = object.__new__(OllamaRuntime)
     runtime.config = {}
-    runtime.request_interruptible = lambda endpoint, payload, should_stop, **kwargs: {
-        "response": "OK",
-        "prompt_eval_count": len(payload["prompt"]),
-    }
+    observed_prompts = []
+
+    def request(endpoint, payload, should_stop, **kwargs):
+        observed_prompts.append(payload["prompt"])
+        return {"response": "OK", "prompt_eval_count": len(payload["prompt"])}
+
+    runtime.request_interruptible = request
     scheduler = _MeasuredScheduler()
     contract = {
         "scenario": "scheduler",
@@ -452,9 +453,9 @@ def test_t12_scheduler_scenario_groups_by_prompt_size_and_reports_measured_batch
             "model": "fixture-model",
             "profile": "balanced",
             "items": [
-                {"id": "short-a", "tenant": "tenant-a", "prompt": "abcdefgh"},
-                {"id": "long", "tenant": "tenant-b", "prompt": "x" * 80},
-                {"id": "short-b", "tenant": "tenant-a", "prompt": "ijklmnop"},
+                {"id": "short-a", "prompt": "abcdefgh"},
+                {"id": "long", "prompt": "x" * 80},
+                {"id": "short-b", "prompt": "ijklmnop"},
             ],
             "max_tokens": 8,
             "max_concurrency": 1,
@@ -472,7 +473,7 @@ def test_t12_scheduler_scenario_groups_by_prompt_size_and_reports_measured_batch
     assert result["metrics"]["batch_size"] == 2
     assert result["metrics"]["batch_item_count"] == 3
     assert result["metrics"]["prefill_tokens"] == 96
-    assert [call["tenant"] for call in scheduler.calls] == ["tenant-a", "tenant-a", "tenant-b"]
+    assert observed_prompts == ["abcdefgh", "ijklmnop", "x" * 80]
 
 
 def test_t12_scheduler_scenario_forwards_admission_and_sampled_vram_bytes() -> None:
@@ -485,7 +486,7 @@ def test_t12_scheduler_scenario_forwards_admission_and_sampled_vram_bytes() -> N
     runtime.loaded_model_details = lambda: [{"name": "fixture-model", "vram_bytes": 1234}]
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return {
                 **execute(),
                 "_lah_scheduler_queue_wait_ms": 2.0,
@@ -520,7 +521,7 @@ def test_t12_scheduler_scenario_forwards_admission_and_sampled_vram_bytes() -> N
             "scenario_inputs": {
                 "model": "fixture-model",
                 "profile": "balanced",
-                "items": [{"id": "item-1", "tenant": "tenant-a", "prompt": "Return OK"}],
+                "items": [{"id": "item-1", "prompt": "Return OK"}],
                 "max_tokens": 8,
                 "max_concurrency": 1,
             },
@@ -556,7 +557,7 @@ def test_t12_scheduler_scenario_keeps_vram_budget_paired_with_request_estimate()
                 {"vram_admission_budget_bytes": 800_000_000, "vram_incremental_required_bytes": 0, "vram_estimate_source": "resident", "fairness_wait_ms": 450.0},
             ]
 
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             admission = self.admissions[self.calls]
             self.calls += 1
             return {
@@ -586,8 +587,8 @@ def test_t12_scheduler_scenario_keeps_vram_budget_paired_with_request_estimate()
             "model": "fixture-model",
             "profile": "balanced",
             "items": [
-                {"id": "cold", "tenant": "tenant-a", "prompt": "Return READY."},
-                {"id": "resident", "tenant": "tenant-b", "prompt": "Return READY."},
+                {"id": "cold", "prompt": "Return READY."},
+                {"id": "resident", "prompt": "Return READY."},
             ],
             "max_tokens": 8,
             "max_concurrency": 1,
@@ -625,9 +626,9 @@ def test_t12_runtime_batch_preserves_order_and_reports_partial_failure() -> None
             "model": "fixture-model",
             "profile": "balanced",
             "items": [
-                {"id": "a", "tenant": "tenant-a", "prompt": "first"},
-                {"id": "b", "tenant": "tenant-b", "prompt": "fail"},
-                {"id": "c", "tenant": "tenant-a", "prompt": "third"},
+                {"id": "a", "prompt": "first"},
+                {"id": "b", "prompt": "fail"},
+                {"id": "c", "prompt": "third"},
             ],
             "failure_probe_item_id": "b",
             "max_tokens": 8,
@@ -664,7 +665,7 @@ def test_t12_runtime_cancel_measures_transport_stop_and_cleanup() -> None:
         "scenario_inputs": {
             "model": "fixture-model",
             "profile": "balanced",
-            "items": [{"id": "cancel-1", "tenant": "tenant-a", "prompt": "long request"}],
+            "items": [{"id": "cancel-1", "prompt": "long request"}],
             "max_tokens": 8,
             "deadline_ms": 1000,
             "cancel_after_ms": 10,
@@ -705,7 +706,7 @@ def test_t12_cancel_timer_starts_after_scheduler_dispatch() -> None:
         "scenario_inputs": {
             "model": "fixture-model",
             "profile": "balanced",
-            "items": [{"id": "cancel-dispatched", "tenant": "tenant-a", "prompt": "long request"}],
+            "items": [{"id": "cancel-dispatched", "prompt": "long request"}],
             "max_tokens": 8,
             "deadline_ms": 1000,
             "cancel_after_ms": 30,
@@ -784,7 +785,7 @@ def test_t12_runtime_cancel_holds_admission_until_child_inference_exits() -> Non
                 "required_fields": ["cancel_requested", "cancelled", "cleanup_complete"],
                 "scenario_inputs": {
                     "model": "fixture-model", "profile": "balanced",
-                    "items": [{"id": "active-child", "tenant": "tenant-a", "prompt": "hold inference"}],
+                    "items": [{"id": "active-child", "prompt": "hold inference"}],
                     "max_tokens": 8, "deadline_ms": 1500, "cancel_after_ms": 30,
                 },
             },
@@ -794,8 +795,8 @@ def test_t12_runtime_cancel_holds_admission_until_child_inference_exits() -> Non
 
     def run_next_inference() -> None:
         second_result.append(scheduler.submit(
-            "replacement-model", "tenant-b", "after-cancel",
-            lambda: (next_inference_started.set() or {"success": True}),
+            "replacement-model", source="after-cancel",
+            execute=lambda: (next_inference_started.set() or {"success": True}),
             wait_timeout=5,
         ))
 
@@ -846,11 +847,19 @@ def test_t12_runtime_overload_reports_observed_admission_rejection() -> None:
         admission = {"state": "rejected", "reason": "queue_limit", "queue_age_ms": 0.0}
 
     class RejectingScheduler(_MeasuredScheduler):
-        def submit(self, model, tenant, source, execute, priority=5, wait_timeout=None, *, background=False, cancel_event=None):
-            if tenant == "tenant-b":
+        def __init__(self):
+            super().__init__()
+            self._submission_lock = threading.Lock()
+            self._submission_count = 0
+
+        def submit(self, model, *, source, execute, priority=5, wait_timeout=None, background=False, cancel_event=None):
+            with self._submission_lock:
+                self._submission_count += 1
+                reject = self._submission_count == 2
+            if reject:
                 raise QueueFullError("fixture queue full")
             return super().submit(
-                model, tenant, source, execute, priority, wait_timeout,
+                model, source=source, execute=execute, priority=priority, wait_timeout=wait_timeout,
                 background=background, cancel_event=cancel_event,
             )
 
@@ -862,8 +871,8 @@ def test_t12_runtime_overload_reports_observed_admission_rejection() -> None:
             "model": "fixture-model",
             "profile": "balanced",
             "items": [
-                {"id": "a", "tenant": "tenant-a", "prompt": "first"},
-                {"id": "b", "tenant": "tenant-b", "prompt": "second"},
+                {"id": "a", "prompt": "first"},
+                {"id": "b", "prompt": "second"},
             ],
             "max_tokens": 8,
             "max_concurrency": 2,
@@ -892,8 +901,16 @@ def test_t12_runtime_overload_does_not_count_vram_rejection_as_queue_overload() 
         }
 
     class ResourceRejectingScheduler(_MeasuredScheduler):
-        def submit(self, model, tenant, source, execute, priority=5, wait_timeout=None, *, background=False, cancel_event=None):
-            if tenant == "tenant-b":
+        def __init__(self):
+            super().__init__()
+            self._submission_lock = threading.Lock()
+            self._submission_count = 0
+
+        def submit(self, model, *, source, execute, priority=5, wait_timeout=None, background=False, cancel_event=None):
+            with self._submission_lock:
+                self._submission_count += 1
+                reject = self._submission_count == 2
+            if reject:
                 raise QueueFullError("resource admission rejected")
             del model, source, priority, wait_timeout, background, cancel_event
             return {
@@ -913,8 +930,8 @@ def test_t12_runtime_overload_does_not_count_vram_rejection_as_queue_overload() 
         "scenario_inputs": {
             "model": "fixture-model", "profile": "balanced",
             "items": [
-                {"id": "a", "tenant": "tenant-a", "prompt": "first"},
-                {"id": "b", "tenant": "tenant-b", "prompt": "second"},
+                {"id": "a", "prompt": "first"},
+                {"id": "b", "prompt": "second"},
             ],
             "max_tokens": 8, "max_concurrency": 2, "overload_count": 2,
         },
@@ -962,7 +979,7 @@ def test_t12_runtime_fallback_scores_observed_response_and_labels_backends() -> 
             "source_max_tokens": 2,
             "fallback_max_tokens": 8,
             "expected": {"answer": "42"},
-            "items": [{"id": "fallback-1", "tenant": "tenant-a", "prompt": "Return JSON"}],
+            "items": [{"id": "fallback-1", "prompt": "Return JSON"}],
             "max_tokens": 8,
         },
     }
@@ -1010,7 +1027,7 @@ def test_t12_fallback_marks_missing_primary_response_as_zero_effective_quality()
             "model": "source-model", "profile": "reasoning", "fallback_model": "fallback-model",
             "fallback_profile": "review", "quality_floor_pct": 80,
             "expected": {"answer": "42"},
-            "items": [{"id": "fallback-no-response", "tenant": "tenant-a", "prompt": "Return JSON"}],
+            "items": [{"id": "fallback-no-response", "prompt": "Return JSON"}],
             "max_tokens": 8,
         },
     }

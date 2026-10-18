@@ -12,13 +12,15 @@ from local_ai_hub.operation_contracts import validate_operation_output
 def test_mcp_get_returns_disjoint_slices_in_one_post(tmp_path, monkeypatch) -> None:
     store = ArtifactStore(tmp_path)
     text = "abcd🙂α\x00" * 60
-    artifact_id = store.put(text, tenant="slice-test", kind="log")
-    assert store.get(artifact_id, offset=5, max_chars=256, tenant="slice-test")["text"] == text[5:261]
+    artifact_id = store.put(text, kind="log")
+    assert store.get(artifact_id, offset=5, max_chars=256)["text"] == text[5:261]
     requested = [
         {"offset": 10, "max_chars": 40},
         {"offset": 200, "max_chars": 50},
     ]
-    assert store.get_slices(artifact_id, requested, tenant="wrong-tenant")["success"] is False
+    assert store.get_slices(artifact_id, slices=requested)["success"] is True
+    with pytest.raises(TypeError):
+        store.get_slices(artifact_id, slices=requested, tenant="retired")
     posts: list[tuple[str, dict]] = []
     statements: list[str] = []
     connect = store._connect
@@ -33,7 +35,7 @@ def test_mcp_get_returns_disjoint_slices_in_one_post(tmp_path, monkeypatch) -> N
     def post(path: str, payload: dict, **_kwargs):
         posts.append((path, payload))
         return store.get_slices(
-            payload["artifact_id"], payload["slices"], tenant="slice-test"
+            payload["artifact_id"], slices=payload["slices"]
         )
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
@@ -101,7 +103,7 @@ def test_artifact_http_handler_forwards_slices_to_temporary_store(tmp_path, monk
 
     store = ArtifactStore(tmp_path)
     body = "0123456789" * 30
-    artifact_id = store.put(body, tenant="http-slice", kind="log")
+    artifact_id = store.put(body, kind="log")
     response = {}
     handler = object.__new__(http_server.Handler)
     payload = {
@@ -112,7 +114,7 @@ def test_artifact_http_handler_forwards_slices_to_temporary_store(tmp_path, monk
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(recovery=None, artifacts=store))
 
     assert "post_artifact_get_1" in select_http_routes("POST", "/api/artifact/get")
-    handler._handle_post_artifact_get(payload, "http-slice")
+    handler._handle_post_artifact_get(payload)
 
     assert response["status"] == 200
     assert response["payload"]["slices"] == [

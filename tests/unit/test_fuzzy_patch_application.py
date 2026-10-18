@@ -84,7 +84,6 @@ def test_patch_and_verify_crlf_whitespace_tolerance(tmp_path: Path, monkeypatch)
     res = broker.patch_and_verify(
         patch=diff,
         cwd=str(tmp_path),
-        tenant="test-agent",
         command="git -c core.whitespace=cr-at-eol diff --check",
         task_id="task-fuzzy",
         criterion="quick pass",
@@ -126,7 +125,6 @@ def test_patch_and_verify_whitespace_change_tolerance(tmp_path: Path, monkeypatc
     res = broker.patch_and_verify(
         patch=diff,
         cwd=str(tmp_path),
-        tenant="test-agent",
         command="git diff --check",
         task_id="task-ws",
         criterion="quick pass",

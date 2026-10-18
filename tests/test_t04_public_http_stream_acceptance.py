@@ -28,7 +28,6 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             f'[server]\nbind="127.0.0.1"\nport={server.server_address[1]}\n'
             f'state_dir="{(tmp_path / "state").as_posix()}"\nmax_stream_duration_seconds=5\n'
             f'[security]\napi_token="{token}"\n'
-            f'api_token_tenant="test-principal"\ntenant_derivation_key="test-derivation-key-material-32-bytes-min"\n'
             f'allowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n',
             encoding="utf-8",
         )
@@ -36,7 +35,7 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         cleanup.callback(app.close)
         generated = []
 
-        def fake_generate(model, prompt, system, max_tokens, temperature, tenant, source, priority, **kwargs):
+        def fake_generate(model, prompt, system, max_tokens, temperature, *, source, priority, **kwargs):
             generated.append(prompt)
             return {"success": True, "model": model, "text": f"fixture answer {len(generated)}"}
 
@@ -68,14 +67,10 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             http_server._strict_root_path(str(root)), app.config["security"]["allowed_roots"]
         )
         task_id = "t04-public-auth-cancel"
-        root_tenant = http_server._derive_root_tenant(
-            "test-principal",
-            str(root.resolve()),
-            "test-derivation-key-material-32-bytes-min",
-        )
+        session_id = "session:t04-public-auth-cancel"
         app.agent_tasks.create(
             GoalContract(goal="verify scoped event streaming"),
-            ScopeContext(repository_id=str(root), session_id=root_tenant, task_id=task_id),
+            ScopeContext(repository_id=str(root), session_id=session_id, task_id=task_id),
             task_id=task_id,
             actor="agent",
             repo_root=str(root),
@@ -83,7 +78,7 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         deadline_task_id = "t04-public-deadline"
         app.agent_tasks.create(
             GoalContract(goal="verify scoped event deadline"),
-            ScopeContext(repository_id=str(root), session_id=root_tenant, task_id=deadline_task_id),
+            ScopeContext(repository_id=str(root), session_id=session_id, task_id=deadline_task_id),
             task_id=deadline_task_id,
             actor="agent",
             repo_root=str(root),

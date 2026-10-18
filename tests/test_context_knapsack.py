@@ -23,10 +23,8 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
     verif_store = VerificationStore(state_store, task_store=task_store)
     mem_store = MemoryStore(state_store)
     repo_root = str(tmp_path.resolve())
-    tenant = "tenant-context-knapsack"
-
     # 1. Create task with goal
-    trace_tokens = set_context(tenant=tenant)
+    trace_tokens = set_context(agent="context-knapsack")
     try:
         task_store.create(
             GoalContract(goal="Build Mars Rover navigation module", acceptance_criteria=("lidar_ok", "imu_ok")),
@@ -37,7 +35,7 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
     finally:
         reset_context(trace_tokens)
 
-    memory_provenance = {"root": repo_root, "tenant": tenant, "task_id": "rover-1"}
+    memory_provenance = {"root": repo_root, "task_id": "rover-1"}
 
     # 2. Add large low-density memory record
     # ~ 100 chars -> ~25 tokens. prio=70, conf=0.5 -> score = 35/25 = 1.4
@@ -93,7 +91,6 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
         task_id="rover-1",
         token_budget=45,
         root=repo_root,
-        tenant=tenant,
     ))
 
     element_ids = [el.element_id for el in ctx.elements]

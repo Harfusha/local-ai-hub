@@ -9,7 +9,7 @@ def _client(tmp_path):
         "[server]\nport=11435\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
-    return HubClient(tenant="test", config_path=str(config))
+    return HubClient(config_path=str(config))
 
 
 def test_client_rejects_non_git_diff_without_transport(tmp_path, monkeypatch):

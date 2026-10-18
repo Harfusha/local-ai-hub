@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import time
 from contextlib import closing
@@ -10,16 +9,12 @@ import pytest
 from local_ai_hub.artifacts import ArtifactStore, ArtifactTextReadError
 
 
-def _identity(tenant: str) -> str:
-    return hashlib.sha256(tenant.encode("utf-8")).hexdigest()
-
-
-def _insert_text(store: ArtifactStore, artifact_id: str, text: str, *, tenant: str = "owner", age: float = 0) -> None:
+def _insert_text(store: ArtifactStore, artifact_id: str, text: str, *, age: float = 0) -> None:
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute(
             f"INSERT INTO {store._table} "
-            "(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
-            (artifact_id, time.time() - age, tenant, _identity(tenant), "text", text),
+            "(artifact_id, created_at, kind, text) VALUES(?,?,?,?)",
+            (artifact_id, time.time() - age, "text", text),
         )
         section_map, sections_truncated = store._section_data(text)
         page_text, nul_mask = store._page_text_metadata(text)
@@ -41,11 +36,10 @@ def test_streaming_reads_round_trip_unicode_nul_and_distant_spans(tmp_path, enco
 
     result = store.get_slices(
         "art_stream",
-        [
+        slices=[
             {"offset": 65_530, "max_chars": 8},
             {"offset": len(text) - 9, "max_chars": 9},
         ],
-        tenant="owner",
     )
     assert result["success"] is True
     assert result["slices"] == [
@@ -54,10 +48,10 @@ def test_streaming_reads_round_trip_unicode_nul_and_distant_spans(tmp_path, enco
     ]
     assert result["total_chars"] == len(text)
 
-    single = store.get("art_stream", offset=65_531, max_chars=256, tenant="owner")
+    single = store.get("art_stream", offset=65_531, max_chars=256)
     assert single["success"] is True
     assert single["text"] == text[65_531:65_531 + 256]
-    one_char = store.get("art_stream", offset=0, max_chars=1, tenant="owner")
+    one_char = store.get("art_stream", offset=0, max_chars=1)
     assert one_char["success"] is True
     assert one_char["text"] == "x"
     with closing(sqlite3.connect(db_path)) as connection:
@@ -90,7 +84,7 @@ def test_streaming_read_uses_one_snapshot_without_rewriting_sidecar(tmp_path, mo
         return stream(connection, rowid, encoding, spans, **kwargs)
 
     monkeypatch.setattr(store, "_stream_text", update_after_snapshot)
-    result = store.get("art_snapshot", offset=100_000, max_chars=256, tenant="owner")
+    result = store.get("art_snapshot", offset=100_000, max_chars=256)
     assert result["success"] is True
     assert result["text"] == "old"
     with closing(sqlite3.connect(store.path)) as connection:
@@ -108,7 +102,7 @@ def test_section_scan_caps_names_and_header_retention(tmp_path) -> None:
     text += "\n## " + ("H" * 100_000) + "\nbody"
     _insert_text(store, "art_sections", text)
 
-    result = store.get("art_sections", max_chars=256, tenant="owner")
+    result = store.get("art_sections", max_chars=256)
     assert result["success"] is True
     assert len(result["sections"]) == 50
     assert result["sections_truncated"] is True
@@ -122,14 +116,14 @@ def test_markdown_section_reads_stop_at_boundary_and_clamp_past_end(tmp_path) ->
     first_end = text.index("## Second")
     first_length = first_end
 
-    result = store.get("art_section_boundary", section="first", tenant="owner")
+    result = store.get("art_section_boundary", section="first")
     assert result["success"] is True
     assert result["text"] == text[:first_end]
     assert "## Second" not in result["text"]
     assert result["total_chars"] == first_length
 
     past_end = store.get(
-        "art_section_boundary", offset=first_length + 9, section="first", tenant="owner",
+        "art_section_boundary", offset=first_length + 9, section="first",
     )
     assert past_end["success"] is True
     assert past_end["text"] == ""
@@ -149,7 +143,7 @@ def test_section_map_closes_last_retained_section_at_first_omitted_heading() -> 
 def test_compact_marks_sections_omitted_from_preview_list(tmp_path) -> None:
     store = ArtifactStore(tmp_path, max_inline_chars=1000)
     text = "\n".join(f"## Heading {index}" for index in range(30)) + "\n" + ("x" * 1200)
-    result = store.compact({"text": text}, "owner", "text")
+    result = store.compact({"text": text}, kind="text")
     assert len(result["artifact"]["sections"]) == 24
     assert result["artifact"]["sections_truncated"] is True
 
@@ -158,7 +152,7 @@ def test_json_section_over_admission_limit_returns_bounded_error(tmp_path) -> No
     store = ArtifactStore(tmp_path)
     _insert_text(store, "art_large_json", '{"large":"' + ("x" * 1_100_000) + '"}')
 
-    result = store.get("art_large_json", section="json:large", tenant="owner")
+    result = store.get("art_large_json", section="json:large")
     assert result["success"] is False
     assert result["error_code"] == "artifact_section_too_large"
 
@@ -169,21 +163,21 @@ def test_json_sections_report_bounded_names_and_reject_duplicate_keys(tmp_path) 
     _insert_text(store, "art_json_duplicate", '{"same":1,"same":2}')
     _insert_text(store, "art_json_long_key", '{"' + ("k" * 600) + '":1}')
 
-    names = store.get("art_json_names", tenant="owner")
+    names = store.get("art_json_names")
     assert names["success"] is True
     assert names["sections"] == ["json:first", "json:second"]
     assert names["sections_truncated"] is False
 
-    duplicate = store.get("art_json_duplicate", section="json:same", tenant="owner")
+    duplicate = store.get("art_json_duplicate", section="json:same")
     assert duplicate["success"] is False
     assert duplicate["error_code"] == "artifact_json_invalid"
 
-    oversized_key = store.get("art_json_long_key", tenant="owner")
+    oversized_key = store.get("art_json_long_key")
     assert oversized_key["success"] is True
     assert oversized_key["sections"] == []
     assert oversized_key["sections_truncated"] is True
     oversized_request = store.get(
-        "art_json_long_key", section="json:" + ("k" * 600), tenant="owner",
+        "art_json_long_key", section="json:" + ("k" * 600),
     )
     assert oversized_request["success"] is False
     assert oversized_request["error_code"] == "artifact_section_invalid"
@@ -202,14 +196,14 @@ def test_json_prefix_decode_preserves_multibyte_boundary(tmp_path, encoding, key
     key = key_prefix + "😀"
     _insert_text(store, "art_json_boundary", '{"' + key + '":1}')
 
-    result = store.get("art_json_boundary", tenant="owner")
+    result = store.get("art_json_boundary")
     assert result["success"] is True
     assert result["sections"] == [f"json:{key}"]
 
 
 def test_oversized_sidecar_is_not_materialized_and_sections_recompute_from_text(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put("## Alpha\nbody", "owner", "text")
+    artifact_id = store.put("## Alpha\nbody", kind="text")
     oversized_sidecar = "x" * (128 * 1024 + 1)
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute(
@@ -227,7 +221,7 @@ def test_oversized_sidecar_is_not_materialized_and_sections_recompute_from_text(
         return connection
 
     store._connect = traced_connect
-    result = store.get(artifact_id, tenant="owner")
+    result = store.get(artifact_id)
     assert result["success"] is True
     assert result["sections"] == ["alpha"]
     assert any(
@@ -256,20 +250,18 @@ def test_get_rejects_noncanonical_arguments_without_coercion(tmp_path, offset, m
     assert result["error_code"] == "artifact_read_invalid"
 
 
-def test_expired_wrong_tenant_and_binary_rows_do_not_stream_text(tmp_path, monkeypatch) -> None:
+def test_expired_and_binary_rows_do_not_stream_text(tmp_path, monkeypatch) -> None:
     store = ArtifactStore(tmp_path, ttl_hours=1)
     _insert_text(store, "art_expired", "expired", age=7_200)
-    _insert_text(store, "art_private", "private", tenant="other")
-    binary_id = store.put_bytes(b"image-data", "owner", "vision-image", "image/png")
+    binary_id = store.put_bytes(b"image-data", kind="vision-image", mime_type="image/png")
     monkeypatch.setattr(
         store,
         "_stream_text",
         lambda *_args, **_kwargs: pytest.fail("unauthorized or binary row reached text reader"),
     )
 
-    assert store.get("art_expired", tenant="owner")["success"] is False
-    assert store.get("art_private", tenant="owner")["success"] is False
-    assert store.get(binary_id, tenant="owner")["success"] is False
+    assert store.get("art_expired")["success"] is False
+    assert store.get(binary_id)["success"] is False
 
 
 def test_expired_stream_deadline_returns_typed_read_timeout(tmp_path) -> None:

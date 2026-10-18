@@ -64,9 +64,6 @@ class DummyHandler:
         self.stream_finishes = []
         self._app = app
 
-    def _tenant(self):
-        return "test-tenant"
-
     def _agent(self):
         return "test-agent"
 
@@ -122,15 +119,10 @@ def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch, 
     app.agent_state = type("DisabledState", (), {"enabled": False})()
     root = tmp_path / "repo"
     root.mkdir()
-    principal = "t18-test-principal"
-    derivation_key = "t18-test-derivation-key-material"
-    tenant = http_server._derive_root_tenant(principal, str(root.resolve()), derivation_key)
-    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id=tenant))
+    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id="session:sse-test"))
     app.config = {
         "security": {
             "api_token": "t18-test-api-token",
-            "api_token_tenant": principal,
-            "tenant_derivation_key": derivation_key,
             "allowed_roots": [str(root.resolve())],
         }
     }
@@ -516,7 +508,6 @@ def test_client_stream_events_parsing(monkeypatch):
     client = HubClient.__new__(HubClient)
     client.base_url = "http://127.0.0.1:11435"
     client.api_token = "tok"
-    client.tenant = "test-tenant"
     client.agent = "test-agent"
     client.max_request_timeout = 30.0
 
@@ -558,7 +549,6 @@ def test_client_stream_events_closes_response_on_cancellation(monkeypatch):
     client.base_url = "http://127.0.0.1:11435"
     client.api_token = ""
     client.max_request_timeout = 60.0
-    client.tenant = "default"
     client.agent = "test"
     cancel_event = threading.Event()
 

@@ -279,7 +279,7 @@ def test_private_transaction_requires_work_attempt_even_when_store_is_available(
     )
 
     result = broker._run_private_transaction(
-        "git add owned.txt", source, "tenant-1", task_id="task-owned",
+        "git add owned.txt", source, task_id="task-owned",
         paths=["owned.txt"], timeout=1, docker_image="python:3.11-slim",
     )
 
@@ -392,7 +392,7 @@ def test_patch_and_verify_runs_and_imports_inside_private_transaction(
 """
 
     result = broker.patch_and_verify(
-        patch, source, "tenant-1", task_id="task-owned", command="python -m pytest -q",
+        patch, source, task_id="task-owned", command="python -m pytest -q",
         record_verification=False,
     )
 
@@ -663,7 +663,7 @@ def test_expired_transaction_lease_cannot_overwrite_newer_declared_path(
     result_a: list[dict] = []
     thread_a = threading.Thread(
         target=lambda: result_a.append(owner_a._run_private_transaction(
-            "git add owned.txt", source, "tenant-a", task_id="task-owned",
+            "git add owned.txt", source, task_id="task-owned",
             paths=["owned.txt"], timeout=1, docker_image="python:3.11-slim",
             work_attempt_fence=attempt_a,
         ))
@@ -676,7 +676,7 @@ def test_expired_transaction_lease_cannot_overwrite_newer_declared_path(
             str(source.resolve()), "task-owned", "owner-b", ttl_seconds=300.0
         ))
         result_b = owner_b._run_private_transaction(
-            "git add owned.txt", source, "tenant-b", task_id="task-owned",
+            "git add owned.txt", source, task_id="task-owned",
             paths=["owned.txt"], timeout=1, docker_image="python:3.11-slim",
             work_attempt_fence=attempt_b[0],
         )
@@ -735,7 +735,7 @@ def test_disjoint_private_transactions_commit_only_their_declared_paths(
 
     def run(broker: CommandBroker, path: str) -> None:
         results.append(broker._run_private_transaction(
-            f"git add {path}", source, f"tenant-{path}", task_id="task-owned",
+            f"git add {path}", source, task_id="task-owned",
             paths=[path], timeout=5, docker_image="python:3.11-slim",
             work_attempt_fence=shared_attempt,
         ))

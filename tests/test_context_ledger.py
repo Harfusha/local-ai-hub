@@ -151,7 +151,7 @@ def test_ledger_recomputes_signed_savings_only_from_current_baseline(tmp_path) -
     assert snapshot["entries"] == 3
 
 
-def test_project_context_changes_ledger_reuse_identity() -> None:
+def test_project_context_changes_ledger_reuse_key() -> None:
     ledger = ContextLedger()
     common = {
         "task_id": "task-7",
@@ -159,7 +159,7 @@ def test_project_context_changes_ledger_reuse_identity() -> None:
         "evidence_ids": ("evidence-7",),
         "context": "same context",
         "root": "C:/repo",
-        "identity": "agent-7",
+        "session_id": "session-7",
         "phase": "search",
         "preload_profile": "review",
     }
@@ -202,44 +202,43 @@ def test_materialized_context_pointer_is_scope_bound_and_ttl_limited(tmp_path, m
         "evidence_ids": ["E123"],
         "context": "current context",
         "root": str(root),
-        "identity": "agent-1",
+        "session_id": "session-1",
         "settings_digest": "config-a",
         "artifact_store": artifact_store,
-        "tenant": "tenant-a",
     }
 
     first = ledger.compile(**compile_values)
     materialized = ledger.materialize(
-        first["reuse_key"], artifact_store, "tenant-a",
-        identity="agent-1", root=str(root), task_id="task-1",
+        first["reuse_key"], artifact_store,
+        root=str(root), task_id="task-1", session_id="session-1",
     )
     assert materialized["success"] is True
     assert materialized["text"] == "current context"
 
     assert ledger.materialize(
-        first["reuse_key"], artifact_store, "tenant-b",
-        identity="agent-1", root=str(root), task_id="task-1",
+        first["reuse_key"], artifact_store,
+        root=str(root), task_id="task-1", session_id="session-2",
     )["success"] is False
     assert ledger.materialize(
-        first["reuse_key"], artifact_store, "tenant-a",
-        identity="agent-1", root=str(root / "other"), task_id="task-1",
+        first["reuse_key"], artifact_store,
+        root=str(root / "other"), task_id="task-1", session_id="session-1",
     )["success"] is False
 
     second = ledger.compile(**(compile_values | {"settings_digest": "config-b"}))
     assert second["reuse_key"] != first["reuse_key"]
     assert ledger.materialize(
-        first["reuse_key"], artifact_store, "tenant-a",
-        identity="agent-1", root=str(root), task_id="task-1",
+        first["reuse_key"], artifact_store,
+        root=str(root), task_id="task-1", session_id="session-1",
     )["success"] is False
     assert ledger.materialize(
-        second["reuse_key"], artifact_store, "tenant-a",
-        identity="agent-1", root=str(root), task_id="task-1",
+        second["reuse_key"], artifact_store,
+        root=str(root), task_id="task-1", session_id="session-1",
     )["success"] is True
 
     now[0] += 4
     expired = ledger.materialize(
-        second["reuse_key"], artifact_store, "tenant-a",
-        identity="agent-1", root=str(root), task_id="task-1",
+        second["reuse_key"], artifact_store,
+        root=str(root), task_id="task-1", session_id="session-1",
     )
     assert expired["success"] is False
     assert expired["status"] == "stale"
@@ -252,7 +251,7 @@ def test_registered_context_dispatch_records_bounded_accounting(tmp_path, monkey
     monkeypatch.setattr(mcp_server, "CONTEXT_LEDGER", ledger)
     events = []
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda event: events.append(dict(event)))
-    client = mcp_server.HubClient(tenant="test", auto_start=False)
+    client = mcp_server.HubClient(auto_start=False)
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     calls = []
     response = {

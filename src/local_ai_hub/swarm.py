@@ -84,8 +84,6 @@ class SwarmCoordinator:
 
     def _init_db(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.state_store.enabled:
-            self.state_store._ensure_schema()
         expected = {
             "agent_swarms": [
                 ("swarm_id", "TEXT", 0, 1), ("goal", "TEXT", 1, 0),
@@ -96,6 +94,22 @@ class SwarmCoordinator:
                 ("updated_at", "REAL", 1, 0), ("version", "INTEGER", 1, 0),
             ],
         }
+        if self.db_path.exists():
+            uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+            try:
+                with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as con:
+                    validate_durable_schema(
+                        con,
+                        self.db_path,
+                        expected,
+                        required_if_event_kinds={"agent_swarms": ("swarm.%",)},
+                    )
+            except sqlite3.DatabaseError as exc:
+                raise RuntimeError(
+                    "swarm database cannot be safely inspected; original database and sidecars preserved"
+                ) from exc
+        if self.state_store.enabled:
+            self.state_store._ensure_schema()
         with closing(self._connect()) as con:
             validate_durable_schema(
                 con,
@@ -203,18 +217,22 @@ class SwarmCoordinator:
             rows = con.execute(
                 "SELECT swarm_id, root, target_paths, state, version FROM agent_swarms"
             ).fetchall()
-        active_leases = self.leases.list()
-        tenants = {str(item.get("tenant", "")) for item in active_leases}
         known = {str(row[0]) for row in rows}
+        leases_by_root: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            root = str(row[1])
+            if root not in leases_by_root:
+                leases_by_root[root] = self.leases.list(root=root)
         for row in rows:
             swarm_id = str(row[0])
             root = str(row[1])
             paths = json.loads(row[2])
             state = str(row[3])
             version = int(row[4])
-            tenant = f"swarm:{swarm_id}"
+            owner = f"swarm:{swarm_id}"
+            owners = {str(item.get("owner", "")) for item in leases_by_root.get(root, [])}
             if state in (SwarmState.COMPLETED.value, SwarmState.FAILED.value):
-                if tenant in tenants:
+                if owner in owners:
                     self._release_all_leases(swarm_id)
                 continue
             if not paths:
@@ -223,9 +241,9 @@ class SwarmCoordinator:
                         swarm_id, version, state, SwarmState.CODING.value, "dispatch recovered without paths"
                     )
                 continue
-            if tenant not in tenants:
+            if owner not in owners:
                 claim = self.leases.claim(
-                    tenant=tenant,
+                    owner=owner,
                     root=root,
                     paths=paths,
                     ttl_seconds=3600,
@@ -241,10 +259,11 @@ class SwarmCoordinator:
                 self._recover_swarm_state(
                     swarm_id, version, state, SwarmState.CODING.value, "dispatch lease recovered"
                 )
-        for lease in active_leases:
-            tenant = str(lease.get("tenant", ""))
-            if tenant.startswith("swarm:") and tenant[len("swarm:"):] not in known:
-                self.leases.release_tenant(tenant)
+        for root, active_leases in leases_by_root.items():
+            for lease in active_leases:
+                owner = str(lease.get("owner", ""))
+                if owner.startswith("swarm:") and owner[len("swarm:"):] not in known:
+                    self.leases.release_owner(owner=owner)
 
     def is_valid_swarm_id(self, swarm_id: str) -> bool:
         if not isinstance(swarm_id, str) or not swarm_id.startswith("swarm_") or "\x00" in swarm_id:
@@ -376,7 +395,7 @@ class SwarmCoordinator:
         if self.leases is None:
             return True
         try:
-            result = self.leases.release_tenant(f"swarm:{swarm_id}")
+            result = self.leases.release_owner(owner=f"swarm:{swarm_id}")
             return bool(result.get("success", False))
         except Exception:
             return False

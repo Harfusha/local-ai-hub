@@ -25,7 +25,7 @@ from .sqlite_support import connect_sqlite, retry_busy
 
 _logger = logging.getLogger(__name__)
 
-_TASK_MEMORY_QUERY: ContextVar[tuple[Any, tuple[str, str, str], frozenset[str]] | None] = ContextVar(
+_TASK_MEMORY_QUERY: ContextVar[tuple[Any, tuple[str, str], frozenset[str]] | None] = ContextVar(
     "agent_task_memory_query", default=None,
 )
 _GOAL_STOP_WORDS = frozenset({
@@ -120,64 +120,31 @@ def _memory_deletion_event(con: Any, *, record_id: str) -> AgentEvent | None:
 
 
 def _memory_matches_request_scope(
-    *,
-    scope: Any,
-    scope_id: str,
-    provenance: Mapping[str, Any] | None,
-    root: str,
-    task_id: str,
-    tenant: str,
-    session_id: str = "",
-    clone_id: str = "",
-    worktree_id: str = "",
-    branch: str = "",
+    *, scope: Any, scope_id: str, provenance: Mapping[str, Any] | None,
+    root: str, task_id: str, session_id: str = "", clone_id: str = "",
+    worktree_id: str = "", branch: str = "",
 ) -> bool:
-    if not isinstance(scope, AgentScope):
+    if not isinstance(scope, AgentScope) or not isinstance(provenance, Mapping):
         return False
-    scope_value = scope.value
-    if scope_value == AgentScope.REPOSITORY.value:
-        if not isinstance(provenance, Mapping) or not isinstance(tenant, str):
-            return False
-        record_root = str(provenance.get("root") or "")
-        record_tenant = provenance.get("tenant")
-        if not isinstance(record_tenant, str) or not record_tenant or not tenant:
-            return False
-        if not (root and _normalise_scope_root(record_root) == _normalise_scope_root(root)):
-            return False
-        return tenant == record_tenant
-    if scope_value == AgentScope.TASK.value:
-        if not isinstance(provenance, Mapping) or not isinstance(tenant, str):
-            return False
-        record_root = str(provenance.get("root") or "").strip()
-        record_tenant = provenance.get("tenant")
-        requested_root = str(root or "").strip()
-        requested_task_id = str(task_id or "").strip()
-        if not isinstance(record_tenant, str) or not all(
-            (requested_root, tenant, record_root, record_tenant, requested_task_id)
-        ):
-            return False
-        if str(scope_id or "").strip() != requested_task_id:
-            return False
-        if _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
-            return False
-        return tenant == record_tenant
-    if scope_value == AgentScope.SESSION.value:
-        if not isinstance(provenance, Mapping) or not isinstance(tenant, str):
-            return False
-        record_tenant = provenance.get("tenant")
-        if not isinstance(record_tenant, str) or not record_tenant or not tenant:
-            return False
-        requested_session = str(session_id or "").strip()
-        if not requested_session or str(scope_id or "").strip() != requested_session:
-            return False
-        return tenant == record_tenant
-    if scope_value == AgentScope.CLONE.value:
-        return bool(clone_id) and scope_id == clone_id
-    if scope_value == AgentScope.WORKTREE.value:
-        return bool(worktree_id) and scope_id == worktree_id
-    if scope_value == AgentScope.BRANCH.value:
-        return bool(branch) and scope_id == branch
-    return scope_value == AgentScope.GLOBAL.value
+    if "tenant" in provenance or "tenant_key" in provenance:
+        raise ValueError("retired memory identity field requires offline conversion")
+    if scope is AgentScope.GLOBAL:
+        return True
+    record_root = provenance.get("root", "")
+    if not isinstance(root, str) or not isinstance(record_root, str):
+        return False
+    if scope is AgentScope.REPOSITORY:
+        return bool(root and record_root) and _normalise_scope_root(root) == _normalise_scope_root(record_root)
+    identity = {
+        AgentScope.TASK: task_id, AgentScope.SESSION: session_id,
+        AgentScope.CLONE: clone_id, AgentScope.WORKTREE: worktree_id, AgentScope.BRANCH: branch,
+    }.get(scope)
+    if not isinstance(identity, str) or not identity or scope_id != identity:
+        return False
+    if scope is not AgentScope.SESSION and not (root and record_root):
+        return False
+    return _normalise_scope_root(root) == _normalise_scope_root(record_root)
+
 
 
 def _memory_conflict_context_matches(left: MemoryRecord, right: MemoryRecord) -> bool:
@@ -194,7 +161,7 @@ def _memory_conflict_context_matches(left: MemoryRecord, right: MemoryRecord) ->
         return False
     if left_root and _normalise_scope_root(left_root) != _normalise_scope_root(right_root):
         return False
-    for identity_key in ("repository_id", "tenant", "task_id", "session_id", "clone_id", "worktree_id", "branch"):
+    for identity_key in ("repository_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"):
         left_value = str(left_provenance.get(identity_key) or "")
         right_value = str(right_provenance.get(identity_key) or "")
         if bool(left_value) != bool(right_value) or (left_value and left_value != right_value):
@@ -237,85 +204,32 @@ def _bounded_memory_limit(limit: int, cap: int = MAX_MEMORY_QUERY_LIMIT) -> int:
 
 
 def _context_scope_sql(
-    *,
-    root: str,
-    task_id: str,
-    tenant: str,
-    session_id: str = "",
-    clone_id: str,
-    worktree_id: str,
-    branch: str,
-    coordination_id: str = "",
+    *, root: str, task_id: str, session_id: str = "", clone_id: str,
+    worktree_id: str, branch: str, coordination_id: str = "",
 ) -> tuple[str, list[Any]]:
-    if not isinstance(tenant, str):
-        raise ValueError("tenant must be a string")
-    root = str(root or "").strip()
+    identities = {
+        AgentScope.TASK: task_id, AgentScope.SESSION: session_id,
+        AgentScope.CLONE: clone_id, AgentScope.WORKTREE: worktree_id, AgentScope.BRANCH: branch,
+    }
+    for value in (root, coordination_id, *identities.values()):
+        if not isinstance(value, str) or value != value.strip() or "\x00" in value:
+            raise ValueError("memory context identities must be canonical strings")
     canonical_root = _normalise_scope_root(root) if root else ""
-    provenance_tenant = (
-        "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-        "'$.tenant')"
-    )
-    global_conditions = ["scope = ?"]
+    clauses = ["(scope = ?)"]
     params: list[Any] = [AgentScope.GLOBAL.value]
-    if tenant:
-        global_conditions.append(
-            f"({provenance_tenant} IS NULL OR {provenance_tenant} = '' OR {provenance_tenant} = ?)"
+    if coordination_id:
+        clauses.append(
+            "(scope = ? AND json_extract(CASE WHEN json_valid(provenance) "
+            "THEN provenance ELSE '{}' END, '$.repository_id') = ?)"
         )
-        params.append(tenant)
-    else:
-        global_conditions.append(f"({provenance_tenant} IS NULL OR {provenance_tenant} = '')")
-    clauses = ["(" + " AND ".join(global_conditions) + ")"]
-
-    def add_scoped_identity(scope_value: str, identity_value: str = "") -> None:
-        identity_value = str(identity_value or "").strip()
-        if scope_value != AgentScope.REPOSITORY.value and not identity_value:
-            return
-        if scope_value == AgentScope.REPOSITORY.value and not (root and tenant):
-            return
-        if scope_value == AgentScope.SESSION.value and not tenant:
-            return
-        if scope_value == AgentScope.TASK.value and not (root and tenant):
-            return
-        conditions = ["scope = ?"]
-        identity_params: list[Any] = [scope_value]
-        if scope_value == AgentScope.REPOSITORY.value:
-            if root:
-                conditions.append(f"{_CONTEXT_ROOT_SQL} = ?")
-                identity_params.append(canonical_root)
-            else:
-                conditions.append(f"{_CONTEXT_ROOT_SQL} = ''")
-        else:
-            conditions.append("scope_id = ?")
-            identity_params.append(identity_value)
-            if root:
-                conditions.append(f"{_CONTEXT_ROOT_SQL} = ?")
-                identity_params.append(canonical_root)
-            else:
-                conditions.append(f"{_CONTEXT_ROOT_SQL} = ''")
-        if tenant:
-            conditions.append(f"{provenance_tenant} = ?")
-            identity_params.append(tenant)
-        else:
-            conditions.append(f"({provenance_tenant} IS NULL OR {provenance_tenant} = '')")
-        clauses.append("(" + " AND ".join(conditions) + ")")
-        params.extend(identity_params)
-
-    coordination_id = str(coordination_id or "").strip()
-    # Repository memory requires trusted repository identity and exact tenant.
-    if tenant and coordination_id:
-        shared_repository = [
-            "scope = ?",
-            f"{provenance_tenant} = ?",
-            "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id') = ?",
-        ]
-        clauses.append("(" + " AND ".join(shared_repository) + ")")
-        params.extend([AgentScope.REPOSITORY.value, tenant, coordination_id])
-    add_scoped_identity(AgentScope.TASK.value, task_id)
-    add_scoped_identity(AgentScope.SESSION.value, session_id)
-    add_scoped_identity(AgentScope.CLONE.value, clone_id)
-    add_scoped_identity(AgentScope.WORKTREE.value, worktree_id)
-    add_scoped_identity(AgentScope.BRANCH.value, branch)
+        params.extend([AgentScope.REPOSITORY.value, coordination_id])
+    for scope, identity in identities.items():
+        if not identity or (scope is not AgentScope.SESSION and not root):
+            continue
+        clauses.append(f"(scope = ? AND scope_id = ? AND COALESCE({_CONTEXT_ROOT_SQL}, '') = ?)")
+        params.extend([scope.value, identity, canonical_root])
     return "(" + " OR ".join(clauses) + ")", params
+
 
 
 @dataclass(frozen=True)
@@ -338,6 +252,12 @@ class MemoryRecord:
     created_at: float = 0.0
     updated_at: float = 0.0
     expires_at: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provenance, dict):
+            raise ValueError("memory provenance must be an object")
+        if "tenant" in self.provenance or "tenant_key" in self.provenance:
+            raise ValueError("retired memory provenance field: tenant identity")
 
     @classmethod
     def create(
@@ -531,6 +451,8 @@ class MemoryRecord:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> MemoryRecord:
+        if "tenant" in data or "tenant_key" in data:
+            raise ValueError("retired memory field: tenant identity")
         return cls(
             record_id=str(data["record_id"]),
             kind=MemoryKind(data["kind"]),
@@ -704,6 +626,17 @@ class MemoryStore:
                         complete_groups=(("agent_memory_records", "agent_entity_relations"),),
                         required_if_event_kinds={"agent_memory_records": ("memory.%",)},
                     )
+                    if con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_memory_records'"
+                    ).fetchone() is not None:
+                        legacy = con.execute(
+                            "SELECT 1 FROM agent_memory_records WHERE "
+                            "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant') IS NOT NULL "
+                            "OR json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant_key') IS NOT NULL "
+                            "LIMIT 1"
+                        ).fetchone()
+                        if legacy is not None:
+                            raise RuntimeError("retired memory identity found; explicit offline data conversion is required")
                     # SQLite DDL may autocommit statement by statement. Keep the
                     # durable table group invisible until both tables exist.
                     con.execute("BEGIN IMMEDIATE")
@@ -761,17 +694,6 @@ class MemoryStore:
                             ON agent_memory_records (
                                 scope,
                                 json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'),
-                                status,
-                                updated_at DESC
-                            );
-                            """
-                        )
-                        con.execute(
-                            """
-                            CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_tenant
-                            ON agent_memory_records (
-                                scope,
-                                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant'),
                                 status,
                                 updated_at DESC
                             );
@@ -1099,7 +1021,6 @@ class MemoryStore:
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
-        tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
         clone_id: str | None = None,
@@ -1114,7 +1035,6 @@ class MemoryStore:
             scope_id=scope_id,
             root=root,
             repository_id=repository_id,
-            tenant=tenant,
             task_id=task_id,
             session_id=session_id,
             clone_id=clone_id,
@@ -1144,7 +1064,6 @@ class MemoryStore:
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
-        tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
         clone_id: str | None = None,
@@ -1156,7 +1075,6 @@ class MemoryStore:
             "scope_id": scope_id,
             "root": root,
             "repository_id": repository_id,
-            "tenant": tenant,
             "task_id": task_id,
             "session_id": session_id,
             "clone_id": clone_id,
@@ -1428,7 +1346,6 @@ class MemoryStore:
         coordination_id: str = "",
         task_id: str | None = None,
         session_id: str | None = None,
-        tenant: str | None = None,
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
@@ -1446,7 +1363,7 @@ class MemoryStore:
         self._init_table()
         capped_limit = max(0, min(32, int(id_limit)))
         request_scope_provided = any(
-            value is not None for value in (root, task_id, tenant, session_id, clone_id, worktree_id, branch)
+            value is not None for value in (root, task_id, session_id, clone_id, worktree_id, branch)
         )
         request_scope_provided = request_scope_provided or bool(coordination_id)
         con = connect_sqlite(self.state_store.db_path)
@@ -1463,7 +1380,6 @@ class MemoryStore:
                     root=root or "",
                     coordination_id=coordination_id,
                     task_id=task_id or "",
-                    tenant=tenant or "",
                     session_id=session_id or "",
                     clone_id=clone_id or "",
                     worktree_id=worktree_id or "",
@@ -1500,15 +1416,12 @@ class MemoryStore:
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
-        tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
     ) -> MemoryRecord | None:
-        if tenant is not None and not isinstance(tenant, str):
-            raise ValueError("tenant must be a string")
         requested_scope = AgentScope.parse(scope).value if scope is not None else ""
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
@@ -1521,9 +1434,9 @@ class MemoryStore:
         if (
             requested_scope == AgentScope.REPOSITORY.value
             or (not requested_scope and str(repository_id or "").strip())
-        ) and (not str(repository_id or "").strip() or not tenant):
+        ) and not str(repository_id or "").strip():
             return None
-        if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
+        if any(value is not None for value in (scope, scope_id, root, repository_id)) or any(
             str(value or "").strip() for value in (task_id, session_id, clone_id, worktree_id, branch)
         ):
             records = self.find(
@@ -1532,7 +1445,6 @@ class MemoryStore:
                 scope_id=scope_id,
                 root=root,
                 repository_id=repository_id,
-                tenant=tenant,
                 task_id=task_id,
                 session_id=session_id,
                 clone_id=clone_id,
@@ -1546,7 +1458,7 @@ class MemoryStore:
             if requested_scope == AgentScope.GLOBAL.value and record is not None:
                 # Direct lookup must provide every stored owner identity. This
                 # does not constrain intentional cross-project GLOBAL context
-                # sharing; tenant filtering remains strict for every lookup.
+                # sharing; explicit provenance constraints still apply.
                 if str(record.scope_id or "").strip():
                     return None
                 for identity_key, requested_identity in (
@@ -1569,7 +1481,6 @@ class MemoryStore:
                 "FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = '' "
                 "AND sensitivity = 'normal' "
                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'), '') = '' "
-                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant'), '') = '' "
                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'), '') = '' "
                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.task_id'), '') = '' "
                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.session_id'), '') = '' "
@@ -1586,15 +1497,6 @@ class MemoryStore:
             if not include_expired:
                 sql += " AND (expires_at IS NULL OR expires_at > ?)"
                 params.append(time.time())
-            provenance_tenant = (
-                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-                "'$.tenant')"
-            )
-            sql += (
-                " AND scope = ? AND ("
-                f"{provenance_tenant} IS NULL OR {provenance_tenant} = '')"
-            )
-            params.append(AgentScope.GLOBAL.value)
             row = con.execute(sql, tuple(params)).fetchone()
             if not row:
                 return None
@@ -1607,11 +1509,9 @@ class MemoryStore:
             con.close()
 
     @contextmanager
-    def task_retrieval_scope(self, goal: str, *, root: str, tenant: str, task_id: str):
+    def task_retrieval_scope(self, goal: str, *, root: str, task_id: str):
         """Apply goal relevance only within this request's exact memory identity."""
-        if not isinstance(tenant, str):
-            raise ValueError("tenant must be a string")
-        identity = (_normalise_scope_root(root), tenant, str(task_id).strip())
+        identity = (_normalise_scope_root(root), str(task_id).strip())
         token = _TASK_MEMORY_QUERY.set((self, identity, _goal_words(str(goal or ""))))
         try:
             yield
@@ -1630,7 +1530,6 @@ class MemoryStore:
         *,
         root: str = "",
         task_id: str = "",
-        tenant: str = "",
         session_id: str = "",
         clone_id: str = "",
         worktree_id: str = "",
@@ -1639,16 +1538,13 @@ class MemoryStore:
         include_kinds: Collection[str] = (),
         limit: int = 20,
     ) -> list[MemoryRecord]:
-        """Find bounded memory for exact context identity; GLOBAL remains cross-project, never cross-tenant."""
-        if not isinstance(tenant, str):
-            raise ValueError("tenant must be a string")
+        """Find bounded memory for exact context identity; GLOBAL belongs to the owner; declared project and session scopes remain distinct."""
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
         scope_sql, scope_params = _context_scope_sql(
             root=root,
             task_id=task_id,
-            tenant=tenant,
             session_id=session_id,
             clone_id=clone_id,
             worktree_id=worktree_id,
@@ -1693,7 +1589,7 @@ class MemoryStore:
             sql += f" AND kind IN ({placeholders})"
             params.extend(kinds)
         bound_query = _TASK_MEMORY_QUERY.get()
-        identity = (_normalise_scope_root(root), tenant, str(task_id).strip())
+        identity = (_normalise_scope_root(root), str(task_id).strip())
         goal_terms = (
             bound_query[2]
             if bound_query is not None and bound_query[0] is self and bound_query[1] == identity
@@ -1751,15 +1647,12 @@ class MemoryStore:
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
-        tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
     ) -> list[MemoryRecord]:
-        if tenant is not None and not isinstance(tenant, str):
-            raise ValueError("tenant must be a string")
         scope = AgentScope.parse(scope) if scope is not None else None
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -1785,7 +1678,6 @@ class MemoryStore:
         scope_id_val = str(scope_id or "").strip()
         root = str(root or "").strip()
         repository_id = str(repository_id or "").strip()
-        tenant = tenant if isinstance(tenant, str) else ""
         identity_scopes = [
             (task_id_val, AgentScope.TASK.value),
             (session_id_val, AgentScope.SESSION.value),
@@ -1816,11 +1708,10 @@ class MemoryStore:
                 scope_id_val = identity_scopes[0][0]
         elif len(identity_scopes) > 1:
             sql += " AND 0"
-        elif root or repository_id or tenant:
-            scope_val = AgentScope.REPOSITORY.value if (root or repository_id) else AgentScope.SESSION.value
+        elif root or repository_id:
+            scope_val = AgentScope.REPOSITORY.value
             sql += " AND scope = ?"
             params.append(scope_val)
-            # A tenant alone is not a SESSION identity; fail closed below.
         elif scope_id_val:
             sql += " AND 0"
 
@@ -1849,7 +1740,7 @@ class MemoryStore:
                 params.append(scope_id_val)
             elif scope_val is not None:
                 if scope_val == AgentScope.REPOSITORY.value:
-                    if not repository_id or not tenant:
+                    if not repository_id:
                         sql += " AND 0"
                 elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
                     sql += " AND 0"
@@ -1868,12 +1759,8 @@ class MemoryStore:
             params.append(str(record_id))
         if root and scope_val != AgentScope.REPOSITORY.value:
             canonical_root = _normalise_scope_root(root)
-            provenance_repo_id = (
-                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-                "'$.repository_id')"
-            )
-            sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ? OR {provenance_repo_id} = ?)"
-            params.extend([canonical_root, canonical_root, root])
+            sql += f" AND {_CONTEXT_ROOT_SQL} = ?"
+            params.append(canonical_root)
         elif scope_val is None:
             sql += " AND scope = ?"
             params.append(AgentScope.GLOBAL.value)
@@ -1884,23 +1771,15 @@ class MemoryStore:
             )
             sql += f" AND {provenance_repository_id} = ?"
             params.append(repository_id)
-        provenance_tenant = (
-            "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-            "'$.tenant')"
-        )
-        if tenant:
-            sql += f" AND {provenance_tenant} = ?"
-            params.append(tenant)
-        else:
-            sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
-        if scope_val == AgentScope.REPOSITORY.value and (not repository_id or not tenant):
+        if scope_val == AgentScope.REPOSITORY.value and not repository_id:
             sql += " AND 0"
         if scope_val == AgentScope.TASK.value:
-            # A task ID (or repository alias) cannot replace either trusted
-            # context identity. The SQL above matches both provenance fields.
-            if not (root and tenant and (task_id_val or scope_id_val)):
+            # A task identity still requires its repository root.
+            if not (root and (task_id_val or scope_id_val)):
                 sql += " AND 0"
-        if scope_val == AgentScope.SESSION.value and (not tenant or not session_id_val):
+        if scope_val == AgentScope.SESSION.value and not session_id_val:
+            sql += " AND 0"
+        if scope_val in {AgentScope.CLONE.value, AgentScope.WORKTREE.value, AgentScope.BRANCH.value} and not root:
             sql += " AND 0"
         for identity_value, identity_scope in identity_scopes:
             if identity_scope == scope_val:
@@ -1955,7 +1834,7 @@ class MemoryStore:
             embed_fn = getattr(services, "embed", None)
             if embed_fn and callable(embed_fn):
                 try:
-                    emb_res = embed_fn([query], tenant="agent")
+                    emb_res = embed_fn([query])
                     q_vec = emb_res.get("embeddings", [[]])[0]
                     if q_vec:
                         cur_emb = con.execute("SELECT record_id, embedding FROM agent_memory_embeddings ORDER BY created_at DESC LIMIT 500")
@@ -2348,7 +2227,6 @@ class MemoryStore:
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
-        tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
         clone_id: str | None = None,
@@ -2367,6 +2245,8 @@ class MemoryStore:
         else:
             return False
         scope_value = parsed_scope.value
+        if parsed_scope in {AgentScope.TASK, AgentScope.CLONE, AgentScope.WORKTREE, AgentScope.BRANCH} and not root:
+            return False
         for supplied_identity in (root, scope_id):
             if supplied_identity is not None and (
                 not isinstance(supplied_identity, str)
@@ -2374,11 +2254,6 @@ class MemoryStore:
                 or supplied_identity != supplied_identity.strip()
             ):
                 return False
-        if tenant is not None and (
-            not isinstance(tenant, str)
-            or tenant != tenant.strip()
-        ):
-            return False
         if parsed_scope is AgentScope.REPOSITORY and (
             not isinstance(repository_id, str)
             or not repository_id
@@ -2412,7 +2287,6 @@ class MemoryStore:
                 if isinstance(repository_id, str)
                 else str(repository_id or "").strip()
             ),
-            "tenant": tenant if isinstance(tenant, str) else "",
             "task_id": str(task_id or "").strip(),
             "session_id": str(session_id or "").strip(),
             "clone_id": str(clone_id or "").strip(),
@@ -2429,11 +2303,11 @@ class MemoryStore:
             if not scope_id_value:
                 return False
         elif parsed_scope is AgentScope.REPOSITORY:
-            if not identity_values["repository_id"] or not identity_values["tenant"]:
+            if not identity_values["repository_id"]:
                 return False
         elif parsed_scope is AgentScope.GLOBAL:
-            # Tenant is transport identity, not part of a GLOBAL record's scope.
-            # Other supplied identities remain provenance constraints below.
+            # The single owner's global scope has no identity partition.
+            # Supplied project/task/session identities still constrain provenance.
             scope_id_value = ""
         elif not scope_id_value:
             return False
@@ -2479,33 +2353,13 @@ class MemoryStore:
                     if not isinstance(provenance, dict):
                         provenance = {}
                         provenance_valid = False
-                    record_tenant = provenance.get("tenant")
-                    if parsed_scope is AgentScope.GLOBAL:
-                        if not provenance_valid:
-                            con.execute("COMMIT")
-                            return False, None
-                        if record_tenant is not None and not isinstance(record_tenant, str):
-                            con.execute("COMMIT")
-                            return False, None
-                        if record_tenant and (
-                            not identity_values["tenant"]
-                            or record_tenant != record_tenant.strip()
-                            or record_tenant != identity_values["tenant"]
-                        ):
-                            con.execute("COMMIT")
-                            return False, None
-                    elif (
-                        not isinstance(record_tenant, str)
-                        or not record_tenant
-                        or not identity_values["tenant"]
-                        or record_tenant != identity_values["tenant"]
-                    ):
+                    if not provenance_valid:
                         con.execute("COMMIT")
                         return False, None
+                    if "tenant" in provenance or "tenant_key" in provenance:
+                        raise RuntimeError("retired memory identity found; explicit offline data conversion is required")
                     for identity_key, expected in identity_values.items():
                         if not expected or identity_key == scope_identity_key:
-                            continue
-                        if parsed_scope is AgentScope.GLOBAL and identity_key == "tenant":
                             continue
                         if identity_key == "root":
                             actual_root = provenance.get("root")

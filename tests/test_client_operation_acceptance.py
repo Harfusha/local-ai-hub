@@ -12,8 +12,6 @@ def fake_http_transport(tmp_path):
     config_path = tmp_path / "missing-hub.toml"
     config_path.write_text(
         "[security]\n"
-        'api_token_tenant = "acceptance-test"\n'
-        'tenant_derivation_key = "acceptance-root-key-0123456789-abcdef"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -35,7 +33,6 @@ def fake_http_transport(tmp_path):
 
 def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fake_http_transport):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -72,7 +69,6 @@ def test_client_context_compile_targets_agent_state_context(
     tmp_path, monkeypatch, fake_http_transport
 ):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -105,7 +101,6 @@ def test_client_verify_receipt_targets_agent_state_verification(
     tmp_path, monkeypatch, fake_http_transport
 ):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -146,7 +141,6 @@ def test_client_record_memory_targets_agent_state_memory(
     tmp_path, monkeypatch, fake_http_transport
 ):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -181,7 +175,6 @@ def test_client_incident_decision_targets_agent_state_incidents(
     tmp_path, monkeypatch, fake_http_transport
 ):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -191,6 +184,7 @@ def test_client_incident_decision_targets_agent_state_incidents(
 
     result = client.coord(
         "incident_decision",
+        root=str(tmp_path),
         fingerprint={"error_class": "AssertionError", "operation_class": "test", "signature_hash": "case-17"},
         state_revision="rev-17",
     )
@@ -202,6 +196,7 @@ def test_client_incident_decision_targets_agent_state_incidents(
             "path": "/api/agent-state/incidents",
             "payload": {
                 "action": "decision",
+                "root": str(tmp_path),
                 "fingerprint": {
                     "error_class": "AssertionError", "operation_class": "test", "signature_hash": "case-17"
                 },
@@ -215,7 +210,6 @@ def test_client_worktree_lease_targets_coord_worktree_lease(
     tmp_path, monkeypatch, fake_http_transport
 ):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -237,7 +231,6 @@ def test_client_worktree_lease_targets_coord_worktree_lease(
 
 def test_client_complexity_targets_repo_complexity(tmp_path, monkeypatch, fake_http_transport):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -259,7 +252,6 @@ def test_client_complexity_targets_repo_complexity(tmp_path, monkeypatch, fake_h
 
 def test_client_package_audit_returns_target_error(tmp_path, monkeypatch, fake_http_transport):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -281,7 +273,6 @@ def test_client_package_audit_returns_target_error(tmp_path, monkeypatch, fake_h
 
 def test_client_mock_server_targets_command_mock_server(tmp_path, monkeypatch, fake_http_transport):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
@@ -312,7 +303,6 @@ def test_client_ingest_diagram_targets_rag_artifact_operation(
     tmp_path, monkeypatch, fake_http_transport
 ):
     client = HubClient(
-        tenant="acceptance-test",
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )

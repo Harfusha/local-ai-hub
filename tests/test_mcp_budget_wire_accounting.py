@@ -22,7 +22,7 @@ def _wire_measure(result) -> tuple[int, dict, dict | None]:
 
 def test_live_mcp_budget_measures_final_envelope_and_accounting(monkeypatch) -> None:
     events = []
-    monkeypatch.setattr(mcp_server, "CLIENT", mcp_server.HubClient(tenant="budget-test", auto_start=False))
+    monkeypatch.setattr(mcp_server, "CLIENT", mcp_server.HubClient(auto_start=False))
     monkeypatch.setattr(mcp_server.CLIENT, "get", lambda path, timeout=None: {
         "hub_online": True, "scheduler": {}, "observability": {},
     })

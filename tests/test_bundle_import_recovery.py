@@ -52,7 +52,6 @@ def _source_bundle(tmp_path: Path, source_root: Path) -> bytes:
     try:
         source_root_path = source_root.as_posix()
         source_workspace = source_app.rag.workspace_id(source_root_path)
-        source_scope = source_app.rag._scope_key("__preprocess__")
         with closing(source_app.deterministic._connect()) as con:
             con.execute(
                 "INSERT INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)",
@@ -61,15 +60,14 @@ def _source_bundle(tmp_path: Path, source_root: Path) -> bytes:
             con.commit()
         with closing(source_app.rag._connect()) as con:
             con.execute(
-                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                (source_scope, source_workspace, "new.py", 1, 8, "new-hash"),
+                "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+                (source_workspace, "new.py", 1, 8, "new-hash"),
             )
             con.execute(
-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                (source_scope, source_workspace, "new.py", 0, "new-hash", "new bundle text", ""),
+                "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
+                (source_workspace, "new.py", 0, "new-hash", "new bundle text", "", ""),
             )
             con.commit()
-        tenant = "bundle-fixture"
         records = []
         for index in (1, 2):
             task_id = f"bundle-task-{index}"
@@ -81,21 +79,19 @@ def _source_bundle(tmp_path: Path, source_root: Path) -> bytes:
                         scope_id=task_id,
                         key=f"bundle-memory-{index}",
                         value={"index": index},
-                        provenance={"root": source_root_path, "tenant": tenant, "task_id": task_id},
+                        provenance={"root": source_root_path, "task_id": task_id},
                     ),
                     actor="bundle_fixture",
                 )
             )
         return source_app.export_bundle(
             source_root_path,
-            tenant=tenant,
             agent_state_record_ids=[record.record_id for record in records],
             agent_state_contexts={
                 record.record_id: {
                     "scope": record.scope,
                     "scope_id": record.scope_id,
                     "root": source_root_path,
-                    "tenant": tenant,
                     "task_id": record.scope_id,
                 }
                 for record in records
@@ -105,11 +101,10 @@ def _source_bundle(tmp_path: Path, source_root: Path) -> bytes:
         source_app.close()
 
 
-def _task_memory_context(record: MemoryRecord, tenant: str, root: str) -> dict[str, object]:
+def _task_memory_context(record: MemoryRecord, root: str) -> dict[str, object]:
     return {
         "scope": record.scope,
         "scope_id": record.scope_id,
-        "tenant": tenant,
         "task_id": record.scope_id,
         "root": root,
     }
@@ -148,10 +143,9 @@ def test_bundle_import_rejects_malformed_rag_embedding_before_staging(tmp_path: 
         with closing(target_app.deterministic._connect()) as con:
             assert con.execute("SELECT COUNT(*) FROM files WHERE root=?", (root_path,)).fetchone()[0] == 0
         workspace = target_app.rag.workspace_id(root_path)
-        scope = target_app.rag._scope_key("__preprocess__")
         with closing(target_app.rag._connect()) as con:
             assert con.execute(
-                "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?", (scope, workspace)
+                "SELECT COUNT(*) FROM chunks WHERE workspace=?", (workspace,)
             ).fetchone()[0] == 0
         with closing(sqlite3.connect(target_app.agent_state.db_path)) as con:
             imported_memory = con.execute(
@@ -163,6 +157,35 @@ def test_bundle_import_rejects_malformed_rag_embedding_before_staging(tmp_path: 
             ).fetchone()[0]
         assert imported_memory == []
         assert imported_events == 0
+    finally:
+        target_app.close()
+
+
+def test_bundle_import_rejects_retired_tenant_fields_before_staging(tmp_path: Path) -> None:
+    source_root = tmp_path / "source-repo"
+    target_root = tmp_path / "target-repo"
+    source_root.mkdir()
+    target_root.mkdir()
+    source_bundle = _source_bundle(tmp_path, source_root)
+    with zipfile.ZipFile(io.BytesIO(source_bundle)) as source_archive:
+        bundle_data = json.loads(source_archive.read("bundle.json"))
+
+    bundle_data["tenant"] = None
+    raw_json = app_module.json_dumps(
+        bundle_data, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    legacy_bundle = io.BytesIO()
+    with zipfile.ZipFile(legacy_bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("bundle.json", raw_json)
+
+    target_app, _config_path = _app(tmp_path / "target-app")
+    try:
+        result = target_app.import_bundle(legacy_bundle.getvalue(), target_root.as_posix())
+
+        assert result["success"] is False
+        assert "retired tenant fields" in result["error"]
+        journal_dir = Path(target_app.config["server"]["state_dir"]) / "bundle-imports"
+        assert not journal_dir.exists()
     finally:
         target_app.close()
 
@@ -181,7 +204,6 @@ def test_bundle_import_recovers_after_store_commit_crash(tmp_path: Path, monkeyp
     target_app, config_path = _app(tmp_path / "target-app")
     target_root_path = target_root.as_posix()
     target_workspace = target_app.rag.workspace_id(target_root_path)
-    target_scope = target_app.rag._scope_key("__preprocess__")
     try:
         with closing(target_app.preprocessor._connect()) as con:
             con.execute(
@@ -198,8 +220,8 @@ def test_bundle_import_recovers_after_store_commit_crash(tmp_path: Path, monkeyp
             con.commit()
         with closing(target_app.rag._connect()) as con:
             con.execute(
-                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                (target_scope, target_workspace, "old.py", 1, 8, "old-hash"),
+                "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+                (target_workspace, "old.py", 1, 8, "old-hash"),
             )
             con.commit()
 
@@ -265,8 +287,8 @@ def test_bundle_import_recovers_after_store_commit_crash(tmp_path: Path, monkeyp
             ).fetchall()
         with closing(recovered_app.rag._connect()) as con:
             chunks = con.execute(
-                "SELECT path,text FROM chunks WHERE tenant=? AND workspace=?",
-                (target_scope, target_workspace),
+                "SELECT path,text FROM chunks WHERE workspace=?",
+                (target_workspace,),
             ).fetchall()
         with closing(sqlite3.connect(recovered_app.agent_state.db_path)) as con:
             memory_keys = con.execute(
@@ -332,7 +354,6 @@ def test_agent_state_bundle_recovers_after_partial_memory_commit(tmp_path: Path,
     source_root.mkdir()
     source_root_path = source_root.as_posix()
     try:
-        tenant = "bundle-fixture"
         records = []
         for index in (1, 2):
             task_id = f"standalone-task-{index}"
@@ -341,16 +362,15 @@ def test_agent_state_bundle_recovers_after_partial_memory_commit(tmp_path: Path,
                     MemoryRecord.create(
                         kind="fact", scope="task", scope_id=task_id,
                         key=f"standalone-memory-{index}", value=index,
-                        provenance={"root": source_root_path, "tenant": tenant, "task_id": task_id},
+                        provenance={"root": source_root_path, "task_id": task_id},
                     ),
                     actor="bundle_fixture",
                 )
             )
         bundle = source_app.export_bundle(
             source_root_path,
-            tenant=tenant,
             agent_state_record_ids=[record.record_id for record in records],
-            agent_state_contexts={record.record_id: _task_memory_context(record, tenant, source_root_path) for record in records},
+            agent_state_contexts={record.record_id: _task_memory_context(record, source_root_path) for record in records},
         )
     finally:
         source_app.close()
@@ -513,20 +533,18 @@ def test_agent_state_initial_journal_failure_reports_no_pending_recovery(tmp_pat
     source_root.mkdir()
     source_root_path = source_root.as_posix()
     try:
-        tenant = "bundle-fixture"
         task_id = "staging-failure-task"
         record = source_app.agent_memory.record(
             MemoryRecord.create(
                 kind="fact", scope="task", scope_id=task_id, key="staging-failure", value=True,
-                provenance={"root": source_root_path, "tenant": tenant, "task_id": task_id},
+                provenance={"root": source_root_path, "task_id": task_id},
             ),
             actor="bundle_fixture",
         )
         bundle = source_app.export_bundle(
             source_root_path,
-            tenant=tenant,
             agent_state_record_ids=[record.record_id],
-            agent_state_contexts={record.record_id: _task_memory_context(record, tenant, source_root_path)},
+            agent_state_contexts={record.record_id: _task_memory_context(record, source_root_path)},
         )
     finally:
         source_app.close()

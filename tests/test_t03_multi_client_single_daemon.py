@@ -86,7 +86,7 @@ def event(stage, **fields):
 # construction finish before publishing arrival at the startup barrier.
 hardware.detect_hardware = lambda profile: {"profile": "cpu", "gpus": []}
 time.sleep(float(sys.argv[10]))
-client = HubClient(tenant=f"t03-client-{sys.argv[11]}", config_path=config_path, auto_start=True)
+client = HubClient(config_path=config_path, auto_start=True)
 supervisor = Supervisor(config_path)
 assert Path(client.config["_config_path"]).resolve() == Path(config_path).resolve()
 assert Path(client.config["server"]["state_dir"]).resolve() == ready.parent.resolve()
@@ -94,7 +94,7 @@ worker_owner = process_owner_record(os.getpid(), ready.parent, "fixture_client")
 assert worker_owner is not None
 worker_owner.pop("command", None)
 assert process_owner_state(worker_owner, ready.parent, "fixture_client") == "owned"
-event("constructed", tenant=client.tenant, owner=worker_owner)
+event("constructed", owner=worker_owner)
 
 def service_start(command, **_kwargs):
     assert len(command) == 3 and command[-1] == "start", command
@@ -268,9 +268,6 @@ print("ready" if online else "failed")
     assert sum(event["stage"] == "released" for event in events) == 1, diagnostics
     constructed = [event for event in events if event["stage"] == "constructed"]
     assert len(constructed) == client_count, diagnostics
-    assert {event["tenant"] for event in constructed} == {
-        f"t03-client-{index}" for index in range(client_count)
-    }, diagnostics
     assert len(launcher_owners) == client_count, diagnostics
     assert all(owner is not None for owner in launcher_owners.values()), diagnostics
     owners = [event["owner"] for event in constructed] + list(launcher_owners.values())
@@ -285,6 +282,6 @@ print("ready" if online else "failed")
         "supervisor_spawn_authorities=1 "
         f"returncodes={[result.returncode for result in results]} "
         f"owner_status_after_close={diagnostics['owner_status']} "
-        f"identity_verified_closed_clients={client_count} tenant_count={client_count} "
+        f"identity_verified_closed_clients={client_count} "
         f"stderr={client_count}-prepared,1-real-acquire,1-released"
     )

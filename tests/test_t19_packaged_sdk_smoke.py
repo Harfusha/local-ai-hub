@@ -232,7 +232,7 @@ configuration.write_text(
 # Only hardware discovery is substituted: load_config otherwise probes GPUs even
 # with auto_tune=false. SDK, resource loading, config merging and schemas are real.
 with patch.object(hardware, "detect_hardware", return_value={"profile": "cpu", "gpus": [], "npus": []}):
-    sdk = client.HubClient(tenant="t19-offline-smoke", config_path=str(configuration), auto_start=False)
+    sdk = client.HubClient(config_path=str(configuration), auto_start=False)
 assert sdk.auto_start is False and sdk.base_url == "http://127.0.0.1:59992"
 assert pathlib.Path(sdk.config["_config_path"]) == configuration
 assert pathlib.Path(sdk.config["_defaults_path"]) == package / "defaults.toml"

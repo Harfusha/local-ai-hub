@@ -50,7 +50,6 @@ def test_repair_loop_terminates_when_generator_has_no_candidate(
     result = broker.repair_loop(
         "python -m pytest",
         tmp_path,
-        "tenant-1",
         max_attempts=4,
         fix_generator=generator if has_generator else None,
         initial_result={"success": False, "exit_code": 1},
@@ -94,7 +93,6 @@ def test_repair_loop_uses_verified_incident_fix_when_generator_is_empty(
     result = broker.repair_loop(
         "python -m pytest",
         tmp_path,
-        "tenant-1",
         max_attempts=4,
         fix_generator=lambda *_args: {},
         initial_result={

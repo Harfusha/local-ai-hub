@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import hashlib
+import subprocess
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +17,7 @@ from local_ai_hub.agent_verification import (
     VerificationStore,
 )
 from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.commands import CommandBroker
 from local_ai_hub.sqlite_support import connect_sqlite
 
 
@@ -33,19 +34,35 @@ def task_ready_for_completion(
     tasks: TaskStore,
     task_id: str,
     *,
-    owner: str = "tenant-a",
-    repository_id: str = "repo-receipts",
+    owner: str = "task-owner-a",
+    repository_id: str = "repo-coordination",
 ):
     contract = GoalContract(
         goal="Verify durable receipt completion",
         acceptance_criteria=("tests",),
         scope=AgentScope.TASK,
     )
+    repo_root = Path(tasks.state_store.db_path).parent / "receipt-repositories" / task_id
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / ".gitignore").write_text("", encoding="utf-8")
+    (repo_root / ".local-ai.toml").write_text(
+        '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n', encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "T09 test"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t09-test@example.invalid"], cwd=repo_root, check=True)
+    subprocess.run(["git", "add", ".gitignore", ".local-ai.toml"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt repository"], cwd=repo_root, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True
+    ).stdout.strip()
     tasks.create(
         contract,
         ScopeContext(repository_id=repository_id, task_id=task_id),
         task_id=task_id,
         actor=owner,
+        repo_root=str(repo_root),
+        repository_revision=revision,
     )
     tasks.transition(
         task_id,
@@ -64,7 +81,7 @@ def task_ready_for_completion(
     tasks.checkpoint(
         task_id,
         TaskCheckpoint(
-            state_data={"repository_revision": "rev-1", "mutation_generation": 0}
+            state_data={"repository_revision": revision, "mutation_generation": 0}
         ),
         actor=owner,
         idempotency_key=f"{task_id}-revision",
@@ -78,42 +95,46 @@ def passing_receipt(
     artifacts: ArtifactStore,
     task_id: str,
     *,
-    owner: str | None = None,
-    revision: str = "rev-1",
+    revision: str | None = None,
 ) -> VerificationReceipt:
     task = tasks.get(task_id)
     assert task is not None
-    receipt_owner = owner or task.owner
-    command_id = hashlib.sha256(
-        f"{task_id}:{receipt_owner}:{revision}:tests".encode()
-    ).hexdigest()[:32]
-    proof = {
-        "kind": "work_command_verification",
-        "passed": True,
-        "task_id": task_id,
-        "owner": receipt_owner,
-        "criterion": "tests",
-        "command_id": command_id,
-        "command_classification": "test",
-        "command": "python -m pytest -q",
-        "repository_revision": revision,
-        "mutation_generation": 0,
-        "exit_code": 0,
-        "cached": False,
-        "result": {"success": True, "exit_code": 0},
-    }
-    evidence_id = artifacts.put_json(proof, receipt_owner, "command_verification")
-    return VerificationReceipt.create(
-        task_id,
-        "tests",
-        passed=True,
-        evidence_id=evidence_id,
-        command_id=command_id,
-        owner=receipt_owner,
-        repository_revision=revision,
-        mutation_generation=0,
-        evidence_type="test",
+    repo_root = Path(task.checkpoint.state_data["_agent_task_scope"]["repo_root"])
+    actual_revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    assert revision is None or revision == actual_revision
+    (repo_root / "test_receipt.py").write_text("def test_receipt_command():\n    assert True\n", encoding="utf-8")
+
+    class _RepoState:
+        def fingerprint(self, cwd):
+            current = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=cwd, check=True, text=True, capture_output=True
+            ).stdout.strip()
+            return {"fingerprint": current, "root": str(cwd)}
+
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(Path(tasks.state_store.db_path).parent / "receipt-command-state")},
+            "commands": {"enabled": True, "allow_validation": True, "allow_read": True},
+        },
+        artifacts,
+        _RepoState(),
     )
+    broker.set_task_store(tasks)
+    broker.set_verification_store(verifier)
+    verifier.set_command_execution_record_lookup(broker.get_command_execution_record)
+    result = broker.run(
+        "python -m pytest -q test_receipt.py",
+        str(repo_root),
+        task_id=task_id,
+        criterion="tests",
+        timeout=60,
+    )
+    assert result.get("success") is True, result.get("error")
+    receipt_data = result.get("verification_receipt")
+    assert isinstance(receipt_data, dict)
+    return VerificationReceipt.from_dict(receipt_data)
 
 
 
@@ -131,7 +152,7 @@ def test_description_round_trip_and_description_terms_are_indexed(stores):
         contract,
         ScopeContext(repository_id="repo-receipts", task_id="task-description-search"),
         task_id="task-description-search",
-        actor="tenant-a",
+        actor="task-owner-a",
     )
 
     fetched = tasks.get(task.task_id)
@@ -154,7 +175,7 @@ def test_keyword_query_matches_across_indexed_task_fields(stores):
         ),
         ScopeContext(repository_id="repo-receipts", task_id="task-search-target"),
         task_id="task-search-target",
-        actor="tenant-a",
+        actor="task-owner-a",
     )
     tasks.create(
         GoalContract(
@@ -165,12 +186,12 @@ def test_keyword_query_matches_across_indexed_task_fields(stores):
         ),
         ScopeContext(repository_id="repo-receipts", task_id="task-search-other"),
         task_id="task-search-other",
-        actor="tenant-a",
+        actor="task-owner-a",
     )
     tasks.checkpoint(
         target.task_id,
         TaskCheckpoint(next_action="Review signed handoff"),
-        actor="tenant-a",
+        actor="task-owner-a",
         idempotency_key="task-search-checkpoint",
     )
 
@@ -191,7 +212,7 @@ def test_keyword_search_respects_requested_result_bound(stores):
             ),
             ScopeContext(repository_id="repo-receipts", task_id=task_id),
             task_id=task_id,
-            actor="tenant-a",
+            actor="task-owner-a",
         )
 
     matches = tasks.list_tasks(query="quasar", limit=1)
@@ -219,7 +240,9 @@ def test_recorded_receipt_retrieves_after_verifier_restart(stores):
     verifier.record(receipt)
 
     reopened = VerificationStore(tasks.state_store, task_store=tasks, artifact_store=artifacts)
-    completion = reopened.completion(task.task_id, current_revision="rev-1")
+    completion = reopened.completion(
+        task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+    )
 
     assert completion.complete is True
     assert completion.satisfied_criteria == ("tests",)
@@ -248,7 +271,9 @@ def test_recording_same_receipt_twice_is_idempotent(stores):
 
     first = verifier.record(receipt)
     second = verifier.record(receipt)
-    completion = verifier.completion(task.task_id, current_revision="rev-1")
+    completion = verifier.completion(
+        task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+    )
 
     assert first.to_dict() == second.to_dict() == receipt.to_dict()
     assert completion.complete is True
@@ -277,7 +302,7 @@ def test_receipt_owner_metadata_uses_versioned_existing_details_envelope(stores)
     }
 
 
-def test_legacy_receipt_owner_metadata_remains_valid(stores):
+def test_legacy_receipt_owner_metadata_requires_offline_conversion(stores):
     tasks, verifier, artifacts = stores
     task = task_ready_for_completion(tasks, "task-legacy-receipt-metadata")
     receipt = passing_receipt(tasks, verifier, artifacts, task.task_id)
@@ -296,10 +321,18 @@ def test_legacy_receipt_owner_metadata_remains_valid(stores):
         )
         con.commit()
 
-    completion = verifier.completion(task.task_id, current_revision="rev-1")
+    with pytest.raises(ValueError, match="offline conversion required"):
+        verifier.completion(
+            task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+        )
 
-    assert completion.complete is True
-    assert completion.receipts[0].owner == task.owner
+    with closing(connect_sqlite(tasks.state_store.db_path)) as con:
+        preserved = con.execute(
+            "SELECT details FROM agent_verification_receipts WHERE receipt_id = ?",
+            (receipt.receipt_id,),
+        ).fetchone()
+    assert preserved is not None
+    assert "schema" not in json.loads(preserved[0])["_verification_receipt"]
 
 
 def test_unknown_receipt_metadata_schema_fails_closed(stores):
@@ -321,11 +354,18 @@ def test_unknown_receipt_metadata_schema_fails_closed(stores):
         )
         con.commit()
 
-    completion = verifier.completion(task.task_id, current_revision="rev-1")
+    with pytest.raises(ValueError, match="unsupported stored verification receipt metadata; offline conversion required"):
+        verifier.completion(
+            task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+        )
 
-    assert completion.complete is False
-    assert completion.unsatisfied_criteria == ("tests",)
-    assert completion.receipts == ()
+    with closing(connect_sqlite(tasks.state_store.db_path)) as con:
+        preserved = con.execute(
+            "SELECT details FROM agent_verification_receipts WHERE receipt_id = ?",
+            (receipt.receipt_id,),
+        ).fetchone()
+    assert preserved is not None
+    assert json.loads(preserved[0])["_verification_receipt"]["schema"] == "verification_receipt_metadata.v99"
 
 
 def test_repo_bound_task_rejects_receipt_at_different_revision(stores, tmp_path):
@@ -333,14 +373,23 @@ def test_repo_bound_task_rejects_receipt_at_different_revision(stores, tmp_path)
     task = task_ready_for_completion(
         tasks,
         "task-repository-isolation",
-        repository_id=str(tmp_path / "repository-a"),
+        repository_id="repo-coordination-a",
     )
-    receipt = passing_receipt(
-        tasks, verifier, artifacts, task.task_id, revision="repository-b-rev"
-    )
+    receipt = passing_receipt(tasks, verifier, artifacts, task.task_id)
     verifier.record(receipt)
+    tasks.checkpoint(
+        task.task_id,
+        TaskCheckpoint(
+            state_data={
+                **task.checkpoint.state_data,
+                "repository_revision": "different-current-revision",
+            }
+        ),
+        actor=task.owner,
+        idempotency_key="different-current-revision",
+    )
 
-    completion = verifier.completion(task.task_id, current_revision="repository-a-rev")
+    completion = verifier.completion(task.task_id, current_revision="different-current-revision")
 
     assert completion.complete is False
     assert completion.stale_criteria == ("tests",)
@@ -353,7 +402,9 @@ def test_foreign_task_receipt_cannot_complete_target(stores):
     foreign = task_ready_for_completion(tasks, "task-foreign")
     verifier.record(passing_receipt(tasks, verifier, artifacts, foreign.task_id))
 
-    completion = verifier.completion(target.task_id, current_revision="rev-1")
+    completion = verifier.completion(
+        target.task_id, current_revision=target.checkpoint.state_data["repository_revision"]
+    )
 
     assert completion.complete is False
     assert completion.unsatisfied_criteria == ("tests",)
@@ -362,49 +413,58 @@ def test_foreign_task_receipt_cannot_complete_target(stores):
         tasks.complete(target.task_id, actor=target.owner, idempotency_key="target-complete")
 
 
-def test_foreign_tenant_receipt_cannot_complete_task(stores):
+def test_wrong_owner_receipt_cannot_complete_task(stores):
     tasks, verifier, artifacts = stores
-    task = task_ready_for_completion(tasks, "task-tenant-scope", owner="tenant-a")
-    verifier.record(
-        passing_receipt(tasks, verifier, artifacts, task.task_id, owner="tenant-b")
-    )
+    task = task_ready_for_completion(tasks, "task-owner-scope", owner="task-owner-a")
+    receipt = passing_receipt(tasks, verifier, artifacts, task.task_id)
+    with closing(connect_sqlite(tasks.state_store.db_path)) as con:
+        row = con.execute(
+            "SELECT details FROM agent_verification_receipts WHERE receipt_id=?",
+            (receipt.receipt_id,),
+        ).fetchone()
+        assert row is not None
+        details = json.loads(row[0])
+        details["_verification_receipt"]["owner"] = "other-agent"
+        con.execute(
+            "UPDATE agent_verification_receipts SET details=? WHERE receipt_id=?",
+            (json.dumps(details, sort_keys=True, separators=(",", ":")), receipt.receipt_id),
+        )
+        con.commit()
 
-    completion = verifier.completion(task.task_id, current_revision="rev-1")
+    completion = verifier.completion(
+        task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+    )
 
     assert completion.complete is False
     assert completion.unsatisfied_criteria == ("tests",)
     assert completion.receipts == ()
     with pytest.raises(CompletionGateError):
-        tasks.complete(task.task_id, actor=task.owner, idempotency_key="tenant-complete")
+        tasks.complete(task.task_id, actor=task.owner, idempotency_key="owner-complete")
 
 
-def test_newer_foreign_tenant_receipt_is_hidden_and_supersedes_owner_receipt(stores):
+def test_newer_wrong_owner_receipt_is_hidden_and_supersedes_owner_receipt(stores):
     tasks, verifier, artifacts = stores
-    task = task_ready_for_completion(tasks, "task-tenant-latest", owner="tenant-a")
-    owner_receipt = replace(
-        passing_receipt(tasks, verifier, artifacts, task.task_id), observed_at=10.0
-    )
-    foreign_receipt = replace(
-        passing_receipt(tasks, verifier, artifacts, task.task_id, owner="tenant-b"),
-        observed_at=20.0,
-    )
+    task = task_ready_for_completion(tasks, "task-owner-latest", owner="task-owner-a")
+    owner_receipt = passing_receipt(tasks, verifier, artifacts, task.task_id)
     verifier.record(owner_receipt)
-    verifier.record(foreign_receipt)
+    forged_newer = replace(owner_receipt, owner="other-agent", observed_at=owner_receipt.observed_at + 1)
+    with pytest.raises(ValueError, match="matching trusted evidence"):
+        verifier.record(forged_newer)
 
-    completion = verifier.completion(task.task_id, current_revision="rev-1")
+    completion = verifier.completion(
+        task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+    )
 
-    assert completion.complete is False
-    assert completion.unsatisfied_criteria == ("tests",)
-    assert completion.receipts == ()
-    with pytest.raises(CompletionGateError):
-        tasks.complete(task.task_id, actor=task.owner, idempotency_key="tenant-latest-complete")
+    assert completion.complete is True
+    assert completion.receipts[0].receipt_id == owner_receipt.receipt_id
+    assert tasks.complete(task.task_id, actor=task.owner, idempotency_key="owner-latest-complete").status is TaskStatus.COMPLETED
 
 
 def test_stale_revision_receipt_cannot_complete_task(stores):
     tasks, verifier, artifacts = stores
     task = task_ready_for_completion(tasks, "task-stale-revision")
     verifier.record(
-        passing_receipt(tasks, verifier, artifacts, task.task_id, revision="rev-1")
+        passing_receipt(tasks, verifier, artifacts, task.task_id)
     )
     tasks.checkpoint(
         task.task_id,
@@ -436,7 +496,9 @@ def test_valid_durable_receipt_completes_task(stores):
     )
 
     assert completed.status is TaskStatus.COMPLETED
-    persisted = verifier.completion(task.task_id, current_revision="rev-1")
+    persisted = verifier.completion(
+        task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+    )
     assert persisted.complete is True
     assert persisted.receipts[0].receipt_id == receipt.receipt_id
 
@@ -473,7 +535,7 @@ def test_keyword_search_backfills_missing_index_after_reopen(stores):
         ),
         ScopeContext(repository_id="repo-index-recovery", task_id="task-index-recovery"),
         task_id="task-index-recovery",
-        actor="tenant-a",
+        actor="task-owner-a",
     )
     with closing(connect_sqlite(tasks.state_store.db_path)) as con:
         con.execute("DROP TABLE agent_task_search_grams")
@@ -488,7 +550,7 @@ def test_keyword_search_backfills_missing_index_after_reopen(stores):
 def test_source_review_receipt_without_command_completes_documentation_task(stores):
     tasks, verifier, artifacts = stores
     task_id = "task-documentation-review"
-    owner = "tenant-docs"
+    owner = "documentation-reviewer"
     tasks.create(
         GoalContract(
             goal="Document release evidence",
@@ -530,8 +592,7 @@ def test_source_review_receipt_without_command_completes_documentation_task(stor
             "mutation_generation": 0,
             "review_summary": "release docs checked against acceptance criteria",
         },
-        owner,
-        "source_review",
+        kind="source_review",
     )
     receipt = VerificationReceipt.create(
         task_id,
@@ -570,8 +631,7 @@ def test_model_assessment_artifact_cannot_satisfy_test_receipt(stores):
             "mutation_generation": 0,
             "assessment": {"score": 1.0, "summary": "model says tests passed"},
         },
-        task.owner,
-        "source_review",
+        kind="source_review",
     )
     receipt = VerificationReceipt.create(
         task.task_id,
@@ -587,7 +647,9 @@ def test_model_assessment_artifact_cannot_satisfy_test_receipt(stores):
     with pytest.raises(ValueError, match="requires matching trusted evidence"):
         verifier.record(receipt)
 
-    completion = verifier.completion(task.task_id, current_revision="rev-1")
+    completion = verifier.completion(
+        task.task_id, current_revision=task.checkpoint.state_data["repository_revision"]
+    )
 
     assert completion.complete is False
     assert completion.unsatisfied_criteria == ("tests",)

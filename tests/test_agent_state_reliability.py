@@ -90,7 +90,9 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
 
     contract = GoalContract(goal="test heartbeat")
     context = ScopeContext()
-    tenant_token = trace_context.set_context(tenant="tenant-a")
+    trace_token = trace_context.set_context(
+        agent="agent-a", request_id="heartbeat-request", trace_id="heartbeat-trace"
+    )
     t1 = task_store.create(contract, context, task_id="task_hb_1", repo_root=str(tmp_path))
     t1 = task_store.transition(t1.task_id, TaskStatus.ACTIVE, reason="activate", actor="agent", idempotency_key="act1")
 
@@ -115,7 +117,7 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
     t_blocked = task_store.create(contract, context, task_id="task_block", repo_root=str(tmp_path))
     task_store.transition(t_blocked.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_b")
     task_store.transition(t_blocked.task_id, TaskStatus.BLOCKED, reason="block", actor="agent", idempotency_key="block_b")
-    trace_context.reset_context(tenant_token)
+    trace_context.reset_context(trace_token)
 
     # Manually backdate heartbeats after transitions complete
     with closing(sqlite3.connect(db)) as con:
@@ -125,7 +127,7 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
         )
         con.commit()
 
-    reaped = task_store.reap_expired_heartbeats(repo_root=tmp_path, tenant="tenant-a")
+    reaped = task_store.reap_expired_heartbeats(repo_root=tmp_path)
     assert "task_act" in reaped
     assert "task_ver" in reaped
     assert "task_wait" in reaped
@@ -297,7 +299,7 @@ def test_disabled_agent_state_keeps_stateless_context_useful(tmp_path: Path) -> 
     leases = ScopeLeaseStore(tmp_path / "leases")
     repo = tmp_path / "repo"
     repo.mkdir()
-    claimed = leases.claim("other-agent", str(repo), ["src/core.py"], purpose="inspect")
+    claimed = leases.claim(owner="other-agent", root=str(repo), paths=["src/core.py"], purpose="inspect")
     assert claimed["success"] is True
 
     compiler = ContextCompiler(state, lease_store=leases)
@@ -307,7 +309,6 @@ def test_disabled_agent_state_keeps_stateless_context_useful(tmp_path: Path) -> 
             token_budget=512,
             include_kinds=("active_lease",),
             root=str(repo),
-            tenant="current-agent",
         )
     )
 
@@ -333,7 +334,7 @@ def test_rag_embedder_queue_exception_handling(tmp_path: Path) -> None:
     f1 = root / "code.py"
     f1.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
 
-    res = store.index(str(root), tenant="t1", workspace="w1")
+    res = store.index(str(root))
     assert res["success"] is False
     assert res["retryable"] is True
     assert "busy or timed out" in res["error"]

@@ -38,7 +38,7 @@ def _dispatch_get(
     responses = []
     handler._begin_trace = lambda *_args: None
     if authenticate:
-        handler.server = SimpleNamespace(check_rate_limit=lambda _tenant: True)
+        handler.server = SimpleNamespace(check_rate_limit=lambda: True)
         handler._require_authorized = lambda *args, **kwargs: http_server.Handler._require_authorized(
             handler, *args, **kwargs
         )
@@ -66,7 +66,7 @@ def _dispatch_post(
     handler._begin_trace = lambda *_args: None
     handler._validate_host_and_origin = lambda: True
     if authenticate:
-        handler.server = SimpleNamespace(check_rate_limit=lambda _tenant: True)
+        handler.server = SimpleNamespace(check_rate_limit=lambda: True)
         handler._require_authorized = lambda *args, **kwargs: http_server.Handler._require_authorized(
             handler, *args, **kwargs
         )
@@ -89,23 +89,21 @@ def _store_spy(calls):
     return StoreSpy()
 
 
-def test_api_token_acl_preserves_tenant_scope(monkeypatch):
+def test_api_token_permissions_apply_to_installation_owner(monkeypatch):
     app = SimpleNamespace(config={
         "security": {
             "api_token": "alice-user-credential-long",
             "api_token_permissions": ["read", "write"],
-            "api_token_tenant": "tenant-alice",
         }
     })
     monkeypatch.setattr(http_server, "APP", app)
     handler = _handler({
         "X-LocalAI-Token": "alice-user-credential-long",
-        "X-LocalAI-Tenant": "tenant-alice",
     }, method="POST", path="/api/delegate")
 
     assert http_server.Handler._authorized(handler, "write") is True
-    assert handler._authorization_actor == "tenant-alice"
-    assert http_server.Handler._tenant(handler) == "tenant-alice"
+    assert handler._authorization_actor == "api_token"
+    assert handler._authorization_permissions == frozenset({"read", "write"})
 
 
 def test_http_user_acl_denies_admin_and_invalid_credential(monkeypatch):
@@ -118,11 +116,9 @@ def test_http_user_acl_denies_admin_and_invalid_credential(monkeypatch):
     monkeypatch.setattr(http_server, "APP", app)
     valid = _handler({
         "X-LocalAI-Token": "alice-user-credential-long",
-        "X-LocalAI-Tenant": "tenant-alice",
     }, method="POST", path="/api/admin/mode")
     invalid = _handler({
         "X-LocalAI-Token": "wrong-credential",
-        "X-LocalAI-Tenant": "tenant-alice",
     })
 
     assert http_server.Handler._authorized(valid, "admin") is False
@@ -131,57 +127,39 @@ def test_http_user_acl_denies_admin_and_invalid_credential(monkeypatch):
     assert invalid._authorization_status == 401
 
 
-def test_api_token_tenant_binding_rejects_tenant_switch(monkeypatch):
-    app = SimpleNamespace(config={
-        "security": {
-            "api_token": "tenant-bound-token-long",
-            "api_token_tenant": "tenant-alice",
-        }
-    })
-    monkeypatch.setattr(http_server, "APP", app)
+def test_retired_tenant_header_is_rejected_even_with_valid_token(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
+        "api_token": "valid-owner-token",
+    }}))
     handler = _handler({
-        "X-LocalAI-Token": "tenant-bound-token-long",
-        "X-LocalAI-Tenant": "tenant-other",
+        "X-LocalAI-Token": "valid-owner-token",
+        "X-LocalAI-Tenant": "retired-value",
     })
     responses = []
     handler._send = lambda status, payload: responses.append((status, payload))
 
-    assert http_server.Handler._authorized(handler, "read") is True
-    assert http_server.Handler._tenant_binding_allowed(handler) is False
-    assert responses[0][0] == 403
+    assert http_server.Handler._reject_retired_tenant_headers(handler) is False
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "retired_tenant_header"
 
 
-def test_unbound_client_tenant_header_cannot_choose_principal(monkeypatch):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {"api_token": "unbound-token-long"}
-    }))
-    handler = _handler({
-        "X-LocalAI-Token": "unbound-token-long",
-        "X-LocalAI-Tenant": "tenant-spoof",
-    })
-    assert http_server.Handler._authorized(handler, "read") is True
-    assert http_server.Handler._tenant(handler) == "api-token-default"
+@pytest.mark.parametrize("header", ["X-LocalAI-Tenant", "X-Tenant-ID"])
+def test_each_retired_tenant_header_alias_is_rejected(header):
+    handler = _handler({header: "retired-value"})
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+    assert http_server.Handler._reject_retired_tenant_headers(handler) is False
+    assert responses[0][1]["error_code"] == "retired_tenant_header"
 
 
-def test_rootless_memory_binding_rejects_untrusted_tenant_header(monkeypatch):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {"api_token": "unbound-token-long"}
-    }))
-    handler = _handler({
-        "X-LocalAI-Token": "unbound-token-long",
-        "X-LocalAI-Tenant": "tenant-spoof",
-    })
+def test_retired_tenant_body_field_is_rejected():
+    handler = _handler({})
     responses = []
     handler._send = lambda status, payload: responses.append((status, payload))
 
-    assert http_server.Handler._authorized(handler, "read") is True
-    assert http_server.Handler._bind_principal_tenant(handler) is False
-    assert responses[0][0] == 403
-
-    trusted = _handler({"X-LocalAI-Token": "unbound-token-long"})
-    assert http_server.Handler._authorized(trusted, "read") is True
-    assert http_server.Handler._bind_principal_tenant(trusted) is True
-    assert trusted._authorization_tenant == "api-token-default"
+    assert http_server.Handler._reject_identity_fields(handler, {"tenant": "retired-value"}) is False
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "retired_tenant_field"
 
 
 def test_missing_credentials_fail_closed_and_legacy_global_token_remains(monkeypatch):
@@ -200,8 +178,8 @@ def test_missing_credentials_fail_closed_and_legacy_global_token_remains(monkeyp
     ) is True
 
 
-def test_config_loads_per_user_api_token_acl_and_tenant_binding(tmp_path):
-    from local_ai_hub.config import load_config
+def test_config_rejects_retired_tenant_auth_settings(tmp_path):
+    from local_ai_hub.config import ConfigError, load_config
 
     config = tmp_path / "hub.toml"
     config.write_text(
@@ -215,11 +193,8 @@ def test_config_loads_per_user_api_token_acl_and_tenant_binding(tmp_path):
         encoding="utf-8",
     )
 
-    loaded = load_config(str(config))
-
-    assert loaded["security"]["api_token_tenant"] == "tenant-alice"
-    assert loaded["security"]["allowed_roots"] == [str(tmp_path.as_posix())]
-    assert loaded["security"]["api_token_permissions"] == ["monitor", "read"]
+    with pytest.raises(ConfigError, match="api_token_tenant was removed"):
+        load_config(str(config))
 
 
 @pytest.fixture
@@ -846,12 +821,10 @@ def test_external_termination_does_not_signal_reused_pidfd(monkeypatch, tmp_path
     assert signalled == []
 
 
-def test_root_tenant_is_stable_per_principal_and_separates_same_task_id(tmp_path, monkeypatch):
+def test_task_lookup_is_bound_to_repository_root(tmp_path, monkeypatch):
     app = SimpleNamespace(config={
         "security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-            "api_token_principal": "mcp-global",
             "allowed_roots": [str(tmp_path)],
         }
     })
@@ -860,66 +833,42 @@ def test_root_tenant_is_stable_per_principal_and_separates_same_task_id(tmp_path
     root_b = tmp_path / "b"
     root_a.mkdir()
     root_b.mkdir()
-    key = app.config["security"]["tenant_derivation_key"]
-    tenant_a = http_server._derive_root_tenant("mcp-global", str(root_a.resolve()), key)
-    tenant_b = http_server._derive_root_tenant("mcp-global", str(root_b.resolve()), key)
-    assert tenant_a == http_server._derive_root_tenant("mcp-global", str(root_a.resolve()), key)
-    assert tenant_a != tenant_b
-
-    handler_a = _handler({})
-    handler_a._authorization_tenant = tenant_a
-    handler_b = _handler({})
-    handler_b._authorization_tenant = tenant_b
-    task_scope_a = http_server.Handler._bound_memory_scope_id(handler_a, http_server.AgentScope.TASK, None, "same-task")
-    task_scope_b = http_server.Handler._bound_memory_scope_id(handler_b, http_server.AgentScope.TASK, None, "same-task")
-    assert task_scope_a != task_scope_b
-
     task_a = SimpleNamespace(task_id="same-task", context=SimpleNamespace(
-        repository_id=str(root_a.resolve()), session_id=tenant_a,
+        repository_id=str(root_a.resolve()), session_id="session-a",
     ))
-    assert http_server.Handler._task_matches_request(task_a, str(root_a.resolve()), tenant_a) is True
-    assert http_server.Handler._task_matches_request(task_a, str(root_b.resolve()), tenant_b) is False
+    assert http_server.Handler._task_matches_request(task_a, str(root_a.resolve())) is True
+    assert http_server.Handler._task_matches_request(task_a, str(root_b.resolve())) is False
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config=app.config,
         agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "same-task" else None),
     ))
     allowed = _handler({})
-    assert http_server.Handler._request_task(allowed, "same-task", str(root_a.resolve()), tenant_a) is task_a
+    assert http_server.Handler._request_task(allowed, "same-task", str(root_a.resolve())) is task_a
     # GET and update routes share this lookup gate.
     denied = _handler({})
     responses = []
     denied._send = lambda status, payload: responses.append((status, payload))
-    assert http_server.Handler._request_task(denied, "same-task", str(root_b.resolve()), tenant_b) is None
+    assert http_server.Handler._request_task(denied, "same-task", str(root_b.resolve())) is None
     assert responses[0][0] == 404
 
 
 def test_task_access_sandbox_fails_closed_without_allowed_roots(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
-    tenant = "tenant-bound"
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
         }
     }))
     handler = _handler({})
 
-    task = SimpleNamespace(context=SimpleNamespace(
-        repository_id=str(root.resolve()), session_id=tenant,
-    ))
-    rootless_task = SimpleNamespace(context=SimpleNamespace(
-        repository_id="", session_id=tenant,
-    ))
-    tenantless_task = SimpleNamespace(context=SimpleNamespace(
-        repository_id=str(root.resolve()), session_id="",
-    ))
+    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id="session-a"))
+    rootless_task = SimpleNamespace(context=SimpleNamespace(repository_id="", session_id="session-a"))
 
     assert http_server.Handler._root_sandbox_enabled(handler) is True
-    assert http_server.Handler._task_matches_request(task, str(root.resolve()), tenant) is True
-    assert http_server.Handler._task_matches_request(rootless_task, str(root.resolve()), tenant) is False
-    assert http_server.Handler._task_matches_request(tenantless_task, str(root.resolve()), tenant) is False
+    assert http_server.Handler._task_matches_request(task, str(root.resolve())) is True
+    assert http_server.Handler._task_matches_request(rootless_task, str(root.resolve())) is False
 
 
 def test_task_completion_rejects_missing_owner(tmp_path, monkeypatch):
@@ -945,53 +894,51 @@ def test_task_completion_rejects_missing_owner(tmp_path, monkeypatch):
     assert responses[0][1]["error_code"] == "task_owner_mismatch"
 
 
-def test_root_scope_rejects_spoofed_header_or_body_tenant(tmp_path, monkeypatch):
+def test_root_scope_rejects_retired_tenant_header_and_body_fields(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-            "api_token_principal": "mcp-global",
             "allowed_roots": [str(tmp_path)],
         }
     }))
     header_handler = _handler({"X-LocalAI-Tenant": "tenant-spoof"})
     header_errors = []
     header_handler._send = lambda status, payload: header_errors.append((status, payload))
-    assert http_server.Handler._bind_root_tenant(header_handler, str(root)) is None
-    assert header_errors[0][0] == 403
+    assert http_server.Handler._reject_retired_tenant_headers(header_handler) is False
+    assert header_errors[0][0] == 400
 
     body_handler = _handler({})
     body_errors = []
     body_handler._send = lambda status, payload: body_errors.append((status, payload))
-    assert http_server.Handler._bind_memory_payload(body_handler, {
-        "root": str(root), "scope": "repository", "tenant": "tenant-spoof",
+    assert http_server.Handler._reject_identity_fields(body_handler, {
+        "root": str(root), "tenant": "retired-value",
     }) is False
-    assert body_errors[0][0] == 403
+    assert body_errors[0][0] == 400
 
     for candidate in (
-        {"root": str(root), "scope": "repository", "record": {"tenant": "tenant-spoof"}},
-        {"root": str(root), "scope": "repository", "provenance": {"tenant": "tenant-spoof"}},
-        {"root": str(root), "scope": "repository", "record": {"provenance": {"tenant": "tenant-spoof"}}},
+        {"root": str(root), "record": {"tenant": "retired-value"}},
+        {"root": str(root), "provenance": {"tenant": "retired-value"}},
+        {"root": str(root), "record": {"provenance": {"tenant": "retired-value"}}},
     ):
         handler = _handler({})
         errors = []
         handler._send = lambda status, payload: errors.append((status, payload))
-        assert http_server.Handler._bind_memory_payload(handler, candidate) is False
-        assert errors[0][0] == 403
+        assert http_server.Handler._reject_identity_fields(handler, candidate) is False
+        assert errors[0][0] == 400
 
     for candidate in (
-        {"scope": "global", "tenant": "tenant-spoof"},
-        {"scope": "global", "record": {"tenant": "tenant-spoof"}},
-        {"scope": "global", "provenance": {"tenant": "tenant-spoof"}},
-        {"scope": "global", "record": {"provenance": {"tenant": "tenant-spoof"}}},
+        {"tenant": "retired-value"},
+        {"record": {"tenant": "retired-value"}},
+        {"provenance": {"tenant": "retired-value"}},
+        {"record": {"provenance": {"tenant": "retired-value"}}},
     ):
         handler = _handler({})
         errors = []
         handler._send = lambda status, payload: errors.append((status, payload))
-        assert http_server.Handler._bind_memory_payload(handler, candidate) is False
-        assert errors[0][0] == 403
+        assert http_server.Handler._reject_identity_fields(handler, candidate) is False
+        assert errors[0][0] == 400
 
 
 def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_path, monkeypatch):
@@ -1000,7 +947,6 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
             "allowed_roots": [str(allowed)],
         }
     }))
@@ -1008,7 +954,7 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
         handler = _handler({})
         errors = []
         handler._send = lambda status, payload: errors.append((status, payload))
-        assert http_server.Handler._bind_root_tenant(handler, requested) is None
+        assert http_server.Handler._bind_root(handler, requested) is None
         assert errors[0][0] == 403
 
     link = tmp_path / "allowed-link"
@@ -1019,14 +965,14 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
     handler = _handler({})
     errors = []
     handler._send = lambda status, payload: errors.append((status, payload))
-    assert http_server.Handler._bind_root_tenant(handler, str(link)) is None
+    assert http_server.Handler._bind_root(handler, str(link)) is None
     assert errors[0][0] == 403
 
     http_server.APP.config["security"]["allowed_roots"] = []
     handler = _handler({})
     errors = []
     handler._send = lambda status, payload: errors.append((status, payload))
-    assert http_server.Handler._bind_root_tenant(handler, str(allowed)) is None
+    assert http_server.Handler._bind_root(handler, str(allowed)) is None
     assert errors[0][0] == 403
 
     scoped_task_handler = _handler({})
@@ -1038,50 +984,45 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
     assert scoped_task_errors[0][0] == 403
 
 
-def test_fixed_api_token_tenant_remains_principal_namespace(tmp_path, monkeypatch):
+def test_api_token_authorizes_owner_without_root_identity_rewrite(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
-    derivation_key = "stable-test-derivation-secret-0123456789"
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
-            "api_token": "tenant-bound-token-long",
-            "api_token_tenant": "tenant-alice",
-            "tenant_derivation_key": derivation_key,
+            "api_token": "owner-token-long",
+            "api_token_permissions": ["read", "write"],
             "allowed_roots": [str(tmp_path)],
         }
     }))
     handler = _handler({
-        "X-LocalAI-Token": "tenant-bound-token-long",
-        "X-LocalAI-Tenant": "tenant-spoof",
+        "X-LocalAI-Token": "owner-token-long",
     })
     assert http_server.Handler._authorized(handler, "read") is True
-    assert http_server.Handler._tenant(handler) == "tenant-alice"
-    assert handler._authorization_actor == "tenant-alice"
+    assert handler._authorization_actor == "api_token"
+    assert handler._authorization_permissions == frozenset({"read", "write"})
 
-    untagged = _handler({})
-    bound = http_server.Handler._bind_root_tenant(untagged, str(root))
-    assert bound is not None
-    assert bound[1] == http_server._derive_root_tenant("tenant-alice", str(root.resolve()), derivation_key)
+    scoped = _handler({})
+    assert http_server.Handler._bind_root(scoped, str(root)) == str(root.resolve())
+    assert scoped._authorization_root == str(root.resolve())
 
 
-def test_rootless_global_memory_is_forced_into_principal_scope(monkeypatch):
+def test_global_memory_stays_owner_global_and_session_scope_is_explicit(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {"api_token": "tenant-bound-token-long", "api_token_tenant": "tenant-alice"}
+        "security": {"api_token": "owner-token-long"}
     }))
     handler = _handler({})
     payload = {"scope": "global", "key": "private"}
     assert http_server.Handler._bind_memory_payload(handler, payload) is True
-    assert payload["scope"] == "session"
-    assert payload["scope_id"] == "tenant-alice"
-    assert payload["tenant"] == "tenant-alice"
+    assert payload == {"scope": "global", "key": "private"}
 
     query = {"scope": ["global"]}
     query_handler = _handler({})
     assert http_server.Handler._bind_memory_query(query_handler, query) is True
-    assert query["scope"] == ["session"]
-    assert query["scope_id"] == ["tenant-alice"]
-    assert query["session_id"] == ["tenant-alice"]
-    assert query["tenant"] == ["tenant-alice"]
+    assert query == {"scope": ["global"]}
+
+    session = {"scope": "session", "session_id": "session-actual", "scope_id": "session-actual"}
+    assert http_server.Handler._bind_memory_payload(_handler({}), session) is True
+    assert session["session_id"] == session["scope_id"] == "session-actual"
 
     denied = _handler({})
     responses = []
@@ -1095,17 +1036,16 @@ def test_debug_trace_request_keeps_complete_paths_and_ordinary_context(tmp_path)
     captured = http_server.Handler._safe_debug_trace_request({
         "root": raw_root,
         "target_root": raw_root,
-        "tenant": "sensitive-tenant",
-        "context": {"repo_root": raw_root, "repository_id": raw_root, "tenant": "nested-tenant"},
+        "context": {"repo_root": raw_root, "repository_id": raw_root},
     })
     serialized = json.dumps(captured)
     assert json.dumps(raw_root, ensure_ascii=False)[1:-1] in serialized
-    assert "sensitive-tenant" in serialized
+    assert raw_root in captured["context"]["repo_root"]
     assert captured["root"] == raw_root
     assert captured["target_root"] == raw_root
     assert captured["context"]["repo_root"] == raw_root
     assert captured["context"]["repository_id"] == raw_root
-    assert captured["tenant"] == "sensitive-tenant"
+    assert "tenant" not in captured
 
 
 def test_agent_state_event_endpoints_fail_closed_without_scoping(monkeypatch):
@@ -1140,17 +1080,12 @@ def test_memory_task_query_requires_existing_task_in_bound_root(tmp_path, monkey
     root_b = tmp_path / "root-b"
     root_a.mkdir()
     root_b.mkdir()
-    tenant = http_server._derive_root_tenant(
-        "principal", str(root_a.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task = SimpleNamespace(task_id="known-task", context=SimpleNamespace(
-        repository_id=str(root_a.resolve()), session_id=tenant,
+        repository_id=str(root_a.resolve()), session_id="session-root-a",
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-            "api_token_principal": "principal",
             "allowed_roots": [str(tmp_path)],
         }},
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "known-task" else None),
@@ -1178,16 +1113,11 @@ def test_verification_scope_requires_existing_task_owned_by_root(tmp_path, monke
     root_b = tmp_path / "root-b"
     root_a.mkdir()
     root_b.mkdir()
-    tenant_a = http_server._derive_root_tenant(
-        "principal", str(root_a.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
-        repository_id=str(root_a.resolve()), session_id=tenant_a,
+        repository_id=str(root_a.resolve()), session_id="session-root-a",
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-        "api_token_principal": "principal",
         "allowed_roots": [str(tmp_path)],
     }}, agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
 
@@ -1210,18 +1140,13 @@ def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeyp
     root_b = tmp_path / "root-b"
     root_a.mkdir()
     root_b.mkdir()
-    tenant_a = http_server._derive_root_tenant(
-        "principal", str(root_a.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
-        repository_id=str(root_a.resolve()), session_id=tenant_a,
+        repository_id=str(root_a.resolve()), session_id="session-root-a",
     ))
     calls = []
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-            "api_token_principal": "principal",
             "allowed_roots": [str(tmp_path)],
         }},
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None),
@@ -1251,8 +1176,6 @@ def test_legacy_memory_denies_shared_workspace_read_write_actions(tmp_path, monk
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-        "api_token_principal": "principal",
         "allowed_roots": [str(root)],
     }}))
     handler = _handler({})
@@ -1268,9 +1191,7 @@ def test_legacy_memory_denies_shared_workspace_read_write_actions(tmp_path, monk
     assert http_server.Handler._bind_workspace_memory_payload(
         delete_handler, "/api/memory/delete", {"root": str(root), "key": "k"}
     ) is True
-    assert delete_handler._authorization_tenant == http_server._derive_root_tenant(
-        "principal", str(root.resolve()), "stable-test-derivation-secret-0123456789"
-    )
+    assert delete_handler._authorization_root == str(root.resolve())
 
     denied_root = _handler({})
     root_responses = []
@@ -1309,30 +1230,25 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
     root = tmp_path / "allowed"
     root.mkdir()
     calls = []
-    principal = "principal"
-    derivation_key = "stable-test-derivation-secret-0123456789"
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": derivation_key,
-            "api_token_principal": principal,
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
             get=lambda task_id: SimpleNamespace(context=SimpleNamespace(
-                repository_id=canonical_root, session_id=tenant,
+                repository_id=canonical_root, session_id="session-actual",
             )) if task_id == "task-1" else None,
-            reap_expired_heartbeats=lambda now=None, *, auto_recover=False, repo_root=None, tenant=None, task_id=None: calls.append((
-                "reap", {"auto_recover": auto_recover, "repo_root": repo_root, "tenant": tenant, "task_id": task_id}
+            reap_expired_heartbeats=lambda now=None, *, auto_recover=False, repo_root=None, task_id=None: calls.append((
+                "reap", {"auto_recover": auto_recover, "repo_root": repo_root, "task_id": task_id}
             )) or ["task-1"],
-            recover_zombie_tasks=lambda now=None, *, repo_root=None, tenant=None, task_id=None: calls.append((
-                "recover", {"repo_root": repo_root, "tenant": tenant, "task_id": task_id}
+            recover_zombie_tasks=lambda now=None, *, repo_root=None, task_id=None: calls.append((
+                "recover", {"repo_root": repo_root, "task_id": task_id}
             )) or ["task-1"],
         ),
     )
     canonical_root = str(root.resolve())
-    tenant = http_server._derive_root_tenant(principal, canonical_root, derivation_key)
 
     responses = _dispatch_post(
         monkeypatch,
@@ -1342,13 +1258,9 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
             "action": action,
             "task_id": "task-1",
             "auto_recover": True,
-            "tenant": "body-tenant-must-not-select-scope",
         },
         app,
-        headers={
-            "X-LocalAI-Token": "a-long-test-token-value",
-            "X-LocalAI-Tenant": tenant,
-        },
+        headers={"X-LocalAI-Token": "a-long-test-token-value"},
         authenticate=True,
     )
 
@@ -1361,49 +1273,39 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
         assert calls == [("reap", {
             "auto_recover": True,
             "repo_root": canonical_root,
-            "tenant": tenant,
             "task_id": "task-1",
         })]
 
 
-def test_task_reaper_accepts_authenticated_principal_header_but_derives_root_tenant(tmp_path, monkeypatch):
+def test_task_reaper_uses_authenticated_token_and_explicit_repository_root(tmp_path, monkeypatch):
     root = tmp_path / "allowed"
     root.mkdir()
     calls = []
-    principal = "principal"
-    derivation_key = "stable-test-derivation-secret-0123456789"
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": derivation_key,
-            "api_token_principal": principal,
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
             get=lambda task_id: SimpleNamespace(context=SimpleNamespace(
-                repository_id=canonical_root, session_id=expected_tenant,
+                repository_id=canonical_root, session_id="session-real-task",
             )) if task_id == "task-1" else None,
             reap_expired_heartbeats=lambda **kwargs: calls.append(kwargs) or ["task-1"],
         ),
     )
     canonical_root = str(root.resolve())
-    expected_tenant = http_server._derive_root_tenant(principal, canonical_root, derivation_key)
 
     responses = _dispatch_post(
         monkeypatch,
         "/api/agent-state/tasks",
         {"root": str(root), "action": "reap_expired", "task_id": "task-1"},
         app,
-        headers={
-            "X-LocalAI-Token": "a-long-test-token-value",
-            "X-LocalAI-Tenant": principal,
-        },
+        headers={"X-LocalAI-Token": "a-long-test-token-value"},
         authenticate=True,
     )
 
     assert responses[0][0] == 200
-    assert calls[0]["tenant"] == expected_tenant
     assert calls[0]["repo_root"] == canonical_root
 
 
@@ -1417,15 +1319,13 @@ def scoped_reaper_store(tmp_path, monkeypatch):
     root, other_root = tmp_path / "allowed", tmp_path / "other"
     root.mkdir()
     other_root.mkdir()
-    key = "stable-test-derivation-secret-0123456789"
-    tenant = http_server._derive_root_tenant("principal", str(root.resolve()), key)
     store = TaskStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
 
-    def create(task_id, task_root, task_tenant):
-        token = trace_context.set_context(tenant=task_tenant)
+    def create(task_id, task_root, session_id):
+        token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
         try:
             store.create(GoalContract(goal="Recover scoped expired work"), ScopeContext(
-                repository_id=str(task_root.resolve()), session_id=task_tenant, task_id=task_id,
+                repository_id=str(task_root.resolve()), session_id=session_id, task_id=task_id,
             ), task_id=task_id, repo_root=str(task_root), actor="owner")
             store.transition(task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key=f"start-{task_id}")
         finally:
@@ -1434,16 +1334,15 @@ def scoped_reaper_store(tmp_path, monkeypatch):
     old_time = time.time() - 1000
     with monkeypatch.context() as clock:
         clock.setattr("local_ai_hub.agent_tasks.time.time", lambda: old_time)
-        create("target", root, tenant)
-        create("sibling", root, tenant)
-        create("other-root", other_root, tenant)
-        create("other-tenant", root, "foreign-tenant")
-    create("fresh", root, tenant)
+        create("target", root, "session-target")
+        create("sibling", root, "session-sibling")
+        create("other-root", other_root, "session-other-root")
+        create("different-session", root, "session-distinct")
+    create("fresh", root, "session-fresh")
     app = SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value", "api_token_principal": "principal",
-        "tenant_derivation_key": key, "allowed_roots": [str(root)],
+        "api_token": "a-long-test-token-value", "allowed_roots": [str(root)],
     }}, agent_tasks=store, recovery=None)
-    headers = {"X-LocalAI-Token": "a-long-test-token-value", "X-LocalAI-Tenant": tenant}
+    headers = {"X-LocalAI-Token": "a-long-test-token-value"}
 
     def post(task_id, **extra):
         return _dispatch_post(monkeypatch, "/api/agent-state/tasks", {
@@ -1457,20 +1356,27 @@ def scoped_reaper_store(tmp_path, monkeypatch):
 def test_scoped_reaper_real_store_preserves_other_tasks_and_identities(scoped_reaper_store, auto_recover):
     from local_ai_hub.agent_tasks import TaskStatus
     store, post = scoped_reaper_store
-    before = {name: store.get(name) for name in ("sibling", "other-root", "other-tenant", "fresh")}
+    before = {name: store.get(name) for name in ("sibling", "other-root", "different-session", "fresh")}
     status, result = post("target", auto_recover=auto_recover)
     assert status == 200 and result["reaped"] == ["target"]
     assert store.get("target").status is (TaskStatus.WAITING if auto_recover else TaskStatus.ABANDONED)
     assert {name: store.get(name) for name in before} == before
 
 
-@pytest.mark.parametrize("task_id", ["other-root", "other-tenant", "missing"])
+@pytest.mark.parametrize("task_id", ["other-root", "missing"])
 def test_scoped_reaper_hides_foreign_or_missing_tasks(scoped_reaper_store, task_id):
     store, post = scoped_reaper_store
-    before = {name: store.get(name) for name in ("target", "sibling", "other-root", "other-tenant", "fresh")}
+    before = {name: store.get(name) for name in ("target", "sibling", "other-root", "different-session", "fresh")}
     status, result = post(task_id, auto_recover=True)
     assert status == 404 and result["success"] is False
     assert {name: store.get(name) for name in before} == before
+
+
+def test_scoped_reaper_does_not_partition_tasks_by_session(scoped_reaper_store):
+    store, post = scoped_reaper_store
+    status, result = post("different-session", auto_recover=True)
+    assert status == 200 and result["reaped"] == ["different-session"]
+    assert store.get("different-session").context.session_id == "session-distinct"
 
 
 @pytest.mark.parametrize(("task_id", "auto_recover"), [
@@ -1522,21 +1428,17 @@ def test_scoped_reaper_does_not_report_store_failure_as_empty_success(scoped_rea
     monkeypatch.setattr(store, "transition", fail_transition)
     with pytest.raises(RuntimeError, match="transition persistence unavailable"):
         store.reap_expired_heartbeats(
-            repo_root=before.context.repository_id, tenant=before.context.session_id, task_id="target",
+            repo_root=before.context.repository_id, task_id="target",
         )
     assert store.get("target") == before
 
 
-def test_task_list_accepts_authenticated_principal_header_and_uses_derived_scope(tmp_path, monkeypatch):
+def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monkeypatch):
     root = tmp_path / "allowed"
     root.mkdir()
-    principal = "principal"
-    derivation_key = "stable-test-derivation-secret-0123456789"
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": derivation_key,
-            "api_token_principal": principal,
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
@@ -1551,10 +1453,7 @@ def test_task_list_accepts_authenticated_principal_header_and_uses_derived_scope
         monkeypatch,
         path,
         app,
-        headers={
-            "X-LocalAI-Token": "a-long-test-token-value",
-            "X-LocalAI-Tenant": principal,
-        },
+        headers={"X-LocalAI-Token": "a-long-test-token-value"},
         authenticate=True,
     )
 
@@ -1562,18 +1461,14 @@ def test_task_list_accepts_authenticated_principal_header_and_uses_derived_scope
     assert responses[0][1]["tasks"] == []
 
 
-def test_root_memory_accepts_authenticated_principal_header_and_derives_root_tenant(tmp_path, monkeypatch):
+def test_root_memory_preserves_global_scope_with_authenticated_owner_token(tmp_path, monkeypatch):
     root = tmp_path / "allowed"
     root.mkdir()
-    principal = "principal"
-    derivation_key = "stable-test-derivation-secret-0123456789"
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": derivation_key,
-        "api_token_principal": principal,
         "allowed_roots": [str(root)],
     }}))
-    handler = _handler({"X-LocalAI-Tenant": principal})
+    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
     errors = []
     handler._send = lambda status, response: errors.append((status, response))
     payload = {"root": str(root), "scope": "global"}
@@ -1582,27 +1477,26 @@ def test_root_memory_accepts_authenticated_principal_header_and_derives_root_ten
 
     assert http_server.Handler._bind_memory_payload(handler, payload) is True
     assert errors == []
-    assert payload["tenant"] == http_server._derive_root_tenant(
-        principal, str(root.resolve()), derivation_key
-    )
+    assert payload == {"root": str(root.resolve()), "scope": "global"}
 
 
-def test_root_agent_memory_fails_closed_without_configured_principal(tmp_path, monkeypatch):
+def test_root_session_memory_requires_explicit_matching_session(tmp_path, monkeypatch):
     root = tmp_path / "allowed"
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
         "allowed_roots": [str(root)],
     }}))
     handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
     responses = []
     handler._send = lambda status, response: responses.append((status, response))
-    payload = {"root": str(root), "scope": "global"}
+    payload = {"root": str(root), "scope": "session", "session_id": "session-actual"}
 
     assert http_server.Handler._authorized(handler, "write") is True
-    assert http_server.Handler._bind_memory_payload(handler, payload) is False
-    assert responses[0][0] == 403
+    assert http_server.Handler._bind_memory_payload(handler, payload) is True
+    assert responses == []
+    assert payload["root"] == str(root.resolve())
+    assert payload["session_id"] == "session-actual"
 
 
 @pytest.mark.parametrize(("action", "expected_status"), [
@@ -1613,8 +1507,6 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
     root = tmp_path / "allowed"
     root.mkdir()
     calls = []
-    principal = "principal"
-    derivation_key = "stable-test-derivation-secret-0123456789"
 
     def curate_training_dataset(
         output_path,
@@ -1622,14 +1514,12 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
         format="jsonl",
         *,
         repo_root=None,
-        tenant=None,
         task_id=None,
     ):
         calls.append(((output_path,), {
             "min_receipts": min_receipts,
             "format": format,
             "repo_root": repo_root,
-            "tenant": tenant,
             "task_id": task_id,
         }))
         return {"success": True}
@@ -1637,8 +1527,6 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": derivation_key,
-            "api_token_principal": principal,
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
@@ -1647,7 +1535,6 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
         ),
     )
     canonical_root = str(root.resolve())
-    tenant = http_server._derive_root_tenant(principal, canonical_root, derivation_key)
 
     responses = _dispatch_post(
         monkeypatch,
@@ -1661,7 +1548,7 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
             "format": "jsonl",
         },
         app,
-        headers={"X-LocalAI-Tenant": tenant},
+        headers={"X-LocalAI-Token": "a-long-test-token-value"},
     )
 
     assert responses[0][0] == expected_status
@@ -1674,7 +1561,6 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
         "min_receipts": 3,
         "format": "jsonl",
         "repo_root": canonical_root,
-        "tenant": tenant,
         "task_id": "task-1",
     })]
 
@@ -1682,9 +1568,9 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
 @pytest.mark.parametrize("payload,headers", [
     ({"action": "reap"}, {}),
     ({"action": "curate_dataset", "root": "C:/outside"}, {}),
-    ({"action": "reap", "root": "{root}"}, {"X-LocalAI-Tenant": "header-tenant"}),
+    ({"action": "reap_expired", "root": "{root}"}, {"X-LocalAI-Tenant": "header-retired"}),
 ])
-def test_scoped_task_operations_reject_invalid_root_or_tenant_before_store_mutation(
+def test_scoped_task_operations_reject_invalid_root_or_retired_header_before_store_mutation(
     tmp_path, monkeypatch, payload, headers
 ):
     root = tmp_path / "allowed"
@@ -1693,8 +1579,6 @@ def test_scoped_task_operations_reject_invalid_root_or_tenant_before_store_mutat
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-            "api_token_principal": "principal",
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
@@ -1713,25 +1597,21 @@ def test_scoped_task_operations_reject_invalid_root_or_tenant_before_store_mutat
         headers=headers,
     )
 
-    assert responses[0][0] == 403
+    expected_status = 400 if "X-LocalAI-Tenant" in headers else 403
+    assert responses[0][0] == expected_status
     assert calls == []
 
 
-@pytest.mark.parametrize("case", ["wrong_token", "wrong_tenant_header", "missing_principal_binding"])
-def test_scoped_task_routes_fail_closed_on_authentication_binding_mismatch(
+@pytest.mark.parametrize("case", ["wrong_token", "retired_header", "retired_body"])
+def test_scoped_task_routes_fail_closed_on_authentication_or_retired_identity(
     tmp_path, monkeypatch, case
 ):
     root = tmp_path / "allowed"
     root.mkdir()
-    principal = "principal"
-    derivation_key = "stable-test-derivation-secret-0123456789"
     security = {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": derivation_key,
         "allowed_roots": [str(root)],
     }
-    if case != "missing_principal_binding":
-        security["api_token_principal"] = principal
     app = SimpleNamespace(
         config={"security": security},
         agent_tasks=SimpleNamespace(
@@ -1739,26 +1619,25 @@ def test_scoped_task_routes_fail_closed_on_authentication_binding_mismatch(
             reap_expired_heartbeats=lambda **_kwargs: pytest.fail("scope mismatch reached task store"),
         ),
     )
-    expected_tenant = http_server._derive_root_tenant(
-        principal, str(root.resolve()), derivation_key
-    )
     headers = {
         "X-LocalAI-Token": "wrong-token" if case == "wrong_token" else security["api_token"],
-        "X-LocalAI-Tenant": (
-            "wrong-tenant" if case == "wrong_tenant_header" else expected_tenant
-        ),
     }
+    if case == "retired_header":
+        headers["X-LocalAI-Tenant"] = ""
+    payload = {"root": str(root), "action": "reap_expired"}
+    if case == "retired_body":
+        payload["tenant"] = None
 
     responses = _dispatch_post(
         monkeypatch,
         "/api/agent-state/tasks",
-        {"root": str(root), "action": "reap", "tenant": "body-tenant"},
+        payload,
         app,
         headers=headers,
         authenticate=True,
     )
 
-    expected_status = 401 if case == "wrong_token" else 403
+    expected_status = {"wrong_token": 401, "retired_header": 400, "retired_body": 400}[case]
     assert responses[0][0] == expected_status
 
 
@@ -1894,7 +1773,7 @@ def test_unscoped_repository_get_routes_deny_before_service_access(monkeypatch, 
     assert calls == []
 
 
-def test_repository_get_rejects_conflicting_duplicate_tenants(monkeypatch, tmp_path):
+def test_repository_get_rejects_retired_tenant_query_field(monkeypatch, tmp_path):
     calls = []
     app = SimpleNamespace(
         config={"security": {}},
@@ -1902,11 +1781,11 @@ def test_repository_get_rejects_conflicting_duplicate_tenants(monkeypatch, tmp_p
         deterministic=SimpleNamespace(),
         recovery=None,
     )
-    path = f"/api/dead_code?root={tmp_path}&tenant=tenant-a&tenant=tenant-b"
+    path = f"/api/dead_code?root={tmp_path}&tenant="
     responses = _dispatch_get(monkeypatch, path, app)
 
-    assert responses[0][0] == 403
-    assert responses[0][1]["error_code"] == "tenant_binding_mismatch"
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "retired_tenancy_field"
     assert calls == []
 
 
@@ -2100,13 +1979,12 @@ def test_cross_project_graph_get_forwards_bound_roots(monkeypatch):
         recovery=None,
     )
 
-    def bind_root(_handler, root, *_args, **_kwargs):
+    def bind_root(_handler, root):
         canonical = str(root).replace("\\", "/").rstrip("/")
         _handler._authorization_root = canonical
-        _handler._authorization_tenant = "tenant-cross"
-        return canonical, "tenant-cross"
+        return canonical
 
-    monkeypatch.setattr(http_server.Handler, "_bind_root_tenant", bind_root)
+    monkeypatch.setattr(http_server.Handler, "_bind_root", bind_root)
     responses = _dispatch_get(
         monkeypatch,
         "/api/cross_project_graph?roots=C:/frontend&roots=C:/backend",
@@ -2124,13 +2002,12 @@ def test_cross_project_impact_rejects_origin_outside_explicit_roots(monkeypatch)
         deterministic=SimpleNamespace(cross_project_impact=lambda *args, **kwargs: calls.append(args)),
         recovery=None,
     )
-    def bind_root(_handler, root, *_args, **_kwargs):
+    def bind_root(_handler, root):
         canonical = str(root).replace("\\", "/")
         _handler._authorization_root = canonical
-        _handler._authorization_tenant = "tenant-cross"
-        return canonical, "tenant-cross"
+        return canonical
 
-    monkeypatch.setattr(http_server.Handler, "_bind_root_tenant", bind_root)
+    monkeypatch.setattr(http_server.Handler, "_bind_root", bind_root)
     responses = _dispatch_post(
         monkeypatch,
         "/api/cross_project_impact",
@@ -2154,7 +2031,6 @@ def test_authenticated_learning_route_dispatches_candidate_mutation(monkeypatch)
             "security": {
                 "api_token": token,
                 "api_token_permissions": ["write"],
-                "api_token_tenant": "tenant-learning",
             }
         },
         agent_learning=learning,
@@ -2187,8 +2063,8 @@ def test_authenticated_incident_find_requires_and_forwards_root_scope(monkeypatc
     calls = []
     incidents = SimpleNamespace(
         state_store=SimpleNamespace(enabled=True),
-        find_negative_knowledge=lambda query, limit, root, tenant: calls.append(
-            (query, limit, root, tenant)
+        find_negative_knowledge=lambda query, limit, *, root: calls.append(
+            (query, limit, root)
         ) or [],
     )
     app = SimpleNamespace(
@@ -2196,9 +2072,7 @@ def test_authenticated_incident_find_requires_and_forwards_root_scope(monkeypatc
             "security": {
                 "api_token": token,
                 "api_token_permissions": ["write"],
-                "api_token_tenant": "tenant-incidents",
                 "allowed_roots": [str(tmp_path)],
-                "tenant_derivation_key": token,
             }
         },
         agent_incidents=incidents,
@@ -2216,7 +2090,7 @@ def test_authenticated_incident_find_requires_and_forwards_root_scope(monkeypatc
 
     assert responses[0][0] == 200
     assert calls and calls[0][0] == "timeouterror"
-    assert calls[0][2] == str(tmp_path.resolve())
+    assert calls[0] == ("timeouterror", 100, str(tmp_path.resolve()))
 
 
 def test_debug_trace_keeps_user_facing_error_but_not_internal_exception_text(monkeypatch):
@@ -2246,26 +2120,21 @@ def test_context_compile_binds_existing_task_root_without_changing_task_id_contr
 
     root = tmp_path / "repo"
     root.mkdir()
-    tenant = http_server._derive_root_tenant(
-        "principal", str(root.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
-        repository_id=str(root.resolve()), session_id=tenant,
+        repository_id=str(root.resolve()), session_id="session-context-real",
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-        "api_token_principal": "principal",
         "allowed_roots": [str(root)],
     }}, agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
-    handler = _handler({"X-LocalAI-Tenant": "principal"})
+    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
     payload = {"action": "compile", "task_id": "task-a"}
 
     assert http_server.Handler._bind_context_payload(handler, payload) is True
-    request = build_context_request(payload, tenant=http_server.Handler._tenant(handler))
+    request = build_context_request(payload)
     assert request.task_id == "task-a"
     assert request.root == str(root.resolve())
-    assert request.tenant == tenant
+    assert request.session_id == "session-context-real"
     assert request.scoped_task_only is True
 
 
@@ -2274,16 +2143,11 @@ def test_context_compile_rejects_foreign_or_unknown_task_before_compile(tmp_path
     root_b = tmp_path / "root-b"
     root_a.mkdir()
     root_b.mkdir()
-    tenant_a = http_server._derive_root_tenant(
-        "principal", str(root_a.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task_a = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
-        repository_id=str(root_a.resolve()), session_id=tenant_a,
+        repository_id=str(root_a.resolve()), session_id="session-a",
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-        "api_token_principal": "principal",
         "allowed_roots": [str(tmp_path)],
     }}, agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "task-a" else None)))
 
@@ -2298,24 +2162,19 @@ def test_context_compile_rejects_foreign_or_unknown_task_before_compile(tmp_path
 def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
-    tenant = http_server._derive_root_tenant(
-        "principal", str(root.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
-        repository_id=str(root.resolve()), session_id=tenant,
+        repository_id=str(root.resolve()), session_id="session-events-real",
     ))
     calls = []
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
-            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-            "api_token_principal": "principal",
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None),
         agent_state=SimpleNamespace(enabled=True, events=lambda **kwargs: calls.append(kwargs) or []),
     )
-    handler = _handler({"X-LocalAI-Tenant": "principal"}, path=(
+    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"}, path=(
         f"/api/agent-state/events?root={root}&stream_id=task%3Atask-a"
     ))
     monkeypatch.setattr(http_server, "APP", app)
@@ -2333,16 +2192,11 @@ def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
 def test_task_blackboard_access_requires_owned_task_board(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
-    tenant = http_server._derive_root_tenant(
-        "principal", str(root.resolve()), "stable-test-derivation-secret-0123456789"
-    )
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
-        repository_id=str(root.resolve()), session_id=tenant,
+        repository_id=str(root.resolve()), session_id="session-board-real",
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "api_token": "a-long-test-token-value",
-        "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
-        "api_token_principal": "principal",
         "allowed_roots": [str(root)],
     }}, agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
 
@@ -2812,14 +2666,14 @@ def test_async_job_trace_persists_complete_input_and_output_when_enabled(tmp_pat
     traces = DebugTraceStore(config)
 
     class Artifacts:
-        def put(self, _content, _tenant, _kind):
+        def put(self, _content, *, kind):
             return "artifact-1"
 
     manager = AsyncJobManager(
         config,
         scheduler=object(),
         artifacts=Artifacts(),
-        executor=lambda _action, _payload, _tenant: {
+        executor=lambda _action, _payload: {
             "success": True,
             "answer": "ordinary response text",
             "api_key": "api-secret",
@@ -2828,11 +2682,10 @@ def test_async_job_trace_persists_complete_input_and_output_when_enabled(tmp_pat
     )
     try:
         submitted = manager.submit(
-            "tenant-a",
             "reason",
             {"task": "private prompt text", "context": "private source text"},
         )
-        assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
+        assert manager.wait(submitted["job_id"], 3)["state"] == "done"
         detail = traces.detail(submitted["trace_id"], full_payload=True)
         serialized = json.dumps(detail, ensure_ascii=False)
 

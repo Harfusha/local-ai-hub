@@ -15,7 +15,7 @@ def test_batch_delegate_rejects_more_than_sixteen_without_delegating(monkeypatch
     monkeypatch.setattr(async_jobs, "report_job_progress", lambda *args: None)
 
     result = services.LocalAIServices.batch_delegate(
-        self, {"tasks": [{"task": f"task-{i}"} for i in range(17)]}, "tenant"
+        self, {"tasks": [{"task": f"task-{i}"} for i in range(17)]}
     )
 
     assert calls == []
@@ -40,7 +40,7 @@ def test_batch_delegate_bounds_rejected_indices_for_huge_input():
         delegate=lambda *args: calls.append("delegate"),
     )
 
-    result = services.LocalAIServices.batch_delegate(self, {"tasks": [None] * 100_000}, "tenant")
+    result = services.LocalAIServices.batch_delegate(self, {"tasks": [None] * 100_000})
 
     assert calls == []
     assert result["input_count"] == 100_000
@@ -59,7 +59,7 @@ def test_batch_delegate_marks_empty_preflight_as_terminal_without_sending():
         delegate=lambda *args: calls.append("delegate"),
     )
 
-    result = services.LocalAIServices.batch_delegate(self, {"tasks": []}, "tenant")
+    result = services.LocalAIServices.batch_delegate(self, {"tasks": []})
 
     assert calls == []
     assert result["success"] is False
@@ -76,12 +76,12 @@ def test_batch_delegate_reports_counts_for_every_accepted_task(monkeypatch):
     self = SimpleNamespace(
         router=SimpleNamespace(classify=lambda *args: {"model": "model-a"}),
         scheduler=SimpleNamespace(status=lambda: {"active_model": "model-a"}),
-        delegate=lambda item, tenant: delegated.append(item) or {"success": True},
+        delegate=lambda item: delegated.append(item) or {"success": True},
     )
     monkeypatch.setattr(async_jobs, "report_job_progress", lambda *args: None)
 
     result = services.LocalAIServices.batch_delegate(
-        self, {"tasks": [{"task": f"task-{i}"} for i in range(16)]}, "tenant"
+        self, {"tasks": [{"task": f"task-{i}"} for i in range(16)]}
     )
 
     assert len(delegated) == 16

@@ -70,41 +70,41 @@ def _fake_daemon(monkeypatch):
     return created
 
 
-def test_pool_reuses_session_but_separates_tenants_and_roots(tmp_path, monkeypatch):
+def test_pool_reuses_session_per_executable_and_repository_root(tmp_path, monkeypatch):
     created = _fake_daemon(monkeypatch)
     other = tmp_path / "other"
     other.mkdir()
     pool = lint_daemon.RuffDaemonPool(max_sessions=3)
-    for root, tenant in [(tmp_path, "a"), (tmp_path, "a"), (tmp_path, "b"), (other, "a")]:
-        assert pool.run("ruff", str(root), tenant, ["x.py"])["success"]
-    assert len(created) == 3
+    for root in (tmp_path, tmp_path, other):
+        assert pool.run("ruff", str(root), paths=["x.py"])["success"]
+    assert len(created) == 2
     assert len(created[0].calls) == 2
     pool.close()
     assert all(daemon.closed for daemon in created)
-    assert not pool.run("ruff", str(tmp_path), "a", ["x.py"])["success"]
+    assert not pool.run("ruff", str(tmp_path), paths=["x.py"])["success"]
 
 
 def test_unconfirmed_retirement_keeps_capacity_reserved(tmp_path, monkeypatch):
     created = _fake_daemon(monkeypatch)
     pool = lint_daemon.RuffDaemonPool(max_sessions=1, idle_ttl=1)
-    assert pool.run("ruff", str(tmp_path), "a", ["x.py"])["success"]
+    assert pool.run("ruff", str(tmp_path), paths=["x.py"])["success"]
     created[0].confirmed = False
     next(iter(pool._sessions.values()))["last_used"] = float("-inf")
-    assert not pool.run("ruff", str(tmp_path), "b", ["x.py"])["success"]
+    assert not pool.run("ruff", str(tmp_path), paths=["x.py"])["success"]
     assert created[0].closed
     assert len(created) == 1
     created[0].confirmed = True
-    assert pool.run("ruff", str(tmp_path), "b", ["x.py"])["success"]
+    assert pool.run("ruff", str(tmp_path), paths=["x.py"])["success"]
     assert len(created) == 2
 
 
 def test_pool_preserves_unknown_cleanup_without_fallback(tmp_path, monkeypatch):
     created = _fake_daemon(monkeypatch)
     pool = lint_daemon.RuffDaemonPool()
-    pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    pool.run("ruff", str(tmp_path), paths=["x.py"])
     created[0].failure = TimeoutError("deadline")
     created[0].confirmed = False
-    result = pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    result = pool.run("ruff", str(tmp_path), paths=["x.py"])
     assert result["outcome_unknown"] and result["cleanup_unconfirmed"]
     assert result["terminal"] and not result["retryable"]
     assert len(created) == 1
@@ -113,31 +113,31 @@ def test_pool_preserves_unknown_cleanup_without_fallback(tmp_path, monkeypatch):
 def test_admission_timeout_does_not_close_another_requests_session(tmp_path, monkeypatch):
     created = _fake_daemon(monkeypatch)
     pool = lint_daemon.RuffDaemonPool()
-    pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    pool.run("ruff", str(tmp_path), paths=["x.py"])
     created[0].failure = lint_daemon.LintDaemonAdmissionTimeout("busy")
-    result = pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    result = pool.run("ruff", str(tmp_path), paths=["x.py"])
     assert not result["success"] and not result.get("outcome_unknown")
     assert not created[0].closed
 
 
-def test_debounce_only_cancels_same_tenant_and_project(tmp_path):
+def test_debounce_cancels_prior_job_for_same_root(tmp_path):
     class Jobs:
         def __init__(self):
             self.cancelled, self.number = [], 0
 
-        def cancel(self, tenant, job_id):
-            self.cancelled.append((tenant, job_id))
+        def cancel(self, job_id):
+            self.cancelled.append(job_id)
 
-        def submit(self, tenant, action, payload, **kwargs):
+        def submit(self, action, payload, **kwargs):
             self.number += 1
             return {"success": True, "job_id": str(self.number)}
 
     jobs = Jobs()
     queue = SpeculativeLintQueue(jobs, {"speculative_lint": {"enabled": True}})
-    queue.submit("a", str(tmp_path), ["x.py"])
-    queue.submit("b", str(tmp_path), ["x.py"])
-    queue.submit("a", str(tmp_path), ["x.py"])
-    assert jobs.cancelled == [("a", "1")]
+    queue.submit(str(tmp_path), ["x.py"])
+    queue.submit(str(tmp_path), ["y.py"])
+    queue.submit(str(tmp_path / "other"), ["x.py"])
+    assert jobs.cancelled == ["1"]
 
 
 class _LintCommands:
@@ -171,15 +171,15 @@ def test_biome_daemon_mode_uses_owned_provider_contract(tmp_path, monkeypatch):
     calls = []
 
     class FakeOwnedBiomePool:
-        def run(self, executable, root, tenant, paths, **kwargs):
-            calls.append((executable, root, tenant, paths, kwargs))
+        def run(self, executable, root, *, paths, **kwargs):
+            calls.append((executable, root, paths, kwargs))
             return {"success": True, "provider": "biome", "daemon_mode": True,
                     "transport": "owned_foreground_lsp", "read_only": True, "auto_fix": False,
                     "diagnostics": [], "diagnostic_count": 0}
 
     service._biome_daemons = FakeOwnedBiomePool()
 
-    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]}, "tenant-a")
+    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]})
 
     assert result["success"]
     assert result["provider"] == "biome"
@@ -188,15 +188,15 @@ def test_biome_daemon_mode_uses_owned_provider_contract(tmp_path, monkeypatch):
     assert result["read_only"] and not result["auto_fix"]
     assert not service.commands.calls
     assert len(calls) == 1
-    executable, root, tenant, paths, kwargs = calls[0]
-    assert (executable, root, tenant, paths) == ("biome.exe", str(tmp_path), "tenant-a", ["src/app.ts"])
+    executable, root, paths, kwargs = calls[0]
+    assert (executable, root, paths) == ("biome.exe", str(tmp_path), ["src/app.ts"])
     assert kwargs["timeout"] == 120 and callable(kwargs["should_stop"])
 
 
 def test_biome_non_daemon_mode_uses_explicit_read_only_one_shot_ci(tmp_path, monkeypatch):
     service = _lint_service(monkeypatch, tmp_path, daemon_mode=False)
 
-    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]}, "tenant-a")
+    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]})
 
     assert result["success"]
     assert result["provider"] == "biome"
@@ -214,6 +214,6 @@ def test_biome_daemon_rejects_invalid_timeout_before_provider_admission(tmp_path
             raise AssertionError("invalid Biome timeout must be rejected before session admission")
 
     service._biome_daemons = MustNotAdmit()
-    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"], "timeout": timeout}, "tenant-a")
+    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"], "timeout": timeout})
     assert result["success"] is False
     assert result["terminal"] is True and result["retryable"] is False

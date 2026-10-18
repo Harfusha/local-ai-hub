@@ -24,6 +24,7 @@ from local_ai_hub.agent_tasks import (
     TaskStore,
 )
 from local_ai_hub.agent_verification import CompletionResult, VerificationReceipt, VerificationStore
+from local_ai_hub.task_memory_wire import task_memory_projection
 from local_ai_hub.sqlite_support import connect_sqlite
 from local_ai_hub import trace_context
 
@@ -50,7 +51,7 @@ def test_capture_enrichment_rechecks_selective_wire_budget_before_checkpoint_com
     task = store.create(contract_with_criteria(), task_context(), task_id="preflight-capture")
     before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
     memory = {
-        "schema_version": 1, "tenant_key": "tenant-test", "instruction": "Use memory carefully",
+        "schema_version": 2, "context": {"root": "C:\\repo", "coordination_id": "repo-1", "task_id": "task-1", "session_id": None, "clone_id": None, "worktree_id": None, "branch": "main"}, "instruction": "Use memory carefully",
         "items": [{"id": "mem-1", "content": "fact", "origin": "memory_store"}],
         "warnings": [], "estimated_tokens": 10,
     }
@@ -63,7 +64,7 @@ def test_capture_enrichment_rechecks_selective_wire_budget_before_checkpoint_com
     measured_values = []
 
     def measure(value, requested):
-        measured_values.append(value)
+        measured_values.append(task_memory_projection(value))
         return 64 if len(measured_values) == 1 else 129
 
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", measure)
@@ -91,7 +92,7 @@ def test_capture_enrichment_rechecks_selective_wire_budget_before_checkpoint_com
 
 def test_budget_watchdog_preflights_failed_state_with_preserved_checkpoint(store, monkeypatch):
     memory = {
-        "schema_version": 1, "tenant_key": "tenant-test", "instruction": "Use memory carefully",
+        "schema_version": 2, "context": {"root": "C:\\repo", "coordination_id": "repo-1", "task_id": "task-1", "session_id": None, "clone_id": None, "worktree_id": None, "branch": "main"}, "instruction": "Use memory carefully",
         "items": [], "warnings": [], "estimated_tokens": 1,
     }
     old_checkpoint = TaskCheckpoint(
@@ -112,7 +113,7 @@ def test_budget_watchdog_preflights_failed_state_with_preserved_checkpoint(store
     measured = []
 
     def measure(projected, requested):
-        measured.append(projected)
+        measured.append(task_memory_projection(projected))
         return 129 if projected["task"]["status"] == "failed" else 64
 
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", measure)
@@ -179,7 +180,7 @@ def record_test_receipt(
         "mutation_generation": mutation_generation,
         "result": {"success": True, "exit_code": 0},
     }
-    evidence_id = artifacts.put_json(proof, task.owner, "command_verification")
+    evidence_id = artifacts.put_json(proof, kind="command_verification")
     VerificationStore(
         store.state_store, task_store=store, artifact_store=artifacts
     ).record(
@@ -518,7 +519,7 @@ def test_completed_succeeds_when_verified(
         "mutation_generation": 0,
         "result": {"success": True, "exit_code": 0},
     }
-    evidence_id = artifact_store.put_json(proof, task.owner, "command_verification")
+    evidence_id = artifact_store.put_json(proof, kind="command_verification")
     VerificationStore(
         store.state_store, task_store=store, artifact_store=artifact_store
     ).record(
@@ -820,7 +821,9 @@ def test_nonapplicable_project_rule_does_not_bypass_missing_repository_revision(
 ):
     repo_root, _revision = make_trusted_repository(tmp_path)
     context = ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-1")
-    task = store.create(contract_with_criteria("tests"), context)
+    task = store.create(
+        contract_with_criteria("tests"), context, repo_root=str(repo_root)
+    )
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
     store.checkpoint(
@@ -1052,7 +1055,9 @@ def test_completed_uses_task_context_repo_root_without_worktree_checkpoint(
     repo_root = tmp_path / "repository"
     repo_root.mkdir()
     context = ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-context-root")
-    task = store.create(contract_with_criteria("tests"), context)
+    task = store.create(
+        contract_with_criteria("tests"), context, repo_root=str(repo_root)
+    )
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
     store.checkpoint(
@@ -1069,7 +1074,7 @@ def test_completed_uses_task_context_repo_root_without_worktree_checkpoint(
         "command_id": command_id, "exit_code": 0, "repository_revision": "rev-ctx",
         "mutation_generation": 1, "result": {"success": True, "exit_code": 0},
     }
-    evidence_id = artifact_store.put_json(proof, task.owner, "command_verification")
+    evidence_id = artifact_store.put_json(proof, kind="command_verification")
     store.checkpoint(
         task.task_id,
         TaskCheckpoint(state_data={"repository_revision": "rev-ctx", "mutation_generation": 1}),
@@ -1194,11 +1199,11 @@ def test_completed_forwards_project_rules_to_supported_verification_store(
 def test_expired_active_task_becomes_abandoned_with_checkpoint(store: TaskStore, tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    tenant_token = trace_context.set_context(tenant="tenant-a")
+    trace_token = trace_context.set_context(agent="agent-a", request_id="reap-heartbeat", trace_id="reap-heartbeat")
     try:
         task = store.create(contract_with_criteria("tests"), task_context(), task_id="t-heartbeat", repo_root=str(repo_root))
     finally:
-        trace_context.reset_context(tenant_token)
+        trace_context.reset_context(trace_token)
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.checkpoint(task.task_id, TaskCheckpoint(phase="coding", next_action="run tests"), actor="agent", idempotency_key="chk-1")
     active_task = store.get(task.task_id)
@@ -1206,7 +1211,7 @@ def test_expired_active_task_becomes_abandoned_with_checkpoint(store: TaskStore,
     assert active_task.status == TaskStatus.ACTIVE
     assert active_task.heartbeat_expires_at > 0
 
-    reaped = store.reap_expired_heartbeats(now=active_task.heartbeat_expires_at + 10, repo_root=repo_root, tenant="tenant-a")
+    reaped = store.reap_expired_heartbeats(now=active_task.heartbeat_expires_at + 10, repo_root=repo_root)
     assert reaped == [task.task_id]
     abandoned = store.get(task.task_id)
     assert abandoned is not None
@@ -1218,11 +1223,11 @@ def test_expired_active_task_becomes_abandoned_with_checkpoint(store: TaskStore,
 def test_resume_abandoned_task(store: TaskStore, tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    tenant_token = trace_context.set_context(tenant="tenant-a")
+    trace_token = trace_context.set_context(agent="agent-a", request_id="resume-heartbeat", trace_id="resume-heartbeat")
     try:
         task = store.create(contract_with_criteria("tests"), task_context(), task_id="t-resume", repo_root=str(repo_root))
     finally:
-        trace_context.reset_context(tenant_token)
+        trace_context.reset_context(trace_token)
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     memory_context = {
         "records": [{
@@ -1243,7 +1248,7 @@ def test_resume_abandoned_task(store: TaskStore, tmp_path: Path):
         actor="agent",
         idempotency_key="memory-checkpoint",
     )
-    store.reap_expired_heartbeats(now=store.get(task.task_id).heartbeat_expires_at + 10, repo_root=repo_root, tenant="tenant-a")
+    store.reap_expired_heartbeats(now=store.get(task.task_id).heartbeat_expires_at + 10, repo_root=repo_root)
 
     resumed = store.resume(task.task_id, actor="agent", idempotency_key="res-1")
     assert resumed.status == TaskStatus.ACTIVE

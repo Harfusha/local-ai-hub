@@ -20,7 +20,7 @@ def test_route_context_rejects_task_and_context_aliases_before_routing(alias_pay
     )
     services = SimpleNamespace(token_router=router)
 
-    result = LocalAIServices.route_context(services, alias_payload, "tenant")
+    result = LocalAIServices.route_context(services, alias_payload)
 
     assert result["success"] is False
     assert "not aliases" in result["error"]
@@ -39,7 +39,7 @@ def test_route_context_rejects_non_string_canonical_values(field):
     if field == "root":
         payload["path"] = "src/a.py"
 
-    result = LocalAIServices.route_context(services, payload, "tenant")
+    result = LocalAIServices.route_context(services, payload)
 
     assert result["success"] is False
     assert field in result["error"]
@@ -58,8 +58,7 @@ def test_route_context_forwards_canonical_text_query_without_coercion():
     result = LocalAIServices.route_context(
         services,
         {"query": "find symbol", "text": "source body", "label": "src/a.py"},
-        "tenant",
     )
 
     assert result is expected
-    assert calls == [(("source body", "find symbol", "tenant"), {"path": "src/a.py"})]
+    assert calls == [(("source body", "find symbol"), {"path": "src/a.py"})]

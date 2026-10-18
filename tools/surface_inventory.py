@@ -2429,7 +2429,6 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             "backend_availability": f"{backend_gate}; runtime backend health unverified",
             "input_schema": input_schema,
             "output_schema": output_schema,
-            "operation_contract": operation_contract,
             "defaults": defaults,
             "required": list(parameters.get("required", [])) if isinstance(parameters, dict) else [],
             "feature_gate": backend_gate,
@@ -2743,7 +2742,7 @@ _UNVERIFIED_TEXT = {
     "consumption": "no operation-specific resource measurement is attached",
     "benchmark_cohort": "no per-operation benchmark cohort receipt is attached",
     "cache_key": "no operation-level cache key declaration was found; cache behavior is unverified",
-    "tenant_scope": "operation-specific tenant enforcement was not extracted; identity scope is unverified",
+    "scope_boundary": "operation-specific project/task/session confinement was not extracted; scope boundary is unverified",
     "fixtures": "no operation-specific fixture is linked in the inventory",
     "handler": "no matching runtime handler registration was found",
 }
@@ -2911,7 +2910,7 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             ),
             "access_classification": finding.get("access_classification") or _access_classification(finding["surface"]),
             "cache_key": _normalize_unverified(finding.get("cache_key") or "not statically identified", "cache_key"),
-            "tenant_scope": _normalize_unverified(finding.get("tenant_scope") or "not statically identified", "tenant_scope"),
+            "scope_boundary": _normalize_unverified(finding.get("scope_boundary") or "not statically identified", "scope_boundary"),
             "provenance": finding.get("provenance") or evidence,
             "test_ids": test_ids,
             "test_coverage": finding.get("test_coverage") or (

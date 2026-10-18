@@ -35,25 +35,25 @@ def test_workspace_memory_store_nan_inf_bool_surrogates_and_helpers(tmp_path: Pa
     repo.mkdir()
 
     with pytest.raises(ValueError, match="memo key"):
-        store.put(str(repo), "\x00  \x00", "valid", "tenant-a")
+        store.put(str(repo), "\x00  \x00", "valid")
 
-    with pytest.raises(ValueError, match="memo tenant"):
-        store.put(str(repo), "valid-key", "valid", "\x00  ")
+    with pytest.raises(ValueError, match="retired"):
+        store.put(str(repo), "valid-key", "valid", metadata={"tenant": None})
 
     with pytest.raises(ValueError, match="memo value"):
-        store.put(str(repo), "valid-key", "\x00  \x00", "tenant-a")
+        store.put(str(repo), "valid-key", "\x00  \x00")
 
     put_res = store.put(
         str(repo),
         "  key\x00-1  ",
         "value with surrogate \ud800 and null \x00 byte",
-        "  ten\x00ant-a  ",
         ttl_seconds=float("nan"),  # type: ignore[arg-type]
-        metadata={"path": Path("a/b"), "text": "meta\ud800\x00"},
+        metadata={"path": Path("a/b"), "text": "meta\ud800\x00", "session_id": "session-a"},
     )
     assert put_res["success"] is True
     assert put_res["key"] == "key-1"
-    assert put_res["tenant"] == "tenant-a"
+    assert put_res["workspace"] == store.workspace_id(str(repo))
+    assert store.get(str(repo), "key-1")["metadata"]["session_id"] == "session-a"
     assert put_res["expires_in_seconds"] == store.default_ttl
     assert store.count() == 1
     assert store.count(str(repo)) == 1

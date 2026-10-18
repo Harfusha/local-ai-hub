@@ -55,19 +55,25 @@ def test_build_context_request_rejects_retired_etag_input_alias() -> None:
 
 
 def test_build_context_request_null_byte_sanitization() -> None:
-    req = build_context_request(
-        {
-            "task_id": "task\x00poison",
-            "root": "root\x00dir",
-            "changed_paths": ["path\x00one", "path/two"],
-        },
-        tenant="tenant\x00sec",
-    )
+    req = build_context_request({
+        "task_id": "task\x00poison",
+        "session_id": "session-1",
+        "root": "root\x00dir",
+        "changed_paths": ["path\x00one", "path/two"],
+    })
     assert "\x00" not in req.task_id
     assert "\x00" not in req.root
-    assert "\x00" not in req.tenant
+    assert req.session_id == "session-1"
+    assert req.task_id == "taskpoison"
     for p in req.changed_paths:
         assert "\x00" not in p
+
+
+@pytest.mark.parametrize("retired", ["tenant", "tenant_id", "tenant_key", "tenant_scope"])
+@pytest.mark.parametrize("value", [None, "", False])
+def test_build_context_request_rejects_retired_scope_field_by_presence(retired, value) -> None:
+    with pytest.raises(ValueError, match="retired task context field"):
+        build_context_request({"task_id": "task-1", retired: value})
 
 
 def test_compose_task_context_none_repository_handling() -> None:

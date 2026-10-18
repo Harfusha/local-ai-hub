@@ -359,16 +359,15 @@ def test_mcp_transport_metadata_keeps_deterministic_reads_light() -> None:
     assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
     assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", False)
 
-def test_mcp_client_forwards_tenant_config_and_keeps_autostart_lazy(monkeypatch) -> None:
+def test_mcp_client_forwards_config_and_keeps_autostart_lazy(monkeypatch) -> None:
     from local_ai_hub import mcp_server
 
     calls = {}
 
     class FakeHubClient:
-        def __init__(self, *, tenant, config_path, auto_start):
+        def __init__(self, *, config_path, auto_start):
             self.requests = []
             calls.update(
-                tenant=tenant,
                 config_path=config_path,
                 auto_start=auto_start,
                 requests=self.requests,
@@ -380,11 +379,10 @@ def test_mcp_client_forwards_tenant_config_and_keeps_autostart_lazy(monkeypatch)
 
     monkeypatch.setattr(mcp_server, "HubClient", FakeHubClient)
 
-    client = mcp_server._build_mcp_client("agent:workspace", "C:/config/hub.toml")
+    client = mcp_server._build_mcp_client("C:/config/hub.toml")
 
     assert isinstance(client._client, FakeHubClient)
     assert calls == {
-        "tenant": "agent:workspace",
         "config_path": "C:/config/hub.toml",
         "auto_start": True,
         "requests": [],

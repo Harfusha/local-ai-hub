@@ -1,7 +1,7 @@
 """Explicit, one-shot current-tab capture protocol.
 
 The browser extension is deliberately a dumb transport.  This module owns the
-capability, tenant, size, and credential-bearing payload checks before anything
+capability, size, and credential-bearing payload checks before anything
 is written to the artifact store.
 """
 
@@ -409,7 +409,7 @@ class BrowserBridge:
                     self._capture_slots.release()
 
 
-def capture_browser_page(url: str, *, artifacts: ArtifactStore, tenant: str,
+def capture_browser_page(url: str, *, artifacts: ArtifactStore,
                          state_dir: str | Path, viewport: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Run in the shared daemon and persist capture payloads outside the MCP envelope."""
     scratch_dir = Path(state_dir) / "browser-captures"
@@ -420,14 +420,14 @@ def capture_browser_page(url: str, *, artifacts: ArtifactStore, tenant: str,
         diagnostic = result.pop("diagnostic", "")
         if not result.get("success"):
             if diagnostic:
-                result["diagnostic_artifact_id"] = artifacts.put(diagnostic, tenant, "browser:diagnostic")
+                result["diagnostic_artifact_id"] = artifacts.put(diagnostic, kind="browser:diagnostic")
             return result
         if not isinstance(screenshot, bytes):
             return _result_error("browser_screenshot_missing", "capture returned no screenshot bytes", status=502)
         dom = str(result.get("dom_snapshot", ""))
-        with artifacts.batch(tenant) as batch:
-            dom_id = batch.put(dom, "browser:dom")
-            screenshot_id = batch.put_bytes(screenshot, "browser:screenshot", "image/png")
+        with artifacts.batch() as batch:
+            dom_id = batch.put(dom, kind="browser:dom")
+            screenshot_id = batch.put_bytes(screenshot, kind="browser:screenshot", mime_type="image/png")
         result.update(dom_artifact_id=dom_id, screenshot_artifact_id=screenshot_id,
                       screenshot_mime_type="image/png", screenshot_size_bytes=len(screenshot),
                       dom_snapshot=dom[:6000], dom_preview_truncated=len(dom) > 6000)
@@ -551,6 +551,17 @@ def _safe_request_id(value: Any) -> str:
     return request_id
 
 
+def _retired_tenant_field(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    retired = {"tenant", "tenant_id", "tenant_key", "tenant_scope"}
+    for key in value:
+        normalized = str(key).strip().casefold()
+        if normalized in retired:
+            return normalized
+    return ""
+
+
 def _cleanup_staged_locked(now: float) -> None:
     for request_id, terminal in list(_terminal_captures.items()):
         if float(terminal.get("expires_at", 0)) <= now:
@@ -579,7 +590,6 @@ def _remember_terminal_locked(request_id: str, stage: Mapping[str, Any], result:
     terminal.setdefault("request_id", request_id)
     _terminal_captures[request_id] = {
         "capability": str(stage.get("capability", "")),
-        "tenant": str(stage.get("tenant", "")),
         "result": terminal,
         "created_at": now,
         "expires_at": now + _TERMINAL_CAPTURE_TTL_SECONDS,
@@ -589,25 +599,24 @@ def _remember_terminal_locked(request_id: str, stage: Mapping[str, Any], result:
         _terminal_captures.pop(oldest, None)
 
 
-def _terminal_result_locked(request_id: str, capability: str, tenant: str, *, now: float) -> dict[str, Any] | None:
+def _terminal_result_locked(request_id: str, capability: str, *, now: float) -> dict[str, Any] | None:
     terminal = _terminal_captures.get(request_id)
     if not terminal:
         return None
     if float(terminal.get("expires_at", 0)) <= now:
         _terminal_captures.pop(request_id, None)
         return None
-    if terminal.get("capability") != str(capability) or terminal.get("tenant") != str(tenant):
+    if terminal.get("capability") != str(capability):
         return _result_error("request_id_conflict", "capture request_id is already terminal for another capability", status=409)
     return dict(terminal.get("result", {}))
 
 
-def _stage_cancel_requested(request_id: str, capability: str, tenant: str) -> bool:
+def _stage_cancel_requested(request_id: str, capability: str) -> bool:
     with _capability_lock:
         stage = _staged_captures.get(request_id)
         return bool(
             stage
             and stage.get("capability") == str(capability)
-            and stage.get("tenant") == str(tenant)
             and stage.get("cancel_requested")
         )
 
@@ -638,7 +647,6 @@ def issue_capture_capability(
     config: Any,
     *,
     origin: str,
-    tenant: str = "generic",
     tab_id: int | str | None = None,
     window_id: int | str | None = None,
     api_token_authorized: bool = False,
@@ -656,7 +664,6 @@ def issue_capture_capability(
     token = secrets.token_urlsafe(32)
     now = time.monotonic()
     record = {
-        "tenant": str(tenant or "generic"),
         "origin": normalized_origin,
         "tab_id": str(tab_id),
         "window_id": str(window_id),
@@ -680,11 +687,13 @@ def _validate_capture_request_locked(
     capability: str,
     request: Mapping[str, Any],
     *,
-    tenant: str | None = None,
     consume: bool = True,
     request_id: str = "",
 ) -> dict[str, Any]:
     """Validate a capability while the capability lock is held."""
+    retired = _retired_tenant_field(request)
+    if retired:
+        return _result_error("invalid_request", f"retired capture field: {retired}")
     token = str(capability or "").strip()
     record = _capabilities.get(token)
     if not record:
@@ -699,9 +708,6 @@ def _validate_capture_request_locked(
         return _result_error("capability_replayed", "capture capability already has an active staged request", status=403)
     if str(request.get("origin", "")) != record["origin"]:
         return _result_error("origin_mismatch", "capture origin does not match capability", status=403)
-    requested_tenant = str(tenant if tenant is not None else request.get("tenant", "generic"))
-    if requested_tenant != record["tenant"]:
-        return _result_error("capability_tenant_mismatch", "capture tenant does not match capability", status=403)
     requested_tab = request.get("tab_id")
     if requested_tab is None or str(requested_tab).strip() == "":
         return _result_error("missing_tab_id", "capture requires the explicitly requested tab_id")
@@ -716,46 +722,46 @@ def _validate_capture_request_locked(
         record.pop("staged_request_id", None)
     elif request_id:
         record["staged_request_id"] = request_id
-    return {"success": True, "tenant": record["tenant"], "tab_id": record["tab_id"], "window_id": record.get("window_id")}
+    return {"success": True, "tab_id": record["tab_id"], "window_id": record.get("window_id")}
 
 
 def validate_capture_request(
     capability: str,
     request: Mapping[str, Any],
-    *,
-    tenant: str | None = None,
 ) -> dict[str, Any]:
-    """Consume a capability only after origin, tenant, and tab all match."""
+    """Consume a capability only after origin and selected tab all match."""
     with _capability_lock:
         _cleanup_staged_locked(time.monotonic())
-        return _validate_capture_request_locked(capability, request, tenant=tenant)
+        return _validate_capture_request_locked(capability, request)
 
 
-def stage_capture(capability: str, payload: Mapping[str, Any], *, tenant: str, config: Any) -> dict[str, Any]:
+def stage_capture(capability: str, payload: Mapping[str, Any], *, config: Any) -> dict[str, Any]:
     """Validate and hold a bounded capture until an explicit commit request."""
+    retired = _retired_tenant_field(payload)
+    if retired:
+        return _result_error("invalid_request", f"retired capture field: {retired}")
     request_id = _safe_request_id(payload.get("request_id")) if isinstance(payload, Mapping) else ""
     if not request_id:
         return _result_error("invalid_request_id", "staged capture requires a bounded request_id")
     request = {
         "origin": payload.get("origin", ""),
-        "tenant": tenant,
         "tab_id": payload.get("tab_id"),
         "window_id": payload.get("window_id"),
     }
     with _capability_lock:
         now = time.monotonic()
         _cleanup_staged_locked(now)
-        terminal = _terminal_result_locked(request_id, capability, tenant, now=now)
+        terminal = _terminal_result_locked(request_id, capability, now=now)
         if terminal is not None:
             return terminal
         existing = _staged_captures.get(request_id)
         if existing:
-            if existing.get("capability") != str(capability) or existing.get("tenant") != str(tenant):
+            if existing.get("capability") != str(capability):
                 return _result_error("request_id_conflict", "staged capture request_id is already in use", status=409)
             if existing.get("status") == "committing":
                 return _result_error("capture_in_progress", "staged capture is already committing", status=409)
             return {"success": True, "staged": True, "request_id": request_id}
-        checked_request = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
+        checked_request = _validate_capture_request_locked(capability, request, consume=False, request_id=request_id)
         if not checked_request.get("success"):
             return checked_request
         checked_payload = validate_capture_payload(payload, config=config)
@@ -768,7 +774,6 @@ def stage_capture(capability: str, payload: Mapping[str, Any], *, tenant: str, c
         ttl = max(1.0, float(_setting(config, "capability_ttl_seconds")))
         _staged_captures[request_id] = {
             "capability": str(capability),
-            "tenant": str(tenant),
             "payload": checked_payload["payload"],
             "created_at": now,
             "expires_at": min(float(_capabilities[str(capability)]["expires_at"]), now + ttl),
@@ -787,25 +792,27 @@ def commit_staged_capture(
     request: Mapping[str, Any],
     *,
     artifacts: Any,
-    tenant: str,
     config: Any,
 ) -> dict[str, Any]:
     """Commit one staged capture with cancellation and terminal idempotence."""
+    retired = _retired_tenant_field(request)
+    if retired:
+        return _result_error("invalid_request", f"retired capture field: {retired}")
     request_id = _safe_request_id(request.get("request_id"))
     if not request_id:
         return _result_error("invalid_request_id", "capture commit requires a bounded request_id")
     with _capability_lock:
         now = time.monotonic()
         _cleanup_staged_locked(now)
-        terminal = _terminal_result_locked(request_id, capability, tenant, now=now)
+        terminal = _terminal_result_locked(request_id, capability, now=now)
         if terminal is not None:
             return terminal
         stage = _staged_captures.get(request_id)
         if not stage:
-            return _result_error("capture_stage_missing", "capture stage is missing, expired, or tenant-scoped elsewhere", status=409)
-        if stage.get("capability") != str(capability) or stage.get("tenant") != str(tenant):
+            return _result_error("capture_stage_missing", "capture stage is missing or expired", status=409)
+        if stage.get("capability") != str(capability):
             return _result_error("request_id_conflict", "capture request_id is already in use", status=409)
-        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
+        checked = _validate_capture_request_locked(capability, request, consume=False, request_id=request_id)
         if not checked.get("success"):
             return checked
         if stage.get("status") == "committing":
@@ -821,9 +828,8 @@ def commit_staged_capture(
     result = capture_to_artifacts(
         stage["payload"],
         artifacts=artifacts,
-        tenant=tenant,
         config=config,
-        cancel_check=lambda: _stage_cancel_requested(request_id, capability, tenant),
+        cancel_check=lambda: _stage_cancel_requested(request_id, capability),
     )
     with _capability_lock:
         now = time.monotonic()
@@ -842,23 +848,26 @@ def commit_staged_capture(
     return result
 
 
-def abandon_staged_capture(capability: str, request: Mapping[str, Any], *, tenant: str) -> dict[str, Any]:
+def abandon_staged_capture(capability: str, request: Mapping[str, Any]) -> dict[str, Any]:
     """Burn the capability and discard a staged capture without writing artifacts."""
+    retired = _retired_tenant_field(request)
+    if retired:
+        return _result_error("invalid_request", f"retired capture field: {retired}")
     request_id = _safe_request_id(request.get("request_id"))
     if not request_id:
         return _result_error("invalid_request_id", "capture abandon requires a bounded request_id")
     with _capability_lock:
         now = time.monotonic()
         _cleanup_staged_locked(now)
-        terminal = _terminal_result_locked(request_id, capability, tenant, now=now)
+        terminal = _terminal_result_locked(request_id, capability, now=now)
         if terminal is not None:
             return terminal
         stage = _staged_captures.get(request_id)
         if not stage:
-            return _result_error("capture_stage_missing", "capture stage is missing, expired, or tenant-scoped elsewhere", status=409)
-        if stage.get("capability") != str(capability) or stage.get("tenant") != str(tenant):
+            return _result_error("capture_stage_missing", "capture stage is missing or expired", status=409)
+        if stage.get("capability") != str(capability):
             return _result_error("request_id_conflict", "capture request_id is already in use", status=409)
-        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
+        checked = _validate_capture_request_locked(capability, request, consume=False, request_id=request_id)
         if not checked.get("success"):
             return checked
         if stage.get("status") == "committing":
@@ -929,6 +938,9 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
     """Validate an extension payload without redacting DOM semantics."""
     if not isinstance(payload, Mapping):
         return _result_error("invalid_capture_payload", "capture payload must be an object")
+    retired = _retired_tenant_field(payload)
+    if retired:
+        return _result_error("invalid_request", f"retired capture field: {retired}")
     if "capture_error" in payload:
         return capture_failure(str(payload.get("capture_error", "unsupported")))
     try:
@@ -1093,7 +1105,6 @@ def capture_to_artifacts(
     payload: Mapping[str, Any],
     *,
     artifacts: Any,
-    tenant: str,
     config: Any,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
@@ -1105,12 +1116,12 @@ def capture_to_artifacts(
         if cancel_check and cancel_check():
             return _result_error("capture_cancelled", "capture was cancelled before artifact write", status=409)
         screenshot, mime = _screenshot_bytes(value["screenshot"], max_bytes=int(_setting(config, "max_screenshot_bytes")))
-        with artifacts.batch(tenant, cancel_check=cancel_check) as batch:
-            dom_id = batch.put_json(dict(value["dom"]), "browser-dom")
-            accessibility_id = batch.put_json(dict(value.get("accessibility", {})), "browser-accessibility")
-            styles_id = batch.put_json(dict(value.get("computed_styles", {})), "browser-computed-styles")
-            runtime_id = batch.put_json(_safe_runtime(value.get("runtime", {})), "browser-runtime")
-            screenshot_id = batch.put_bytes(screenshot, "browser-screenshot", mime)
+        with artifacts.batch( cancel_check=cancel_check) as batch:
+            dom_id = batch.put_json(dict(value["dom"]), kind="browser-dom")
+            accessibility_id = batch.put_json(dict(value.get("accessibility", {})), kind="browser-accessibility")
+            styles_id = batch.put_json(dict(value.get("computed_styles", {})), kind="browser-computed-styles")
+            runtime_id = batch.put_json(_safe_runtime(value.get("runtime", {})), kind="browser-runtime")
+            screenshot_id = batch.put_bytes(screenshot, kind="browser-screenshot", mime_type=mime)
             initial_identity = _capture_identity(value.get("capture_identity", {}).get("initial"))
             bundle = {
 
@@ -1133,7 +1144,7 @@ def capture_to_artifacts(
                 "runtime": {"artifact_id": runtime_id, "format": "runtime-refs"},
                 "viewport": dict(value.get("viewport", {})) if isinstance(value.get("viewport"), Mapping) else {},
             }
-            bundle_id = batch.put_json(bundle, "frontend-review-bundle")
+            bundle_id = batch.put_json(bundle, kind="frontend-review-bundle")
     except ArtifactBatchCancelled:
         return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
     except Exception:
@@ -1146,7 +1157,6 @@ def capture_to_artifacts(
         "accessibility_artifact_id": accessibility_id,
         "computed_styles_artifact_id": styles_id,
         "runtime_artifact_id": runtime_id,
-        "tenant": str(tenant),
         "page": bundle["page"],
         "tab_id": bundle["tab_id"],
     }

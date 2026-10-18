@@ -101,7 +101,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
             kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=repository_id,
             key="renderer cache", value="Renderer cache uses the current theme revision",
             source="user", status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(repo), "repository_id": repository_id, "tenant": "memory-wire-test", "version": "v1"},
+            provenance={"root": str(repo), "repository_id": repository_id, "version": "v1"},
         ), record_id="mem_store_wire"), actor="user")
         tasks.set_memory_adoption(memory_store=memory_store,
             context_compiler=ContextCompiler(state_store, task_store=tasks, memory_store=memory_store))
@@ -127,7 +127,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                 return
             if tasks is not None:
                 token = trace_context.set_context(
-                    request_id=request_id, trace_id=request_id, tenant="memory-wire-test")
+                    request_id=request_id, trace_id=request_id, session_id="session:memory-wire-test")
                 try:
                     action = body["action"]
                     if action == "create":

@@ -23,7 +23,7 @@ def _command_broker_for_task(tmp_path, task_id):
         GoalContract(goal="command receipt contract", acceptance_criteria=("tests",)),
         ScopeContext(task_id=task_id),
         task_id=task_id,
-        actor="tenant-a",
+        actor="agent",
     )
     broker = CommandBroker(
         {
@@ -108,7 +108,7 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
         GoalContract(goal="command receipt completion", acceptance_criteria=("tests",)),
         ScopeContext(task_id=task_id),
         task_id=task_id,
-        actor="tenant-a",
+        actor="agent",
     )
     broker = CommandBroker(
         {
@@ -132,7 +132,6 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
     result = broker.run(
         _passing_test_command(tmp_path),
         str(tmp_path),
-        "tenant-a",
         task_id=task_id,
         criterion="tests",
     )
@@ -142,7 +141,7 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
     assert publication_calls == 1
     receipt_data = result["verification_receipt"]
     assert receipt_data["evidence_id"] == result["verification_evidence_id"]
-    assert artifacts.get(receipt_data["evidence_id"], tenant="tenant-a")["success"] is True
+    assert artifacts.get(receipt_data["evidence_id"])["success"] is True
 
     reloaded_state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     reloaded_tasks = TaskStore(reloaded_state_store)
@@ -159,7 +158,7 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
     )
     completed = reloaded_tasks.complete(
         task_id,
-        actor="tenant-a",
+        actor="agent",
         reason="verified command receipt",
         idempotency_key="command-receipt-completion",
     )
@@ -179,7 +178,6 @@ def test_failed_command_does_not_create_passed_verification_receipt(tmp_path):
     result = broker.run(
         command,
         str(tmp_path),
-        "tenant-a",
         task_id=task_id,
         criterion="tests",
     )
@@ -212,7 +210,6 @@ def test_receipt_persistence_failure_warns_without_overwriting_command_result(
     result = broker.run(
         command,
         str(tmp_path),
-        "tenant-a",
         task_id=task_id,
         criterion="tests",
     )
@@ -231,7 +228,7 @@ def test_success_without_test_execution_does_not_mint_test_receipt(tmp_path, com
     task_id = "no-tests-no-receipt"
     broker, verifier, _artifacts = _command_broker_for_task(tmp_path, task_id)
     (tmp_path / "tests").mkdir()
-    result = broker.run(command, str(tmp_path), "tenant-a", task_id=task_id, criterion="tests")
+    result = broker.run(command, str(tmp_path), task_id=task_id, criterion="tests")
     assert result["success"] is True
     assert result["exit_code"] == 0
     assert "verification_receipt" not in result

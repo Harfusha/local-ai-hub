@@ -42,7 +42,7 @@ def _wheel_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[HubC
     monkeypatch.setattr(process_utils, "hidden_run_kwargs", lambda **_kwargs: {})
     monkeypatch.setattr(client_module, "process_identity", lambda pid: {"pid": pid})
     monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
-    return HubClient(tenant="test", config_path=str(config_path)), wheel_site
+    return HubClient( config_path=str(config_path)), wheel_site
 
 
 def test_wheel_install_starts_module_supervisor_without_tools_service(

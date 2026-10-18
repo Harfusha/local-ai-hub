@@ -12,12 +12,12 @@ class _FakeAsyncJobs:
         self.submissions: list[dict[str, object]] = []
         self.cancelled: list[str] = []
 
-    def submit(self, tenant: str, action: str, payload: dict[str, object], *, dispatch_delay_seconds: float = 0.0) -> dict[str, object]:
+    def submit(self, action: str, payload: dict[str, object], *, dispatch_delay_seconds: float = 0.0) -> dict[str, object]:
         job_id = f"job-{len(self.submissions) + 1}"
-        self.submissions.append({"tenant": tenant, "action": action, "payload": payload, "delay": dispatch_delay_seconds})
+        self.submissions.append({"action": action, "payload": payload, "delay": dispatch_delay_seconds})
         return {"success": True, "job_id": job_id, "state": "queued"}
 
-    def cancel(self, tenant: str, job_id: str) -> dict[str, object]:
+    def cancel(self, job_id: str) -> dict[str, object]:
         self.cancelled.append(job_id)
         return {"success": True, "job_id": job_id, "state": "cancelled"}
 
@@ -25,7 +25,7 @@ class _FakeAsyncJobs:
 def test_speculative_lint_is_disabled_by_default(tmp_path: Path) -> None:
     queue = SpeculativeLintQueue(_FakeAsyncJobs(), {"speculative_lint": {}})
 
-    result = queue.submit("agent", str(tmp_path), ["src/main.py"])
+    result = queue.submit(str(tmp_path), ["src/main.py"])
 
     assert result["success"] is False
     assert result["unsupported"] is True
@@ -38,14 +38,16 @@ def test_speculative_lint_replaces_pending_root_job_and_preserves_changed_paths(
         {"speculative_lint": {"enabled": True, "debounce_seconds": 0.25, "max_paths": 4}},
     )
 
-    first = queue.submit("agent", str(tmp_path), ["src/one.py"])
-    second = queue.submit("agent", str(tmp_path), ["src/two.py"])
+    first = queue.submit(str(tmp_path), ["src/one.py"])
+    second = queue.submit(str(tmp_path), ["src/two.py"])
 
     assert first["job_id"] == "job-1"
     assert second["job_id"] == "job-2"
     assert async_jobs.cancelled == ["job-1"]
     assert async_jobs.submissions[-1]["action"] == "speculative_lint"
     assert async_jobs.submissions[-1]["payload"]["paths"] == ["src/two.py"]
+    assert async_jobs.submissions[-1]["payload"]["root"] == str(tmp_path.resolve())
+    assert "tenant" not in async_jobs.submissions[-1]
     assert async_jobs.submissions[-1]["delay"] == 0.25
 
 

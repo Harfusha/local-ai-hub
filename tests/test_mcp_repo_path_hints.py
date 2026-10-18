@@ -131,9 +131,6 @@ def test_api_search_route_consumes_t03_hint_and_returns_repository_hit(
         def _validate_payload(self, _path, _payload):
             return None
 
-        def _tenant(self):
-            return "default"
-
         def _agent(self):
             return "t21-test"
 
@@ -305,7 +302,6 @@ def test_api_search_forwards_path_hints_to_repo_search(monkeypatch):
         ],
     }
     handler._validate_payload = lambda _path, _payload: None
-    handler._tenant = lambda: "default"
     handler._agent = lambda: "agent"
     handler._send = lambda status, data: responses.append((status, data))
     monkeypatch.setattr(http_server, "APP", app)

@@ -1,7 +1,47 @@
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, Iterable
+
+
+def _json_projection(value: Any, max_chars: int) -> str:
+    """Keep the largest useful JSON prefix that fits, without invalid comments."""
+    def encode(item: Any) -> str:
+        return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+
+    if isinstance(value, dict):
+        parts: list[str] = []
+        used = 2  # braces
+        for key, item in value.items():
+            part = f"{encode(key)}:{encode(item)}"
+            needed = len(part) + (1 if parts else 0)
+            if used + needed > max_chars:
+                break
+            parts.append(part)
+            used += needed
+        return "{" + ",".join(parts) + "}" if used <= max_chars else "0"
+    if isinstance(value, list):
+        parts: list[str] = []
+        used = 2  # brackets
+        for item in value:
+            part = encode(item)
+            needed = len(part) + (1 if parts else 0)
+            if used + needed > max_chars:
+                break
+            parts.append(part)
+            used += needed
+        return "[" + ",".join(parts) + "]" if used <= max_chars else "0"
+    if isinstance(value, str):
+        low, high = 0, len(value)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if len(encode(value[:middle])) <= max_chars:
+                low = middle
+            else:
+                high = middle - 1
+        return encode(value[:low]) if low or max_chars >= 2 else "0"
+    return "null" if max_chars >= 4 else "0"
 
 
 def syntax_aware_truncate(text: str, max_chars: int, marker: str = "\n[... compact MCP projection ...]") -> str:
@@ -15,25 +55,28 @@ def syntax_aware_truncate(text: str, max_chars: int, marker: str = "\n[... compa
                 max_chars = 0
             else:
                 max_chars = int(max_chars)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             max_chars = 0
     if max_chars <= 0:
         return ""
     marker_str = str(marker).replace("\x00", "") if marker is not None else ""
     if len(text) <= max_chars:
         return text
+    if len(text) <= 1_000_000:
+        try:
+            parsed = json.loads(text)
+            return _json_projection(parsed, max_chars)
+        except (json.JSONDecodeError, TypeError, RecursionError, OverflowError):
+            pass
     if max_chars < len(marker_str):
         return text[:max_chars]
-    budget = max(64, max_chars - len(marker_str))
+    if "\n" in text and max_chars - len(marker_str) < max_chars // 2:
+        marker_str = "\n[…]" if max_chars >= 5 else "…"[:max_chars]
+    budget = max_chars - len(marker_str)
     prefix = text[:budget]
     last_nl = prefix.rfind("\n")
     if last_nl > int(budget * 0.7):
         prefix = prefix[:last_nl]
-    trimmed = prefix.strip()
-    if trimmed.startswith("{") and not trimmed.endswith("}"):
-        return prefix + "\n  // ... remaining structure omitted ...\n}"
-    if trimmed.startswith("[") and not trimmed.endswith("]"):
-        return prefix + "\n  // ... remaining items omitted ...\n]"
     return prefix + marker_str
 
 

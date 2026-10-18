@@ -33,13 +33,12 @@ def test_build_context_request_forwards_task_scope_fields():
             "since_hash": "etag-1",
             "changed_paths": ["src/a.py"],
         },
-        tenant="agent-a",
     )
     assert request == ContextRequest(
         task_id="task-1",
         token_budget=100,
         root="repo",
-        tenant="agent-a",
+
         phase="review",
         focus=("context endpoint",),
         preload_profile="review",

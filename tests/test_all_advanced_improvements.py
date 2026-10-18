@@ -18,7 +18,8 @@ from local_ai_hub.deterministic import DeterministicEngine
 
 
 # ── Area 1: Agent OS & Swarm Coordination Tests ──────────────────────────────
-
+
+
 
 def test_event_delta_sync_export_import(tmp_path: Path) -> None:
     source_db = tmp_path / "source_state.sqlite3"
@@ -58,11 +59,11 @@ def test_zombie_task_watchdog_and_recovery(tmp_path: Path) -> None:
 
     contract = GoalContract(goal="work", acceptance_criteria=["c1"])
     context = ScopeContext(repository_id="repo1")
-    tenant_token = trace_context.set_context(tenant="tenant-a")
+    context_token = trace_context.set_context(agent="trace-agent", request_id="trace-request")
     try:
         task = tasks.create(contract, context, repo_root=str(tmp_path))
     finally:
-        trace_context.reset_context(tenant_token)
+        trace_context.reset_context(context_token)
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="t1")
 
     # Set heartbeat
@@ -70,7 +71,7 @@ def test_zombie_task_watchdog_and_recovery(tmp_path: Path) -> None:
     future_time = time.time() + 1000.0
 
     # Reap with recovery at future time
-    reaped = tasks.reap_expired_heartbeats(now=future_time, auto_recover=True, repo_root=tmp_path, tenant="tenant-a")
+    reaped = tasks.reap_expired_heartbeats(now=future_time, auto_recover=True, repo_root=tmp_path)
     assert task.task_id in reaped
 
     # Status should be WAITING

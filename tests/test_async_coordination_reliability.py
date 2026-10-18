@@ -33,13 +33,13 @@ class _Scheduler:
     def __init__(self) -> None:
         self.calls = []
 
-    def enqueue(self, model, tenant, source, execute, priority=1, *, background=True):
-        self.calls.append({"model": model, "tenant": tenant, "source": source, "execute": execute, "priority": priority, "background": background})
+    def enqueue(self, model, *, source, execute, priority=1, background=True):
+        self.calls.append({"model": model, "source": source, "execute": execute, "priority": priority, "background": background})
         return _Job()
 
 
 class _Artifacts:
-    def put(self, _content, _tenant, _kind):
+    def put(self, _content, *, kind):
         return "artifact-1"
 
 
@@ -47,7 +47,7 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
     call_count = 0
     request_ids = []
 
-    def _fail_first(action, payload, tenant):
+    def _fail_first(action, payload):
         nonlocal call_count
         call_count += 1
         request_ids.append(payload.get("request_id"))
@@ -61,19 +61,19 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
         _Artifacts(),
         _fail_first,
     )
-    submitted = manager.submit("tenant-a", "reason", {"request_id": "retry-job-001", "task": "retry-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("reason", {"request_id": "retry-job-001", "task": "retry-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
     manager._execute(job_id)
-    st = manager.status("tenant-a", job_id)
+    st = manager.status(job_id)
     assert st["state"] == "queued"
     assert st["attempts"] == 1
     assert request_ids[0]
 
     # Second attempt succeeds
     manager._execute(job_id)
-    st2 = manager.status("tenant-a", job_id)
+    st2 = manager.status(job_id)
     assert st2["state"] == "done"
     assert st2["attempts"] == 2
     assert request_ids == [request_ids[0], request_ids[0]]
@@ -85,10 +85,10 @@ def test_async_retry_dispatch_clears_stale_completion_event(tmp_path: Path):
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"max_attempts": 2}},
         _Scheduler(),
         _Artifacts(),
-        lambda _action, _payload, _tenant: {"success": False, "retryable": True, "error": "retry"},
+        lambda _action, _payload: {"success": False, "retryable": True, "error": "retry"},
     )
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "retry-event"}, dispatch_delay_seconds=30.0)
+        submitted = manager.submit("reason", {"task": "retry-event"}, dispatch_delay_seconds=30.0)
         job_id = submitted["job_id"]
         manager._execute(job_id)
         assert manager._event(job_id).is_set()
@@ -107,7 +107,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
         _Artifacts(),
         lambda a, p, t: {"success": True},
     )
-    submitted = manager.submit("tenant-a", "reason", {"request_id": "stuck-job-001", "task": "stuck-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("reason", {"request_id": "stuck-job-001", "task": "stuck-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # Artificially set job to running with an expired lease
@@ -121,7 +121,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
 
     manager.tick()
     # Expired lease reclaimed -> re-queued
-    st = manager.status("tenant-a", job_id)
+    st = manager.status(job_id)
     assert st["state"] == "queued"
     manager.close()
 
@@ -153,7 +153,7 @@ def test_client_mutating_endpoints_not_replay_safe():
     client = HubClient(auto_start=False)
     captured = []
 
-    def mock_request(path, payload=None, timeout=None, replay_safe=False, *, tenant=None, cancel_event=None):
+    def mock_request(path, payload=None, timeout=None, replay_safe=False, *, cancel_event=None):
         captured.append({"path": path, "payload": payload, "replay_safe": replay_safe})
         return {"success": True}
 
@@ -187,7 +187,7 @@ def test_client_mutating_endpoints_not_replay_safe():
     assert "C%3A" in called_url or "test%20dir" in called_url
 
 
-def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
+def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful(tmp_path):
     class Snapshot:
         revision = "rev-1"
         changed_paths = ("src/routes.py",)
@@ -199,6 +199,13 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
         def git_diff(self, _root, base="HEAD", staged=False, max_tokens=10000):
             assert base == "HEAD" and staged is False and max_tokens > 0
             return {"success": True, "revision": "rev-1", "changed_paths": ["src/routes.py"], "diff": ""}
+
+        def context_pack(self, _root, _query, *, max_tokens, top_k):
+            assert max_tokens > 0 and top_k > 0
+            return {
+                "success": True, "root": str(_root), "context": "route evidence",
+                "evidence": [{"evidence_id": "route-1", "path": "src/routes.py"}],
+            }
 
     class Deterministic:
         def context_pack(self, _root, _query, *, max_chars, max_raw_evidence):
@@ -223,14 +230,25 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
             return ()
 
     services = LocalAIServices.__new__(LocalAIServices)
-    services.config = {"deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5}}
+    root = tmp_path / "repo"
+    root.mkdir()
+    services.config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5},
+    }
     services.deterministic = Deterministic()
+    services.code_index = None
+    services.evidence_store = None
     services.repo_tools = RepoTools()
+    services.preprocessor = None
+    services.rag = None
     services.consistency_guard = Guard()
+    # This focused fake intentionally omits the optional learner backend.
+    services.learner = None
     services._repo_cached = lambda _op, _root, _params, compute: compute()
 
     result = services.adaptive_context_pack(
-        ConsistencyRequest(root="C:/repo", query="route", task_id="task-1", phase="review"),
+        ConsistencyRequest(root=str(root), query="route", task_id="task-1", phase="review"),
         mode="adaptive",
         since_hash="rev-1",
     )
@@ -299,30 +317,27 @@ def test_leases_norm_rel_windows_drive_rejection():
     assert _norm_rel("foo/bar/baz.txt") == "foo/bar/baz.txt"
 
 
-def test_leases_release_and_renew_require_owner_by_id(tmp_path: Path):
+def test_leases_release_and_renew_require_actual_task_owner(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path)
     root = str(tmp_path)
 
-    # Tenant-1 claims a file
-    claim = store.claim("tenant-1", root, ["src/worker.py"])
+    owner_a = "task-a"
+    owner_b = "task-b"
+    claim = store.claim(owner=owner_a, root=root, paths=["src/worker.py"], purpose="review")
     assert claim["success"] is True
     lease_id = claim["lease_id"]
 
-    # Another tenant attempts claim -> fails
-    claim2 = store.claim("tenant-2", root, ["src/worker.py"])
+    claim2 = store.claim(owner=owner_b, root=root, paths=["src/worker.py"], purpose="review")
     assert claim2["success"] is False
 
-    # Special tenant labels must not act as cross-tenant authorization.
-    for tenant in ("http-default", "system", "admin", "*"):
-        assert store.release(tenant=tenant, lease_id=lease_id)["released_rows"] == 0
-        assert store.renew(tenant=tenant, lease_id=lease_id)["success"] is False
+    assert store.release(owner=owner_b, lease_id=lease_id)["released_rows"] == 0
+    assert store.renew(owner=owner_b, lease_id=lease_id)["success"] is False
 
-    rel = store.release(tenant="tenant-1", lease_id=lease_id)
+    rel = store.release(owner=owner_a, lease_id=lease_id)
     assert rel["success"] is True
     assert rel["released_rows"] >= 1
 
-    # Now tenant-2 can claim successfully
-    claim3 = store.claim("tenant-2", root, ["src/worker.py"])
+    claim3 = store.claim(owner=owner_b, root=root, paths=["src/worker.py"], purpose="review")
     assert claim3["success"] is True
 
 

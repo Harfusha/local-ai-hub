@@ -35,7 +35,6 @@ class _LockedDatabase:
 def api(monkeypatch):
     monkeypatch.setattr(Handler, "_require_authorized", lambda self, *args, **kwargs: True)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *args, **kwargs: None)
-    monkeypatch.setattr(Handler, "_tenant", lambda self: "test-tenant")
 
     server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})

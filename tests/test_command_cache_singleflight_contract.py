@@ -60,9 +60,9 @@ def test_bypass_cache_skips_reads_and_does_not_write_results(tmp_path, monkeypat
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    initial = broker.run(command, str(tmp_path), tenant="test")
-    bypassed = broker.run(command, str(tmp_path), tenant="test", bypass_cache=True)
-    cached_again = broker.run(command, str(tmp_path), tenant="test")
+    initial = broker.run(command, str(tmp_path))
+    bypassed = broker.run(command, str(tmp_path), bypass_cache=True)
+    cached_again = broker.run(command, str(tmp_path))
 
     assert initial["stdout"] == "run-1"
     assert bypassed["cache_hit"] is False
@@ -79,8 +79,8 @@ def test_bypass_cache_does_not_write_suppression_results(tmp_path, monkeypatch) 
     )
 
     command = "python -m pytest -q"
-    bypassed = broker.run(command, str(tmp_path), tenant="test", bypass_cache=True)
-    ordinary = broker.run(command, str(tmp_path), tenant="test")
+    bypassed = broker.run(command, str(tmp_path), bypass_cache=True)
+    ordinary = broker.run(command, str(tmp_path))
 
     assert bypassed.get("preflight") is True
     assert ordinary.get("suppression_cache_hit") is not True
@@ -89,7 +89,7 @@ def test_bypass_cache_does_not_write_suppression_results(tmp_path, monkeypatch) 
 
 def test_unknown_command_is_denied_before_execution(tmp_path) -> None:
     broker = _broker(tmp_path)
-    result = broker.run("unknown-tool", str(tmp_path), tenant="test")
+    result = broker.run("unknown-tool", str(tmp_path))
 
     assert result["policy_blocked"] is True
     assert result["request_not_sent"] is True
@@ -120,12 +120,12 @@ def test_singleflight_waiter_receives_escaped_owner_timeout(tmp_path, monkeypatc
     waiter_result: dict[str, object] = {}
     owner = threading.Thread(
         target=lambda: owner_result.update(
-            broker.run(command, str(tmp_path), tenant="test", timeout=1)
+            broker.run(command, str(tmp_path), timeout=1)
         )
     )
     waiter = threading.Thread(
         target=lambda: waiter_result.update(
-            broker.run(command, str(tmp_path), tenant="test", timeout=1)
+            broker.run(command, str(tmp_path), timeout=1)
         )
     )
 
@@ -199,10 +199,10 @@ def test_command_result_cache_does_not_reuse_across_environment_values(
         }
 
     monkeypatch.setattr(broker, "_execute", execute)
-    first = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
-    warm = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
+    first = broker.run("python -m pytest -q", str(tmp_path))
+    warm = broker.run("python -m pytest -q", str(tmp_path))
     monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-two")
-    changed = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
+    changed = broker.run("python -m pytest -q", str(tmp_path))
 
     assert first["stdout"] == "environment-one"
     assert warm["cache_hit"] is True
@@ -245,12 +245,12 @@ def test_command_result_cache_observes_l1_and_l2_ttl(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), tenant="test")
-    warm = broker.run(command, str(tmp_path), tenant="test")
+    first = broker.run(command, str(tmp_path))
+    warm = broker.run(command, str(tmp_path))
     clock.update(monotonic=3.0, wall=1003.0)
-    l2_promoted = broker.run(command, str(tmp_path), tenant="test")
+    l2_promoted = broker.run(command, str(tmp_path))
     clock.update(monotonic=15.0, wall=1015.0)
-    expired = broker.run(command, str(tmp_path), tenant="test")
+    expired = broker.run(command, str(tmp_path))
 
     assert first["cache_hit"] is False
     assert warm["cache_hit"] is True
@@ -310,9 +310,9 @@ def test_configured_result_cache_l1_ttl_does_not_outlive_l2(
         }
 
     monkeypatch.setattr(broker, "_execute", execute)
-    first = broker.run(command, str(tmp_path), tenant="test")
+    first = broker.run(command, str(tmp_path))
     clock.update(monotonic=3.0, wall=2003.0)
-    expired = broker.run(command, str(tmp_path), tenant="test")
+    expired = broker.run(command, str(tmp_path))
 
     assert first["cache_hit"] is False
     assert expired["cache_hit"] is False
@@ -344,10 +344,10 @@ def test_configured_suppression_l1_ttl_does_not_outlive_l2(
 
     command = "python -m pytest -q"
     monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: "python")
-    first = broker.run(command, str(tmp_path), tenant="test")
-    warm = broker.run(command, str(tmp_path), tenant="test")
+    first = broker.run(command, str(tmp_path))
+    warm = broker.run(command, str(tmp_path))
     clock.update(monotonic=3.0, wall=3003.0)
-    expired = broker.run(command, str(tmp_path), tenant="test")
+    expired = broker.run(command, str(tmp_path))
 
     assert first["preflight"] is True
     assert warm["suppression_cache_hit"] is True

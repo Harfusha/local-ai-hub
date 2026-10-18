@@ -8,6 +8,7 @@ import hashlib
 import contextvars
 import queue
 import math
+import os
 import threading
 import tempfile
 import time
@@ -30,6 +31,7 @@ from .task_memory_wire import (
 from .token_accounting import json_tokens
 
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
+MAX_TASK_REAP_BATCH = 64
 MAX_AGENT_QUESTION_BYTES = 16_384
 
 
@@ -535,13 +537,19 @@ def _checkpoint_with_scheduled_worktree_cleanup(checkpoint: TaskCheckpoint) -> T
 
 
 def _canonical_repository_root(value: Any) -> str:
-    raw = str(value or "").strip()
+    if not isinstance(value, (str, Path)):
+        raise ValueError("repo_root is required as an explicit path")
+    raw = str(value)
+    if raw != raw.strip() or "\x00" in raw:
+        raise ValueError("repo_root must be a canonical path")
     if not raw:
         raise ValueError("repo_root is required")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise ValueError("repo_root must be absolute")
     try:
+        if any(item.is_symlink() for item in (path, *path.parents)):
+            raise ValueError("repo_root must not contain symlinks")
         canonical = path.resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("repo_root must resolve to an existing directory") from exc
@@ -549,35 +557,26 @@ def _canonical_repository_root(value: Any) -> str:
         raise ValueError("repo_root must resolve to an existing directory")
     return str(canonical)
 
-def _tenant_scope_key(tenant: Any) -> str:
-    value = str(tenant or "").strip()
-    if not value:
-        raise ValueError("authenticated tenant is required")
-    return hashlib.sha256(f"agent-task-memory-tenant\\0{value}".encode("utf-8")).hexdigest()
-
-def _task_scope_values(task: "TaskState") -> tuple[str, str]:
-    state_data = task.checkpoint.state_data
-    scope = state_data.get("_agent_task_scope")
-    if not isinstance(scope, Mapping) or scope.get("version") != 1:
-        return "", ""
-    root = scope.get("repo_root")
-    tenant_key = scope.get("tenant_key")
+def _task_scope_root(task: "TaskState") -> str:
+    scope = task.checkpoint.state_data.get("_agent_task_scope")
+    if scope is None:
+        return ""
+    if (not isinstance(scope, Mapping) or set(scope) != {"version", "repo_root"}
+            or type(scope.get("version")) is not int or scope.get("version") != 2):
+        raise RuntimeError("retired task scope contract requires explicit offline conversion")
     try:
-        canonical_root = _canonical_repository_root(root)
+        return _canonical_repository_root(scope["repo_root"])
     except ValueError:
-        return "", ""
-    key = str(tenant_key or "").strip().lower()
-    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
-        return "", ""
-    return canonical_root, key
+        return ""
 
-def _task_matches_scope(
-    task: "TaskState", repo_root: str, tenant_key: str, task_id: str | None = None
-) -> bool:
+
+def _task_matches_scope(task: "TaskState", repo_root: str, task_id: str | None = None) -> bool:
     if task_id and task.task_id != task_id:
         return False
-    task_root, task_tenant_key = _task_scope_values(task)
-    return task_root == repo_root and task_tenant_key == tenant_key
+    root = _task_scope_root(task)
+    return bool(root) and root == repo_root
+
+
 
 class TaskStore:
     def __init__(
@@ -641,7 +640,7 @@ class TaskStore:
         if not raw:
             return ""
         try:
-            return str(Path(raw).expanduser().resolve(strict=False)).replace("\\", "/").casefold()
+            return os.path.normcase(str(Path(raw).expanduser().resolve(strict=False))).replace("\\", "/")
         except (OSError, RuntimeError, TypeError, ValueError):
             return ""
 
@@ -653,9 +652,9 @@ class TaskStore:
         pass
 
     @staticmethod
-    def _memory_warning(code: str, tenant_key: str = "") -> dict[str, Any]:
+    def _memory_warning(code: str) -> dict[str, Any]:
         return TaskStore._account_memory_snapshot({
-            "schema_version": 1, "tenant_key": tenant_key, "instruction": "",
+            "schema_version": 2, "context": {}, "instruction": "",
             "items": [], "warnings": [{"code": code}], "estimated_tokens": 0,
         })
 
@@ -696,6 +695,9 @@ class TaskStore:
     def _fit_memory_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
         if snapshot is None:
             return None
+        if (type(snapshot.get("schema_version")) is not int or snapshot.get("schema_version") != 2
+                or "tenant_key" in snapshot or not isinstance(snapshot.get("context"), Mapping)):
+            raise ValueError("retired memory snapshot contract requires explicit offline conversion")
         result = dict(snapshot)
         source_items = list(result.get("items", ()))
         result["items"] = []
@@ -704,7 +706,7 @@ class TaskStore:
             if not result.get("warnings"):
                 return None
             result = TaskStore._account_memory_snapshot(result)
-            return result if json_tokens(result) <= 512 else TaskStore._memory_warning("memory_snapshot_budget_exceeded", str(result.get("tenant_key", "")))
+            return result if json_tokens(result) <= 512 else TaskStore._memory_warning("memory_snapshot_budget_exceeded")
 
         def fits(candidate: dict[str, Any]) -> bool:
             for _ in range(16):
@@ -735,8 +737,8 @@ class TaskStore:
                 candidate = best
             result = candidate
         if not result["items"]:
-            return TaskStore._memory_warning("memory_snapshot_budget_exceeded", str(result.get("tenant_key", "")))
-        return result if fits(result) else TaskStore._memory_warning("memory_snapshot_budget_exceeded", str(result.get("tenant_key", "")))
+            return TaskStore._memory_warning("memory_snapshot_budget_exceeded")
+        return result if fits(result) else TaskStore._memory_warning("memory_snapshot_budget_exceeded")
 
     def _task_memory_context(
         self,
@@ -749,25 +751,21 @@ class TaskStore:
     ) -> dict[str, Any] | None:
         if self.memory_context_compiler is None or self.memory_store is None:
             return self._memory_warning("memory_context_unavailable") if previous is not None else None
-        from .trace_context import current as current_trace_context
 
         deadline = time.monotonic() + 1.0
-        tenant = str(current_trace_context().get("tenant", "") or "").strip()
-        tenant_key = _tenant_scope_key(tenant) if tenant else ""
         if not self._memory_lookup_slots.acquire(blocking=False):
-            return self._memory_warning("memory_lookup_busy", tenant_key)
+            return self._memory_warning("memory_lookup_busy")
         if time.monotonic() >= deadline:
             self._memory_lookup_slots.release()
-            return self._memory_warning("memory_lookup_deadline_exceeded", tenant_key)
+            return self._memory_warning("memory_lookup_deadline_exceeded")
         cancelled, completed = threading.Event(), threading.Event()
         outcome: dict[str, Any] = {}
-        previous = {"tenant_key": previous.get("tenant_key", "")} if previous is not None else None
 
         def lookup() -> dict[str, Any] | None:
             self._check_memory_deadline(deadline, cancelled)
-            root = str(root_override or context.repository_id or "").strip()
+            root = str(root_override or "").strip()
             guard = getattr(self.memory_store, "task_retrieval_scope", None)
-            with guard(contract.goal, root=root, tenant=tenant, task_id=task_id) if callable(guard) else nullcontext():
+            with guard(contract.goal, root=root, task_id=task_id) if callable(guard) else nullcontext():
                 self._check_memory_deadline(deadline, cancelled)
                 snapshot = self._collect_task_memory_context(
                     task_id, contract, context, root_override=root, previous=previous,
@@ -790,13 +788,13 @@ class TaskStore:
             self._memory_lookup_queue.put_nowait((contextvars.copy_context(), lookup, completed, outcome))
         except Exception:
             self._memory_lookup_slots.release()
-            return self._memory_warning("memory_context_unavailable", tenant_key)
+            return self._memory_warning("memory_context_unavailable")
         if not completed.wait(max(0.0, deadline - time.monotonic())):
             cancelled.set()
-            return self._memory_warning("memory_lookup_deadline_exceeded", tenant_key)
+            return self._memory_warning("memory_lookup_deadline_exceeded")
         if outcome.get("error"):
             code = "memory_lookup_deadline_exceeded" if outcome["error"] == "deadline" else "memory_context_unavailable"
-            return self._memory_warning(code, tenant_key)
+            return self._memory_warning(code)
         return outcome.get("value")
 
     def _collect_task_memory_context(
@@ -810,11 +808,8 @@ class TaskStore:
             return None
         try:
             from .agent_context import ContextRequest
-            from .trace_context import current as current_trace_context
 
-            trace_tenant = str(current_trace_context().get("tenant", "") or "").strip()
-            tenant = trace_tenant
-            root = str(root_override or context.repository_id or "").strip()
+            root = str(root_override or "").strip()
             coordination_id = ""
             if root:
                 try:
@@ -823,32 +818,36 @@ class TaskStore:
                     project = resolve_project_context(
                         root, Path(self.state_store.db_path).parent
                     )
-                    coordination_id = str(project.coordination_id or "").strip()
+                    resolved_identity = project.coordination_id
+                    if not isinstance(resolved_identity, str) or not resolved_identity or resolved_identity != resolved_identity.strip() or "\x00" in resolved_identity:
+                        raise ValueError("invalid project coordination identity")
+                    coordination_id = resolved_identity
                 except Exception:
                     # Missing repository identity excludes repository memory;
                     # independently scoped task/session/global records remain eligible.
                     coordination_id = ""
             self._check_memory_deadline(deadline, cancelled)
-            tenant_key = hashlib.sha256(
-                f"agent-task-memory-tenant\\0{tenant}".encode("utf-8")
-            ).hexdigest() if tenant else ""
-            old_tenant_key = str((previous or {}).get("tenant_key", "") or "")
+            snapshot_context = {
+                "root": root, "coordination_id": coordination_id, "task_id": task_id,
+                "session_id": context.session_id, "clone_id": context.clone_id,
+                "worktree_id": context.worktree_id, "branch": context.branch,
+            }
             warnings: list[dict[str, str]] = []
-            if previous is not None and old_tenant_key and old_tenant_key != tenant_key:
-                return {
-                    "schema_version": 1,
-                    "tenant_key": tenant_key,
-                    "instruction": "Memory is advisory. Cite used memory IDs in the next checkpoint; otherwise record not_used_reason. Verify volatile facts against current source before relying on them.",
-                    "items": [],
-                    "warnings": [{"code": "memory_tenant_mismatch"}],
-                    "estimated_tokens": 0,
-                }
+            if previous is not None:
+                if (type(previous.get("schema_version")) is not int or previous.get("schema_version") != 2 or "tenant_key" in previous
+                        or not isinstance(previous.get("context"), Mapping)):
+                    return self._memory_warning("memory_snapshot_requires_offline_conversion")
+                if previous.get("items") and previous["context"] != snapshot_context:
+                    return {
+                        "schema_version": 2, "context": snapshot_context,
+                        "instruction": "Memory scope changed; verify memory against current context before use.",
+                        "items": [], "warnings": [{"code": "memory_scope_mismatch"}], "estimated_tokens": 0,
+                    }
 
             request = ContextRequest(
                 task_id=task_id,
                 token_budget=512,
                 root=root,
-                tenant=tenant,
                 session_id=context.session_id,
                 clone_id=context.clone_id,
                 worktree_id=context.worktree_id,
@@ -872,7 +871,7 @@ class TaskStore:
                         id_limit=0,
                         root=root or None,
                         coordination_id=coordination_id,
-                        tenant=tenant or None,
+                        task_id=task_id,
                         session_id=context.session_id or None,
                         clone_id=context.clone_id or None,
                         worktree_id=context.worktree_id or None,
@@ -889,12 +888,11 @@ class TaskStore:
                 try:
                     expired_found = False
                     queries = [
-                        {"scope": AgentScope.GLOBAL, "tenant": tenant or None},
+                        {"scope": AgentScope.GLOBAL},
                         {
                             "scope": AgentScope.REPOSITORY,
                             "repository_id": coordination_id or None,
                             "root": root or None,
-                            "tenant": tenant or None,
                         },
                     ]
                     for query in queries:
@@ -915,14 +913,8 @@ class TaskStore:
                                     continue
                                 if not isinstance(provenance, Mapping):
                                     continue
-                                record_tenant = str(provenance.get("tenant", "") or "").strip()
-                                if record_tenant and record_tenant != tenant:
-                                    continue
-                                record_root = provenance.get("root") or provenance.get("repository_root")
-                                if record_root and root and self._canonical_memory_root(record_root) != self._canonical_memory_root(root):
-                                    continue
-                                if record_root and not root:
-                                    continue
+                                if "tenant" in provenance or "tenant_key" in provenance:
+                                    raise ValueError("retired memory provenance requires offline conversion")
                                 expired_found = True
                                 break
                             if expired_found:
@@ -955,7 +947,6 @@ class TaskStore:
                             root=root,
                             coordination_id=coordination_id,
                             task_id=task_id,
-                            tenant=tenant,
                             session_id=context.session_id,
                             clone_id=context.clone_id,
                             worktree_id=context.worktree_id,
@@ -999,30 +990,27 @@ class TaskStore:
                     sensitivity = str(getattr(record, "sensitivity", "normal") or "normal").strip().lower()
                     if sensitivity not in {"normal", "low", "public"}:
                         continue
-                    record_tenant = str(provenance.get("tenant", "") or "").strip()
-                    if scope == "global":
-                        if record_tenant and record_tenant != tenant:
+                    if "tenant" in provenance or "tenant_key" in provenance:
+                        raise ValueError("retired memory provenance requires offline conversion")
+                    if scope == "repository":
+                        if not coordination_id or provenance.get("repository_id") != coordination_id:
                             continue
-                    elif scope == "repository":
-                        if (not tenant or record_tenant != tenant or not coordination_id
-                                or provenance.get("repository_id") != coordination_id):
-                            continue
-                    else:
-                        if (tenant and record_tenant != tenant) or (not tenant and record_tenant):
-                            continue
+                    elif scope != "global":
                         expected_scope_ids = {
                             "clone": context.clone_id,
                             "worktree": context.worktree_id,
                             "branch": context.branch,
-                            "task": context.task_id,
+                            "task": task_id,
                             "session": context.session_id,
                         }
                         expected_scope_id = str(expected_scope_ids.get(str(scope), "") or "")
                         record_scope_id = str(getattr(record, "scope_id", "") or "")
                         if not expected_scope_id or expected_scope_id != record_scope_id:
                             continue
-                    record_root = provenance.get("root") or provenance.get("repository_root")
-                    if scope != "repository" and record_root and (
+                    record_root = provenance.get("root")
+                    if scope in {"task", "clone", "worktree", "branch"} and (not isinstance(record_root, str) or not record_root):
+                        continue
+                    if scope not in {"repository", "global"} and record_root and (
                         not root
                         or self._canonical_memory_root(record_root) != self._canonical_memory_root(root)
                     ):
@@ -1088,11 +1076,11 @@ class TaskStore:
             items = selected_items
 
             incident_store = self.incident_store
-            if root and tenant and incident_store is not None:
+            if root and incident_store is not None:
                 finder = getattr(incident_store, "find_negative_knowledge", None)
                 if callable(finder):
                     try:
-                        incidents = finder(contract.goal, limit=3, root=root, tenant=tenant)
+                        incidents = finder(contract.goal, limit=3, root=root)
                         self._check_memory_deadline(deadline, cancelled)
                         for incident in incidents[:3]:
                             self._check_memory_deadline(deadline, cancelled)
@@ -1102,7 +1090,7 @@ class TaskStore:
                             provenance = incident.get("provenance")
                             if not incident_id or not isinstance(provenance, Mapping):
                                 continue
-                            if not provenance.get("repository_key") or not provenance.get("tenant_key"):
+                            if not provenance.get("repository_key"):
                                 continue
                             expires_at = incident.get("expires_at")
                             if "expires_at" not in incident:
@@ -1112,7 +1100,7 @@ class TaskStore:
                                     continue
                                 full = getter(incident_id)
                                 self._check_memory_deadline(deadline, cancelled)
-                                if full is None or getattr(full, "repository_key", "") != provenance["repository_key"] or getattr(full, "tenant_key", "") != provenance["tenant_key"]:
+                                if full is None or getattr(full, "repository_key", "") != provenance["repository_key"]:
                                     continue
                                 expires_at = getattr(full, "expires_at", None)
                             try:
@@ -1138,7 +1126,7 @@ class TaskStore:
                                 "origin": "incident_store",
                                 "content": content,
                                 "source": "incident_store",
-                                "scope": "repository+tenant",
+                                "scope": "repository",
                                 "scope_id": "",
                                 "status": "active",
                                 "version": str(incident.get("state_revision", "") or "")[:128],
@@ -1155,8 +1143,8 @@ class TaskStore:
             if not items and not warnings:
                 return None
             return {
-                "schema_version": 1,
-                "tenant_key": tenant_key,
+                "schema_version": 2,
+                "context": snapshot_context,
                 "instruction": instruction,
                 "items": items,
                 "warnings": warnings[:8],
@@ -1166,7 +1154,8 @@ class TaskStore:
             raise
         except Exception:
             return {
-                "schema_version": 1,
+                "schema_version": 2,
+                "context": {},
                 "instruction": "Memory unavailable; continue without memory claims. Cite used memory IDs or record not_used_reason in the next checkpoint.",
                 "items": [],
                 "warnings": [{"code": "memory_context_unavailable"}],
@@ -1179,9 +1168,24 @@ class TaskStore:
         memory_context = state_data.get("memory_context")
         if not isinstance(memory_context, Mapping):
             return
+        if (type(memory_context.get("schema_version")) is not int or memory_context.get("schema_version") != 2 or "tenant_key" in memory_context
+                or not isinstance(memory_context.get("context"), Mapping)):
+            raise CompletionGateError("Retired memory snapshot contract requires explicit offline conversion")
         items = memory_context.get("items")
         warnings = memory_context.get("warnings")
-        if not isinstance(items, list) or (not items and not warnings):
+        snapshot_context = memory_context["context"]
+        expected_fields = {"root", "coordination_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"}
+        if snapshot_context and (
+            set(snapshot_context) != expected_fields
+            or any(not isinstance(value, str) or value != value.strip() or "\x00" in value for value in snapshot_context.values())
+            or snapshot_context.get("task_id") != task.task_id
+        ):
+            raise CompletionGateError("Invalid checkpoint memory context identity")
+        if items and not snapshot_context:
+            raise CompletionGateError("Checkpoint memory items require explicit task context identity")
+        if not isinstance(items, list) or not isinstance(warnings, list):
+            raise CompletionGateError("Invalid checkpoint memory items/warnings contract")
+        if not items and not warnings:
             return
         audit = state_data.get("memory_audit")
         if not isinstance(audit, Mapping):
@@ -1280,7 +1284,7 @@ class TaskStore:
                             ],
                             "agent_questions": [
                                 ("question_id", "TEXT", 0, 1),
-                                ("root", "TEXT", 1, 0), ("tenant", "TEXT", 1, 0),
+                                ("root", "TEXT", 1, 0),
                                 ("session_id", "TEXT", 1, 0), ("task_id", "TEXT", 1, 0),
                                 ("question", "TEXT", 1, 0), ("answer", "TEXT", 1, 0),
                                 ("status", "TEXT", 1, 0), ("asked_by", "TEXT", 1, 0),
@@ -1290,6 +1294,34 @@ class TaskStore:
                         },
                         required_if_event_kinds={"agent_tasks_projection": ("task.%",)},
                     )
+                    if con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_tasks_projection'"
+                    ).fetchone() is not None:
+                        document = "CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END"
+                        invalid_contracts = ["NOT json_valid(checkpoint)"]
+                        for path in ("$.state_data._agent_task_scope", "$.state_data.memory_context"):
+                            checks = [
+                                f"json_type({document}, '{path}') != 'object'",
+                                f"COALESCE(json_type({document}, '{path}.{'version' if path.endswith('_agent_task_scope') else 'schema_version'}'), '') != 'integer'",
+                                f"COALESCE(json_extract({document}, '{path}.{'version' if path.endswith('_agent_task_scope') else 'schema_version'}'), 0) != 2",
+                                f"json_type({document}, '{path}.tenant') IS NOT NULL",
+                                f"json_type({document}, '{path}.tenant_key') IS NOT NULL",
+                            ]
+                            if path.endswith("memory_context"):
+                                checks.extend([
+                                    f"COALESCE(json_type({document}, '{path}.context'), '') != 'object'",
+                                    f"json_type({document}, '{path}.context.tenant') IS NOT NULL",
+                                    f"json_type({document}, '{path}.context.tenant_key') IS NOT NULL",
+                                ])
+                            invalid_contracts.append(
+                                f"(json_type({document}, '{path}') IS NOT NULL "
+                                f"AND json_type({document}, '{path}') != 'null' AND ({' OR '.join(checks)}))"
+                            )
+                        invalid = con.execute(
+                            "SELECT 1 FROM agent_tasks_projection WHERE " + " OR ".join(invalid_contracts) + " LIMIT 1"
+                        ).fetchone()
+                        if invalid is not None:
+                            raise RuntimeError("retired task checkpoint contract requires explicit offline conversion")
                     con.execute(
                         """
                         CREATE TABLE IF NOT EXISTS agent_tasks_projection (
@@ -1330,7 +1362,6 @@ class TaskStore:
                         CREATE TABLE IF NOT EXISTS agent_questions (
                             question_id TEXT PRIMARY KEY,
                             root TEXT NOT NULL,
-                            tenant TEXT NOT NULL,
                             session_id TEXT NOT NULL,
                             task_id TEXT NOT NULL DEFAULT '',
                             question TEXT NOT NULL,
@@ -1346,7 +1377,7 @@ class TaskStore:
                     con.execute(
                         """
                         CREATE INDEX IF NOT EXISTS idx_agent_questions_session
-                        ON agent_questions (root, tenant, session_id, created_at DESC);
+                        ON agent_questions (root, session_id, created_at DESC);
                         """
                     )
                     self._backfill_task_search_index(con)
@@ -1357,12 +1388,13 @@ class TaskStore:
     @staticmethod
     def _question_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         names = (
-            "question_id", "root", "tenant", "session_id", "task_id", "question",
+            "question_id", "root", "session_id", "task_id", "question",
             "answer", "status", "asked_by", "answered_by", "created_at", "answered_at",
         )
+        if len(row) != len(names):
+            raise ValueError("unsupported question row contract")
         result = dict(zip(names, row))
         result.pop("root", None)
-        result.pop("tenant", None)
         return result
 
     @staticmethod
@@ -1378,14 +1410,12 @@ class TaskStore:
         return value.strip()
 
     @staticmethod
-    def _validate_question_scope(root: Any, tenant: Any, session_id: Any) -> tuple[str, str, str]:
-        values = (root, tenant, session_id)
-        if any(not isinstance(value, str) or not value.strip() or "\x00" in value for value in values):
-            raise ValueError("root, tenant and session_id are required for agent questions")
-        root_value, tenant_value, session_value = (value.strip() for value in values)
-        if len(session_value.encode("utf-8")) > 256:
+    def _validate_question_scope(root: Any, session_id: Any) -> tuple[str, str]:
+        if any(not isinstance(value, str) or not value or value != value.strip() or "\x00" in value for value in (root, session_id)):
+            raise ValueError("canonical root and session_id are required for agent questions")
+        if len(session_id.encode("utf-8")) > 256:
             raise ValueError("session_id exceeds 256 UTF-8 bytes")
-        return root_value, tenant_value, session_value
+        return _canonical_repository_root(root), session_id
 
     @staticmethod
     def _validate_question_response_budget(response_budget_tokens: int | None) -> None:
@@ -1414,7 +1444,6 @@ class TaskStore:
         self,
         *,
         root: str,
-        tenant: str,
         session_id: str,
         question: str = "",
         task_id: str = "",
@@ -1425,11 +1454,15 @@ class TaskStore:
         """Persist a session-bound question or retrieve it within the same scope."""
         if not self._db_path_available():
             raise RuntimeError("agent question storage is unavailable")
-        root_value, tenant_value, session_value = self._validate_question_scope(
-            root, tenant, session_id
+        root_value, session_value = self._validate_question_scope(
+            root, session_id
         )
         self._validate_question_response_budget(response_budget_tokens)
-        question_key = str(question_id or "").strip()
+        if not isinstance(question_id, str) or question_id != question_id.strip() or "\x00" in question_id:
+            raise ValueError("question_id must be a canonical string")
+        if not isinstance(task_id, str) or task_id != task_id.strip() or "\x00" in task_id:
+            raise ValueError("task_id must be a canonical string")
+        question_key, task_value = question_id, task_id
         if len(question_key) > 80:
             raise ValueError("question_id exceeds 80 characters")
         if question_key:
@@ -1438,14 +1471,17 @@ class TaskStore:
                 with closing(connect_sqlite(self.state_store.db_path)) as con:
                     row = con.execute(
                         """
-                        SELECT question_id, root, tenant, session_id, task_id, question,
+                        SELECT question_id, root, session_id, task_id, question,
                                answer, status, asked_by, answered_by, created_at, answered_at
                         FROM agent_questions
-                        WHERE question_id = ? AND root = ? AND tenant = ? AND session_id = ?
+                        WHERE question_id = ? AND root = ? AND session_id = ?
                         """,
-                        (question_key, root_value, tenant_value, session_value),
+                        (question_key, root_value, session_value),
                     ).fetchone()
-                return self._question_row_to_dict(row) if row else None
+                if row is None:
+                    return None
+                question_record = self._question_row_to_dict(row)
+                return question_record if not task_value or question_record["task_id"] == task_value else None
 
             result = retry_busy(_read, retries=5, base_delay_seconds=0.02)
             if result is not None:
@@ -1453,7 +1489,6 @@ class TaskStore:
             return result
 
         question_value = self._validate_question_text(question, "question")
-        task_value = str(task_id or "").strip()
         actor_value = str(actor or "agent").strip() or "agent"
         question_key = f"q_{uuid.uuid4().hex}"
         created_at = time.time()
@@ -1478,12 +1513,12 @@ class TaskStore:
                 con.execute(
                     """
                     INSERT INTO agent_questions (
-                        question_id, root, tenant, session_id, task_id, question, answer,
+                        question_id, root, session_id, task_id, question, answer,
                         status, asked_by, answered_by, created_at, answered_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, '', 'pending', ?, '', ?, NULL)
+                    ) VALUES (?, ?, ?, ?, ?, '', 'pending', ?, '', ?, NULL)
                     """,
                     (
-                        question_key, root_value, tenant_value, session_value, task_value,
+                        question_key, root_value, session_value, task_value,
                         question_value, actor_value, created_at,
                     ),
                 )
@@ -1501,24 +1536,18 @@ class TaskStore:
         *,
         question_id: str,
         root: str,
-        tenant: str,
         answer: str,
+        task_id: str = "",
         actor: str = "operator",
         response_budget_tokens: int | None = None,
     ) -> dict[str, Any] | None:
-        """Record operator response for a question in the authenticated root tenant."""
+        """Record an answer in the authorized repository; retain the stored session."""
         if not self._db_path_available():
             raise RuntimeError("agent question storage is unavailable")
-        if any(not isinstance(value, str) for value in (root, tenant, question_id)):
-            raise ValueError("question_id, root and tenant must be strings")
-        root_value = root.strip()
-        tenant_value = tenant.strip()
-        question_key = question_id.strip()
-        if (
-            not root_value or not tenant_value or not question_key
-            or "\x00" in root_value or "\x00" in tenant_value or "\x00" in question_key
-        ):
-            raise ValueError("question_id, root and tenant are required")
+        if any(not isinstance(value, str) or value != value.strip() or "\x00" in value for value in (root, question_id, task_id)) or not root or not question_id:
+            raise ValueError("canonical question_id and root are required")
+        root_value = _canonical_repository_root(root)
+        question_key, task_value = question_id, task_id
         if len(question_key) > 80:
             raise ValueError("question_id exceeds 80 characters")
         self._validate_question_response_budget(response_budget_tokens)
@@ -1532,17 +1561,22 @@ class TaskStore:
                 con.execute("BEGIN IMMEDIATE")
                 row = con.execute(
                     """
-                    SELECT question_id, root, tenant, session_id, task_id, question,
+                    SELECT question_id, root, session_id, task_id, question,
                            answer, status, asked_by, answered_by, created_at, answered_at
                     FROM agent_questions
-                    WHERE question_id = ? AND root = ? AND tenant = ?
+                    WHERE question_id = ? AND root = ?
                     """,
-                    (question_key, root_value, tenant_value),
+                    (question_key, root_value),
                 ).fetchone()
                 if row is None:
                     con.execute("COMMIT")
                     return None, []
                 current = self._question_row_to_dict(row)
+                if task_value and current["task_id"] != task_value:
+                    con.execute("COMMIT")
+                    return None, []
+                if current["status"] not in {"pending", "answered"}:
+                    raise ValueError("unsupported question status")
                 if current["status"] == "answered":
                     if current["answer"] == answer_value:
                         self._preflight_question_response(current, response_budget_tokens)
@@ -1561,18 +1595,18 @@ class TaskStore:
                     """
                     UPDATE agent_questions
                     SET answer = ?, status = 'answered', answered_by = ?, answered_at = ?
-                    WHERE question_id = ? AND root = ? AND tenant = ? AND status = 'pending'
+                    WHERE question_id = ? AND root = ? AND status = 'pending'
                     """,
-                    (answer_value, actor_value, answered_at, question_key, root_value, tenant_value),
+                    (answer_value, actor_value, answered_at, question_key, root_value),
                 )
                 updated_row = con.execute(
                     """
-                    SELECT question_id, root, tenant, session_id, task_id, question,
+                    SELECT question_id, root, session_id, task_id, question,
                            answer, status, asked_by, answered_by, created_at, answered_at
                     FROM agent_questions
-                    WHERE question_id = ? AND root = ? AND tenant = ?
+                    WHERE question_id = ? AND root = ?
                     """,
-                    (question_key, root_value, tenant_value),
+                    (question_key, root_value),
                 ).fetchone()
                 con.execute("COMMIT")
                 return self._question_row_to_dict(updated_row), []
@@ -1611,6 +1645,8 @@ class TaskStore:
         initial_sd: dict[str, Any] = {}
         try:
             canonical_root = _canonical_repository_root(repo_root) if repo_root else ""
+            if auto_worktree and not canonical_root:
+                raise ValueError("automatic worktree preparation requires an explicit repository root")
         except ValueError as exc:
             if auto_worktree:
                 raise TaskWorktreeError(
@@ -1621,11 +1657,6 @@ class TaskStore:
                 ) from exc
             raise
         worktree_plan = None
-        try:
-            from .trace_context import current as current_trace_context
-            authenticated_tenant = str(current_trace_context().get("tenant", "") or "").strip()
-        except Exception:
-            authenticated_tenant = ""
         if canonical_root:
             initial_sd["repo_root"] = canonical_root
         if repository_revision:
@@ -1634,9 +1665,7 @@ class TaskStore:
         if auto_worktree:
             try:
                 from .process_utils import prepare_git_worktree
-                r_root = repo_root or context.repository_id or "."
-                if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
-                    raise ValueError("task worktree repository does not match task context")
+                r_root = canonical_root
                 worktree_ttl = max(60.0, min(float(worktree_ttl_seconds), 30 * 24 * 60 * 60.0))
                 worktree_expiry = now + worktree_ttl
                 worktree_plan = prepare_git_worktree(
@@ -1661,12 +1690,8 @@ class TaskStore:
                     cleanup_succeeded=None,
                 ) from exc
 
-        if canonical_root and authenticated_tenant:
-            initial_sd["_agent_task_scope"] = {
-                "version": 1,
-                "repo_root": canonical_root,
-                "tenant_key": _tenant_scope_key(authenticated_tenant),
-            }
+        if canonical_root:
+            initial_sd["_agent_task_scope"] = {"version": 2, "repo_root": canonical_root}
 
         memory_context = self._task_memory_context(
             t_id, contract, context, root_override=canonical_root or repo_root
@@ -1692,7 +1717,7 @@ class TaskStore:
         if worktree_plan is not None:
             try:
                 from .process_utils import create_git_worktree
-                r_root = repo_root or context.repository_id or "."
+                r_root = canonical_root
                 wt_res = create_git_worktree(
                     r_root,
                     branch_name=f"hub/task-{t_id}",
@@ -2018,35 +2043,16 @@ class TaskStore:
     def get_active_task(
         self,
         repo_root: str | None = None,
-        tenant: str | None = None,
     ) -> TaskState | None:
-        """Find the most recently updated active/planned task matching repository and tenant."""
+        """Find the most recently updated active/planned task matching the declared repository scope."""
         if not self._db_path_available():
             return None
         target_root = self._canonical_memory_root(repo_root) if repo_root else ""
-        target_tenant_key = ""
-        if tenant:
-            try:
-                target_tenant_key = _tenant_scope_key(tenant)
-            except Exception:
-                pass
-
         def _matches(task: TaskState) -> bool:
             if task.is_stale or task.is_terminal():
                 return False
-            task_root, task_tenant = _task_scope_values(task)
-            if target_tenant_key and task_tenant and task_tenant != target_tenant_key:
+            if target_root and self._canonical_memory_root(_task_scope_root(task)) != target_root:
                 return False
-            if target_root:
-                resolved_task_root = self._canonical_memory_root(
-                    task_root
-                    or task.checkpoint.state_data.get("repo_root")
-                    or task.context.repository_id
-                )
-                if resolved_task_root and resolved_task_root != target_root:
-                    return False
-                if not resolved_task_root:
-                    return False
             return True
 
         for st in (TaskStatus.ACTIVE, TaskStatus.VERIFYING, TaskStatus.PLANNED):
@@ -2329,7 +2335,7 @@ class TaskStore:
         checkpoint: TaskCheckpoint | None = None,
         response_budget_tokens: int | None = None,
         _allow_server_memory_refresh: bool = False,
-        _expected_reap: tuple[str, str, TaskStatus, float, float] | None = None,
+        _expected_reap: tuple[str, TaskStatus, float, float] | None = None,
         _prepared_updated_at: float | None = None,
         _expected_completion_content: tuple[Any, Any, str, float, TaskCheckpoint, dict[str, str], str] | None = None,
     ) -> TaskState:
@@ -2354,9 +2360,9 @@ class TaskStore:
             raise ConcurrentTaskUpdateError("task completion content changed after response preflight")
 
         if _expected_reap is not None:
-            expected_root, expected_tenant_key, expected_status, expected_expiry, deadline = _expected_reap
+            expected_root, expected_status, expected_expiry, deadline = _expected_reap
             if (
-                not _task_matches_scope(current, expected_root, expected_tenant_key, task_id)
+                not _task_matches_scope(current, expected_root, task_id)
                 or current.status is not expected_status
                 or current.heartbeat_expires_at != expected_expiry
                 or expected_expiry <= 0
@@ -3183,16 +3189,7 @@ class TaskStore:
             task_id,
             current.contract,
             current.context,
-            root_override=str(
-                state_data.get("repo_root")
-                or (
-                    state_data.get("worktree", {}).get("repo_root", "")
-                    if isinstance(state_data.get("worktree"), Mapping)
-                    else ""
-                )
-                or current.context.repository_id
-                or ""
-            ),
+            root_override=_task_scope_root(current),
             previous=state_data.get("memory_context") if isinstance(state_data.get("memory_context"), Mapping) else None,
         )
         if memory_context is not None:
@@ -3300,7 +3297,7 @@ class TaskStore:
 
             task_id_value = str(wt.get("task_id", ""))
             owner_value = str(wt.get("owner", ""))
-            repo_value = Path(str(wt.get("repo_root", ""))).expanduser().resolve(strict=False)
+            repo_value = Path(_canonical_repository_root(wt.get("repo_root")))
             worktree_id = str(wt.get("worktree_id", ""))
             branch = str(wt.get("branch", ""))
             worktree_path = Path(str(wt.get("worktree_path", ""))).expanduser()
@@ -3310,9 +3307,12 @@ class TaskStore:
                 return {"success": False, "error": "worktree owner identity mismatch"}
             if not worktree_id or not branch or worktree_path.is_symlink():
                 return {"success": False, "error": "worktree ownership metadata is incomplete"}
-            expected_repo = Path(task.context.repository_id or ".").expanduser().resolve(strict=False)
+            scope_root = _task_scope_root(task)
+            if not scope_root:
+                return {"success": False, "error": "worktree cleanup requires the server-managed task scope root"}
+            expected_repo = Path(scope_root)
             if repo_value != expected_repo:
-                return {"success": False, "error": "worktree repository does not match task context"}
+                return {"success": False, "error": "worktree repository does not match the server-managed task scope"}
             created_at = float(wt["created_at"])
             ttl_seconds = float(wt["ttl_seconds"])
             expires_at = float(wt["expires_at"])
@@ -3498,16 +3498,52 @@ class TaskStore:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+    def _expired_repository_roots(self, *, now: float, limit: int = 16, after_root: str = "") -> list[str]:
+        """Bounded watchdog inventory from the server-managed task scope."""
+        if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now):
+            raise ValueError("now must be a finite timestamp")
+        if type(limit) is not int or not 1 <= limit <= 64:
+            raise ValueError("root limit must be an integer between 1 and 64")
+        if not isinstance(after_root, str) or after_root != after_root.strip() or "\x00" in after_root:
+            raise ValueError("after_root must be a canonical string")
+        if not self._db_path_available():
+            return []
+        self._init_projection_table()
+        def _read() -> list[str]:
+            document = "CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END"
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                rows = con.execute(
+                    "SELECT json_extract(" + document + ", '$.state_data._agent_task_scope.repo_root') AS scoped_root "
+                    "FROM agent_tasks_projection "
+                    "WHERE status IN ('planned', 'active', 'verifying', 'waiting', 'blocked') "
+                    "AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ? "
+                    "AND json_type(" + document + ", '$.state_data._agent_task_scope.version') = 'integer' "
+                    "AND json_extract(" + document + ", '$.state_data._agent_task_scope.version') = 2 "
+                    "AND json_type(" + document + ", '$.state_data._agent_task_scope.repo_root') = 'text' "
+                    "AND json_extract(" + document + ", '$.state_data._agent_task_scope.repo_root') != '' "
+                    "GROUP BY scoped_root HAVING scoped_root > ? ORDER BY scoped_root LIMIT ?",
+                    (now, after_root, limit),
+                ).fetchall()
+            return [row[0] for row in rows]
+        return retry_busy(_read, retries=5, base_delay_seconds=0.02)
+
     def reap_expired_heartbeats(
         self,
         now: float | None = None,
         *,
         auto_recover: bool = False,
         repo_root: str | Path | None = None,
-        tenant: Any = None,
         task_id: str | None = None,
         response_budget_tokens: int | None = None,
+        _deadline_monotonic: float | None = None,
+        _cancel_event: threading.Event | None = None,
     ) -> list[str]:
+        if task_id is not None and (not isinstance(task_id, str) or not task_id or task_id != task_id.strip() or "\x00" in task_id):
+            raise ValueError("task_id must be a nonempty canonical string when supplied")
+        if now is not None and (isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now)):
+            raise ValueError("now must be a finite timestamp")
+        if _deadline_monotonic is not None and (isinstance(_deadline_monotonic, bool) or not isinstance(_deadline_monotonic, (int, float)) or not math.isfinite(_deadline_monotonic)):
+            raise ValueError("deadline must be finite")
         if response_budget_tokens is not None:
             if (
                 isinstance(response_budget_tokens, bool)
@@ -3525,7 +3561,6 @@ class TaskStore:
                 raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
         try:
             scoped_root = _canonical_repository_root(repo_root)
-            tenant_key = _tenant_scope_key(tenant)
         except ValueError:
             return []
         if not self._db_path_available():
@@ -3535,13 +3570,16 @@ class TaskStore:
         def _fetch_expired() -> list[str]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 task_filter = " AND task_id = ?" if task_id is not None else ""
-                parameters = (current_time, task_id) if task_id is not None else (current_time,)
+                parameters = (current_time, scoped_root, task_id, MAX_TASK_REAP_BATCH) if task_id is not None else (current_time, scoped_root, MAX_TASK_REAP_BATCH)
                 cur = con.execute(
                     """
                     SELECT task_id FROM agent_tasks_projection
                     WHERE status IN ('planned', 'active', 'verifying', 'waiting', 'blocked')
                       AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ?
-                    """ + task_filter,
+                      AND json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer'
+                      AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 2
+                      AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.repo_root') = ?
+                    """ + task_filter + " ORDER BY heartbeat_expires_at, task_id LIMIT ?",
                     parameters,
                 )
                 return [row[0] for row in cur.fetchall()]
@@ -3550,11 +3588,15 @@ class TaskStore:
 
         reaped: list[str] = []
         for t_id in expired_ids:
+            if (_cancel_event is not None and _cancel_event.is_set()) or (
+                _deadline_monotonic is not None and time.monotonic() >= _deadline_monotonic
+            ):
+                break
             try:
                 current = self.get(t_id)
                 if (
                     current is None
-                    or not _task_matches_scope(current, scoped_root, tenant_key, task_id)
+                    or not _task_matches_scope(current, scoped_root, task_id)
                     or current.status not in {
                         TaskStatus.PLANNED,
                         TaskStatus.ACTIVE,
@@ -3576,7 +3618,6 @@ class TaskStore:
                     idempotency_key=f"reap_{t_id}_{int(current_time)}",
                     _expected_reap=(
                         scoped_root,
-                        tenant_key,
                         current.status,
                         current.heartbeat_expires_at,
                         current_time,
@@ -3592,7 +3633,6 @@ class TaskStore:
         now: float | None = None,
         *,
         repo_root: str | Path | None = None,
-        tenant: Any = None,
         task_id: str | None = None,
     ) -> list[str]:
         """Automatically detect timed-out zombie tasks and recover them to WAITING state for re-assignment."""
@@ -3600,7 +3640,6 @@ class TaskStore:
             now=now,
             auto_recover=True,
             repo_root=repo_root,
-            tenant=tenant,
             task_id=task_id,
         )
 
@@ -3914,15 +3953,17 @@ class TaskStore:
         format: str = "jsonl",
         *,
         repo_root: str | Path | None = None,
-        tenant: Any = None,
         task_id: str | None = None,
     ) -> dict[str, Any]:
         """Export verified completed tasks into structured fine-tuning / LoRA training dataset."""
+        if task_id is not None and (not isinstance(task_id, str) or not task_id or task_id != task_id.strip() or "\x00" in task_id):
+            raise ValueError("task_id must be a nonempty canonical string when supplied")
+        if not isinstance(format, str) or format not in {"json", "jsonl"}:
+            raise ValueError("format must be json or jsonl")
         scoped_root = Path(_canonical_repository_root(repo_root))
-        tenant_key = _tenant_scope_key(tenant)
         tasks = [
             task for task in self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
-            if _task_matches_scope(task, str(scoped_root), tenant_key, task_id)
+            if _task_matches_scope(task, str(scoped_root), task_id)
         ]
         samples: list[dict[str, Any]] = []
         estimated_bytes = 0
@@ -3969,7 +4010,7 @@ class TaskStore:
         if out_file == scoped_root or not out_file.is_relative_to(scoped_root):
             raise ValueError("output_path must remain inside repo_root")
 
-        if format.lower() == "json":
+        if format == "json":
             payload = json_dumps(samples, indent=2, ensure_ascii=False)
         else:
             payload = "".join(json_dumps(item, ensure_ascii=False) + "\n" for item in samples)

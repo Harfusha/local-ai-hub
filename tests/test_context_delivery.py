@@ -68,7 +68,7 @@ def _request(**overrides):
         "query": "find route",
         "task_id": "task-1",
         "phase": "implementation",
-        "tenant": "tenant-1",
+        "session_id": "session-1",
     }
     values.update(overrides)
     return ConsistencyRequest(**values)
@@ -419,7 +419,7 @@ def test_completion_revision_resolution_stops_on_degraded_snapshot():
     assert stop["stop_code"] == "completion_repository_revision_unavailable"
 
 
-def test_taskless_context_pack_cache_identity_includes_tenant(monkeypatch, tmp_path):
+def test_taskless_context_pack_cache_identity_includes_repository_root(monkeypatch, tmp_path):
     import json
     import threading
     import urllib.request
@@ -430,12 +430,15 @@ def test_taskless_context_pack_cache_identity_includes_tenant(monkeypatch, tmp_p
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        f'[security]\napi_token = "context-pack-tenant-a-token"\napi_token_tenant = "tenant-a"\n'
-        f'tenant_derivation_key = "context-pack-tenant-derivation-key"\n'
+        f'[security]\napi_token = "context-pack-owner-token"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    root_a = tmp_path / "repo-a"
+    root_b = tmp_path / "repo-b"
+    root_a.mkdir()
+    root_b.mkdir()
     hybrid_calls = []
 
     def record_hybrid(*args, **kwargs):
@@ -449,22 +452,19 @@ def test_taskless_context_pack_cache_identity_includes_tenant(monkeypatch, tmp_p
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        for tenant in ("tenant-a", "tenant-b"):
-            token = f"context-pack-{tenant}-token"
-            app.config["security"]["api_token"] = token
-            app.config["security"]["api_token_tenant"] = tenant
+        for root in (root_a, root_b):
+            token = "context-pack-owner-token"
             request = urllib.request.Request(
                 f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
-                data=json.dumps({"root": str(tmp_path), "query": "same query", "mode": "adaptive"}).encode(),
+                data=json.dumps({"root": str(root), "query": "same query", "mode": "adaptive"}).encode(),
                 headers={"Content-Type": "application/json", "X-LocalAI-Token": token},
                 method="POST",
             )
             with urllib.request.urlopen(request) as response:
                 assert response.status == 200
 
-        context_tenants = [call[1]["context_identity"]["tenant"] for call in hybrid_calls]
-        assert len(context_tenants) == 2
-        assert context_tenants[0] != context_tenants[1]
+        context_roots = [call[0][0] for call in hybrid_calls]
+        assert context_roots == [str(root_a.resolve()), str(root_b.resolve())]
     finally:
         server.shutdown()
         server.server_close()
@@ -831,7 +831,7 @@ def test_adaptive_path_controls_use_root_scoped_index_without_full_file_walk(tmp
     )
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find button", "tenant-a", None, 512,
+        str(tmp_path), "find button", workspace=None, max_tokens=512,
         quality_first=True,
         path_hints=({"path": "templates/element/button.php", "purpose": "button"},),
         directory_hints=("templates/element",),
@@ -862,7 +862,7 @@ def test_directory_hint_resolves_indexed_descendants_and_structured_hint(tmp_pat
     )
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find button", "tenant-a", None, 512,
+        str(tmp_path), "find button", workspace=None, max_tokens=512,
         quality_first=True,
         path_hints=({"path": "templates/element/button.php", "purpose": "button template"},),
         directory_hints=("templates/element",),
@@ -886,7 +886,7 @@ def test_directory_hint_finds_late_index_entries_without_filesystem_walk(tmp_pat
     services = _path_inventory_services(tmp_path, indexed_paths=indexed_paths, inventory_size=1000)
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find button", "tenant-a", None, 512,
+        str(tmp_path), "find button", workspace=None, max_tokens=512,
         quality_first=True, directory_hints=("templates/element",),
     )
 
@@ -904,12 +904,12 @@ def test_focus_and_changed_paths_change_candidate_order(tmp_path):
     )
 
     services._hybrid_context_uncached(
-        str(tmp_path), "find app", "tenant-a", None, 512,
+        str(tmp_path), "find app", workspace=None, max_tokens=512,
         quality_first=True, focus=("database",),
     )
     focus_order = list(services.repo_tools.candidates)
     services._hybrid_context_uncached(
-        str(tmp_path), "find app", "tenant-a", None, 512,
+        str(tmp_path), "find app", workspace=None, max_tokens=512,
         quality_first=True, changed_paths=("tests/test_app.py",),
     )
     changed_order = list(services.repo_tools.candidates)
@@ -925,7 +925,7 @@ def test_adaptive_path_scan_fallback_is_bounded_and_explicitly_degraded(tmp_path
     services = _path_inventory_services(tmp_path, inventory_size=1000)
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find route", "tenant-a", None, 512,
+        str(tmp_path), "find route", workspace=None, max_tokens=512,
         quality_first=True, exclude_paths=("inventory/private/**",),
     )
 
@@ -940,7 +940,7 @@ def test_fallback_hints_boost_without_narrowing_inventory_candidates(tmp_path):
     services = _path_inventory_services(tmp_path, inventory_size=1000)
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find route", "tenant-a", None, 512,
+        str(tmp_path), "find route", workspace=None, max_tokens=512,
         quality_first=True,
         path_hints=({"path": "src/desired.py", "purpose": "task"},),
         directory_hints=("src",),
@@ -956,7 +956,7 @@ def test_empty_available_path_index_does_not_trigger_filesystem_fallback(tmp_pat
     services = _path_inventory_services(tmp_path, indexed_paths=(), inventory_size=1000)
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "find route", "tenant-a", None, 512,
+        str(tmp_path), "find route", workspace=None, max_tokens=512,
         quality_first=True, exclude_paths=("private/**",),
     )
 
@@ -979,12 +979,12 @@ def test_path_inventory_candidates_stay_repository_scoped(tmp_path):
     )
 
     first = services._hybrid_context_uncached(
-        str(root_a), "find item", "tenant-a", None, 512,
+        str(root_a), "find item", workspace=None, max_tokens=512,
         quality_first=True, directory_hints=("src",),
     )
     candidates_a = list(services.repo_tools.candidates)
     second = services._hybrid_context_uncached(
-        str(root_b), "find item", "tenant-b", None, 512,
+        str(root_b), "find item", workspace=None, max_tokens=512,
         quality_first=True, directory_hints=("src",),
     )
     candidates_b = list(services.repo_tools.candidates)
@@ -1004,7 +1004,7 @@ def test_path_inventory_rejects_symlink_alias_before_candidate_normalization(tmp
     monkeypatch.setattr(Path, "is_symlink", lambda path: path == root / "linked" or original_is_symlink(path))
 
     result = services._hybrid_context_uncached(
-        str(root), "needle", "tenant", None, 512,
+        str(root), "needle", workspace=None, max_tokens=512,
         quality_first=True, directory_hints=("linked",),
         force_include_paths=("linked/private.py",),
     )
@@ -1307,7 +1307,7 @@ def test_path_scoped_context_uses_bounded_candidates_with_exclude_force_preceden
     services = _path_scan_services(tmp_path, paths)
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "needle", "tenant", None, 1000,
+        str(tmp_path), "needle", workspace=None, max_tokens=1000,
         path_hints=("src/app.py", "../outside.py"),
         exclude_paths=("src/**",),
         force_include_paths=("src/private.py",),
@@ -1327,11 +1327,11 @@ def test_context_focus_and_changed_paths_change_candidate_ranking(tmp_path):
     services = _path_scan_services(tmp_path, paths)
 
     services._hybrid_context_uncached(
-        str(tmp_path), "needle", "tenant", None, 1000, focus=("docs",),
+        str(tmp_path), "needle", workspace=None, max_tokens=1000, focus=("docs",),
     )
     focus_order = services.repo_tools.path_calls[-1]
     services._hybrid_context_uncached(
-        str(tmp_path), "needle", "tenant", None, 1000,
+        str(tmp_path), "needle", workspace=None, max_tokens=1000,
         changed_paths=("tests/test_app.py",),
     )
     changed_order = services.repo_tools.path_calls[-1]
@@ -1351,7 +1351,7 @@ def test_path_scoped_context_uses_bounded_degraded_fallback_without_index(tmp_pa
     services.config["search"]["context_fallback_scan_limit"] = 2
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "needle", "tenant", None, 1000, path_hints=("src",),
+        str(tmp_path), "needle", workspace=None, max_tokens=1000, path_hints=("src",),
     )
 
     assert services.repo_tools.path_calls == [["src/a.py", "src/b.py"]]

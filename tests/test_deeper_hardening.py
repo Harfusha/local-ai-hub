@@ -103,7 +103,7 @@ def test_telemetry_removes_secret_values(tmp_path):
 def test_telemetry_recent_http_history_is_persistent(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry-state", enabled=True, flush_interval_seconds=0.01)
     try:
-        store.record_http(action="/api/delegate", request_id="req-1", agent="test", tenant="tenant", status_code=200, duration_ms=12.5)
+        store.record_http(action="/api/delegate", request_id="req-1", agent="test",  status_code=200, duration_ms=12.5)
         store.flush(1.0)
         recent = store.recent_http(10)
     finally:

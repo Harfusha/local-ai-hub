@@ -80,7 +80,7 @@ def tool_count(path: Path) -> int:
 
 
 cfg = load_config(str(root / "config.toml"))
-client = HubClient(tenant="doctor", config_path=str(root / "config.toml"), auto_start=False)
+client = HubClient(config_path=str(root / "config.toml"), auto_start=False)
 hub_probe = probe_hub_status(client)
 status = hub_probe["status"]
 hub_online = bool(hub_probe["hub_online"])

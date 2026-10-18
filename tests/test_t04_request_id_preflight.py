@@ -28,7 +28,7 @@ def _run_work_order_post(monkeypatch, request_id: str, payload: dict[str, Any], 
         recovery=_Journal(),
         work_orchestrator=SimpleNamespace(
             enabled=True,
-            submit=lambda _tenant, value: submitted.append(dict(value)) or {"success": True},
+            submit=lambda _action, value: submitted.append(dict(value)) or {"success": True},
         ),
     )
     monkeypatch.setattr(http_server, "APP", app)
@@ -44,7 +44,6 @@ def _run_work_order_post(monkeypatch, request_id: str, payload: dict[str, Any], 
 
     monkeypatch.setattr(http_server.Handler, "_require_authorized", require_authorized)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda _self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: "tenant")
 
     def read_json(_self):
         payload_reads.append(True)

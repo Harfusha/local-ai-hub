@@ -308,7 +308,7 @@ def test_patch_and_verify_clean_success(tmp_path: Path, monkeypatch):
     res = broker.patch_and_verify(
         patch=diff,
         cwd=str(tmp_path),
-        tenant="test-agent",
+
         command=f"python -m pytest test_app.py -q",
         task_id="task-clean",
         criterion="test_hello passes",
@@ -346,7 +346,7 @@ def test_patch_and_verify_syntax_error_rollback(tmp_path: Path, monkeypatch):
     res = broker.patch_and_verify(
         patch=bad_syntax_diff,
         cwd=str(tmp_path),
-        tenant="test-agent",
+
         task_id="task-syntax",
         auto_rollback=True,
     )
@@ -389,7 +389,7 @@ def test_patch_and_verify_test_failure_rollback(tmp_path: Path, monkeypatch):
     res = broker.patch_and_verify(
         patch=bad_logic_diff,
         cwd=str(tmp_path),
-        tenant="test-agent",
+
         task_id="task-failure",
         command="python -m pytest test_calc.py -q",
         auto_rollback=True,
@@ -418,8 +418,7 @@ def test_task_scaffold(tmp_path: Path):
         "tokens": 42,
     })
     res = services.task_scaffold(
-        {"spec": "Create a UserDTO with username", "language": "python"},
-        tenant="test-agent"
+        {"prompt": "Create a UserDTO with username", "language": "python"}
     )
 
     assert res["success"] is True
@@ -445,7 +444,6 @@ def test_generate_tests_fast_scaffold_is_explicitly_incomplete(
 
     result = services.generate_tests(
         {"symbol": "calculate_total", "framework": framework, "fast_scaffold": True},
-        tenant="test-agent",
     )
 
     assert result["success"] is True
@@ -462,7 +460,6 @@ def test_generate_tests_fast_jest_scaffold_escapes_symbol(tmp_path: Path):
 
     result = services.generate_tests(
         {"symbol": symbol, "framework": "jest", "fast_scaffold": True},
-        tenant="test-agent",
     )
 
     assert json.dumps(symbol) in result["test_code"]
@@ -639,7 +636,7 @@ def test_patch_and_verify_auto_affected_tests(tmp_path: Path, monkeypatch):
     res = broker.patch_and_verify(
         patch=patch,
         cwd=str(tmp_path),
-        tenant="test-agent",
+
         task_id="task-auto",
         command="auto",
     )
@@ -713,7 +710,7 @@ def test_review_diff_ast_mode(tmp_path: Path):
     cfg = {"server": {"state_dir": str(tmp_path / "state")}}
     services = make_services(cfg)
 
-    res = services.review_diff({"root": str(tmp_path), "mode": "ast"}, tenant="test")
+    res = services.review_diff({"root": str(tmp_path), "mode": "ast"})
     assert res["success"] is True
     assert res["mode"] == "ast"
     assert "module.py" in res["changed_files"]

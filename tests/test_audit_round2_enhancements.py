@@ -42,7 +42,7 @@ def test_speculative_draft_reads_text_key(tmp_path: Path):
         "duration_ms": 42,
     })
 
-    result = services.speculative_draft({"task": "add function"}, tenant="test")
+    result = services.speculative_draft({"task": "add function"})
     assert result["success"] is True
     assert result["draft"] == "def add(a, b):\n    return a + b"
 
@@ -157,29 +157,29 @@ def test_task_completion_gate_checks_receipt_freshness(tmp_path: Path):
 
 
 def test_lease_release_scoped_wait_cleanup(tmp_path: Path):
-    """B3: Releasing one lease must not clear wait graph for other active paths held by tenant."""
+    """Releasing one actual-owner lease clears only its own wait paths."""
     leases = ScopeLeaseStore(state_dir=tmp_path)
-    claim_a = leases.claim("tenant1", str(tmp_path), ["file_a.py"], ttl_seconds=600)
-    claim_b = leases.claim("tenant1", str(tmp_path), ["file_b.py"], ttl_seconds=600)
+    claim_a = leases.claim(owner="agent-a", root=str(tmp_path), paths=["file_a.py"], ttl_seconds=600)
+    claim_b = leases.claim(owner="agent-b", root=str(tmp_path), paths=["file_b.py"], ttl_seconds=600)
 
     # Add wait records for both paths
     con = leases._connect()
     try:
         now = time.time()
         _, root_id = leases._root(str(tmp_path))
-        con.execute("INSERT INTO lease_waits VALUES (?, ?, ?, ?, ?)", ("waiter1", "tenant1", root_id, "file_a.py", now))
-        con.execute("INSERT INTO lease_waits VALUES (?, ?, ?, ?, ?)", ("waiter2", "tenant1", root_id, "file_b.py", now))
+        con.execute("INSERT INTO lease_waits VALUES (?, ?, ?, ?, ?)", ("waiter1", "agent-a", root_id, "file_a.py", now))
+        con.execute("INSERT INTO lease_waits VALUES (?, ?, ?, ?, ?)", ("waiter2", "agent-b", root_id, "file_b.py", now))
         con.commit()
     finally:
         con.close()
 
     # Release ONLY lease A
-    leases.release("tenant1", lease_id=claim_a["lease_id"])
+    leases.release(owner="agent-a", lease_id=claim_a["lease_id"])
 
     # Waiter for file_a.py is cleaned, but waiter for file_b.py must REMAIN
     con = leases._connect()
     try:
-        rows = con.execute("SELECT requested_path FROM lease_waits WHERE blocked_by='tenant1'").fetchall()
+        rows = con.execute("SELECT requested_path FROM lease_waits WHERE blocked_by IN ('agent-a','agent-b')").fetchall()
         paths = [r[0] for r in rows]
         assert "file_a.py" not in paths
         assert "file_b.py" in paths
@@ -222,7 +222,7 @@ def test_lease_claim_auto_resolves_absolute_paths(tmp_path: Path):
     file_path.write_text("# worker", encoding="utf-8")
 
     # Claiming with an absolute path must succeed and store relative path
-    claim_res = leases.claim("agent_worker", str(tmp_path), [str(file_path)])
+    claim_res = leases.claim(owner="agent_worker", root=str(tmp_path), paths=[str(file_path)])
     assert claim_res["success"] is True
     assert claim_res["paths"] == ["src/worker.py"]
 

@@ -14,12 +14,12 @@ class _Job:
 class _Scheduler:
     config = {"models": {"heavy_code": "test-model"}}
 
-    def enqueue(self, model, tenant, source, execute, priority=1, *, background=True):
+    def enqueue(self, model, source, execute, priority=1, *, background=True):
         return _Job()
 
 
 class _Artifacts:
-    def put(self, _content, _tenant, _kind):
+    def put(self, _content, _kind):
         return "artifact-1"
 
 
@@ -28,12 +28,12 @@ def test_wait_rechecks_terminal_state_after_tick_removes_event(tmp_path, monkeyp
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
         _Scheduler(),
         _Artifacts(),
-        lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant},
+        lambda action, payload: {"success": True, "action": action, "task": payload.get("task")},
     )
     real_event_wait = threading.Event.wait
     try:
         monkeypatch.setattr(manager, "_dispatch_background", lambda _job_id: None)
-        submitted = manager.submit("tenant-a", "reason", {"task": "wait race"})
+        submitted = manager.submit("reason", {"task": "wait race", "task_id": "task-race", "root": str(tmp_path)})
         job_id = submitted["job_id"]
 
         real_status = manager.status
@@ -41,9 +41,9 @@ def test_wait_rechecks_terminal_state_after_tick_removes_event(tmp_path, monkeyp
         second_status_probed = False
         second_status_lock_probe = []
 
-        def status_with_completion(tenant, requested_job_id):
+        def status_with_completion(requested_job_id):
             nonlocal first_status, second_status_probed
-            snapshot = real_status(tenant, requested_job_id)
+            snapshot = real_status(requested_job_id)
             if first_status:
                 first_status = False
                 assert snapshot["state"] == "queued"
@@ -73,7 +73,7 @@ def test_wait_rechecks_terminal_state_after_tick_removes_event(tmp_path, monkeyp
                 probe.start()
                 assert probe_done.wait(1)
                 probe.join(1)
-            return real_status(tenant, requested_job_id)
+            return real_status(requested_job_id)
 
         monkeypatch.setattr(manager, "status", status_with_completion)
         wait_calls = []
@@ -86,7 +86,7 @@ def test_wait_rechecks_terminal_state_after_tick_removes_event(tmp_path, monkeyp
 
         monkeypatch.setattr(threading.Event, "wait", record_wait)
 
-        result = manager.wait("tenant-a", job_id, 1)
+        result = manager.wait(job_id, 1)
 
         assert result["state"] == "failed"
         assert wait_calls == []

@@ -92,7 +92,7 @@ def test_services_delegation_prompts_contain_terse_directive(tmp_path: Path) -> 
     services._generate = MagicMock(return_value={"success": True, "text": "OK"})
 
     for task_type in ["code", "review", "reasoning", "general"]:
-        services.delegate({"task": "test task", "task_type": task_type}, tenant="default")
+        services.delegate({"task": "test task", "task_type": task_type})
         assert services._generate.called
         call_args = services._generate.call_args
         system_prompt = call_args[0][2]

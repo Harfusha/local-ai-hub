@@ -1,23 +1,30 @@
 from __future__ import annotations
 
+
 import json
-import hashlib
-import hmac
+
+
 import threading
+
+
 from concurrent.futures import ThreadPoolExecutor
+
+
 from pathlib import Path
-from urllib.parse import urlencode
+
 
 import pytest
 
+
 import local_ai_hub.client as client_module
+
+
 from local_ai_hub.client import HubClient
 
 
 def _client(
     tmp_path: Path,
     *,
-    tenant: str | None = "tenant-default",
     auto_start: bool = False,
     allowed_roots: list[Path] | None = None,
     security_overrides: dict[str, object] | None = None,
@@ -26,9 +33,6 @@ def _client(
     config_path = tmp_path / "hub.toml"
     security: dict[str, object] = {
         "api_token": "fallback-api-token",
-        "api_token_tenant": "fixed-principal",
-        "api_token_principal": "secondary-principal",
-        "tenant_derivation_key": "configured-tenant-derivation-key-0123456789",
         "allowed_roots": allowed_roots or [tmp_path],
     }
     security.update(security_overrides or {})
@@ -49,44 +53,7 @@ def _client(
         + "\n",
         encoding="utf-8",
     )
-    return HubClient(tenant=tenant, config_path=str(config_path), auto_start=auto_start)
-
-
-def _expected_root_tenant(client: HubClient, root: Path) -> str:
-    security = client.config["security"]
-    configured = str(security.get("api_token_tenant", "") or "").strip()
-    principal = configured or str(security.get("api_token_principal", "") or "").strip() or "api-token-default"
-    key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
-    canonical_root = str(root.resolve(strict=True))
-    message = f"local-ai-root-tenant\0{principal}\0{canonical_root}".encode("utf-8")
-    digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
-    return f"root-{digest}"
-
-
-@pytest.mark.parametrize("route", ["/api/repo/callers", "/api/repo/impact", "/api/search"])
-@pytest.mark.parametrize("configured", [False, True])
-def test_repository_transport_uses_server_principal_instead_of_workspace_label(tmp_path, monkeypatch, route, configured):
-    (tmp_path / ".git").mkdir()
-    overrides = {} if configured else {
-        "api_token": None, "api_token_tenant": None, "api_token_principal": None,
-        "tenant_derivation_key": None, "allowed_roots": [],
-    }
-    client = _client(tmp_path, tenant="codex:workspace-label", security_overrides=overrides)
-    captured = []
-
-    def open_request(method, path, body, headers, timeout, **kwargs):
-        captured.append(headers["X-LocalAI-Tenant"])
-        return b'{"success":true}'
-
-    monkeypatch.setattr(client, "_open", open_request)
-    result = client.post(route, {"root": str(tmp_path)})
-    expected = "fixed-principal" if configured else "http-default"
-    assert result["success"] is True, result
-    assert captured == [expected]
-    rejected = client.post(route, {"root": str(tmp_path)}, tenant="codex:workspace-label")
-    assert rejected["success"] is False
-    assert rejected["error_code"] == "tenant_binding_mismatch"
-    assert captured == [expected]
+    return HubClient(config_path=str(config_path), auto_start=auto_start)
 
 
 def test_start_lock_identity_lookup_failure_uses_live_pid_fallback(tmp_path, monkeypatch):
@@ -167,7 +134,7 @@ def test_concurrent_cold_requests_share_one_service_start_and_readiness(tmp_path
     client_root = tmp_path / "clients"
     client_root.mkdir()
     clients = [
-        _client(client_root, tenant="", auto_start=True)
+        _client(client_root, auto_start=True)
         for _ in range(worker_count)
     ]
     start_gate = threading.Barrier(worker_count)
@@ -233,7 +200,7 @@ def test_concurrent_cold_requests_share_one_service_start_and_readiness(tmp_path
     assert ready_probes[service_owner[0]] == 1
 
 
-def test_concurrent_task_requests_derive_tenant_per_root_for_same_task_id(tmp_path, monkeypatch):
+def test_concurrent_task_requests_preserve_roots_for_same_task_id(tmp_path, monkeypatch):
     client = _client(tmp_path)
     root_a = tmp_path / "worktree-a"
     root_b = tmp_path / "worktree-b"
@@ -280,230 +247,23 @@ def test_concurrent_task_requests_derive_tenant_per_root_for_same_task_id(tmp_pa
     assert by_root[str(root_a)][0] == by_root[str(root_b)][0] == "/api/agent-state/tasks"
     assert by_root[str(root_a)][1] == requests[0][0]
     assert by_root[str(root_b)][1] == requests[1][0]
-    assert by_root[str(root_a)][2]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root_a)
-    assert by_root[str(root_b)][2]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root_b)
-    assert by_root[str(root_a)][2]["X-LocalAI-Tenant"] != by_root[str(root_b)][2]["X-LocalAI-Tenant"]
+    assert all("X-LocalAI-Tenant" not in headers for _, _, headers in observed)
     assert by_root[str(root_a)][2]["X-LocalAI-Request-ID"] == "same-request-id"
     assert by_root[str(root_b)][2]["X-LocalAI-Request-ID"] == "same-request-id"
-    assert client.tenant == "tenant-default"
-
-
-def test_root_scoped_post_accepts_only_matching_tenant_hints(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    root = tmp_path / "worktree"
-    root.mkdir()
-    observed = []
-
-    def pooled_open(_method, path, body, headers, _timeout):
-        observed.append((path, json.loads(body.decode("utf-8")), dict(headers)))
-        return b'{"success":true}'
-
-    monkeypatch.setattr(client, "_pooled_open", pooled_open)
-    expected = _expected_root_tenant(client, root)
-    payload = {"root": str(root), "action": "get", "task_id": "same-task", "tenant": expected}
-    accepted = client.post(
-        "/api/agent-state/tasks",
-        payload,
-        request_id="matching-hint",
-        tenant=expected,
-    )
-    mismatched_header = client.post(
-        "/api/agent-state/tasks",
-        {"root": str(root), "action": "get", "task_id": "same-task"},
-        request_id="mismatched-header",
-        tenant="root-not-derived-here",
-    )
-    mismatched_body = client.post(
-        "/api/agent-state/tasks",
-        {"root": str(root), "action": "get", "task_id": "same-task", "tenant": "root-not-derived-here"},
-        request_id="mismatched-body",
-    )
-
-    assert accepted == {"success": True}
-    assert observed[0][0] == "/api/agent-state/tasks"
-    assert observed[0][1] == payload
-    assert observed[0][2]["X-LocalAI-Tenant"] == expected
-    assert mismatched_header["error_code"] == "tenant_binding_mismatch"
-    assert mismatched_body["error_code"] == "tenant_binding_mismatch"
-    assert mismatched_header["terminal"] is mismatched_body["terminal"] is True
-    assert mismatched_header["retryable"] is mismatched_body["retryable"] is False
-    assert len(observed) == 1
-    assert client.tenant == "tenant-default"
-
-
-def test_post_without_tenant_override_uses_configured_principal(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    observed = []
-
-    def pooled_open(_method, path, body, headers, _timeout):
-        observed.append((path, json.loads(body.decode("utf-8")), dict(headers)))
-        return b'{"success":true}'
-
-    monkeypatch.setattr(client, "_pooled_open", pooled_open)
-    payload = {"root": "C:/worktrees/default", "task": "task-default", "query": "needle"}
-
-    result = client.post("/api/search", payload, request_id="request-default")
-
-    assert result == {"success": True}
-    assert len(observed) == 1
-    assert observed[0][0] == "/api/search"
-    assert observed[0][1] == payload
-    assert observed[0][2]["X-LocalAI-Tenant"] == "fixed-principal"
-    assert observed[0][2]["X-LocalAI-Request-ID"] == "request-default"
-    rejected = client.post(
-        "/api/search",
-        payload,
-        request_id="request-other-tenant",
-        tenant="arbitrary-tenant",
-    )
-    assert rejected["error_code"] == "tenant_binding_mismatch"
-    assert rejected["terminal"] is True
-    assert rejected["retryable"] is False
-    assert len(observed) == 1
-    assert client.tenant == "tenant-default"
-
-
-def test_empty_client_label_still_uses_configured_principal(tmp_path, monkeypatch):
-    client = _client(tmp_path, tenant="")
-    observed = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, _path, _body, headers, _timeout: observed.append(dict(headers)) or b'{"success":true}',
-    )
-
-    result = client.post("/api/search", {"query": "needle"})
-
-    assert result == {"success": True}
-    assert len(observed) == 1
-    assert observed[0]["X-LocalAI-Tenant"] == "fixed-principal"
-    assert not any(value.startswith("agent-") for value in observed[0].values())
-
-
-def test_root_scoped_tenant_uses_fallback_key_and_fixed_api_token_tenant(tmp_path, monkeypatch):
-    client = _client(
-        tmp_path,
-        security_overrides={
-            "api_token_tenant": "fixed-api-token-tenant",
-            "api_token_principal": "lower-priority-principal",
-            "tenant_derivation_key": None,
-        },
-    )
-    root = tmp_path / "worktree"
-    root.mkdir()
-    observed = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, path, body, headers, _timeout: observed.append(
-            (path, json.loads(body.decode("utf-8")), dict(headers))
-        ) or b'{"success":true}',
-    )
-
-    result = client.post(
-        "/api/agent-state/tasks",
-        {"root": str(root), "action": "get", "task_id": "task-a"},
-    )
-
-    assert result == {"success": True}
-    assert observed[0][2]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root)
-    assert observed[0][2]["X-LocalAI-Tenant"] != client.tenant
-
-
-def test_rootless_memory_uses_principal_and_rejects_mismatched_hint(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    observed = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, path, body, headers, _timeout: observed.append(
-            (path, json.loads(body.decode("utf-8")), dict(headers))
-        ) or b'{"success":true}',
-    )
-
-    accepted = client.post(
-        "/api/agent-state/memory",
-        {"action": "find", "scope": "global"},
-    )
-    rejected = client.post(
-        "/api/agent-state/memory",
-        {"action": "find", "scope": "session"},
-        tenant="other-principal",
-    )
-
-    assert accepted == {"success": True}
-    assert observed[0][2]["X-LocalAI-Tenant"] == "fixed-principal"
-    assert rejected["error_code"] == "tenant_binding_mismatch"
-    assert rejected["terminal"] is True
-    assert rejected["retryable"] is False
-    assert len(observed) == 1
-    assert client.tenant == "tenant-default"
-
-
-def test_tokenless_agent_state_uses_server_principal_not_client_tenant(tmp_path):
-    client = _client(
-        tmp_path,
-        tenant="client-selected-tenant",
-        security_overrides={
-            "api_token": None,
-            "api_token_tenant": None,
-            "api_token_principal": None,
-            "tenant_derivation_key": None,
-            "allowed_roots": [],
-        },
-    )
-
-    tenant, error = client._request_tenant(
-        "/api/agent-state/memory",
-        {"action": "find", "scope": "global"},
-        None,
-    )
-    mismatch, mismatch_error = client._request_tenant(
-        "/api/agent-state/memory",
-        {"action": "find", "scope": "global", "tenant": "client-selected-tenant"},
-        None,
-    )
-
-    assert (tenant, error) == ("api-token-default", None)
-    assert mismatch is None
-    assert mismatch_error["error_code"] == "tenant_binding_mismatch"
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/leases/claim_batch",
-        "/api/leases/release",
-        "/api/leases/renew",
-        "/api/leases?root=/repo",
-    ],
-)
-def test_lease_routes_bind_tenant_to_authenticated_principal(tmp_path, path):
-    client = _client(tmp_path, tenant="client-selected-tenant")
-
-    derived, derived_error = client._request_tenant(path, {}, None)
-    matching, matching_error = client._request_tenant(path, {}, "fixed-principal")
-    overridden, override_error = client._request_tenant(path, {}, "other-tenant")
-
-    assert (derived, derived_error) == ("fixed-principal", None)
-    assert (matching, matching_error) == ("fixed-principal", None)
-    assert overridden is None
-    assert override_error["error_code"] == "tenant_binding_mismatch"
+    assert not hasattr(client, "tenant")
 
 
 def test_configured_token_with_empty_allowlist_rejects_root_scoped_request(tmp_path):
     client = _client(
         tmp_path,
-        security_overrides={"allowed_roots": [], "tenant_derivation_key": None},
+        security_overrides={"allowed_roots": []},
     )
 
-    tenant, error = client._request_tenant(
+    error = client._request_scope(
         "/api/agent-state/tasks",
         {"root": str(tmp_path), "task_id": "task-empty-allowlist"},
-        None,
     )
 
-    assert tenant is None
     assert error["error_code"] == "root_not_allowed"
 
 
@@ -514,117 +274,12 @@ def test_explicit_root_allowlist_rejects_outside_agent_state_root(tmp_path):
     outside.mkdir()
     client = _client(tmp_path, allowed_roots=[allowed])
 
-    tenant, error = client._request_tenant(
+    error = client._request_scope(
         "/api/agent-state/tasks",
         {"root": str(outside), "task_id": "task-outside-allowlist"},
-        None,
     )
 
-    assert tenant is None
     assert error["error_code"] == "root_not_allowed"
-
-
-@pytest.mark.parametrize(
-    ("security_overrides", "expected_principal"),
-    [
-        ({"api_token_tenant": None, "api_token_principal": "principal-fallback"}, "principal-fallback"),
-        ({"api_token_tenant": None, "api_token_principal": None}, "api-token-default"),
-    ],
-)
-def test_rootless_memory_uses_configured_principal_fallbacks(
-    tmp_path, monkeypatch, security_overrides, expected_principal
-):
-    client = _client(tmp_path, security_overrides=security_overrides)
-    observed = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, path, body, headers, _timeout: observed.append(
-            (path, dict(headers))
-        ) or b'{"success":true}',
-    )
-
-    result = client.post("/api/agent-state/memory", {"action": "find", "scope": "session"})
-
-    assert result == {"success": True}
-    assert observed[0][1]["X-LocalAI-Tenant"] == expected_principal
-    assert observed[0][1]["X-LocalAI-Tenant"] != client.tenant
-
-
-def test_get_derives_root_tenant_from_query_and_rejects_mismatch(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    root = tmp_path / "worktree"
-    root.mkdir()
-    query = urlencode({"root": str(root), "scope": "repository", "task_id": "same-task"})
-    path = f"/api/agent-state/memory?{query}"
-    observed = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, request_path, _body, headers, _timeout: observed.append(
-            (request_path, dict(headers))
-        ) or b'{"success":true}',
-    )
-    expected = _expected_root_tenant(client, root)
-
-    accepted = client.get(path, tenant=expected)
-    rejected = client.get(path, tenant="wrong-root-tenant")
-
-    assert accepted == {"success": True}
-    assert observed[0][0] == path
-    assert observed[0][1]["X-LocalAI-Tenant"] == expected
-    assert rejected["error_code"] == "tenant_binding_mismatch"
-    assert rejected["terminal"] is True
-    assert rejected["retryable"] is False
-    assert len(observed) == 1
-
-
-def test_get_task_derives_root_tenant_from_query(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    root = tmp_path / "worktree"
-    root.mkdir()
-    path = f"/api/agent-state/tasks?{urlencode({'root': str(root), 'task_id': 'same-task'})}"
-    observed = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, request_path, _body, headers, _timeout: observed.append(
-            (request_path, dict(headers))
-        ) or b'{"success":true}',
-    )
-
-    result = client.get(path)
-
-    assert result == {"success": True}
-    assert observed[0][0] == path
-    assert observed[0][1]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root)
-
-
-def test_memory_payload_derives_tenant_from_nested_root(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    root = tmp_path / "worktree"
-    root.mkdir()
-    expected = _expected_root_tenant(client, root)
-    observed = []
-    payload = {
-        "action": "record",
-        "scope": "repository",
-        "record": {"root": str(root), "tenant": expected, "scope": "repository"},
-        "provenance": {"root": str(root), "tenant": expected},
-    }
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda _method, path, body, headers, _timeout: observed.append(
-            (path, json.loads(body.decode("utf-8")), dict(headers))
-        ) or b'{"success":true}',
-    )
-
-    result = client.post("/api/agent-state/memory", payload)
-
-    assert result == {"success": True}
-    assert observed[0][1] == payload
-    assert observed[0][2]["X-LocalAI-Tenant"] == expected
 
 
 @pytest.mark.parametrize("root_case", ["missing", "outside", "symlink"])
@@ -657,7 +312,7 @@ def test_root_scoped_task_rejects_invalid_roots_before_http(tmp_path, monkeypatc
         {"root": str(root), "action": "get", "task_id": "task-a"},
     )
 
-    assert result["error_code"] == "root_not_allowed"
+    assert result["error_code"] == ("root_not_allowed" if root_case == "outside" else "invalid_root")
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert result["preflight"] is True
@@ -680,48 +335,8 @@ def test_scoped_task_and_memory_requests_require_root_before_http(tmp_path, monk
         {"action": "find", "scope": "task", "task_id": "task-a"},
     )
 
-    assert task_post["error_code"] == "root_not_allowed"
-    assert task_get["error_code"] == "root_not_allowed"
+    assert task_post["error_code"] == "root_required"
+    assert task_get["error_code"] == "root_required"
     assert memory_task["error_code"] == "root_required"
     assert all(result["terminal"] is True and result["retryable"] is False for result in (task_post, task_get, memory_task))
     assert attempts == []
-
-
-@pytest.mark.parametrize(
-    "tenant",
-    [
-        "",
-        "tenant with space",
-        "tenant\r\nX: injected",
-        "tenant\x00control",
-        "x" * 129,
-        "tenant\u007f",
-        "tenant-é",
-    ],
-)
-def test_invalid_tenant_override_is_terminal_preflight_without_http(tmp_path, monkeypatch, tenant):
-    client = _client(tmp_path)
-    attempts = []
-    monkeypatch.setattr(
-        client,
-        "_pooled_open",
-        lambda *_args, **_kwargs: attempts.append(True) or b'{"success":true}',
-    )
-
-    result = client.post(
-        "/api/search",
-        {"root": "C:/worktrees/a", "task": "task-a", "query": "needle"},
-        request_id="valid-request-id",
-        tenant=tenant,
-    )
-
-    assert result == {
-        "success": False,
-        "error": "tenant must be 1-128 visible ASCII characters without whitespace",
-        "error_code": "tenant_binding_mismatch",
-        "terminal": True,
-        "retryable": False,
-        "preflight": True,
-    }
-    assert attempts == []
-    assert client.tenant == "tenant-default"

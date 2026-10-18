@@ -94,6 +94,7 @@ class ContextLedger:
             "local_compute_reused_tokens_est": _safe_nonnegative_int(local_compute_reused_tokens_est),
             "cache_outcome": (_clean_str(cache_outcome) or "none")[:24],
             "result_id": _clean_str(result_id)[:32],
+            "session_id": _clean_str(session_id)[:160],
         }
         with self._lock:
             if len(self._entries) == self._entries.maxlen:
@@ -160,7 +161,6 @@ class ContextLedger:
         context: str,
         *,
         root: str = "",
-        identity: str = "",
         phase: str = "",
         focus: list[str] | tuple[str, ...] = (),
         path_hints: list[ContextPathHintInput] | tuple[ContextPathHintInput, ...] | None = (),
@@ -169,8 +169,8 @@ class ContextLedger:
         configuration: Any = None,
         model: str = "",
         memory_revision: str = "",
+        session_id: str = "",
         artifact_store: Any = None,
-        tenant: str = "local",
     ) -> dict[str, Any]:
         """Return bounded context plus a freshness-bounded, scope-safe reuse key."""
         task = _clean_str(task_id)
@@ -203,7 +203,6 @@ class ContextLedger:
         semantic_inputs = {
             "root": normalized_root,
             "revision": rev,
-            "identity": _clean_str(identity),
             "task_id": task,
             "phase": _clean_str(phase),
             "focus": focus_values,
@@ -213,17 +212,16 @@ class ContextLedger:
             "configuration": configuration,
             "model": _clean_str(model),
             "memory_revision": _clean_str(memory_revision),
-            "tenant": _clean_str(tenant),
+            "session_id": _clean_str(session_id),
             "evidence_ids": full_ids,
             "context_sha256": context_hash.hexdigest(),
         }
         canonical = json.dumps(semantic_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         digest = hashlib.sha256(canonical.encode("utf-8", "replace")).hexdigest()[:32]
         scope_inputs = {
-            "tenant": _clean_str(tenant),
             "root": normalized_root,
-            "identity": _clean_str(identity),
             "task_id": task,
+            "session_id": _clean_str(session_id),
         }
         scope_canonical = json.dumps(scope_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         scope_key = hashlib.sha256(scope_canonical.encode("utf-8", "replace")).hexdigest()[:32]
@@ -237,14 +235,13 @@ class ContextLedger:
         artifact_id = ""
         fresh_until = 0.0
         if artifact_store is not None:
-            artifact_id = str(artifact_store.put(raw_context, tenant, "agent-context"))
+            artifact_id = str(artifact_store.put(raw_context, kind="agent-context"))
             artifact_ttl = _safe_positive_int(getattr(artifact_store, "ttl_seconds", self._pointer_ttl_seconds), self._pointer_ttl_seconds)
             fresh_until = time.time() + min(self._pointer_ttl_seconds, artifact_ttl)
         current = {
-            "tenant": _clean_str(tenant),
             "root": normalized_root,
-            "identity": _clean_str(identity),
             "task_id": task,
+            "session_id": _clean_str(session_id),
             "revision": rev[:200],
             "phase": _clean_str(phase)[:64],
             "evidence_ids": ids,
@@ -305,15 +302,14 @@ class ContextLedger:
         self,
         reuse_key: str,
         artifact_store: Any,
-        tenant: str,
         *,
-        identity: str,
         root: str,
         task_id: str,
+        session_id: str = "",
         offset: int = 0,
         max_chars: int = 6000,
     ) -> dict[str, Any]:
-        """Fetch a fresh context slice through its tenant, root, task, and identity-scoped pointer."""
+        """Fetch a fresh context slice through its repository/task/session identity."""
         key = _clean_str(reuse_key)
         with self._lock:
             stored = self._compiled.get(key)
@@ -321,10 +317,9 @@ class ContextLedger:
         if not entry or not entry.get("artifact_id"):
             return {"success": False, "status": "unavailable", "freshness": "unknown", "error": "context pointer cannot be materialized"}
         if (
-            entry.get("tenant") != _clean_str(tenant)
-            or entry.get("root") != normalize_context_root(root)
-            or entry.get("identity") != _clean_str(identity)
+            entry.get("root") != normalize_context_root(root)
             or entry.get("task_id") != _clean_str(task_id)
+            or entry.get("session_id") != _clean_str(session_id)
         ):
             return {"success": False, "status": "unavailable", "freshness": "unknown", "error": "context pointer cannot be materialized"}
         with self._lock:
@@ -334,8 +329,7 @@ class ContextLedger:
         if float(entry.get("fresh_until") or 0.0) <= time.time():
             return {"success": False, "status": "stale", "freshness": "stale", "error": "context pointer expired", "reuse_key": reuse_key}
         result = artifact_store.get(
-            str(entry["artifact_id"]), offset=offset, max_chars=max_chars, tenant=tenant
-        )
+            str(entry["artifact_id"]), offset=offset, max_chars=max_chars)
         if not isinstance(result, dict) or not result.get("success"):
             return {"success": False, "status": "stale", "freshness": "stale", "error": "context artifact expired or unavailable", "reuse_key": reuse_key}
         return {

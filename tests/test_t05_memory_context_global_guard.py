@@ -36,7 +36,7 @@ def test_context_without_tenant_excludes_scoped_rows(store, tmp_path, scope, ide
         prov["repository_id"] = "shared-coord"
     record = seed(store, scope, prov, "shared-session" if scope is AgentScope.SESSION else "shared-task")
     shared = seed(store, AgentScope.GLOBAL, {})
-    found = store.find_for_context(root=root, tenant=tenant, **identity)
+    found = store.find_for_context(root=root,  **identity)
     assert record.record_id not in {item.record_id for item in found}
     assert found == [shared]
 
@@ -55,10 +55,10 @@ def test_context_scoped_identity_denies_foreign_owner(store, tmp_path, scope, id
     seed(store, scope, {"root": str(tmp_path / "other"), "tenant": "tenant-a"}, scope_id)
     seed(store, scope, {"root": root, "tenant": "tenant-b"}, scope_id)
     seed(store, scope, {"root": root}, scope_id)
-    assert store.find_for_context(root=root, tenant="tenant-a", **identity) == [valid]
-    assert store.find_for_context(root=root, tenant="tenant-a") == []
+    assert store.find_for_context(root=root,  **identity) == [valid]
+    assert store.find_for_context(root=root) == []
     if scope is AgentScope.REPOSITORY:
-        assert store.find_for_context(tenant="tenant-a") == []
+        assert store.find_for_context() == []
 
 
 @pytest.mark.parametrize("owner_field", ["root", "repository_id", "session_id", "task_id", "clone_id", "worktree_id", "branch"])
@@ -88,13 +88,13 @@ def test_global_context_shares_across_projects_not_tenants(store, tmp_path):
     shared = seed(store, AgentScope.GLOBAL, {"root": str(tmp_path / "foreign-repo"), "repository_id": "foreign-repo", "tenant": "tenant-a"})
     unowned = seed(store, AgentScope.GLOBAL, {})
     seed(store, AgentScope.GLOBAL, {"tenant": "tenant-b"})
-    assert {item.record_id for item in store.find_for_context(root=str(tmp_path / "repo"), tenant="tenant-a")} == {shared.record_id}
+    assert {item.record_id for item in store.find_for_context(root=str(tmp_path / "repo"))} == {shared.record_id}
     assert store.find_for_context(root=str(tmp_path / "repo")) == [unowned]
 
 
 def test_global_delete_transport_tenant_does_not_override_root(store, tmp_path):
     root = str(tmp_path / "repo")
     record = seed(store, AgentScope.GLOBAL, {"root": root, "tenant": "owner-tenant"})
-    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL, root=str(tmp_path / "other"), tenant="transport-tenant")
-    assert store.get(record.record_id, scope=AgentScope.GLOBAL, root=root, tenant="owner-tenant") == record
-    assert store.delete(record.record_id, scope=AgentScope.GLOBAL, root=root, tenant="transport-tenant")
+    assert not store.delete(record.record_id, scope=AgentScope.GLOBAL, root=str(tmp_path / "other"))
+    assert store.get(record.record_id, scope=AgentScope.GLOBAL, root=root) == record
+    assert store.delete(record.record_id, scope=AgentScope.GLOBAL, root=root)

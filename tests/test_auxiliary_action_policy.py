@@ -173,7 +173,6 @@ def test_command_spawn_daemon_forwards_task_id_separately_from_name(tmp_path: Pa
             "name": "named-daemon",
             "task_id": "task-owned",
         },
-        "agent",
     )
 
     assert result["success"] is True
@@ -271,7 +270,6 @@ def test_services_command_authorizes_run_before_broker_dispatch(
             "task_id": "task-owned",
             "force": True,
         },
-        "agent",
     )
 
     assert result["success"] is False
@@ -314,12 +312,15 @@ def test_services_command_rejects_noncanonical_action_before_run_fallback(
 
     result = services.command(
         {"action": action, "command": "must-not-run", "cwd": str(tmp_path)},
-        "agent",
     )
 
     assert result["success"] is False
     assert result["policy_blocked"] is True
-    assert result["policy"]["side_effect_class"] == "unknown"
+    expected_side_effect = {
+        "repair": "workspace_write",
+        "mock_server": "network_listener",
+    }.get(action, "unknown")
+    assert result["policy"]["side_effect_class"] == expected_side_effect
     if (
         not isinstance(action, str)
         or not action

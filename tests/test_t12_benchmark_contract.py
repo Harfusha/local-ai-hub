@@ -48,7 +48,7 @@ def test_t12_case_reports_backend_throughput_and_end_to_end_latency(tmp_path: Pa
         def __init__(self) -> None:
             self.calls = 0
 
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             result = execute()
             result["_lah_scheduler_queue_wait_ms"] = 12.5
             result["_lah_scheduler_fairness_wait_ms"] = 3.5
@@ -151,39 +151,33 @@ def test_t12_case_reports_backend_throughput_and_end_to_end_latency(tmp_path: Pa
     assert cold_result["model_reuse_event"] is False
 
 
-def test_scheduler_tracks_cross_tenant_fairness_wait() -> None:
+def test_scheduler_tracks_same_priority_wait_and_oldest_first_order() -> None:
     from local_ai_hub.scheduler import AffinityScheduler, Job
 
     scheduler = object.__new__(AffinityScheduler)
     scheduler._active_model = "test-model"
-    scheduler._inflight_by_tenant = {}
-    scheduler.max_inflight_per_tenant = 2
-    scheduler._tenant_vruntime = {"tenant-a": 0, "tenant-b": 0}
 
-    def job(job_id: int, tenant: str, created_at: float) -> Job:
+    def job(job_id: int, created_at: float) -> Job:
         return Job(
-            job_id,
-            "test-model",
-            tenant,
-            "test",
-            1,
-            lambda: {"success": True},
+            id=job_id,
+            model="test-model",
+            source="test",
+            priority=1,
+            execute=lambda: {"success": True},
             created_at=created_at,
         )
 
-    first_a = job(1, "tenant-a", 1.0)
-    waiting_a = job(2, "tenant-a", 3.0)
-    first_b = job(3, "tenant-b", 2.0)
-    waiting_b = job(4, "tenant-b", 4.0)
+    first_a = job(1, 1.0)
+    waiting_a = job(2, 3.0)
+    first_b = job(3, 2.0)
+    waiting_b = job(4, 4.0)
 
     assert scheduler._choose_job_for_active_model(10.0, [first_a, waiting_a, first_b, waiting_b]) is first_a
-    scheduler._tenant_vruntime["tenant-a"] += 1
     assert scheduler._choose_job_for_active_model(11.0, [waiting_a, first_b, waiting_b]) is first_b
-    scheduler._tenant_vruntime["tenant-b"] += 1
     assert scheduler._choose_job_for_active_model(13.0, [waiting_a, waiting_b]) is waiting_a
 
     assert waiting_a.fairness_wait_ms == 1000.0
-    assert waiting_b.fairness_wait_ms == 2000.0
+    assert waiting_b.fairness_wait_ms == 3000.0
 
 
 def test_scheduler_switch_receipt_records_eviction_and_vram_boundaries() -> None:
@@ -208,7 +202,7 @@ def test_scheduler_switch_receipt_records_eviction_and_vram_boundaries() -> None
         scheduler._running = False
         scheduler._dispatcher.join(timeout=1.0)
         waiters = [
-            Job(1, "target-model", f"tenant-{index}", "test", 1, lambda: {"success": True})
+            Job(id=1, model="target-model", source="test", priority=1, execute=lambda: {"success": True})
             for index in range(2)
         ]
         with scheduler._cond:
@@ -235,7 +229,7 @@ def test_t12_case_does_not_infer_throughput_without_backend_eval_duration(tmp_pa
             yield {"response": '{"answer":"42"}', "eval_count": 9}
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
     runner = HardwareBenchmarkRunner(
@@ -275,7 +269,7 @@ def test_t12_case_uses_runtime_request_stream_and_final_metrics(tmp_path: Path) 
             }
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
     runtime = Runtime()
@@ -312,8 +306,8 @@ def test_t12_case_reports_vram_admission_rejection_instead_of_empty_response(tmp
             return []
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
-            del model, tenant, source, execute, kwargs
+        def submit(self, model, *, source, execute, **kwargs):
+            del model, source, execute, kwargs
             raise QueueFullError(
                 "resource pressure blocks admission",
                 admission={
@@ -411,7 +405,7 @@ def test_t12_scenario_hook_forwards_contract_metrics_for_all_scenarios(tmp_path:
         def __init__(self) -> None:
             self.scenario_calls: list[tuple[str, dict[str, object]]] = []
 
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
         def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]):
@@ -508,7 +502,7 @@ def test_t12_scenario_hook_fails_closed_on_partial_metrics_or_missing_receipt(tm
     class Scheduler:
         payload: dict[str, object] = {}
 
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
         def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]):
@@ -545,7 +539,7 @@ def test_t12_scenario_hook_fails_closed_on_partial_metrics_or_missing_receipt(tm
 
 def test_t12_scenario_hook_fails_closed_without_executor(tmp_path: Path) -> None:
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
+        def submit(self, model, *, source, execute, **kwargs):
             return execute()
 
     runner = HardwareBenchmarkRunner(
@@ -899,8 +893,8 @@ def test_t12_quality_diagnostics_distinguish_structured_failure_modes(tmp_path: 
             return [{"name": "test-model", "vram_bytes": 400 * 1024 * 1024}]
 
     class Scheduler:
-        def submit(self, model, tenant, source, execute, **kwargs):
-            del model, tenant, source, kwargs
+        def submit(self, model, *, source, execute, **kwargs):
+            del model, source, kwargs
             return execute()
 
     runtime = Runtime()

@@ -35,8 +35,8 @@ def test_slo_observation_hardening() -> None:
 def test_improvement_candidate_post_init_and_from_dict_hardening() -> None:
     # Boolean values inside slo_thresholds and metrics dicts must not coerce to 1.0
     cand = ImprovementCandidate(
-        candidate_id="cand_1\x00",
-        name="test\x00_cand",
+        candidate_id="cand_1",
+        name="test_cand",
         baseline_version="1.0.0",
         candidate_version="1.0.1",
         slo_thresholds={"max_latency": True, "valid_lat": 15.5},  # type: ignore[arg-type]
@@ -129,12 +129,58 @@ def test_learning_store_rejects_corrupt_rows_and_round_trips_valid_rows() -> Non
         ImprovementCandidate.from_dict(True)  # type: ignore[arg-type]
 
 
-def test_rollback_and_promotion_decision_sanitization() -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        ("candidate_id", True, TypeError),
+        ("name", 7, TypeError),
+        ("baseline_version", None, TypeError),
+        ("candidate_version", "", ValueError),
+        ("candidate_id", "candidate\x00id", ValueError),
+        ("candidate_id", "", ValueError),
+        ("name", " candidate", ValueError),
+        ("status", CandidateStatus.CANDIDATE.value, TypeError),
+        ("status", "unknown", TypeError),
+        ("status", True, TypeError),
+        ("approver", "operator\x00", ValueError),
+        ("approver", False, TypeError),
+        ("metrics", True, TypeError),
+        ("slo_thresholds", {1: 0.5}, TypeError),
+    ),
+)
+def test_improvement_candidate_rejects_noncanonical_direct_inputs(field, value, error) -> None:
+    data = {
+        "candidate_id": "candidate_1",
+        "name": "candidate one",
+        "baseline_version": "1.0",
+        "candidate_version": "1.1",
+        "status": CandidateStatus.CANDIDATE,
+        "slo_thresholds": {},
+        "metrics": {},
+        "approver": "",
+        "created_at": 1.0,
+        "updated_at": 1.0,
+    }
+    data[field] = value
+
+    with pytest.raises(error):
+        ImprovementCandidate(**data)
+
+
+@pytest.mark.parametrize("field", ("slo_thresholds", "metrics"))
+def test_improvement_candidate_create_rejects_non_mapping_metrics(field) -> None:
+    values = {field: False}
+
+    with pytest.raises(TypeError):
+        ImprovementCandidate.create("candidate", "1.0", "1.1", **values)
+
+
+def test_rollback_and_promotion_decision_canonical_text() -> None:
     rb = RollbackTrigger(
-        candidate_id="cand\x001",
-        action="rollback\x00",
-        reason="breached\x00",
-        restored_version="v1\x00",
+        candidate_id="cand1",
+        action="rollback",
+        reason="breached",
+        restored_version="v1",
     )
     assert rb.candidate_id == "cand1"
     assert rb.action == "rollback"
@@ -142,10 +188,10 @@ def test_rollback_and_promotion_decision_sanitization() -> None:
     assert rb.restored_version == "v1"
 
     pd = PromotionDecision(
-        candidate_id="cand\x002",
+        candidate_id="cand2",
         promoted=True,
-        approver="user\x00",
-        version="v2\x00",
+        approver="user",
+        version="v2",
     )
     assert pd.candidate_id == "cand2"
     assert pd.promoted is True

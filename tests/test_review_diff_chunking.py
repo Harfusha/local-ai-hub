@@ -66,8 +66,8 @@ class ReviewDiffChunkingTests(unittest.TestCase):
             synthesis_task="unused",
             max_output_tokens=100,
             complexity="fast",
-            tenant="test",
-            delegate=lambda payload, tenant: calls.append((payload, tenant)),
+
+            delegate=lambda payload: calls.append(payload),
         )
 
         self.assertEqual(text, "SUMMARY: No findings.")
@@ -78,11 +78,11 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         diff_text = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
-        services.delegate = lambda payload, tenant: calls.append(payload) or {
+        services.delegate = lambda payload: calls.append(payload) or {
             "success": True, "text": "SUMMARY: No findings.", "model": "3b"
         }
 
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertTrue(result["success"])
         self.assertEqual(len(calls), 1)
@@ -97,7 +97,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
             "success": True, "text": "1**", "model": "7b"
         })
 
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertFalse(result["success"])
         self.assertTrue(result["invalid_model_output"])
@@ -108,7 +108,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
 
-        def fake_delegate(payload, tenant):
+        def fake_delegate(payload):
             calls.append(payload)
             if len(calls) == 1:
                 return {"success": True, "text": "1**", "model": "qwen2.5-coder:3b-instruct-q5_K_M"}
@@ -119,7 +119,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
             }
 
         services.delegate = fake_delegate
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertTrue(result["success"])
         self.assertEqual(len(calls), 2)
@@ -138,7 +138,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
 
-        def fake_delegate(payload, tenant):
+        def fake_delegate(payload):
             calls.append(payload)
             text = (
                 "SUMMARY: No actionable findings in this segment."
@@ -149,7 +149,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
 
         services.delegate = fake_delegate
 
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertTrue(result["success"])
         self.assertTrue(result["review_synthesis"]["degraded"])
@@ -168,11 +168,11 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         )
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
-        services.delegate = lambda payload, tenant: calls.append(payload) or {
+        services.delegate = lambda payload: calls.append(payload) or {
             "success": True, "text": "SUMMARY: No actionable findings in this segment.", "model": "7b"
         }
 
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertTrue(result["success"])
         segment_calls = [call for call in calls if call["context"].startswith("diff --git")]
@@ -221,11 +221,11 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services.config["token_saving"]["max_local_input_tokens"] = 56000
         services.model_policy = ModelExecutionPolicy(services.config)
         calls = []
-        services.delegate = lambda payload, tenant: calls.append(payload) or {
+        services.delegate = lambda payload: calls.append(payload) or {
             "success": True, "text": "SUMMARY: No findings.", "model": "3b"
         }
 
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertTrue(result["success"])
         segment_calls = [call for call in calls if call["context"].startswith("diff --git")]
@@ -248,7 +248,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
 
-        def fake_delegate(payload, tenant):
+        def fake_delegate(payload):
             calls.append(payload)
             return {
                 "success": True,
@@ -286,7 +286,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text))
         services.delegate = MagicMock(return_value={"success": True, "text": "Should not run."})
 
-        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+        result = LocalAIServices.review_diff(services, {"root": "."})
 
         self.assertFalse(result["success"])
         self.assertIn("cannot be split safely", result["error"])
@@ -305,11 +305,11 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text), changed_files=[f"file_{i}.py" for i in range(25)])
         services.config["review"] = {"max_async_chunks": 32}
         calls = []
-        services.delegate = lambda payload, tenant: calls.append(payload) or {
+        services.delegate = lambda payload: calls.append(payload) or {
             "success": True, "text": "SUMMARY: No actionable findings.", "model": "7b"
         }
 
-        result = LocalAIServices.review_diff(services, {"root": ".", "_async_job": True, "priority": 1}, "test")
+        result = LocalAIServices.review_diff(services, {"root": ".", "_async_job": True, "priority": 1})
 
         assert result["success"] is True
         assert result["diff"]["review_chunks"] > 8

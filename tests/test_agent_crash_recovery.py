@@ -1,4 +1,3 @@
-import inspect
 import os
 import sqlite3
 import subprocess
@@ -11,6 +10,7 @@ import pytest
 
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.commands import CommandBroker
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_memory import (
     AgentScope,
@@ -27,7 +27,7 @@ from local_ai_hub.agent_tasks import (
     TaskStatus,
     TaskStore,
 )
-from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.swarm import SwarmCoordinator, SwarmState
 
@@ -276,8 +276,8 @@ def test_committed_task_completion_survives_restart_before_publish(tmp_path, mon
     task_id = "task-restart-completion"
     repo_root, revision = _make_trusted_repository(tmp_path)
     task = tasks.create(
-        GoalContract(goal="restart completion", acceptance_criteria=("tests",)),
-        ScopeContext(repository_id=str(repo_root), task_id=task_id),
+        GoalContract(goal="restart completion", acceptance_criteria=("pytest suite passes",)),
+        ScopeContext(repository_id="crash-recovery-coordination", task_id=task_id),
         task_id=task_id,
         actor="test",
         repo_root=str(repo_root),
@@ -293,42 +293,32 @@ def test_committed_task_completion_survives_restart_before_publish(tmp_path, mon
     artifacts = ArtifactStore(tmp_path / "artifacts")
     verifications = VerificationStore(state_store, task_store=tasks)
     verifications.artifact_store = artifacts
-    command_id = f"cmd-{task_id}"
-    receipt_owner = task.owner
-    evidence_id = artifacts.put_json(
+    (repo_root / "test_receipt.py").write_text("def test_receipt_command():\n    assert True\n", encoding="utf-8")
+
+    class _RepoState:
+        def fingerprint(self, cwd):
+            return {"fingerprint": revision, "root": str(cwd)}
+
+    broker = CommandBroker(
         {
-            "kind": "work_command_verification",
-            "passed": True,
-            "task_id": task_id,
-            "owner": receipt_owner,
-            "criterion": "tests",
-            "command_id": command_id,
-            "command_classification": "test",
-            "command": "python -m pytest -q",
-            "repository_revision": revision,
-            "mutation_generation": 0,
-            "exit_code": 0,
-            "cached": False,
-            "result": {"success": True, "exit_code": 0},
+            "server": {"state_dir": str(tmp_path / "command-state")},
+            "commands": {"enabled": True, "allow_validation": True, "allow_read": True},
         },
-        receipt_owner,
-        "command_verification",
+        artifacts,
+        _RepoState(),
     )
-    receipt_kwargs = {
-        "passed": True,
-        "evidence_id": evidence_id,
-        "command_id": command_id,
-        "repository_revision": revision,
-    }
-    supported = inspect.signature(VerificationReceipt.create).parameters
-    for key, value in {
-        "owner": receipt_owner,
-        "mutation_generation": 0,
-        "evidence_type": "test",
-    }.items():
-        if key in supported:
-            receipt_kwargs[key] = value
-    verifications.record(VerificationReceipt.create(task_id, "tests", **receipt_kwargs))
+    broker.set_task_store(tasks)
+    broker.set_verification_store(verifications)
+    verifications.set_command_execution_record_lookup(broker.get_command_execution_record)
+    command_result = broker.run(
+        f'"{sys.executable}" -m pytest -q test_receipt.py',
+        str(repo_root),
+        task_id=task_id,
+        criterion="pytest suite passes",
+        timeout=60,
+    )
+    assert command_result.get("success") is True
+    assert isinstance(command_result.get("verification_receipt"), dict)
     from local_ai_hub import project_config
 
     monkeypatch.setattr(
@@ -405,7 +395,7 @@ def test_committed_memory_record_survives_restart_before_publish(tmp_path, monke
         scope_id="task-restart-memory",
         key="durable-fact",
         value={"value": 42},
-        provenance={"root": str(tmp_path), "repository_id": "repository-crash", "tenant": "tenant-a"},
+        provenance={"root": str(tmp_path), "repository_id": "repository-crash"},
     )
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
@@ -419,7 +409,6 @@ def test_committed_memory_record_survives_restart_before_publish(tmp_path, monke
         task_id="task-restart-memory",
         root=str(tmp_path),
         repository_id="repository-crash",
-        tenant="tenant-a",
     )
     assert saved is not None and saved.value == {"value": 42}
     stream_id = _memory_event_stream_id(
@@ -434,33 +423,60 @@ def test_committed_receipt_and_task_projection_survive_restart_before_publish(
     db_path = tmp_path / "agent_state.sqlite3"
     state_store = AgentStateStore(db_path)
     tasks = TaskStore(state_store)
+    repo_root, revision = _make_trusted_repository(tmp_path)
+    (repo_root / "test_receipt.py").write_text(
+        "def test_receipt_command():\n    assert True\n", encoding="utf-8"
+    )
     tasks.create(
-        GoalContract(goal="verify after restart", acceptance_criteria=("tests",)),
-        ScopeContext(task_id="task-restart-receipt"),
+        GoalContract(goal="verify after restart", acceptance_criteria=("pytest suite passes",)),
+        ScopeContext(repository_id="receipt-coordination", task_id="task-restart-receipt"),
         task_id="task-restart-receipt",
+        actor="receipt-owner",
+        repo_root=str(repo_root),
     )
-    verifications = VerificationStore(state_store, task_store=tasks)
-    receipt = VerificationReceipt.create(
+    tasks.checkpoint(
         "task-restart-receipt",
-        "tests",
-        passed=True,
-        evidence_id="evidence-restart",
-        command_id="t08-crash-recovery-test",
+        TaskCheckpoint(state_data={"repository_revision": revision, "mutation_generation": 0}),
+        actor="receipt-owner",
+        idempotency_key="receipt-revision",
     )
+    artifacts = ArtifactStore(tmp_path / "receipt-artifacts")
+    verifications = VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
+    class _RepoState:
+        def fingerprint(self, cwd):
+            return {"fingerprint": revision, "root": str(cwd)}
+
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(tmp_path / "receipt-command-state")},
+            "commands": {"enabled": True, "allow_validation": True, "allow_read": True},
+        },
+        artifacts,
+        _RepoState(),
+    )
+    broker.set_task_store(tasks)
+    broker.set_verification_store(verifications)
+    verifications.set_command_execution_record_lookup(broker.get_command_execution_record)
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
     with pytest.raises(SystemExit, match="after commit"):
-        verifications.record(receipt)
+        broker.run(
+            "python -m pytest -q test_receipt.py",
+            str(repo_root),
+            task_id="task-restart-receipt",
+            criterion="pytest suite passes",
+            timeout=60,
+        )
 
     restarted_store = AgentStateStore(db_path)
     restarted_tasks = TaskStore(restarted_store)
     task = restarted_tasks.get("task-restart-receipt")
     assert task is not None
-    assert task.verification_receipts == {"tests": receipt.receipt_id}
+    receipt_id = task.verification_receipts["pytest suite passes"]
     with closing(sqlite3.connect(db_path)) as con:
         assert con.execute(
             "SELECT COUNT(*) FROM agent_verification_receipts WHERE receipt_id = ?",
-            (receipt.receipt_id,),
+            (receipt_id,),
         ).fetchone()[0] == 1
     assert [event.kind for event in restarted_store.events("verification:task-restart-receipt")] == [
         "verification.receipt_recorded"
@@ -705,7 +721,7 @@ def test_committed_swarm_dispatch_phases_recover_lease_after_restart(
     assert status["version"] == 2
     active = restarted_leases.list(str(root))
     assert len(active) == 1
-    assert active[0]["tenant"] == f"swarm:{swarm_id}"
+    assert active[0]["owner"] == f"swarm:{swarm_id}"
     assert [event.kind for event in restarted_store.events(f"swarm:{swarm_id}")] == [
         "swarm.dispatched",
         "swarm.reconciled",
@@ -724,7 +740,7 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
                 scope_id="task-restart-compact",
                 key=f"source-{index}",
                 value={"index": index},
-                provenance={"root": str(tmp_path), "repository_id": "repository-crash", "tenant": "tenant-a"},
+                provenance={"root": str(tmp_path), "repository_id": "repository-crash"},
             )
         )
 
@@ -740,7 +756,6 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
         task_id="task-restart-compact",
         root=str(tmp_path),
         repository_id="repository-crash",
-        tenant="tenant-a",
         status=MemoryStatus.ACTIVE,
     )
     superseded = restarted_memory.find(
@@ -748,13 +763,12 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
         scope_id="task-restart-compact",
         task_id="task-restart-compact",
         root=str(tmp_path),
-        tenant="tenant-a",
         status=MemoryStatus.SUPERSEDED,
     )
     assert len(active) == 1 and active[0].key.startswith("compacted_fact_")
     assert active[0].scope_id == "task-restart-compact"
     assert active[0].provenance == {
-        "root": str(tmp_path), "repository_id": "repository-crash", "tenant": "tenant-a"
+        "root": str(tmp_path), "repository_id": "repository-crash"
     }
     assert {item.key for item in superseded} == {"source-0", "source-1"}
     assert all(item.status is MemoryStatus.SUPERSEDED for item in superseded)
@@ -781,7 +795,7 @@ def test_compaction_preserves_scope_identity_and_never_merges_tasks(tmp_path):
                     scope_id=task_id,
                     key=f"{task_id}-fact-{index}",
                     value={"index": index},
-                    provenance={"root": str(tmp_path), "repository_id": "repository-crash", "tenant": "tenant-a"},
+                    provenance={"root": str(tmp_path), "repository_id": "repository-crash"},
                 )
             )
 
@@ -796,7 +810,6 @@ def test_compaction_preserves_scope_identity_and_never_merges_tasks(tmp_path):
             scope_id=task_id,
             task_id=task_id,
             root=str(tmp_path),
-            tenant="tenant-a",
             status=MemoryStatus.ACTIVE,
         )
         assert len(scoped) == 1
@@ -901,7 +914,6 @@ def test_committed_memory_revision_staleness_survives_restart_before_publish(
             provenance={
                 "root": str(tmp_path),
                 "repository_id": "repository-crash",
-                "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/parser.py"],
             },
@@ -919,7 +931,6 @@ def test_committed_memory_revision_staleness_survives_restart_before_publish(
         scope=AgentScope.REPOSITORY,
         root=str(tmp_path),
         repository_id="repository-crash",
-        tenant="tenant-a",
     )
     assert stale is not None and stale.status is MemoryStatus.STALE
     events = restarted_store.events(
@@ -939,7 +950,7 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
             scope_id="task-restart-quarantine",
             key="conflict",
             value={"answer": "old"},
-            provenance={"root": str(tmp_path), "repository_id": "repository-crash", "tenant": "tenant-a"},
+            provenance={"root": str(tmp_path), "repository_id": "repository-crash"},
         )
     )
 
@@ -952,7 +963,6 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
             task_id="task-restart-quarantine",
             root=str(tmp_path),
             repository_id="repository-crash",
-            tenant="tenant-a",
         )
 
     restarted_store = AgentStateStore(db_path)
@@ -962,7 +972,6 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
         task_id="task-restart-quarantine",
         root=str(tmp_path),
         repository_id="repository-crash",
-        tenant="tenant-a",
     )
     assert quarantined is not None and quarantined.status is MemoryStatus.QUARANTINED
     events = restarted_store.events(

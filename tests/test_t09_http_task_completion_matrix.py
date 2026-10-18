@@ -28,11 +28,11 @@ def _record_command(
     receipt_task_id: str,
     proof_task_id: str,
     owner: str,
-    artifact_tenant: str,
     revision: str,
     command_id: str,
     project_config_digest: str,
     repository_root: str | Path = "",
+    record_root_override: str | Path = "",
 ) -> tuple[str, bool]:
     if len(command_id) != 32 or any(character not in "0123456789abcdef" for character in command_id):
         command_id = hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:32]
@@ -92,8 +92,7 @@ def _record_command(
             "result": {"success": True, "exit_code": 0},
             "cached": False,
         },
-        artifact_tenant,
-        "command_verification",
+        kind="command_verification",
     )
     receipt = VerificationReceipt.create(
         receipt_task_id,
@@ -116,12 +115,11 @@ def _record_command(
         return evidence_id, False
 
     if repository_root and hasattr(app, "commands") and hasattr(app.commands, "_persist_command_execution_record"):
-        canonical_root = str(Path(repository_root).expanduser().resolve(strict=False))
+        canonical_root = str(Path(record_root_override or repository_root).expanduser().resolve(strict=False))
         receipt_dict = receipt.to_dict()
         record = {
-            "schema": "command_execution_record.v1",
+            "schema": "command_execution_record.v2",
             "command_id": command_id,
-            "tenant_identity": app.commands._tenant_identity(artifact_tenant),
             "task_id": receipt_task_id,
             "owner": owner,
             "criterion": criterion,
@@ -175,7 +173,7 @@ _CASES = (
         id="used-volatile-memory-has-current-source-check",
     ),
     pytest.param("owner-mismatch", {"test_owner": "other-agent"}, False, id="owner-mismatch"),
-    pytest.param("tenant-mismatch", {"test_artifact_tenant": "other-agent", "expect_record_rejected": True}, False, id="artifact-tenant-mismatch"),
+    pytest.param("repository-mismatch", {"test_record_root": "other-repository", "expect_record_rejected": True}, False, id="repository-mismatch"),
     pytest.param("task-mismatch", {"test_receipt_task_id": "other-task", "test_proof_task_id": "other-task"}, False, id="task-mismatch"),
     pytest.param("revision-mismatch", {"test_revision": "stale-revision"}, False, id="revision-mismatch"),
     pytest.param("criterion-mismatch", {"test_criterion": "test-other"}, False, id="criterion-mismatch"),
@@ -210,14 +208,12 @@ def test_task_completion_http_receipt_and_memory_matrix(
     expected_success: bool,
     request: pytest.FixtureRequest,
 ) -> None:
-    principal = "agent-t09"
     api_token = "t09-isolated-http-matrix-token-long"
-    derivation_key = "t09-isolated-tenant-derivation-key-long"
     task_id = f"task-t09-{case}"
     revision = "rev-t09-matrix-current"
     project_root = tmp_path / "repo"
     project_root.mkdir()
-    tenant = http_server._derive_root_tenant(principal, str(project_root.resolve()), derivation_key)
+    session_id = f"session-{task_id}"
     (project_root / ".local-ai.toml").write_text(
         '[commands]\ntest = "python -m pytest -q tests/test_contract.py"\n'
         'lint = "python -m ruff check src"\n'
@@ -232,8 +228,8 @@ def test_task_completion_http_receipt_and_memory_matrix(
         "\n[agent_state]\nenabled = true\n"
         "[prewarm]\nenabled = false\n"
         "[preprocessing]\nenabled = false\n"
-        f'[security]\napi_token = "{api_token}"\napi_token_principal = "{principal}"\n'
-        f'tenant_derivation_key = "{derivation_key}"\nallowed_roots = [{json.dumps(project_root.as_posix())}]\n',
+        f'[security]\napi_token = "{api_token}"\n'
+        f'allowed_roots = [{json.dumps(project_root.as_posix())}]\n',
         encoding="utf-8",
     )
     project_context = resolve_project_context(project_root, state_dir)
@@ -255,17 +251,17 @@ def test_task_completion_http_receipt_and_memory_matrix(
             goal="exercise project completion receipt gates over HTTP",
             acceptance_criteria=("test",),
         ),
-        ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=tenant),
+        ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=session_id),
         task_id=task_id,
-        actor=tenant,
+        actor="agent-t09",
         repo_root=str(project_root),
     )
     if changes.get("test_receipt_task_id") == "other-task":
         app.agent_tasks.create(
             GoalContract(goal="unrelated task", acceptance_criteria=("test",)),
-            ScopeContext(repository_id=str(project_root), task_id="other-task", session_id=tenant),
+            ScopeContext(repository_id=str(project_root), task_id="other-task", session_id=session_id),
             task_id="other-task",
-            actor=tenant,
+            actor="agent-t09",
             repo_root=str(project_root),
         )
     memory_audit = changes.get("memory_audit")
@@ -287,18 +283,17 @@ def test_task_completion_http_receipt_and_memory_matrix(
             before_checkpoint = app.agent_tasks.get(task_id)
             before_checkpoint_events = app.agent_state.events(f"task:{task_id}")
             with pytest.raises(CompletionGateError):
-                app.agent_tasks.checkpoint(task_id, checkpoint, actor=tenant)
+                app.agent_tasks.checkpoint(task_id, checkpoint, actor="agent-t09")
             assert app.agent_tasks.get(task_id) == before_checkpoint
             assert app.agent_state.events(f"task:{task_id}") == before_checkpoint_events
             with monkeypatch.context() as legacy_fixture:
                 legacy_fixture.setattr(app.agent_tasks, "_validate_memory_audit", lambda _task: None)
-                app.agent_tasks.checkpoint(task_id, checkpoint, actor=tenant)
+                app.agent_tasks.checkpoint(task_id, checkpoint, actor="agent-t09")
         else:
-            app.agent_tasks.checkpoint(task_id, checkpoint, actor=tenant)
+            app.agent_tasks.checkpoint(task_id, checkpoint, actor="agent-t09")
 
     test_criterion = str(changes.get("test_criterion", "test"))
-    test_owner = str(changes.get("test_owner", tenant))
-    test_artifact_tenant = str(changes.get("test_artifact_tenant", test_owner))
+    test_owner = str(changes.get("test_owner", "agent-t09"))
     test_revision = str(changes.get("test_revision", revision))
     test_task_id = str(changes.get("test_receipt_task_id", task_id))
     test_proof_task_id = str(changes.get("test_proof_task_id", test_task_id))
@@ -308,25 +303,24 @@ def test_task_completion_http_receipt_and_memory_matrix(
         receipt_task_id=test_task_id,
         proof_task_id=test_proof_task_id,
         owner=test_owner,
-        artifact_tenant=test_artifact_tenant,
         revision=test_revision,
         command_id=f"cmd-{case}-test",
         project_config_digest=project_config_digest,
         repository_root=project_root,
+        record_root_override=(project_root.parent / str(changes["test_record_root"])) if changes.get("test_record_root") else "",
     )
     expected_receipt_recorded = not bool(changes.get("expect_record_rejected"))
     assert test_receipt_recorded is expected_receipt_recorded, case
     if not test_receipt_recorded:
-        task_tenant_view = app.artifacts.get(test_evidence_id, max_chars=50_000, tenant=tenant)
-        assert task_tenant_view.get("success") is False, (case, task_tenant_view)
+        evidence_view = app.artifacts.get(test_evidence_id, max_chars=50_000)
+        assert evidence_view.get("success") is True, (case, evidence_view)
     if changes.get("include_lint", True):
         _record_command(
             app,
             criterion="lint",
             receipt_task_id=task_id,
             proof_task_id=task_id,
-            owner=tenant,
-            artifact_tenant=tenant,
+            owner="agent-t09",
             revision=revision,
             command_id=f"cmd-{case}-lint",
             project_config_digest=project_config_digest,
@@ -392,8 +386,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
             headers={
                 "Content-Type": "application/json",
                 "X-LocalAI-Token": api_token,
-                "X-LocalAI-Agent": tenant,
-                "X-LocalAI-Tenant": tenant,
+                "X-LocalAI-Agent": "agent-t09",
             },
             method="POST",
         )
@@ -430,7 +423,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         assert payload["task"]["status"] == "completed"
         stored = app.agent_tasks.get(task_id)
         assert stored is not None
-        assert stored.owner == tenant
+        assert stored.owner == "agent-t09"
         assert stored.context.repository_id == str(project_root)
         assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
         assert stored.checkpoint.state_data["repository_revision"] == revision

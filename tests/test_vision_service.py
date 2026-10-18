@@ -136,7 +136,7 @@ def test_prepare_vision_inputs_requires_an_image_fail_closed() -> None:
         args={},
         image_path="",
         prompt="review",
-        tenant="tenant-a",
+
         artifacts=MagicMock(),
     )
 
@@ -157,7 +157,7 @@ def test_prepare_vision_inputs_artifact_store_failure_is_retryable() -> None:
         args={"image_artifact_id": "image-1"},
         image_path="",
         prompt="review",
-        tenant="tenant-a",
+
         artifacts=artifacts,
     )
 
@@ -177,7 +177,7 @@ def test_prepare_vision_inputs_normalizes_data_url_and_reads_dimensions() -> Non
         args={"image": data_url},
         image_path=data_url,
         prompt="review this page",
-        tenant="tenant-a",
+
         artifacts=MagicMock(),
     )
 
@@ -203,7 +203,7 @@ def test_prepare_vision_inputs_normalizes_data_url_without_runtime() -> None:
         args={"image": data_url},
         image_path=data_url,
         prompt="review this page",
-        tenant="tenant-a",
+
         artifacts=MagicMock(),
     )
     assert isinstance(prepared, VisionInputs)
@@ -252,7 +252,7 @@ def _services(tmp_path: Path, *, models: dict[str, str] | None = None):
 def test_vision_rejects_non_object_request_payload(tmp_path: Path, payload: object) -> None:
     services, runtime, _image = _services(tmp_path)
 
-    result = services.vision(payload, "tenant-a")
+    result = services.vision(payload)
 
     assert result["success"] is False
     assert result["error_code"] == "invalid_request"
@@ -272,7 +272,7 @@ def test_vision_cancelled_before_request_skips_image_and_runtime(
         raise AssertionError("cancelled vision request read image")
 
     monkeypatch.setattr(Path, "read_bytes", fail_read)
-    result = services.vision({"image": str(image)}, "tenant-a", cancel_event=cancelled)
+    result = services.vision({"image": str(image)}, cancel_event=cancelled)
 
     assert result["success"] is False
     assert result["reason"] == "cancelled"
@@ -294,7 +294,7 @@ def test_vision_cancelled_during_preflight_skips_runtime(tmp_path: Path, monkeyp
         return data
 
     monkeypatch.setattr(Path, "read_bytes", cancel_while_reading)
-    result = services.vision({"image": str(image)}, "tenant-a", cancel_event=cancelled)
+    result = services.vision({"image": str(image)}, cancel_event=cancelled)
 
     assert result["success"] is False
     assert result["reason"] == "cancelled"
@@ -314,7 +314,7 @@ def test_vision_cancellation_after_generation_discards_output(tmp_path: Path) ->
         return {"response": json.dumps({"summary": "late", "findings": []})}
 
     runtime.request.side_effect = cancel_after_generation
-    result = services.vision({"image": str(image)}, "tenant-a", cancel_event=cancelled)
+    result = services.vision({"image": str(image)}, cancel_event=cancelled)
 
     assert result["success"] is False
     assert result["reason"] == "cancelled"
@@ -328,7 +328,7 @@ def test_vision_uses_default_structured_output_schema(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path)
     services.config["ollama"] = {"enabled": True}
 
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["success"] is True
     assert result["model"] == "qwen3-vl:4b"
@@ -379,7 +379,7 @@ def test_vision_uses_default_structured_output_schema(tmp_path: Path) -> None:
     assert payload["images"] == [base64.b64encode(image.read_bytes()).decode("ascii")]
 
     services.config["ollama"]["enabled"] = False
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["success"] is True
     assert runtime.request.call_args.args[1]["format"] == "json"
@@ -389,7 +389,7 @@ def test_vision_prompt_mentions_every_required_default_schema_field(tmp_path: Pa
     services, runtime, image = _services(tmp_path)
     services.config["ollama"] = {"enabled": True}
 
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["success"] is True
     payload = runtime.request.call_args.args[1]
@@ -447,7 +447,7 @@ def test_vision_rejects_parseable_output_with_invalid_field_shape(
         )
     }
 
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["success"] is False
     assert result["error_code"] == "vision_output_invalid"
@@ -459,7 +459,6 @@ def test_vision_normalizes_data_url_to_provider_base64(tmp_path: Path) -> None:
 
     result = services.vision(
         {"image": "data:image/png;base64,ZmFrZS1pbWFnZQ==", "prompt": "Review UI"},
-        "t",
     )
 
     assert result["success"] is True
@@ -469,7 +468,7 @@ def test_vision_normalizes_data_url_to_provider_base64(tmp_path: Path) -> None:
 def test_vision_cloud_fallback_is_explicitly_disabled_by_default(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path)
 
-    result = services.vision({"image": str(image), "cloud_fallback": True}, "tenant")
+    result = services.vision({"image": str(image), "cloud_fallback": True})
 
     assert result["success"] is False
     assert result["error_code"] == "vision_cloud_fallback_disabled"
@@ -480,7 +479,7 @@ def test_vision_cloud_fallback_enabled_without_provider_fails_closed(tmp_path: P
     services, runtime, image = _services(tmp_path)
     services.config["vision"] = {"cloud_fallback_enabled": True, "cloud_provider": ""}
 
-    result = services.vision({"image": str(image), "cloud_fallback": True}, "tenant")
+    result = services.vision({"image": str(image), "cloud_fallback": True})
 
     assert result["success"] is False
     assert result["error_code"] == "vision_cloud_fallback_unavailable"
@@ -491,7 +490,7 @@ def test_vision_feature_can_be_disabled(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path)
     services.config["features"] = {"vision": False}
 
-    result = services.vision({"image": str(image)}, "tenant")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["unsupported"] is True
@@ -507,7 +506,7 @@ def test_vision_image_path_checks_size_before_reading_bytes(tmp_path: Path, monk
         raise AssertionError("oversized image was read before preflight")
 
     monkeypatch.setattr(Path, "read_bytes", fail_read)
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "tenant-a")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["terminal"] is True
     assert result["error_code"] == "vision_image_too_large"
@@ -527,7 +526,7 @@ def test_vision_rejects_oversized_inline_context_before_json_loads(
         return original_loads(value, *args, **kwargs)
 
     monkeypatch.setattr(json, "loads", fail_if_called)
-    result = services.vision({"image": str(image), "runtime": raw}, "tenant-a")
+    result = services.vision({"image": str(image), "runtime": raw})
 
     assert result["terminal"] is True
     assert result["error"]["code"] == "frontend_context_too_large"
@@ -548,14 +547,14 @@ def test_vision_rejects_deep_inline_context_before_parser_recursion(
         return original_loads(value, *args, **kwargs)
 
     monkeypatch.setattr(json, "loads", fail_with_recursion)
-    result = services.vision({"image": str(image), field_name: raw}, "tenant-a")
+    result = services.vision({"image": str(image), field_name: raw})
 
     assert result["terminal"] is True
     assert result["error"]["code"] == "frontend_context_too_deep"
     assert runtime.request.call_count == 0
 
 
-def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: Path) -> None:
+def test_vision_resolves_network_artifacts_without_owner_partition(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     services.artifacts.get.side_effect = [
         {"success": True, "text": json.dumps({"errors": ["console error"]})},
@@ -589,7 +588,6 @@ def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: 
             "runtime_artifact_id": "console-1",
             "network_artifact_id": "network-1",
         },
-        "tenant-a",
     )
 
     assert result["success"] is True
@@ -600,7 +598,7 @@ def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: 
         "console_artifact_id": "console-1",
         "network_artifact_id": "network-1",
     }
-    assert all(call.kwargs["tenant"] == "tenant-a" for call in services.artifacts.get.call_args_list)
+    assert all("tenant" not in call.kwargs for call in services.artifacts.get.call_args_list)
 
 
 def test_vision_rejects_oversized_inline_dom_like_artifact_ref(tmp_path: Path) -> None:
@@ -615,7 +613,6 @@ def test_vision_rejects_oversized_inline_dom_like_artifact_ref(tmp_path: Path) -
                 "elements": [{"element_id": "root"}],
             },
         },
-        "tenant-a",
     )
 
     assert result["success"] is False
@@ -643,7 +640,7 @@ def test_packaged_defaults_enable_vision_capability() -> None:
 def test_vision_explicit_model_override_is_preserved(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
 
-    result = services.vision({"image": str(image), "model": "custom-vl:latest"}, "t")
+    result = services.vision({"image": str(image), "model": "custom-vl:latest"})
 
     assert result["model"] == "custom-vl:latest"
     assert runtime.request.call_args.args[1]["model"] == "custom-vl:latest"
@@ -652,7 +649,7 @@ def test_vision_explicit_model_override_is_preserved(tmp_path: Path) -> None:
 def test_vision_bounds_requested_output_tokens(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
 
-    services.vision({"image": str(image), "max_tokens": 999999}, "t")
+    services.vision({"image": str(image), "max_tokens": 999999})
 
     assert runtime.request.call_args.args[1]["options"]["num_predict"] == 4096
 
@@ -669,7 +666,7 @@ def test_vision_image_only_response_matches_golden_contract(tmp_path: Path) -> N
     )
     runtime.request.return_value = {"response": raw_output}
 
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "tenant-a")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     payload = runtime.request.call_args.args[1]
     assert runtime.request.call_args.args[0] == "/api/generate"
@@ -710,7 +707,7 @@ def test_vision_non_multimodal_model_matches_golden_error_contract(tmp_path: Pat
 
     runtime.request.side_effect = preflight
 
-    result = services.vision({"image": str(image)}, "tenant-a")
+    result = services.vision({"image": str(image)})
 
     assert result == {
         "success": False,
@@ -745,7 +742,7 @@ def test_vision_returns_structured_findings_and_raw_artifact(tmp_path: Path) -> 
         )
     }
 
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["review"]["summary"] == "bad CTA"
     assert result["review"]["findings"][0]["finding_id"] == "f-1"
@@ -776,7 +773,7 @@ def test_vision_rejects_hallucinated_dom_and_out_of_image_region(tmp_path: Path)
         )
     }
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["degraded"] is True
@@ -804,7 +801,7 @@ def test_vision_rejects_dom_markup_evidence_without_element_id(tmp_path: Path) -
         )
     }
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["degraded"] is True
@@ -832,7 +829,7 @@ def test_vision_accepts_image_only_finding_with_valid_region_anchor(tmp_path: Pa
         )
     }
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is True
     finding = result["review"]["findings"][0]
@@ -883,7 +880,6 @@ def test_vision_accepts_dom_id_from_supplied_frontend_context(tmp_path: Path) ->
                 ],
             },
         },
-        "t",
     )
 
     assert result["success"] is True
@@ -943,7 +939,6 @@ def test_vision_normalizes_numeric_dom_ids_consistently(tmp_path: Path) -> None:
                 "elements": [{"element_id": 7, "tag": "button", "text": "Continue"}],
             },
         },
-        "t",
     )
 
     assert result["success"] is True
@@ -994,7 +989,6 @@ def test_vision_rejects_dom_observation_fact_that_mismatches_supplied_source(
                 "elements": [{"element_id": "button-1", "tag": "button", "text": "Continue"}],
             },
         },
-        "t",
     )
 
     assert result["success"] is False
@@ -1022,7 +1016,7 @@ def test_vision_rejects_findings_without_cited_evidence(tmp_path: Path) -> None:
         )
     }
 
-    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+    result = services.vision({"image": str(image), "prompt": "Review UI"})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -1033,7 +1027,7 @@ def test_malformed_vision_output_is_terminal_structured_failure(tmp_path: Path) 
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     runtime.request.return_value = {"response": "The button looks fine."}
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -1045,7 +1039,7 @@ def test_malformed_vision_output_is_terminal_structured_failure(tmp_path: Path) 
 def test_missing_vision_model_is_explicitly_unsupported(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": ""})
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["unsupported"] is True
@@ -1058,7 +1052,7 @@ def test_missing_model_response_is_only_unsupported_failure(tmp_path: Path) -> N
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     runtime.request.return_value = {"error": "HTTP 404: model 'qwen3-vl:4b' not found"}
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["unsupported"] is True
     assert result["degraded"] is True
@@ -1070,7 +1064,7 @@ def test_vision_timeout_is_retryable_not_unsupported(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     runtime.request.side_effect = TimeoutError("secret timeout detail")
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["retryable"] is True
@@ -1083,7 +1077,7 @@ def test_vision_network_error_is_retryable_not_unsupported(tmp_path: Path) -> No
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     runtime.request.return_value = {"error": "Ollama unavailable"}
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["retryable"] is True
@@ -1095,7 +1089,7 @@ def test_vision_runtime_failure_is_terminal_not_unsupported(tmp_path: Path) -> N
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     runtime.request.side_effect = RuntimeError("secret runtime detail")
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["retryable"] is False
@@ -1111,7 +1105,7 @@ def test_vision_file_read_error_is_sanitized(tmp_path: Path, monkeypatch) -> Non
         raise OSError("C:\\private\\secret-image.png")
 
     monkeypatch.setattr(Path, "read_bytes", fail_read)
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -1128,7 +1122,7 @@ def test_vision_stat_error_never_forwards_path_to_ollama(tmp_path: Path, monkeyp
         raise OSError("C:\\private\\stat-secret.png")
 
     monkeypatch.setattr(Path, "is_file", fail_stat)
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -1146,14 +1140,14 @@ def test_vision_missing_image_artifact_is_explicit_and_safe(tmp_path: Path) -> N
         "artifact_id": "img-secret-id",
     }
 
-    result = services.vision({"image_artifact_id": "img-secret-id"}, "t")
+    result = services.vision({"image_artifact_id": "img-secret-id"})
 
     assert result["success"] is False
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert "not found" in result["error"].lower()
     assert "img-secret-id" not in result["error"]
-    services.artifacts.get_binary.assert_called_once_with("img-secret-id", tenant="t")
+    services.artifacts.get_binary.assert_called_once_with("img-secret-id")
     runtime.request.assert_not_called()
 
 
@@ -1167,7 +1161,7 @@ def test_vision_rejects_truncated_image_artifact(tmp_path: Path) -> None:
         "size_bytes": 60_000,
     }
 
-    result = services.vision({"image_artifact_id": "img-1"}, "t")
+    result = services.vision({"image_artifact_id": "img-1"})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -1189,7 +1183,7 @@ def test_vision_accepts_valid_image_at_byte_limit_with_larger_base64_transport(t
         "size_bytes": len(image_bytes),
     }
 
-    result = services.vision({"image_artifact_id": "img-1"}, "tenant")
+    result = services.vision({"image_artifact_id": "img-1"})
 
     assert result["success"] is True
     assert len(runtime.request.call_args.args[1]["images"][0]) == len(encoded)
@@ -1207,7 +1201,7 @@ def test_vision_reports_base64_transport_bound_separately(tmp_path: Path) -> Non
         "size_bytes": len(b"small-image"),
     }
 
-    result = services.vision({"image_artifact_id": "img-1"}, "tenant")
+    result = services.vision({"image_artifact_id": "img-1"})
 
     assert result["success"] is False
     assert result["error_code"] == "vision_image_transport_too_large"
@@ -1219,7 +1213,7 @@ def test_vision_artifact_backend_failure_is_retryable_and_safe(tmp_path: Path) -
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     services.artifacts.get_binary.side_effect = RuntimeError("C:\\private\\artifact-db-secret")
 
-    result = services.vision({"image_artifact_id": "img-1"}, "t")
+    result = services.vision({"image_artifact_id": "img-1"})
 
     assert result["success"] is False
     assert result["terminal"] is False
@@ -1232,18 +1226,17 @@ def test_vision_artifact_backend_failure_is_retryable_and_safe(tmp_path: Path) -
 def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) -> None:
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     artifacts = ArtifactStore(tmp_path / "artifacts")
-    screenshot_id = artifacts.put_bytes(b"binary-image", "tenant", "vision-image", "image/png")
+    screenshot_id = artifacts.put_bytes(b"binary-image", kind="vision-image", mime_type="image/png")
     dom_id = artifacts.put_json(
         {
             "redaction": "none",
             "html": "<main><button>Save</button></main>",
             "elements": [{"element_id": "root", "tag": "main"}],
         },
-        "tenant",
-        "live-dom",
+        kind="live-dom",
     )
-    accessibility_id = artifacts.put("button Save is reachable", "tenant", "accessibility")
-    styles_id = artifacts.put("button { color: red; }", "tenant", "computed-styles")
+    accessibility_id = artifacts.put("button Save is reachable", kind="accessibility")
+    styles_id = artifacts.put("button { color: red; }", kind="computed-styles")
     bundle_id = artifacts.put_json(
         {
             "schema_version": "1",
@@ -1252,12 +1245,11 @@ def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) 
             "accessibility": {"artifact_id": accessibility_id},
             "computed_styles": {"artifact_id": styles_id, "scope": "visible-elements"},
         },
-        "tenant",
-        "frontend_review_bundle",
+        kind="frontend_review_bundle",
     )
     services.artifacts = artifacts
 
-    result = services.vision({"bundle_artifact_id": bundle_id}, "tenant")
+    result = services.vision({"bundle_artifact_id": bundle_id})
 
     assert result["success"] is True
     payload = runtime.request.call_args.args[1]
@@ -1267,9 +1259,8 @@ def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) 
     assert "button { color: red; }" in payload["prompt"]
     assert result["image_artifact_id"] == screenshot_id
 
-    cross_tenant = services.vision({"bundle_artifact_id": bundle_id}, "other-tenant")
-    assert cross_tenant["success"] is False
-    assert cross_tenant["error_code"] == "vision_input_error"
+    owner_global = services.vision({"bundle_artifact_id": bundle_id})
+    assert owner_global["success"] is True
 
 
 def test_vision_bundle_artifact_is_resolved_with_bounded_context(tmp_path: Path) -> None:
@@ -1281,7 +1272,6 @@ def test_vision_bundle_artifact_is_resolved_with_bounded_context(tmp_path: Path)
 
     result = services.vision(
         {"image": str(image), "bundle_artifact_id": "bundle-1"},
-        "t",
     )
 
     assert result["success"] is True
@@ -1295,7 +1285,6 @@ def test_vision_rejects_unbounded_prompt_schema_and_image(tmp_path: Path) -> Non
 
     prompt_result = services.vision(
         {"image": str(image), "prompt": "P" * 100_000},
-        "t",
     )
 
     assert prompt_result["success"] is False
@@ -1307,9 +1296,8 @@ def test_vision_rejects_unbounded_prompt_schema_and_image(tmp_path: Path) -> Non
             "json_schema": {"description": "S" * 20_000},
             "image": str(image),
         },
-        "t",
     )
-    image_result = services.vision({"image": "A" * (VISION_MAX_IMAGE_CHARS + 1)}, "t")
+    image_result = services.vision({"image": "A" * (VISION_MAX_IMAGE_CHARS + 1)})
 
     assert schema_result["success"] is False
     assert schema_result["terminal"] is True
@@ -1344,7 +1332,7 @@ def test_vision_bounds_runtime_and_parsed_text(tmp_path: Path) -> None:
         )
     }
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is True
     assert len(result["response"]) <= 12_000
@@ -1362,7 +1350,7 @@ def test_vision_rejects_oversized_runtime_output_without_echo(tmp_path: Path) ->
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     runtime.request.return_value = {"response": "R" * 100_000}
 
-    result = services.vision({"image": str(image)}, "t")
+    result = services.vision({"image": str(image)})
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -1381,7 +1369,7 @@ def test_text_only_vision_override_is_explicitly_unsupported(tmp_path: Path) -> 
         return {"response": json.dumps({"summary": "unexpected", "findings": []})}
 
     runtime.request.side_effect = text_only_request
-    result = services.vision({"image": str(image), "model": "text-only:latest"}, "t")
+    result = services.vision({"image": str(image), "model": "text-only:latest"})
 
     assert result["success"] is False
     assert result["unsupported"] is True

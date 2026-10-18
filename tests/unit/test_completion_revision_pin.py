@@ -63,12 +63,12 @@ def test_completion_revision_pin_http_contract(
     )
     app = LocalAIApp(str(config))
     task_id = "completion-pin-task"
-    tenant = "api-token-default"
+    session_id = "completion-session"
     app.agent_tasks.create(
         GoalContract(goal="test pinned completion", acceptance_criteria=("test",)),
-        ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=tenant),
+        ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=session_id),
         task_id=task_id,
-        actor=tenant,
+        actor="operator",
         repo_root=str(project_root),
     )
     task_before = app.agent_tasks.get(task_id)
@@ -105,8 +105,7 @@ def test_completion_revision_pin_http_contract(
             data=json.dumps(body).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "X-LocalAI-Agent": tenant,
-                "X-LocalAI-Tenant": tenant,
+                "X-LocalAI-Agent": session_id,
             },
             method="POST",
         )

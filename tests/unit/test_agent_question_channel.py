@@ -46,7 +46,7 @@ def test_question_and_answer_survive_public_mcp_projection(tmp_path, monkeypatch
 
 def test_answer_is_idempotent_and_rejects_overwriting_operator_decision(tmp_path):
     store = _task_store(tmp_path)
-    scope = {"root": str(tmp_path), "tenant": "tenant-a"}
+    scope = {"root": str(tmp_path)}
     pending = store.ask_question(**scope, session_id="session-a", question="Which option?")
     assert store.ask_question(
         **scope, session_id="session-b", question_id=pending["question_id"]
@@ -65,11 +65,11 @@ def test_agent_question_and_operator_answer_persist_across_store_instances(
     tmp_path: Path,
 ) -> None:
     root = str(tmp_path / "project")
+    (tmp_path / "project").mkdir()
     store = _task_store(tmp_path)
 
     pending = store.ask_question(
         root=root,
-        tenant="tenant-a",
         session_id="session-1",
         question="Which migration should this task target?",
         actor="agent",
@@ -77,13 +77,11 @@ def test_agent_question_and_operator_answer_persist_across_store_instances(
     answered = store.answer_question(
         question_id=pending["question_id"],
         root=root,
-        tenant="tenant-a",
         answer="Use migration 0042.",
         actor="operator",
     )
     retrieved = _task_store(tmp_path).ask_question(
         root=root,
-        tenant="tenant-a",
         session_id="session-1",
         question_id=pending["question_id"],
     )
@@ -96,35 +94,35 @@ def test_agent_question_and_operator_answer_persist_across_store_instances(
     assert retrieved["session_id"] == "session-1"
 
 
-def test_agent_question_and_answer_are_isolated_by_root_and_tenant(
+def test_agent_question_and_answer_preserve_root_session_and_task(
     tmp_path: Path,
 ) -> None:
     store = _task_store(tmp_path)
+    (tmp_path / "project").mkdir()
+    (tmp_path / "other-project").mkdir()
     pending = store.ask_question(
         root=str(tmp_path / "project"),
-        tenant="tenant-a",
         session_id="session-1",
+        task_id="task-one",
         question="Need operator input",
         actor="agent",
     )
 
     assert store.ask_question(
         root=str(tmp_path / "other-project"),
-        tenant="tenant-a",
         session_id="session-1",
         question_id=pending["question_id"],
     ) is None
     assert store.ask_question(
         root=str(tmp_path / "project"),
-        tenant="tenant-b",
-        session_id="session-1",
+        session_id="session-2",
         question_id=pending["question_id"],
     ) is None
     assert store.answer_question(
         question_id=pending["question_id"],
         root=str(tmp_path / "project"),
-        tenant="tenant-b",
-        answer="cross-tenant leak",
+        task_id="other-task",
+        answer="wrong task association",
         actor="operator",
     ) is None
 
@@ -133,9 +131,9 @@ def test_agent_question_rejects_missing_session_and_unbounded_text(
     tmp_path: Path,
 ) -> None:
     store = _task_store(tmp_path)
+    (tmp_path / "project").mkdir()
     arguments = {
         "root": str(tmp_path / "project"),
-        "tenant": "tenant-a",
         "actor": "agent",
     }
 
@@ -164,14 +162,12 @@ def test_agent_question_actions_are_public_and_use_scoped_task_route(monkeypatch
     ask_result = client.coord(
         "ask",
         root="C:/repo",
-        tenant="tenant-a",
         session_id="session-1",
         question="Need operator input",
     )
     answer_result = client.coord(
         "answer",
         root="C:/repo",
-        tenant="tenant-a",
         question_id="q_123",
         answer="Proceed with option A",
     )
@@ -185,7 +181,6 @@ def test_agent_question_actions_are_public_and_use_scoped_task_route(monkeypatch
             {
                 "action": "ask",
                 "root": "C:/repo",
-                "tenant": "tenant-a",
                 "session_id": "session-1",
                 "task_id": "",
                 "question_id": "",
@@ -198,7 +193,6 @@ def test_agent_question_actions_are_public_and_use_scoped_task_route(monkeypatch
             {
                 "action": "answer",
                 "root": "C:/repo",
-                "tenant": "tenant-a",
                 "session_id": "",
                 "task_id": "",
                 "question_id": "q_123",

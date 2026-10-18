@@ -121,7 +121,7 @@ def test_ensure_server_waits_for_live_owner_past_stale_age(tmp_path: Path, monke
         stale = time.time() - 120.0
         os.utime(lock, (stale, stale))
 
-        client = HubClient(tenant="test", config_path=str(config))
+        client = HubClient(config_path=str(config))
         monkeypatch.setattr(client, "_online", lambda *_args: False)
         monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
         monkeypatch.setattr(
@@ -142,7 +142,7 @@ def test_ensure_server_waits_for_live_owner_past_stale_age(tmp_path: Path, monke
 def test_failed_owner_metadata_write_releases_startup_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _enable_startup(monkeypatch)
     config = _client_config(tmp_path)
-    client = HubClient(tenant="test", config_path=str(config))
+    client = HubClient(config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
 
@@ -183,8 +183,8 @@ def test_startup_retry_cooldown_expires_while_owner_client_stays_alive(
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
     monkeypatch.setattr(client_module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(client_module.subprocess, "run", fake_run)
-    first = HubClient(tenant="first", config_path=str(config))
-    second = HubClient(tenant="second", config_path=str(config))
+    first = HubClient(config_path=str(config))
+    second = HubClient(config_path=str(config))
     monkeypatch.setattr(first, "_online", lambda *_args: False)
     monkeypatch.setattr(second, "_online", lambda *_args: False)
 
@@ -206,7 +206,7 @@ def test_spawn_failure_returns_false_and_releases_start_lock_for_retry(
 ) -> None:
     _enable_startup(monkeypatch)
     config = _client_config(tmp_path)
-    client = HubClient(tenant="test", config_path=str(config), auto_start=True)
+    client = HubClient(config_path=str(config), auto_start=True)
     state_dir = Path(client.config["server"]["state_dir"])
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)

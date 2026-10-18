@@ -12,15 +12,13 @@ from local_ai_hub.delivery import (
 def test_conversation_dataclass_sanitizes_fields_and_helpers() -> None:
     conv = Conversation(
         conversation_id="  cid\x00-1  ",
-        tenant="  ten\x00ant-a  ",
-        settings="not-a-dict",  # type: ignore[arg-type]
+        settings={"task_id": "task-1", "session_id": "session-1"},
         messages="not-a-list",  # type: ignore[arg-type]
         active=1,  # type: ignore[arg-type]
         updated_at=float("nan"),
     )
     assert conv.conversation_id == "cid-1"
-    assert conv.tenant == "tenant-a"
-    assert conv.settings == {}
+    assert conv.settings == {"task_id": "task-1", "session_id": "session-1"}
     assert conv.messages == []
     assert conv.active is True
     assert conv.updated_at == 0.0
@@ -35,7 +33,15 @@ def test_conversation_dataclass_sanitizes_fields_and_helpers() -> None:
     assert conv.is_empty() is False
     as_dict = conv.to_dict()
     assert as_dict["conversation_id"] == "cid-1"
+    assert as_dict["settings"] == {"task_id": "task-1", "session_id": "session-1"}
     assert as_dict["turn_count"] == 1
+
+
+def test_conversation_rejects_retired_scope_metadata_by_presence() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="retired conversation settings field: tenant"):
+        Conversation(conversation_id="cid-1", settings={"tenant": None})
 
 
 def test_conversation_store_nan_inf_bool_and_null_byte_resilience() -> None:
@@ -63,19 +69,18 @@ def test_conversation_store_nan_inf_bool_and_null_byte_resilience() -> None:
     assert bool_store.max_turns == 12
     assert bool_store.max_conversations == 1000
 
-    conv = store.start("ten\x00ant-a", None)  # type: ignore[arg-type]
+    conv = store.start({"session_id": "session-a", "task_id": "task-a"})
     assert conv is not None
-    assert conv.tenant == "tenant-a"
-    assert conv.settings == {}
+    assert conv.settings == {"session_id": "session-a", "task_id": "task-a"}
     assert store.count() == 1
     assert store.active_count() == 0
 
-    reserved, err = store.reserve(f"  {conv.conversation_id}\x00 ", "tenant-a")
+    reserved, err = store.reserve(f"  {conv.conversation_id}\x00 ")
     assert err == ""
     assert reserved is conv
     assert store.active_count() == 1
 
-    completed = store.complete(conv.conversation_id, "ten\x00ant-a", "u\x001", "a\x001")
+    completed = store.complete(conv.conversation_id, "u\x001", "a\x001")
     assert completed is True
     assert store.active_count() == 0
     assert conv.turn_count() == 1

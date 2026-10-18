@@ -10,10 +10,10 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub.client import HubClient
 
 
-def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
+def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     tmp_path: Path, monkeypatch
 ) -> None:
-    tenant_id = "agent-t09"
+    agent_id = "agent-t09"
     task_id = "task-t09-http-receipts"
     project_root = tmp_path / "repo"
     project_root.mkdir()
@@ -34,15 +34,13 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        f'\n[security]\napi_token = "t09-test-token"\napi_token_tenant = "{tenant_id}"\n'
+        '\n[security]\napi_token = "t09-test-token"\n'
         f'allowed_roots = ["{project_root.as_posix()}"]\n',
         encoding="utf-8",
     )
 
     app = LocalAIApp(str(config_path))
-    scoped_tenant = http_server._derive_root_tenant(
-        tenant_id, str(project_root.resolve()), "t09-test-token"
-    )
+    session_id = "session-t09-http-receipts"
     app.agent_tasks.create(
         GoalContract(
             goal="complete task through production HTTP route",
@@ -51,16 +49,16 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
         ScopeContext(
             repository_id=str(project_root),
             task_id=task_id,
-            session_id=scoped_tenant,
+            session_id=session_id,
         ),
         task_id=task_id,
-        actor=tenant_id,
+        actor=agent_id,
         repo_root=str(project_root),
     )
     command_result = app.commands.run_project_command(
         "test",
         str(project_root),
-        tenant=scoped_tenant,
+
         task_id=task_id,
         criterion="test",
         timeout=60,
@@ -73,15 +71,14 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     assert command_evidence
     repository_revision = str(receipt.get("repository_revision") or "")
     assert repository_revision
-    # The direct broker fixture must use the same root-bound tenant as HTTP,
-    # while receipt/artifact ownership remains the human-readable agent name.
+    # Receipt identity binds the explicit task owner and canonical repository.
     command_id = str(receipt["command_id"])
     assert app.commands.get_command_execution_record(
-        command_id, tenant=tenant_id, task_id=task_id,
+        command_id,  task_id=task_id,
         repository_root=str(project_root),
     ) is None
     assert app.commands.get_command_execution_record(
-        command_id, tenant=scoped_tenant, task_id=task_id,
+        command_id,  task_id=task_id,
         repository_root=str(project_root),
     ) is not None
     task_state = app.agent_tasks.get(task_id)
@@ -98,7 +95,7 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
             blockers=task_state.checkpoint.blockers,
             state_data=state_data,
         ),
-        actor=tenant_id,
+        actor=agent_id,
         idempotency_key="t09-broker-revision",
     )
     preflight = app.agent_verification.completion(
@@ -108,7 +105,7 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
         preflight.unsatisfied_criteria,
         preflight.stale_criteria,
         preflight.consistency,
-        app.artifacts.get(command_evidence, max_chars=50_000, tenant=tenant_id),
+        app.artifacts.get(command_evidence, max_chars=50_000),
         app.agent_tasks.get(task_id).owner,
     )
 
@@ -123,8 +120,8 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     previous_mcp_client = mcp_server.CLIENT
-    mcp_client = HubClient(tenant=tenant_id, config_path=str(config_path), auto_start=False)
-    mcp_client.agent = tenant_id
+    mcp_client = HubClient(config_path=str(config_path), auto_start=False)
+    mcp_client.agent = agent_id
     mcp_client._http_host = "127.0.0.1"
     mcp_client._http_port = server.server_address[1]
     mcp_server.CLIENT = mcp_client
@@ -144,29 +141,27 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
         assert after_unauthorized == before_unauthorized
 
         mcp_client.api_token = "t09-test-token"
-        before_cross_tenant = app.agent_tasks.get(task_id)
-        task_events_before_cross_tenant = app.agent_tasks.state_store.events(
+        before_wrong_owner = app.agent_tasks.get(task_id)
+        task_events_before_wrong_owner = app.agent_tasks.state_store.events(
             stream_id=f"task:{task_id}"
         )
-        mcp_client.tenant = "other-agent"
         mcp_client.agent = "other-agent"
-        cross_tenant = mcp_server.local_ai_coord(
+        wrong_owner = mcp_server.local_ai_coord(
             action="task_complete",
             task_id=task_id,
             root=str(project_root),
-            reason="cross-tenant completion attempt",
+            reason="wrong-owner completion attempt",
         )
-        assert cross_tenant["success"] is False, cross_tenant
+        assert wrong_owner["success"] is False, wrong_owner
         after_cross_tenant = app.agent_tasks.get(task_id)
-        assert after_cross_tenant == before_cross_tenant
-        assert after_cross_tenant.status == before_cross_tenant.status
-        assert after_cross_tenant.owner == before_cross_tenant.owner
+        assert after_cross_tenant == before_wrong_owner
+        assert after_cross_tenant.status == before_wrong_owner.status
+        assert after_cross_tenant.owner == before_wrong_owner.owner
         assert app.agent_tasks.state_store.events(
             stream_id=f"task:{task_id}"
-        ) == task_events_before_cross_tenant
+        ) == task_events_before_wrong_owner
 
-        mcp_client.tenant = tenant_id
-        mcp_client.agent = tenant_id
+        mcp_client.agent = agent_id
         payload = mcp_server.local_ai_coord(
             action="task_complete",
             task_id=task_id,

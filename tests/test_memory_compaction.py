@@ -35,7 +35,7 @@ def test_memory_compaction_basic(tmp_path):
         scope=AgentScope.TASK,
         status=MemoryStatus.ACTIVE,
         root=root,
-        tenant=tenant,
+
         task_id=task_id,
     )
     assert len(active_before) == 4
@@ -56,7 +56,7 @@ def test_memory_compaction_basic(tmp_path):
         scope=AgentScope.TASK,
         status=MemoryStatus.ACTIVE,
         root=root,
-        tenant=tenant,
+
         task_id=task_id,
     )
     assert len(active_after) == 1
@@ -67,7 +67,7 @@ def test_memory_compaction_basic(tmp_path):
         scope=AgentScope.TASK,
         status=MemoryStatus.SUPERSEDED,
         root=root,
-        tenant=tenant,
+
         task_id=task_id,
     )
     assert len(superseded) == 4

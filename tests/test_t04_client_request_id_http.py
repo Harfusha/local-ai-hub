@@ -49,7 +49,7 @@ def test_safe_http_retry_reuses_explicit_request_id(tmp_path) -> None:
         "[client]\nmax_request_timeout_seconds=5\n",
         encoding="utf-8",
     )
-    client = HubClient(config_path=str(config_path), tenant="request-id-test", auto_start=False)
+    client = HubClient(config_path=str(config_path), auto_start=False)
     request_id = "stable-http-retry-id"
     body = {"command": "safe"}
     try:

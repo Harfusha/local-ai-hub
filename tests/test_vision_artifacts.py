@@ -21,7 +21,7 @@ def test_binary_transport_is_available_without_changing_text_transport(tmp_path:
     store = ArtifactStore(tmp_path)
 
     assert callable(getattr(store, "put_bytes", None))
-    artifact_id = store.put("plain text", "tenant", "text")
+    artifact_id = store.put("plain text", kind="text")
 
     result = store.get(artifact_id)
     assert result["success"] is True
@@ -31,7 +31,7 @@ def test_binary_transport_is_available_without_changing_text_transport(tmp_path:
 def test_binary_image_round_trips_with_complete_identity_metadata(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
 
-    artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
+    artifact_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
     result = store.get_binary(artifact_id)
 
     assert result == {
@@ -55,49 +55,44 @@ def test_binary_image_round_trips_with_complete_identity_metadata(tmp_path: Path
     }
 
 
-def test_artifacts_are_tenant_scoped_and_same_content_cannot_overwrite(tmp_path: Path) -> None:
+def test_artifacts_are_owner_global_and_same_content_is_idempotent(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
 
-    first_id = store.put("same response", "tenant-a", "vision-output")
-    second_id = store.put("same response", "tenant-b", "vision-output")
-    first_image_id = store.put_bytes(PNG, "tenant-a", "vision-image", "image/png")
-    second_image_id = store.put_bytes(PNG, "tenant-b", "vision-image", "image/png")
+    first_id = store.put("same response", kind="vision-output")
+    second_id = store.put("same response", kind="vision-output")
+    first_image_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
+    second_image_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
 
-    assert first_id != second_id
-    assert first_image_id != second_image_id
-    assert store.get(first_id, tenant="tenant-a")["success"] is True
-    assert store.get(first_id, tenant="tenant-b") == {
-        "success": False,
-        "error": "artifact not found or expired",
-        "artifact_id": first_id,
-    }
-    assert store.get_binary(first_image_id, tenant="tenant-a")["success"] is True
-    assert store.get_binary(first_image_id, tenant="tenant-b") == {
-        "success": False,
-        "error": "artifact not found or expired",
-    }
+    assert first_id == second_id
+    assert first_image_id == second_image_id
+    assert store.get(first_id)["text"] == "same response"
+    assert store.get_binary(first_image_id)["data_base64"] == base64.b64encode(PNG).decode("ascii")
+    with pytest.raises(TypeError):
+        store.get(first_id, tenant="retired")
+    with pytest.raises(TypeError):
+        store.get_binary(first_image_id, tenant="retired")
 
 
 @pytest.mark.parametrize("operation", ["put", "get", "get_binary", "list"])
-def test_artifact_identity_rejects_non_string_tenant_labels(tmp_path: Path, operation: str) -> None:
+def test_artifact_operations_reject_retired_tenant_selectors(tmp_path: Path, operation: str) -> None:
     store = ArtifactStore(tmp_path)
 
-    with pytest.raises(ValueError, match="tenant"):
+    with pytest.raises(TypeError):
         if operation == "put":
-            store.put("payload", 7, "text")  # type: ignore[arg-type]
+            store.put("payload", tenant="retired", kind="text")
         elif operation == "get":
-            store.get("art_missing", tenant=7)  # type: ignore[arg-type]
+            store.get("art_missing", tenant="retired")
         elif operation == "get_binary":
-            store.get_binary("art_missing", tenant=7)  # type: ignore[arg-type]
+            store.get_binary("art_missing", tenant="retired")
         else:
-            store.list(tenant=7)  # type: ignore[arg-type]
+            store.list(tenant="retired")
 
 
-@pytest.mark.parametrize("tenant", [None, 0])
-def test_artifact_list_rejects_falsey_non_string_tenant_labels(tmp_path: Path, tenant: object) -> None:
+@pytest.mark.parametrize("tenant", [None, "", False, 0])
+def test_artifact_list_rejects_falsey_retired_tenant_selectors(tmp_path: Path, tenant: object) -> None:
     store = ArtifactStore(tmp_path)
 
-    with pytest.raises(ValueError, match="tenant"):
+    with pytest.raises(TypeError):
         store.list(tenant=tenant)  # type: ignore[arg-type]
 
 
@@ -131,19 +126,19 @@ def test_pre_paging_schema_fails_closed_without_mutating_database(tmp_path: Path
     assert db_path.read_bytes() == original_database
 
     current_store = ArtifactStore(tmp_path / "fresh")
-    artifact_id = current_store.put("current schema", tenant, "text")
-    assert current_store.get(artifact_id, tenant=tenant)["text"] == "current schema"
+    artifact_id = current_store.put("current schema", kind="text")
+    assert current_store.get(artifact_id)["text"] == "current schema"
 
 
 def test_binary_integrity_rejects_non_numeric_stored_size(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
+    artifact_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
 
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute("UPDATE artifacts SET size_bytes=? WHERE artifact_id=?", ("not-a-number", artifact_id))
         connection.commit()
 
-    assert store.get_binary(artifact_id, tenant="tenant") == {
+    assert store.get_binary(artifact_id) == {
         "success": False,
         "error": "artifact integrity check failed",
     }
@@ -153,9 +148,9 @@ def test_binary_transport_rejects_non_images_and_oversized_images(tmp_path: Path
     store = ArtifactStore(tmp_path, max_binary_bytes=len(PNG))
 
     with pytest.raises(ValueError, match="image MIME"):
-        store.put_bytes(PNG, "tenant", "not-an-image", "application/json")
+        store.put_bytes(PNG, kind="not-an-image", mime_type="application/json")
     with pytest.raises(ValueError, match="size"):
-        store.put_bytes(PNG + b"x", "tenant", "vision-image", "image/png")
+        store.put_bytes(PNG + b"x", kind="vision-image", mime_type="image/png")
 
 
 def test_review_bundle_round_trips_without_semantic_dom_redaction(tmp_path: Path) -> None:
@@ -171,7 +166,7 @@ def test_review_bundle_round_trips_without_semantic_dom_redaction(tmp_path: Path
         "dom_payload": dom,
     }
 
-    artifact_id = store.put_json(bundle, "tenant", "frontend_review_bundle")
+    artifact_id = store.put_json(bundle, kind="frontend_review_bundle")
     result = store.get(artifact_id, section="json:dom")
 
     assert result["success"] is True
@@ -181,7 +176,7 @@ def test_review_bundle_round_trips_without_semantic_dom_redaction(tmp_path: Path
 
 def test_binary_reads_never_return_partial_payloads(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
+    artifact_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
 
     text_result = store.get(artifact_id, offset=1, max_chars=2)
     binary_result = store.get_binary(artifact_id)
@@ -202,42 +197,30 @@ def test_invalid_binary_ref_has_bounded_sanitized_failure(tmp_path: Path) -> Non
     assert invalid_ref not in json.dumps(result)
 
 
-def test_binary_metadata_does_not_echo_tenant_path_or_credentials(tmp_path: Path) -> None:
+def test_binary_metadata_does_not_echo_credentials_or_payload(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
-    tenant_path = r"C:\Users\secret\profile"
-
-    artifact_id = store.put_bytes(PNG, tenant_path, "vision-image", "image/png")
+    artifact_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
     result = store.get_binary(artifact_id)
 
     encoded = json.dumps(result)
-    assert tenant_path not in encoded
     assert "authorization" not in encoded.lower()
     assert "cookie" not in encoded.lower()
     assert "network_body" not in encoded.lower()
 
 
-def test_new_text_and_binary_artifacts_store_only_tenant_identity(tmp_path: Path) -> None:
+def test_new_artifacts_use_tenantless_schema_and_preserve_content(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
-    sensitive_tenant = r"C:\Users\secret\auth-profile"
-
-    text_id = store.put("response", sensitive_tenant, "vision-output")
-    image_id = store.put_bytes(PNG, sensitive_tenant, "vision-image", "image/png")
+    text_id = store.put("response", kind="vision-output")
+    image_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
 
     with closing(sqlite3.connect(store.path)) as connection:
-        rows = connection.execute(
-            "SELECT tenant, tenant_identity FROM artifacts WHERE artifact_id IN (?, ?) ORDER BY artifact_id",
-            (text_id, image_id),
-        ).fetchall()
-    stored_tenants = [str(row[0]) for row in rows]
-    stored_values = [str(value) for row in rows for value in row]
-    assert sensitive_tenant not in json.dumps(stored_values)
-    assert all(len(value) == 64 for value in stored_values)
-    assert all(value == hashlib.sha256(sensitive_tenant.encode()).hexdigest() for value in stored_values)
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(artifacts)")}
+    assert not {"tenant", "tenant_identity"}.intersection(columns)
+    assert {"artifact_id", "kind", "text", "mime_type", "blob"}.issubset(columns)
 
-    ArtifactStore(tmp_path)
-    with closing(sqlite3.connect(store.path)) as connection:
-        reopened_values = [row[0] for row in connection.execute("SELECT tenant FROM artifacts").fetchall()]
-    assert reopened_values == stored_tenants
+    reopened = ArtifactStore(tmp_path)
+    assert reopened.get(text_id)["text"] == "response"
+    assert base64.b64decode(reopened.get_binary(image_id)["data_base64"]) == PNG
 
 
 @pytest.mark.parametrize("column,value", [
@@ -248,7 +231,7 @@ def test_new_text_and_binary_artifacts_store_only_tenant_identity(tmp_path: Path
 ])
 def test_binary_integrity_rejects_mismatched_stored_identity(tmp_path: Path, column: str, value: object) -> None:
     store = ArtifactStore(tmp_path)
-    artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
+    artifact_id = store.put_bytes(PNG, kind="vision-image", mime_type="image/png")
 
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute(f"UPDATE artifacts SET {column}=? WHERE artifact_id=?", (value, artifact_id))
@@ -258,7 +241,7 @@ def test_binary_integrity_rejects_mismatched_stored_identity(tmp_path: Path, col
     assert result == {"success": False, "error": "artifact integrity check failed"}
 
 
-def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> None:
+def test_http_binary_artifact_get_is_owner_global_and_complete(tmp_path: Path) -> None:
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
 
@@ -269,7 +252,7 @@ def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> No
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
-    artifact_id = app.artifacts.put_bytes(PNG, "tenant", "vision-image", "image/png")
+    artifact_id = app.artifacts.put_bytes(PNG, kind="vision-image", mime_type="image/png")
     previous_app = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -279,7 +262,7 @@ def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> No
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/artifact/get",
             data=json.dumps({"artifact_id": artifact_id, "binary": True}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -292,18 +275,14 @@ def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> No
             data=json.dumps({"artifact_id": artifact_id, "binary": True}).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "X-LocalAI-Tenant": "other-tenant",
-                "X-LocalAI-Request-ID": "t17-cross-tenant-artifact-request",
+                "X-LocalAI-Request-ID": "owner-global-artifact-request",
             },
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
-            cross_tenant_payload = json.loads(response.read().decode("utf-8"))
-        assert cross_tenant_payload == {
-            "success": False,
-            "error": "artifact not found or expired",
-            "request_id": "t17-cross-tenant-artifact-request",
-        }
+            owner_global_payload = json.loads(response.read().decode("utf-8"))
+        assert owner_global_payload["success"] is True
+        assert base64.b64decode(owner_global_payload["data_base64"]) == PNG
     finally:
         server.shutdown()
         server.server_close()
@@ -337,4 +316,4 @@ def test_json_bundle_size_is_bounded(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path, max_json_bytes=32)
 
     with pytest.raises(ValueError, match="size"):
-        store.put_json({"dom": "x" * 100}, "tenant", "frontend_review_bundle")
+        store.put_json({"dom": "x" * 100}, kind="frontend_review_bundle")

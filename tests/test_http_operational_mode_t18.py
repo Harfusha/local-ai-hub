@@ -126,20 +126,13 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={
             "security": {
-                "api_token_tenant": "tenant-mode",
                 "allowed_roots": [str(tmp_path)],
-                "tenant_derivation_key": "tenant-derivation-test-key-0123456789abcdef",
             }
         },
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")), agent_tasks=AgentTasks(),
     ))
-    tenant = http_server._derive_root_tenant(
-        "tenant-mode",
-        str(tmp_path),
-        "tenant-derivation-test-key-0123456789abcdef",
-    )
     handler = _handler(
-        f"/api/agent-state/tasks?root={quote(str(tmp_path))}&tenant={quote(tenant)}"
+        f"/api/agent-state/tasks?root={quote(str(tmp_path))}"
     )
 
     handler.do_GET()
@@ -149,15 +142,11 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
 
 def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -> None:
     _install_mode_api(monkeypatch, "gaming")
-    tenant = http_server._derive_root_tenant(
-        "tenant-mode",
-        str(tmp_path),
-        "tenant-derivation-test-key-0123456789abcdef",
-    )
+    session_id = "session:mode-event-export"
     agent_tasks = SimpleNamespace(
         get=lambda task_id: SimpleNamespace(
             task_id=task_id,
-            context=SimpleNamespace(repository_id=str(tmp_path), session_id=tenant),
+            context=SimpleNamespace(repository_id=str(tmp_path), session_id=session_id),
         )
     )
     state_store = SimpleNamespace(export_delta=lambda stream, after, limit: {
@@ -166,9 +155,7 @@ def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={
             "security": {
-                "api_token_tenant": "tenant-mode",
                 "allowed_roots": [str(tmp_path)],
-                "tenant_derivation_key": "tenant-derivation-test-key-0123456789abcdef",
             }
         },
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
@@ -183,7 +170,6 @@ def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -
         "stream_id": "task:task-31",
         "task_id": "task-31",
         "root": str(tmp_path),
-        "tenant": tenant,
         "after_seq": 0,
         "limit": 50,
     }
@@ -198,17 +184,10 @@ def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -
 
 def test_gaming_mode_blocks_workspace_memory_but_allows_artifact_reads(monkeypatch, tmp_path) -> None:
     _install_mode_api(monkeypatch, "gaming")
-    tenant = http_server._derive_root_tenant(
-        "tenant-mode",
-        str(tmp_path),
-        "tenant-derivation-test-key-0123456789abcdef",
-    )
     app = SimpleNamespace(
         config={
             "security": {
-                "api_token_tenant": "tenant-mode",
                 "allowed_roots": [str(tmp_path)],
-                "tenant_derivation_key": "tenant-derivation-test-key-0123456789abcdef",
             }
         },
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
@@ -222,9 +201,9 @@ def test_gaming_mode_blocks_workspace_memory_but_allows_artifact_reads(monkeypat
     for path, payload, expected_status, expected_error in (
         (
             "/api/memory/get",
-            {"root": str(tmp_path), "tenant": tenant, "key": "note-1"},
-            403,
-            "workspace-shared memory access is unavailable through this tenant-scoped endpoint",
+            {"root": str(tmp_path), "key": "note-1"},
+            200,
+            None,
         ),
         (
             "/api/artifact/get",
@@ -278,7 +257,6 @@ def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> N
     ))
     handler = _handler("/api/context/pack")
     handler._read_json = lambda: {"root": "C:/work", "query": "lookup"}
-    handler._tenant = lambda: "tenant-test"
     handler._async_delivery = lambda *_args: None
 
     handler.do_POST()
@@ -415,7 +393,6 @@ def test_heavy_or_mutating_http_route_returns_retryable_mode_envelope(
     ))
     handler = _handler(path)
     handler._read_json = lambda: payload
-    handler._tenant = lambda: "tenant-test"
     handler._async_delivery = lambda *_args: None
 
     handler.do_POST()

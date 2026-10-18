@@ -11,7 +11,7 @@ def test_model_free_harness_measures_profile_routing_admission_and_scheduler_sta
     assert report["vram_bytes"] is None
     assert report["quality"] == "not_measured"
     assert set(report["profiles"]) == {"integrated", "balanced", "high", "max"}
-    assert report["cross_tenant_fairness_wait_ms"] == {"tenant_a": 1000.0, "tenant_b": 2000.0}
+    assert report["same_priority_wait_ms"] == {"job_2": 1000.0, "job_4": 3000.0}
 
     for profile_name, result in report["profiles"].items():
         assert result["route_models"]["fast_code"]

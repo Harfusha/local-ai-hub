@@ -54,7 +54,6 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
             "env": {},
             "python": sys.version_info[:3],
             "tool": "tool",
-            "tenant": broker._tenant_identity("agent"),
             "timeout_seconds": 60,
             "policy": {
                 "blocking": True,
@@ -68,12 +67,11 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
         }
     )
     tokens = broker._tokens(command)
-    assert broker._attempt_key(command, cwd, tenant="agent", timeout=60) == stable_hash(
+    assert broker._attempt_key(command, cwd, timeout=60) == stable_hash(
         {
             "command": " ".join(tokens) if tokens else command.strip(),
             "cwd": str(Path(cwd).resolve()),
             "tool": "tool",
-            "tenant": broker._tenant_identity("agent"),
             "timeout_seconds": 60,
             "policy": {
                 "blocking": True,
@@ -152,7 +150,7 @@ def test_run_project_command_executes_exact_argv_with_safe_env_reference(
     broker = _broker(tmp_path)
 
     result = broker.run_project_command(
-        "check", str(tmp_path), tenant="test", args=["safe;argument"], force=True
+        "check", str(tmp_path), args=["safe;argument"], force=True
     )
 
     assert result["success"] is True
@@ -217,21 +215,21 @@ def test_project_environment_invalidates_suppression_and_success_cache(
 
     monkeypatch.setattr(broker, "classify", classify)
 
-    blocked = broker.run_project_command("check", str(project_root), tenant="test")
-    suppressed = broker.run_project_command("check", str(project_root), tenant="test")
+    blocked = broker.run_project_command("check", str(project_root))
+    suppressed = broker.run_project_command("check", str(project_root))
     assert blocked["policy_blocked"] is True
     assert suppressed["suppression_cache_hit"] is True
 
     monkeypatch.setenv("T15_HOST_TOKEN", "second")
-    fresh = broker.run_project_command("check", str(project_root), tenant="test")
-    warm = broker.run_project_command("check", str(project_root), tenant="test")
+    fresh = broker.run_project_command("check", str(project_root))
+    warm = broker.run_project_command("check", str(project_root))
     assert fresh["success"] is True
     assert fresh["stdout"] == "second\n"
     assert fresh.get("suppression_cache_hit") is not True
     assert warm["cache_hit"] is True
 
     monkeypatch.setenv("T15_HOST_TOKEN", "third")
-    changed = broker.run_project_command("check", str(project_root), tenant="test")
+    changed = broker.run_project_command("check", str(project_root))
     assert changed["success"] is True
     assert changed["stdout"] == "third\n"
     assert changed.get("cache_hit") is not True
@@ -251,7 +249,7 @@ def test_unknown_project_command_alias_fails_before_execution(
         raise AssertionError("unknown alias must not execute")
 
     monkeypatch.setattr(broker, "_execute", forbidden_execute)
-    result = broker.run_project_command("missing", str(tmp_path), tenant="test")
+    result = broker.run_project_command("missing", str(tmp_path))
 
     assert result["success"] is False
     assert result["preflight"] is True
@@ -281,7 +279,7 @@ def test_project_command_rejects_unsafe_environment_override_before_execution(
         raise AssertionError("unsafe environment must not execute")
 
     monkeypatch.setattr(broker, "_execute", forbidden_execute)
-    result = broker.run_project_command("check", str(tmp_path), tenant="test")
+    result = broker.run_project_command("check", str(tmp_path))
 
     assert result["success"] is False
     assert result["project_command_error"] == "invalid_command_environment"
@@ -310,15 +308,14 @@ def test_project_command_delegates_rollback_scope_to_existing_run(
     broker = _broker(tmp_path)
     captured: dict = {}
 
-    def capture_run(command, cwd, tenant, **kwargs):
-        captured.update(command=command, cwd=cwd, tenant=tenant, kwargs=kwargs)
+    def capture_run(command, cwd, **kwargs):
+        captured.update(command=command, cwd=cwd, kwargs=kwargs)
         return {"success": True}
 
     monkeypatch.setattr(broker, "run", capture_run)
     result = broker.run_project_command(
         "check",
         str(tmp_path),
-        tenant="test",
         task_id="task-15",
         criterion="command config",
         rollback_on_failure=True,
@@ -354,7 +351,7 @@ def test_project_command_still_obeys_broker_policy(tmp_path: Path, monkeypatch) 
         },
     )
     monkeypatch.setattr(broker, "_execute", forbidden_execute)
-    result = broker.run_project_command("check", str(tmp_path), tenant="test")
+    result = broker.run_project_command("check", str(tmp_path))
 
     assert result["success"] is False
     assert result["policy_blocked"] is True

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 import threading
 import urllib.request
 
 from local_ai_hub.commands import CommandBroker
-from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.agent_verification import VerificationStore, VerificationReceipt
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_memory import MemoryStore, MemoryRecord
 from local_ai_hub.agent_tasks import TaskStore, GoalContract
 from local_ai_hub.agent_identity import ScopeContext
@@ -18,27 +19,22 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 
 
+def _init_test_repo(root: Path) -> str:
+    (root / ".test-marker").write_text("single-owner fixture\n", encoding="utf-8")
+    (root / ".local-ai.toml").write_text(
+        '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n', encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".test-marker", ".local-ai.toml"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize fixture repository"], cwd=root, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+
 def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
-    artifacts = {}
-
-    class _Artifacts:
-        def put(self, text, tenant, kind, _content_type="application/json"):
-            artifacts["art-1"] = {
-                "success": True,
-                "artifact_id": "art-1",
-                "kind": kind,
-                "text": text,
-                "next_offset": None,
-                "tenant": tenant,
-            }
-            return "art-1"
-
-        def get(self, artifact_id, *, max_chars, tenant):
-            artifact = artifacts.get(artifact_id)
-            if artifact is None or artifact["tenant"] != tenant:
-                return {"success": False}
-            return artifact
-
     class _RepoState:
         def fingerprint(self, _cwd):
             return {"fingerprint": "hash1"}
@@ -51,7 +47,7 @@ def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
             "server": {"state_dir": str(state_dir)},
             "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
         },
-        _Artifacts(),
+        ArtifactStore(tmp_path / "classification-artifacts"),
         _RepoState(),
     )
     
@@ -117,37 +113,23 @@ def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     task_store = TaskStore(state_store)
-    artifacts = {}
-
+    revision = _init_test_repo(tmp_path)
     task = task_store.create(
         GoalContract(goal="Pass tests", acceptance_criteria=["Tests must pass"]),
-        ScopeContext(task_id="task-test-1"),
+        ScopeContext(repository_id="receipt-test-coordination", task_id="task-test-1"),
         task_id="task-test-1",
+        repo_root=str(tmp_path),
+        repository_revision=revision,
     )
 
-    class _Artifacts:
-        def put(self, text, tenant, kind, _content_type="application/json"):
-            artifacts["art-1"] = {
-                "success": True,
-                "artifact_id": "art-1",
-                "kind": kind,
-                "text": text,
-                "next_offset": None,
-                "tenant": tenant,
-            }
-            return "art-1"
-
-        def get(self, artifact_id, *, max_chars, tenant):
-            artifact = artifacts.get(artifact_id)
-            if artifact is None or artifact["tenant"] != tenant:
-                return {"success": False}
-            return artifact
-
     class _RepoState:
-        def fingerprint(self, _cwd):
-            return {"fingerprint": "hash1"}
+        def fingerprint(self, cwd):
+            current = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=cwd, check=True, text=True, capture_output=True
+            ).stdout.strip()
+            return {"fingerprint": current, "root": str(cwd)}
 
-    artifact_store = _Artifacts()
+    artifact_store = ArtifactStore(tmp_path / "receipt-artifacts")
     v_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
     broker = CommandBroker(
         {
@@ -157,7 +139,9 @@ def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
         artifact_store,
         _RepoState(),
     )
+    broker.set_task_store(task_store)
     broker.set_verification_store(v_store)
+    v_store.set_command_execution_record_lookup(broker.get_command_execution_record)
 
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_smoke.py").write_text("def test_smoke(): pass\n", encoding="utf-8")
@@ -166,9 +150,9 @@ def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
     res = broker.run(
         "python -m pytest -q tests/test_smoke.py",
         str(tmp_path),
-        "tenant",
         task_id="task-test-1",
         criterion="Tests must pass",
+        timeout=60,
     )
 
     assert res["exit_code"] == 0
@@ -189,20 +173,20 @@ def test_memory_store_query_search(tmp_path: Path):
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     mem_store = MemoryStore(state_store)
-    provenance = {"repository_id": "query-test-repository", "tenant": "tenant-a"}
+    provenance = {"repository_id": "query-test-repository"}
 
     mem_store.record(MemoryRecord.create(key="backend_config", value="Serena runs on port 9000", kind="config", scope="repository", provenance=provenance))
     mem_store.record(MemoryRecord.create(key="db_port", value="Port 5432 is postgres", kind="fact", scope="repository", provenance=provenance))
     mem_store.record(MemoryRecord.create(key="auth_token_pattern", value="JWT tokens use RS256", kind="finding", scope="repository", provenance=provenance))
 
     # Search query in value
-    res1 = mem_store.find(query="port", repository_id="query-test-repository", tenant="tenant-a")
+    res1 = mem_store.find(query="port", repository_id="query-test-repository")
     assert len(res1) == 2
     keys = {r.key for r in res1}
     assert keys == {"backend_config", "db_port"}
 
     # Search query in key
-    res2 = mem_store.find(query="auth", repository_id="query-test-repository", tenant="tenant-a")
+    res2 = mem_store.find(query="auth", repository_id="query-test-repository")
     assert len(res2) == 1
     assert res2[0].key == "auth_token_pattern"
 
@@ -223,8 +207,6 @@ enabled = true
 [security]
 api_token = "test-api-token-long-enough"
 api_token_permissions = ["read", "write"]
-api_token_tenant = "flat-test-tenant"
-tenant_derivation_key = "flat-test-tenant-derivation-key-0123456789"
 allowed_roots = ["{tmp_path.as_posix()}"]
 """, encoding="utf-8")
 
@@ -343,8 +325,7 @@ def test_hubctl_agent_state_and_cleanup(monkeypatch, capsys):
 
     monkeypatch.setattr(hubctl, "client", lambda: DummyClient())
 
-    def cleanup_client(*, tenant, config_path, auto_start):
-        assert tenant == "hubctl"
+    def cleanup_client(*, config_path, auto_start):
         assert auto_start is False
         assert config_path == hubctl._config_arg()
         return DummyClient()
@@ -376,8 +357,7 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     task_store = TaskStore(state_store)
-    artifact_store = ArtifactStore(state_dir / "artifacts")
-    verif_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
+    verif_store = VerificationStore(state_store, task_store=task_store)
     mem_store = MemoryStore(state_store)
 
     # 1. Auto complete without criteria: PLANNED -> ACTIVE -> VERIFYING -> COMPLETED
@@ -405,21 +385,11 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     # State should now be in VERIFYING
     assert task_store.get("t-2").status == TaskStatus.VERIFYING
 
-    # Add receipt and complete
-    proof = {
-        "kind": "work_source_review", "passed": True, "task_id": "t-2",
-        "owner": "agent", "repository_revision": "", "mutation_generation": 0,
-        "criteria": ["criterion 1"],
-    }
-    evidence_id = artifact_store.put_json(proof, "agent", "source_review")
-    rcpt = VerificationReceipt.create(
-        task_id="t-2", criterion="criterion 1", passed=True, evidence_id=evidence_id,
-        owner="agent", evidence_type="source_review",
-    )
-    verif_store.record(rcpt)
-    task_store.add_verification_receipt("t-2", "criterion 1", rcpt.receipt_id)
-    c2 = task_store.complete("t-2")
-    assert c2.status == TaskStatus.COMPLETED
+    # A hand-built source-review payload cannot satisfy the command-evidence gate.
+    with pytest.raises(CompletionGateError):
+        task_store.complete("t-2")
+    assert task_store.get("t-2").status == TaskStatus.VERIFYING
+    assert task_store.fail("t-2", reason="required evidence was not produced").status == TaskStatus.FAILED
 
     # 3. Direct fail from PLANNED and ACTIVE
     t3 = task_store.create(GoalContract(goal="Failing task"), ScopeContext(task_id="t-3"), task_id="t-3")
@@ -439,8 +409,8 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     assert f4.status == TaskStatus.FAILED
 
     # 5. Counts
-    assert task_store.count(TaskStatus.FAILED) == 2
-    assert task_store.count(TaskStatus.COMPLETED) == 2
+    assert task_store.count(TaskStatus.FAILED) == 3
+    assert task_store.count(TaskStatus.COMPLETED) == 1
     assert task_store.count() == 4
 
     # 6. MemoryStore count

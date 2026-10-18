@@ -70,7 +70,10 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     repo_root, revision = make_trusted_repository(tmp_path, 'test = ["test"]')
     app = app_with_agent_state(tmp_path)
     contract = GoalContract(goal="Interrupted Goal", acceptance_criteria=("test",))
-    ctx = ScopeContext(repository_id=str(repo_root), task_id="task-resume-1")
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(repo_root, configured_state_dir(app.config)).coordination_id
+    ctx = ScopeContext(repository_id=repository_id, task_id="task-resume-1")
     t = app.agent_tasks.create(
         contract, ctx, task_id="task-resume-1", actor="agent", idempotency_key="cr-1",
         repo_root=str(repo_root),
@@ -91,7 +94,6 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     command_result = app.commands.run_project_command(
         "test",
         str(repo_root),
-        tenant=t.owner,
         task_id=t.task_id,
         criterion="test",
         timeout=30,
@@ -108,7 +110,7 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     }
     assert receipt["evidence_type"] == "test"
     verification_artifact = app.artifacts.get(
-        receipt["evidence_id"], max_chars=50_000, tenant=t.owner
+        receipt["evidence_id"], max_chars=50_000
     )
     assert verification_artifact["success"] is True
     assert "command" not in json.loads(verification_artifact["text"])
@@ -144,7 +146,7 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     completed = app2.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="done", actor="agent", idempotency_key="tx-complete")
     assert completed.status is TaskStatus.COMPLETED
     assert app2.commands.get_command_execution_record(
-        receipt["command_id"], tenant=t.owner, task_id=t.task_id, repository_root=str(repo_root)
+        receipt["command_id"], task_id=t.task_id, repository_root=str(repo_root)
     ) is not None
     app2.close()
 
@@ -189,7 +191,10 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
     )
     app = app_with_agent_state(tmp_path)
     contract = GoalContract(goal="Gated Goal", acceptance_criteria=("test", "lint"))
-    ctx = ScopeContext(repository_id=str(repo_root), task_id="task-gate-1")
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
+    repository_id = resolve_project_context(repo_root, configured_state_dir(app.config)).coordination_id
+    ctx = ScopeContext(repository_id=repository_id, task_id="task-gate-1")
     t = app.agent_tasks.create(
         contract, ctx, task_id="task-gate-1", actor="agent", idempotency_key="g-cr",
         repo_root=str(repo_root),
@@ -214,7 +219,6 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
     test_result = app.commands.run_project_command(
         "test",
         str(repo_root),
-        tenant=t.owner,
         task_id=t.task_id,
         criterion="test",
         timeout=30,
@@ -254,7 +258,6 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
     lint_result = app.commands.run_project_command(
         "lint",
         str(repo_root),
-        tenant=t.owner,
         task_id=t.task_id,
         criterion="lint",
         timeout=30,
@@ -283,6 +286,7 @@ def test_e2e_negative_knowledge_retry_decision(tmp_path: Path):
         error="Syntax error: expected semicolon",
         exit_code=1,
         state_revision="rev-initial",
+        repository_root=str(tmp_path),
     )
     # Record failed outcome via capture
     inc = app.agent_incidents.capture(outcome)
@@ -290,12 +294,16 @@ def test_e2e_negative_knowledge_retry_decision(tmp_path: Path):
     assert inc.attempts == 1
 
     # Same revision retry query -> stop (negative knowledge)
-    dec1 = app.agent_incidents.retry_decision(inc.fingerprint, state_revision="rev-initial")
+    dec1 = app.agent_incidents.retry_decision(
+        inc.fingerprint, state_revision="rev-initial", root=str(tmp_path)
+    )
     assert dec1.action == "stop"
     assert "negative knowledge" in dec1.reason
 
     # Revision changed -> allowed to retry
-    dec2 = app.agent_incidents.retry_decision(inc.fingerprint, state_revision="rev-changed")
+    dec2 = app.agent_incidents.retry_decision(
+        inc.fingerprint, state_revision="rev-changed", root=str(tmp_path)
+    )
     assert dec2.action == "retry"
 
     app.close()
@@ -316,22 +324,23 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
         record = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_id,
             key=key,
             value=key,
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "repository_id": repository_id, "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_id},
         )
         return app.agent_memory.record(record, actor="user", idempotency_key=idempotency_key)
 
     first = record_memory("matching parser fact", "app-memory-first")
-    token = trace_context.set_context(tenant="tenant-a")
+    token = trace_context.set_context(agent="agent-a", request_id="req-a", trace_id="trace-a")
     try:
         task = app.agent_tasks.create(
             GoalContract(goal="matching parser fact"),
-            ScopeContext(repository_id=str(root), branch="main", task_id="app-memory-task"),
+            ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-task"),
             task_id="app-memory-task",
+            repo_root=str(root),
         )
         initial_ids = {
             item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]
@@ -389,8 +398,9 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
         assert learned.status is MemoryStatus.CONFIRMED
         follow_up = app.agent_tasks.create(
             GoalContract(goal="confirmed post-task learning sentinel"),
-            ScopeContext(repository_id=str(root), branch="main", task_id="app-memory-follow-up"),
+            ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-follow-up"),
             task_id="app-memory-follow-up",
+            repo_root=str(root),
         )
         follow_up_ids = {
             item["id"] for item in follow_up.checkpoint.state_data["memory_context"]["items"]

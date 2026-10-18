@@ -269,33 +269,28 @@ class VerificationReceipt:
         )
 
 
-_RECEIPT_METADATA_KEY = "__agent_os_receipt_metadata_v1__"
-
-
-def _receipt_details_for_storage(receipt: VerificationReceipt) -> dict[str, Any]:
-    if not (receipt.owner or receipt.mutation_generation is not None or receipt.evidence_type):
-        return copy.deepcopy(receipt.details)
-    return {
-        _RECEIPT_METADATA_KEY: {
-            "details": copy.deepcopy(receipt.details),
-            "owner": receipt.owner,
-            "mutation_generation": receipt.mutation_generation,
-            "evidence_type": receipt.evidence_type,
-        }
-    }
-
-
-def _receipt_details_from_storage(raw: str) -> tuple[dict[str, Any], str, int | None, str]:
-    details = json.loads(raw) if raw else {}
-    metadata = details.get(_RECEIPT_METADATA_KEY) if isinstance(details, Mapping) else None
-    if not isinstance(metadata, Mapping):
-        return dict(details or {}), "", None, ""
-    generation = metadata.get("mutation_generation")
-    return (
-        dict(metadata.get("details") or {}),
-        str(metadata.get("owner", "") or ""),
-        generation,
-        str(metadata.get("evidence_type", "") or ""),
+def _stored_receipt(row: Any) -> VerificationReceipt:
+    """Decode the sole supported stored receipt contract without promotion."""
+    if len(row) != 11 or type(row[9]) is not int or row[9] not in (0, 1):
+        raise ValueError("invalid stored verification receipt passed flag")
+    if not isinstance(row[10], str) or not row[10]:
+        raise ValueError("stored verification receipt requires canonical metadata; offline conversion required")
+    details = json.loads(row[10])
+    if not isinstance(details, dict):
+        raise ValueError("stored verification receipt details must be an object")
+    metadata = details.pop("_verification_receipt", None)
+    required = {"schema", "owner", "mutation_generation", "evidence_type"}
+    if not isinstance(metadata, dict) or set(metadata) != required:
+        raise ValueError("stored verification receipt requires canonical metadata; offline conversion required")
+    if metadata["schema"] != VERIFICATION_RECEIPT_METADATA_SCHEMA:
+        raise ValueError("unsupported stored verification receipt metadata; offline conversion required")
+    return VerificationReceipt(
+        receipt_id=row[0], task_id=row[1], criterion=row[2],
+        owner=metadata["owner"], change_intent_id=row[3], evidence_id=row[4],
+        command_id=row[5], repository_revision=row[6],
+        mutation_generation=metadata["mutation_generation"],
+        evidence_type=metadata["evidence_type"], observed_at=row[7],
+        expires_at=row[8], passed=(row[9] == 1), details=details,
     )
 
 
@@ -651,7 +646,6 @@ def evaluate_completion_receipts(
     project_config_digest: str = "",
     project_root: str | Path = "",
     command_execution_record_lookup: Any | None = None,
-    trusted_tenant: str = "",
     trusted_repository_root: str | Path = "",
     require_execution_provenance: bool = False,
     now: float | None = None,
@@ -761,7 +755,6 @@ def evaluate_completion_receipts(
             expected_project_environment_sha256=(configured_environment_sha256 or {}).get(criterion, ""),
             expected_project_root=project_root,
             command_execution_record_lookup=command_execution_record_lookup,
-            trusted_tenant=trusted_tenant,
             trusted_repository_root=trusted_repository_root,
             require_execution_provenance=require_execution_provenance,
             evidence_store=evidence_store,
@@ -815,12 +808,11 @@ def _receipt_evidence_matches(
     expected_project_environment_sha256: str = "",
     expected_project_root: str | Path = "",
     command_execution_record_lookup: Any | None = None,
-    trusted_tenant: str = "",
     trusted_repository_root: str | Path = "",
     require_execution_provenance: bool = False,
     evidence_store: Any | None = None,
 ) -> bool:
-    """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
+    """Bind positive receipts to complete proof with exact task/owner/repository pins."""
     if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
         return False
     if require_repository_revision and not receipt.repository_revision.strip():
@@ -837,7 +829,7 @@ def _receipt_evidence_matches(
         artifact = artifact_store.get(
             receipt.evidence_id,
             max_chars=50_000,
-            tenant=expected_owner,
+
         )
     except Exception:
         return False
@@ -990,7 +982,6 @@ def _receipt_evidence_matches(
         if require_execution_provenance and receipt.command_id:
             if (
                 not callable(command_execution_record_lookup)
-                or not trusted_tenant
                 or not trusted_repository_root
             ):
                 return False
@@ -1000,7 +991,6 @@ def _receipt_evidence_matches(
                 )
                 execution_record = command_execution_record_lookup(
                     receipt.command_id,
-                    tenant=trusted_tenant,
                     task_id=receipt.task_id,
                     repository_root=canonical_root,
                 )
@@ -1021,7 +1011,7 @@ def _receipt_evidence_matches(
                 "project_execution_binding_sha256",
             )
             if (
-                execution_record.get("schema") != "command_execution_record.v1"
+                execution_record.get("schema") != "command_execution_record.v2"
                 or execution_record.get("command_id") != receipt.command_id
                 or execution_record.get("task_id") != receipt.task_id
                 or execution_record.get("owner") != expected_owner
@@ -1752,25 +1742,14 @@ class VerificationStore:
             else current_mutation_generation
         )
         expected_owner = str(task_state.owner or "").strip() if task_state else ""
-        # HTTP task creation binds session_id to the authenticated tenant. Broker
-        # provenance uses that identity; artifact ownership remains the agent.
-        trusted_tenant = (
-            str(task_state.context.session_id or "").strip() if task_state else ""
-        ) or expected_owner
-        trusted_repository_root: str | Path = ""
-        if isinstance(state_data, Mapping):
-            trusted_repository_root = str(state_data.get("repo_root", "") or "").strip()
-            worktree_data = state_data.get("worktree")
-            if not trusted_repository_root and isinstance(worktree_data, Mapping):
-                trusted_repository_root = str(worktree_data.get("repo_root", "") or "").strip()
-        if not trusted_repository_root and project_root:
-            trusted_repository_root = project_root
-        if not trusted_repository_root and task_state:
-            context_root = str(task_state.context.repository_id or "").strip()
-            if context_root and Path(context_root).is_absolute():
-                trusted_repository_root = context_root
+        from .agent_tasks import _task_scope_root
+        from .repository_scope import canonical_repository_root
+
+        trusted_repository_root = _task_scope_root(task_state) if task_state else ""
+        if project_root and str(canonical_repository_root(str(project_root))) != trusted_repository_root:
+            raise ValueError("project_root conflicts with the server-managed task scope")
         repo_bound = bool(
-            state_data.get("repo_root")
+            trusted_repository_root
             or (task_state and task_state.context.repository_id)
             or (task_state and task_state.checkpoint.affected_paths)
         )
@@ -1795,29 +1774,7 @@ class VerificationStore:
 
         latest_by_criterion: dict[str, VerificationReceipt] = {}
         for row in rows:
-            stored_details = json.loads(row[10]) if row[10] else {}
-            stored_details = dict(stored_details) if isinstance(stored_details, Mapping) else {}
-            receipt_metadata = stored_details.pop("_verification_receipt", {})
-            receipt_metadata = dict(receipt_metadata) if isinstance(receipt_metadata, Mapping) else {}
-            metadata_schema = str(receipt_metadata.get("schema", "") or "")
-            if metadata_schema not in {"", VERIFICATION_RECEIPT_METADATA_SCHEMA}:
-                receipt_metadata = {}
-            r = VerificationReceipt(
-                receipt_id=row[0],
-                task_id=row[1],
-                criterion=row[2],
-                owner=str(receipt_metadata.get("owner", "")),
-                change_intent_id=row[3],
-                evidence_id=row[4],
-                command_id=row[5],
-                repository_revision=row[6],
-                mutation_generation=int(receipt_metadata.get("mutation_generation", 0) or 0),
-                evidence_type=str(receipt_metadata.get("evidence_type", "source_review")),
-                observed_at=row[7],
-                expires_at=row[8],
-                passed=bool(row[9]),
-                details=stored_details,
-            )
+            r = _stored_receipt(row)
             if r.criterion not in latest_by_criterion:
                 latest_by_criterion[r.criterion] = r
 
@@ -1844,7 +1801,6 @@ class VerificationStore:
             project_config_digest=project_config_digest,
             project_root=project_root,
             command_execution_record_lookup=self.command_execution_record_lookup,
-            trusted_tenant=trusted_tenant,
             trusted_repository_root=trusted_repository_root,
             require_execution_provenance=self.require_execution_provenance,
             now=current_time,
@@ -1948,29 +1904,7 @@ class VerificationStore:
         rows = retry_busy(_fetch, retries=5, base_delay_seconds=0.02)
         receipts: list[VerificationReceipt] = []
         for row in rows:
-            stored_details = json.loads(row[10]) if row[10] else {}
-            stored_details = dict(stored_details) if isinstance(stored_details, Mapping) else {}
-            receipt_metadata = stored_details.pop("_verification_receipt", {})
-            receipt_metadata = dict(receipt_metadata) if isinstance(receipt_metadata, Mapping) else {}
-            metadata_schema = str(receipt_metadata.get("schema", "") or "")
-            if metadata_schema not in {"", VERIFICATION_RECEIPT_METADATA_SCHEMA}:
-                receipt_metadata = {}
-            r = VerificationReceipt(
-                receipt_id=row[0],
-                task_id=row[1],
-                criterion=row[2],
-                owner=str(receipt_metadata.get("owner", "")),
-                change_intent_id=row[3],
-                evidence_id=row[4],
-                command_id=row[5],
-                repository_revision=row[6],
-                mutation_generation=int(receipt_metadata.get("mutation_generation", 0) or 0),
-                evidence_type=str(receipt_metadata.get("evidence_type", "source_review")),
-                observed_at=row[7],
-                expires_at=row[8],
-                passed=bool(row[9]),
-                details=stored_details,
-            )
+            r = _stored_receipt(row)
             receipts.append(r)
 
         if fmt == "trailers":

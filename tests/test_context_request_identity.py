@@ -126,8 +126,7 @@ def test_context_delta_history_is_scoped_to_semantic_request_identity(tmp_path) 
         task_id="task-1",
         token_budget=512,
         root=str(tmp_path / "repo-a"),
-        tenant="tenant-a",
-        identity="agent-a",
+        session_id="session-a",
         phase="review",
         focus=("cache identity",),
     )
@@ -140,8 +139,8 @@ def test_context_delta_history_is_scoped_to_semantic_request_identity(tmp_path) 
     different_phase = compiler.compile(
         replace(request, phase="handoff", since_hash=first.etag())
     )
-    different_identity = compiler.compile(
-        replace(request, identity="agent-b", since_hash=first.etag())
+    different_session = compiler.compile(
+        replace(request, session_id="session-b", since_hash=first.etag())
     )
 
     assert unchanged.unchanged is True
@@ -150,8 +149,8 @@ def test_context_delta_history_is_scoped_to_semantic_request_identity(tmp_path) 
     assert different_root.delta_from == first.etag()
     assert different_phase.unchanged is False
     assert different_phase.etag() != first.etag()
-    assert different_identity.unchanged is False
-    assert different_identity.etag() != first.etag()
+    assert different_session.unchanged is False
+    assert different_session.etag() != first.etag()
 
 
 def test_scope_changes_return_full_seeded_context_instead_of_unrelated_delta(tmp_path) -> None:
@@ -169,7 +168,6 @@ def test_scope_changes_return_full_seeded_context_instead_of_unrelated_delta(tmp
         task_id="task-1",
         token_budget=512,
         root=str(root),
-        tenant="tenant-a",
         session_id="session-a",
         focus=("cache identity",),
         preload_profile="default",
@@ -180,7 +178,6 @@ def test_scope_changes_return_full_seeded_context_instead_of_unrelated_delta(tmp
     changes = (
         {"root": str(other_root)},
         {"task_id": "task-2"},
-        {"tenant": "tenant-b"},
         {"session_id": "session-b"},
         {"focus": ("artifact expiry",)},
         {"preload_profile": "alternate"},
@@ -309,17 +306,15 @@ def test_context_request_builder_preserves_trusted_hints_outside_payload() -> No
             "task_id": "task-1",
             "path_hints": [{"path": "src/untrusted.py"}],
             "settings_digest": "untrusted-digest",
-            "identity": "untrusted-agent",
+            "session_id": "session-a",
         },
-        tenant="tenant-a",
-        identity="agent-a",
         trusted_path_hints=trusted_hints,
         settings_digest="trusted-digest",
     )
 
     assert request.path_hints == trusted_hints[:64]
     assert request.settings_digest == "trusted-digest"
-    assert request.identity == "agent-a"
+    assert request.session_id == "session-a"
 
 
 def test_context_compiler_rejects_non_mapping_path_hint(tmp_path) -> None:
@@ -440,9 +435,9 @@ def test_context_request_builder_consumes_resolved_project_context(tmp_path, mon
             "task_id": "task-7",
             "root": str(tmp_path),
             "repo_revision": "rev-7",
+            "session_id": "session-7",
             "path_hints": [{"path": "payload/untrusted.py"}],
         },
-        identity="agent-7",
         trusted_path_hints=({"path": str(tmp_path / "src/request.py"), "provenance": "trusted_request"},),
         project_context=project_context,
     )
@@ -453,7 +448,7 @@ def test_context_request_builder_consumes_resolved_project_context(tmp_path, mon
         "repository_revision": "rev-7",
     }
     assert request.settings_digest == project_digest
-    assert request.identity == "agent-7"
+    assert request.session_id == "session-7"
     assert [hint["path"] for hint in request.path_hints] == [
         "docs/pinned.md",
         "src/main.py",

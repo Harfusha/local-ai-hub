@@ -99,14 +99,14 @@ def coordination_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
             client_type = OverrideCoordinationIdClient
         client = client_type(
-            tenant=owner, config_path=str(client_config), auto_start=False
+             config_path=str(client_config), auto_start=False
         )
         clients.append(client)
         monkeypatch.setattr(mcp_server, "CLIENT", client)
         return mcp_server.local_ai_coord(
             action=action,
             root=str(context.root),
-            tenant=tool_tenant,
+
             max_response_tokens=3200,
             response_profile="standard",
             extra_fields=["records"],
@@ -157,7 +157,7 @@ def _find_repository_memory(env, context, *, owner: str, key: str) -> dict:
     return env.app.agent_memory.find(
         scope="repository",
         repository_id=_coordination_id(context),
-        tenant=owner,
+
         key=key,
         semantic=False,
     )
@@ -225,7 +225,7 @@ def test_repo_memory_rejects_a_different_tenant(coordination_bridge):
         scope="session",
         session_id="tenant-b",
         root=str(repository.root),
-        tenant="tenant-b",
+
         key="tenant-rule",
         semantic=False,
     )
@@ -378,7 +378,7 @@ def test_client_cannot_override_namespace_or_tenant_for_memory_find(
         attacker,
         "memory_find",
         owner="tenant-attacker",
-        tenant="tenant-victim",
+
         scope="repository",
         key="private-rule",
         repository_id=_coordination_id(victim),
@@ -418,7 +418,7 @@ def test_client_memory_requests_leave_repository_and_tenant_identity_to_server(
         root="C:/repo",
         scope="repository",
         scope_id="forged-scope",
-        tenant="tenant-victim",
+
         repository_id="forged-repository",
         coordination_id="forged-coordination",
         record=record,

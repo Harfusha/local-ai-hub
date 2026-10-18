@@ -34,7 +34,6 @@ def _invoke_http_secret_scan(payload, scanner, monkeypatch):
     handler._begin_trace = lambda _path: None
     handler._read_json = lambda: payload
     handler._validate_payload = lambda _path, _payload: None
-    handler._tenant = lambda: "test"
     handler._claim_recovery = lambda *_args: True
     handler._finish_debug_trace = lambda *_args, **_kwargs: None
     handler._close_trace_context = lambda: None

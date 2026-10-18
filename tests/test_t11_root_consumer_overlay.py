@@ -16,7 +16,7 @@ class RecordingEmbedder:
         self.space_id = space_id
         self.calls = 0
 
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         self.calls += 1
         return {
             "success": True,
@@ -30,7 +30,7 @@ class ConfigIdentityEmbedder:
     def __init__(self):
         self.calls = 0
 
-    def embed(self, texts, _tenant, **_kwargs):
+    def embed(self, texts, **_kwargs):
         self.calls += 1
         return {
             "success": True,
@@ -53,11 +53,11 @@ def _store(tmp_path: Path, *, rag_config: dict | None = None, models: dict | Non
     )
 
 
-def _stored_paths(store: RAGStore, tenant: str, workspace: str) -> set[str]:
+def _stored_paths(store: RAGStore, workspace: str) -> set[str]:
     with closing(store._connect()) as con:
         rows = con.execute(
-            "SELECT path FROM files WHERE tenant=? AND workspace=?",
-            (store._scope_key(tenant), workspace),
+            "SELECT path FROM files WHERE workspace=?",
+            (workspace,),
         ).fetchall()
     return {str(row[0]) for row in rows}
 
@@ -92,17 +92,17 @@ def test_custom_extensions_and_project_size_policy_reach_all_rag_entrypoints(
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(str(root), "tenant", workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(str(root), "tenant", workspace, max_files=10)
+        result = store.index_step(root=str(root), workspace=workspace, max_files=10)
     else:
         result = store.index_paths_step(
-            str(root), "tenant", workspace,
-            ["view.tmpl", "asset.blob", "large.tmpl", "included.py"],
+            str(root), workspace=workspace,
+            paths=["view.tmpl", "asset.blob", "large.tmpl", "included.py"],
         )
 
     assert result["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == {"view.tmpl", "included.py"}
+    assert _stored_paths(store, workspace) == {"view.tmpl", "included.py"}
 
 
 def test_explicit_index_path_cannot_resurrect_rag_ignored_directory(tmp_path: Path):
@@ -118,15 +118,15 @@ def test_explicit_index_path_cannot_resurrect_rag_ignored_directory(tmp_path: Pa
     store = _store(tmp_path, rag_config=rag_config)
     workspace = store.workspace_id(str(root))
     assert store.index_paths_step(
-        str(root), "tenant", workspace, ["generated/keep.py"]
+        str(root), workspace=workspace, paths=["generated/keep.py"]
     )["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == {"generated/keep.py"}
+    assert _stored_paths(store, workspace) == {"generated/keep.py"}
 
     rag_config["ignore_dirs"] = ["generated"]
-    result = store.index_paths_step(str(root), "tenant", workspace, ["generated/keep.py"])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=["generated/keep.py"])
 
     assert result["success"] is True
-    assert _stored_paths(store, "tenant", workspace) == set()
+    assert _stored_paths(store, workspace) == set()
 
 
 @pytest.mark.parametrize("entrypoint", ["index", "index_step", "index_paths_step"])
@@ -153,15 +153,15 @@ def test_linked_worktree_skip_rag_override_reaches_rag_entrypoints(
     workspace = store.workspace_id(str(linked))
 
     if entrypoint == "index":
-        result = store.index(str(linked), "tenant", workspace)
+        result = store.index(root=str(linked), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(str(linked), "tenant", workspace, max_files=10)
+        result = store.index_step(root=str(linked), workspace=workspace, max_files=10)
     else:
-        result = store.index_paths_step(str(linked), "tenant", workspace, ["module.py"])
+        result = store.index_paths_step(root=str(linked), workspace=workspace, paths=["module.py"])
 
     assert result["success"] is True
     assert result.get("skipped") is True
-    assert _stored_paths(store, "tenant", workspace) == set()
+    assert _stored_paths(store, workspace) == set()
 
 
 def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_path: Path):
@@ -176,7 +176,7 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
     }
     embedder = ConfigIdentityEmbedder()
     first = RAGStore(first_config, services=embedder)
-    assert first.index(str(root), "tenant", workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     first_space = first._embedding_space_id({"backend": "test"})
     assert embedder.calls == 1
 
@@ -187,7 +187,7 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
     }
     second = RAGStore(second_config, services=embedder)
     second_space = second._embedding_space_id({"backend": "test"})
-    result = second.index(str(root), "tenant", workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert first_space != second_space
     assert result["success"] is True
@@ -197,8 +197,8 @@ def test_full_index_reembeds_unchanged_files_after_embedding_config_change(tmp_p
         spaces = {
             str(row[0])
             for row in con.execute(
-                "SELECT DISTINCT embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                (second._scope_key("tenant"), workspace),
+                "SELECT DISTINCT embedding_space FROM chunks WHERE workspace=?",
+                (workspace,),
             ).fetchall()
         }
     assert spaces == {second_space}

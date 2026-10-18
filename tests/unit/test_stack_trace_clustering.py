@@ -106,7 +106,7 @@ def test_command_broker_compact_deduplicates_repetitive_traces(tmp_path: Path) -
         "success": False,
     }
 
-    compacted = broker._compact(raw_result, tenant="test", command="pytest")
+    compacted = broker._compact(raw_result, command="pytest")
 
     assert "stack_trace_clusters" in compacted
     assert len(compacted["stack_trace_clusters"]) == 1

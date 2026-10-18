@@ -129,7 +129,7 @@ def test_two_process_linked_worktree_lease_expiry_reclaim_rejects_stale_commit(
     con = sqlite3.connect(state_dir / "agent_state.sqlite")
     try:
         updated = con.execute(
-            "UPDATE leases SET expires_at=0 WHERE lease_id=? AND tenant='owner-a'",
+            "UPDATE leases SET expires_at=0 WHERE lease_id=? AND owner='owner-a'",
             (old["claim"]["lease_id"],),
         )
         assert updated.rowcount == 1

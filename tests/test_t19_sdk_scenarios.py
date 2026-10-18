@@ -30,8 +30,6 @@ def scenario_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        "\n[security]\napi_token_tenant = \"t19-scenario\"\n"
-        "tenant_derivation_key = \"t19-test-root-derivation-key-0123456789\"\n"
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -44,7 +42,6 @@ def scenario_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         system,
         max_tokens,
         temperature,
-        tenant,
         source,
         priority,
         **kwargs,
@@ -181,8 +178,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
             "cached": False,
             "result": {"success": True, "exit_code": 0},
         },
-        task.owner,
-        "command_verification",
+        kind="command_verification",
     )
     receipt = client.verify_receipt(
         "t19-change-check",

@@ -12,7 +12,7 @@ def test_existing_question_lookup_preflights_response_budget(monkeypatch):
     monkeypatch.setattr(
         store,
         "_validate_question_scope",
-        lambda *_args: ("root", "tenant", "session"),
+        lambda *_args: ("root", "session"),
     )
     monkeypatch.setattr(store, "_init_projection_table", lambda: None)
     monkeypatch.setattr(
@@ -58,7 +58,6 @@ def test_existing_question_lookup_preflights_response_budget(monkeypatch):
     with pytest.raises(agent_tasks_module.CheckpointResponseBudgetError):
         store.ask_question(
             root="root",
-            tenant="tenant",
             session_id="session",
             question_id="q_existing",
             response_budget_tokens=128,

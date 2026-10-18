@@ -62,7 +62,7 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
                 f'"source_text":"{case["source"]}"',
                 error,
                 request_id=f'req-{index} tok' + f'en="{case["secret"]}"',
-                tenant=f'tenant-{index} pass' + f'word="{case["secret"]}"',
+
                 agent=f'worker-{index} source="{case["source"]}"',
                 retryable=True,
                 recovered=True,

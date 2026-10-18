@@ -206,7 +206,6 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
     repo = tmp_path / "repo"; repo.mkdir()
     root = str(repo.resolve()).replace("\\", "/")
     workspace = app.rag.workspace_id(root)
-    scope = app.rag._scope_key("__preprocess__")
     try:
         with closing(app.deterministic._connect()) as con:
             con.execute("INSERT INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)", (root,"a.py","h","python",0,time.time()))
@@ -216,8 +215,8 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
             con.commit()
         blob = sqlite3.Binary(b"\x00\x00\x80?\x00\x00\x00@")
         with closing(app.rag._connect()) as con:
-            con.execute("INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)", (scope,workspace,"a.py",1,10,"h"))
-            con.execute("INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)", (scope,workspace,"a.py",0,"h","hello",blob))
+            con.execute("INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)", (workspace,"a.py",1,10,"h"))
+            con.execute("INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?)", (workspace,"a.py",0,"h","hello",blob))
             con.commit()
         archive = app.export_bundle(root)
         with zipfile.ZipFile(io.BytesIO(archive)) as zf:
@@ -228,13 +227,13 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
                 con.execute(f"DELETE FROM {table} WHERE root=?", (root,))
             con.commit()
         with closing(app.rag._connect()) as con:
-            con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=?", (scope,workspace)); con.commit()
+            con.execute("DELETE FROM chunks WHERE workspace=?", (workspace,)); con.commit()
         restored = app.import_bundle(archive, root)
         assert restored["success"] is True and restored["version"] == __version__
         with closing(app.deterministic._connect()) as con:
             assert con.execute("SELECT COUNT(*) FROM facts WHERE root=?", (root,)).fetchone()[0] == 1
         with closing(app.rag._connect()) as con:
-            raw = con.execute("SELECT embedding FROM chunks WHERE tenant=? AND workspace=?", (scope,workspace)).fetchone()[0]
+            raw = con.execute("SELECT embedding FROM chunks WHERE workspace=?", (workspace,)).fetchone()[0]
         assert isinstance(raw, (bytes, bytearray, memoryview))
         assert bytes(raw) == bytes(blob)
     finally:
@@ -381,7 +380,7 @@ enabled=false
 ''',
         encoding="utf-8",
     )
-    client = HubClient(tenant="probe", config_path=str(cfg), auto_start=False)
+    client = HubClient( config_path=str(cfg), auto_start=False)
 
     def forbidden():
         raise AssertionError("ensure_server must not be called for non-starting probes")
@@ -401,7 +400,6 @@ auto_start_ollama=false
 max_request_body_bytes=1024
 [security]
 api_token="0123456789abcdef"
-api_token_principal="http-test"
 allowed_roots=["{repo.as_posix()}"]
 [hardware]
 profile="cpu"

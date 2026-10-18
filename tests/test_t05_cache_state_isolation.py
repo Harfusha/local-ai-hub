@@ -32,7 +32,6 @@ def _assert_task_memory_access(store: MemoryStore, memory: MemoryRecord, task_id
         scope_id=task_id,
         task_id=task_id,
         root=memory.provenance["root"],
-        tenant=memory.provenance["tenant"],
     )
     assert restored is not None
     assert restored.value == memory.value
@@ -147,13 +146,11 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="another-worktree",
-        tenant="tenant-a",
     ) is False
     assert memories.delete(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
-        tenant="tenant-b",
     ) is False
     assert memories.get(
         record.record_id,
@@ -164,7 +161,6 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
-        tenant="tenant-a",
     ).value == "keep until owner deletes"
     assert memories.find_relations(source_entity=record.record_id) == original_relations
 
@@ -172,13 +168,11 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
-        tenant="tenant-a",
     ) is True
     assert memories.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
-        tenant="tenant-a",
     ) is None
     assert memories.find_relations(source_entity=record.record_id) == []
 

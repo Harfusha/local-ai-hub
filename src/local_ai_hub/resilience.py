@@ -207,7 +207,7 @@ class RecoveryJournal:
         return connect_sqlite(self.path, timeout_seconds=5.0)
 
     _REQUIRED_REQUEST_COLUMNS = frozenset({
-        "request_id", "tenant", "identity", "action", "payload_fingerprint", "state",
+        "request_id", "action", "payload_fingerprint", "state",
         "created_at", "updated_at", "detail", "status_code", "response_json",
     })
 
@@ -229,8 +229,7 @@ class RecoveryJournal:
             raise _IncompatibleRecoveryJournalSchema(
                 "unable to safely inspect recovery journal WAL"
             ) from exc
-        missing = self._REQUIRED_REQUEST_COLUMNS - columns
-        if missing and has_wal:
+        if columns != self._REQUIRED_REQUEST_COLUMNS and has_wal:
             # Schema creation or an upgrade may be committed only in WAL. Inspect a
             # private snapshot so SQLite can replay WAL without touching the durable
             # journal or its sidecars. Keep the temporary database under state_dir.
@@ -246,11 +245,15 @@ class RecoveryJournal:
                 raise _IncompatibleRecoveryJournalSchema(
                     "unable to safely verify recovery journal schema from WAL"
                 ) from exc
-        missing = self._REQUIRED_REQUEST_COLUMNS - columns
-        if missing:
-            names = ", ".join(sorted(missing))
+        if columns != self._REQUIRED_REQUEST_COLUMNS:
+            missing = self._REQUIRED_REQUEST_COLUMNS - columns
+            extra = columns - self._REQUIRED_REQUEST_COLUMNS
+            names = ", ".join(
+                ([f"missing: {', '.join(sorted(missing))}"] if missing else [])
+                + ([f"retired or unsupported: {', '.join(sorted(extra))}"] if extra else [])
+            )
             raise _IncompatibleRecoveryJournalSchema(
-                f"incompatible recovery journal schema; missing required columns: {names}"
+                f"incompatible recovery journal schema; explicit offline conversion required ({names})"
             )
 
     def _create_schema(self) -> bool:
@@ -259,8 +262,8 @@ class RecoveryJournal:
         with closing(self._connect()) as con:
             initialize_wal(con)
             con.execute("""CREATE TABLE IF NOT EXISTS requests (
-                request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, identity TEXT NOT NULL DEFAULT '',
-                action TEXT NOT NULL, payload_fingerprint TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+                request_id TEXT PRIMARY KEY, action TEXT NOT NULL,
+                payload_fingerprint TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
                 created_at REAL NOT NULL, updated_at REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
                 status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
             )""")
@@ -287,10 +290,6 @@ class RecoveryJournal:
         except _IncompatibleRecoveryJournalSchema as exc:
             self._journal_unavailable = True
             self._journal_unavailable_reason = str(exc)
-            try:
-                self._journal_unavailable_marker.write_text(str(exc), encoding="utf-8")
-            except OSError:
-                pass
         except sqlite3.DatabaseError as exc:
             # Lock contention is not corruption. Do not rename a valid journal just because
             # another process is finishing its final transaction during startup.
@@ -327,10 +326,8 @@ class RecoveryJournal:
     def begin(
         self,
         request_id: str,
-        tenant: str,
-        action: str,
         *,
-        identity: str,
+        action: str,
         payload: Any,
     ) -> dict[str, Any]:
         """Atomically claim a request ID or return its recorded outcome."""
@@ -347,15 +344,15 @@ class RecoveryJournal:
                 with closing(self._connect()) as con:
                     con.execute("BEGIN IMMEDIATE")
                     row = con.execute(
-                        "SELECT tenant,identity,action,payload_fingerprint,state,status_code,response_json,updated_at "
+                        "SELECT action,payload_fingerprint,state,status_code,response_json,updated_at "
                         "FROM requests WHERE request_id=?",
                         (request_id,),
                     ).fetchone()
                     if row is None:
                         con.execute(
-                            "INSERT INTO requests(request_id,tenant,identity,action,payload_fingerprint,state,created_at,updated_at,detail,status_code,response_json) "
-                            "VALUES(?,?,?,?,?,'running',?,?,?,0,'')",
-                            (request_id, tenant, identity, action, fingerprint, now, now, ""),
+                            "INSERT INTO requests(request_id,action,payload_fingerprint,state,created_at,updated_at,detail,status_code,response_json) "
+                            "VALUES(?,?,?,'running',?,?,?,0,'')",
+                            (request_id, action, fingerprint, now, now, ""),
                         )
                         result.update({
                             "claimed": True,
@@ -364,22 +361,22 @@ class RecoveryJournal:
                             "status_code": 0,
                             "payload_fingerprint": fingerprint,
                         })
-                    elif row[0] != tenant or row[1] != identity or row[2] != action or row[3] != fingerprint:
+                    elif row[0] != action or row[1] != fingerprint:
                         result.update({
                             "claimed": False,
                             "state": "conflict",
-                            "error": "request id already belongs to a different identity, operation, or payload",
+                            "error": "request id already belongs to a different operation or payload",
                         })
                     else:
-                        response = self._decode_response(str(row[6] or ""))
-                        state = str(row[4])
+                        response = self._decode_response(str(row[4] or ""))
+                        state = str(row[2])
                         result.update({
                             "claimed": False,
                             "state": state,
-                            "status_code": int(row[5] or 0),
+                            "status_code": int(row[3] or 0),
                             "response": response,
-                            "updated_at": float(row[7]),
-                            "payload_fingerprint": str(row[3]),
+                            "updated_at": float(row[5]),
+                            "payload_fingerprint": str(row[1]),
                         })
                         if state == "abandoned" or (state in {"done", "failed"} and response is None):
                             result["outcome_unknown"] = True
@@ -565,28 +562,26 @@ class RecoveryJournal:
     def lookup(
         self,
         request_id: str,
-        tenant: str,
-        action: str,
         *,
-        identity: str,
+        action: str,
         payload_fingerprint: str,
     ) -> dict[str, Any] | None:
         request_id = self.validate_request_id(request_id)
         with self._lock, closing(self._connect()) as con:
             row = con.execute(
-                "SELECT tenant,identity,action,payload_fingerprint,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
+                "SELECT action,payload_fingerprint,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
                 (request_id,),
             ).fetchone()
         if not row:
             return None
-        if row[0] != tenant or row[1] != identity or row[2] != action or row[3] != payload_fingerprint:
-            return {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
-        response = self._decode_response(str(row[6] or ""))
-        result = {"state": row[4], "status_code": int(row[5] or 0), "response": response, "updated_at": float(row[7])}
+        if row[0] != action or row[1] != payload_fingerprint:
+            return {"state": "conflict", "error": "request id already belongs to a different operation or payload"}
+        response = self._decode_response(str(row[4] or ""))
+        result = {"state": row[2], "status_code": int(row[3] or 0), "response": response, "updated_at": float(row[5])}
         pending = self._pending_completions.get(request_id)
         if pending is not None:
             result.update(self._completion_result(pending))
-        if row[4] == "abandoned" or (row[4] in {"done", "failed"} and response is None):
+        if row[2] == "abandoned" or (row[2] in {"done", "failed"} and response is None):
             if pending is None:
                 result["outcome_unknown"] = True
         return result
@@ -594,24 +589,22 @@ class RecoveryJournal:
     def lookup_metadata(
         self,
         request_id: str,
-        tenant: str,
-        action: str,
         *,
-        identity: str,
+        action: str,
     ) -> dict[str, Any] | None:
         """Return journal state without response data for trusted trace reconciliation."""
         request_id = self.validate_request_id(request_id)
         with self._lock, closing(self._connect()) as con:
             row = con.execute(
-                "SELECT tenant,identity,action,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
+                "SELECT action,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
                 (request_id,),
             ).fetchone()
         if not row:
             return None
-        if row[0] != tenant or row[1] != identity or row[2] != action:
-            return {"state": "conflict", "error": "request id already belongs to a different identity or operation"}
-        state = str(row[3])
-        result = {"state": state, "status_code": int(row[4] or 0), "updated_at": float(row[6])}
+        if row[0] != action:
+            return {"state": "conflict", "error": "request id already belongs to a different operation"}
+        state = str(row[1])
+        result = {"state": state, "status_code": int(row[2] or 0), "updated_at": float(row[4])}
         pending = self._pending_completions.get(request_id)
         if pending is not None:
             completion = self._completion_result(pending)
@@ -619,18 +612,16 @@ class RecoveryJournal:
             result.pop("outcome_unknown", None)
             if completion.get("outcome_unknown"):
                 result["outcome_unknown"] = True
-        elif state == "abandoned" or (state in {"done", "failed"} and not row[5]):
+        elif state == "abandoned" or (state in {"done", "failed"} and not row[3]):
             result["outcome_unknown"] = True
         return result
 
     def wait_for(
         self,
         request_id: str,
-        tenant: str,
-        action: str,
         *,
+        action: str,
         timeout_seconds: float,
-        identity: str,
         payload_fingerprint: str,
     ) -> dict[str, Any] | None:
         """Wait briefly for active duplicate work, never re-executing it."""
@@ -639,8 +630,7 @@ class RecoveryJournal:
         with self._changed:
             while True:
                 current = self.lookup(
-                    request_id, tenant, action, identity=identity,
-                    payload_fingerprint=payload_fingerprint,
+                    request_id, action=action, payload_fingerprint=payload_fingerprint,
                 )
                 if current is None or current.get("state") != "running":
                     if current is None:
@@ -690,9 +680,9 @@ class RecoveryJournal:
         with closing(self._connect()) as con:
             counts = {row[0]: int(row[1]) for row in con.execute("SELECT state,COUNT(*) FROM requests GROUP BY state")}
             recent = [
-                {"request_id": r[0], "tenant": r[1], "action": r[2], "state": r[3], "updated_at": r[4], "detail": r[5]}
+                {"request_id": r[0], "action": r[1], "state": r[2], "updated_at": r[3], "detail": r[4]}
                 for r in con.execute(
-                    "SELECT request_id,tenant,action,state,updated_at,detail FROM requests ORDER BY updated_at DESC LIMIT ?",
+                    "SELECT request_id,action,state,updated_at,detail FROM requests ORDER BY updated_at DESC LIMIT ?",
                     (max(1, min(int(limit), 100)),),
                 )
             ]

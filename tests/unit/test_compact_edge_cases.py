@@ -31,6 +31,20 @@ def test_syntax_aware_truncate_non_positive_and_tight_caps() -> None:
     assert syntax_aware_truncate("foo\x00bar\x00baz", 6) == "foobar"
 
 
+@pytest.mark.parametrize(
+    ("text", "max_chars"),
+    (
+        ("{\n" + "x" * 200, 40),
+        ("[\n" + "x" * 200, 64),
+        ("x" * 200, 45),
+    ),
+)
+def test_syntax_aware_truncate_never_exceeds_character_limit(text: str, max_chars: int) -> None:
+    result = syntax_aware_truncate(text, max_chars)
+
+    assert len(result) <= max_chars
+
+
 def test_syntax_aware_truncate_defensive_types() -> None:
     # Non-string passes through
     assert syntax_aware_truncate(12345, 10) == 12345  # type: ignore

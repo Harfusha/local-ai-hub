@@ -52,7 +52,7 @@ def _write_project(tmp_path: Path) -> tuple[LocalAIApp, Path, str]:
 
 def _proof(app: LocalAIApp, result: dict) -> dict:
     artifact = app.artifacts.get(
-        result["verification_evidence_id"], max_chars=50_000, tenant="agent"
+        result["verification_evidence_id"], max_chars=50_000
     )
     assert artifact["success"] is True, artifact
     return json.loads(artifact["text"])

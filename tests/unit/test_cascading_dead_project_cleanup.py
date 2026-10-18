@@ -32,7 +32,7 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
     tmp_path: Path, monkeypatch, failure_site: str
 ) -> None:
     state_dir = tmp_path / "state"
-    config = {"server": {"state_dir": str(state_dir)}, "rag": {"scope": "shared"}}
+    config = {"server": {"state_dir": str(state_dir)}, "rag": {}}
     rag = RAGStore(config, _StubEmbeddings())
     code_index = CodeIndex(config, None)
     deterministic = DeterministicEngine(config, code_index=code_index)
@@ -48,16 +48,17 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
     live_root = tmp_path / "live-project"
     live_root.mkdir()
     (live_root / "shared.md").write_text("aliased content", encoding="utf-8")
-    shared_workspace = "shared-workspace"
+    dead_workspace = "removed-project-workspace"
+    live_workspace = "live-project-workspace"
     now = time.time()
     with closing(sqlite3.connect(preprocessor.db_path)) as con:
         con.execute(
             "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at) VALUES(?,?,?,?,?,?)",
-            (str(dead_root), shared_workspace, "complete", "complete", now, now),
+            (str(dead_root), dead_workspace, "complete", "complete", now, now),
         )
         con.execute(
             "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at) VALUES(?,?,?,?,?,?)",
-            (str(live_root), shared_workspace, "complete", "complete", now, now),
+            (str(live_root), live_workspace, "complete", "complete", now, now),
         )
         for root, path in ((str(dead_root), "stale.md"), (str(live_root), "shared.md")):
             con.execute(
@@ -66,9 +67,14 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
             )
         con.commit()
 
-    scope = rag._scope_key("__preprocess__")
-    first_index = rag.index_paths_step(str(dead_root), "__preprocess__", shared_workspace, ["stale.md", "shared.md"])
+    first_index = rag.index_paths_step(
+        str(dead_root), workspace=dead_workspace, paths=["stale.md"]
+    )
     assert first_index["success"], first_index
+    live_index = rag.index_paths_step(
+        str(live_root), workspace=live_workspace, paths=["shared.md"]
+    )
+    assert live_index["success"], live_index
     large = "derived project payload " * 9000
     for db_path in (preprocessor.db_path, code_index.db_path, rag.db_path):
         with closing(sqlite3.connect(db_path)) as con:
@@ -96,15 +102,15 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
         con.commit()
     with closing(sqlite3.connect(rag.db_path)) as con:
         con.execute(
-            "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-            (scope, shared_workspace, "legacy-user.md", 0, 1, "unowned"),
+            "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+            (dead_workspace, "unrelated.md", 0, 1, "unowned"),
         )
         con.commit()
     shutil.rmtree(dead_root)
     before_cleanup_bytes = rag.db_path.stat().st_size
     with closing(rag._connect()) as con:
-        generation_before = rag._workspace_index_generation(con, scope, shared_workspace)
-    revision_before = rag.revision("__preprocess__", shared_workspace)
+        generation_before = rag._workspace_index_generation(con, dead_workspace)
+    revision_before = rag.revision(workspace=dead_workspace)
 
     before_db_sizes = {
         path: path.stat().st_size
@@ -168,24 +174,24 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
 
     with closing(sqlite3.connect(rag.db_path)) as con:
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (scope, shared_workspace, "stale.md"),
+            "SELECT 1 FROM files WHERE workspace=? AND path=?",
+            (dead_workspace, "stale.md"),
         ).fetchone() is None
         assert con.execute(
-            "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND path=?",
-            (scope, shared_workspace, "stale.md"),
+            "SELECT 1 FROM chunks WHERE workspace=? AND path=?",
+            (dead_workspace, "stale.md"),
         ).fetchone() is None
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (scope, shared_workspace, "shared.md"),
+            "SELECT 1 FROM files WHERE workspace=? AND path=?",
+            (live_workspace, "shared.md"),
         ).fetchone() is not None
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (scope, shared_workspace, "legacy-user.md"),
+            "SELECT 1 FROM files WHERE workspace=? AND path=?",
+            (dead_workspace, "unrelated.md"),
         ).fetchone() is not None
     with closing(rag._connect()) as con:
-        assert rag._workspace_index_generation(con, scope, shared_workspace) > generation_before
-    assert rag.revision("__preprocess__", shared_workspace) != revision_before
+        assert rag._workspace_index_generation(con, dead_workspace) > generation_before
+    assert rag.revision(workspace=dead_workspace) != revision_before
     for db_path, size_before in before_db_sizes.items():
         with closing(sqlite3.connect(db_path)) as con:
             assert con.execute("PRAGMA auto_vacuum").fetchone() == (2,)
@@ -230,7 +236,7 @@ def test_startup_repair_keeps_failed_cleanup_discoverable_after_restart(
     config = {
         "server": {"state_dir": str(state_dir)},
         "preprocessing": {"enabled": False, "startup_delay_seconds": 0},
-        "rag": {"scope": "shared"},
+        "rag": {},
     }
     rag = RAGStore(config, _StubEmbeddings())
     code_index = CodeIndex(config, None)
@@ -255,7 +261,7 @@ def test_startup_repair_keeps_failed_cleanup_discoverable_after_restart(
         )
         con.commit()
     indexed = rag.index_paths_step(
-        str(dead_root), "__preprocess__", workspace, ["owned.md"]
+        str(dead_root), workspace=workspace, paths=["owned.md"]
     )
     assert indexed["success"], indexed
     with closing(sqlite3.connect(code_index.db_path)) as con:
@@ -358,7 +364,7 @@ def test_unregister_purge_failure_retains_retry_marker_and_retries(tmp_path: Pat
     config = {
         "server": {"state_dir": str(state_dir)},
         "preprocessing": {"enabled": False},
-        "rag": {"scope": "shared"},
+        "rag": {},
     }
     rag = RAGStore(config, _StubEmbeddings())
     code_index = CodeIndex(config, None)
@@ -388,9 +394,9 @@ def test_unregister_purge_failure_retains_retry_marker_and_retries(tmp_path: Pat
                 (str(project_root), path, "hash", 1, 1, now),
             )
         con.commit()
-    indexed = rag.index_paths_step(str(root), "__preprocess__", workspace, ["owned.md"])
+    indexed = rag.index_paths_step(str(root), workspace=workspace, paths=["owned.md"])
     assert indexed["success"], indexed
-    rag.index_paths_step(str(root), "__preprocess__", workspace, ["shared.md"])
+    rag.index_paths_step(str(root), workspace=workspace, paths=["shared.md"])
     with closing(sqlite3.connect(code_index.db_path)) as con:
         con.execute(
             "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)",
@@ -438,14 +444,13 @@ def test_unregister_purge_failure_retains_retry_marker_and_retries(tmp_path: Pat
             "SELECT 1 FROM file_refs WHERE root=?", (str(root),)
         ).fetchone() is None
     with closing(sqlite3.connect(rag.db_path)) as con:
-        scope = rag._scope_key("__preprocess__")
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path='owned.md'",
-            (scope, workspace),
+            "SELECT 1 FROM files WHERE workspace=? AND path='owned.md'",
+            (workspace,),
         ).fetchone() is None
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path='shared.md'",
-            (scope, workspace),
+            "SELECT 1 FROM files WHERE workspace=? AND path='shared.md'",
+            (workspace,),
         ).fetchone() is not None
 
     # Unregister without purge remains scheduler-only and preserves reusable data.
@@ -482,14 +487,14 @@ def test_watcher_ignores_paths_under_missing_cleanup_root(tmp_path: Path) -> Non
     assert preprocessor._watch_relevant(missing_root, missing_root / "file.py") is None
 
 
-def test_tenant_cleanup_removes_orphan_rag_paths_from_existing_database(tmp_path: Path) -> None:
+def test_workspace_cleanup_removes_orphan_rag_paths_and_preserves_unrelated_paths(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
-    config = {"server": {"state_dir": str(state_dir)}, "rag": {"scope": "tenant"}}
+    config = {"server": {"state_dir": str(state_dir)}, "rag": {}}
     rag = RAGStore(config, _StubEmbeddings())
     preprocessor = ProjectPreprocessor(config, None, rag, None, None, None)
     dead_root = tmp_path / "removed-project"
     dead_root.mkdir()
-    (dead_root / "stale.md").write_text("orphaned tenant RAG content " * 9000, encoding="utf-8")
+    (dead_root / "stale.md").write_text("orphaned project RAG content " * 9000, encoding="utf-8")
     workspace = rag.workspace_id(str(dead_root))
     now = time.time()
     with closing(sqlite3.connect(preprocessor.db_path)) as con:
@@ -499,17 +504,19 @@ def test_tenant_cleanup_removes_orphan_rag_paths_from_existing_database(tmp_path
         )
         con.commit()
 
-    scope = rag._scope_key("__preprocess__")
     with closing(sqlite3.connect(rag.db_path)) as con:
         con.execute("PRAGMA auto_vacuum=NONE")
         con.execute("VACUUM")
+    indexed = rag.index_paths_step(
+        str(dead_root), workspace=workspace, paths=["stale.md"]
+    )
+    assert indexed["success"], indexed
+    with closing(sqlite3.connect(rag.db_path)) as con:
         con.execute(
-            "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-            ("user-tenant", workspace, "user.md", 0, 1, "hash"),
+            "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+            (workspace, "unrelated.md", 0, 1, "hash"),
         )
         con.commit()
-    indexed = rag.index_paths_step(str(dead_root), "__preprocess__", workspace, ["stale.md"])
-    assert indexed["success"], indexed
     shutil.rmtree(dead_root)
     before_cleanup_bytes = rag.db_path.stat().st_size
 
@@ -518,12 +525,12 @@ def test_tenant_cleanup_removes_orphan_rag_paths_from_existing_database(tmp_path
     with closing(sqlite3.connect(rag.db_path)) as con:
         assert con.execute("PRAGMA auto_vacuum").fetchone() == (2,)
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
-            (scope, workspace, "stale.md"),
+            "SELECT 1 FROM files WHERE workspace=? AND path=?",
+            (workspace, "stale.md"),
         ).fetchone() is None
         assert con.execute(
-            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
-            ("user-tenant", workspace, "user.md"),
+            "SELECT 1 FROM files WHERE workspace=? AND path=?",
+            (workspace, "unrelated.md"),
         ).fetchone() is not None
     assert rag.db_path.stat().st_size < before_cleanup_bytes
 

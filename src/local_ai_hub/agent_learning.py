@@ -40,6 +40,16 @@ def _safe_int(val: Any, default: int = 0) -> int:
         return default
 
 
+def _canonical_text(value: Any, field_name: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    if "\x00" in value or value != value.strip():
+        raise ValueError(f"{field_name} must be canonical text")
+    if not allow_empty and not value:
+        raise ValueError(f"{field_name} cannot be empty")
+    return value
+
+
 class CandidateStatus(str, Enum):
     CANDIDATE = "candidate"
     REPLAY_PASSED = "replay_passed"
@@ -87,10 +97,10 @@ class RollbackTrigger:
     restored_version: str = ""
 
     def __post_init__(self) -> None:
-        cid = str(self.candidate_id or "").replace("\x00", "").strip()
-        act = str(self.action or "rollback").replace("\x00", "").strip()
-        rsn = str(self.reason or "").replace("\x00", "").strip()
-        rv = str(self.restored_version or "").replace("\x00", "").strip()
+        cid = _canonical_text(self.candidate_id, "candidate_id")
+        act = _canonical_text(self.action, "action")
+        rsn = _canonical_text(self.reason, "reason", allow_empty=True)
+        rv = _canonical_text(self.restored_version, "restored_version", allow_empty=True)
         object.__setattr__(self, "candidate_id", cid)
         object.__setattr__(self, "action", act)
         object.__setattr__(self, "reason", rsn)
@@ -113,11 +123,13 @@ class PromotionDecision:
     version: str
 
     def __post_init__(self) -> None:
-        cid = str(self.candidate_id or "").replace("\x00", "").strip()
-        app = str(self.approver or "").replace("\x00", "").strip()
-        ver = str(self.version or "").replace("\x00", "").strip()
+        cid = _canonical_text(self.candidate_id, "candidate_id")
+        app = _canonical_text(self.approver, "approver")
+        ver = _canonical_text(self.version, "version")
+        if not isinstance(self.promoted, bool):
+            raise TypeError("promoted must be a boolean")
         object.__setattr__(self, "candidate_id", cid)
-        object.__setattr__(self, "promoted", self.promoted is True)
+        object.__setattr__(self, "promoted", self.promoted)
         object.__setattr__(self, "approver", app)
         object.__setattr__(self, "version", ver)
 
@@ -144,30 +156,33 @@ class ImprovementCandidate:
     updated_at: float = 0.0
 
     def __post_init__(self) -> None:
-        cid = str(self.candidate_id or "").replace("\x00", "").strip()
-        nm = str(self.name or "").replace("\x00", "").strip()
-        bv = str(self.baseline_version or "").replace("\x00", "").strip()
-        cv = str(self.candidate_version or "").replace("\x00", "").strip()
+        cid = _canonical_text(self.candidate_id, "candidate_id")
+        nm = _canonical_text(self.name, "name")
+        bv = _canonical_text(self.baseline_version, "baseline_version")
+        cv = _canonical_text(self.candidate_version, "candidate_version")
+        app = _canonical_text(self.approver, "approver", allow_empty=True)
         st = self.status
-        if isinstance(st, str):
-            try:
-                st = CandidateStatus(st)
-            except ValueError:
-                st = CandidateStatus.CANDIDATE
-        elif not isinstance(st, CandidateStatus):
-            st = CandidateStatus.CANDIDATE
+        if not isinstance(st, CandidateStatus):
+            raise TypeError("status must be a CandidateStatus value")
 
         thresh: dict[str, float] = {}
-        if isinstance(self.slo_thresholds, Mapping) and not isinstance(self.slo_thresholds, bool):
-            for k, v in self.slo_thresholds.items():
-                thresh[str(k).replace("\x00", "").strip()] = _safe_float(v, 0.0)
+        if not isinstance(self.slo_thresholds, Mapping) or isinstance(self.slo_thresholds, bool):
+            raise TypeError("slo_thresholds must be a mapping of canonical strings to numbers")
+        for key, value in self.slo_thresholds.items():
+            if not isinstance(key, str):
+                raise TypeError("slo_thresholds keys must be strings")
+            canonical_key = _canonical_text(key, "slo_thresholds key")
+            thresh[canonical_key] = _safe_float(value, 0.0)
 
         mets: dict[str, float] = {}
-        if isinstance(self.metrics, Mapping) and not isinstance(self.metrics, bool):
-            for k, v in self.metrics.items():
-                mets[str(k).replace("\x00", "").strip()] = _safe_float(v, 0.0)
+        if not isinstance(self.metrics, Mapping) or isinstance(self.metrics, bool):
+            raise TypeError("metrics must be a mapping of canonical strings to numbers")
+        for key, value in self.metrics.items():
+            if not isinstance(key, str):
+                raise TypeError("metrics keys must be strings")
+            canonical_key = _canonical_text(key, "metrics key")
+            mets[canonical_key] = _safe_float(value, 0.0)
 
-        app = str(self.approver or "").replace("\x00", "").strip()
         ca = max(0.0, _safe_float(self.created_at, 0.0))
         ua = max(0.0, _safe_float(self.updated_at, 0.0))
 
@@ -200,6 +215,13 @@ class ImprovementCandidate:
         slo_thresholds: dict[str, float] | None = None,
         metrics: dict[str, float] | None = None,
     ) -> ImprovementCandidate:
+        def _mapping_copy(value: Any, field_name: str) -> dict[str, float]:
+            if value is None:
+                return {}
+            if not isinstance(value, Mapping) or isinstance(value, bool):
+                raise TypeError(f"{field_name} must be a mapping of canonical strings to numbers")
+            return dict(value)
+
         now = time.time()
         return cls(
             candidate_id=f"cand_{uuid.uuid4().hex[:12]}",
@@ -207,8 +229,8 @@ class ImprovementCandidate:
             baseline_version=baseline_version,
             candidate_version=candidate_version,
             status=CandidateStatus.CANDIDATE,
-            slo_thresholds=dict(slo_thresholds or {}),
-            metrics=dict(metrics or {}),
+            slo_thresholds=_mapping_copy(slo_thresholds, "slo_thresholds"),
+            metrics=_mapping_copy(metrics, "metrics"),
             approver="",
             created_at=now,
             updated_at=now,

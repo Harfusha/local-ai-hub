@@ -227,7 +227,7 @@ class OwnedBiomeDaemon:
         self._version: str | None = None
         self._closed = False
         self._call_lock = threading.Lock()
-        self._sessions: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+        self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._drainers: list[threading.Thread] = []
         self._workers: list[threading.Thread] = []
 
@@ -359,24 +359,24 @@ class OwnedBiomeDaemon:
         if errors:
             raise EOFError("Biome LSP write failed") from errors[0]
 
-    def has_session(self, tenant: str, root: str) -> bool:
-        key = (tenant, os.path.normcase(str(Path(root).resolve(strict=False))))
+    def has_session(self, root: str) -> bool:
+        key = os.path.normcase(str(Path(root).resolve(strict=False)))
         return key in self._sessions
 
     @property
     def session_count(self) -> int:
         return len(self._sessions)
 
-    def diagnostics(self, tenant: str, root: str, paths: list[str], *, deadline: float,
+    def diagnostics(self, root: str, *, paths: list[str], deadline: float,
                     should_stop: Callable[[], bool]) -> list[dict[str, Any]]:
         if not self._call_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
             raise TimeoutError("Biome LSP session is busy")
         try:
-            return self._diagnostics_locked(tenant, root, paths, deadline=deadline, should_stop=should_stop)
+            return self._diagnostics_locked(root, paths=paths, deadline=deadline, should_stop=should_stop)
         finally:
             self._call_lock.release()
 
-    def _diagnostics_locked(self, tenant: str, root: str, paths: list[str], *, deadline: float,
+    def _diagnostics_locked(self, root: str, *, paths: list[str], deadline: float,
                             should_stop: Callable[[], bool]) -> list[dict[str, Any]]:
         if not paths or len(paths) > 64:
             raise ValueError("Biome daemon accepts 1-64 files")
@@ -385,7 +385,7 @@ class OwnedBiomeDaemon:
         proc, version = self._ensure_server(deadline)
         if should_stop() or time.monotonic() >= deadline:
             raise TimeoutError("Biome LSP request cancelled or timed out")
-        session_key = (tenant, os.path.normcase(str(Path(root).resolve(strict=True))))
+        session_key = os.path.normcase(str(Path(root).resolve(strict=True)))
         session = self._sessions.get(session_key)
         if session is not None and session.get("retiring"):
             raise BiomeOwnershipError("Biome LSP session cleanup is pending or unconfirmed")

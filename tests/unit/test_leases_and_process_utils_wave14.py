@@ -42,77 +42,77 @@ def test_scope_lease_store_scalar_coercion_and_path_validation(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path / "leases")
 
     # Reject scalar paths (e.g. string instead of list/set of strings)
-    res_scalar = store.claim("tenant1", str(tmp_path), "some/file.py")
+    res_scalar = store.claim(owner="execution-1", root=str(tmp_path), paths="some/file.py")
     assert res_scalar["success"] is False
     assert "paths must be a sequence of path strings" in res_scalar["error"]
 
     # Reject unordered collections and Path objects; the contract is a sequence of strings.
-    assert store.claim("tenant1", str(tmp_path), {"some/file.py"})["success"] is False
-    assert store.claim("tenant1", str(tmp_path), [tmp_path / "some" / "file.py"])["success"] is False
+    assert store.claim(owner="execution-1", root=str(tmp_path), paths={"some/file.py"})["success"] is False
+    assert store.claim(owner="execution-1", root=str(tmp_path), paths=[tmp_path / "some" / "file.py"])["success"] is False
 
     # Reject scalar identity coercions before opening a lease transaction.
-    assert store.claim(1, str(tmp_path), ["valid.py"])["error"] == "invalid tenant"
-    assert store.claim("tenant1", tmp_path, ["valid.py"])["error"] == "invalid root"
-    assert store.claim("tenant1", str(tmp_path), ["valid.py"], purpose=1)["error"] == "invalid purpose"
+    assert store.claim(owner=1, root=str(tmp_path), paths=["valid.py"])["error"] == "invalid owner"
+    assert store.claim(owner="execution-1", root=tmp_path, paths=["valid.py"])["error"] == "invalid root"
+    assert store.claim(owner="execution-1", root=str(tmp_path), paths=["valid.py"], purpose=1)["error"] == "invalid purpose"
     assert store.claim(
-        "tenant1", str(tmp_path), ["valid.py"], coordination_id=42
+        owner="execution-1", root=str(tmp_path), paths=["valid.py"], coordination_id=42
     )["error"] == "invalid project coordination id"
 
     # Reject paths containing invalid elements
-    res_invalid_elem = store.claim("tenant1", str(tmp_path), ["valid.py", "bad\x00.py"])
+    res_invalid_elem = store.claim(owner="execution-1", root=str(tmp_path), paths=["valid.py", "bad\x00.py"])
     assert res_invalid_elem["success"] is False
     assert "invalid lease path" in res_invalid_elem["error"]
 
     # Invalid TTL values reject instead of silently selecting a default.
-    res_invalid_ttl = store.claim("tenant1", str(tmp_path), ["invalid.py"], ttl_seconds=True)
+    res_invalid_ttl = store.claim(owner="execution-1", root=str(tmp_path), paths=["invalid.py"], ttl_seconds=True)
     assert res_invalid_ttl["success"] is False
     assert res_invalid_ttl["error"] == "ttl_seconds must be a positive integer"
-    res_invalid_float_ttl = store.claim("tenant1", str(tmp_path), ["invalid-float.py"], ttl_seconds=900.0)
+    res_invalid_float_ttl = store.claim(owner="execution-1", root=str(tmp_path), paths=["invalid-float.py"], ttl_seconds=900.0)
     assert res_invalid_float_ttl["success"] is False
 
-    res_valid = store.claim("tenant1", str(tmp_path), ["valid.py"])
+    res_valid = store.claim(owner="execution-1", root=str(tmp_path), paths=["valid.py"])
     assert res_valid["success"] is True
     lease_id = res_valid["lease_id"]
 
     # Release rejects scalar non-string lease_id
-    res_rel_scalar = store.release("tenant1", 12345)
+    res_rel_scalar = store.release(owner="execution-1", lease_id=12345)
     assert res_rel_scalar["success"] is False
     assert "lease_id must be a string" in res_rel_scalar["error"]
-    assert store.release("tenant1", "")["success"] is False
-    assert store.release("tenant1", None)["success"] is False
-    assert store.release("   ", "lease-id")["success"] is False
+    assert store.release(owner="execution-1", lease_id="")["success"] is False
+    assert store.release(owner="execution-1", lease_id=None)["success"] is False
+    assert store.release(owner="   ", lease_id="lease-id")["success"] is False
 
     # Renew rejects scalar non-string lease_id
-    res_renew_scalar = store.renew("tenant1", 12345)
+    res_renew_scalar = store.renew(owner="execution-1", lease_id=12345)
     assert res_renew_scalar["success"] is False
     assert "lease_id must be a string" in res_renew_scalar["error"]
 
     # Renew rejects boolean TTL rather than silently selecting a default.
-    res_renew = store.renew("tenant1", lease_id, ttl_seconds=False)
+    res_renew = store.renew(owner="execution-1", lease_id=lease_id, ttl_seconds=False)
     assert res_renew["success"] is False
     assert res_renew["error"] == "ttl_seconds must be a positive integer"
 
     # Proper release
-    res_rel = store.release("tenant1", lease_id)
+    res_rel = store.release(owner="execution-1", lease_id=lease_id)
     assert res_rel["success"] is True
 
 
-def test_scope_lease_store_tenant_cleanup_is_explicit(tmp_path: Path):
+def test_scope_lease_store_writer_cleanup_is_explicit(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path / "leases")
-    first = store.claim("tenant1", str(tmp_path), ["one.py"])
-    second = store.claim("tenant1", str(tmp_path), ["two.py"])
+    first = store.claim(owner="execution-1", root=str(tmp_path), paths=["one.py"])
+    second = store.claim(owner="execution-1", root=str(tmp_path), paths=["two.py"])
     assert first["success"] and second["success"]
 
-    result = store.release_tenant("tenant1")
+    result = store.release_owner(owner="execution-1")
     assert result == {"success": True, "released_rows": 2}
-    assert store.release("tenant1", first["lease_id"])["released_rows"] == 0
+    assert store.release(owner="execution-1", lease_id=first["lease_id"])["released_rows"] == 0
 
 
 def test_scope_lease_store_read_and_renew_inputs_fail_closed(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path / "leases")
 
-    assert store.renew(1, "lease-id")["error"] == "invalid tenant"
-    assert store.renew("tenant1", " lease-id ")["error"] == "invalid lease_id"
+    assert store.renew(owner=1, lease_id="lease-id")["error"] == "invalid owner"
+    assert store.renew(owner="execution-1", lease_id=" lease-id ")["error"] == "invalid lease_id"
     assert store.list(coordination_id=42) == []
     assert store.list(root=tmp_path) == []
     assert store.waits(coordination_id=True) == []
@@ -124,7 +124,7 @@ def test_scope_lease_store_read_and_renew_inputs_fail_closed(tmp_path: Path):
 
 def test_corrupt_live_lease_path_blocks_claim_and_check(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path / "leases")
-    held = store.claim("tenant-a", str(tmp_path), ["owned/file.py"])
+    held = store.claim(owner="writer-a:execution-1", root=str(tmp_path), paths=["owned/file.py"])
     assert held["success"] is True
     with closing(sqlite3.connect(store.path)) as con:
         with con:
@@ -133,7 +133,7 @@ def test_corrupt_live_lease_path_blocks_claim_and_check(tmp_path: Path):
                 ("../outside.py", held["lease_id"]),
             )
 
-    claim = store.claim("tenant-b", str(tmp_path), ["unrelated.py"])
+    claim = store.claim(owner="writer-b:execution-2", root=str(tmp_path), paths=["unrelated.py"])
     assert claim["success"] is False
     assert "overlaps another active agent lease" in claim["error"]
     assert store.check_path("unrelated.py", root=str(tmp_path))["leased"] is True

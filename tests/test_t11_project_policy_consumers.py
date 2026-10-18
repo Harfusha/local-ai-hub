@@ -126,7 +126,7 @@ def test_explicit_rag_ingestion_normalizes_windows_path_before_policy_and_storag
     (root / "private").mkdir(parents=True)
     (root / "private" / "keep.py").write_text("keep\n", encoding="utf-8")
     services = SimpleNamespace(
-        embed=lambda texts, _tenant, **_kwargs: {
+        embed=lambda texts, **_kwargs: {
             "success": True,
             "embedding_space_id": "test-space",
             "embeddings": [[1.0, 0.0] for _ in texts],
@@ -136,15 +136,15 @@ def test_explicit_rag_ingestion_normalizes_windows_path_before_policy_and_storag
     workspace = store.workspace_id(str(root.resolve()))
 
     result = store.index_paths_step(
-        str(root), "tenant", workspace, [r"private\keep.py"]
+        str(root), workspace=workspace, paths=[r"private\keep.py"]
     )
 
     assert result["success"] is True
     assert result["processed_paths"] == ["private/keep.py"]
     with closing(store._connect()) as con:
         row = con.execute(
-            "SELECT path,text FROM chunks WHERE tenant=? AND workspace=?",
-            (store._scope_key("tenant"), workspace),
+            "SELECT path,text FROM chunks WHERE workspace=?",
+            (workspace,),
         ).fetchone()
     assert row is not None
     assert row[0] == "private/keep.py"

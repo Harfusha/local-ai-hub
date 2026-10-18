@@ -23,8 +23,8 @@ def test_consistency_request_does_not_rewrite_repository_identity(value):
         ConsistencyRequest(root=value)
 
 
-def test_consistency_request_rejects_null_tenant():
-    with pytest.raises(ValueError):
+def test_consistency_request_rejects_retired_tenant_field():
+    with pytest.raises(TypeError):
         ConsistencyRequest(root="repository", tenant="tenant\x00")
 
 

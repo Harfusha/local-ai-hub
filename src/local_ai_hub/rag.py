@@ -12,6 +12,7 @@ import os
 import errno
 import sqlite3
 import sys
+import stat
 import threading
 import time
 from contextlib import closing
@@ -28,7 +29,6 @@ from .sqlite_support import (
     initialize_wal,
     is_busy_error,
     retry_busy,
-    quick_sanity_check,
 )
 from .process_utils import canonical_root, canonical_workspace_id
 
@@ -506,14 +506,11 @@ class RAGStore:
         state_dir = Path(config["server"]["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = state_dir / "rag.sqlite3"
-        if not ensure_incremental_vacuum(self.db_path).get("success"):
-            logging.getLogger(__name__).warning("RAG database incremental vacuum setup incomplete")
-        self.scope = str(config.get("rag", {}).get("scope", "shared")).lower()
         self._workspace_locks: dict[str, threading.RLock] = {}
         self._workspace_locks_guard = threading.Lock()
         self._index_lock = threading.RLock()
         self._index_flights_lock = threading.Lock()
-        self._index_flights: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._index_flights: dict[tuple[str, str], dict[str, Any]] = {}
         self._index_wait_timeout_seconds = float(
             config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 240)
         )
@@ -541,6 +538,9 @@ class RAGStore:
             "chunk_overlap": rag_cfg.get("chunk_overlap_chars", 450),
         })
         self.index_reset = False
+        self._validate_existing_database(self.db_path, self.index_fingerprint)
+        if not ensure_incremental_vacuum(self.db_path).get("success"):
+            logging.getLogger(__name__).warning("RAG database incremental vacuum setup incomplete")
         workspace_cfg = config.get("workspace_cache", {})
         self.search_cache = TieredCache(
             SQLiteCache(
@@ -557,8 +557,88 @@ class RAGStore:
         try:
             retry_busy(self._init_db, retries=5, base_delay_seconds=0.02)
         except sqlite3.DatabaseError as exc:
-            if not is_busy_error(exc):
-                self._recover_db()
+            if is_busy_error(exc):
+                raise
+            raise RuntimeError(
+                "RAG database is unreadable; original database and sidecars were preserved; "
+                "explicit offline recovery required"
+            ) from exc
+
+    @staticmethod
+    def _validate_existing_database(db_path: Path, fingerprint: str) -> None:
+        if not db_path.exists():
+            return
+        try:
+            if db_path.stat().st_size:
+                with db_path.open("rb") as database:
+                    header = database.read(16)
+                if header != b"SQLite format 3\x00":
+                    raise RuntimeError(
+                        "RAG database is unreadable; original database and sidecars were preserved; "
+                        "explicit offline recovery required"
+                    )
+        except OSError as exc:
+            raise RuntimeError(
+                "RAG database could not be inspected read-only; original database and sidecars "
+                "were preserved; explicit offline recovery required"
+            ) from exc
+        uri = db_path.resolve().as_uri() + "?mode=ro"
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+                known_tables = ("chunks", "files", "project_file_owners", "rag_meta", "chunk_fts")
+                tables = {str(row[0]) for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?,?)",
+                    known_tables,
+                )}
+                canonical = {"chunks", "files", "project_file_owners", "rag_meta"}
+                present = canonical.intersection(tables)
+                if "chunk_fts" in tables:
+                    present.add("chunk_fts")
+                if not present:
+                    return
+                if not canonical.issubset(tables):
+                    raise RuntimeError(
+                        "RAG database has an incomplete or incompatible durable schema; "
+                        "explicit offline conversion required"
+                    )
+                expected = {
+                    "chunks": {"workspace", "path", "chunk_no", "content_hash", "text", "embedding", "embedding_space"},
+                    "files": {"workspace", "path", "mtime_ns", "size", "content_hash"},
+                    "project_file_owners": {"workspace", "root", "path"},
+                    "rag_meta": {"key", "value"},
+                }
+                for table, required in expected.items():
+                    columns = {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
+                    if "tenant" in columns:
+                        raise RuntimeError(
+                            "RAG database has tenant-shaped durable schema; explicit offline conversion required"
+                        )
+                    if columns != required:
+                        raise RuntimeError(
+                            "RAG database has an incompatible durable schema; "
+                            "explicit offline conversion required"
+                        )
+                if "chunk_fts" in tables:
+                    fts_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(chunk_fts)")}
+                    if "tenant" in fts_columns or fts_columns != {"workspace", "path", "chunk_no", "text"}:
+                        raise RuntimeError(
+                            "RAG database has an incompatible durable schema; "
+                            "explicit offline conversion required"
+                        )
+                metadata = con.execute(
+                    "SELECT value FROM rag_meta WHERE key='index_fingerprint'"
+                ).fetchone()
+                stored_fingerprint = str(metadata[0]) if metadata is not None else None
+                if stored_fingerprint != fingerprint:
+                    reason = "fingerprint mismatch" if stored_fingerprint else "missing fingerprint"
+                    raise RuntimeError(
+                        f"RAG database has {reason}; explicit offline rebuild required"
+                    )
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(
+                "RAG database is unreadable; original database and sidecars were preserved; "
+                "explicit offline recovery required"
+            ) from exc
 
     def _get_workspace_lock(self, workspace: str | None = None) -> threading.RLock:
         ws_key = str(workspace or "default")
@@ -566,19 +646,6 @@ class RAGStore:
             if ws_key not in self._workspace_locks:
                 self._workspace_locks[ws_key] = threading.RLock()
             return self._workspace_locks[ws_key]
-
-    def _recover_db(self) -> None:
-        import time
-        stamp = int(time.time())
-        try:
-            if self.db_path.exists():
-                self.db_path.replace(self.db_path.with_name(self.db_path.name + f".corrupt-{stamp}"))
-            for suffix in ("-wal", "-shm"):
-                side = Path(str(self.db_path) + suffix)
-                if side.exists(): side.unlink()
-        except OSError:
-            pass
-        retry_busy(self._init_db, retries=5, base_delay_seconds=0.02)
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=5.0)
@@ -590,27 +657,11 @@ class RAGStore:
         return con
 
     def _init_db(self) -> None:
+        self._validate_existing_database(self.db_path, self.index_fingerprint)
         with closing(self._connect()) as con:
             initialize_wal(con)
-            if not quick_sanity_check(con):
-                raise sqlite3.DatabaseError("rag sanity check failed")
-            legacy_schema_reset = False
-            existing_chunks = con.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'"
-            ).fetchone()
-            if existing_chunks is not None:
-                chunk_columns = {
-                    str(row[1]) for row in con.execute("PRAGMA table_info(chunks)").fetchall()
-                }
-                if "embedding_space" not in chunk_columns:
-                    con.execute("DROP TABLE IF EXISTS chunk_fts")
-                    con.execute("DROP TABLE IF EXISTS chunks")
-                    con.execute("DROP TABLE IF EXISTS files")
-                    con.execute("DROP TABLE IF EXISTS rag_meta")
-                    legacy_schema_reset = True
             con.execute(
                 """CREATE TABLE IF NOT EXISTS chunks (
-                    tenant TEXT NOT NULL,
                     workspace TEXT NOT NULL,
                     path TEXT NOT NULL,
                     chunk_no INTEGER NOT NULL,
@@ -618,37 +669,34 @@ class RAGStore:
                     text TEXT NOT NULL,
                     embedding TEXT NOT NULL,
                     embedding_space TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (tenant, workspace, path, chunk_no)
+                    PRIMARY KEY (workspace, path, chunk_no)
                 )"""
             )
             con.execute(
                 """CREATE TABLE IF NOT EXISTS files (
-                    tenant TEXT NOT NULL,
                     workspace TEXT NOT NULL,
                     path TEXT NOT NULL,
                     mtime_ns INTEGER NOT NULL,
                     size INTEGER NOT NULL,
                     content_hash TEXT NOT NULL,
-                    PRIMARY KEY (tenant, workspace, path)
+                    PRIMARY KEY (workspace, path)
                 )"""
             )
             con.execute(
                 """CREATE TABLE IF NOT EXISTS project_file_owners (
-                    tenant TEXT NOT NULL,
                     workspace TEXT NOT NULL,
                     root TEXT NOT NULL,
                     path TEXT NOT NULL,
-                    PRIMARY KEY (tenant, workspace, root, path)
+                    PRIMARY KEY (workspace, root, path)
                 )"""
             )
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_project_file_owners_path "
-                "ON project_file_owners(tenant, workspace, path)"
+                "ON project_file_owners(workspace, path)"
             )
             try:
                 con.execute(
                     """CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
-                        tenant UNINDEXED,
                         workspace UNINDEXED,
                         path UNINDEXED,
                         chunk_no UNINDEXED,
@@ -663,34 +711,14 @@ class RAGStore:
                     value TEXT NOT NULL
                 )"""
             )
-            previous = con.execute("SELECT value FROM rag_meta WHERE key='index_fingerprint'").fetchone()
-            current = self.index_fingerprint
-            if previous is None:
-                existing = int(con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
-                self.index_reset = legacy_schema_reset or existing > 0
-                if existing:
-                    con.execute("DELETE FROM chunks")
-                    con.execute("DELETE FROM files")
-                    con.execute("DELETE FROM project_file_owners")
-                    try:
-                        con.execute("DELETE FROM chunk_fts")
-                    except Exception:
-                        pass
-            elif str(previous[0]) != current:
-                self.index_reset = True
-                con.execute("DELETE FROM chunks")
-                con.execute("DELETE FROM files")
-                con.execute("DELETE FROM project_file_owners")
-                try:
-                    con.execute("DELETE FROM chunk_fts")
-                except Exception:
-                    pass
-            con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES('index_fingerprint',?)", (current,))
-            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(tenant, workspace)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space ON chunks(tenant, workspace, embedding_space, path, chunk_no)")
+            con.execute(
+                "INSERT OR IGNORE INTO rag_meta(key,value) VALUES('index_fingerprint',?)",
+                (self.index_fingerprint,),
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(workspace)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space ON chunks(workspace, embedding_space, path, chunk_no)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tenant_hash ON chunks(tenant, content_hash)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace ON files(tenant, workspace)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace ON files(workspace)")
             con.commit()
 
     @staticmethod
@@ -777,6 +805,12 @@ class RAGStore:
             child_dirs: list[Path] = []
             for entry in entries:
                 try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    is_reparse_point = bool(
+                        getattr(entry_stat, "st_file_attributes", 0) & 0x400
+                    )
+                    if entry.is_symlink() or is_reparse_point:
+                        continue
                     if entry.is_dir(follow_symlinks=False):
                         if entry.name.lower() not in ignored:
                             child = Path(entry.path)
@@ -784,10 +818,6 @@ class RAGStore:
                                 root, child, settings, phase="rag",
                             ):
                                 child_dirs.append(child)
-                        continue
-                    # Never follow directory symlinks, matching os.walk's default,
-                    # but preserve the historical behavior for symlinked files.
-                    if entry.is_symlink() and entry.is_dir(follow_symlinks=True):
                         continue
                     path = Path(entry.path)
                     if extensions and path.suffix.lower() not in extensions:
@@ -1016,16 +1046,13 @@ class RAGStore:
         return chunks
 
 
-    def _scope_key(self, tenant: str) -> str:
-        return tenant if self.scope == "tenant" else "*"
+    @staticmethod
+    def _workspace_embedding_space_key(workspace: str) -> str:
+        return "workspace_embedding_space:" + stable_hash({"workspace": workspace})
 
     @staticmethod
-    def _workspace_embedding_space_key(scope_key: str, workspace: str) -> str:
-        return "workspace_embedding_space:" + stable_hash({"tenant": scope_key, "workspace": workspace})
-
-    @staticmethod
-    def _workspace_index_generation_key(scope_key: str, workspace: str) -> str:
-        return "workspace_index_generation:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+    def _workspace_index_generation_key(workspace: str) -> str:
+        return "workspace_index_generation:" + stable_hash({"workspace": workspace})
 
     @staticmethod
     def _project_root_identity(root: str | Path) -> str:
@@ -1033,23 +1060,73 @@ class RAGStore:
         return stable_hash({"root": canonical})
 
     @staticmethod
-    def _workspace_root_identity_key(scope_key: str, workspace: str) -> str:
-        return "workspace_root_identity:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+    def _workspace_root_identity_key(workspace: str) -> str:
+        return "workspace_root_identity:" + stable_hash({"workspace": workspace})
+
+    def require_workspace_root(self, *, workspace: str, root: str) -> None:
+        """Require an exact repository/workspace binding before workspace access.
+
+        A legacy populated workspace without a recorded root is ambiguous. It is
+        deliberately rejected for explicit offline rebuild rather than adopted
+        based on whichever repository asks first.
+        """
+        if type(root) is not str or not root or root != root.strip() or "\x00" in root:
+            raise ValueError("RAG root must be a canonical non-empty path string")
+        try:
+            resolved = Path(root).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("RAG root must be an existing repository directory") from exc
+        if (
+            not resolved.is_dir()
+            or Path(root).is_symlink()
+            or os.path.normcase(str(Path(root).absolute())) != os.path.normcase(str(resolved))
+        ):
+            raise ValueError("RAG root must be a real canonical directory without symlink aliases")
+        if (
+            type(workspace) is not str
+            or not workspace
+            or workspace != workspace.strip()
+            or any(character.isspace() for character in workspace)
+            or "\x00" in workspace
+            or len(workspace) > 256
+        ):
+            raise ValueError("RAG workspace must be a canonical bounded identifier")
+
+        expected_identity = self._project_root_identity(resolved)
+        root_key = self._workspace_root_identity_key(workspace)
+        with closing(self._connect()) as con:
+            bound = con.execute(
+                "SELECT value FROM rag_meta WHERE key=?", (root_key,)
+            ).fetchone()
+            if bound is not None:
+                if str(bound[0]) != expected_identity:
+                    raise ValueError("RAG workspace is already bound to a different repository root")
+                return
+            has_files = con.execute(
+                "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone()
+            has_chunks = con.execute(
+                "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone()
+        if has_files is not None or has_chunks is not None:
+            raise ValueError(
+                "populated RAG workspace has no repository binding; explicit offline rebuild required"
+            )
 
     @staticmethod
     def _workspace_project_config_key(
-        scope_key: str, workspace: str, root_identity: str = ""
+        workspace: str, root_identity: str = ""
     ) -> str:
         return "workspace_project_config:" + stable_hash({
-            "tenant": scope_key, "workspace": workspace, "root": root_identity,
+            "workspace": workspace, "root": root_identity,
         })
 
     @staticmethod
-    def _workspace_read_uncertainty_key(scope_key: str, workspace: str) -> str:
-        return "workspace_read_uncertainty:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+    def _workspace_read_uncertainty_key(workspace: str) -> str:
+        return "workspace_read_uncertainty:" + stable_hash({"workspace": workspace})
 
-    def _workspace_read_uncertain_paths(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> set[str]:
-        key = self._workspace_read_uncertainty_key(scope_key, workspace)
+    def _workspace_read_uncertain_paths(self, con: sqlite3.Connection, workspace: str) -> set[str]:
+        key = self._workspace_read_uncertainty_key(workspace)
         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
         if row is None or not row[0]:
             return set()
@@ -1062,12 +1139,12 @@ class RAGStore:
         return {str(path).replace("\\", "/") for path in value if isinstance(path, str) and path.strip()}
 
     def _update_workspace_read_uncertainty(
-        self, con: sqlite3.Connection, scope_key: str, workspace: str,
+        self, con: sqlite3.Connection, workspace: str,
         *, uncertain_paths: set[str] | None = None, clear_paths: set[str] | None = None,
         bump_generation: bool = True,
     ) -> bool:
-        key = self._workspace_read_uncertainty_key(scope_key, workspace)
-        current = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+        key = self._workspace_read_uncertainty_key(workspace)
+        current = self._workspace_read_uncertain_paths(con, workspace)
         updated = current - {str(path).replace("\\", "/") for path in (clear_paths or set())}
         updated |= {str(path).replace("\\", "/") for path in (uncertain_paths or set())}
         if updated == current:
@@ -1079,11 +1156,11 @@ class RAGStore:
         else:
             con.execute("DELETE FROM rag_meta WHERE key=?", (key,))
         if bump_generation:
-            self._bump_workspace_index_generation(con, scope_key, workspace)
+            self._bump_workspace_index_generation(con, workspace)
         return True
 
     def _publish_workspace_read_uncertainty(
-        self, scope_key: str, workspace: str, uncertain_paths: set[str]
+        self, workspace: str, uncertain_paths: set[str]
     ) -> None:
         if not uncertain_paths:
             return
@@ -1092,12 +1169,12 @@ class RAGStore:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 changed = self._update_workspace_read_uncertainty(
-                    con, scope_key, workspace,
+                    con, workspace,
                     uncertain_paths=uncertain_paths,
                     bump_generation=False,
                 )
                 if changed:
-                    self._bump_workspace_index_generation(con, scope_key, workspace)
+                    self._bump_workspace_index_generation(con, workspace)
                 con.commit()
 
         retry_busy(
@@ -1109,14 +1186,11 @@ class RAGStore:
     def _sync_workspace_project_policy_identity(
         self,
         root: str | Path,
-        scope_key: str,
         workspace: str,
         project_context: Any | None,
     ) -> int:
         """Bind policy state to one root and prune only paths conclusively rejected."""
         digest = getattr(project_context, "config_digest", None)
-        if not isinstance(digest, str) or not digest:
-            return 0
         root_path = Path(root).resolve(strict=False)
         root_identity = self._project_root_identity(root_path)
         context_root = getattr(project_context, "root", None)
@@ -1125,8 +1199,35 @@ class RAGStore:
                 "project policy context belongs to a different root",
                 retryable=False,
             )
-        key = self._workspace_project_config_key(scope_key, workspace, root_identity)
-        root_key = self._workspace_root_identity_key(scope_key, workspace)
+        key = self._workspace_project_config_key(workspace, root_identity)
+        root_key = self._workspace_root_identity_key(workspace)
+        if not isinstance(digest, str) or not digest:
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                bound = con.execute("SELECT value FROM rag_meta WHERE key=?", (root_key,)).fetchone()
+                if bound is not None and str(bound[0]) != root_identity:
+                    con.rollback()
+                    raise ProjectPolicySyncError(
+                        "RAG workspace is already bound to a different project root",
+                        retryable=False,
+                    )
+                if bound is None:
+                    populated = con.execute(
+                        "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,)
+                    ).fetchone() or con.execute(
+                        "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+                    ).fetchone()
+                    if populated is not None:
+                        con.rollback()
+                        raise ProjectPolicySyncError(
+                            "populated RAG workspace has no repository binding; explicit offline rebuild required",
+                            retryable=False,
+                        )
+                    con.execute(
+                        "INSERT INTO rag_meta(key,value) VALUES(?,?)", (root_key, root_identity)
+                    )
+                con.commit()
+            return 0
         with closing(self._connect()) as con:
             bound_root = con.execute("SELECT value FROM rag_meta WHERE key=?", (root_key,)).fetchone()
             if bound_root is not None and str(bound_root[0]) != root_identity:
@@ -1139,9 +1240,17 @@ class RAGStore:
             if previous_digest == digest and bound_root is not None:
                 return 0
             rows = con.execute(
-                "SELECT path FROM files WHERE tenant=? AND workspace=?",
-                (scope_key, workspace),
+                "SELECT path FROM files WHERE workspace=?",
+                (workspace,),
             ).fetchall()
+            has_chunks = con.execute(
+                "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone()
+            if bound_root is None and (rows or has_chunks is not None):
+                raise ProjectPolicySyncError(
+                    "populated RAG workspace has no repository binding; explicit offline rebuild required",
+                    retryable=False,
+                )
 
         cfg = self.config.get("rag", {})
         extensions = {str(ext).lower() for ext in cfg.get("extensions", [])}
@@ -1190,7 +1299,7 @@ class RAGStore:
                 uncertain.add(rel)
 
         if uncertain:
-            self._publish_workspace_read_uncertainty(scope_key, workspace, uncertain)
+            self._publish_workspace_read_uncertainty(workspace, uncertain)
             raise ProjectPolicySyncError(
                 "project policy scan could not verify indexed paths; retry required",
                 retryable=True,
@@ -1234,29 +1343,29 @@ class RAGStore:
                     )
                 verify_current_context()
                 if rejected:
-                    pairs = [(scope_key, workspace, rel) for rel in sorted(set(rejected))]
+                    pairs = [(workspace, rel) for rel in sorted(set(rejected))]
                     con.executemany(
-                        "DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", pairs
+                        "DELETE FROM chunks WHERE workspace=? AND path=?", pairs
                     )
                     con.executemany(
-                        "DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", pairs
+                        "DELETE FROM files WHERE workspace=? AND path=?", pairs
                     )
                     fts_exists = con.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                     ).fetchone() is not None
                     if fts_exists:
                         con.executemany(
-                            "DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", pairs
+                            "DELETE FROM chunk_fts WHERE workspace=? AND path=?", pairs
                         )
                     self._update_workspace_read_uncertainty(
-                        con, scope_key, workspace, clear_paths=set(rejected), bump_generation=False
+                        con, workspace, clear_paths=set(rejected), bump_generation=False
                     )
                 con.execute(
                     "INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)",
                     (root_key, root_identity),
                 )
                 con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, digest))
-                self._bump_workspace_index_generation(con, scope_key, workspace)
+                self._bump_workspace_index_generation(con, workspace)
                 verify_current_context()
                 con.commit()
             return len(set(rejected))
@@ -1267,31 +1376,31 @@ class RAGStore:
             base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
         )
 
-    def _workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
-        key = self._workspace_index_generation_key(scope_key, workspace)
+    def _workspace_index_generation(self, con: sqlite3.Connection, workspace: str) -> int:
+        key = self._workspace_index_generation_key(workspace)
         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
         try:
             return max(0, int(row[0])) if row and row[0] is not None else 0
         except (TypeError, ValueError):
             return 0
 
-    def _bump_workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
-        key = self._workspace_index_generation_key(scope_key, workspace)
-        generation = self._workspace_index_generation(con, scope_key, workspace) + 1
+    def _bump_workspace_index_generation(self, con: sqlite3.Connection, workspace: str) -> int:
+        key = self._workspace_index_generation_key(workspace)
+        generation = self._workspace_index_generation(con, workspace) + 1
         con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, str(generation)))
         return generation
 
     def _stored_workspace_embedding_space(
-        self, con: sqlite3.Connection, scope_key: str, workspace: str
+        self, con: sqlite3.Connection, workspace: str
     ) -> str | None:
-        key = self._workspace_embedding_space_key(scope_key, workspace)
+        key = self._workspace_embedding_space_key(workspace)
         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
         return str(row[0]) if row and row[0] else None
 
     def _store_workspace_embedding_space(
-        self, con: sqlite3.Connection, scope_key: str, workspace: str, embedding_space: str
+        self, con: sqlite3.Connection, workspace: str, embedding_space: str
     ) -> None:
-        key = self._workspace_embedding_space_key(scope_key, workspace)
+        key = self._workspace_embedding_space_key(workspace)
         con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, embedding_space))
 
     def _embedding_space_is_resolved(self, result: dict[str, Any] | None = None) -> bool:
@@ -1371,10 +1480,10 @@ class RAGStore:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
-    def index(self, root: str, tenant: str, workspace: str | None = None) -> dict[str, Any]:
+    def index(self, root: str, *, workspace: str | None = None) -> dict[str, Any]:
         resolved_root = str(Path(root).resolve())
         resolved_workspace = workspace or self.workspace_id(resolved_root)
-        flight_key = (resolved_root, self._scope_key(tenant), resolved_workspace)
+        flight_key = (resolved_root, resolved_workspace)
         with self._index_flights_lock:
             flight = self._index_flights.get(flight_key)
             if flight is None:
@@ -1411,7 +1520,7 @@ class RAGStore:
         }
         try:
             with self._get_workspace_lock(resolved_workspace):
-                result = self._index_locked(resolved_root, tenant, resolved_workspace)
+                result = self._index_locked(resolved_root, resolved_workspace)
         except Exception as exc:
             result = {
                 "success": False, "error": str(exc),
@@ -1425,7 +1534,7 @@ class RAGStore:
         return result
 
     def _index_locked(
-        self, root: str, tenant: str, workspace: str | None = None, *,
+        self, root: str, workspace: str | None = None, *,
         _space_override: str | None = None, _identity_retry: bool = False,
     ) -> dict[str, Any]:
         try:
@@ -1446,26 +1555,25 @@ class RAGStore:
         project_context = self.project_context(root_path)
         if not self._project_phase_allowed(project_context, "rag"):
             target_ws = workspace or self.workspace_id(str(root_path))
-            removed = self.prune_missing(root_path, tenant, target_ws, [])
+            removed = self.prune_missing(root_path, target_ws, [])
             return {
                 "success": True, "workspace": target_ws,
                 "skipped": True, "reason": "project phase disabled",
                 "removed_paths": removed, "processed_paths": [],
             }
         workspace = workspace or self.workspace_id(str(root_path))
-        scope_key = self._scope_key(tenant)
-        self._sync_workspace_project_policy_identity(root_path, scope_key, workspace, project_context)
+        self._sync_workspace_project_policy_identity(root_path, workspace, project_context)
         embedding_space = _space_override or self._embedding_space_id()
 
         with closing(self._connect()) as con:
-            uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+            uncertain_retry_paths = self._workspace_read_uncertain_paths(con, workspace)
             old_files_rows = con.execute(
-                "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-                (scope_key, workspace),
+                "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+                (workspace,),
             ).fetchall()
             old_chunk_rows = con.execute(
-                "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                (scope_key, workspace),
+                "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE workspace=?",
+                (workspace,),
             ).fetchall()
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
         persisted_spaces = {
@@ -1599,7 +1707,7 @@ class RAGStore:
                 else:
                     reused_chunks += 1
 
-        self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+        self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
         if embedding_space_changed and any(p in old_files for p in read_uncertain_paths):
             return {
                 "success": False,
@@ -1620,8 +1728,8 @@ class RAGStore:
                     batch_h = missing_hashes[i:i + 500]
                     placeholders = ",".join("?" for _ in batch_h)
                     rows = con.execute(
-                        f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
-                        (scope_key, embedding_space, *batch_h),
+                        f"SELECT content_hash, embedding FROM chunks WHERE embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
+                        (embedding_space, *batch_h),
                     ).fetchall()
                     for r in rows:
                         if r[0] and r[1] and str(r[0]) not in global_chunks:
@@ -1648,7 +1756,7 @@ class RAGStore:
                 batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]
                 batch_texts = [str(changed_records[idx]["text"]) for idx in batch_indices]
                 try:
-                    vectors_result = self.services.embed(batch_texts, tenant, priority=2, query=False)
+                    vectors_result = self.services.embed(batch_texts, priority=2, query=False)
                 except (TimeoutError, QueueFullError) as exc:
                     return {"success": False, "retryable": True, "error": f"embedder busy or timed out: {exc}"}
                 except Exception as exc:
@@ -1667,7 +1775,7 @@ class RAGStore:
                         return {"success": False, "error": "embedding identity changed during atomic index retry", "retryable": True}
                     if old_chunk_rows or reused_chunks:
                         return self._index_locked(
-                            str(root_path), tenant, workspace,
+                            str(root_path), workspace,
                             _space_override=batch_space, _identity_retry=True,
                         )
                     embedding_space = batch_space
@@ -1683,60 +1791,60 @@ class RAGStore:
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
         def publish() -> None:
-            with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+            with self._get_workspace_lock(workspace,), closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 fts_exists = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                 ).fetchone()
                 successfully_read_paths = {str(row[0]) for row in file_rows}
                 publish_paths = deleted_paths + [rel for rel in changed_paths if rel in successfully_read_paths]
-                del_paths = [(scope_key, workspace, rel) for rel in publish_paths]
+                del_paths = [(workspace, rel) for rel in publish_paths]
                 if del_paths:
-                    con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
-                    con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                    con.executemany("DELETE FROM chunks WHERE workspace=? AND path=?", del_paths)
+                    con.executemany("DELETE FROM files WHERE workspace=? AND path=?", del_paths)
                     if fts_exists:
-                        con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                        con.executemany("DELETE FROM chunk_fts WHERE workspace=? AND path=?", del_paths)
                 con.execute(
-                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=?",
-                    (scope_key, workspace, str(root_path)),
+                    "DELETE FROM project_file_owners WHERE workspace=? AND root=?",
+                    (workspace, str(root_path)),
                 )
                 con.executemany(
-                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                    "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
                     [
-                        (scope_key, workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"])
+                        (workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"])
                         for r in changed_records
                     ],
                 )
                 if fts_exists:
                     con.executemany(
-                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+                        "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
                         [
-                            (scope_key, workspace, record["path"], record["chunk_no"], record["text"])
+                            (workspace, record["path"], record["chunk_no"], record["text"])
                             for record in changed_records
                         ],
                     )
                 con.executemany(
-                    "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                    [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                    "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+                    [(workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
                 )
                 owner_root = str(root_path)
                 con.executemany(
-                    "INSERT OR IGNORE INTO project_file_owners(tenant,workspace,root,path) "
-                    "SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?)",
+                    "INSERT OR IGNORE INTO project_file_owners(workspace,root,path) "
+                    "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE workspace=? AND path=?)",
                     [
-                        (scope_key, workspace, owner_root, rel, scope_key, workspace, rel)
+                        (workspace, owner_root, rel, workspace, rel)
                         for rel in current_meta
                     ],
                 )
-                self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+                self._store_workspace_embedding_space(con, workspace, embedding_space)
                 uncertainty_changed = self._update_workspace_read_uncertainty(
-                    con, scope_key, workspace,
+                    con, workspace,
                     uncertain_paths=read_uncertain_paths,
                     clear_paths=set(publish_paths),
                     bump_generation=False,
                 )
                 if publish_paths or uncertainty_changed:
-                    self._bump_workspace_index_generation(con, scope_key, workspace)
+                    self._bump_workspace_index_generation(con, workspace)
                 con.commit()
 
         retry_busy(
@@ -1747,15 +1855,14 @@ class RAGStore:
 
         with closing(self._connect()) as con:
             chunk_count = con.execute(
-                "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?", (scope_key, workspace)
+                "SELECT COUNT(*) FROM chunks WHERE workspace=?", (workspace,)
             ).fetchone()[0]
             file_count = con.execute(
-                "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)
+                "SELECT COUNT(*) FROM files WHERE workspace=?", (workspace,)
             ).fetchone()[0]
 
         return {
             "success": True,
-            "scope": self.scope,
             "workspace": workspace,
             "files_root": str(root_path),
             "files": int(file_count),
@@ -1774,123 +1881,120 @@ class RAGStore:
         }
 
 
-    def prune_missing(self, root: str, tenant: str, workspace: str, current_paths: list[str]) -> int:
+    def prune_missing(self, root: str, workspace: str, current_paths: list[str]) -> int:
         """Delete RAG rows for files no longer present without rescanning the filesystem."""
-        scope_key = self._scope_key(tenant)
         current = set(current_paths)
-        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+        with self._get_workspace_lock(workspace,), closing(self._connect()) as con:
             policy_removed = 0
             if Path(root).is_dir():
                 policy_context = self.project_context(root)
                 policy_removed = self._sync_workspace_project_policy_identity(
-                    root, scope_key, workspace, policy_context
+                    root, workspace, policy_context
                 )
             owner_root = str(Path(root).resolve())
             owned = {str(r[0]) for r in con.execute(
-                "SELECT path FROM project_file_owners WHERE tenant=? AND workspace=? AND root=?",
-                (scope_key, workspace, owner_root),
+                "SELECT path FROM project_file_owners WHERE workspace=? AND root=?",
+                (workspace, owner_root),
             ).fetchall()}
             deleted = owned - current
             for rel in deleted:
                 con.execute(
-                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=? AND path=?",
-                    (scope_key, workspace, owner_root, rel),
+                    "DELETE FROM project_file_owners WHERE workspace=? AND root=? AND path=?",
+                    (workspace, owner_root, rel),
                 )
                 still_owned = con.execute(
-                    "SELECT 1 FROM project_file_owners WHERE tenant=? AND workspace=? AND path=? LIMIT 1",
-                    (scope_key, workspace, rel),
+                    "SELECT 1 FROM project_file_owners WHERE workspace=? AND path=? LIMIT 1",
+                    (workspace, rel),
                 ).fetchone()
                 if still_owned is None:
-                    self._delete_rag_path_rows(con, scope_key, workspace, rel)
+                    self._delete_rag_path_rows(con, workspace, rel)
             if deleted:
-                self._bump_workspace_index_generation(con, scope_key, workspace)
+                self._bump_workspace_index_generation(con, workspace)
             con.commit()
         return policy_removed + len(deleted)
 
     @staticmethod
-    def _delete_rag_path_rows(con: sqlite3.Connection, tenant: str, workspace: str, path: str) -> None:
-        con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (tenant, workspace, path))
-        con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (tenant, workspace, path))
+    def _delete_rag_path_rows(con: sqlite3.Connection, workspace: str, path: str) -> None:
+        con.execute("DELETE FROM chunks WHERE workspace=? AND path=?", (workspace, path))
+        con.execute("DELETE FROM files WHERE workspace=? AND path=?", (workspace, path))
         try:
-            con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (tenant, workspace, path))
+            con.execute("DELETE FROM chunk_fts WHERE workspace=? AND path=?", (workspace, path))
         except sqlite3.Error:
             pass
 
     def remove_project(
-        self, root: str, tenant: str, workspace: str, *, preserve_paths: set[str] | None = None
+        self, root: str, *, workspace: str, preserve_paths: set[str] | None = None
     ) -> int:
         """Delete indexed paths only when this exact root owns their provenance."""
-        scope_key = self._scope_key(tenant)
         owner_root = str(Path(root).resolve())
         preserve = {str(path).replace("\\", "/") for path in (preserve_paths or set())}
-        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+        with self._get_workspace_lock(workspace,), closing(self._connect()) as con:
             paths = [str(row[0]) for row in con.execute(
-                "SELECT path FROM project_file_owners WHERE tenant=? AND workspace=? AND root=?",
-                (scope_key, workspace, owner_root),
+                "SELECT path FROM project_file_owners WHERE workspace=? AND root=?",
+                (workspace, owner_root),
             ).fetchall()]
             removed = 0
             for path in paths:
                 con.execute(
-                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=? AND path=?",
-                    (scope_key, workspace, owner_root, path),
+                    "DELETE FROM project_file_owners WHERE workspace=? AND root=? AND path=?",
+                    (workspace, owner_root, path),
                 )
                 still_owned = con.execute(
-                    "SELECT 1 FROM project_file_owners WHERE tenant=? AND workspace=? AND path=? LIMIT 1",
-                    (scope_key, workspace, path),
+                    "SELECT 1 FROM project_file_owners WHERE workspace=? AND path=? LIMIT 1",
+                    (workspace, path),
                 ).fetchone()
                 if still_owned is None and path not in preserve:
                     before = con.total_changes
-                    self._delete_rag_path_rows(con, scope_key, workspace, path)
+                    self._delete_rag_path_rows(con, workspace, path)
                     removed += int(con.total_changes > before)
             if removed:
-                self._bump_workspace_index_generation(con, scope_key, workspace)
+                self._bump_workspace_index_generation(con, workspace)
             con.commit()
         return removed
 
-    def remove_paths(self, tenant: str, workspace: str, paths: list[str]) -> int:
+    def remove_paths(self, *, workspace: str, paths: list[str]) -> int:
         """Remove explicitly known paths from a semantic workspace.
 
         Used when a newer deterministic analyzer proves that a declarative file no
         longer needs embeddings. This keeps rebuilt indexes free of stale semantic chunks.
         """
-        scope_key = self._scope_key(tenant)
         unique = sorted({str(p).replace("\\", "/") for p in paths if str(p).strip()})
         if not unique:
             return 0
         removed = 0
-        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+        with self._get_workspace_lock(workspace,), closing(self._connect()) as con:
             changes_before = con.total_changes
             for rel in unique:
                 row = con.execute(
-                    "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
-                    (scope_key, workspace, rel),
+                    "SELECT 1 FROM files WHERE workspace=? AND path=?",
+                    (workspace, rel),
                 ).fetchone()
-                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                con.execute("DELETE FROM chunks WHERE workspace=? AND path=?", (workspace, rel))
+                con.execute("DELETE FROM files WHERE workspace=? AND path=?", (workspace, rel))
                 try:
-                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                    con.execute("DELETE FROM chunk_fts WHERE workspace=? AND path=?", (workspace, rel))
                 except Exception:
                     pass
                 con.execute(
-                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND path=?",
-                    (scope_key, workspace, rel),
+                    "DELETE FROM project_file_owners WHERE workspace=? AND path=?",
+                    (workspace, rel),
                 )
                 removed += int(row is not None)
             if con.total_changes > changes_before:
-                self._bump_workspace_index_generation(con, scope_key, workspace)
+                self._bump_workspace_index_generation(con, workspace)
             con.commit()
         return removed
 
     def index_paths_step(
         self,
         root: str,
-        tenant: str,
+        *,
         workspace: str,
         paths: list[str],
         should_yield: Any | None = None,
         content_overrides: dict[str, str] | None = None,
         deleted_paths: list[str] | None = None,
-        *, _space_override: str | None = None, _identity_retry: bool = False,
+        _space_override: str | None = None, _identity_retry: bool = False,
     ) -> dict[str, Any]:
         """Index only explicitly dirty paths supplied by Local AI preprocessing.
 
@@ -1906,7 +2010,6 @@ class RAGStore:
                 "reason": "project phase disabled", "processed_paths": [],
                 "embedded_chunks": 0, "reused_chunks": 0,
             }
-        scope_key = self._scope_key(tenant)
         embedding_space = _space_override or self._embedding_space_id()
         processed_paths: list[str] = []
         embedded_chunks = 0
@@ -1914,16 +2017,16 @@ class RAGStore:
         with self._get_workspace_lock(workspace):
             try:
                 self._sync_workspace_project_policy_identity(
-                    root_path, scope_key, workspace, project_context
+                    root_path, workspace, project_context
                 )
             except ProjectPolicySyncError as exc:
                 return {"success": False, "error": str(exc), "retryable": exc.retryable}
             with closing(self._connect()) as con:
-                stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+                stored_space = self._stored_workspace_embedding_space(con, workspace)
                 legacy_rows = (
                     con.execute(
-                        "SELECT embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                        (scope_key, workspace),
+                        "SELECT embedding,embedding_space FROM chunks WHERE workspace=?",
+                        (workspace,),
                     ).fetchall()
                     if stored_space is None else []
                 )
@@ -1950,14 +2053,14 @@ class RAGStore:
                 def persist_recovered_space() -> None:
                     with closing(self._connect()) as con:
                         con.execute("BEGIN IMMEDIATE")
-                        current_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+                        current_space = self._stored_workspace_embedding_space(con, workspace)
                         if current_space is not None and current_space != inferred_space:
                             con.rollback()
                             recovery_conflict["value"] = True
                             return
                         if current_space is None:
-                            self._store_workspace_embedding_space(con, scope_key, workspace, inferred_space)
-                            self._bump_workspace_index_generation(con, scope_key, workspace)
+                            self._store_workspace_embedding_space(con, workspace, inferred_space)
+                            self._bump_workspace_index_generation(con, workspace)
                         con.commit()
 
                 try:
@@ -1992,7 +2095,7 @@ class RAGStore:
             }
             for rel in paths:
                 if callable(should_yield) and should_yield():
-                    self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+                    self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
                     return {
                         "success": True, "workspace": workspace, "preempted": True,
                         "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
@@ -2054,7 +2157,7 @@ class RAGStore:
                     read_uncertain_paths.add(rel)
                     continue
 
-            self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+            self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
 
             deleted_unique = sorted(
                 {str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()}
@@ -2066,7 +2169,7 @@ class RAGStore:
                         with closing(self._connect()) as con:
                             con.execute("BEGIN IMMEDIATE")
                             self._update_workspace_read_uncertainty(
-                                con, scope_key, workspace, uncertain_paths=read_uncertain_paths,
+                                con, workspace, uncertain_paths=read_uncertain_paths,
                             )
                             con.commit()
 
@@ -2092,8 +2195,8 @@ class RAGStore:
                     batch_rels = all_rels[i:i+500]
                     placeholders = ",".join("?" for _ in batch_rels)
                     rows = con.execute(
-                        f"SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})",
-                        (scope_key, workspace, *batch_rels),
+                        f"SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE workspace=? AND path IN ({placeholders})",
+                        (workspace, *batch_rels),
                     ).fetchall()
                     for r in rows:
                         if embedding_space and str(r[4] or "").strip() == embedding_space:
@@ -2129,8 +2232,8 @@ class RAGStore:
                         batch_h = missing_hashes[i:i + 500]
                         placeholders = ",".join("?" for _ in batch_h)
                         rows = con.execute(
-                            f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
-                            (scope_key, embedding_space, *batch_h),
+                            f"SELECT content_hash, embedding FROM chunks WHERE embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
+                            (embedding_space, *batch_h),
                         ).fetchall()
                         for r in rows:
                             if r[0] and r[1] and str(r[0]) not in global_chunks:
@@ -2170,7 +2273,7 @@ class RAGStore:
                     batch_texts = all_missing_texts[offset:offset + _INDEX_EMBED_BATCH_SIZE]
                     batch_pointers = missing_pointers[offset:offset + _INDEX_EMBED_BATCH_SIZE]
                     try:
-                        vectors_result = self.services.embed(batch_texts, tenant, priority=0, query=False, background=True)
+                        vectors_result = self.services.embed(batch_texts, priority=0, query=False, background=True)
                     except (TimeoutError, QueueFullError) as exc:
                         return {
                             "success": True, "workspace": workspace, "preempted": True,
@@ -2192,7 +2295,7 @@ class RAGStore:
                                 return {"success": False, "error": "embedding identity changed during RAG path retry", "retryable": True}
                             if reused_chunks:
                                 return self.index_paths_step(
-                                    str(root_path), tenant, workspace, paths,
+                                    str(root_path), workspace=workspace, paths=paths,
                                     should_yield=should_yield, content_overrides=content_overrides,
                                     deleted_paths=deleted_paths, _space_override=current_space,
                                     _identity_retry=True,
@@ -2221,8 +2324,8 @@ class RAGStore:
                 rel = item["rel"]
                 stat = item["stat"]
                 for r in item["records"]:
-                    chunks_to_insert.append((scope_key, workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]))
-                files_to_insert.append((scope_key, workspace, rel, int(stat.st_mtime_ns), int(stat.st_size), item["file_hash"]))
+                    chunks_to_insert.append((workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]))
+                files_to_insert.append((workspace, rel, int(stat.st_mtime_ns), int(stat.st_size), item["file_hash"]))
                 processed_paths.append(rel)
 
             def publish() -> None:
@@ -2234,42 +2337,42 @@ class RAGStore:
                     for i in range(0, len(all_rels), 500):
                         batch_rels = all_rels[i:i+500]
                         placeholders = ",".join("?" for _ in batch_rels)
-                        con.execute(f"DELETE FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
-                        con.execute(f"DELETE FROM files WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+                        con.execute(f"DELETE FROM chunks WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
+                        con.execute(f"DELETE FROM files WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
                         if fts_exists:
-                            con.execute(f"DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+                            con.execute(f"DELETE FROM chunk_fts WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
                     con.executemany(
-                        "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                        "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
                         chunks_to_insert,
                     )
                     if fts_exists:
                         con.executemany(
-                            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
-                            [(c[0], c[1], c[2], c[3], c[5]) for c in chunks_to_insert],
+                            "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
+                            [(c[0], c[1], c[2], c[4]) for c in chunks_to_insert],
                         )
                     con.executemany(
-                        "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                        "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
                         files_to_insert,
                     )
                     for rel in set(deleted_paths or []) | policy_deleted:
                         con.execute(
-                            "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=? AND path=?",
-                            (scope_key, workspace, str(root_path), str(rel).replace("\\", "/")),
+                            "DELETE FROM project_file_owners WHERE workspace=? AND root=? AND path=?",
+                            (workspace, str(root_path), str(rel).replace("\\", "/")),
                         )
                     con.executemany(
-                        "INSERT OR IGNORE INTO project_file_owners(tenant,workspace,root,path) VALUES(?,?,?,?)",
-                        [(scope_key, workspace, str(root_path), rel) for rel in processed_paths],
+                        "INSERT OR IGNORE INTO project_file_owners(workspace,root,path) VALUES(?,?,?)",
+                        [(workspace, str(root_path), rel) for rel in processed_paths],
                     )
                     if embedding_space:
-                        self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+                        self._store_workspace_embedding_space(con, workspace, embedding_space)
                     uncertainty_changed = self._update_workspace_read_uncertainty(
-                        con, scope_key, workspace,
+                        con, workspace,
                         uncertain_paths=read_uncertain_paths,
                         clear_paths=set(all_rels),
                         bump_generation=False,
                     )
                     if all_rels or uncertainty_changed:
-                        self._bump_workspace_index_generation(con, scope_key, workspace)
+                        self._bump_workspace_index_generation(con, workspace)
                     con.commit()
 
             try:
@@ -2296,7 +2399,7 @@ class RAGStore:
     def index_step(
         self,
         root: str,
-        tenant: str,
+        *,
         workspace: str | None = None,
         max_files: int = 2,
         should_yield: Any | None = None,
@@ -2313,7 +2416,7 @@ class RAGStore:
         project_context = self.project_context(root_path)
         if not self._project_phase_allowed(project_context, "rag"):
             target_ws = workspace or self.workspace_id(str(root_path))
-            removed = self.prune_missing(root, tenant, target_ws, [])
+            removed = self.prune_missing(root, target_ws, [])
             return {
                 "success": True, "workspace": target_ws,
                 "skipped": True, "reason": "project phase disabled", "done": True,
@@ -2322,10 +2425,9 @@ class RAGStore:
             }
         workspace = workspace or self.workspace_id(str(root_path))
         with self._get_workspace_lock(workspace):
-            scope_key = self._scope_key(tenant)
             try:
                 self._sync_workspace_project_policy_identity(
-                    root_path, scope_key, workspace, project_context
+                    root_path, workspace, project_context
                 )
             except ProjectPolicySyncError as exc:
                 return {"success": False, "error": str(exc), "retryable": exc.retryable}
@@ -2335,14 +2437,14 @@ class RAGStore:
 
             with closing(self._connect()) as con:
                 old_rows = con.execute(
-                    "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
-                    (scope_key, workspace),
+                    "SELECT path,mtime_ns,size,content_hash FROM files WHERE workspace=?",
+                    (workspace,),
                 ).fetchall()
                 old_chunk_rows = con.execute(
-                    "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
-                    (scope_key, workspace),
+                    "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE workspace=?",
+                    (workspace,),
                 ).fetchall()
-                uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+                uncertain_retry_paths = self._workspace_read_uncertain_paths(con, workspace)
                 stale_embedding_paths = {
                     str(row[0]).replace("\\", "/")
                     for row in old_chunk_rows
@@ -2386,7 +2488,7 @@ class RAGStore:
             selected_changed = [rel for rel in selected if rel in current_meta]
             selected_deleted = [rel for rel in selected if rel in deleted]
             staged = self.index_paths_step(
-                str(root_path), tenant, workspace, selected_changed,
+                str(root_path), workspace=workspace, paths=selected_changed,
                 should_yield=should_yield, deleted_paths=selected_deleted,
             )
             if not staged.get("success"):
@@ -2426,22 +2528,21 @@ class RAGStore:
         score = dot / (na * nb) if na and nb else 0.0
         return score if math.isfinite(score) else 0.0
 
-    def revision(self, tenant: str, workspace: str) -> str:
-        scope_key = self._scope_key(tenant)
+    def revision(self, *, workspace: str) -> str:
         now = time.monotonic()
         if not hasattr(self, "_rev_cache"):
-            self._rev_cache: dict[tuple[str, str], tuple[float, str, int]] = {}
+            self._rev_cache: dict[str, tuple[float, str, int]] = {}
             self._rev_lock = threading.Lock()
         with closing(self._connect()) as con:
-            generation = self._workspace_index_generation(con, scope_key, workspace)
+            generation = self._workspace_index_generation(con, workspace)
         with self._rev_lock:
-            cached = self._rev_cache.get((scope_key, workspace))
+            cached = self._rev_cache.get(workspace)
             if cached and now - cached[0] < 3.0 and cached[2] == generation:
                 return cached[1]
         with closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT path,content_hash,mtime_ns,size FROM files WHERE tenant=? AND workspace=? ORDER BY path",
-                (scope_key, workspace),
+                "SELECT path,content_hash,mtime_ns,size FROM files WHERE workspace=? ORDER BY path",
+                (workspace,),
             ).fetchall()
         rev = stable_hash({"index": self.index_fingerprint, "generation": generation, "files": rows})
         with self._rev_lock:
@@ -2449,7 +2550,7 @@ class RAGStore:
                 oldest_keys = sorted(self._rev_cache.keys(), key=lambda k: self._rev_cache[k][0])[:128]
                 for k in oldest_keys:
                     self._rev_cache.pop(k, None)
-            self._rev_cache[(scope_key, workspace)] = (now, rev, generation)
+            self._rev_cache[workspace] = (now, rev, generation)
         return rev
 
     @staticmethod
@@ -2485,21 +2586,17 @@ class RAGStore:
             result["deterministic_postprocess"] = {"deduplicated": removed}
         return result
 
-    def search(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
-        if "/" in workspace or "\\" in workspace or ":" in workspace:
-            workspace = self.workspace_id(workspace)
+    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
         clean_query = normalize_query(query)
-        revision = self.revision(tenant, workspace)
-        scope_key = self._scope_key(tenant)
+        revision = self.revision(workspace=workspace)
         cache_identity_known = self._embedding_space_cache_identity_known()
         query_space = self._embedding_space_id()
         with closing(self._connect()) as con:
-            generation = self._workspace_index_generation(con, scope_key, workspace)
+            generation = self._workspace_index_generation(con, workspace)
         cache_dimension = self._embedding_dimension_cache_identity()
 
         def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
             return stable_hash({
-                "tenant": tenant, "scope": self.scope, "effective_scope": scope_key,
                 "workspace": workspace, "revision": revision, "generation": index_generation,
                 "query": clean_query, "top_k": top_k, "reranker": use_reranker,
                 "scope_path": scope_path,
@@ -2512,7 +2609,7 @@ class RAGStore:
 
         def compute_search() -> dict[str, Any]:
             raw_result = self._search_uncached(
-                clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path
+                clean_query, workspace, top_k, use_reranker, priority, scope_path
             )
             observed_identity["space"] = self._embedding_space_id()
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
@@ -2536,12 +2633,12 @@ class RAGStore:
             if isinstance(raw, dict) and raw.get("retrieval_mode") == "lexical_fallback":
                 self.search_flight.cache.delete(key)
         else:
-            raw = self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
+            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
             hit, coalesced = False, False
         with closing(self._connect()) as con:
-            latest_generation = self._workspace_index_generation(con, scope_key, workspace)
+            latest_generation = self._workspace_index_generation(con, workspace)
         if latest_generation != generation:
-            raw = self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
+            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
@@ -2565,11 +2662,10 @@ class RAGStore:
         return f" AND {column} NOT IN (SELECT path FROM rag_uncertain_paths)"
 
     def _search_fts_candidates(
-        self, query: str, tenant: str, workspace: str, limit: int = 16,
+        self, query: str, workspace: str, limit: int = 16,
         scope_path: str | None = None, embedding_space: str | None = None,
         excluded_paths: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        scope_key = self._scope_key(tenant)
         try:
             tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
             tokens = [t for t in tokens if len(t) > 1]
@@ -2585,19 +2681,19 @@ class RAGStore:
                     fts_rows = con.execute(
                         f"""SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
                            FROM chunk_fts
-                           JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
-                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%'){space_filter}{path_filter} AND chunk_fts MATCH ?
+                           JOIN chunks c ON c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+                           WHERE chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%'){space_filter}{path_filter} AND chunk_fts MATCH ?
                            ORDER BY bm25(chunk_fts) LIMIT ?""",
-                        (scope_key, workspace, norm_scope, norm_scope, *space_params, fts_expr, limit),
+                        (workspace, norm_scope, norm_scope, *space_params, fts_expr, limit),
                     ).fetchall()
                 else:
                     fts_rows = con.execute(
                         f"""SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
                            FROM chunk_fts
-                           JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
-                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=?{space_filter}{path_filter} AND chunk_fts MATCH ?
+                           JOIN chunks c ON c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+                           WHERE chunk_fts.workspace=?{space_filter}{path_filter} AND chunk_fts MATCH ?
                            ORDER BY bm25(chunk_fts) LIMIT ?""",
-                        (scope_key, workspace, *space_params, fts_expr, limit),
+                        (workspace, *space_params, fts_expr, limit),
                     ).fetchall()
                 return [
                     {
@@ -2610,11 +2706,10 @@ class RAGStore:
             return []
 
     def _search_token_overlap(
-        self, query: str, tenant: str, workspace: str, limit: int = 16,
+        self, query: str, workspace: str, limit: int = 16,
         scope_path: str | None = None, embedding_space: str | None = None,
         excluded_paths: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        scope_key = self._scope_key(tenant)
         terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
         if not terms:
             return []
@@ -2625,13 +2720,13 @@ class RAGStore:
             if scope_path:
                 norm_scope = scope_path.replace("\\", "/").rstrip("/")
                 rows = con.execute(
-                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')" + space_filter + path_filter,
-                    (scope_key, workspace, norm_scope, norm_scope, *space_params),
+                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE workspace=? AND (path=? OR path LIKE ? || '/%')" + space_filter + path_filter,
+                    (workspace, norm_scope, norm_scope, *space_params),
                 ).fetchall()
             else:
                 rows = con.execute(
-                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=?" + space_filter + path_filter,
-                    (scope_key, workspace, *space_params),
+                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE workspace=?" + space_filter + path_filter,
+                    (workspace, *space_params),
                 ).fetchall()
         scored: list[dict[str, Any]] = []
         for r in rows:
@@ -2647,7 +2742,7 @@ class RAGStore:
         return scored[:limit]
 
     def _centroid_index_for_search(
-        self, scope_key: str, workspace: str, embedding_space: str, query_vector: Any,
+        self, workspace: str, embedding_space: str, query_vector: Any,
     ) -> tuple[int, tuple[tuple[str, int], ...]] | None:
         try:
             np = importlib.import_module("numpy")
@@ -2657,22 +2752,22 @@ class RAGStore:
         if dimension <= 0 or dimension > 4096:
             return None
         with closing(self._connect()) as con:
-            generation = self._workspace_index_generation(con, scope_key, workspace)
+            generation = self._workspace_index_generation(con, workspace)
             row = con.execute(
-                "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=? AND embedding_space=? AND embedding_space<>''",
-                (scope_key, workspace, embedding_space),
+                "SELECT COUNT(*) FROM chunks WHERE workspace=? AND embedding_space=? AND embedding_space<>''",
+                (workspace, embedding_space),
             ).fetchone()
             chunk_count = int(row[0]) if row else 0
         if not _centroid_threshold_reached(chunk_count):
             return None
-        key = (str(self.db_path.resolve()), scope_key, workspace, embedding_space, dimension, generation)
+        key = (str(self.db_path.resolve()), workspace, embedding_space, dimension, generation)
         cached = _centroid_cache_get(key)
         if cached is None:
             with _CENTROID_BUILD_LOCK:
                 cached = _centroid_cache_get(key)
                 if cached is None:
                     cached = self._build_centroid_index(
-                        scope_key, workspace, embedding_space, dimension, generation, chunk_count
+                        workspace, embedding_space, dimension, generation, chunk_count
                     )
                     if cached is not None and not _centroid_cache_put(key, cached):
                         return None
@@ -2692,7 +2787,7 @@ class RAGStore:
         return (generation, tuple(selected)) if selected else None
 
     def _build_centroid_index(
-        self, scope_key: str, workspace: str, embedding_space: str,
+        self, workspace: str, embedding_space: str,
         dimension: int, generation: int, chunk_count: int,
     ) -> tuple[Any, dict[int, tuple[tuple[str, int], ...]], int] | None:
         try:
@@ -2707,16 +2802,16 @@ class RAGStore:
             for index in range(sample_count)
         }
         query = (
-            "SELECT path,chunk_no,embedding FROM chunks WHERE tenant=? AND workspace=? "
+            "SELECT path,chunk_no,embedding FROM chunks WHERE workspace=? "
             "AND embedding_space=? AND embedding_space<>'' ORDER BY path,chunk_no"
         )
         with closing(self._connect()) as con:
             con.execute("BEGIN")
-            if self._workspace_index_generation(con, scope_key, workspace) != generation:
+            if self._workspace_index_generation(con, workspace) != generation:
                 return None
             sample = []
             sample_path_bytes = 0
-            cursor = con.execute(query, (scope_key, workspace, embedding_space))
+            cursor = con.execute(query, (workspace, embedding_space))
             position = 0
             try:
                 while True:
@@ -2767,7 +2862,7 @@ class RAGStore:
 
             buckets: dict[int, list[tuple[str, int]]] = {index: [] for index in range(len(centers_array))}
             retained_bytes = int(centers_array.nbytes)
-            cursor = con.execute(query, (scope_key, workspace, embedding_space))
+            cursor = con.execute(query, (workspace, embedding_space))
             try:
                 while True:
                     batch = cursor.fetchmany(256)
@@ -2788,20 +2883,19 @@ class RAGStore:
                         buckets[int(cluster_id)].append((path, int(chunk_no)))
             finally:
                 cursor.close()
-            if self._workspace_index_generation(con, scope_key, workspace) != generation:
+            if self._workspace_index_generation(con, workspace) != generation:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
-        scope_key = self._scope_key(tenant)
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
         with closing(self._connect()) as con:
-            uncertain_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+            uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
 
         def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]
 
         try:
-            query_result = self.services.embed([query], tenant, priority=priority, query=True)
+            query_result = self.services.embed([query], priority=priority, query=True)
         except Exception as exc:
             query_result = {"success": False, "error": str(exc)}
         if query_result.get("success"):
@@ -2824,13 +2918,13 @@ class RAGStore:
         if not query_result.get("success"):
             lexical_backend = "fts5"
             candidates = visible(self._search_fts_candidates(
-                query, tenant, workspace, max(16, top_k * 2), scope_path,
+                query, workspace, max(16, top_k * 2), scope_path,
                 excluded_paths=uncertain_paths,
             ))
             if not candidates:
                 lexical_backend = "token_overlap"
                 candidates = visible(self._search_token_overlap(
-                    query, tenant, workspace, max(16, top_k * 2), scope_path,
+                    query, workspace, max(16, top_k * 2), scope_path,
                     excluded_paths=uncertain_paths,
                 ))
             results = [
@@ -2891,7 +2985,7 @@ class RAGStore:
         ):
             try:
                 centroid_index = self._centroid_index_for_search(
-                    scope_key, workspace, embedding_space, query_vec
+                    workspace, embedding_space, query_vec
                 )
             except Exception:
                 centroid_index = None
@@ -2936,7 +3030,7 @@ class RAGStore:
             centroid_active = False
             if centroid_index is not None:
                 centroid_generation, centroid_rows = centroid_index
-                if self._workspace_index_generation(con, scope_key, workspace) == centroid_generation:
+                if self._workspace_index_generation(con, workspace) == centroid_generation:
                     con.execute(
                         "CREATE TEMP TABLE IF NOT EXISTS rag_centroid_candidates "
                         "(path TEXT NOT NULL, chunk_no INTEGER NOT NULL, PRIMARY KEY(path,chunk_no)) WITHOUT ROWID"
@@ -2950,8 +3044,8 @@ class RAGStore:
             last_path: str | None = None
             last_chunk_no: int | None = None
             while True:
-                predicates = ["tenant=?", "workspace=?", "embedding_space=?", "embedding_space<>''"]
-                params: list[Any] = [scope_key, workspace, embedding_space]
+                predicates = ["workspace=?", "embedding_space=?", "embedding_space<>''"]
+                params: list[Any] = [workspace, embedding_space]
                 if centroid_active:
                     predicates.append(
                         "EXISTS (SELECT 1 FROM rag_centroid_candidates cc "
@@ -3040,12 +3134,12 @@ class RAGStore:
                             score = 0.0
                         offer(row, score)
             has_stale_embedding_rows = con.execute(
-                "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND COALESCE(embedding_space,'')<>? LIMIT 1",
-                (scope_key, workspace, embedding_space),
+                "SELECT 1 FROM chunks WHERE workspace=? AND COALESCE(embedding_space,'')<>? LIMIT 1",
+                (workspace, embedding_space),
             ).fetchone() is not None
             if embedding_space_resolved:
                 try:
-                    stored_embedding_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+                    stored_embedding_space = self._stored_workspace_embedding_space(con, workspace)
                     stored_embedding_space_read = True
                 except sqlite3.Error:
                     pass
@@ -3055,8 +3149,8 @@ class RAGStore:
                 if not stored_embedding_space_read or stored_embedding_space != embedding_space:
                     with closing(self._connect()) as con:
                         con.execute("BEGIN IMMEDIATE")
-                        if self._stored_workspace_embedding_space(con, scope_key, workspace) != embedding_space:
-                            self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+                        if self._stored_workspace_embedding_space(con, workspace) != embedding_space:
+                            self._store_workspace_embedding_space(con, workspace, embedding_space)
                         con.commit()
             except sqlite3.Error:
                 fallbacks.append("embedding_space_metadata")
@@ -3092,7 +3186,7 @@ class RAGStore:
 
         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
         fts_candidates = visible(self._search_fts_candidates(
-            query, tenant, workspace, 16, scope_path, embedding_space, uncertain_paths
+            query, workspace, 16, scope_path, embedding_space, uncertain_paths
         ))
 
         is_hybrid = bool(fts_candidates)
@@ -3135,8 +3229,8 @@ class RAGStore:
             with closing(self._connect()) as con:
                 for (chunk_path, chunk_no), target_candidates in needed_map.items():
                     txt_row = con.execute(
-                        "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=? AND chunk_no=?",
-                        (scope_key, workspace, chunk_path, chunk_no),
+                        "SELECT text FROM chunks WHERE workspace=? AND path=? AND chunk_no=?",
+                        (workspace, chunk_path, chunk_no),
                     ).fetchone()
                     chunk_text = str(txt_row[0]) if txt_row else ""
                     for c in target_candidates:
@@ -3241,38 +3335,93 @@ class RAGStore:
             "results": candidates[:top_k],
         }
 
-    def list_workspaces(self, tenant: str) -> list[dict[str, Any]]:
-        scope_key = self._scope_key(tenant)
+    def list_workspaces(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT workspace, COUNT(*), COUNT(DISTINCT path) FROM chunks WHERE tenant=? GROUP BY workspace ORDER BY workspace",
-                (scope_key,),
+                "SELECT workspace, COUNT(*), COUNT(DISTINCT path) FROM chunks GROUP BY workspace ORDER BY workspace",
             ).fetchall()
         return [{"workspace": r[0], "chunks": r[1], "files": r[2]} for r in rows]
 
-    def docset_index(self, name: str, root: str, tenant: str = "docset") -> dict[str, Any]:
+    def docset_index(self, name: str, *, root: str) -> dict[str, Any]:
         """Index an offline library or API documentation directory under a named docset workspace."""
         clean_name = str(name or "").strip().lower().replace(" ", "_")
         if not clean_name:
             return {"success": False, "error": "docset name is required"}
-        return self.index(root, tenant, workspace=f"docset:{clean_name}")
+        return self.index(root, workspace=f"docset:{clean_name}")
 
-    def docset_search(self, name: str, query: str, tenant: str = "docset", top_k: int = 8, use_reranker: bool = True) -> dict[str, Any]:
+    def docset_search(self, name: str, *, query: str, top_k: int = 8, use_reranker: bool = True) -> dict[str, Any]:
         """Search an indexed offline library or API docset."""
         clean_name = str(name or "").strip().lower().replace(" ", "_")
         if not clean_name:
             return {"success": False, "error": "docset name is required"}
-        return self.search(query, tenant, f"docset:{clean_name}", top_k=top_k, use_reranker=use_reranker)
+        return self.search(query, workspace=f"docset:{clean_name}", top_k=top_k, use_reranker=use_reranker)
+
+    def _prepare_ingest_workspace(self, *, root: str, workspace: str) -> tuple[Path, str]:
+        if type(root) is not str or not root or root != root.strip() or "\x00" in root:
+            raise ValueError("RAG ingestion requires a canonical repository root")
+        try:
+            root_path = Path(root).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("RAG ingestion root must be an existing repository directory") from exc
+        if (
+            not root_path.is_dir()
+            or Path(root).is_symlink()
+            or os.path.normcase(str(Path(root).absolute())) != os.path.normcase(str(root_path))
+        ):
+            raise ValueError("RAG ingestion root must be a real canonical directory")
+        self.require_workspace_root(workspace=workspace, root=str(root_path))
+        return root_path, workspace
+
+    def _publish_ingest_workspace_binding(self, root: Path, workspace: str) -> None:
+        project_context = self.project_context(root)
+        self._sync_workspace_project_policy_identity(root, workspace, project_context)
+
+    @staticmethod
+    def _confined_diagram_path(root: Path, image_path: str) -> Path:
+        if type(image_path) is not str or not image_path or image_path != image_path.strip() or "\x00" in image_path:
+            raise ValueError("diagram image_path must be a canonical non-empty path")
+        candidate = Path(image_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = Path(os.path.abspath(candidate))
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("diagram image must be inside the authorized repository root") from exc
+        if not relative.parts:
+            raise ValueError("diagram image path must identify a file inside the repository root")
+        current = root
+        final_stat: os.stat_result | None = None
+        for part in relative.parts:
+            current = current / part
+            try:
+                final_stat = current.lstat()
+            except OSError as exc:
+                raise ValueError("diagram image must exist inside the repository root") from exc
+            if stat.S_ISLNK(final_stat.st_mode) or bool(
+                getattr(final_stat, "st_file_attributes", 0) & 0x400
+            ):
+                raise ValueError("diagram image paths cannot contain symlinks or reparse points")
+        if final_stat is None or not stat.S_ISREG(final_stat.st_mode):
+            raise ValueError("diagram image path must identify a regular file")
+        return candidate
 
     def ingest_document(
         self,
+        *,
+        root: str,
         workspace: str,
         content: str,
         title: str = "",
         metadata: dict[str, Any] | None = None,
-        tenant: str = "default",
-    ) -> dict[str, Any]:
+            ) -> dict[str, Any]:
         """Ingest raw document or specification content into a RAG workspace."""
+        try:
+            _root_path, clean_ws = self._prepare_ingest_workspace(
+                root=root, workspace=workspace
+            )
+        except Exception as exc:
+            return {"success": False, "workspace": workspace, "error": str(exc)}
         raw_text = str(content or "")
         rag_cfg = self.config.get("rag", {})
         max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
@@ -3288,11 +3437,9 @@ class RAGStore:
         if not clean_text:
             return {"success": False, "error": "content is required"}
 
-        clean_ws = str(workspace or "default").strip()
         doc_metadata = metadata if isinstance(metadata, dict) else {}
         doc_title = str(title or "").strip() or str(doc_metadata.get("title") or "").strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
         doc_path = f"doc:{doc_title}"
-        scope_key = self._scope_key(tenant)
 
         index_parts = [f"Title: {doc_title}"]
         if doc_metadata:
@@ -3322,13 +3469,17 @@ class RAGStore:
                 "embedding_space": "",
             })
 
+        try:
+            self._publish_ingest_workspace_binding(_root_path, clean_ws)
+        except Exception as exc:
+            return {"success": False, "workspace": clean_ws, "error": str(exc)}
+
         if self.services is not None:
             for offset in range(0, len(records), _INDEX_EMBED_BATCH_SIZE):
                 batch_records = records[offset:offset + _INDEX_EMBED_BATCH_SIZE]
                 try:
                     vec_res = self.services.embed(
                         [record["text"] for record in batch_records],
-                        tenant,
                         priority=2,
                         query=False,
                     )
@@ -3355,27 +3506,27 @@ class RAGStore:
         def publish_document() -> None:
             with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
-                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
-                con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+                con.execute("DELETE FROM chunks WHERE workspace=? AND path=?", (clean_ws, doc_path))
+                con.execute("DELETE FROM files WHERE workspace=? AND path=?", (clean_ws, doc_path))
                 fts_exists = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                 ).fetchone()
                 if fts_exists:
-                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+                    con.execute("DELETE FROM chunk_fts WHERE workspace=? AND path=?", (clean_ws, doc_path))
 
                 now_ns = time.time_ns()
                 con.execute(
-                    "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                    (scope_key, clean_ws, doc_path, now_ns, len(indexed_text.encode("utf-8")), _fragment_hash(indexed_text)),
+                    "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+                    (clean_ws, doc_path, now_ns, len(indexed_text.encode("utf-8")), _fragment_hash(indexed_text)),
                 )
                 con.executemany(
-                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
-                    [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
+                    "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
+                    [(clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
                 )
                 if fts_exists:
                     con.executemany(
-                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
-                        [(scope_key, clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
+                        "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
+                        [(clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
                     )
                 con.commit()
 
@@ -3410,22 +3561,26 @@ class RAGStore:
 
     def ingest_diagram(
         self,
+        *,
+        root: str,
         workspace: str,
         image_path: str,
         caption: str = "",
         metadata: dict[str, Any] | None = None,
-        tenant: str = "default",
-    ) -> dict[str, Any]:
+            ) -> dict[str, Any]:
         """Ingest architectural diagram, flowchart, or visual asset into RAG workspace."""
-        p_img = Path(image_path).expanduser().resolve(strict=False)
-        if not p_img.is_file():
-            return {"success": False, "error": f"image file not found: {image_path}"}
+        try:
+            root_path, clean_ws = self._prepare_ingest_workspace(
+                root=root, workspace=workspace
+            )
+            p_img = self._confined_diagram_path(root_path, image_path)
+        except Exception as exc:
+            return {"success": False, "workspace": workspace, "error": str(exc)}
 
         suffix = p_img.suffix.lower()
         if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".bmp"):
             return {"success": False, "error": f"unsupported diagram format: {suffix}"}
 
-        clean_ws = str(workspace or "default").strip()
         doc_title = f"diagram_{p_img.stem}_{_fragment_hash(str(p_img))[:16]}"
 
         diagram_text = ""
@@ -3463,11 +3618,11 @@ class RAGStore:
             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
 
         res = self.ingest_document(
+            root=str(root_path),
             workspace=clean_ws,
             content=diagram_text,
             title=doc_title,
             metadata={"type": "diagram", "format": suffix, "image_path": str(p_img), **(metadata or {})},
-            tenant=tenant,
         )
         if isinstance(res, dict):
             res["diagram_indexed"] = bool(res.get("success"))

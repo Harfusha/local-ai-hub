@@ -25,7 +25,7 @@ def _receipt(task, artifacts, *, passed, observed_at):
         "cached": False,
         "result": {"success": passed, "exit_code": exit_code},
     }
-    evidence_id = artifacts.put_json(proof, task.owner, "command_verification")
+    evidence_id = artifacts.put_json(proof, kind="command_verification")
     return replace(
         VerificationReceipt.create(
             task.task_id,
@@ -55,7 +55,7 @@ def test_newer_failed_receipt_supersedes_older_pass(tmp_path):
         ),
         ScopeContext(repository_id="repo-receipt-order", task_id="task-receipt-order"),
         task_id="task-receipt-order",
-        actor="tenant-a",
+        actor="task-owner-a",
     )
 
     verifier.record(_receipt(task, artifacts, passed=True, observed_at=10.0))
@@ -81,7 +81,7 @@ def test_newer_failed_receipt_stays_authoritative_after_verifier_recreation(tmp_
         ),
         ScopeContext(repository_id="repo-receipt-reopen", task_id="task-receipt-reopen"),
         task_id="task-receipt-reopen",
-        actor="tenant-a",
+        actor="task-owner-a",
     )
     verifier.record(_receipt(task, artifacts, passed=True, observed_at=10.0))
     verifier.record(_receipt(task, artifacts, passed=False, observed_at=20.0))

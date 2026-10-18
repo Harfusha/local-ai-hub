@@ -33,10 +33,10 @@ def test_unsupported_existing_recovery_schema_is_preserved_and_journal_fails_clo
 
         journal = RecoveryJournal(tmp_path)
         with pytest.raises(sqlite3.DatabaseError, match="incompatible recovery journal schema"):
-            journal.begin("new-request", "tenant-a", "/api/tasks", identity="agent-a", payload={})
+            journal.begin("new-request", action="/api/tasks", payload={})
 
         assert {path.name: path.read_bytes() for path in (database, wal, shm)} == before
-        assert (tmp_path / "recovery.unavailable").exists()
+        assert journal._journal_unavailable is True
         assert not list(tmp_path.glob("recovery.corrupt-*.sqlite3"))
     finally:
         connection.close()
@@ -50,8 +50,8 @@ def test_supported_schema_in_wal_is_verified_without_changing_sidecars(tmp_path:
         connection.execute("PRAGMA wal_autocheckpoint=0")
         connection.execute(
             """CREATE TABLE requests (
-                request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, identity TEXT NOT NULL,
-                action TEXT NOT NULL, payload_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+                request_id TEXT PRIMARY KEY, action TEXT NOT NULL,
+                payload_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
                 created_at REAL NOT NULL, updated_at REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
                 status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
             )"""
@@ -71,7 +71,7 @@ def test_supported_schema_in_wal_is_verified_without_changing_sidecars(tmp_path:
         connection.close()
 
 
-def test_wal_schema_upgrade_completes_nonempty_main_schema_without_changing_sidecars(
+def test_wal_tenant_schema_is_rejected_without_changing_sidecars(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "recovery.sqlite3"
@@ -82,27 +82,21 @@ def test_wal_schema_upgrade_completes_nonempty_main_schema_without_changing_side
         connection.execute(
             """CREATE TABLE requests (
                 request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, action TEXT NOT NULL,
-                state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-                detail TEXT NOT NULL DEFAULT '', status_code INTEGER NOT NULL DEFAULT 0,
-                response_json TEXT NOT NULL DEFAULT ''
+                payload_fingerprint TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
+                status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
             )"""
         )
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        migration = "ALTER" + " TABLE requests ADD COLUMN "
-        connection.execute(migration + "identity TEXT NOT NULL DEFAULT ''")
-        connection.execute(
-            migration + "payload_fingerprint TEXT NOT NULL DEFAULT ''"
-        )
-
         wal = Path(f"{database}-wal")
         shm = Path(f"{database}-shm")
-        assert wal.exists() and shm.exists() and wal.stat().st_size > 0
+        assert wal.exists() and shm.exists()
         paths = (database, wal, shm)
         before = {path.name: path.read_bytes() for path in paths}
 
         journal = RecoveryJournal.__new__(RecoveryJournal)
         journal.path = database
-        journal._verify_existing_schema()
+        with pytest.raises(sqlite3.DatabaseError, match="incompatible recovery journal schema"):
+            journal._verify_existing_schema()
 
         assert {path.name: path.read_bytes() for path in paths} == before
         assert not list(tmp_path.glob(".recovery-schema-*"))

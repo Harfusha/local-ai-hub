@@ -118,8 +118,6 @@ def test_model_prepare_failure_fails_queue_and_opens_fast_circuit(tmp_path: Path
         "scheduler": {
             "max_parallel": 1,
             "max_queue": 8,
-            "max_queued_per_tenant": 8,
-            "max_inflight_per_tenant": 1,
             "model_switch_failure_cooldown_seconds": 5,
             "max_loaded_models": 1,
         },
@@ -129,11 +127,11 @@ def test_model_prepare_failure_fails_queue_and_opens_fast_circuit(tmp_path: Path
     }
     scheduler = AffinityScheduler(_FailingRuntime(), config)
     try:
-        result = scheduler.submit("broken", "tenant", "test", lambda: {"success": True}, wait_timeout=2)
+        result = scheduler.submit("broken", source="test", execute=lambda: {"success": True}, wait_timeout=2)
         assert result["success"] is False
         assert "model preparation failed" in result["error"]
         with pytest.raises(ModelUnavailableError):
-            scheduler.submit("broken", "tenant", "test", lambda: {"success": True}, wait_timeout=1)
+            scheduler.submit("broken", source="test", execute=lambda: {"success": True}, wait_timeout=1)
         assert scheduler.status()["stats"]["model_switch_failures"] >= 1
         assert scheduler.status()["stats"]["model_fast_rejections"] >= 1
     finally:
@@ -265,8 +263,6 @@ def test_scheduler_omitted_wait_timeout_is_still_hard_bounded():
         "scheduler": {
             "max_parallel": 1,
             "max_queue": 8,
-            "max_queued_per_tenant": 8,
-            "max_inflight_per_tenant": 1,
             "max_caller_wait_timeout_seconds": 0.08,
             "max_loaded_models": 1,
         },
@@ -279,7 +275,7 @@ def test_scheduler_omitted_wait_timeout_is_still_hard_bounded():
     started = time.monotonic()
     try:
         with pytest.raises(TimeoutError) as exc_info:
-            scheduler.submit("slow", "tenant", "test", lambda: (time.sleep(0.3) or {"success": True}))
+            scheduler.submit("slow", source="test", execute=lambda: (time.sleep(0.3) or {"success": True}))
         assert time.monotonic() - started < 0.2
         assert exc_info.value.error_code == "scheduler_caller_timeout"
         assert exc_info.value.state in {"running", "dispatching"}

@@ -90,7 +90,7 @@ def test_pinned_project_hint_survives_fusion_cap_but_remains_policy_checked(tmp_
     services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "context", "tenant", None, 400,
+        str(tmp_path), "context", workspace=None, max_tokens=400,
         quality_first=True,
         path_hints=(
             {"path": "docs/pinned.md", "provenance": "project_config:pinned_context"},
@@ -159,7 +159,7 @@ def test_hybrid_source_intent_ranks_source_and_config_before_history_and_coverag
     services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "Fix runtime implementation", "tenant", None, 400,
+        str(tmp_path), "Fix runtime implementation", workspace=None, max_tokens=400,
         quality_first=True,
     )
 
@@ -532,9 +532,13 @@ def test_rag_exception_degrades_and_keeps_evidence_traceable(tmp_path: Path) -> 
         @staticmethod
         def workspace_id(_root: str) -> str:
             return "workspace-1"
+        @staticmethod
+        def require_workspace_root(*, workspace: str, root: str) -> None:
+            assert workspace == "workspace-1"
+            assert Path(root).is_dir()
 
         @staticmethod
-        def list_workspaces(_tenant: str) -> list[dict]:
+        def list_workspaces() -> list[dict]:
             return [{"workspace": "workspace-1"}]
 
         @staticmethod
@@ -553,7 +557,7 @@ def test_rag_exception_degrades_and_keeps_evidence_traceable(tmp_path: Path) -> 
     services.rag = FakeRag()
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "route", "tenant", None, 400, quality_first=True
+        str(tmp_path), "route", workspace=None, max_tokens=400, quality_first=True
     )
 
     assert result["success"] is True
@@ -580,9 +584,13 @@ def test_rag_malformed_chunk_is_skipped_without_failing_context(tmp_path: Path) 
         @staticmethod
         def workspace_id(_root: str) -> str:
             return "workspace-1"
+        @staticmethod
+        def require_workspace_root(*, workspace: str, root: str) -> None:
+            assert workspace == "workspace-1"
+            assert Path(root).is_dir()
 
         @staticmethod
-        def list_workspaces(_tenant: str) -> list[dict]:
+        def list_workspaces() -> list[dict]:
             return [{"workspace": "workspace-1"}]
 
         @staticmethod
@@ -600,7 +608,7 @@ def test_rag_malformed_chunk_is_skipped_without_failing_context(tmp_path: Path) 
     services.evidence_store = None
     services.rag = FakeRag()
 
-    result = services._hybrid_context_uncached(str(tmp_path), "route", "tenant", None, 400, quality_first=True)
+    result = services._hybrid_context_uncached(str(tmp_path), "route", workspace=None, max_tokens=400, quality_first=True)
 
     assert result["success"] is True
     assert result["retrieval"]["backend_states"]["rag"] == "degraded"
@@ -612,9 +620,14 @@ def test_missing_rag_revision_bypasses_context_cache(tmp_path: Path) -> None:
         @staticmethod
         def workspace_id(_root: str) -> str:
             return "workspace-1"
+        @staticmethod
+        def require_workspace_root(*, workspace: str, root: str) -> None:
+            assert workspace == "workspace-1"
+            assert Path(root).is_dir()
 
         @staticmethod
-        def revision(*_args) -> str:
+        def revision(*, workspace: str) -> str:
+            assert workspace == "workspace-1"
             raise RuntimeError("database unavailable")
 
     services = LocalAIServices.__new__(LocalAIServices)
@@ -630,7 +643,7 @@ def test_missing_rag_revision_bypasses_context_cache(tmp_path: Path) -> None:
 
     services._hybrid_context_uncached = uncached
 
-    result = services._hybrid_context(str(tmp_path), "route", "tenant", None, 400, quality_first=True)
+    result = services._hybrid_context(str(tmp_path), "route", workspace=None, max_tokens=400, quality_first=True)
 
     assert result["context"] == "fresh"
     assert result["cache_hit"] is False
@@ -669,7 +682,7 @@ def test_incomplete_evidence_receipt_fails_closed(tmp_path: Path) -> None:
     services.rag = None
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "route", "tenant", None, 400, quality_first=True
+        str(tmp_path), "route", workspace=None, max_tokens=400, quality_first=True
     )
 
     assert result["success"] is False
@@ -728,9 +741,13 @@ def test_all_adaptive_backends_keep_multifile_evidence_and_report_coverage(tmp_p
         @staticmethod
         def workspace_id(_root: str) -> str:
             return "workspace-1"
+        @staticmethod
+        def require_workspace_root(*, workspace: str, root: str) -> None:
+            assert workspace == "workspace-1"
+            assert Path(root).is_dir()
 
         @staticmethod
-        def list_workspaces(_tenant: str) -> list[dict]:
+        def list_workspaces() -> list[dict]:
             return [{"workspace": "workspace-1"}]
 
         @staticmethod
@@ -753,7 +770,7 @@ def test_all_adaptive_backends_keep_multifile_evidence_and_report_coverage(tmp_p
     services.rag = FakeRag()
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "route-repair across handlers and models", "tenant", None, 900,
+        str(tmp_path), "route-repair across handlers and models", workspace=None, max_tokens=900,
         quality_first=True, exclude_paths=("private/**",), force_include_paths=("private/generated.py",),
     )
 
@@ -839,7 +856,7 @@ def test_adaptive_selection_excludes_disabled_serena(tmp_path: Path) -> None:
     (root / "routes.py").write_text("def project_route():\n    return True\n", encoding="utf-8")
 
     result = services._hybrid_context_uncached(
-        str(root), "Find project route", "tenant", None, 200, quality_first=True,
+        str(root), "Find project route", workspace=None, max_tokens=200, quality_first=True,
     )
 
     selection = result["retrieval"]["backend_selection"]
@@ -912,7 +929,7 @@ def test_adaptive_context_reports_lexical_quality_and_fallback(tmp_path: Path) -
     services.rag = FakeRag()
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "Find ProjectRoute implementation", "tenant", "workspace-1", 200,
+        str(tmp_path), "Find ProjectRoute implementation", workspace="workspace-1", max_tokens=200,
         quality_first=True, rag_revision="r1", rag_revision_available=True,
     )
 
@@ -969,7 +986,7 @@ def test_semantic_coverage_preserves_incomplete_backend_receipt(tmp_path: Path) 
     services.rag = FakeRag()
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "ProjectRoute", "tenant", "workspace-1", 400,
+        str(tmp_path), "ProjectRoute", workspace="workspace-1", max_tokens=400,
         quality_first=True, rag_revision="r1", rag_revision_available=True,
     )
 
@@ -1026,7 +1043,7 @@ def test_path_hints_rank_context_evidence_without_narrowing_lexical_search(tmp_p
     services.rag = None
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "unique source", "tenant", None, 400, quality_first=True
+        str(tmp_path), "unique source", workspace=None, max_tokens=400, quality_first=True
     )
 
     paths = [item["path"] for item in result["evidence"]]

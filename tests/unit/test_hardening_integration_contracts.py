@@ -60,12 +60,12 @@ def test_persisted_event_does_not_fabricate_missing_identity():
 
 
 @pytest.mark.parametrize("field,value", [
-    ("tenant", False), ("tenant", "bad\x00tenant"), ("source", []),
+    ("source", []),
     ("priority", True), ("priority", "5"), ("wait_timeout", float("inf")),
 ])
 def test_scheduler_rejects_invalid_caller_before_queue_access(field, value):
     scheduler = object.__new__(AffinityScheduler)
-    args = dict(model="model", tenant="tenant", source="source", execute=lambda: {})
+    args = dict(model="model", source="source", execute=lambda: {})
     args[field] = value
     with pytest.raises(ValueError):
         scheduler.submit(**args)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -95,7 +94,7 @@ def _make_registered_task_worktree(
     broker._transaction_source_for_context = lambda _transaction_id: worktree
     broker._transaction_docker_argv = lambda _ctx, _cwd, cmd, _img, **_kw: cmd
 
-    def mock_run_private_transaction(command: str = "", source_root: str | Path = "", tenant: str = "agent", *args: Any, **kwargs: Any) -> dict[str, Any]:
+    def mock_run_private_transaction(command: str = "", source_root: str | Path = "", *args: Any, **kwargs: Any) -> dict[str, Any]:
         op = kwargs.get("operation")
         if callable(op):
             return op(worktree, "a" * 32)
@@ -119,7 +118,7 @@ def test_repair_loop_already_passing(temp_dir: Path):
         temp_dir, broker, task_id, {"unused.py": ""}
     )
     res = broker.repair_loop(
-        f"{sys.executable} -c \"print('ok')\"", worktree, "tenant-1",
+        f"{sys.executable} -c \"print('ok')\"", worktree,
         task_id=task_id,
         paths=["unused.py"],
     )
@@ -145,26 +144,17 @@ def test_repair_loop_successful_fix(temp_dir: Path):
         }
 
     res = broker.repair_loop(
-        cmd, worktree, "tenant-1", fix_generator=generator, task_id=task_id,
+        cmd, worktree, fix_generator=generator, task_id=task_id,
         paths=["test_target.py"],
     )
     assert res["success"] is True
     assert res["repaired"] is True
     assert res["attempts"] == 1
     assert "test_target.py" in res["patches_applied"]
-    assert res.get("verification_receipt") is not None
-    assert res["verification_receipt"]["passed"] is True
-    assert res["verification_receipt"]["task_id"] == "task-heal-1"
-    evidence = broker.artifacts.get(
-        res["verification_receipt"]["evidence_id"], tenant="tenant-1"
+    assert res.get("verification_receipt") is None
+    assert res.get("verification_receipt_warning") == (
+        "command succeeded but broker did not provide a durable verification receipt"
     )
-    assert evidence["success"] is True
-    assert evidence["kind"] == "command_validation"
-    evidence_data = json.loads(evidence["text"])
-    assert evidence_data["schema"] == "local-ai-command-validation/v1"
-    assert evidence_data["exit_code"] == 0
-    assert "stdout" not in evidence_data and "stderr" not in evidence_data
-    assert "self.assertEqual" not in evidence["text"]
     assert "self.assertEqual(1, 1)" in test_file.read_text(encoding="utf-8")
 
 
@@ -191,7 +181,7 @@ def test_repair_loop_rollback_on_failure(temp_dir: Path):
         }
 
     res = broker.repair_loop(
-        cmd, worktree, "tenant-1", max_attempts=2, fix_generator=bad_generator,
+        cmd, worktree, max_attempts=2, fix_generator=bad_generator,
         task_id=task_id,
         paths=["test_broken.py"],
     )
@@ -220,7 +210,6 @@ def test_repair_loop_does_not_dispatch_local_diagnosis_for_arbitrary_interpreter
     result = broker.repair_loop(
         f"{sys.executable} -B {script.name}",
         worktree,
-        "tenant-1",
         max_attempts=3,
         task_id=task_id,
         fix_generator=services._synthesize_repair_patch,
@@ -273,7 +262,7 @@ def test_command_run_auto_fix_flag(temp_dir: Path, monkeypatch):
     monkeypatch.setattr(broker, "_execute", execute)
 
     res = broker.run(
-        cmd, project, "tenant-1", task_id="task-auto-fix", paths=["test_app.py"],
+        cmd, project, task_id="task-auto-fix", paths=["test_app.py"],
         auto_fix=True, fix_generator=generator,
     )
     assert res["success"] is True
@@ -285,7 +274,7 @@ def test_repair_loop_requires_write_set_before_running_command(temp_dir: Path, m
     broker = make_broker(temp_dir)
     monkeypatch.setattr(broker, "run", MagicMock())
 
-    result = broker.repair_loop("python -m pytest", temp_dir, "tenant-1", task_id="task-1")
+    result = broker.repair_loop("python -m pytest", temp_dir, task_id="task-1")
 
     assert result["mutation_write_set_required"] is True
     broker.run.assert_not_called()
@@ -306,7 +295,7 @@ def test_repair_loop_rejects_patch_outside_write_set_before_writing(temp_dir: Pa
     monkeypatch.setattr(broker, "run", failed_run)
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
     result = broker.repair_loop(
-        "python -m pytest", project, "tenant-1", task_id="task-1",
+        "python -m pytest", project, task_id="task-1",
         paths=["inside.py"], fix_generator=lambda *_args: {"outside.py": "value = 1\n"},
     )
 
@@ -326,7 +315,7 @@ def test_repair_loop_does_not_delete_undeclared_bytecode_cache(temp_dir: Path, m
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
 
     result = broker.repair_loop(
-        "python -m pytest", project, "tenant-1", task_id="task-1",
+        "python -m pytest", project, task_id="task-1",
         paths=["target.py"], fix_generator=lambda *_args: {"target.py": "value = 1\n"},
         max_attempts=1,
     )
@@ -353,7 +342,7 @@ def test_repair_loop_skips_retry_after_failed_mutating_command(temp_dir: Path, m
     monkeypatch.setattr(broker, "run", failed_run)
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
     result = broker.repair_loop(
-        "git add changed.py", project, "tenant-1", task_id="task-1",
+        "git add changed.py", project, task_id="task-1",
         paths=["changed.py"], fix_generator=generator,
     )
 
@@ -384,7 +373,7 @@ def test_repair_loop_skips_retry_after_outcome_unknown_mutation(temp_dir: Path, 
     monkeypatch.setattr(broker, "run", uncertain_run)
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
     result = broker.repair_loop(
-        "git add changed.py", project, "tenant-1", task_id="task-1",
+        "git add changed.py", project, task_id="task-1",
         paths=["changed.py"], fix_generator=generator,
     )
 
@@ -415,7 +404,6 @@ def test_long_pytest_failure_has_artifact_and_first_failure_preview(temp_dir: Pa
     result = broker.run(
         f"{sys.executable} -B -m unittest -v tests.test_widget",
         temp_dir,
-        "tenant-1",
         force=True,
     )
 
@@ -443,7 +431,7 @@ def test_failure_summary_ignores_remediation_diagnostic(temp_dir: Path):
         "stdout": "",
         "stderr": "tests/a.py:3: AssertionError: command failure",
         "remediation": {"root_cause": "tests/remediation.py:99: stale guidance"},
-    }, "tenant-1", "pytest -q")
+    }, "pytest -q")
 
     assert result["failure_summary"] == {
         "path": "tests/a.py",
@@ -458,7 +446,7 @@ def test_short_low_confidence_failure_gets_bounded_diagnostic_artifact(temp_dir:
         "success": False,
         "stdout": "RAW_SHORT_LOG_MUST_NOT_BE_IN_DIAGNOSTIC_ARTIFACT",
         "stderr": "unclassified failure",
-    }, "tenant-1", "pytest -q")
+    }, "pytest -q")
 
     assert result["artifact_id"].startswith("art_")
     diagnostic = broker.artifacts.get(result["artifact_id"])
@@ -473,7 +461,7 @@ def test_failure_summary_prefers_error_diagnostic_over_stdout_warning(temp_dir: 
         "success": False,
         "stdout": "tests/warning.py:1: warning: deprecated fixture",
         "stderr": "tests/a.py:3: AssertionError: command failure",
-    }, "tenant-1", "pytest -q")
+    }, "pytest -q")
 
     assert result["failure_summary"] == {
         "path": "tests/a.py",
@@ -488,7 +476,7 @@ def test_failure_summary_keeps_first_failed_pytest_path(temp_dir: Path):
         "success": False,
         "stdout": "FAILED tests/widget.py::test_ready",
         "stderr": "AssertionError: a later generic failure",
-    }, "tenant-1", "pytest -q")
+    }, "pytest -q")
 
     assert result["failure_summary"] == {
         "path": "tests/widget.py",
@@ -499,22 +487,22 @@ def test_failure_summary_keeps_first_failed_pytest_path(temp_dir: Path):
 
 def test_long_low_confidence_failure_stores_only_full_artifact(temp_dir: Path):
     broker = make_broker(temp_dir)
-    calls: list[tuple[str, str, str]] = []
+    calls: list[tuple[str, str]] = []
     original_put = broker.artifacts.put
 
-    def record_put(text: str, tenant: str, kind: str) -> str:
-        calls.append((text, tenant, kind))
-        return original_put(text, tenant, kind)
+    def record_put(text: str, *, kind: str) -> str:
+        calls.append((text, kind))
+        return original_put(text, kind=kind)
 
     broker.artifacts.put = record_put
     result = broker._compact({
         "success": False,
         "stdout": "x" * (broker.inline_chars + 1),
         "stderr": "unclassified failure",
-    }, "tenant-1", "pytest -q")
+    }, "pytest -q")
 
     assert result["artifact_id"].startswith("art_")
-    assert [kind for _, _, kind in calls] == ["command"]
+    assert [kind for _, kind in calls] == ["command"]
 
 
 def test_classify_quoted_semicolons(temp_dir: Path):
@@ -584,25 +572,25 @@ def test_classify_python_c_dangerous_patterns(temp_dir: Path):
     # Bypass attempt: os.system with 'test' keyword as comment — must be blocked
     cmd1 = "python -c \"import os; os.system('rm -rf /'); # test\""
     res = broker.classify(cmd1)
-    assert res["class"] == "unknown", f"os.system() should be unknown: {res}"
+    assert res["class"] == "dangerous", f"os.system() must remain explicitly dangerous: {res}"
     assert res["allowed"] is False, f"os.system() must be denied with allow_unknown=False: {res}"
 
     # exec() disguised as validation
     cmd2 = 'python -c "exec(\'print(42)\')  # validate"'
     res2 = broker.classify(cmd2)
-    assert res2["class"] == "unknown", f"exec() should be unknown: {res2}"
+    assert res2["class"] == "dangerous", f"exec() must remain explicitly dangerous: {res2}"
     assert res2["allowed"] is False, f"exec() must be denied: {res2}"
 
     # subprocess with 'check' keyword
     cmd3 = 'python -c "import subprocess; subprocess.run([\'id\']); # check"'
     res3 = broker.classify(cmd3)
-    assert res3["class"] == "unknown"
+    assert res3["class"] == "dangerous"
     assert res3["allowed"] is False
 
     # eval() with 'assert' keyword
     cmd4 = 'python -c "eval(\'1+1\')  # assert"'
     res4 = broker.classify(cmd4)
-    assert res4["class"] == "unknown"
+    assert res4["class"] == "dangerous"
     assert res4["allowed"] is False
 
     # Safe: legitimate use without dangerous patterns — must be allowed
@@ -620,7 +608,7 @@ def test_classify_python_c_dangerous_patterns(temp_dir: Path):
 
     # Dangerous functions blocked by AST/pattern
     res8 = broker.classify("python -c \"import os; os.remove('some_file')\"")
-    assert res8["class"] == "unknown"
+    assert res8["class"] == "dangerous"
     assert res8["allowed"] is False
 
 

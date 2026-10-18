@@ -161,8 +161,7 @@ def test_coord_memory_find_keeps_canonical_agent_state_route(client_and_calls):
     client, calls = client_and_calls
 
     result = client.coord(
-        "memory_find", root="C:/repo", query="known", tenant="caller-tenant",
-        repository_id="caller-repo", coordination_id="caller-coordination",
+        "memory_find", root="C:/repo", query="known",
     )
 
     assert result["success"] is True

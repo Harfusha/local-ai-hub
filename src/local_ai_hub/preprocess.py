@@ -1342,7 +1342,7 @@ class ProjectPreprocessor:
                     rag_workspace = str(self.rag.workspace_id(root))
                 live_paths = self._live_workspace_paths(rag_workspace, root)
                 self.rag.remove_project(
-                    root, "__preprocess__", rag_workspace, preserve_paths=live_paths
+                    root, workspace=rag_workspace, preserve_paths=live_paths
                 )
             except Exception as exc:
                 cascade_ok = False
@@ -2859,7 +2859,7 @@ class ProjectPreprocessor:
             ).fetchall()
             all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
         if not pending:
-            deleted = self.rag.prune_missing(root, "__preprocess__", workspace, all_paths)
+            deleted = self.rag.prune_missing(root, workspace, all_paths)
             if deleted:
                 with self._stats_lock:
                     self._stats["rag_deleted_files"] = self._stats.get("rag_deleted_files", 0) + deleted
@@ -2876,7 +2876,7 @@ class ProjectPreprocessor:
                 if not needed:
                     skipped.append(rel)
         if skipped:
-            self.rag.remove_paths("__preprocess__", workspace, skipped)
+            self.rag.remove_paths(workspace=workspace, paths=skipped)
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
                 con.executemany(
@@ -2900,7 +2900,7 @@ class ProjectPreprocessor:
             ).fetchall()
         content_overrides.update({str(item["path"]): str(item["text"]) for item in rows})
         result = self.rag.index_paths_step(
-            root, "__preprocess__", workspace, paths,
+            root, workspace=workspace, paths=paths,
             should_yield=self._yield,
             content_overrides=content_overrides or None,
         )
@@ -2919,7 +2919,7 @@ class ProjectPreprocessor:
             if not ((Path(root) / rel).resolve(strict=False)).is_file()
         ]
         if missing:
-            self.rag.remove_paths("__preprocess__", workspace, missing)
+            self.rag.remove_paths(workspace=workspace, paths=missing)
             placeholders = ",".join("?" for _ in missing)
             with self._db_lock, closing(self._connect()) as con:
                 con.execute(
@@ -3489,7 +3489,7 @@ class ProjectPreprocessor:
 
         try:
             return self.scheduler.submit(
-                model, "__preprocess__", source, execute, priority=0,
+                model, source=source, execute=execute, priority=0,
                 wait_timeout=float(self.cfg.get("background_scheduler_timeout_seconds", 120)), background=True,
             )
         except TimeoutError:
@@ -3815,7 +3815,7 @@ class ProjectPreprocessor:
     def _step_hot_query(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         workspace = str(row["workspace"])
-        revision = self.rag.revision("__preprocess__", workspace)
+        revision = self.rag.revision(workspace=workspace)
         queries = []
         if self.learner is not None:
             try:
@@ -3857,10 +3857,11 @@ class ProjectPreprocessor:
                 self._stats["deterministic_hot_query_hits"] += 1
         else:
             use_reranker = bool(self.cfg.get("hot_query_use_reranker", False))
-            result = self.rag.search(query, "__preprocess__", workspace, top_k=int(self.cfg.get("hot_query_top_k", 8)), use_reranker=use_reranker, priority=0)
+            self.rag.require_workspace_root(workspace=workspace, root=root)
+            result = self.rag.search(query, workspace=workspace, top_k=int(self.cfg.get("hot_query_top_k", 8)), use_reranker=use_reranker, priority=0)
             if not result.get("success"):
                 raise RuntimeError(str(result.get("error", "hot query failed")))
-            hybrid = self.services._hybrid_context(root, query, "__preprocess__", workspace, int(self.cfg.get("hot_context_tokens", 1800)))
+            hybrid = self.services._hybrid_context(root, query, workspace=workspace, max_tokens=int(self.cfg.get("hot_context_tokens", 1800)))
             paths = [str(x.get("path")) for x in result.get("results", [])[:8] if x.get("path")]
             evidence_ids = [str(x.get("evidence_id")) for x in (hybrid.get("evidence", []) if isinstance(hybrid, dict) else []) if x.get("evidence_id")][:10]
         capsule = {

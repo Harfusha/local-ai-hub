@@ -33,8 +33,8 @@ class _InlineScheduler:
     def status(self) -> dict:
         return {}
 
-    def submit(self, _model, _tenant, _source, work, **_kwargs):
-        return work()
+    def submit(self, _model, *, source, execute, **_kwargs):
+        return execute()
 
 
 class _NoopSemanticCache:

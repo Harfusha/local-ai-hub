@@ -38,7 +38,6 @@ def test_vision_service(tmp_path: Path) -> None:
             "image": str(img_file),
             "prompt": "What is in this image?",
         },
-        tenant="test",
     )
 
     assert res["success"] is True
@@ -79,7 +78,7 @@ def test_telemetry_timeline(tmp_path: Path) -> None:
         telemetry.record_http(
             request_id="req-1",
             agent="agent-a",
-            tenant="tenant-1",
+
             action="local_ai_command",
             status_code=200,
             duration_ms=45.2,
@@ -88,7 +87,7 @@ def test_telemetry_timeline(tmp_path: Path) -> None:
         telemetry.record_http(
             request_id="req-2",
             agent="agent-b",
-            tenant="tenant-1",
+
             action="local_ai_repo",
             status_code=200,
             duration_ms=12.5,

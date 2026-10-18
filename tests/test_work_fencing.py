@@ -385,11 +385,11 @@ def test_namespace_writer_token_starts_above_legacy_physical_token(tmp_path: Pat
     legacy_scope = os.path.normcase(str(root.resolve()))
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO writer_fence_leases(lease_id,resource,owner_id,fencing_token,expires_at,paths_json,attempt_id,attempt_token,scope_id,active) "
-            "VALUES(?,?,?,?,?,?,?,?,?,0)",
-            ("legacy-lease", legacy_scope, "old-owner", 8, 0, '["src/shared.py"]', "", 0, legacy_scope),
+            "INSERT INTO writer_fence_leases(lease_id,resource,owner_id,fencing_token,expires_at,paths_json,attempt_id,attempt_token,scope_id,active,work_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,0,?)",
+            ("legacy-lease", legacy_scope, "old-owner", 8, 0, '["src/shared.py"]', "", 0, legacy_scope, "work-legacy"),
         )
-    coordination_id = "tenant-new"
+    coordination_id = "repo-coordination-new"
     attempt = store.claim_attempt(
         root, "work-new", "owner-new", ttl_seconds=30,
         coordination_id=coordination_id,

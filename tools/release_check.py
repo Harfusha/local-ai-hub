@@ -299,7 +299,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
     from local_ai_hub.client import HubClient
 
     config = root / "config.toml"
-    client = HubClient(tenant="release-smoke", config_path=str(config) if config.is_file() else None)
+    client = HubClient(config_path=str(config) if config.is_file() else None)
     checks: list[dict[str, object]] = []
     errors: list[str] = []
 

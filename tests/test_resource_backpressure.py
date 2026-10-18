@@ -37,7 +37,7 @@ class _Runtime:
 def _scheduler(tmp_path, resource: dict[str, object] | None = None, **scheduler_cfg) -> AffinityScheduler:
     config = {
         "models": {"fast_code": "fast"},
-        "scheduler": {"max_parallel": 1, "max_queue": 8, "max_queued_per_tenant": 8, **scheduler_cfg},
+        "scheduler": {"max_parallel": 1, "max_queue": 8, **scheduler_cfg},
     }
     return AffinityScheduler(_Runtime(resource), config)
 
@@ -48,7 +48,7 @@ def test_foreground_admission_is_degraded_under_resource_pressure(tmp_path) -> N
         {"pressure_level": "high", "context_budget_factor": 0.5, "throttle_background": True},
     )
     try:
-        result = scheduler.submit("fast", "tenant-a", "test", lambda: {"success": True})
+        result = scheduler.submit("fast", source="test", execute=lambda: {"success": True})
         assert result["admission"]["state"] == "degraded"
         assert result["admission"]["reason"] == "resource_pressure"
         assert result["admission"]["context_budget_factor"] == 0.5
@@ -65,7 +65,7 @@ def test_background_admission_rejects_critical_pressure() -> None:
     )
     try:
         with pytest.raises(QueueFullError) as exc_info:
-            scheduler.enqueue("fast", "tenant-a", "background", lambda: {"success": True})
+            scheduler.enqueue("fast", source="background", execute=lambda: {"success": True})
         error = exc_info.value
         assert error.admission["state"] == "rejected"
         assert error.admission["reason"] == "resource_pressure"
@@ -84,14 +84,13 @@ def test_scheduler_status_marks_bounded_pending_and_cache_stats() -> None:
             "scheduler": {
                 "max_parallel": 1,
                 "max_queue": 8,
-                "max_queued_per_tenant": 8,
                 "status_max_items": 2,
                 "cache_stats_max_items": 3,
             },
         },
     )
     try:
-        jobs = [scheduler.enqueue("fast", "tenant-a", f"queued-{i}", lambda: {"success": True}) for i in range(3)]
+        jobs = [scheduler.enqueue("fast", source=f"queued-{i}", execute=lambda: {"success": True}) for i in range(3)]
         status = scheduler.status()
         assert len(status["pending_jobs"]) == 2
         assert status["pending_jobs_total"] == 3

@@ -69,7 +69,6 @@ def _broker(
         if op:
             return op(root, "test-tx")
         cmd = args[0] if args else kwargs.get("command", "")
-        tenant = args[2] if len(args) > 2 else kwargs.get("tenant", "tenant")
         return broker._execute(cmd, root, 30)
 
     broker._run_private_transaction = mock_run_private_transaction
@@ -87,13 +86,13 @@ def _broker(
         )
         orig_run = broker.run
 
-        def mutating_run(command, cwd, tenant, *args, **kwargs):
+        def mutating_run(command, cwd, *args, **kwargs):
             if "paths" not in kwargs or kwargs["paths"] is None:
                 kwargs["paths"] = ["changed.py"]
             if "_work_attempt_fence" not in kwargs or kwargs["_work_attempt_fence"] is None:
                 kwargs["_work_attempt_fence"] = dummy_fence
                 kwargs.setdefault("task_id", "test")
-            return orig_run(command, cwd, tenant, *args, **kwargs)
+            return orig_run(command, cwd, *args, **kwargs)
 
         broker.run = mutating_run
 
@@ -113,7 +112,7 @@ def _execution_result(stdout: str) -> dict:
     }
 
 
-def test_repeatable_command_cache_is_scoped_by_tenant_and_timeout(tmp_path, monkeypatch) -> None:
+def test_repeatable_command_cache_is_scoped_by_timeout(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     command = "python -m pytest -q"
     monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
@@ -135,19 +134,19 @@ def test_repeatable_command_cache_is_scoped_by_tenant_and_timeout(tmp_path, monk
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    tenant_a = broker.run(command, str(tmp_path), "tenant-a", timeout=4)
-    tenant_b = broker.run(command, str(tmp_path), "tenant-b", timeout=4)
-    short = broker.run(command, str(tmp_path), "tenant-timeout", timeout=1)
-    long = broker.run(command, str(tmp_path), "tenant-timeout", timeout=10)
+    first = broker.run(command, str(tmp_path), timeout=4)
+    cached = broker.run(command, str(tmp_path), timeout=4)
+    short = broker.run(command, str(tmp_path), timeout=1)
+    long = broker.run(command, str(tmp_path), timeout=10)
 
-    assert executions == [4, 4, 1, 10]
-    assert tenant_a["cache_hit"] is False
-    assert tenant_b["cache_hit"] is False
-    assert tenant_b["stdout"] == "run-2"
+    assert executions == [4, 1, 10]
+    assert first["cache_hit"] is False
+    assert cached["cache_hit"] is True
+    assert cached["stdout"] == "run-1"
     assert short["success"] is False
     assert long["success"] is True
     assert long["cache_hit"] is False
-    assert long["stdout"] == "run-4"
+    assert long["stdout"] == "run-3"
 
 
 def test_overlapping_repeatable_calls_execute_once_and_return_same_result(tmp_path, monkeypatch) -> None:
@@ -173,7 +172,7 @@ def test_overlapping_repeatable_calls_execute_once_and_return_same_result(tmp_pa
 
     def run(caller: str) -> None:
         try:
-            results[caller] = broker.run(command, str(tmp_path), "tenant")
+            results[caller] = broker.run(command, str(tmp_path))
         except BaseException as exc:  # surface worker failures in the test thread
             errors.append(exc)
 
@@ -241,7 +240,7 @@ def test_inflight_waiter_is_not_reported_as_cache_hit(tmp_path, monkeypatch) -> 
 
     def run(caller: str) -> None:
         try:
-            results[caller] = broker.run(command, str(tmp_path), "tenant")
+            results[caller] = broker.run(command, str(tmp_path))
         except BaseException as exc:  # surface worker failures in the test thread
             errors.append(exc)
 
@@ -304,7 +303,7 @@ def test_repository_revision_change_during_flight_uses_distinct_execution(tmp_pa
 
     def run(caller: str) -> None:
         try:
-            results[caller] = broker.run(command, str(tmp_path), "tenant")
+            results[caller] = broker.run(command, str(tmp_path))
         except BaseException as exc:  # surface worker failures in the test thread
             errors.append(exc)
 
@@ -358,7 +357,7 @@ def test_mutating_call_bypasses_existing_singleflight_entry(tmp_path, monkeypatc
 
     def run(caller: str) -> None:
         try:
-            results[caller] = broker.run(command, str(tmp_path), "tenant")
+            results[caller] = broker.run(command, str(tmp_path))
         except BaseException as exc:  # surface worker failures in the test thread
             errors.append(exc)
 
@@ -457,7 +456,7 @@ def test_stdout_and_stderr_flood_are_drained_without_blocking(tmp_path) -> None:
 
     def run() -> None:
         try:
-            result_holder["result"] = broker.run(command, str(tmp_path), "tenant", timeout=8)
+            result_holder["result"] = broker.run(command, str(tmp_path), timeout=8)
         except BaseException as exc:  # surface worker failures in the test thread
             errors.append(exc)
         finally:
@@ -471,7 +470,7 @@ def test_stdout_and_stderr_flood_are_drained_without_blocking(tmp_path) -> None:
 
     def cancel() -> None:
         try:
-            broker.cancel(command, str(tmp_path), "tenant")
+            broker.cancel(command, str(tmp_path))
         except BaseException as exc:  # surface cleanup failures in the test thread
             cancel_errors.append(exc)
         finally:
@@ -620,7 +619,7 @@ def test_pipe_read_error_fails_closed_and_is_not_cached(tmp_path, monkeypatch) -
         return process
 
     monkeypatch.setattr(commands_module.subprocess, "Popen", popen_with_stdout_read_error)
-    result = broker.run(command, str(tmp_path), "tenant", timeout=8)
+    result = broker.run(command, str(tmp_path), timeout=8)
 
     assert result["success"] is False
     assert result["output_capture_unconfirmed"] is True
@@ -629,7 +628,7 @@ def test_pipe_read_error_fails_closed_and_is_not_cached(tmp_path, monkeypatch) -
     assert "stdout" in result["error"].lower()
     assert result["cleanup_unconfirmed"] is False
 
-    retry = broker.run(command, str(tmp_path), "tenant", timeout=8)
+    retry = broker.run(command, str(tmp_path), timeout=8)
     assert retry["cache_hit"] is False
     assert len(spawned_pids) == 2
 
@@ -653,8 +652,8 @@ def test_uncertain_command_results_are_not_cached(tmp_path, monkeypatch, uncerta
         return result
 
     monkeypatch.setattr(broker, "_execute", execute)
-    first = broker.run(command, str(tmp_path), "tenant", timeout=4)
-    second = broker.run(command, str(tmp_path), "tenant", timeout=4)
+    first = broker.run(command, str(tmp_path), timeout=4)
+    second = broker.run(command, str(tmp_path), timeout=4)
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is False
@@ -685,7 +684,7 @@ def test_spawn_setup_failure_reports_unconfirmed_cleanup(tmp_path, monkeypatch) 
             return None
 
     monkeypatch.setattr(commands_module.subprocess, "Popen", lambda *_args, **_kwargs: UnreapedProcess())
-    result = broker.run("python -m pytest -q", str(tmp_path), "tenant", timeout=4)
+    result = broker.run("python -m pytest -q", str(tmp_path), timeout=4)
 
     assert result["success"] is False
     assert result["cleanup_unconfirmed"] is True
@@ -803,7 +802,7 @@ def test_finished_leader_does_not_leave_descendant_holding_command_pipes(tmp_pat
     child_pid: int | None = None
 
     try:
-        result = broker.run(command, str(tmp_path), "tenant", timeout=8)
+        result = broker.run(command, str(tmp_path), timeout=8)
         child_pid = int(result["stdout"].strip().splitlines()[-1])
 
         assert result["exit_code"] == 0
@@ -840,7 +839,7 @@ def test_finished_leader_kills_descendant_that_closed_command_pipes(tmp_path) ->
     child_pid: int | None = None
 
     try:
-        result = broker.run(command, str(tmp_path), "tenant", timeout=8)
+        result = broker.run(command, str(tmp_path), timeout=8)
         child_pid = int(result["stdout"].strip().splitlines()[-1])
 
         assert result["exit_code"] == 0
@@ -904,10 +903,10 @@ def test_repeatable_cache_reuses_results_and_tracks_repository_revision(tmp_path
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), "tenant")
-    repeated = broker.run(command, str(tmp_path), "tenant")
+    first = broker.run(command, str(tmp_path))
+    repeated = broker.run(command, str(tmp_path))
     repo_state.revision = "revision-b"
-    revised = broker.run(command, str(tmp_path), "tenant")
+    revised = broker.run(command, str(tmp_path))
 
     assert executions == ["revision-a", "revision-b"]
     assert first["cache_hit"] is False
@@ -947,10 +946,10 @@ def test_repo_state_cache_does_not_reuse_result_after_immediate_file_change(tmp_
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), "tenant")
-    repeated = broker.run(command, str(tmp_path), "tenant")
+    first = broker.run(command, str(tmp_path))
+    repeated = broker.run(command, str(tmp_path))
     source.write_text("value = 2\n", encoding="utf-8")
-    changed = broker.run(command, str(tmp_path), "tenant")
+    changed = broker.run(command, str(tmp_path))
 
     assert first["cache_hit"] is False
     assert repeated["cache_hit"] is True
@@ -974,10 +973,10 @@ def test_environment_change_invalidates_repeatable_cache(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), "tenant")
-    repeated = broker.run(command, str(tmp_path), "tenant")
+    first = broker.run(command, str(tmp_path))
+    repeated = broker.run(command, str(tmp_path))
     monkeypatch.setenv("T15_CACHE_SCOPE", "scope-b")
-    changed = broker.run(command, str(tmp_path), "tenant")
+    changed = broker.run(command, str(tmp_path))
 
     assert executions == ["scope-a", "scope-b"]
     assert first["cache_hit"] is False
@@ -1000,10 +999,10 @@ def test_toolchain_change_invalidates_repeatable_cache(tmp_path, monkeypatch) ->
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), "tenant")
-    repeated = broker.run(command, str(tmp_path), "tenant")
+    first = broker.run(command, str(tmp_path))
+    repeated = broker.run(command, str(tmp_path))
     tool_identity["version"] = "tool-b"
-    changed = broker.run(command, str(tmp_path), "tenant")
+    changed = broker.run(command, str(tmp_path))
 
     assert executions == ["tool-a", "tool-b"]
     assert first["cache_hit"] is False
@@ -1027,12 +1026,12 @@ def test_run_reuses_tool_identity_and_reports_command_phase_timings(tmp_path, mo
         },
     )
 
-    result = broker.run("python -m pytest -q", str(tmp_path), "tenant")
+    result = broker.run("python -m pytest -q", str(tmp_path))
 
     assert result["success"] is True
     assert identity_reads == [tool_identity]
     timings = result["phase_timings_ms"]
-    assert {"command_classification_ms", "tool_identity_ms", "repository_fingerprint_ms", "result_cache_lookup_ms", "shell_startup_ms", "stream_capture_ms"} <= set(timings)
+    assert {"command_classification_ms", "repository_fingerprint_ms", "result_cache_lookup_ms", "shell_startup_ms", "stream_capture_ms"} <= set(timings)
     assert all(value >= 0 for value in timings.values())
 
 
@@ -1075,7 +1074,6 @@ def test_cold_warm_command_benchmark_reports_paired_phase_percentiles(tmp_path) 
     broker = _broker(tmp_path)
     stages = (
         "command_classification_ms",
-        "tool_identity_ms",
         "repository_fingerprint_ms",
         "shell_startup_ms",
         "stream_capture_ms",
@@ -1086,18 +1084,18 @@ def test_cold_warm_command_benchmark_reports_paired_phase_percentiles(tmp_path) 
         command = f'"{sys.executable}" -c "print(\'T15_PAIR_{pair}\')"'
         if pair % 2 == 0:
             cold_started = time.perf_counter()
-            cold = broker.run(command, str(tmp_path), "tenant", force=True)
+            cold = broker.run(command, str(tmp_path),  force=True)
             cold_elapsed_ms = (time.perf_counter() - cold_started) * 1000
             warm_started = time.perf_counter()
-            warm = broker.run(command, str(tmp_path), "tenant")
+            warm = broker.run(command, str(tmp_path))
             warm_elapsed_ms = (time.perf_counter() - warm_started) * 1000
         else:
-            broker.run(command, str(tmp_path), "tenant", force=True)
+            broker.run(command, str(tmp_path),  force=True)
             warm_started = time.perf_counter()
-            warm = broker.run(command, str(tmp_path), "tenant")
+            warm = broker.run(command, str(tmp_path))
             warm_elapsed_ms = (time.perf_counter() - warm_started) * 1000
             cold_started = time.perf_counter()
-            cold = broker.run(command, str(tmp_path), "tenant", force=True)
+            cold = broker.run(command, str(tmp_path),  force=True)
             cold_elapsed_ms = (time.perf_counter() - cold_started) * 1000
         observations.append({
             "pair": pair + 1,
@@ -1192,8 +1190,8 @@ def test_mutating_calls_are_never_cached(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    first = broker.run(command, str(tmp_path), "tenant")
-    second = broker.run(command, str(tmp_path), "tenant")
+    first = broker.run(command, str(tmp_path))
+    second = broker.run(command, str(tmp_path))
 
     assert executions == [0, 1]
     assert first["cache_hit"] is False
@@ -1258,7 +1256,7 @@ def test_uncertain_affected_test_selection_widens_to_full_suite(tmp_path, monkey
 +value = 2
 """
 
-    result = broker.patch_and_verify(patch, str(tmp_path), "tenant", command="auto")
+    result = broker.patch_and_verify(patch, str(tmp_path),  command="auto")
 
     assert commands == ["python -m pytest -q"]
     assert result["success"] is True
@@ -1306,7 +1304,7 @@ def test_uncertain_affected_test_selection_without_runner_rolls_back(tmp_path, m
     result = broker.patch_and_verify(
         patch,
         str(tmp_path),
-        "tenant",
+
         command="auto",
         auto_rollback=True,
     )
@@ -1359,7 +1357,7 @@ def test_affected_test_selection_exception_still_uses_full_suite(tmp_path, monke
 +value = 2
 """
 
-    result = broker.patch_and_verify(patch, str(tmp_path), "tenant", command="auto")
+    result = broker.patch_and_verify(patch, str(tmp_path),  command="auto")
 
     assert commands == ["python -m pytest -q"]
     assert result["success"] is True
@@ -1462,7 +1460,7 @@ def test_patch_rollback_preserves_dirty_and_unrelated_files(tmp_path, monkeypatc
 @@ -0,0 +1 @@
 +generated by patch
 """
-    result = broker.patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+    result = broker.patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
     assert result["success"] is False
     assert result["rolled_back"] is True
@@ -1491,7 +1489,7 @@ def test_patch_rollback_preserves_concurrent_edit_to_touched_file(tmp_path, monk
 +value = 2
 """
 
-    result = broker.patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+    result = broker.patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
     assert result["success"] is False
     assert result["rolled_back"] is False
@@ -1525,7 +1523,7 @@ def test_patch_root_guard_blocks_rename_during_validation_and_releases_afterward
 +after
 """
 
-    result = broker.patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+    result = broker.patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
     assert result["success"] is True
     tmp_path.rename(moved)
@@ -1577,7 +1575,7 @@ def test_patch_git_preapply_timeout_returns_structured_failure(tmp_path, monkeyp
         return real_run(args, *positional, **kwargs)
 
     monkeypatch.setattr(commands_module.subprocess, "run", timeout_selected_stage)
-    result = _broker(tmp_path).patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+    result = _broker(tmp_path).patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
     assert result["success"] is False
     assert result["timed_out"] is True
@@ -1608,7 +1606,7 @@ def test_patch_apply_timeout_reports_unknown_state_without_claiming_rollback(tmp
         return result
 
     monkeypatch.setattr(commands_module.subprocess, "run", apply_then_timeout)
-    result = _broker(tmp_path).patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+    result = _broker(tmp_path).patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
     assert result["success"] is False
     assert result["timed_out"] is True
@@ -1638,7 +1636,7 @@ def test_patch_rollback_fingerprints_postapply_file_above_preimage_cap(tmp_path,
 +a replacement longer than the snapshot cap
 """
 
-    result = broker.patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+    result = broker.patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
     assert result["success"] is False
     assert result["rolled_back"] is True, result.get("rollback_error")
@@ -1663,7 +1661,7 @@ def test_patch_scope_rejects_symlink_escape_without_touching_target(tmp_path) ->
 +changed data
 """
     try:
-        result = _broker(tmp_path).patch_and_verify(patch, str(tmp_path), "tenant", command="python -m pytest -q")
+        result = _broker(tmp_path).patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
         assert result["success"] is False
         assert result["applied"] is False
@@ -1688,7 +1686,7 @@ def test_early_preflight_does_not_acquire_rollback_guard(tmp_path, monkeypatch) 
     result = broker.run(
         "git status --short",
         str(tmp_path),
-        "tenant",
+
         rollback_on_failure=True,
         paths=["tracked.txt"],
     )
@@ -1729,12 +1727,12 @@ def test_project_context_env_resolution_is_cached_by_config_and_env_fingerprint(
         env_references={"CI_TOKEN": "PROJECT_CI_TOKEN"},
     )
 
-    first = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
-    cached = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    first = broker.run("python -m pytest -q", str(tmp_path),  project_context=context)
+    cached = broker.run("python -m pytest -q", str(tmp_path),  project_context=context)
     monkeypatch.setenv("PROJECT_CI_TOKEN", "secret-b")
-    changed_env = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    changed_env = broker.run("python -m pytest -q", str(tmp_path),  project_context=context)
     context.config_digest = "config-b"
-    changed_config = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    changed_config = broker.run("python -m pytest -q", str(tmp_path),  project_context=context)
 
     assert first["cache_hit"] is False
     assert cached["cache_hit"] is True
@@ -1765,7 +1763,7 @@ def test_project_context_missing_env_reference_fails_before_spawn(tmp_path, monk
         env_references={"CI_TOKEN": "MISSING_PROJECT_TOKEN"},
     )
 
-    result = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    result = broker.run("python -m pytest -q", str(tmp_path),  project_context=context)
 
     assert result["success"] is False
     assert executions == []
@@ -1785,7 +1783,7 @@ def test_structured_command_invocation_preserves_argv_without_shell_rendering(tm
     argv = ["python", "-m", "pytest", "-q", "--junitxml=literal;pipe|arg.xml"]
     invocation = CommandInvocation(argv=argv, cwd=str(tmp_path), shell=False)
 
-    result = broker.run(invocation, str(tmp_path), "tenant")
+    result = broker.run(invocation, str(tmp_path))
 
     assert result["success"] is True
     assert invocations == [argv]
@@ -1869,7 +1867,7 @@ def test_repair_loop_retries_explicit_validation(tmp_path, monkeypatch, command)
     result = broker.repair_loop(
         command,
         str(tmp_path),
-        "tenant",
+
         paths=["changed.py"],
         max_attempts=1,
         fix_generator=generate,
@@ -1901,7 +1899,7 @@ def test_repair_loop_skips_uncertain_validation_result(tmp_path, monkeypatch, in
     result = broker.repair_loop(
         "python -m pytest -q",
         str(tmp_path),
-        "tenant",
+
         max_attempts=2,
         fix_generator=generate,
         initial_result=initial_result,
@@ -1925,7 +1923,7 @@ def test_repair_loop_skips_non_replay_safe_validation(tmp_path) -> None:
     result = broker.repair_loop(
         "python -m compileall -q src",
         str(tmp_path),
-        "tenant",
+
         max_attempts=2,
         fix_generator=generate,
         initial_result={"success": False, "exit_code": 1},

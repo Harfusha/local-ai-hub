@@ -72,7 +72,7 @@ def test_capture_rolls_back_every_artifact_when_any_insert_fails(tmp_path: Path,
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _FailingConnection(connect(), fail_insert=fail_insert))
 
-    result = capture_to_artifacts(_payload(), artifacts=store, tenant="tenant-a", config=_config())
+    result = capture_to_artifacts(_payload(), artifacts=store, config=_config())
 
     assert result["success"] is False
     with closing(connect()) as con:
@@ -84,7 +84,7 @@ def test_capture_rolls_back_all_artifacts_when_commit_fails(tmp_path: Path, monk
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _FailingConnection(connect(), fail_commit=True))
 
-    result = capture_to_artifacts(_payload(), artifacts=store, tenant="tenant-a", config=_config())
+    result = capture_to_artifacts(_payload(), artifacts=store, config=_config())
 
     assert result["success"] is False
     with closing(connect()) as con:
@@ -94,7 +94,7 @@ def test_capture_rolls_back_all_artifacts_when_commit_fails(tmp_path: Path, monk
 def test_failed_batch_preserves_preexisting_shared_content_addressed_row(tmp_path: Path, monkeypatch) -> None:
     store = ArtifactStore(tmp_path)
     existing = {"redaction": "none", "html": "<main>Pay</main>", "elements": []}
-    artifact_id = store.put_json(existing, "tenant-a", "browser-dom")
+    artifact_id = store.put_json(existing, kind="browser-dom")
     existing_created_at = time.time() - 60
     with closing(store._connect()) as con:
         con.execute("UPDATE artifacts SET created_at=? WHERE artifact_id=?", (existing_created_at, artifact_id))
@@ -102,30 +102,27 @@ def test_failed_batch_preserves_preexisting_shared_content_addressed_row(tmp_pat
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _FailingConnection(connect(), fail_insert=6))
 
-    result = capture_to_artifacts(_payload(), artifacts=store, tenant="tenant-a", config=_config())
+    result = capture_to_artifacts(_payload(), artifacts=store, config=_config())
 
     assert result["success"] is False
-    stored = store.get(artifact_id, tenant="tenant-a")
+    stored = store.get(artifact_id)
     assert stored["success"] is True
     assert json.loads(stored["text"]) == existing
     with closing(connect()) as con:
         assert con.execute("SELECT created_at FROM artifacts WHERE artifact_id=?", (artifact_id,)).fetchone()[0] == existing_created_at
 
 
-def test_capture_batch_is_tenant_scoped_readable_and_deduplicated(tmp_path: Path) -> None:
+def test_capture_batch_is_readable_and_deduplicated(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
-    first = capture_to_artifacts(_payload(), artifacts=store, tenant="tenant-a", config=_config())
-    replay = capture_to_artifacts(_payload(), artifacts=store, tenant="tenant-a", config=_config())
-    other_tenant = capture_to_artifacts(_payload(), artifacts=store, tenant="tenant-b", config=_config())
+    first = capture_to_artifacts(_payload(), artifacts=store, config=_config())
+    replay = capture_to_artifacts(_payload(), artifacts=store, config=_config())
 
-    assert first["success"] is replay["success"] is other_tenant["success"] is True
+    assert first["success"] is replay["success"] is True
     assert first["bundle_artifact_id"] == replay["bundle_artifact_id"]
-    assert first["bundle_artifact_id"] != other_tenant["bundle_artifact_id"]
-    bundle = store.get(first["bundle_artifact_id"], tenant="tenant-a")
+    bundle = store.get(first["bundle_artifact_id"])
     assert bundle["success"] is True
     bundle_value = json.loads(bundle["text"])
-    assert store.get(bundle_value["dom"]["artifact_id"], tenant="tenant-a")["success"] is True
-    assert store.get(bundle_value["dom"]["artifact_id"], tenant="tenant-b")["success"] is False
+    assert store.get(bundle_value["dom"]["artifact_id"])["success"] is True
 
 
 def test_capture_cancellation_during_batch_rolls_back(tmp_path: Path) -> None:
@@ -138,7 +135,7 @@ def test_capture_cancellation_during_batch_rolls_back(tmp_path: Path) -> None:
         return checks >= 4
 
     result = capture_to_artifacts(
-        _payload(), artifacts=store, tenant="tenant-a", config=_config(), cancel_check=cancel_after_some_inserts
+        _payload(), artifacts=store, config=_config(), cancel_check=cancel_after_some_inserts
     )
 
     assert result["success"] is False

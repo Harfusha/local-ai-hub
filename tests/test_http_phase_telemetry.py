@@ -29,7 +29,7 @@ def test_tool_accounting_accepts_current_signed_event_shape():
         response={"success": True},
         measured={"gross_cloud_tokens_avoided_est": 100},
     )
-    event.update({"tenant": "tenant", "agent": "agent", "created_at": 1.0})
+    event.update({"agent": "agent", "created_at": 1.0})
 
     assert len(event) > 24
     Handler._validate_payload("/api/telemetry/tool-accounting", {"events": [event]})

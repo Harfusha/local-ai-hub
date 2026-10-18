@@ -13,7 +13,7 @@ from .vision_contracts import (
     bound_vision_result,
     parse_vision_result,
 )
-from .vision_inputs import prepare_vision_inputs
+from .vision_inputs import _retired_field_error, prepare_vision_inputs
 from .vision_payload import vision_success_payload
 from .vision_request import build_vision_request, select_vision_model, vision_request_timeout
 from .vision_runtime import vision_capability_error, vision_generation_error
@@ -163,7 +163,7 @@ class VisionService:
         }
 
     def _compare_artifacts(
-        self, args: dict[str, Any], tenant: str, cancel_event: threading.Event | None
+        self, args: dict[str, Any], cancel_event: threading.Event | None
     ) -> dict[str, Any]:
         if args.get("cloud_fallback"):
             return {"success": False, "terminal": True, "retryable": False,
@@ -180,7 +180,7 @@ class VisionService:
                         "error": "Comparison requires baseline and candidate screenshot artifact IDs"}
             prepared = prepare_vision_inputs(
                 args={"image_artifact_id": reference}, image_path="", prompt="Compare screenshots",
-                tenant=tenant, artifacts=self.artifacts,
+                artifacts=self.artifacts,
             )
             if isinstance(prepared, dict):
                 return prepared
@@ -188,14 +188,13 @@ class VisionService:
 
         def review(comparison_args: dict[str, Any]) -> dict[str, Any]:
             inherited = {key: args[key] for key in ("model", "max_tokens", "root", "cloud_fallback") if key in args}
-            return self.run({**inherited, **comparison_args}, tenant, cancel_event=cancel_event)
+            return self.run({**inherited, **comparison_args}, cancel_event=cancel_event)
 
         return compare_screens(screenshots[0], screenshots[1], review=review)
 
     def run(
         self,
         args: dict[str, Any],
-        tenant: str,
         *,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
@@ -224,8 +223,17 @@ class VisionService:
                 "error_code": "invalid_request",
                 "error": "Vision request must be an object.",
             }
+        field_error = _retired_field_error(args)
+        if field_error:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": field_error,
+            }
         if args.get("baseline_screenshot_artifact_id"):
-            return self._compare_artifacts(args, tenant, cancel_event)
+            return self._compare_artifacts(args, cancel_event)
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
         model, model_error = select_vision_model(args, self.config)
@@ -236,7 +244,6 @@ class VisionService:
             args=args,
             image_path=image_path,
             prompt=prompt,
-            tenant=tenant,
             artifacts=self.artifacts,
         )
         if isinstance(prepared_inputs, dict):
@@ -290,7 +297,7 @@ class VisionService:
             if len(raw_output) > VISION_MAX_RUNTIME_OUTPUT_CHARS:
                 raw_artifact_id = ""
                 try:
-                    raw_artifact_id = str(self.artifacts.put(raw_output[:VISION_MAX_RUNTIME_OUTPUT_CHARS], tenant, "vision-output"))
+                    raw_artifact_id = str(self.artifacts.put(raw_output[:VISION_MAX_RUNTIME_OUTPUT_CHARS], kind="vision-output"))
                 except Exception:
                     pass
                 return {
@@ -303,7 +310,7 @@ class VisionService:
                 }
             raw_artifact_id = ""
             try:
-                raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
+                raw_artifact_id = str(self.artifacts.put(raw_output, kind="vision-output"))
             except Exception:
                 pass
             dom_context = model_context.dom if model_context is not None else {}

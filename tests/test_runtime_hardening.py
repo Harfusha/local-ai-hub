@@ -103,7 +103,7 @@ def test_client_does_not_spawn_when_hub_port_is_already_owned(tmp_path, monkeypa
         "[headless]\nrespect_disabled_marker=true\n",
         encoding="utf-8",
     )
-    client = HubClient(tenant="test", config_path=str(config))
+    client = HubClient( config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: os.getpid())
     monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")))
@@ -118,7 +118,7 @@ def test_client_failed_start_lock_write_leaves_reusable_lock_file(tmp_path, monk
         "[headless]\nrespect_disabled_marker=true\n",
         encoding="utf-8",
     )
-    client = HubClient(tenant="test", config_path=str(config))
+    client = HubClient( config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
     original_write_owner = client_module._write_start_lock_owner
@@ -148,7 +148,7 @@ def test_client_does_not_bypass_live_managed_supervisor(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (state / "supervisor.pid").write_text(str(os.getpid()), encoding="utf-8")
-    client = HubClient(tenant="test", config_path=str(config))
+    client = HubClient( config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")))
     assert client.ensure_server() is False
@@ -164,7 +164,7 @@ def test_client_does_not_direct_spawn_during_managed_restart(tmp_path, monkeypat
         encoding="utf-8",
     )
     (state / "service.managed").write_text("managed", encoding="utf-8")
-    client = HubClient(tenant="test", config_path=str(config))
+    client = HubClient( config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")))
     assert client.ensure_server() is False

@@ -22,33 +22,28 @@ from local_ai_hub.scheduler import AffinityScheduler, Job, QueueFullError
 _PROFILES = ("integrated", "balanced", "high", "max")
 
 
-def _measure_cross_tenant_fairness() -> dict[str, float]:
-    """Run deterministic virtual-time picks through the production fairness policy."""
+def _measure_same_priority_wait() -> dict[str, float]:
+    """Measure oldest-first scheduling and wait accounting with virtual time."""
     scheduler = object.__new__(AffinityScheduler)
     scheduler._active_model = "synthetic-model"
-    scheduler._inflight_by_tenant = {}
-    scheduler.max_inflight_per_tenant = 2
-    scheduler._tenant_vruntime = {"tenant-a": 0, "tenant-b": 0}
 
-    def job(job_id: int, tenant: str, created_at: float) -> Job:
-        return Job(job_id, "synthetic-model", tenant, "model-free", 1, lambda: {"success": True}, created_at=created_at)
+    def job(job_id: int, created_at: float) -> Job:
+        return Job(id=job_id, model="synthetic-model", source="model-free", priority=1, execute=lambda: {"success": True}, created_at=created_at)
 
-    first_a = job(1, "tenant-a", 1.0)
-    waiting_a = job(2, "tenant-a", 3.0)
-    first_b = job(3, "tenant-b", 2.0)
-    waiting_b = job(4, "tenant-b", 4.0)
+    first_a = job(1, 1.0)
+    waiting_a = job(2, 3.0)
+    first_b = job(3, 2.0)
+    waiting_b = job(4, 4.0)
     selected = scheduler._choose_job_for_active_model(10.0, [first_a, waiting_a, first_b, waiting_b])
     if selected is not first_a:
-        raise RuntimeError("synthetic fairness fixture selected unexpected first tenant")
-    scheduler._tenant_vruntime["tenant-a"] += 1
+        raise RuntimeError("synthetic wait fixture did not select the oldest request")
     selected = scheduler._choose_job_for_active_model(11.0, [waiting_a, first_b, waiting_b])
     if selected is not first_b:
-        raise RuntimeError("synthetic fairness fixture did not rotate tenants")
-    scheduler._tenant_vruntime["tenant-b"] += 1
+        raise RuntimeError("synthetic wait fixture did not retain oldest-first ordering")
     scheduler._choose_job_for_active_model(13.0, [waiting_a, waiting_b])
     return {
-        "tenant_a": round(waiting_a.fairness_wait_ms, 3),
-        "tenant_b": round(waiting_b.fairness_wait_ms, 3),
+        "job_2": round(waiting_a.fairness_wait_ms, 3),
+        "job_4": round(waiting_b.fairness_wait_ms, 3),
     }
 
 
@@ -96,9 +91,7 @@ def _measure_profile(profile_name: str) -> dict[str, Any]:
             "model_execution": {},
             "scheduler": {
                 "max_parallel": 1,
-                "max_inflight_per_tenant": 1,
                 "max_queue": 1,
-                "max_queued_per_tenant": 1,
                 "max_loaded_models": 1,
                 "affinity_batch_jobs": 1,
                 "affinity_batch_seconds": 0,
@@ -131,7 +124,7 @@ def _measure_profile(profile_name: str) -> dict[str, Any]:
     def submit_named(name: str, model: str, execute: Callable[[], dict[str, Any]]) -> None:
         try:
             results[name] = scheduler.submit(
-                model, "tenant-a", "t12-model-free", execute, wait_timeout=2,
+                model, source="t12-model-free", execute=execute, wait_timeout=2,
             )
         except BaseException as exc:  # preserve worker exceptions for the caller
             errors[name] = exc
@@ -162,8 +155,8 @@ def _measure_profile(profile_name: str) -> dict[str, Any]:
         queue_rejection = {"state": "accepted", "reason": "", "executor_invoked": False}
         try:
             scheduler.submit(
-                fast_model, "tenant-a", "t12-model-free-overflow",
-                lambda: (rejected_executor_called.set() or {"success": True}),
+                fast_model, source="t12-model-free-overflow",
+                execute=lambda: (rejected_executor_called.set() or {"success": True}),
                 wait_timeout=1,
             )
         except QueueFullError as exc:
@@ -185,8 +178,8 @@ def _measure_profile(profile_name: str) -> dict[str, Any]:
             raise RuntimeError(f"synthetic scheduler jobs failed: {sorted(errors)}")
 
         heavy_result = scheduler.submit(
-            heavy_model, "tenant-a", "t12-model-free",
-            lambda: timed_executor(), wait_timeout=2,
+            heavy_model, source="t12-model-free",
+            execute=lambda: timed_executor(), wait_timeout=2,
         )
         results["heavy"] = heavy_result
 
@@ -227,7 +220,7 @@ def run_model_free_acceptance(profiles: tuple[str, ...] = _PROFILES) -> dict[str
         "live_inference": False,
         "vram_bytes": None,
         "quality": "not_measured",
-        "cross_tenant_fairness_wait_ms": _measure_cross_tenant_fairness(),
+        "same_priority_wait_ms": _measure_same_priority_wait(),
         "profiles": {name: _measure_profile(name) for name in profiles},
     }
 

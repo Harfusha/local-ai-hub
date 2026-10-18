@@ -10,7 +10,7 @@ from local_ai_hub.artifacts import ArtifactStore
 def test_artifact_get_lines_returns_exact_range(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "artifacts.sqlite")
     content = "\n".join([f"line {i}" for i in range(1, 21)])  # 20 lines
-    artifact_id = store.put(content, "agent", "test_log")
+    artifact_id = store.put(content, kind="test_log")
 
     # Fetch lines 5 to 10
     res = store.get_lines(artifact_id, start_line=5, end_line=10)
@@ -28,7 +28,7 @@ def test_artifact_get_lines_returns_exact_range(tmp_path: Path) -> None:
 def test_artifact_get_lines_from_start_to_end(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "artifacts.sqlite")
     content = "first\nsecond\nthird"
-    artifact_id = store.put(content, "agent", "summary")
+    artifact_id = store.put(content, kind="summary")
 
     # Omit end_line -> read to end of file
     res = store.get_lines(artifact_id, start_line=2)
@@ -42,7 +42,7 @@ def test_artifact_get_lines_from_start_to_end(tmp_path: Path) -> None:
 def test_artifact_get_lines_out_of_bounds_handling(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "artifacts.sqlite")
     content = "alpha\nbeta"
-    artifact_id = store.put(content, "agent", "short")
+    artifact_id = store.put(content, kind="short")
 
     # start_line beyond total_lines
     res = store.get_lines(artifact_id, start_line=50, end_line=60)
@@ -59,23 +59,19 @@ def test_artifact_get_lines_out_of_bounds_handling(tmp_path: Path) -> None:
 
 def test_artifact_get_lines_invalid_range_rejected(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "artifacts.sqlite")
-    artifact_id = store.put("sample", "agent", "test")
+    artifact_id = store.put("sample", kind="test")
 
     res = store.get_lines(artifact_id, start_line=10, end_line=5)
     assert res["success"] is False
     assert "greater than or equal" in res["error"]
 
 
-def test_artifact_get_lines_tenant_isolation(tmp_path: Path) -> None:
+def test_artifact_get_lines_are_owner_global_and_retired_selector_rejects(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "artifacts.sqlite")
-    artifact_id = store.put("tenant a secret\nline 2", "tenant_a", "secret")
+    artifact_id = store.put("private local artifact\nline 2", kind="secret")
 
-    # Other tenant cannot read lines
-    res = store.get_lines(artifact_id, start_line=1, end_line=2, tenant="tenant_b")
-    assert res["success"] is False
-    assert "not found" in res["error"]
-
-    # Owning tenant can read
-    res_ok = store.get_lines(artifact_id, start_line=1, end_line=2, tenant="tenant_a")
+    res_ok = store.get_lines(artifact_id, start_line=1, end_line=2)
     assert res_ok["success"] is True
-    assert res_ok["lines"] == ["tenant a secret", "line 2"]
+    assert res_ok["lines"] == ["private local artifact", "line 2"]
+    with pytest.raises(TypeError):
+        store.get_lines(artifact_id, start_line=1, tenant=None)
