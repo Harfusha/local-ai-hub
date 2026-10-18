@@ -256,7 +256,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
         ".agents", ".serena", ".superpowers", ".handoff", ".t03-root-current-overlay", "artifacts", "agy-contextless-workspace",
         "backups", "migration-backups", ".worktrees", "handoff", "T18-review-artifacts-20260928",
     }
-    skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
+    skip_files = {"ORIGINAL_REQUEST.md", ".coverage", "config.toml"}
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue

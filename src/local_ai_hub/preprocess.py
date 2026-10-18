@@ -1606,9 +1606,7 @@ class ProjectPreprocessor:
             hard_denied = True
         checker = path_policy.allows if path_policy is not None else None
         if checker is None:
-            api, _context = self._project_config_context(root)
-            checker_func = getattr(api, "path_is_allowed", path_is_allowed) if api is not None else path_is_allowed
-            return checker_func(
+            return path_is_allowed(
                 root,
                 Path(root) / relative,
                 settings,
