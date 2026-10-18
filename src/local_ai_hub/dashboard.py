@@ -3400,7 +3400,7 @@ async function confirmCleanMissing(){
   const statusEl=$('cleanMissingStatus');
   if(statusEl)statusEl.textContent='Scanning and cleaning…';
   try{
-    const r=await post('/api/preprocess',{action:'cleanup_deleted'});
+    const r=await post('/api/preprocess',{action:'cleanup_deleted'},{timeoutMs:120000});
     $('modalClose')?.click();
     await pollStatus();
   }catch(e){
@@ -4078,7 +4078,7 @@ async function fetchDashboardJson(path,options={}){
   if(!response.ok||data?.success===false)throw new Error(String(data?.error||data?.message||`HTTP ${response.status}`));
   return data;
 }
-async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
+async function post(path,payload,requestOptions={}){const r=await apiFetch(path,{...requestOptions,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
 const ACTIVITY_MODES=['active','gaming','maintenance'];
 let activityModeStatusPolls=0;
