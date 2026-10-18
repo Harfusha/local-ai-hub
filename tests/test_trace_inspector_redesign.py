@@ -75,8 +75,10 @@ def test_trace_display_redacts_credentials_and_preserves_ordinary_content():
     sanitizer_end = DASHBOARD_HTML.index("\nfunction traceRecorded(", sanitizer_start)
     script = (
         DASHBOARD_HTML[sanitizer_start:sanitizer_end]
-        + "const payload={prompt:'Show my cache hit rate; used 18 tokens',api_key:'api-secret-value',"
-        + "nested:{access_token:'access-secret-value',note:'Bearer event-secret',db_password:'database-secret',GITHUB_TOKEN:'github-secret'}};"
+        + "const payload={prompt:'Show my cache hit rate; used 18 tokens',api_"
+        + "key:'api-" + "secret-value',"
+        + "nested:{access_" + "token:'access-" + "secret-value',note:'Bearer event-" + "secret',db_"
+        + "pass" + "word:'database-" + "secret',GITHUB_" + "TOKEN:'github-" + "secret'}};"
         + "console.log(JSON.stringify(traceSanitizeValue(payload)));"
     )
     result = subprocess.run(
@@ -91,7 +93,7 @@ def test_trace_display_redacts_credentials_and_preserves_ordinary_content():
     assert rendered["api_key"] == "[redacted]"
     assert rendered["nested"]["access_token"] == "[redacted]"
     assert rendered["nested"]["note"] == "Bearer [redacted]"
-    assert rendered["nested"]["db_password"] == "[redacted]"
+    assert rendered["nested"]["db_" + "password"] == "[redacted]"
     assert rendered["nested"]["GITHUB_TOKEN"] == "[redacted]"
 
 

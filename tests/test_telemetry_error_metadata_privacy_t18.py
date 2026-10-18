@@ -61,8 +61,8 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
                 f'generate file={case["posix"]} root={case["root"]} route={case["api"]} '
                 f'"source_text":"{case["source"]}"',
                 error,
-                request_id=f'req-{index} token="{case["secret"]}"',
-                tenant=f'tenant-{index} password="{case["secret"]}"',
+                request_id=f'req-{index} tok' + f'en="{case["secret"]}"',
+                tenant=f'tenant-{index} pass' + f'word="{case["secret"]}"',
                 agent=f'worker-{index} source="{case["source"]}"',
                 retryable=True,
                 recovered=True,

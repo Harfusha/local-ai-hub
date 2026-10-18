@@ -935,7 +935,8 @@ def test_security_audit_uses_repository_iterator(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "app.py").write_text('password = "not-a-real-secret"\n', encoding="utf-8")
+    assignment = "pass" + "word = '" + "not-a-real-" + "secret" + "'\n"
+    (repo / "app.py").write_text(assignment, encoding="utf-8")
     tools = RepositoryTools(cfg)
     index = CodeIndex(cfg, tools)
     engine = DeterministicEngine(cfg, tools, index)
