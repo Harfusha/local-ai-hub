@@ -1140,10 +1140,35 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
         entries[key] = {"name": skill_name, "sha256": source_hash}
         _manifest_write(manifest, entries)
     except (OSError, ValueError) as exc:
+        if installed_new and target.exists():
+            if moved_old and backup.exists():
+                try:
+                    recovery = _retain_previous_install(
+                        backup,
+                        target=target,
+                        skills_root=skills_root,
+                        manifest=manifest,
+                        skill_name=skill_name,
+                        original_hash=current_hash,
+                        entries=entries,
+                    )
+                except (OSError, ValueError) as recovery_exc:
+                    recovery = (
+                        f"previous skill remains recoverable at {backup}; "
+                        f"quarantine reconciliation failed: {recovery_exc}"
+                    )
+                return f"skill replacement failed for {target}: {exc}; current target preserved; {recovery}"
+            try:
+                _manifest_write(manifest, entries)
+            except (OSError, ValueError) as manifest_exc:
+                return (
+                    f"skill installation failed for {target}: {exc}; installed tree preserved; "
+                    f"manifest reconciliation failed: {manifest_exc}"
+                )
+            return f"skill installed at {target}; manifest recovered after write failure: {exc}"
+
         rollback_error: Exception | None = None
         try:
-            if installed_new and target.exists() and _safe_tree_hash(target) == source_hash:
-                shutil.rmtree(target)
             if moved_old and backup.exists() and not target.exists():
                 os.replace(backup, target)
         except (OSError, ValueError) as rollback_exc:

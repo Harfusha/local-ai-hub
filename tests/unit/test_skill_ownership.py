@@ -783,6 +783,45 @@ so.install_skill(source, target, root, manifest, name)
         self.assertEqual(quarantine_key, skill_ownership._canonical(quarantine))
         self.assertEqual(record["recorded_sha256"], skill_ownership._safe_tree_hash(self.target))
 
+    def test_replacement_rollback_preserves_concurrent_edit_after_hash(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        source_file = self.source / "SKILL.md"
+        target_file = self.target / "SKILL.md"
+        source_file.write_text("new Hub version\n", encoding="utf-8")
+
+        original_hash = skill_ownership._safe_tree_hash
+        original_write = skill_ownership._manifest_write
+        writes = 0
+
+        def hash_then_edit(path: Path) -> str:
+            digest = original_hash(path)
+            candidate = Path(path)
+            if candidate == self.target and target_file.read_text(encoding="utf-8") == "new Hub version\n":
+                target_file.write_text("concurrent edit\n", encoding="utf-8")
+            return digest
+
+        def fail_first_replacement_write(manifest: Path, entries: dict[str, dict[str, object]]) -> None:
+            nonlocal writes
+            writes += 1
+            if writes == 1:
+                raise OSError("simulated replacement manifest failure")
+            original_write(manifest, entries)
+
+        with (
+            patch.object(skill_ownership, "_safe_tree_hash", side_effect=hash_then_edit),
+            patch.object(skill_ownership, "_manifest_write", side_effect=fail_first_replacement_write),
+        ):
+            install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertTrue(self.target.exists())
+        self.assertEqual(target_file.read_text(encoding="utf-8"), "concurrent edit\n")
+        preserved_contents = {
+            path.read_text(encoding="utf-8")
+            for path in self.skills_root.rglob("SKILL.md")
+        }
+        self.assertIn("Hub version\n", preserved_contents)
+        self.assertIn("concurrent edit\n", preserved_contents)
+
 
 if __name__ == "__main__":
     unittest.main()
