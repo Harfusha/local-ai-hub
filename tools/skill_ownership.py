@@ -989,7 +989,7 @@ def _retain_previous_install(
     quarantine_key = ""
     pending_entries = dict(entries)
 
-    def mark_ambiguous(reason: str) -> str:
+    def mark_ambiguous(reason: str, recovery_path: Path | None = None) -> str:
         ambiguous_key = f"ambiguous:{_canonical(target)}:{uuid.uuid4().hex}"
         ambiguous_record = {
             "name": skill_name,
@@ -1000,19 +1000,22 @@ def _retain_previous_install(
             "original_target": _canonical(target),
             "quarantine_path": "unknown",
         }
+        if recovery_path is not None and recovery_path.exists():
+            ambiguous_record["recovery_path"] = str(recovery_path)
         ambiguous_entries = dict(entries)
         ambiguous_entries.pop(quarantine_key, None)
         ambiguous_entries[ambiguous_key] = ambiguous_record
         try:
             _manifest_write(manifest, ambiguous_entries)
         except (OSError, ValueError) as exc:
-            return f"installed Hub-owned skill: {target}; previous version location ambiguous: {reason}; manifest update failed: {exc}"
-        return f"installed Hub-owned skill: {target}; previous version location ambiguous: {reason}"
+            recovery = f"; recovery copy remains at {recovery_path}" if recovery_path else ""
+            return f"previous version location ambiguous: {reason}; manifest update failed: {exc}{recovery}"
+        return f"previous version location ambiguous: {reason}"
 
     try:
         source_pin = _pin_source(backup)
         if not _source_is_current(source_pin) or _safe_tree_hash(backup) != original_hash or not _source_is_current(source_pin):
-            return f"installed Hub-owned skill: {target}; previous version retained at {backup}; backup identity changed"
+            return f"previous version retained at {backup}; backup identity changed"
         quarantine_directory = _skill_quarantine_path(skills_root, skill_name)
         quarantine_key = quarantine_directory.key
         pending_record = {
@@ -1035,14 +1038,7 @@ def _retain_previous_install(
         except (OSError, ValueError) as exc:
             if not _source_is_current(source_pin):
                 return mark_ambiguous(str(exc))
-            try:
-                _manifest_write(manifest, entries)
-            except (OSError, ValueError) as restore_exc:
-                return (
-                    f"installed Hub-owned skill: {target}; previous version retained at {backup}; "
-                    f"quarantine record cleanup failed: {restore_exc}"
-                )
-            return f"installed Hub-owned skill: {target}; previous version retained at {backup}: {exc}"
+            return mark_ambiguous(f"quarantine move failed: {exc}", recovery_path=backup)
 
         if not quarantine_directory.is_current():
             return mark_ambiguous("quarantine root changed after move")
@@ -1067,7 +1063,7 @@ def _retain_previous_install(
             _manifest_write(manifest, retained_entries)
         except (OSError, ValueError) as exc:
             return (
-                f"installed Hub-owned skill: {target}; previous version retained at {quarantine_directory.path}; "
+                f"previous version retained at {quarantine_directory.path}; "
                 f"pending recovery record remains: {exc}"
             )
         # The backup is now outside the staging tree. Remove only the empty
@@ -1076,9 +1072,11 @@ def _retain_previous_install(
             backup.parent.rmdir()
         except OSError:
             pass
-        return f"installed Hub-owned skill: {target}; previous version retained at {quarantine_directory.path}"
+        return f"previous version retained at {quarantine_directory.path}"
     except (OSError, ValueError) as exc:
-        return f"installed Hub-owned skill: {target}; previous version retained at {backup}: {exc}"
+        return mark_ambiguous(
+            str(exc), recovery_path=backup if backup.exists() else None
+        )
     finally:
         if source_pin is not None:
             source_pin.close()
@@ -1135,7 +1133,7 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
                 return f"preserved changed skill tree during replacement: {target}"
         elif target.exists() or _is_link(target):
             return f"preserved conflicting skill tree created during install: {target}"
-        os.replace(staged, target)
+        _rename_noreplace(staged, target)
         installed_new = True
         entries[key] = {"name": skill_name, "sha256": source_hash}
         _manifest_write(manifest, entries)
@@ -1167,6 +1165,23 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
                 )
             return f"skill installed at {target}; manifest recovered after write failure: {exc}"
 
+        if moved_old and backup.exists() and target.exists():
+            recovery_entries = dict(entries)
+            recovery_entries.pop(key, None)
+            try:
+                recovery = _retain_previous_install(
+                    backup,
+                    target=target,
+                    skills_root=skills_root,
+                    manifest=manifest,
+                    skill_name=skill_name,
+                    original_hash=current_hash,
+                    entries=recovery_entries,
+                )
+            except (OSError, ValueError) as recovery_exc:
+                recovery = f"previous version remains recoverable at {backup}; manifest reconciliation failed: {recovery_exc}"
+            return f"skill replacement failed for {target}: {exc}; competing target preserved; {recovery}"
+
         rollback_error: Exception | None = None
         try:
             if moved_old and backup.exists() and not target.exists():
@@ -1184,7 +1199,7 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
         if not backup.exists():
             shutil.rmtree(stage_root, ignore_errors=True)
     if backup.exists():
-        return _retain_previous_install(
+        recovery = _retain_previous_install(
             backup,
             target=target,
             skills_root=skills_root,
@@ -1193,6 +1208,7 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
             original_hash=current_hash,
             entries=entries,
         )
+        return f"installed Hub-owned skill: {target}; {recovery}"
     try:
         shutil.rmtree(stage_root)
     except OSError:

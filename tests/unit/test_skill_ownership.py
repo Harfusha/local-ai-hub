@@ -130,6 +130,99 @@ class SkillOwnershipTests(unittest.TestCase):
         self.assertEqual((self.target / "SKILL.md").read_text(encoding="utf-8"), original)
 
 
+    def test_replacement_preserves_concurrent_empty_destination(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        original = (self.target / "SKILL.md").read_text(encoding="utf-8")
+        original_hash = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"][
+            skill_ownership._canonical(self.target)
+        ]["sha256"]
+        (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
+        real_rename = skill_ownership._rename_noreplace
+
+        def create_competing_destination(
+            source: Path,
+            destination: Path,
+            *,
+            quarantine_directory: skill_ownership._PinnedQuarantine | None = None,
+            source_pin: skill_ownership._PinnedSource | None = None,
+        ) -> None:
+            if Path(source).name == "replacement":
+                Path(destination).mkdir()
+            real_rename(
+                source,
+                destination,
+                quarantine_directory=quarantine_directory,
+                source_pin=source_pin,
+            )
+
+        with patch.object(
+            skill_ownership, "_rename_noreplace", side_effect=create_competing_destination
+        ):
+            result = install_skill(
+                self.source, self.target, self.skills_root, self.manifest, "example-skill"
+            )
+
+        self.assertIn("replacement failed", result)
+        self.assertIn("previous version retained at", result)
+        self.assertTrue(self.target.is_dir())
+        self.assertEqual(list(self.target.iterdir()), [])
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        recovery_records = [
+            record
+            for record in entries.values()
+            if record.get("status") == "unverified"
+            and record.get("original_target") == skill_ownership._canonical(self.target)
+        ]
+        self.assertEqual(len(recovery_records), 1)
+        self.assertEqual(recovery_records[0]["recorded_sha256"], original_hash)
+        self.assertNotIn(skill_ownership._canonical(self.target), entries)
+        quarantine = Path(recovery_records[0]["quarantine_path"])
+        self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), original)
+
+    def test_replacement_race_records_backup_when_quarantine_move_fails(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        original = (self.target / "SKILL.md").read_text(encoding="utf-8")
+        original_hash = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"][
+            skill_ownership._canonical(self.target)
+        ]["sha256"]
+        (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
+        real_rename = skill_ownership._rename_noreplace
+
+        def fail_quarantine_move(
+            source: Path,
+            destination: Path,
+            *,
+            quarantine_directory: skill_ownership._PinnedQuarantine | None = None,
+            source_pin: skill_ownership._PinnedSource | None = None,
+        ) -> None:
+            if Path(source).name == "replacement":
+                Path(destination).mkdir()
+            if quarantine_directory is not None:
+                raise OSError("simulated quarantine move failure")
+            real_rename(source, destination)
+
+        with patch.object(
+            skill_ownership, "_rename_noreplace", side_effect=fail_quarantine_move
+        ):
+            result = install_skill(
+                self.source, self.target, self.skills_root, self.manifest, "example-skill"
+            )
+
+        self.assertIn("location ambiguous", result)
+        self.assertTrue(self.target.is_dir())
+        self.assertEqual(list(self.target.iterdir()), [])
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        recovery_records = [
+            record
+            for record in entries.values()
+            if record.get("status") == "ambiguous"
+            and record.get("original_target") == skill_ownership._canonical(self.target)
+        ]
+        self.assertEqual(len(recovery_records), 1)
+        self.assertEqual(recovery_records[0]["recorded_sha256"], original_hash)
+        recovery_path = Path(recovery_records[0]["recovery_path"])
+        self.assertEqual((recovery_path / "SKILL.md").read_text(encoding="utf-8"), original)
+
     def test_replaced_owned_tree_is_retained_in_tracked_quarantine(self) -> None:
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
         (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
