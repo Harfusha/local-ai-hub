@@ -60,7 +60,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             key="safe fact",
             value="repository fresh value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "repository_id": coord_id},
+            provenance={"root": str(root), "repository_id": coordination_id},
             repository_revision="revision-1",
             path_refs=("src/keep.py",),
         ))
@@ -70,7 +70,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             key="stale fact",
             value="old changed-path value",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "repository_id": coord_id},
+            provenance={"root": str(root), "repository_id": coordination_id},
             repository_revision="revision-0",
             path_refs=("src/changed.py",),
         ))
@@ -81,12 +81,12 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             value="session-b private value",
             scope_id="session-b",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(root), "repository_id": coord_id},
+            provenance={"root": str(root), "repository_id": coordination_id},
             repository_revision="revision-1",
             path_refs=("src/keep.py",),
         ))
         assert app.agent_memory.mark_stale_for_revision(str(root), "revision-1", ["src/changed.py"]) == 1
-        assert app.agent_memory.get(stale.record_id, root=str(root), repository_id=coord_id).status is MemoryStatus.STALE
+        assert app.agent_memory.get(stale.record_id, root=str(root), repository_id=coordination_id).status is MemoryStatus.STALE
 
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
             "success": True,

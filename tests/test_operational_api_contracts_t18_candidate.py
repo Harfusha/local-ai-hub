@@ -666,12 +666,12 @@ def test_agent_event_sse_emits_later_provider_failure_after_headers(monkeypatch)
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append(after_seq)
             if len(calls) == 1:
                 return {
                     "success": True,
-                    "events": [],
+                    "events": [{"seq": 1, "stream_id": "task:one", "kind": "task.progress", "payload": {}}],
                     "next_seq": 1,
                     "first_retained_seq": 1,
                     "last_seq": 1,

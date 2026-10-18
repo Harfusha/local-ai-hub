@@ -6,6 +6,10 @@ from typing import Any
 import pytest
 
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import GoalContract, TaskStore
+from local_ai_hub.project_config import resolve_project_context
 
 
 class _Artifacts:
@@ -55,8 +59,25 @@ def test_cached_success_does_not_mint_command_verification_receipt(tmp_path: Pat
 def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -> None:
     artifacts = _Artifacts()
     verification = _VerificationStore()
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=artifacts)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    repository_root = str(tmp_path.resolve())
+    coordination_id = resolve_project_context(tmp_path, state_dir).coordination_id
+    task_store = TaskStore(AgentStateStore(state_dir / "agent_state.sqlite"))
+    task_store.create(
+        GoalContract(goal="record command verification"),
+        ScopeContext(
+            repository_id=coordination_id,
+            task_id="task-a",
+            session_id="session-t06-server",
+        ),
+        task_id="task-a",
+        actor="agent",
+        repo_root=repository_root,
+    )
+    broker = CommandBroker({"server": {"state_dir": str(state_dir)}}, artifacts=artifacts)
     broker.set_verification_store(verification)
+    broker.set_task_store(task_store)
     command_id = "1" * 32
 
     result = {"success": True, "exit_code": 0}
@@ -76,7 +97,7 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
         configured_command_sha256="configured-command-digest",
         caller_arguments_sha256="caller-arguments-digest",
         cached=False,
-        repository_root=str(tmp_path.resolve()),
+        repository_root=repository_root,
     )
 
     assert "verification_receipt_warning" not in result, result
@@ -89,7 +110,7 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
     assert scoped_record["repository_root"] == str(tmp_path.resolve())
     assert broker.get_command_execution_record(
         command_id,  task_id="task-a", repository_root=str(tmp_path)
-    ) is None
+    ) == scoped_record
     assert broker.get_command_execution_record(
         command_id,  task_id="other-task", repository_root=str(tmp_path)
     ) is None

@@ -476,8 +476,9 @@ enabled=true
         status,_,_= _request(base+"/api/command",method="POST",body=b"x"*2048,headers={**auth,"Content-Type":"application/json"})
         assert status==413
         import hashlib
+        from local_ai_hub.process_utils import canonical_workspace_id
         tables={"rag_files":[],"rag_chunks":[],"rag_project_file_owners":[]}; canonical=json.dumps(tables,sort_keys=True,separators=(",",":")).encode()
-        payload={"format":"local-ai-hub-project-bundle","version":__version__,"root":str(repo),"tables":tables,"tables_sha256":hashlib.sha256(canonical).hexdigest()}
+        payload={"format":"local-ai-hub-project-bundle","version":__version__,"root":str(repo),"workspace":canonical_workspace_id(str(repo)),"tables":tables,"tables_sha256":hashlib.sha256(canonical).hexdigest()}
         buf=io.BytesIO()
         with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as zf: zf.writestr("bundle.json",json.dumps(payload,separators=(",",":")))
         url=base+"/api/bundle/import?target_root="+urllib.parse.quote(str(repo))

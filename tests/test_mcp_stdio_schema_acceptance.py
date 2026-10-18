@@ -42,7 +42,6 @@ def test_live_stdio_publishes_valid_schemas_and_closes_child(tmp_path, monkeypat
         cwd=tmp_path,
         env={
             "LOCAL_AI_CONFIG": str(config),
-            "LOCAL_AI_TENANT": "stdio-schema-acceptance",
             "LOCAL_AI_AGENT": "pytest-stdio",
         },
     )

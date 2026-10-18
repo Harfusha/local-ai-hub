@@ -130,10 +130,11 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    def post(payload):
+    def post(payload, *, include_root=True):
+        request_payload = {"root": root, **payload} if include_root else dict(payload)
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
-            data=json.dumps({"root": root, **payload}).encode("utf-8"),
+            data=json.dumps(request_payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "Connection": "close",
@@ -161,7 +162,10 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
             scope_id="worktree-one",
             root=root,
         ).value == "preserve me"
-        deleted = post({"root": None, "action": "delete", "record_id": global_record.record_id, "scope": "global"})
+        deleted = post(
+            {"action": "delete", "record_id": global_record.record_id, "scope": "global"},
+            include_root=False,
+        )
         assert deleted["deleted"] is True
     finally:
         server.shutdown()

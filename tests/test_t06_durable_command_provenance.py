@@ -127,7 +127,7 @@ def test_real_broker_execution_record_survives_broker_restart(tmp_path: Path) ->
     assert record["cached"] is False
     assert restarted.get_command_execution_record(
         command_id,  task_id="task-1", repository_root=str(repo)
-    ) is None
+    ) == record
     assert restarted.get_command_execution_record(
         command_id,  task_id="other-task", repository_root=str(repo)
     ) is None

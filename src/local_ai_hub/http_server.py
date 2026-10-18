@@ -5542,6 +5542,16 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        if path == "/api/work-orders" and isinstance(payload, Mapping) and "request_id" in payload:
+            supplied_request_id = payload.get("request_id")
+            journal_request_id = str(getattr(self, "_trace_request_id", ""))
+            if supplied_request_id != journal_request_id:
+                self._send(400, {
+                    "success": False,
+                    "error": "body request_id conflicts with X-LocalAI-Request-ID",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
         self._admin_payload = payload if isinstance(payload, dict) else {}
         mode_rejection = _http_mode_gate_error("POST", path, payload)
         if mode_rejection is not None:
@@ -7526,6 +7536,11 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 path_control_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
                 path_controls_requested = any(field in payload for field in path_control_fields)
+                if path_controls_requested and mode != "adaptive":
+                    self._send(400, {
+                        "success": False, "terminal": True, "retryable": False,
+                        "error": "path controls require adaptive context mode",
+                    }); return
                 path_controls = None
                 project_config_digest = ""
                 project_retrieval_weights = None
@@ -7761,10 +7776,15 @@ class Handler(BaseHTTPRequestHandler):
                     if isinstance(result, dict) and "query" not in result:
                         result["query"] = guarded_query
                     self._send(200, result); return
+                if mode == "fast":
+                    result = APP.services.fast_context(root, query_text, max_tokens)
+                    if isinstance(result, dict):
+                        result["delivery_mode"] = mode
+                    self._send(200, result); return
                 result = APP.services._hybrid_context(
                     root, query_text,
                     workspace=payload.get("workspace"), max_tokens=max_tokens,
-                    quality_first=True,
+                    quality_first=mode == "adaptive",
                     context_identity={
                         "path_hints": path_controls.path_hints if path_controls else (),
                         "directory_hints": path_controls.directory_hints if path_controls else (),

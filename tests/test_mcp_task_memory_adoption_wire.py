@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import traceback
 
 # Run the focused regression batch without importing an operator configuration
 # during collection. This changes only this test runner's inherited environment.
@@ -49,6 +50,19 @@ INSTRUCTION = (
 )
 
 
+def _request_diagnostics(calls, index: int, request: dict) -> str:
+    return json.dumps({
+        "result_index": index,
+        "action": request.get("action"),
+        "calls": list(calls),
+        "handler_errors": list(getattr(calls, "handler_errors", ())),
+    }, default=str)
+
+
+class _CapturedCalls(list):
+    handler_errors: list[str]
+
+
 def _memory(repository_id: str, *, root: str):
     # This is a wire snapshot: record provenance is sanitized before delivery.
     return {
@@ -86,7 +100,8 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
     from local_ai_hub.project_config import resolve_project_context
     repository_id = resolve_project_context(repo, tmp_path).coordination_id
     expected = _memory(repository_id, root=str(repo))
-    calls = []
+    calls = _CapturedCalls()
+    calls.handler_errors = []
     current_audit = None
     tasks = None
     if real_store:
@@ -133,7 +148,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                 return
             if tasks is not None:
                 token = trace_context.set_context(
-                    request_id=request_id, trace_id=request_id, session_id="session:memory-wire-test")
+                    request_id=request_id, trace_id=request_id)
                 try:
                     action = body["action"]
                     if action == "create":
@@ -220,7 +235,11 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         def log_message(self, *args):
             pass
 
-    http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    class _DiagnosticHTTPServer(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            calls.handler_errors.append(traceback.format_exc())
+
+    http = _DiagnosticHTTPServer(("127.0.0.1", 0), Handler)
     http.daemon_threads = True
     thread = threading.Thread(target=http.serve_forever, daemon=True)
     thread.start()
@@ -238,7 +257,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
     )
     params = stdio.StdioServerParameters(command=sys.executable,
         args=["-B", "-c", bootstrap, str(ROOT / "src")], cwd=tmp_path,
-        env={"LOCAL_AI_CONFIG": str(config), "LOCAL_AI_TENANT": "memory-wire-test"})
+        env={"LOCAL_AI_CONFIG": str(config)})
     children = []
     spawn = stdio._create_platform_compatible_process
 
@@ -303,9 +322,12 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
         {"action": "task_resume"},
     ]
     _, calls, results = _round_trip(tmp_path, requests, monkeypatch, real_store=True)
-    for result in results:
+    for index, (request, result) in enumerate(zip(requests, results)):
         payload = result.structuredContent
-        assert payload["success"] is True, json.dumps(payload)
+        assert payload["success"] is True, json.dumps({
+            "payload": payload,
+            "diagnostics": _request_diagnostics(calls, index, request),
+        })
         context = payload["task"]["checkpoint"]["state_data"]["memory_context"]
         assert [item["id"] for item in context["items"]] == ["mem_store_wire"]
         assert "Cite used memory IDs" in context["instruction"]
@@ -330,7 +352,8 @@ def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_
     result = results[1]
     payload = result.structuredContent
     assert payload["success"] is False
-    assert payload["mutation_applied"] is False
+    assert payload.get("mutation_applied") is False, _request_diagnostics(
+        calls, 1, {"action": "task_checkpoint"})
     assert payload["operation_not_started"] is True
     assert "request_not_sent" not in payload
     assert payload["request_id"] == calls[-1]["request_id"]
@@ -350,7 +373,8 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(tmp_path, m
          "response_profile": "compact", "max_response_tokens": 3200},
     ], monkeypatch, real_store=True, return_store=True)
     payload = results[1].structuredContent
-    assert payload["success"] is True
+    assert payload["success"] is True, _request_diagnostics(
+        calls, 1, {"action": "task_checkpoint"})
     assert payload["request_id"] == calls[-1]["request_id"]
     assert payload["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
     assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
@@ -360,14 +384,15 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(tmp_path, m
 
 
 def test_registered_mcp_checkpoint_rejects_malformed_audit_before_preflight(tmp_path, monkeypatch):
-    _, _, results, tasks = _round_trip(tmp_path, [
+    _, calls, results, tasks = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
         {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": {}}},
          "response_profile": "compact", "max_response_tokens": 3200},
     ], monkeypatch, real_store=True, return_store=True)
     payload = results[1].structuredContent
     assert payload["success"] is False
-    assert "memory_audit" in payload["error"]
+    assert "memory_audit" in payload["error"], _request_diagnostics(
+        calls, 1, {"action": "task_checkpoint"})
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 1
     assert "memory_audit" not in tasks.get(TASK_ID).checkpoint.state_data
 
@@ -461,7 +486,7 @@ def test_stdio_subminimum_quota_rejected_before_task_side_effect(tmp_path, monke
         {"action": "task_create", "contract": {"goal": "wire task"},
          "max_response_tokens": 127}], monkeypatch)
     assert results[0].structuredContent["success"] is False
-    assert "128" in results[0].structuredContent["error"]
+    assert results[0].structuredContent["error"] == "budget_too_small"
     assert calls == []
 
 

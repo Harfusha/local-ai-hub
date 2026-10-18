@@ -262,7 +262,7 @@ def test_http_mode_routes_read_and_update_persisted_mode(monkeypatch, tmp_path):
         "config": {"server": {"state_dir": str(tmp_path)}}, "runtime": runtime, "async_jobs": async_jobs,
     })())
     responses = []
-    handler = type("MockHandler", (http_server.Handler,), {
+    MockHandler = type("MockHandler", (http_server.Handler,), {
         "path": "/api/mode",
         "headers": {},
         "client_address": ("127.0.0.1", 0),
@@ -270,7 +270,11 @@ def test_http_mode_routes_read_and_update_persisted_mode(monkeypatch, tmp_path):
         "_validate_host_and_origin": lambda self: True,
         "_require_authorized": lambda self: True,
         "_send": lambda self, status, payload: responses.append((status, payload)),
-    })()
+    })
+    handler = object.__new__(MockHandler)
+    handler.path = "/api/mode"
+    handler.headers = {}
+    handler.client_address = ("127.0.0.1", 0)
 
     http_server.Handler.do_GET(handler)
     assert responses[-1][0] == 200

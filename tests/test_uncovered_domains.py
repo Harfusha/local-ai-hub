@@ -60,11 +60,11 @@ def test_docset_rag(tmp_path: Path) -> None:
 
     idx_res = rag.docset_index("pandas", root=str(tmp_path))
     assert idx_res["success"] is True
-    rag.index.assert_called_once_with(str(tmp_path), "docset", workspace="docset:pandas")
+    rag.index.assert_called_once_with(str(tmp_path), workspace="docset:pandas")
 
-    search_res = rag.docset_search("pandas", "DataFrame")
+    search_res = rag.docset_search("pandas", query="DataFrame")
     assert search_res["success"] is True
-    rag.search.assert_called_once_with("DataFrame", "docset", "docset:pandas", top_k=8, use_reranker=True)
+    rag.search.assert_called_once_with("DataFrame", workspace="docset:pandas", top_k=8, use_reranker=True)
 
 
 def test_telemetry_timeline(tmp_path: Path) -> None:

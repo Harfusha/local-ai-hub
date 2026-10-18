@@ -199,6 +199,17 @@ def test_project_environment_invalidates_suppression_and_success_cache(
     )
     monkeypatch.setenv("T15_HOST_TOKEN", "first")
     broker = _broker(tmp_path)
+
+    class TaskStore:
+        def get(self, task_id: str):
+            return type("Task", (), {
+                "task_id": task_id,
+                "checkpoint": type("Checkpoint", (), {
+                    "state_data": {"worktree": {"success": True, "worktree_path": str(project_root)}}
+                })(),
+            })()
+
+    broker.set_task_store(TaskStore())
     broker.policy_blocking = True
     classify_calls = 0
 
@@ -207,7 +218,10 @@ def test_project_environment_invalidates_suppression_and_success_cache(
         classify_calls += 1
         blocked = classify_calls <= 2
         return {
-            "class": "unknown",
+            # Unknown results remain blocked unless both unknown and mutation
+            # are authorized; after the transient block, model this read-only
+            # environment probe as an allowed validation command.
+            "class": "unknown" if blocked else "validation",
             "cacheable": not blocked,
             "allowed": not blocked,
             "reason": "test policy",
@@ -215,8 +229,8 @@ def test_project_environment_invalidates_suppression_and_success_cache(
 
     monkeypatch.setattr(broker, "classify", classify)
 
-    blocked = broker.run_project_command("check", str(project_root))
-    suppressed = broker.run_project_command("check", str(project_root))
+    blocked = broker.run_project_command("check", str(project_root), task_id="project-env-task")
+    suppressed = broker.run_project_command("check", str(project_root), task_id="project-env-task")
     assert blocked["policy_blocked"] is True
     # Authorization is re-evaluated before cache lookup, so a blocked request
     # cannot become a historical suppression-cache hit.
@@ -224,15 +238,15 @@ def test_project_environment_invalidates_suppression_and_success_cache(
     assert suppressed.get("suppression_cache_hit") is not True
 
     monkeypatch.setenv("T15_HOST_TOKEN", "second")
-    fresh = broker.run_project_command("check", str(project_root))
-    warm = broker.run_project_command("check", str(project_root))
+    fresh = broker.run_project_command("check", str(project_root), task_id="project-env-task")
+    warm = broker.run_project_command("check", str(project_root), task_id="project-env-task")
     assert fresh["success"] is True
     assert fresh["stdout"] == "second\n"
     assert fresh.get("suppression_cache_hit") is not True
     assert warm["cache_hit"] is True
 
     monkeypatch.setenv("T15_HOST_TOKEN", "third")
-    changed = broker.run_project_command("check", str(project_root))
+    changed = broker.run_project_command("check", str(project_root), task_id="project-env-task")
     assert changed["success"] is True
     assert changed["stdout"] == "third\n"
     assert changed.get("cache_hit") is not True

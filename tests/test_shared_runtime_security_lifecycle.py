@@ -1275,6 +1275,7 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
     calls = []
     canonical_root = str(root.resolve())
     task = SimpleNamespace(
+        task_id="task-1",
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-actual"),
         checkpoint=SimpleNamespace(state_data={
             "_agent_task_scope": {"version": 2, "repo_root": canonical_root},
@@ -1289,7 +1290,7 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
             get=lambda task_id: task if task_id == "task-1" else None,
-            reap_expired_heartbeats=lambda now=None, *, auto_recover=False, repo_root=None, task_id=None: calls.append((
+            reap_expired_heartbeats=lambda now=None, *, auto_recover=False, repo_root=None, task_id=None, response_budget_tokens=None: calls.append((
                 "reap", {"auto_recover": auto_recover, "repo_root": repo_root, "task_id": task_id}
             )) or ["task-1"],
             recover_zombie_tasks=lambda now=None, *, repo_root=None, task_id=None: calls.append((
@@ -1331,6 +1332,7 @@ def test_task_reaper_uses_authenticated_token_and_explicit_repository_root(tmp_p
     calls = []
     canonical_root = str(root.resolve())
     task = SimpleNamespace(
+        task_id="task-1",
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-real-task"),
         checkpoint=SimpleNamespace(state_data={
             "_agent_task_scope": {"version": 2, "repo_root": canonical_root},
@@ -1484,7 +1486,8 @@ def test_scoped_reaper_does_not_report_store_failure_as_empty_success(scoped_rea
     monkeypatch.setattr(store, "transition", fail_transition)
     with pytest.raises(RuntimeError, match="transition persistence unavailable"):
         store.reap_expired_heartbeats(
-            repo_root=before.context.repository_id, task_id="target",
+            repo_root=before.checkpoint.state_data["_agent_task_scope"]["repo_root"],
+            task_id="target",
         )
     assert store.get("target") == before
 
@@ -1719,7 +1722,10 @@ def test_unscoped_agent_state_get_routes_deny_before_store_access(monkeypatch, p
 
     responses = _dispatch_get(monkeypatch, path, app)
 
-    assert responses[0][0] == 403
+    expected_status = 403 if path == "/api/agent-state/events/delta" else 400
+    assert responses[0][0] == expected_status
+    if expected_status == 400:
+        assert responses[0][1]["error_code"] == "root_required"
     assert calls == []
 
 
@@ -1771,11 +1777,16 @@ def test_unscoped_agent_state_post_routes_deny_before_store_access(monkeypatch, 
 
     responses = _dispatch_post(monkeypatch, path, {"action": action}, app)
 
-    retired_blackboard_actions = {
-        "put", "blackboard_update", "read", "blackboard_get",
-        "blackboard_list", "blackboard_merge", "remove", "blackboard_delete",
-    }
-    expected_status = 400 if path == "/api/agent-state/blackboard" and action in retired_blackboard_actions else 403
+    if path == "/api/agent-state/events/delta" or path in {
+        "/api/agent-state/learning", "/api/agent-state/cleanup",
+    }:
+        expected_status = 403
+    elif path == "/api/agent-state/blackboard" and action == "list":
+        expected_status = 403
+    else:
+        # Root-scoped routes reject before store access when no explicit root is
+        # present; retired blackboard aliases are likewise rejected pre-dispatch.
+        expected_status = 400
     assert responses[0][0] == expected_status
     assert responses[0][1]["success"] is False
     assert calls == []
@@ -2025,7 +2036,7 @@ def test_cross_project_graph_get_requires_explicit_roots(monkeypatch):
     responses = _dispatch_get(monkeypatch, "/api/cross_project_graph", app)
 
     assert responses[0][0] == 400
-    assert responses[0][1]["error_code"] == "roots_required"
+    assert "explicit roots are required" in responses[0][1]["error"]
     assert calls == []
 
 
@@ -2192,7 +2203,7 @@ def test_context_compile_binds_existing_task_root_without_changing_task_id_contr
     }}, agent_state=agent_state,
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
     handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
-    payload = {"action": "compile", "task_id": "task-a"}
+    payload = {"action": "compile", "task_id": "task-a", "session_id": "session-context-real"}
 
     assert http_server.Handler._bind_context_payload(handler, payload) is True
     request = build_context_request(payload)
@@ -2246,7 +2257,16 @@ def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
         agent_state=SimpleNamespace(
             enabled=True,
             db_path=agent_state.db_path,
-            events=lambda **kwargs: calls.append(kwargs) or [],
+            event_page=lambda **kwargs: calls.append(kwargs) or {
+                "success": True,
+                "events": [],
+                "next_seq": kwargs.get("after_seq", 0),
+                "first_retained_seq": 0,
+                "last_seq": 0,
+                "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": False,
+            },
         ),
     )
     handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"}, path=(

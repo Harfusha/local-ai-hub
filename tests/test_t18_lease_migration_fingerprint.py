@@ -69,9 +69,11 @@ def test_changed_renamed_wait_constraints_remain_rejected(ddl):
             AgentStateStore._classify_schema(con)
 
 
-def test_canonical_wait_schema_does_not_allow_unknown_trigger():
-    with closing(sqlite3.connect(":memory:")) as con:
-        con.execute("""CREATE TABLE lease_waits (owner TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL, requested_path TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY(root_id, owner, blocked_by, requested_path))""")
+def test_canonical_wait_schema_does_not_allow_unknown_trigger(tmp_path):
+    path = tmp_path / "agent_state.sqlite"
+    AgentStateStore(path)._ensure_schema()
+    ScopeLeaseStore(tmp_path)
+    with closing(sqlite3.connect(path)) as con:
         con.execute("CREATE TRIGGER unexpected AFTER INSERT ON lease_waits BEGIN SELECT 1; END")
         with pytest.raises(RuntimeError, match="unsupported agent_state schema object: trigger unexpected"):
             AgentStateStore._classify_schema(con)

@@ -24,7 +24,9 @@ class _Services:
         self.calls.append(batch)
         return {
             "success": True,
-            "embedding_space_id": "test-hybrid-embedding-space-v1",
+            "embedding_space_id": getattr(
+                self, "space_id", "test-hybrid-embedding-space-v1"
+            ),
             "embeddings": [[float(len(text)), 1.0] for text in batch],
         }
 
@@ -835,11 +837,8 @@ def test_index_paths_step_retries_uncertain_only_publish_lock(tmp_path, monkeypa
     assert result["success"] is True
     assert result["read_uncertain_paths"] == ["unreadable.py"]
     assert state["begins"] == 4
-    key = workspace
     with closing(original_connect()) as con:
-        uncertain = store._workspace_read_uncertain_paths(
-            con, key, "uncertain-lock-workspace"
-        )
+        uncertain = store._workspace_read_uncertain_paths(con, workspace)
     assert uncertain == {"unreadable.py"}
 
 

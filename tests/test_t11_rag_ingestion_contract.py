@@ -159,7 +159,7 @@ def test_document_ingest_indexes_title_and_metadata(tmp_path):
     assert result["embedded"] is False
     assert result["embedding_status"] == "degraded"
     assert result["degraded"] is True
-    indexed = _chunk_text(store, "default", "specs", "doc:Credential Rotation Plan")
+    indexed = _chunk_text(store, "specs", "doc:Credential Rotation Plan")
     assert "Title: Credential Rotation Plan" in indexed
     assert '"owner":"identity-team"' in indexed
     assert '"revision":7' in indexed
@@ -186,7 +186,7 @@ def test_document_ingest_reports_embedded_only_when_all_chunks_have_vectors(tmp_
         rows = con.execute(
             "SELECT text,embedding FROM chunks WHERE workspace=? "
             "AND path=? ORDER BY chunk_no",
-            (workspace, "specs", "doc:Long document"),
+            ("specs", "doc:Long document"),
         ).fetchall()
     assert len(rows) == result["chunks_ingested"]
     assert _decode_embedding(rows[0][1]) == pytest.approx([0.1, 0.2])
@@ -223,11 +223,11 @@ def test_document_ingest_replay_replaces_one_stable_document_snapshot(tmp_path):
     with closing(store._connect()) as con:
         files = con.execute(
             "SELECT COUNT(*) FROM files WHERE workspace=? AND path=?",
-            (workspace, "specs", "doc:Replay Safe"),
+            ("specs", "doc:Replay Safe"),
         ).fetchone()[0]
         chunks = con.execute(
             "SELECT COUNT(*) FROM chunks WHERE workspace=? AND path=?",
-            (workspace, "specs", "doc:Replay Safe"),
+            ("specs", "doc:Replay Safe"),
         ).fetchone()[0]
 
     assert files == 1
@@ -273,7 +273,9 @@ def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monk
     result = store.ingest_document(root=str(tmp_path), title="Busy", workspace="specs", content="retryable publication")
 
     assert result["success"] is True
-    assert state["begins"] == 2
+    # One transaction binds the empty workspace to its physical root before
+    # the two publication attempts (one busy, one successful).
+    assert state["begins"] == 3
     assert services.calls == 1
 
 
@@ -307,8 +309,8 @@ def test_document_ingest_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch
     monkeypatch.setattr(store, "_connect", connect)
 
     assert result["success"] is False
-    assert "old content" in _chunk_text(store, "default", "specs", f"doc:{title}")
-    assert "new content" not in _chunk_text(store, "default", "specs", f"doc:{title}")
+    assert "old content" in _chunk_text(store, "specs", f"doc:{title}")
+    assert "new content" not in _chunk_text(store, "specs", f"doc:{title}")
 
 
 @pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])
@@ -384,7 +386,7 @@ def test_document_ingest_fts_write_failure_keeps_previous_snapshot(
     store = _store(tmp_path)
     title = "Atomic FTS Document"
     assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
-    previous = _rag_snapshot(store, "default", "specs")
+    previous = _rag_snapshot(store, "specs")
 
     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
     result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
@@ -392,7 +394,7 @@ def test_document_ingest_fts_write_failure_keeps_previous_snapshot(
     assert result["success"] is False
     assert result["retryable"] is False
     assert injected["attempts"] == 1
-    assert _rag_snapshot(store, "default", "specs") == previous
+    assert _rag_snapshot(store, "specs") == previous
 
 
 @pytest.mark.parametrize("operation", ["incremental_index", "document_ingest"])
@@ -429,7 +431,7 @@ def test_exhausted_publish_busy_retries_preserve_snapshot_and_report_retryable(
     else:
         title = "Busy Document"
         assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
-        previous = _rag_snapshot(store, "default", "specs")
+        previous = _rag_snapshot(store, "specs")
         invoke = lambda: store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
         expected_error = "ingest_publish_failed"
 
@@ -609,7 +611,7 @@ def test_document_ingest_bounds_batches_and_preserves_long_document_order(tmp_pa
         rows = con.execute(
             "SELECT chunk_no,text,embedding FROM chunks "
             "WHERE workspace=? AND path=? ORDER BY chunk_no",
-            (workspace, "specs", f"doc:{title}"),
+            ("specs", f"doc:{title}"),
         ).fetchall()
     assert [(int(row[0]), str(row[1])) for row in rows] == list(enumerate(expected_chunks))
     assert [_decode_embedding(row[2]) for row in rows] == [
@@ -659,7 +661,7 @@ def test_document_ingest_keeps_text_and_degrades_remainder_after_later_batch_fai
         rows = con.execute(
             "SELECT chunk_no,text,embedding FROM chunks "
             "WHERE workspace=? AND path=? ORDER BY chunk_no",
-            (workspace, "specs", f"doc:{title}"),
+            ("specs", f"doc:{title}"),
         ).fetchall()
     assert [(int(row[0]), str(row[1])) for row in rows] == list(enumerate(expected_chunks))
     assert all(bool(row[2]) for row in rows[:64])
@@ -713,7 +715,7 @@ def test_document_ingest_rejects_overlong_later_batch_without_misassociation(tmp
         rows = con.execute(
             "SELECT chunk_no,text,embedding FROM chunks "
             "WHERE workspace=? AND path=? ORDER BY chunk_no",
-            (workspace, "specs", f"doc:{title}"),
+            ("specs", f"doc:{title}"),
         ).fetchall()
     assert [(int(row[0]), str(row[1])) for row in rows] == list(enumerate(expected_chunks))
     assert [_decode_embedding(row[2]) for row in rows[:64]] == [
@@ -751,7 +753,7 @@ def test_docset_rejects_empty_names_without_index_or_search(tmp_path, monkeypatc
 
     assert store.docset_index("  ", root=str(tmp_path))["success"] is False
     assert store.docset_index(None, root=str(tmp_path))["success"] is False
-    assert store.docset_search("\t", "query")["success"] is False
+    assert store.docset_search("\t", query="query")["success"] is False
 
 
 def test_raster_diagram_reports_metadata_only_and_indexes_caption_metadata(tmp_path):
@@ -764,7 +766,7 @@ def test_raster_diagram_reports_metadata_only_and_indexes_caption_metadata(tmp_p
     assert result["success"] is True
     assert result["diagram_content_mode"] == "metadata_only"
     assert result["vision_or_ocr_used"] is False
-    indexed = _chunk_text(store, "default", "diagrams", f"doc:{result['document_title']}")
+    indexed = _chunk_text(store, "diagrams", f"doc:{result['document_title']}")
     assert "Caption: Private edge routing" in indexed
     assert '"owner":"platform"' in indexed
 
@@ -778,7 +780,7 @@ def test_svg_diagram_reports_extracted_text_provenance(tmp_path):
 
     assert result["diagram_content_mode"] == "svg_text_nodes"
     assert result["vision_or_ocr_used"] is False
-    indexed = _chunk_text(store, "default", "diagrams", f"doc:{result['document_title']}")
+    indexed = _chunk_text(store, "diagrams", f"doc:{result['document_title']}")
     assert "Queue Drain" in indexed
     assert "Caption: Drain workflow" in indexed
 
@@ -1214,6 +1216,7 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch, tmp_path):
     mcp_server.local_ai_rag(
         action="ingest_diagram",
         root=str(tmp_path),
+        workspace="default",
         image_path="diagram.svg",
         caption="",
         metadata={"kind": "diagram"},
@@ -1303,7 +1306,7 @@ def test_diagram_ingest_uses_path_identity_for_same_stem_files(tmp_path):
     with closing(store._connect()) as con:
         paths = con.execute(
             "SELECT path FROM files WHERE workspace=? ORDER BY path",
-            (workspace, "diagrams"),
+            ("diagrams",),
         ).fetchall()
     assert len(paths) == 2
 
@@ -1334,7 +1337,7 @@ def test_document_ingest_rejects_content_over_configured_file_limit(tmp_path):
     with closing(store._connect()) as con:
         count = con.execute(
             "SELECT COUNT(*) FROM files WHERE workspace=?",
-            (workspace, "specs"),
+            ("specs",),
         ).fetchone()[0]
     assert count == 0
 
@@ -1358,6 +1361,6 @@ def test_document_ingest_rejects_indexed_fields_over_configured_file_limit(tmp_p
     with closing(store._connect()) as con:
         count = con.execute(
             "SELECT COUNT(*) FROM files WHERE workspace=?",
-            (workspace, "specs"),
+            ("specs",),
         ).fetchone()[0]
     assert count == 0
