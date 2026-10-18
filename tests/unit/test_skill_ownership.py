@@ -12,6 +12,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from pathlib import Path
+from typing import Any
 
 _spec = importlib.util.spec_from_file_location(
     "skill_ownership_under_test", Path(__file__).resolve().parents[2] / "tools" / "skill_ownership.py"
@@ -612,7 +613,6 @@ so.install_skill(source, target, root, manifest, name)
 
         self.assertIn("uninstalled Hub-owned skill", result)
         self.assertFalse(self.target.exists())
-        self.assertTrue(quarantine_root.is_dir())
         self.assertFalse(replacement_root.exists())
         entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
         quarantine_path = Path(
@@ -620,6 +620,74 @@ so.install_skill(source, target, root, manifest, name)
         )
         self.assertTrue(quarantine_path.is_relative_to(quarantine_root))
         self.assertTrue((quarantine_path / "SKILL.md").is_file())
+        self.assertTrue(quarantine_root.is_dir())
+
+    def test_install_preserves_external_stage_write_during_cleanup(self) -> None:
+        real_mkdtemp = skill_ownership.tempfile.mkdtemp
+        real_manifest_write = skill_ownership._manifest_write
+        stage_roots: list[Path] = []
+
+        def capture_stage_root(*args: Any, **kwargs: Any) -> str:
+            stage_root = Path(real_mkdtemp(*args, **kwargs))
+            stage_roots.append(stage_root)
+            return str(stage_root)
+
+        def write_manifest_then_external_file(
+            manifest: Path, entries: dict[str, dict[str, object]],
+        ) -> None:
+            real_manifest_write(manifest, entries)
+            if stage_roots:
+                (stage_roots[-1] / "external-write.txt").write_text(
+                    "preserve me\n", encoding="utf-8",
+                )
+
+        with (
+            patch.object(skill_ownership.tempfile, "mkdtemp", side_effect=capture_stage_root),
+            patch.object(skill_ownership, "_manifest_write", side_effect=write_manifest_then_external_file),
+        ):
+            result = install_skill(
+                self.source, self.target, self.skills_root, self.manifest, "example-skill",
+            )
+
+        self.assertIn("installed Hub-owned skill", result)
+        self.assertIn("staging data preserved", result)
+        self.assertEqual(
+            (stage_roots[0] / "external-write.txt").read_text(encoding="utf-8"),
+            "preserve me\n",
+        )
+
+    def test_install_reports_retained_stage_when_target_changes_during_copy(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        real_mkdtemp = skill_ownership.tempfile.mkdtemp
+        real_copytree = skill_ownership.shutil.copytree
+        stage_roots: list[Path] = []
+
+        def capture_stage_root(*args: Any, **kwargs: Any) -> str:
+            stage_root = Path(real_mkdtemp(*args, **kwargs))
+            stage_roots.append(stage_root)
+            return str(stage_root)
+
+        def copytree_then_change_target(
+            source: Path, destination: Path, *args: Any, **kwargs: Any,
+        ) -> Path:
+            copied = real_copytree(source, destination, *args, **kwargs)
+            if Path(destination).name == "replacement":
+                (self.target / "external-write.txt").write_text("preserve me\n", encoding="utf-8")
+            return copied
+
+        with (
+            patch.object(skill_ownership.tempfile, "mkdtemp", side_effect=capture_stage_root),
+            patch.object(skill_ownership.shutil, "copytree", side_effect=copytree_then_change_target),
+        ):
+            result = install_skill(
+                self.source, self.target, self.skills_root, self.manifest, "example-skill",
+            )
+
+        self.assertIn("preserved changed skill tree", result)
+        self.assertIn("staging data preserved", result)
+        self.assertEqual((self.target / "external-write.txt").read_text(encoding="utf-8"), "preserve me\n")
+        self.assertEqual((stage_roots[0] / "replacement" / "SKILL.md").read_text(encoding="utf-8"), "Hub version\n")
+
     @unittest.skipIf(os.name == "nt", "POSIX quarantine-root replacement check")
     def test_quarantine_root_swap_cannot_redirect_noreplace_move(self) -> None:
         install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
