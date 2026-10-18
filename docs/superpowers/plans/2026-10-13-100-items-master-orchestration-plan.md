@@ -1155,7 +1155,30 @@ Commit `5b030df0` resolved the remaining path-policy regression where `_project_
 
 **5. Root State & Production Readiness:**
 - Root `config.toml` verified: validated clean with zero tenancy/quota errors via `validate_config()`.
-- Root state databases and running daemons preserved untouched.
+- Root state databases and running daemons preserved untouched during verification.
 - All code changes, tests, benchmarks, and runtime acceptance criteria are fully met and verified with durable evidence.
+
+### Production Cutover Complete and Goal Closed — 2026-10-18
+
+Upon explicit operator authorization, the final production cutover was executed following `docs/MIGRATION_3_TO_4.md` and `state/single-owner-conversion-20261018-1d55c3d703/production-cutover-plan.json`:
+
+1. **Production Backup:** Created full pre-cutover backup of all 8 original durable databases, RAG database, and root `config.toml` in `state/single-owner-conversion-20261018-1d55c3d703/production-backup-pre-cutover-5b030df0/` (10 files preserved).
+2. **Converted State Deployment:** Pristine converted targets from `production-candidate-9a01c82a2e/` deployed into `state/` (`agent_state.sqlite`, `artifacts.sqlite3`, `async_jobs.sqlite3`, `debug_traces.sqlite3`, `telemetry.sqlite3`, `work_fencing.sqlite3`, `work_orders.sqlite3`, `workspace_memory.sqlite3`).
+3. **Single-Owner RAG Deployment:** Single-owner RAG store from `rag-candidate-tenantless-v4-d6d785293f/rag.sqlite3` deployed into `state/rag.sqlite3`.
+4. **Pristine Configuration Deployment:** Clean single-owner `config.toml` deployed to root.
+5. **Package Metadata Refresh:** `pip install --no-deps -e .` executed cleanly; package version updated from 3.0.0 to 4.0.0.
+6. **Production Daemon Startup & Health Acceptance (port 11435):**
+   - Daemon started cleanly via `hubctl start` (PID 7972).
+   - `python tools/hubctl.py status`: **Online (PID 7972), v4.0.0**, active mode, Ollama Online (qwen2.5-coder:3b), 8 models installed, RTX 4060 GPU detected.
+   - `python tools/doctor.py`: **Online v4.0.0**, 8 compact MCP tools, Ollama Online, Tree-sitter installed, Serena available, 0 errors.
+   - `python tools/selftest.py`: **Passed 6/6 checks OK**.
+   - HTTP `/health`: HTTP 200 `{"success":true,"hub_online":true,"version":"4.0.0"}`.
+   - HTTP `/ready`: HTTP 200 `{"success":true,"ready":true,"reason":"ready","retryable":false,"version":"4.0.0"}`.
+   - HTTP `/dashboard`: HTTP 200 (479,493 HTML bytes).
+   - Zero-tenancy enforcement: HTTP 400 rejection on `X-LocalAI-Tenant` header (`retired request header: X-LocalAI-Tenant`) and `tenant` payload field (`retired tenancy field: tenant`).
+   - Durable proof recorded in `state/single-owner-conversion-20261018-1d55c3d703/production-cutover-proof.json`.
+
+All items in the master orchestration plan, waves 1–6, single-owner no-tenancy spec, and migration guide are complete and verified with durable evidence. Goal is CLOSED.
+
 
 
