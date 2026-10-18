@@ -67,6 +67,16 @@ def _install_project_config(monkeypatch, settings):
         )
 
     module.path_is_allowed = path_is_allowed
+
+    class MockProjectPathPolicy:
+        def __init__(self, root, current):
+            self.root = root
+            self.current = current
+
+        def allows(self, path, *, phase, size_bytes=None, **kwargs):
+            return module.path_is_allowed(self.root, path, self.current, phase=phase, size_bytes=size_bytes, **kwargs)
+
+    module.ProjectPathPolicy = MockProjectPathPolicy
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", module)
     return state
 
