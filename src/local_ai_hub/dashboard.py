@@ -1108,14 +1108,17 @@ function shouldRefreshDashboardStatus(status){
 
 function scopeAgentOsRequest(path,options={}){
   if(!String(path).startsWith('/api/agent-state/'))return {path,options};
-  const root=$('agentOsRoot')?.value?.trim();
+  if(options?.unscoped)return {path,options};
+  const root=$('agentOsRoot')?.value?.trim()||$('agentOsRepoSelect')?.value?.trim();
   if(!root)throw new Error('Choose a repository root in Agent OS first.');
   if(String(options.method||'GET').toUpperCase()==='GET'){
-    path+=String(path).includes('?')?'&':'?';
-    path+='root='+encodeURIComponent(root);
+    if(!new URL(path,'http://localhost').searchParams.has('root')){
+      path+=String(path).includes('?')?'&':'?';
+      path+='root='+encodeURIComponent(root);
+    }
   }else{
     const payload=options.body?JSON.parse(options.body):{};
-    options={...options,body:JSON.stringify({...payload,root})};
+    if(!payload.root)options={...options,body:JSON.stringify({...payload,root})};
   }
   return {path,options};
 }
@@ -5007,18 +5010,17 @@ async function loadAgentOsView(){
   const isAll=!selectedRoot||selectedRoot.toLowerCase()==='all'||selectedRoot==='__all__';
   setAgentOsScopeReady(!isAll&&Boolean(selectedRoot));
 
-  const tasksUrl=isAll?'/api/agent-state/tasks':`/api/agent-state/tasks?root=${encodeURIComponent(selectedRoot)}`;
-  const memUrl=isAll?'/api/agent-state/memory':`/api/agent-state/memory?root=${encodeURIComponent(selectedRoot)}`;
-
   const promises=[
-    fetchDashboardJson(tasksUrl,{cache:'no-store'}),
-    fetchDashboardJson(memUrl,{cache:'no-store'})
+    fetchDashboardJson('/api/agent-state/tasks',{cache:'no-store',unscoped:isAll}),
+    fetchDashboardJson('/api/agent-state/memory',{cache:'no-store',unscoped:isAll})
   ];
-  if(!isAll){
+  if(isAll){
+    promises.push(fetchDashboardJson('/api/agent-state/incidents',{cache:'no-store',unscoped:true}));
+  }else{
     promises.push(fetchDashboardJson('/api/agent-state/incidents',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'find',root:selectedRoot,limit:100})
+      body:JSON.stringify({action:'find',limit:100})
     }));
   }
   const results=await Promise.allSettled(promises);
@@ -5031,15 +5033,13 @@ async function loadAgentOsView(){
   if(results[1].status==='rejected'){
     agentOsLoadErrors.memory=String(results[1].reason?.message||results[1].reason);
   }
-  if(isAll){
-    agentOsLoadErrors.incidents='Select a specific repository above to inspect negative knowledge & incidents.';
-  }else if(results[2]?.status==='rejected'){
+  if(results[2]?.status==='rejected'){
     agentOsLoadErrors.incidents=String(results[2].reason?.message||results[2].reason);
   }
 
   agentOsTasks=results[0].status==='fulfilled'?(results[0].value.tasks||[]):[];
   agentOsMemories=results[1].status==='fulfilled'?(results[1].value.records||[]):[];
-  agentOsIncidents=(!isAll&&results[2]?.status==='fulfilled')?(results[2].value.incidents||[]):[];
+  agentOsIncidents=results[2]?.status==='fulfilled'?(results[2].value.incidents||[]):[];
   renderAgentOsView();
 }
 
@@ -5139,7 +5139,17 @@ function renderAgentOsView(){
 
 function renderAgentOsLoadErrors(){
   const failed=Object.keys(agentOsLoadErrors);
-  if(failed.length&&!$('agentOsTasksBody')?.children?.length){
+  if(!failed.length)return;
+  const isRepoPrompt=Object.values(agentOsLoadErrors).every(msg=>/Choose a repository|Select a repository/i.test(msg));
+  if(isRepoPrompt){
+    if($('agentOsState'))$('agentOsState').textContent='Select a repository';
+    if($('agentOsSummary'))$('agentOsSummary').textContent='Choose a repository above, then refresh to view its records.';
+    [['tasks','agentOsTasksBody',8],['memory','agentOsMemoryBody',7],['incidents','agentOsIncBody',8]].forEach(([key,id,columns])=>{
+      if(agentOsLoadErrors[key]&&$(id))$(id).innerHTML=`<tr><td colspan="${columns}" class="empty">${esc(agentOsLoadErrors[key])}</td></tr>`;
+    });
+    return;
+  }
+  if(!Boolean($('agentOsTasksBody')?.children?.length)){
     if($('agentOsState'))$('agentOsState').textContent='Partially unavailable · '+failed.join(', ');
     if($('agentOsSummary'))$('agentOsSummary').textContent='Some data could not be loaded. Refresh to retry.';
   }
@@ -5333,7 +5343,11 @@ let cachedTrajTasks=[];
 
 async function loadTrajectories(){
   try{
-    const d=await fetchDashboardJson('/api/agent-state/tasks?limit=100',{cache:'no-store'});
+    const repoVal=$('agentOsRepoSelect')?.value?.trim()||'';
+    const rootVal=$('agentOsRoot')?.value?.trim()||'';
+    const selectedRoot=rootVal||repoVal||'';
+    const isAll=!selectedRoot||selectedRoot.toLowerCase()==='all'||selectedRoot==='__all__';
+    const d=await fetchDashboardJson('/api/agent-state/tasks?limit=100',{cache:'no-store',unscoped:isAll});
     cachedTrajTasks=d.tasks||[];
     renderTrajectories();
   }catch(e){
@@ -5380,7 +5394,7 @@ async function viewTrajectory(taskId, afterSeq=0, append=false){
   try{
     const params=new URLSearchParams({stream_id:taskId,limit:'100'});
     if(afterSeq>0)params.set('after_seq',String(afterSeq));
-    const r=await apiFetch('/api/agent-state/events?'+params.toString(),{cache:'no-store'});
+    const r=await apiFetch('/api/agent-state/events?'+params.toString(),{cache:'no-store',unscoped:true});
     const responseText=await r.text();
     const d=JSON.parse(responseText);
     const evs=Array.isArray(d.events)?d.events:[];

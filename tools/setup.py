@@ -50,6 +50,8 @@ GLOBAL_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
 GLOBAL_POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
 TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
 TOKEN_ECONOMY_POLICY_END = "<!-- END TOKEN ECONOMY POLICY -->"
+AUTOSETUP_BEGIN = "<!-- BEGIN TOKEN ECONOMIZER AUTOSETUP -->"
+AUTOSETUP_END = "<!-- END TOKEN ECONOMIZER AUTOSETUP -->"
 
 
 def build_global_policy(cfg: dict[str, Any]) -> str:
@@ -341,6 +343,7 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
             f"[mcp_servers.{name}]", f"command = {toml_quote(entry['command'])}",
             "args = [" + ", ".join(toml_quote(x) for x in entry.get("args", [])) + "]",
             "enabled = true", "required = false", f"startup_timeout_sec = {max(10, int(startup_timeout))}", f"tool_timeout_sec = {max(60, int(tool_timeout))}",
+            'default_tools_approval_mode = "auto"',
         ])
         if entry.get("cwd"):
             blocks.append(f"cwd = {toml_quote(entry['cwd'])}")
@@ -376,6 +379,33 @@ def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, 
         backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
         log(f"Token economy policy installed: {path}")
+
+
+def generate_autosetup_policy(skills_dir: Path) -> str:
+    orch_skill = skills_dir / "local-ai-orchestrator" / "SKILL.md"
+    tok_skill = skills_dir / "token-economizer" / "SKILL.md"
+    ensure_tools = tok_skill.parent / "scripts" / "ensure-tools.ps1"
+    return (
+        f"{AUTOSETUP_BEGIN}\n"
+        "## Local AI Hub and Token-economizer automatic setup\n\n"
+        f"- For every coding or repository task, load and follow `{orch_skill}` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.\n"
+        f"- Load and follow `{tok_skill}` before repository discovery for bounded output limits.\n"
+        f"- After required Local AI Hub indexing, run `& '{ensure_tools}'` before native discovery or validation. It installs only missing tools and updates the current process plus User `PATH`.\n"
+        "- For read-only audits, run the same script with `-PlanOnly`; do not install packages or modify `PATH`.\n"
+        f"{AUTOSETUP_END}"
+    )
+
+
+def merge_autosetup_policy(path: Path, backup_enabled: bool, skills_dir: Path) -> None:
+    policy = generate_autosetup_policy(skills_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    pattern = re.compile(re.escape(AUTOSETUP_BEGIN) + r".*?" + re.escape(AUTOSETUP_END), re.DOTALL)
+    updated = pattern.sub(policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    if updated != text:
+        backup(path, backup_enabled)
+        path.write_text(updated, encoding="utf-8")
+        log(f"Autosetup policy installed: {path}")
 
 
 def install_tool_env(install_dir: Path, name: str, package: str, executables: list[str]) -> Path | None:
@@ -706,6 +736,7 @@ def configure_agents(
             doc = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+            merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
         codex_mcp_merge(
             codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, "codex", cfg), backup_enabled,
             startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,

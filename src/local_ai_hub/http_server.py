@@ -3969,6 +3969,7 @@ class Handler(BaseHTTPRequestHandler):
         allowed_agent_state_get = {
             "/api/agent-state/memory",
             "/api/agent-state/tasks",
+            "/api/agent-state/incidents",
             "/api/agent-state/events",
             "/api/agent-state/events/stream",
             "/api/agent-state/blackboard",
@@ -4158,6 +4159,20 @@ class Handler(BaseHTTPRequestHandler):
                 if getattr(tasks, "query_truncated", False):
                     response["query_truncated"] = True
                 self._send(200, response); return
+            if path == "/api/agent-state/incidents":
+                if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                limit = int((query.get("limit") or [100])[0])
+                resolved_raw = (query.get("resolved") or [None])[0]
+                status_raw = (query.get("status") or [None])[0]
+                request_root = (query.get("root") or [""])[0]
+                if request_root in ("all", "__all__"):
+                    request_root = ""
+                if request_root:
+                    incidents = APP.agent_incidents.find_negative_knowledge("", limit=limit, root=request_root)
+                else:
+                    incidents = APP.agent_incidents.list_incidents(resolved=resolved_raw, limit=limit, status=status_raw)
+                self._send(200, {"success": True, "incidents": [i.to_dict() if hasattr(i, "to_dict") else i for i in incidents]}); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -4259,6 +4274,7 @@ class Handler(BaseHTTPRequestHandler):
                     task_id_val = scope_id_val
                 elif scope_val is AgentScope.SESSION:
                     session_id_val = scope_id_val
+                include_all_scopes = str((query.get("all") or ["false"])[0]).lower() in ("true", "1", "yes") or (not root_val and not scope_raw)
                 records = APP.agent_memory.find(
                     scope=scope_val if scope_raw is not None else None,
                     scope_id=str(scope_id_val) if scope_id_val is not None else None,
@@ -4273,6 +4289,7 @@ class Handler(BaseHTTPRequestHandler):
                     query=query_val,
                     status=status_val,
                     limit=limit_val,
+                    include_all_scopes=include_all_scopes,
                 )
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":

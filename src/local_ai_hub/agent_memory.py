@@ -1640,6 +1640,7 @@ class MemoryStore:
         limit: int = 100,
         *,
         include_expired: bool = False,
+        include_all_scopes: bool = False,
         semantic: bool = True,
         services: Any = None,
         min_score: float = 0.1,
@@ -1761,7 +1762,7 @@ class MemoryStore:
             canonical_root = _normalise_scope_root(root)
             sql += f" AND {_CONTEXT_ROOT_SQL} = ?"
             params.append(canonical_root)
-        elif scope_val is None:
+        elif scope_val is None and not include_all_scopes:
             sql += " AND scope = ?"
             params.append(AgentScope.GLOBAL.value)
         if repository_id:
