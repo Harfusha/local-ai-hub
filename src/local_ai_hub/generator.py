@@ -163,7 +163,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.
-- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup directly before adaptive context or native broad discovery.
+- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup directly before native broad discovery.
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
 
 
@@ -696,7 +696,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic delegation is on-demand and optional: after deterministic/indexed evidence, actively use `local_ai_task` for bounded generation, code review (`review`), independent second opinions (`second_opinion`), test-log compression (`compress`), commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in."
+            "\n- Semantic delegation is on-demand and optional: after deterministic/indexed evidence, actively use `local_ai_task` for bounded generation, code review (`review`), independent second opinions (`second_opinion`), test-log compression (`compress`), commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
         )
 
     model_default = ""
@@ -744,65 +744,37 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             f" For overlapping edits use `local_ai_coord` leases; record concise findings in {findings_target}"
         )
 
-    antigravity_bullets = []
+    prioritization_bullets = []
     if fs.commands:
-        antigravity_bullets.append(
-            "> - **Tests, builds, lint, execution**: Call `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_command\", Arguments={\"command\": \"...\", \"cwd\": \"...\"})` (pass `task_id` when active). DO NOT run tests or builds directly with native `run_command`!"
+        prioritization_bullets.append(
+            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_command\", Arguments={\"command\": \"...\", \"cwd\": \"...\"})`). Pass `task_id` and `criterion` to auto-mint receipts. DO NOT run tests or builds directly via shell or native `run_command`!"
         )
     if fs.repo:
-        antigravity_bullets.append(
-            "> - **Repository & Code Search**: Call `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_repo\", Arguments={\"action\": \"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", \"root\": \"...\"})`. DO NOT use broad native shell discovery or dump entire files."
+        prioritization_bullets.append(
+            "> - **Repository & Code Search**: Call `local_ai_repo(action=\"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", root=\"...\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_repo\", Arguments={\"action\": \"...\", \"root\": \"...\"})`). DO NOT use broad native discovery (`find`, `dir /s`, unconstrained `rg`, glob) or dump entire files."
         )
     if fs.agent_os or fs.coord:
-        antigravity_bullets.append(
-            "> - **Agent OS Lifecycle & Project Memory**: Call `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_coord\", Arguments={\"action\": \"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...})`. Proactively query memory and record findings."
+        prioritization_bullets.append(
+            "> - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...)` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_coord\", Arguments={\"action\": \"...\"})`). Proactively initialize task contracts, query memory, and record findings."
         )
     if fs.tasks and fs.has_any_model():
-        antigravity_bullets.append(
-            "> - **Semantic Review & Second Opinion**: Call `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_task\", Arguments={\"action\": \"review\"|\"second_opinion\"|\"compress\"})`."
+        prioritization_bullets.append(
+            "> - **Semantic Review & Second Opinion**: Actively call `local_ai_task(action=\"review\"|\"second_opinion\"|\"compress\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_task\", Arguments={\"action\": \"...\"})`) before finalizing non-trivial edits."
         )
-    antigravity_bullets.append(
-        "> - **Native fallback rule**: Native `run_command` and direct file viewing are permitted ONLY when Local AI Hub is unavailable or returns an explicit `terminal=true` failure."
+    prioritization_bullets.append(
+        "> - **Native fallback rule**: Native shell commands, `run_command`, and direct file viewing are permitted ONLY when Local AI Hub is unavailable or returns an explicit `terminal=true` failure."
     )
-    antigravity_directive = (
+    prioritization_directive = (
         "> [!IMPORTANT]\n"
         "> ## AUTOMATIC LOCAL AI HUB PRIORITIZATION IN ANTIGRAVITY\n"
-        "> In Antigravity, all Local AI Hub tools are provided via MCP server `local-ai` and called via `call_mcp_tool(ServerName=\"local-ai\", ToolName=..., Arguments=...)`.\n"
-        "> Gemini MUST AUTOMATICALLY prioritize `call_mcp_tool` over native tools (`run_command`, `view_file`):\n"
-        + "\n".join(antigravity_bullets)
-    )
-
-    codex_bullets = []
-    if fs.commands:
-        codex_bullets.append(
-            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")` (pass `task_id` and `criterion` to auto-mint receipts). DO NOT run tests or builds directly via shell commands!"
-        )
-    if fs.repo:
-        codex_bullets.append(
-            "> - **Repository & Code Search**: Call `local_ai_repo(action=\"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", root=\"...\")`. DO NOT use broad native shell discovery (`dir /s`, `find`, unconstrained `rg`) or dump entire files."
-        )
-    if fs.agent_os or fs.coord:
-        codex_bullets.append(
-            "> - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...)`. Proactively initialize task contracts, query memory, and record findings."
-        )
-    if fs.tasks and fs.has_any_model():
-        codex_bullets.append(
-            "> - **Semantic Review & Second Opinion**: Actively call `local_ai_task(action=\"review\"|\"second_opinion\"|\"compress\")` before finalizing non-trivial edits."
-        )
-    codex_bullets.append(
-        "> - **Native fallback rule**: Native shell commands and direct file viewing are permitted ONLY when Local AI Hub is unavailable or returns an explicit `terminal=true` failure."
-    )
-    codex_directive = (
-        "> [!IMPORTANT]\n"
         "> ## MANDATORY LOCAL AI HUB PRIORITIZATION IN CODEX\n"
-        "> Codex MUST AUTOMATICALLY prioritize `local_ai_*` MCP tools over native terminal execution and shell commands (`powershell`, `cmd`, `bash`, `exec`):\n"
-        + "\n".join(codex_bullets)
+        "> Agents (Gemini in Antigravity, Codex, Claude) MUST AUTOMATICALLY prioritize `local-ai` MCP tools over native tools (`run_command`, native shell, broad `view_file`):\n"
+        + "\n".join(prioritization_bullets)
     )
 
     return (
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
-        f"{antigravity_directive}\n\n"
-        f"{codex_directive}\n\n"
+        f"{prioritization_directive}\n\n"
         f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"

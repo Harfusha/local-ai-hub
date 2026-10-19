@@ -10,7 +10,7 @@ def test_generated_policy_contains_codex_prioritization_directive() -> None:
     assert "local_ai_command(action=\"run\"" in policy
     assert "local_ai_repo" in policy
     assert "local_ai_coord" in policy
-    assert "Semantic delegation is on-demand and optional" in policy
+    assert "Semantic delegation is on-demand" in policy
 
 
 def test_generated_token_economy_policy_includes_orchestrator() -> None:

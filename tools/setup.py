@@ -229,6 +229,18 @@ COMPANION_SKILLS: list[str] = [
 ]
 
 
+def get_user_homes() -> list[Path]:
+    homes = [Path.home()]
+    if os.name == "nt":
+        username = os.environ.get("USERNAME")
+        system_drive = os.environ.get("SystemDrive", "C:")
+        if username:
+            candidate = Path(f"{system_drive}/Users/{username}").resolve()
+            if candidate.is_dir() and candidate != Path.home().resolve() and candidate not in homes:
+                homes.append(candidate)
+    return homes
+
+
 def install_agent_skills(install_dir: Path, target_skills_dir: Path, *, include_companion: bool = True) -> None:
     source_skill = install_dir / "skills" / "local-ai-orchestrator"
     install_skill(source_skill, target_skills_dir / "local-ai-orchestrator")
@@ -362,7 +374,7 @@ def merge_global_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | 
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(GLOBAL_POLICY_BEGIN) + r".*?" + re.escape(GLOBAL_POLICY_END), re.DOTALL)
-    updated = pattern.sub(policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
     if updated != text:
         backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
@@ -374,7 +386,7 @@ def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, 
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(TOKEN_ECONOMY_POLICY_BEGIN) + r".*?" + re.escape(TOKEN_ECONOMY_POLICY_END), re.DOTALL)
-    updated = pattern.sub(policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
     if updated != text:
         backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
@@ -382,9 +394,10 @@ def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, 
 
 
 def generate_autosetup_policy(skills_dir: Path) -> str:
-    orch_skill = skills_dir / "local-ai-orchestrator" / "SKILL.md"
-    tok_skill = skills_dir / "token-economizer" / "SKILL.md"
-    ensure_tools = tok_skill.parent / "scripts" / "ensure-tools.ps1"
+    orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
+    tok_skill_path = skills_dir / "token-economizer" / "SKILL.md"
+    tok_skill = tok_skill_path.as_posix()
+    ensure_tools = (tok_skill_path.parent / "scripts" / "ensure-tools.ps1").as_posix()
     return (
         f"{AUTOSETUP_BEGIN}\n"
         "## Local AI Hub and Token-economizer automatic setup\n\n"
@@ -401,7 +414,7 @@ def merge_autosetup_policy(path: Path, backup_enabled: bool, skills_dir: Path) -
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(AUTOSETUP_BEGIN) + r".*?" + re.escape(AUTOSETUP_END), re.DOTALL)
-    updated = pattern.sub(policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
     if updated != text:
         backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
@@ -728,20 +741,29 @@ def configure_agents(
     agents_cfg = cfg.get("agents", {})
     write_all_generated(cfg, install_dir, hub_python, serena)
     if agents_cfg.get("agent_skills_standard", True):
-        install_agent_skills(install_dir, Path.home() / ".agents" / "skills", include_companion=include_companion)
+        for u_home in get_user_homes():
+            install_agent_skills(install_dir, u_home / ".agents" / "skills", include_companion=include_companion)
     if agents_cfg.get("codex", True):
-        codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        install_agent_skills(install_dir, codex_home / "skills", include_companion=include_companion)
-        if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            doc = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
-            merge_global_policy(doc, backup_enabled, cfg=cfg)
-            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-            merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
-        codex_mcp_merge(
-            codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, "codex", cfg), backup_enabled,
-            startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
-            tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
-        )
+        codex_homes: list[Path] = []
+        if os.environ.get("CODEX_HOME"):
+            codex_homes.append(Path(os.environ["CODEX_HOME"]))
+        for u_home in get_user_homes():
+            ch = u_home / ".codex"
+            if ch.resolve() not in [p.resolve() for p in codex_homes]:
+                codex_homes.append(ch)
+
+        for codex_home in codex_homes:
+            install_agent_skills(install_dir, codex_home / "skills", include_companion=include_companion)
+            if cfg.get("tool_policy", {}).get("install_global_instructions", True):
+                doc = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
+                merge_global_policy(doc, backup_enabled, cfg=cfg)
+                merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+                merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
+            codex_mcp_merge(
+                codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, "codex", cfg), backup_enabled,
+                startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
+                tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
+            )
     if agents_cfg.get("claude", True):
         install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
