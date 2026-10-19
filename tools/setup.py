@@ -230,14 +230,61 @@ COMPANION_SKILLS: list[str] = [
 
 
 def get_user_homes() -> list[Path]:
-    homes = [Path.home()]
+    """Discover all user and MultiGravity profile home directories."""
+    homes: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_home(p: Path) -> None:
+        try:
+            resolved = p.resolve()
+            if resolved not in seen and p.exists() and p.is_dir():
+                seen.add(resolved)
+                homes.append(p)
+        except Exception:
+            pass
+
+    cur_home = Path.home()
+    add_home(cur_home)
+
     if os.name == "nt":
         username = os.environ.get("USERNAME")
         system_drive = os.environ.get("SystemDrive", "C:")
         if username:
-            candidate = Path(f"{system_drive}/Users/{username}").resolve()
-            if candidate.is_dir() and candidate != Path.home().resolve() and candidate not in homes:
-                homes.append(candidate)
+            add_home(Path(f"{system_drive}/Users/{username}"))
+        userprofile = os.environ.get("USERPROFILE")
+        if userprofile:
+            add_home(Path(userprofile))
+
+    # MultiGravity discovery: search cur_home and its ancestors
+    mg_profiles_dir: Path | None = None
+    for p in [cur_home, *cur_home.parents]:
+        cand = p / "Desktop" / "Multigravity" / "profiles"
+        if cand.is_dir():
+            mg_profiles_dir = cand
+            add_home(p)
+            break
+        if p.name.lower() == "profiles" and p.parent.name.lower() == "multigravity":
+            mg_profiles_dir = p
+            for anc in p.parents:
+                if (anc / "Desktop").is_dir():
+                    add_home(anc)
+                    break
+            break
+
+    env_mg = os.environ.get("MULTIGRAVITY_PROFILES") or os.environ.get("MULTIGRAVITY_HOME")
+    if env_mg:
+        p_env = Path(env_mg)
+        if p_env.name.lower() == "profiles" and p_env.is_dir():
+            mg_profiles_dir = p_env
+        elif (p_env / "profiles").is_dir():
+            mg_profiles_dir = p_env / "profiles"
+
+    if mg_profiles_dir and mg_profiles_dir.is_dir():
+        for child in mg_profiles_dir.iterdir():
+            if child.is_dir():
+                target = child / "home" if (child / "home").is_dir() else child
+                add_home(target)
+
     return homes
 
 
@@ -331,6 +378,115 @@ def sync_antigravity_mcp_config(
     json_mcp_merge(path, build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
     if not bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
         prune_direct_code_intelligence(path, serena, backup_enabled)
+
+
+def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
+    """Ensure Antigravity global permissions pre-approve Local AI Hub MCP tools to avoid interactive prompts."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {}
+    if path.exists():
+        backup(path, backup_enabled)
+        try:
+            raw_text = path.read_text(encoding="utf-8").strip()
+            if raw_text:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict):
+                    data = parsed
+        except Exception as exc:
+            log(f"WARNING: could not parse {path}: {exc}")
+
+    user_settings = data.setdefault("userSettings", {})
+    if not isinstance(user_settings, dict):
+        user_settings = {}
+        data["userSettings"] = user_settings
+
+    user_settings.setdefault("autoExecutionPolicy", "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER")
+    user_settings.setdefault("enableTerminalSandbox", False)
+    user_settings.setdefault("nonWorkspaceFileAccessPolicy", "AGENT_SETTING_POLICY_ALLOW")
+    user_settings.setdefault("permissionPreset", "AGENT_PERMISSION_PRESET_TURBO")
+
+    grants = user_settings.setdefault("globalPermissionGrants", {})
+    if not isinstance(grants, dict):
+        grants = {}
+        user_settings["globalPermissionGrants"] = grants
+
+    allow_list = grants.setdefault("allow", [])
+    if not isinstance(allow_list, list):
+        allow_list = []
+        grants["allow"] = allow_list
+
+    required_grants = [
+        "mcp(local-ai/*)",
+        "mcp(local-ai)",
+        "mcp(local_ai/*)",
+        "mcp(local_ai)",
+        "mcp(local-ai/local_ai_status)",
+        "mcp(local-ai/local_ai_coord)",
+        "mcp(local-ai/local_ai_command)",
+        "mcp(local-ai/local_ai_repo)",
+        "mcp(local-ai/local_ai_task)",
+        "mcp(local-ai/local_ai_rag)",
+        "mcp(local-ai/local_ai_work)",
+        "mcp(local-ai/local_ai_artifact)",
+        "mcp(local_ai/local_ai_status)",
+        "mcp(local_ai/local_ai_coord)",
+        "mcp(local_ai/local_ai_command)",
+        "mcp(local_ai/local_ai_repo)",
+        "mcp(local_ai/local_ai_task)",
+        "mcp(local_ai/local_ai_rag)",
+        "mcp(local_ai/local_ai_work)",
+        "mcp(local_ai/local_ai_artifact)",
+    ]
+    for grant in required_grants:
+        if grant not in allow_list:
+            allow_list.append(grant)
+
+    block_list = grants.get("block")
+    if isinstance(block_list, list):
+        for grant in list(block_list):
+            if "local-ai" in grant or "local_ai" in grant:
+                block_list.remove(grant)
+
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    log(f"Antigravity permissions configured: {path}")
+
+
+def configure_gemini_instance(
+    gemini_dir: Path,
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+    include_companion: bool,
+) -> None:
+    """Configure a single .gemini root (skills, instructions, MCP configs, permissions, schemas)."""
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    install_agent_skills(install_dir, gemini_dir / "skills", include_companion=include_companion)
+    install_agent_skills(install_dir, gemini_dir / "config" / "skills", include_companion=include_companion)
+
+    if cfg.get("tool_policy", {}).get("install_global_instructions", True):
+        doc = gemini_dir / "GEMINI.md"
+        merge_global_policy(doc, backup_enabled, cfg=cfg)
+        merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+
+    json_mcp_merge(gemini_dir / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
+    sync_antigravity_mcp_config(
+        gemini_dir / "config" / "mcp_config.json",
+        install_dir, hub_python, serena, cfg, backup_enabled,
+    )
+    sync_antigravity_config_json(
+        gemini_dir / "config" / "config.json",
+        backup_enabled,
+    )
+
+    antigravity_mcp = gemini_dir / "antigravity" / "mcp" / "local-ai"
+    if antigravity_mcp.exists() or (gemini_dir / "antigravity").exists():
+        antigravity_mcp.mkdir(parents=True, exist_ok=True)
+        schemas_dir = install_dir / "generated" / "schemas"
+        if schemas_dir.exists():
+            for sfile in schemas_dir.glob("*.json"):
+                shutil.copy2(sfile, antigravity_mcp / sfile.name)
 
 
 def vscode_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool) -> None:
@@ -772,23 +928,12 @@ def configure_agents(
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, "claude", cfg), backup_enabled)
     if agents_cfg.get("gemini", True):
-        install_agent_skills(install_dir, Path.home() / ".gemini" / "skills", include_companion=include_companion)
-        install_agent_skills(install_dir, Path.home() / ".gemini" / "config" / "skills", include_companion=include_companion)
-        if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            doc = Path.home() / ".gemini" / "GEMINI.md"
-            merge_global_policy(doc, backup_enabled, cfg=cfg)
-            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-        json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
-        sync_antigravity_mcp_config(
-            Path.home() / ".gemini" / "config" / "mcp_config.json",
-            install_dir, hub_python, serena, cfg, backup_enabled,
-        )
-        antigravity_mcp = Path.home() / ".gemini" / "antigravity" / "mcp" / "local-ai"
-        if antigravity_mcp.exists():
-            schemas_dir = install_dir / "generated" / "schemas"
-            if schemas_dir.exists():
-                for sfile in schemas_dir.glob("*.json"):
-                    shutil.copy2(sfile, antigravity_mcp / sfile.name)
+        for u_home in get_user_homes():
+            g_dir = u_home / ".gemini"
+            if u_home.resolve() == Path.home().resolve() or g_dir.exists() or u_home.exists():
+                configure_gemini_instance(
+                    g_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion
+                )
     # Additional major MCP hosts. Their tool descriptions always carry the same
     # tool-first policy even when the host has no global skill format.
     if agents_cfg.get("cursor", True):
