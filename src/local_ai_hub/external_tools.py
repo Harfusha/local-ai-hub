@@ -265,7 +265,7 @@ class MCPStdioClient:
         return (props if isinstance(props, dict) else {}, {str(x) for x in required if isinstance(x, str)})
 
     def call_tool(self, name: str, args: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
-        lock_wait = min(float(soft_timeout), 1.5) if soft_timeout is not None else (float(timeout) if timeout is not None else None)
+        lock_wait = min(float(soft_timeout), 5.0) if soft_timeout is not None else (float(timeout) if timeout is not None else None)
         acquired = self._lock.acquire(timeout=lock_wait if lock_wait is not None else -1)
         if not acquired:
             raise MCPSoftTimeoutError(f"MCP lock wait timeout for tool: {name}")

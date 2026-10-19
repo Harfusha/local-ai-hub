@@ -3995,6 +3995,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
             "/api/resolve_imports", "/api/security_audit", "/api/search",
             "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/worktrees",
+            "/api/project/config", "/api/repo/config",
         }
         if (
             path.startswith("/api/repo/")
@@ -4005,8 +4006,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/cross_project_graph" and not self._bind_multi_repository_query(query):
             return
         if path == "/api/agent-state/tasks":
-            if not self._bind_repository_root_query(query):
-                return
+            roots = query.get("root", [])
+            if roots and roots[0] not in ("", "all", "__all__"):
+                if not self._bind_repository_root_query(query):
+                    return
+            else:
+                query["root"] = [""]
         try:
             get_handler_name = select_get_handler(path)
             if get_handler_name is not None:
@@ -4126,11 +4131,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 request_root = (query.get("root") or [""])[0]
+                if request_root in ("all", "__all__"):
+                    request_root = ""
                 task_id = (query.get("task_id") or [""])[0]
                 if task_id:
-                    task = self._request_task(task_id, request_root)
+                    task = self._request_task(task_id, request_root) if request_root else APP.agent_tasks.get(task_id)
                     if task is None:
-                        return
+                        self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "task": task.to_dict()}); return
                 status_filter = None
                 if query.get("status"):
@@ -4147,7 +4154,7 @@ class Handler(BaseHTTPRequestHandler):
                     include_stale=include_stale,
                     query=task_query,
                 )
-                response = {"success": True, "tasks": [t.to_dict() for t in tasks if self._task_matches_request(t, request_root)]}
+                response = {"success": True, "tasks": [t.to_dict() for t in tasks if not request_root or self._task_matches_request(t, request_root)]}
                 if getattr(tasks, "query_truncated", False):
                     response["query_truncated"] = True
                 self._send(200, response); return
@@ -4696,6 +4703,39 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/preprocess", "/api/preprocess/status"}:
                 root = (query.get("root") or [None])[0]
                 self._send(200, APP.preprocessor.status(root))
+                return
+            if path in {"/api/project/config", "/api/repo/config"}:
+                canonical = (query.get("root") or [None])[0]
+                if not canonical:
+                    self._send(400, {"success": False, "error": "root is required for project configuration", "terminal": True, "retryable": False})
+                    return
+                from .project_config import resolve_project_config
+                try:
+                    resolution = resolve_project_config(canonical)
+                    settings = resolution.settings
+                    config_file = Path(canonical) / ".local-ai.toml"
+                    sources = list(getattr(resolution, "active_sources", getattr(resolution, "sources", ())))
+                    self._send(200, {
+                        "success": True,
+                        "root": canonical,
+                        "config_file": str(config_file),
+                        "config_exists": config_file.is_file(),
+                        "sources": sources,
+                        "settings": {
+                            "exclude_paths": list(settings.exclude_paths),
+                            "force_include_paths": list(settings.force_include_paths),
+                            "path_overrides": dict(settings.path_overrides),
+                            "custom_extensions": list(settings.text_extensions),
+                            "binary_extensions": list(settings.binary_extensions),
+                            "skip_phases": list(settings.skip_phases),
+                            "commands": {k: (list(v.argv) if hasattr(v, "argv") else str(v)) for k, v in settings.commands.items()},
+                            "max_file_size_bytes": settings.max_file_size_bytes,
+                            "model_profile": getattr(settings, "model_profile", None),
+                            "system_prompt_prefix": getattr(settings, "system_prompt_prefix", None),
+                        }
+                    })
+                except Exception as exc:
+                    self._send(500, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
                 return
             if path == "/api/code/symbol":
                 root = (query.get("root") or ["."])[0]

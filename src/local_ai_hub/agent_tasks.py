@@ -370,6 +370,7 @@ class TaskState:
             "status": self.status.value,
             "owner": self.owner,
             "lease_id": self.lease_id,
+            "repo_root": _task_scope_root(self),
             "contract": self.contract.to_dict(),
             "context": {
                 "repository_id": self.context.repository_id,

@@ -1,0 +1,27 @@
+# Local AI Hub project configuration
+project_type = "python"
+model_profile = "balanced"
+pinned_context = ["README.md", "defaults.toml"]
+entry_points = ["src", "tools"]
+exclude_paths = [
+    ".pytest_cache/**",
+    ".handoff/**",
+    "state/**",
+    "**/__pycache__/**",
+    ".t*/**",
+]
+
+[preprocess]
+exclude_paths = [
+    "state/**",
+    ".handoff/**",
+    "generated-artifact-archive/**",
+    "logs/**",
+]
+
+[commands.test]
+argv = ["python", "-m", "pytest", "-q", "tests/test_project_config.py"]
+description = "Run core project config tests"
+
+[verification_rules]
+tests = ["test"]
