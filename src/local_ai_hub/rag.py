@@ -656,6 +656,14 @@ class RAGStore:
             pass
         return con
 
+    def optimize(self) -> None:
+        try:
+            with closing(self._connect()) as con:
+                con.execute("PRAGMA optimize")
+                con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except (sqlite3.DatabaseError, OSError):
+            pass
+
     def _init_db(self) -> None:
         self._validate_existing_database(self.db_path, self.index_fingerprint)
         with closing(self._connect()) as con:

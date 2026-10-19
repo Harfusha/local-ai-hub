@@ -826,6 +826,7 @@ lookup_candidate_cards = 120
 background_request_timeout_seconds = 300
 background_scheduler_timeout_seconds = 180
 max_error_backoff_seconds = 300
+hot_queries_enabled = true
 hot_queries = [
   "architecture entry points main components dependencies",
   "tests build lint static analysis validation commands",

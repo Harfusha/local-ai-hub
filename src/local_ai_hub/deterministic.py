@@ -2792,9 +2792,29 @@ class DeterministicEngine:
         }
         if suffix in data_suffixes or name in known or (name.startswith("requirements") and name.endswith((".txt", ".in"))):
             return False
+        # Configuration templates, samples, and env files
+        if name.startswith(".env") or name.endswith((".example", ".sample", ".template", ".defaults")):
+            return False
+        # Minified code and bundles (dense, low semantic value, huge CPU drain)
+        if name.endswith((".min.js", ".min.mjs", ".min.css", ".bundle.js", ".bundle.css", ".chunk.js", ".chunk.css")):
+            return False
+        # Legal and license boilerplates
+        if name in {"license", "license.txt", "license.md", "licence", "licence.txt", "licence.md", "copying", "notice", "notice.txt", "patents"} or name.startswith(("license.", "licence.")):
+            return False
+        # Changelogs and release notes
+        if name in {"changelog", "changelog.md", "changelog.txt", "changes", "changes.md", "history", "history.md", "releasenotes", "releasenotes.md"}:
+            return False
+        # Test snapshots and raw logs
+        if suffix in {".snap", ".snapshot", ".log", ".patch", ".diff"}:
+            return False
+        # Test fixture directories, mock data, and test snapshots
+        parts = set(Path(lower).parts)
+        if parts & {"fixtures", "__fixtures__", "testdata", "snapshots", "__snapshots__", "mocks", "__mocks__"}:
+            return False
         if "/.github/workflows/" in "/" + lower or "/artifacts/" in "/" + lower or "/candidates/" in "/" + lower:
             return False
         return True
+
 
     def file_card(self, root: str, path: str) -> dict[str, Any]:
         """Build a reusable semantic-ish card using only parsed deterministic facts."""

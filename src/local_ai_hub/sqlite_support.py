@@ -818,24 +818,28 @@ def clean_quarantined_files(
     pruned_files = []
 
     try:
-        for p in p_state.glob("*.corrupt-*"):
-            if not p.is_file():
-                continue
-            try:
-                st = p.stat()
-                age = now - st.st_mtime
-                is_empty = st.st_size == 0
-                if (remove_empty and is_empty) or age >= max_age_seconds:
-                    size = st.st_size
-                    p.unlink(missing_ok=True)
-                    # Also unlink any associated WAL and SHM sidecars
-                    for ext in ("-wal", "-shm"):
-                        p.with_name(f"{p.name}{ext}").unlink(missing_ok=True)
-                    pruned_count += 1
-                    pruned_bytes += size
-                    pruned_files.append(p.name)
-            except Exception:
-                continue
+        patterns = ("*.corrupt-*", "*.path-migration-*", "*.premerge-*", "*.schema-mismatch-*")
+        seen: set[Path] = set()
+        for pat in patterns:
+            for p in p_state.glob(pat):
+                if p in seen or not p.is_file():
+                    continue
+                seen.add(p)
+                try:
+                    st = p.stat()
+                    age = now - st.st_mtime
+                    is_empty = st.st_size == 0
+                    if (remove_empty and is_empty) or age >= max_age_seconds:
+                        size = st.st_size
+                        p.unlink(missing_ok=True)
+                        # Also unlink any associated WAL and SHM sidecars
+                        for ext in ("-wal", "-shm"):
+                            p.with_name(f"{p.name}{ext}").unlink(missing_ok=True)
+                        pruned_count += 1
+                        pruned_bytes += size
+                        pruned_files.append(p.name)
+                except Exception:
+                    continue
     except Exception as exc:
         return {"success": False, "error": str(exc), "pruned_count": pruned_count, "pruned_bytes": pruned_bytes}
 
