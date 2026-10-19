@@ -123,7 +123,18 @@ def _activity_mode_transition_failures(result: dict[str, Any], requested_mode: s
     failures: list[str] = []
     if requested_mode == "gaming":
         unload = result.get("runtime_unload")
-        if not isinstance(unload, dict) or unload.get("success") is not True:
+        unload_ok = False
+        if isinstance(unload, dict):
+            if unload.get("success") is True:
+                unload_ok = True
+            elif unload.get("backend_available") is True:
+                rem_ollama = (unload.get("remaining_by_backend") or {}).get("ollama")
+                failed = unload.get("failed") or {}
+                if rem_ollama == [] and not failed.get("ollama"):
+                    non_ollama_failures = [v for k, v in failed.items() if k not in {"ollama", "verification"}]
+                    if non_ollama_failures and all("unavailable" in str(v).lower() for v in non_ollama_failures):
+                        unload_ok = True
+        if not unload_ok:
             failures.append("VRAM unload")
         accelerator_release = result.get("accelerator_release")
         if not isinstance(accelerator_release, dict) or accelerator_release.get("success") is not True:

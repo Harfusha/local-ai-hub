@@ -2650,6 +2650,12 @@ class OllamaRuntime:
                 name for backend in backend_names for name in requested_by_backend[backend]
                 if name not in (remaining_by_backend[backend] or [])
             ]
+        else:
+            unloaded = [
+                name for backend in backend_names for name in requested_by_backend[backend]
+                if remaining_by_backend.get(backend) is not None
+                and name not in (remaining_by_backend[backend] or [])
+            ]
         backend_available = bool(loaded_rows_by_backend)
         endpoint_receipts: dict[str, dict[str, Any]] = {}
         for backend in backend_names:

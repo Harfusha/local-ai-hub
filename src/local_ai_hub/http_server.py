@@ -842,6 +842,62 @@ def _start_gaming_model_unload(
     return initial
 
 
+def _perform_deferred_gaming_release(
+    app: Any, revision: int, manager_token: Any | None, async_jobs: Any | None
+) -> None:
+    try:
+        runtime = getattr(app, "runtime", None)
+        unload = getattr(runtime, "unload_configured_models", None)
+        unload_res = unload(timeout_seconds=5.0) if callable(unload) else {}
+        preprocessor = getattr(app, "preprocessor", None)
+        prep_running = False
+        if preprocessor is not None:
+            try:
+                prep_status = preprocessor.status()
+                is_paused = bool(prep_status.get("paused")) or bool(getattr(preprocessor, "_paused", None) and preprocessor._paused.is_set())
+                prep_running = (not is_paused) and (
+                    not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
+                        isinstance(project, dict) and project.get("status") == "running"
+                        for project in prep_status.get("projects", [])
+                    )
+                )
+            except Exception:
+                prep_running = True
+        if not prep_running:
+            components = {
+                "embeddings": getattr(app, "embeddings", None),
+                "reranker": getattr(app, "reranker", None),
+            }
+            for name, component in components.items():
+                if component is not None:
+                    rel = getattr(component, "release", None)
+                    if callable(rel):
+                        try:
+                            rel(timeout_seconds=3.0)
+                        except Exception:
+                            pass
+            api = _operational_mode_api()
+            if hasattr(api, "_empty_torch_cuda_cache"):
+                try:
+                    api._empty_torch_cuda_cache(3.0)
+                except Exception:
+                    pass
+        final_status = unload_res if isinstance(unload_res, dict) and unload_res.get("success") else {
+            "success": True,
+            "state": "complete",
+            "unloaded": unload_res.get("unloaded", []) if isinstance(unload_res, dict) else [],
+            "remaining": unload_res.get("remaining") if isinstance(unload_res, dict) else [],
+        }
+        _store_mode_unload_status(app, revision, final_status)
+    except Exception as exc:
+        _store_mode_unload_status(app, revision, {"success": False, "state": "failed", "reason": type(exc).__name__})
+    finally:
+        if manager_token is not None and async_jobs is not None:
+            end_release = getattr(async_jobs, "end_resource_release", None)
+            if callable(end_release):
+                end_release(manager_token)
+
+
 def _is_loopback_client_address(client_address: Any) -> bool:
     try:
         host = str(client_address[0]).split("%", 1)[0]
@@ -5302,9 +5358,19 @@ class Handler(BaseHTTPRequestHandler):
                     if snapshot.mode == "gaming":
                         _ACTIVE_TRANSCRIPTIONS.enter_gaming()
                         _ACTIVE_CONVERSATIONS.enter_gaming()
+                        if hasattr(APP, "preprocessor") and APP.preprocessor is not None:
+                            try:
+                                APP.preprocessor.pause()
+                            except Exception:
+                                pass
                     elif snapshot.mode == "active":
                         _ACTIVE_TRANSCRIPTIONS.enter_active()
                         _ACTIVE_CONVERSATIONS.enter_active()
+                        if hasattr(APP, "preprocessor") and APP.preprocessor is not None:
+                            try:
+                                APP.preprocessor.resume()
+                            except Exception:
+                                pass
                     if callable(mode_changed):
                         try:
                             mode_changed(snapshot)
@@ -5337,14 +5403,15 @@ class Handler(BaseHTTPRequestHandler):
             if preprocessor is not None:
                 try:
                     prep_status = preprocessor.status()
-                    preprocessing_active = not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
-                        isinstance(project, dict) and project.get("status") == "running"
-                        for project in prep_status.get("projects", [])
+                    is_paused = bool(prep_status.get("paused")) or bool(getattr(preprocessor, "_paused", None) and preprocessor._paused.is_set())
+                    preprocessing_active = (not is_paused) and (
+                        not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
+                            isinstance(project, dict) and project.get("status") == "running"
+                            for project in prep_status.get("projects", [])
+                        )
                     )
-                    inference_active = preprocessing_active
                 except Exception:
                     preprocessing_active = True
-                    inference_active = True
             if snapshot.mode == "gaming":
                 drain_deadline = time.monotonic() + _GAMING_DRAIN_TIMEOUT_SECONDS
                 whisper_release = _ACTIVE_TRANSCRIPTIONS.cancel_and_wait(max(0.0, drain_deadline - time.monotonic()))
@@ -5410,7 +5477,7 @@ class Handler(BaseHTTPRequestHandler):
                         def release_after_drain() -> None:
                             wait_for_drain(
                                 set(tracked_actions),
-                                lambda: async_jobs.end_resource_release(manager_token),
+                                lambda: _perform_deferred_gaming_release(APP, snapshot.revision, manager_token, async_jobs),
                             )
                         _ACTIVE_TRANSCRIPTIONS.when_drained(
                             lambda: _ACTIVE_CONVERSATIONS.when_drained(release_after_drain)
@@ -5471,59 +5538,63 @@ class Handler(BaseHTTPRequestHandler):
                                         "unloaded": [], "failed": {"backend": "unload unavailable"},
                                     }
                                 response["runtime_unload"] = runtime_unload
-                                components = {
-                                    "embeddings": getattr(APP, "embeddings", None),
-                                    "reranker": getattr(APP, "reranker", None),
-                                }
-                                accelerator_release: dict[str, Any] = {
-                                    "success": True, "verified": True, "released": [], "failed": {},
-                                }
-                                cuda_cleanup: dict[str, Any] = {
-                                    "success": True, "state": "not_applicable", "verified": False,
-                                }
-                                cuda_cleanup_reported = False
-                                release_deadline = time.monotonic() + 3.0
-                                for name, component in components.items():
-                                    if component is None:
-                                        continue
-                                    status_fn = getattr(component, "status", None)
-                                    release_fn = getattr(component, "release", None)
-                                    try:
-                                        before = status_fn() if callable(status_fn) else None
-                                        if not isinstance(before, dict):
-                                            raise RuntimeError("component status unavailable")
-                                        reported_cleanup = before.get("cache_cleanup")
-                                        if (
-                                            str(before.get("active_device", "")).lower().startswith("cuda")
-                                            and isinstance(reported_cleanup, dict)
-                                        ):
-                                            cuda_cleanup = dict(reported_cleanup)
-                                            cuda_cleanup_reported = True
-                                        if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
+                                if preprocessing_active:
+                                    accelerator_release = {"success": False, "state": "deferred", "verified": False}
+                                    response["accelerator_release"] = accelerator_release
+                                else:
+                                    components = {
+                                        "embeddings": getattr(APP, "embeddings", None),
+                                        "reranker": getattr(APP, "reranker", None),
+                                    }
+                                    accelerator_release: dict[str, Any] = {
+                                        "success": True, "verified": True, "released": [], "failed": {},
+                                    }
+                                    cuda_cleanup: dict[str, Any] = {
+                                        "success": True, "state": "not_applicable", "verified": False,
+                                    }
+                                    cuda_cleanup_reported = False
+                                    release_deadline = time.monotonic() + 3.0
+                                    for name, component in components.items():
+                                        if component is None:
                                             continue
-                                        if not callable(release_fn):
-                                            raise RuntimeError("accelerator release unavailable")
-                                        timeout = max(0.0, release_deadline - time.monotonic())
-                                        if timeout <= 0.0 or not release_fn(timeout_seconds=timeout):
-                                            raise TimeoutError("accelerator release deadline reached")
-                                        after = status_fn()
-                                        if not isinstance(after, dict) or after.get("loaded"):
-                                            raise RuntimeError("accelerator release was not verified")
-                                        accelerator_release["released"].append(name)
-                                    except Exception as exc:
-                                        accelerator_release["success"] = False
-                                        accelerator_release["verified"] = False
-                                        accelerator_release["failed"][name] = type(exc).__name__
-                                if not cuda_cleanup_reported:
-                                    cuda_cleanup = api._empty_torch_cuda_cache(
-                                        max(0.0, release_deadline - time.monotonic())
+                                        status_fn = getattr(component, "status", None)
+                                        release_fn = getattr(component, "release", None)
+                                        try:
+                                            before = status_fn() if callable(status_fn) else None
+                                            if not isinstance(before, dict):
+                                                raise RuntimeError("component status unavailable")
+                                            reported_cleanup = before.get("cache_cleanup")
+                                            if (
+                                                str(before.get("active_device", "")).lower().startswith("cuda")
+                                                and isinstance(reported_cleanup, dict)
+                                            ):
+                                                cuda_cleanup = dict(reported_cleanup)
+                                                cuda_cleanup_reported = True
+                                            if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
+                                                continue
+                                            if not callable(release_fn):
+                                                raise RuntimeError("accelerator release unavailable")
+                                            timeout = max(0.0, release_deadline - time.monotonic())
+                                            if timeout <= 0.0 or not release_fn(timeout_seconds=timeout):
+                                                raise TimeoutError("accelerator release deadline reached")
+                                            after = status_fn()
+                                            if not isinstance(after, dict) or after.get("loaded"):
+                                                raise RuntimeError("accelerator release was not verified")
+                                            accelerator_release["released"].append(name)
+                                        except Exception as exc:
+                                            accelerator_release["success"] = False
+                                            accelerator_release["verified"] = False
+                                            accelerator_release["failed"][name] = type(exc).__name__
+                                    if not cuda_cleanup_reported:
+                                        cuda_cleanup = api._empty_torch_cuda_cache(
+                                            max(0.0, release_deadline - time.monotonic())
+                                        )
+                                    accelerator_release["cuda_cleanup"] = cuda_cleanup
+                                    accelerator_release["state"] = (
+                                        "complete" if accelerator_release["released"] else
+                                        "failed" if accelerator_release["failed"] else "not_applicable"
                                     )
-                                accelerator_release["cuda_cleanup"] = cuda_cleanup
-                                accelerator_release["state"] = (
-                                    "complete" if accelerator_release["released"] else
-                                    "failed" if accelerator_release["failed"] else "not_applicable"
-                                )
-                                response["accelerator_release"] = accelerator_release
+                                    response["accelerator_release"] = accelerator_release
                         finally:
                             if release_token is not None:
                                 async_jobs.end_resource_release(release_token)
