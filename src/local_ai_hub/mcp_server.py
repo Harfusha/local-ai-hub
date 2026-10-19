@@ -1263,9 +1263,20 @@ def _search_page_with_prefix(
 
 def _search_prefix_fitting(
     base: dict[str, Any], raw: dict[str, Any], results: list[Any], requested: int,
-    *, wire_budget: bool = False,
+    *, wire_budget: bool = False, extra_fields: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Fit a whole-result prefix, reducing optional result detail only as needed."""
+    projected_results = []
+    for item in results:
+        if not isinstance(item, dict):
+            projected_results.append(item)
+            continue
+        projected = PROJECTOR.project(item, AGENT_NAME, "search", extra_fields=extra_fields)
+        if isinstance(projected, dict):
+            for exact_field in ("text", "raw"):
+                if isinstance(item.get(exact_field), str):
+                    projected[exact_field] = item[exact_field]
+        projected_results.append(projected)
     minimal_results = [
         {
             key: (
@@ -1277,7 +1288,7 @@ def _search_prefix_fitting(
             if key in item
         }
         if isinstance(item, dict) else item
-        for item in results
+        for item in projected_results
     ]
     essential_results = [
         {
@@ -1285,11 +1296,11 @@ def _search_prefix_fitting(
             if key in item
         }
         if isinstance(item, dict) else item
-        for item in results
+        for item in projected_results
     ]
 
     shapes = (
-        (results, False, False),
+        (projected_results, False, False),
         (minimal_results, True, False),
         (essential_results, True, True),
     )
@@ -1543,6 +1554,7 @@ def _compact(
                 raw_items,
                 requested,
                 wire_budget=True,
+                extra_fields=extra_fields,
             )
             if fitted is None or (raw_items and not fitted.get(page_key)):
                 compacted = {

@@ -76,7 +76,20 @@ _CURRENT_ADDED_ROUTES = {'post_task_browser_1': {'paths': ['/api/task/browser'],
  'post_callees_1': {'paths': ['/api/code/callees'], 'before': 'post_repo_secret_scan_1'},
  'post_implementations_1': {'paths': ['/api/code/implementations'], 'before': 'post_repo_secret_scan_1'},
  'post_declaration_1': {'paths': ['/api/code/declaration'], 'before': 'post_repo_secret_scan_1'},
- 'post_context_pack_1': {'paths': ['/api/context/pack'], 'before': 'post_ingest_document_1'}}
+ 'post_context_pack_1': {'paths': ['/api/context/pack'], 'before': 'post_ingest_document_1'},
+ 'post_coord_session_briefing_1': {'paths': ['/api/coord/session_briefing'], 'before': 'post_eval_suite_1'},
+ 'post_coord_milestone_status_1': {'paths': ['/api/coord/milestone_status'], 'before': 'post_coord_session_briefing_1'},
+ 'post_coord_milestone_create_1': {'paths': ['/api/coord/milestone_create'], 'before': 'post_coord_milestone_status_1'},
+ 'post_coord_board_summary_1': {'paths': ['/api/coord/board_summary'], 'before': 'post_coord_milestone_create_1'},
+ 'post_coord_board_item_list_1': {'paths': ['/api/coord/board_item_list'], 'before': 'post_coord_board_summary_1'},
+ 'post_coord_board_item_delete_1': {'paths': ['/api/coord/board_item_delete'], 'before': 'post_coord_board_item_list_1'},
+ 'post_coord_board_item_get_1': {'paths': ['/api/coord/board_item_get'], 'before': 'post_coord_board_item_delete_1'},
+ 'post_coord_board_item_update_1': {'paths': ['/api/coord/board_item_update'], 'before': 'post_coord_board_item_get_1'},
+ 'post_coord_board_item_create_1': {'paths': ['/api/coord/board_item_create'], 'before': 'post_coord_board_item_update_1'},
+ 'post_coord_semaphore_status_1': {'paths': ['/api/coord/semaphore_status'], 'before': 'post_coord_board_item_create_1'},
+ 'post_coord_semaphore_release_1': {'paths': ['/api/coord/semaphore_release'], 'before': 'post_coord_semaphore_status_1'},
+ 'post_coord_semaphore_acquire_1': {'paths': ['/api/coord/semaphore_acquire'], 'before': 'post_coord_semaphore_release_1'},
+ 'post_coord_wait_for_event_1': {'paths': ['/api/coord/wait_for_event'], 'before': 'post_coord_semaphore_acquire_1'}}
 _ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 

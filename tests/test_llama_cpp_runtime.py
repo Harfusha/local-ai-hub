@@ -70,6 +70,9 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertIn("[hub-qwen-15]", preset)
             self.assertIn("[hub-qwen-3]", preset)
             self.assertNotIn("[hub-qwen-vl]", preset)
+            model_path = runtime.model_path.resolve().as_posix()
+            self.assertIn(f"model = {model_path}", preset)
+            self.assertNotIn(f'model = "{model_path}"', preset)
             self.assertIn("load-on-startup = true", preset)
             self.assertIn("load-on-startup = false", preset)
 

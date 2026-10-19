@@ -122,7 +122,7 @@ def test_preset_recovery_binds_to_held_process_generation(tmp_path):
     fallback = runtime._recovery_routes["fake"]
     preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
     assert f"[{fallback['served_model']}]" in preset and "ctx-size = 4096" in preset
-    assert preset.count(f'model = "{str(runtime.model_path.resolve()).replace(chr(92), "/")}"') == 2
+    assert preset.count(f'model = {str(runtime.model_path.resolve()).replace(chr(92), "/")}') == 2
     assert runtime.recovery_entry("fake") is None
     process = SimpleNamespace(poll=lambda: None)
     runtime._managed_process = runtime._recovery_process = process

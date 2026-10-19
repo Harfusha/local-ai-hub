@@ -77,7 +77,7 @@ def test_hubctl_generate_dispatches_writers_and_optional_agent_install(
         (config, root, Path(sys.executable)),
         (config, install_dir, Path(sys.executable)),
     ]
-    assert installs == [(install_dir, Path(sys.executable), (None, None, config))]
+    assert installs == [(install_dir, Path(sys.executable), (None, config))]
     assert json.loads(capsys.readouterr().out) == {
         "success": True,
         "generated": {"written": 1},

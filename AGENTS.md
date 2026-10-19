@@ -109,13 +109,19 @@ Local model policy: Model routing follows the active hardware profile and user o
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
-- Before any coding or repository task, load and follow `local-ai-orchestrator` and `token-economizer` skills when installed; this trigger applies even under deadline pressure.
-- Zero full-file dumping: Never read files >80 lines in their entirety. Use `local_ai_repo(action="context")` or `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action="slice")`.
+- Before coding or repository work, load `local-ai-orchestrator` and `token-economizer` when installed, even under deadline pressure.
+- Zero full-file dumping: Never read >80-line files in full; use `local_ai_repo(action="context")`/`repo-map`, `grep-ast`, targeted line slices, or `local_ai_artifact(action="slice")`.
 - Fast code search: Use `local_ai_repo(action="code_index"|"search")` or Serena LSP first; use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for fallback discovery before opening files.
 - AST & structural code search: Use `local_ai_repo(action="code_index")`, Serena LSP (`find_symbol`, `find_referencing_symbols`), or `ast-grep` (`sg`) before opening files.
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
 - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
 <!-- END TOKEN ECONOMY POLICY -->
 
