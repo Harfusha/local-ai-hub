@@ -1339,6 +1339,59 @@ class SwarmPubSub:
                 return len(self._subscribers.get(clean_topic, {}))
             return self._subscriber_count
 
+    def wait_for_event(
+        self,
+        topic: str,
+        timeout: float = 60.0,
+        filter_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_topic = bounded_name(topic, "topic").lower()
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+            raise ValueError("pubsub timeout must be a non-negative number")
+        timeout_val = min(float(timeout), 600.0)
+        deadline = time.monotonic() + timeout_val
+        sub_id, q = self.subscribe(clean_topic)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {
+                        "success": False,
+                        "timeout": True,
+                        "timed_out": True,
+                        "topic": clean_topic,
+                        "event": None,
+                        "message": None,
+                    }
+                try:
+                    event = q.get(timeout=min(remaining, 0.5))
+                except queue.Empty:
+                    continue
+
+                if filter_payload and isinstance(filter_payload, dict):
+                    msg = event.get("payload", {})
+                    if isinstance(msg, dict):
+                        match = all(msg.get(k) == v for k, v in filter_payload.items())
+                        if not match:
+                            continue
+                    else:
+                        continue
+                if isinstance(event, dict):
+                    event["message"] = event.get("payload")
+                return {
+                    "success": True,
+                    "timeout": False,
+                    "timed_out": False,
+                    "topic": clean_topic,
+                    "event": event,
+                    "message": event.get("payload") if isinstance(event, dict) else None,
+                    "sender": event.get("sender") if isinstance(event, dict) else None,
+                    "timestamp": event.get("timestamp") if isinstance(event, dict) else None,
+                    "sequence": event.get("sequence", 0) if isinstance(event, dict) else 0,
+                }
+        finally:
+            self.unsubscribe(clean_topic, sub_id)
+
     def topic_count(self) -> int:
         with self._mu:
             return len({key for key, messages in self._topics.items() if messages} | {

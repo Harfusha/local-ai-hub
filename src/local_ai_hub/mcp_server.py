@@ -4540,6 +4540,22 @@ def local_ai_coord(
     delete_branch: bool = True,
     output_path: str = "training_dataset.jsonl",
     min_receipts: int = 1,
+    name: str = "",
+    item_id: str = "",
+    title: str = "",
+    priority: str = "",
+    labels: list[str] | None = None,
+    assignee: str = "",
+    milestone: str = "",
+    linked_task_id: str = "",
+    details: dict[str, Any] | None = None,
+    target_date: str = "",
+    description: str = "",
+    capacity: int = 1,
+    timeout: float = 0.0,
+    filter: dict[str, Any] | None = None,
+    filter_payload: dict[str, Any] | None = None,
+    include: list[str] | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4840,6 +4856,19 @@ def local_ai_coord(
             "root": root, "fingerprint": fingerprint,
             "state_revision": state_revision,
         },
+        "wait_for_event": {k: v for k, v in {"root": root, "topic": topic, "timeout": timeout, "filter": filter or filter_payload}.items() if v is not None and v != ""},
+        "semaphore_acquire": {k: v for k, v in {"root": root, "name": name, "capacity": capacity, "timeout": timeout, "ttl_seconds": ttl_seconds, "purpose": purpose, "owner": owner}.items() if v is not None and v != ""},
+        "semaphore_release": {k: v for k, v in {"root": root, "name": name, "lease_id": lease_id, "owner": owner}.items() if v is not None and v != ""},
+        "semaphore_status": {k: v for k, v in {"root": root, "name": name}.items() if v is not None and v != ""},
+        "board_item_create": {k: v for k, v in {"root": root, "title": title, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details}.items() if v is not None and v != ""},
+        "board_item_update": {k: v for k, v in {"root": root, "item_id": item_id, "title": title, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details}.items() if v is not None and v != ""},
+        "board_item_get": {"root": root, "item_id": item_id},
+        "board_item_delete": {"root": root, "item_id": item_id},
+        "board_item_list": {k: v for k, v in {"root": root, "status": status, "priority": priority, "milestone": milestone, "assignee": assignee, "limit": limit}.items() if v is not None and v != ""},
+        "board_summary": {"root": root},
+        "milestone_create": {k: v for k, v in {"root": root, "name": name, "target_date": target_date, "description": description}.items() if v is not None and v != ""},
+        "milestone_status": {"root": root, "name": name},
+        "session_briefing": {k: v for k, v in {"root": root, "session_id": session_id, "include": include}.items() if v is not None and v != ""},
     }
     if action in coord_canonical_inputs:
         canonical_inputs = coord_canonical_inputs[action]
@@ -5086,6 +5115,21 @@ def local_ai_coord(
             "min_receipts": min_receipts,
             "format": "jsonl" if format is None else format,
         }, timeout=_timeout("quick")), "status")
+    if action in {
+        "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
+        "board_item_create", "board_item_update", "board_item_get", "board_item_delete",
+        "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing",
+    }:
+        coord_kwargs = dict(
+            action=action, root=root,
+            name=name, item_id=item_id, title=title, status=status, priority=priority,
+            labels=labels, assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
+            details=details, target_date=target_date, description=description,
+            capacity=capacity, timeout=timeout, ttl_seconds=ttl_seconds, purpose=purpose,
+            owner=owner, lease_id=lease_id, topic=topic,
+            filter=filter or filter_payload, limit=limit, include=include, session_id=session_id,
+        )
+        return _compact(CLIENT.coord(**coord_kwargs), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 
 

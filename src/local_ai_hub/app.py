@@ -63,6 +63,8 @@ from .agent_consistency import AgentConsistencyGuard
 from .agent_routing import RoutingEngine
 from .agent_learning import LearningStore
 from .agent_blackboard import BlackboardStore
+from .agent_semaphores import SemaphoreStore
+from .agent_board import BoardStore
 from .vram_balancer import VRAMBalancer
 from .swarm import SwarmCoordinator
 from .benchmark import HardwareBenchmarkRunner
@@ -466,6 +468,11 @@ class LocalAIApp:
         self.services.set_incident_store(self.agent_incidents)
         self.services.set_agent_state(self.agent_state)
         self.services.set_blackboard(self.agent_blackboard)
+        from .agent_events import SwarmPubSub
+        self.agent_semaphores = SemaphoreStore(state_dir / "agent_semaphores.sqlite", pubsub=SwarmPubSub.get_default(state_store=self.agent_state))
+        self.agent_board = BoardStore(state_dir / "agent_board.sqlite", services=self.services)
+        self.services.set_semaphores(self.agent_semaphores)
+        self.services.set_board(self.agent_board)
         self.consistency_guard = AgentConsistencyGuard(
             self.repo_tools,
             task_store=self.agent_tasks,

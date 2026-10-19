@@ -8094,6 +8094,81 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), **poll_kwargs)); return
             if path == "/api/coord/simulate_merge":
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
+            if path == "/api/coord/wait_for_event":
+                timeout_val = float(payload.get("timeout", 60.0))
+                self._send(200, APP.services.wait_for_event(
+                    str(payload.get("topic", "default")),
+                    timeout=timeout_val,
+                    filter_payload=payload.get("filter") or payload.get("filter_payload"),
+                )); return
+            if path == "/api/coord/semaphore_acquire":
+                self._send(200, APP.services.semaphore_acquire(
+                    name=str(payload.get("name", "")),
+                    owner=str(payload.get("owner", "agent")),
+                    capacity=int(payload.get("capacity", 1)),
+                    ttl_seconds=float(payload.get("ttl_seconds", 300.0)),
+                    purpose=str(payload.get("purpose", "")),
+                    timeout=float(payload.get("timeout", 0.0)),
+                )); return
+            if path == "/api/coord/semaphore_release":
+                self._send(200, APP.services.semaphore_release(
+                    name=str(payload.get("name", "")),
+                    lease_id=str(payload.get("lease_id", "")),
+                    owner=str(payload.get("owner", "")),
+                )); return
+            if path == "/api/coord/semaphore_status":
+                self._send(200, APP.services.semaphore_status(
+                    name=payload.get("name"),
+                )); return
+            if path == "/api/coord/board_item_create":
+                self._send(200, APP.services.board_item_create(
+                    title=str(payload.get("title", "")),
+                    status=str(payload.get("status", "planned")),
+                    priority=str(payload.get("priority", "medium")),
+                    labels=payload.get("labels"),
+                    assignee=str(payload.get("assignee", "")),
+                    milestone=str(payload.get("milestone", "")),
+                    linked_task_id=str(payload.get("linked_task_id", "")),
+                    details=payload.get("details"),
+                )); return
+            if path == "/api/coord/board_item_update":
+                self._send(200, APP.services.board_item_update(
+                    item_id=str(payload.get("item_id", "")),
+                    status=payload.get("status"),
+                    priority=payload.get("priority"),
+                    labels=payload.get("labels"),
+                    assignee=payload.get("assignee"),
+                    milestone=payload.get("milestone"),
+                    linked_task_id=payload.get("linked_task_id"),
+                    details=payload.get("details"),
+                )); return
+            if path == "/api/coord/board_item_get":
+                self._send(200, APP.services.board_item_get(str(payload.get("item_id", "")))); return
+            if path == "/api/coord/board_item_delete":
+                self._send(200, APP.services.board_item_delete(str(payload.get("item_id", "")))); return
+            if path == "/api/coord/board_item_list":
+                self._send(200, APP.services.board_item_list(
+                    status=payload.get("status"),
+                    priority=payload.get("priority"),
+                    milestone=payload.get("milestone"),
+                    assignee=payload.get("assignee"),
+                    limit=int(payload.get("limit", 50)),
+                )); return
+            if path == "/api/coord/board_summary":
+                self._send(200, APP.services.board_summary()); return
+            if path == "/api/coord/milestone_create":
+                self._send(200, APP.services.milestone_create(
+                    name=str(payload.get("name", "")),
+                    target_date=str(payload.get("target_date", "")),
+                    description=str(payload.get("description", "")),
+                )); return
+            if path == "/api/coord/milestone_status":
+                self._send(200, APP.services.milestone_status(str(payload.get("name", "")))); return
+            if path == "/api/coord/session_briefing":
+                self._send(200, APP.services.session_briefing(
+                    include=payload.get("include"),
+                    root=str(payload.get("root", "")),
+                )); return
             if 'post_eval_suite_1' in post_route_ids:
                 self._send(200, APP.services.eval_suite(payload)); return
             if 'post_prompt_eval_1' in post_route_ids:
