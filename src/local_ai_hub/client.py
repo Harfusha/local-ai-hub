@@ -1635,6 +1635,89 @@ class HubClient:
                 "source_branch": kwargs.get("source_branch", ""),
                 "target_branch": kwargs.get("target_branch", "HEAD"),
             })
+        if act == "wait_for_event":
+            timeout_val = float(kwargs.get("timeout", 60.0))
+            return self.post("/api/coord/wait_for_event", {
+                "topic": kwargs.get("topic", "default"),
+                "timeout": timeout_val,
+                "filter": kwargs.get("filter") or kwargs.get("filter_payload"),
+            }, timeout=max(timeout_val + 5.0, 180.0))
+        if act == "semaphore_acquire":
+            timeout_val = float(kwargs.get("timeout", 0.0))
+            return self.post("/api/coord/semaphore_acquire", {
+                "name": kwargs.get("name", ""),
+                "owner": kwargs.get("owner", "agent"),
+                "capacity": int(kwargs.get("capacity", 1)),
+                "ttl_seconds": float(kwargs.get("ttl_seconds", 300.0)),
+                "purpose": kwargs.get("purpose", ""),
+                "timeout": timeout_val,
+            }, timeout=max(timeout_val + 5.0, 180.0))
+        if act == "semaphore_release":
+            return self.post("/api/coord/semaphore_release", {
+                "name": kwargs.get("name", ""),
+                "lease_id": kwargs.get("lease_id", ""),
+                "owner": kwargs.get("owner", ""),
+            })
+        if act == "semaphore_status":
+            return self.post("/api/coord/semaphore_status", {
+                "name": kwargs.get("name") or None,
+            })
+        if act == "board_item_create":
+            return self.post("/api/coord/board_item_create", {
+                "title": kwargs.get("title", ""),
+                "status": kwargs.get("status", "planned"),
+                "priority": kwargs.get("priority", "medium"),
+                "labels": kwargs.get("labels"),
+                "assignee": kwargs.get("assignee", ""),
+                "milestone": kwargs.get("milestone", ""),
+                "linked_task_id": kwargs.get("linked_task_id", ""),
+                "details": kwargs.get("details"),
+            })
+        if act == "board_item_update":
+            return self.post("/api/coord/board_item_update", {
+                "item_id": kwargs.get("item_id", ""),
+                "title": kwargs.get("title"),
+                "status": kwargs.get("status"),
+                "priority": kwargs.get("priority"),
+                "labels": kwargs.get("labels"),
+                "assignee": kwargs.get("assignee"),
+                "milestone": kwargs.get("milestone"),
+                "linked_task_id": kwargs.get("linked_task_id"),
+                "details": kwargs.get("details"),
+            })
+        if act == "board_item_get":
+            return self.post("/api/coord/board_item_get", {
+                "item_id": kwargs.get("item_id", ""),
+            })
+        if act == "board_item_delete":
+            return self.post("/api/coord/board_item_delete", {
+                "item_id": kwargs.get("item_id", ""),
+            })
+        if act == "board_item_list":
+            return self.post("/api/coord/board_item_list", {
+                "status": kwargs.get("status"),
+                "priority": kwargs.get("priority"),
+                "milestone": kwargs.get("milestone"),
+                "assignee": kwargs.get("assignee"),
+                "limit": kwargs.get("limit", 50),
+            })
+        if act == "board_summary":
+            return self.post("/api/coord/board_summary", {})
+        if act == "milestone_create":
+            return self.post("/api/coord/milestone_create", {
+                "name": kwargs.get("name", ""),
+                "target_date": kwargs.get("target_date", ""),
+                "description": kwargs.get("description", ""),
+            })
+        if act == "milestone_status":
+            return self.post("/api/coord/milestone_status", {
+                "name": kwargs.get("name", ""),
+            })
+        if act == "session_briefing":
+            return self.post("/api/coord/session_briefing", {
+                "include": kwargs.get("include"),
+                "root": kwargs.get("root", ""),
+            })
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
     def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None, since_hash: str = "", compact: bool = False) -> dict[str, Any]:

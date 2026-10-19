@@ -632,6 +632,8 @@ class LocalAIServices:
     tool_agent: Any = None
     blackboard: Any = None
     agent_state: Any = None
+    semaphores: Any = None
+    board: Any = None
     _VISION_MAX_OUTPUT_TOKENS = 4096
     consistency_guard: Any = None
 
@@ -817,6 +819,12 @@ class LocalAIServices:
 
     def set_consistency_guard(self, guard: Any) -> None:
         self.consistency_guard = guard
+
+    def set_semaphores(self, semaphores: Any) -> None:
+        self.semaphores = semaphores
+
+    def set_board(self, board: Any) -> None:
+        self.board = board
 
     @staticmethod
     def _guard_truthy(value: Any) -> bool:
@@ -4371,6 +4379,126 @@ class LocalAIServices:
             limit=limit,
             after_seq=after_seq,
         )
+
+    def wait_for_event(
+        self,
+        topic: str,
+        timeout: float = 60.0,
+        filter_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from .agent_events import SwarmPubSub
+        bus = SwarmPubSub.get_default(state_store=self.agent_state)
+        return bus.wait_for_event(topic, timeout=timeout, filter_payload=filter_payload)
+
+    def semaphore_acquire(
+        self,
+        name: str,
+        owner: str = "agent",
+        capacity: int = 1,
+        ttl_seconds: float = 300.0,
+        purpose: str = "",
+        timeout: float = 0.0,
+    ) -> dict[str, Any]:
+        if self.semaphores is None:
+            from .agent_semaphores import SemaphoreStore
+            from .agent_events import SwarmPubSub
+            state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
+            bus = SwarmPubSub.get_default(state_store=self.agent_state)
+            self.semaphores = SemaphoreStore(state_dir / "agent_semaphores.sqlite", pubsub=bus)
+        return self.semaphores.acquire(
+            name=name, owner=owner, capacity=capacity,
+            ttl_seconds=ttl_seconds, purpose=purpose, timeout=timeout,
+        )
+
+    def semaphore_release(self, name: str, lease_id: str, owner: str = "") -> dict[str, Any]:
+        if self.semaphores is None:
+            from .agent_semaphores import SemaphoreStore
+            from .agent_events import SwarmPubSub
+            state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
+            bus = SwarmPubSub.get_default(state_store=self.agent_state)
+            self.semaphores = SemaphoreStore(state_dir / "agent_semaphores.sqlite", pubsub=bus)
+        return self.semaphores.release(name=name, lease_id=lease_id, owner=owner)
+
+    def semaphore_status(self, name: str | None = None) -> dict[str, Any]:
+        if self.semaphores is None:
+            from .agent_semaphores import SemaphoreStore
+            from .agent_events import SwarmPubSub
+            state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
+            bus = SwarmPubSub.get_default(state_store=self.agent_state)
+            self.semaphores = SemaphoreStore(state_dir / "agent_semaphores.sqlite", pubsub=bus)
+        return self.semaphores.status(name=name)
+
+    def _ensure_board(self) -> Any:
+        if self.board is None:
+            from .agent_board import BoardStore
+            state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
+            self.board = BoardStore(state_dir / "agent_board.sqlite", services=self)
+        return self.board
+
+    def board_item_create(
+        self,
+        title: str,
+        status: str = "planned",
+        priority: str = "medium",
+        labels: list[str] | None = None,
+        assignee: str = "",
+        milestone: str = "",
+        linked_task_id: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_board().item_create(
+            title=title, status=status, priority=priority, labels=labels,
+            assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
+            details=details,
+        )
+
+    def board_item_update(
+        self,
+        item_id: str,
+        status: str | None = None,
+        priority: str | None = None,
+        labels: list[str] | None = None,
+        assignee: str | None = None,
+        milestone: str | None = None,
+        linked_task_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_board().item_update(
+            item_id=item_id, status=status, priority=priority, labels=labels,
+            assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
+            details=details,
+        )
+
+    def board_item_get(self, item_id: str) -> dict[str, Any]:
+        return self._ensure_board().item_get(item_id)
+
+    def board_item_delete(self, item_id: str) -> dict[str, Any]:
+        return self._ensure_board().item_delete(item_id)
+
+    def board_item_list(
+        self,
+        status: str | None = None,
+        priority: str | None = None,
+        milestone: str | None = None,
+        assignee: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return self._ensure_board().item_list(
+            status=status, priority=priority, milestone=milestone,
+            assignee=assignee, limit=limit,
+        )
+
+    def board_summary(self) -> dict[str, Any]:
+        return self._ensure_board().summary()
+
+    def milestone_create(self, name: str, target_date: str = "", description: str = "") -> dict[str, Any]:
+        return self._ensure_board().milestone_create(name=name, target_date=target_date, description=description)
+
+    def milestone_status(self, name: str) -> dict[str, Any]:
+        return self._ensure_board().milestone_status(name=name)
+
+    def session_briefing(self, include: list[str] | None = None, root: str = "") -> dict[str, Any]:
+        return self._ensure_board().session_briefing(include=include, root=root)
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []
