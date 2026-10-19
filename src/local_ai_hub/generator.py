@@ -1117,12 +1117,21 @@ def write_all_generated(
     # 2. Generated agent policy
     gen_dir = target_root / "generated"
     gen_dir.mkdir(parents=True, exist_ok=True)
+    p1 = generate_global_policy(cfg)
+    p2 = generate_token_economy_policy(cfg)
+    total_rule_bytes = len((p1 + "\n\n" + p2).encode("utf-8"))
+    if total_rule_bytes > 23900:
+        raise ValueError(
+            f"Generated policies exceed Antigravity 24KB rule cap ({total_rule_bytes} > 23,900 bytes). "
+            "Antigravity will silently truncate rule files larger than 24,000 bytes. Condense policy text."
+        )
+
     policy_path = gen_dir / "agent-policy.md"
-    policy_path.write_text(generate_global_policy(cfg) + "\n", encoding="utf-8")
+    policy_path.write_text(p1 + "\n", encoding="utf-8")
     results["instructions"].append(str(policy_path))
 
     tok_policy_path = gen_dir / "token-economy-policy.md"
-    tok_policy_path.write_text(generate_token_economy_policy(cfg) + "\n", encoding="utf-8")
+    tok_policy_path.write_text(p2 + "\n", encoding="utf-8")
     results["instructions"].append(str(tok_policy_path))
 
     # 3. Generated MCP manifests
@@ -1179,11 +1188,31 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Python binary path for MCP server configuration (default: sys.executable).",
     )
+    parser.add_argument(
+        "--sync-agents",
+        action="store_true",
+        help="Also configure and sync all discovered agent configurations and MultiGravity profiles.",
+    )
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     target = Path(args.output_dir).resolve()
     py_bin = Path(args.python_bin) if args.python_bin else Path(sys.executable)
     res = write_all_generated(cfg, target, py_bin)
+    if args.sync_agents:
+        try:
+            import importlib.util
+            setup_path = target / "tools" / "setup.py"
+            if not setup_path.exists():
+                setup_path = Path(__file__).resolve().parents[2] / "tools" / "setup.py"
+            if setup_path.exists():
+                spec = importlib.util.spec_from_file_location("_tools_setup", setup_path)
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    mod.configure_agents(target, py_bin, None, cfg)
+                    res["agents_synced"] = True
+        except Exception as exc:
+            res["agents_synced_error"] = str(exc)
     print(json_dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False))
     return 0
 
