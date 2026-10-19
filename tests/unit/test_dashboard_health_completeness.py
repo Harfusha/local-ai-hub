@@ -115,11 +115,12 @@ const base={hub_online:true,ollama_online:true,headless:{state:'running'},observ
   writer:{dropped:0,writer_errors:0,pending:0,activity_observed:true,accounting_balanced:true},
   detail:{incomplete:false},summary_cache_stale:false}};
 assert.equal(dashboardHealth(base).level,'healthy');
+assert.equal(dashboardHealth({...base,observability:{...base.observability,writer:{...base.observability.writer,pending:5}}}).level,'healthy');
 for(const observability of [
   {...base.observability,data_available:false},
   {...base.observability,writer:{...base.observability.writer,activity_observed:false}},
   {...base.observability,writer:{...base.observability.writer,accounting_balanced:false}},
-  {...base.observability,writer:{...base.observability.writer,pending:1}},
+  {...base.observability,writer:{...base.observability.writer,pending:25}},
   {...base.observability,summary_cache_stale:true},
   {...base.observability,detail:{incomplete:true}},
 ]){
