@@ -429,3 +429,146 @@ def test_http_search_route_maps_service_503_to_transport_status(
     assert responses[0][1]["success"] is False
     assert responses[0][1]["total_matches"] == 0
     assert responses[0][1]["has_more"] is False
+
+
+def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = [
+        {
+            "path": f"src/{index:03}.py",
+            "start_line": index * 10 + 1,
+            "end_line": index * 10 + 5,
+            "text": f"line 1\nline 2 match {index}\nline 3\n",
+            "score": round(10.0 - index * 0.1, 2),
+            "evidence_id": f"E{index:020d}",
+        }
+        for index in range(40)
+    ]
+    value = {
+        "success": True, "root": ".", "results": page, "limit": 40,
+        "offset": 40, "total_matches": 100, "returned_count": 40,
+        "matches_count": 40, "has_more": True,
+    }
+
+    def omit_page_rows(compacted, **_kwargs):
+        result = dict(compacted)
+        result["results"] = []
+        return result
+
+    monkeypatch.setattr(mcp_server, "_response_budget", lambda *_args: (1800, "compact", "", True))
+    monkeypatch.setattr(mcp_server, "budget_response", omit_page_rows)
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({"tool": "local_ai_repo", "max_response_tokens": 1800})
+    try:
+        result = mcp_server._compact(value, task_kind="search")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["success"] is True
+    assert 0 < len(result["results"]) < len(page)
+    assert result["results"] == page[:len(result["results"])]
+    assert result["returned_count"] == result["matches_count"] == result["returned_limit"] == len(result["results"])
+    assert result["offset"] == 40
+    assert result["limit"] == 40
+    assert result["total_matches"] == 100
+    assert result["has_more"] is True
+    assert result["next_offset"] == 40 + len(result["results"])
+
+
+def test_registered_search_wire_keeps_prefix_and_final_wire_accounting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from local_ai_hub.token_accounting import json_tokens
+
+    page = [
+        {
+            "path": f"src/{index:03}.py",
+            "start_line": index * 10 + 1,
+            "end_line": index * 10 + 5,
+            "text": f"line 1\nline 2 match {index}\nline 3\n",
+            "score": round(10.0 - index * 0.1, 2),
+            "evidence_id": f"E{index:020d}",
+        }
+        for index in range(40)
+    ]
+    raw = {
+        "success": True, "root": str(tmp_path), "results": page, "limit": 40,
+        "offset": 40, "total_matches": 100, "returned_count": 40,
+        "matches_count": 40, "has_more": True, "terms": ["match"],
+        "observed_match_count": 100, "truncated": True,
+    }
+
+    class DummyClient:
+        def post(self, path, _payload, **_kwargs):
+            assert path == "/api/search"
+            return dict(raw)
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    monkeypatch.setattr(mcp_server, "_workspace", str(tmp_path))
+    monkeypatch.setattr(
+        mcp_server, "budget_response",
+        lambda *_args, **_kwargs: {
+            "success": False, "status_code": 413, "terminal": True,
+            "retryable": False, "failure_kind": "response_budget_rejected",
+            "error": "page clipped", "response_budget": {"rejected": True},
+        },
+    )
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **kwargs: None)
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *args, **kwargs: mcp_server.OperationalModeSnapshot("active", 0, None),
+    )
+    requested = 1800
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+        "action": "search", "root": str(tmp_path), "query": "match",
+        "limit": 40, "offset": 40, "max_response_tokens": requested,
+    }))
+    contents, structured = result if isinstance(result, tuple) else (result, None)
+    payload = json.loads(contents[0].text)
+    wire = {
+        "content": [{"type": "text", "text": contents[0].text}],
+        "structuredContent": structured,
+        "isError": False,
+    }
+    wire_tokens = json_tokens(wire)
+
+    assert structured is not None
+    assert 0 < len(payload["results"]) < len(page)
+    assert payload["results"] == page[:len(payload["results"])]
+    assert payload["success"] is True
+    assert not (payload.get("success") is True and payload.get("status_code") == 413)
+    assert payload["returned_count"] == payload["returned_limit"] == len(payload["results"])
+    assert payload["total_matches"] == 100
+    assert payload["has_more"] is True
+    assert payload["next_offset"] == 40 + len(payload["results"])
+    assert wire_tokens <= requested
+    assert payload["response_budget"]["returned_tokens"] == wire_tokens
+    assert structured["response_budget"]["returned_tokens"] == wire_tokens
+
+
+def test_mcp_bounded_error_preserves_pagination_metadata() -> None:
+    failure = {
+        "success": False,
+        "status_code": 413,
+        "terminal": True,
+        "retryable": False,
+        "error": "The requested search page exceeds the configured MCP response budget; reduce limit.",
+        "root": "C:/repo",
+        "offset": 40,
+        "limit": 24,
+        "total_matches": 1818,
+        "has_more": True,
+        "results": [],
+    }
+    bounded = mcp_server._mcp_bounded_error(failure, requested=512)
+    assert bounded is not None
+    contents, structured = bounded
+    payload = json.loads(contents[0].text)
+    assert payload["success"] is False
+    assert payload["total_matches"] == 1818
+    assert payload["has_more"] is True
+    assert payload["offset"] == 40
+    assert payload["limit"] == 24
+    assert structured["total_matches"] == 1818
+    assert structured["has_more"] is True

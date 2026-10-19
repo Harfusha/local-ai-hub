@@ -2103,9 +2103,9 @@ class LocalAIServices:
 
     def second_opinion(self, args: dict[str, Any]) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
-        question = str(args.get("question", ""))
-        candidate = str(args.get("candidate", ""))
-        context = str(args.get("context", ""))
+        question = str(args.get("question", "") or args.get("task", "") or args.get("prompt", ""))
+        candidate = str(args.get("candidate", "") or args.get("code", ""))
+        context = str(args.get("context", "") or args.get("text", ""))
         focus = str(args.get("focus", "correctness, missing assumptions, edge cases, and alternative explanations"))
         route = self.router.classify(
             f"{question}\n{focus}",

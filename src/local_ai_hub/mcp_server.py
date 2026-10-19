@@ -1208,6 +1208,117 @@ def _relation_prefix_fitting(
     return None
 
 
+def _search_page_with_prefix(
+    base: dict[str, Any], raw: dict[str, Any], results: list[Any], count: int,
+) -> dict[str, Any]:
+    """Keep search page metadata aligned with the whole-result prefix that fits."""
+    candidate = copy.deepcopy(raw if raw.get("success") is True and base.get("success") is False else base)
+    offset = raw.get("offset", 0)
+    total = raw.get("total_matches", raw.get("matches_count", 0))
+    requested_limit = raw.get("limit", 24)
+    has_more = bool(raw.get("has_more")) or count < len(results) or (
+        isinstance(total, int) and not isinstance(total, bool)
+        and isinstance(offset, int) and not isinstance(offset, bool)
+        and offset + count < total
+    )
+    candidate.update({
+        "success": True,
+        "results": results[:count],
+        "offset": offset,
+        "limit": requested_limit,
+        "returned_limit": count,
+        "returned_count": count,
+        "matches_count": count,
+        "total_matches": total,
+        "has_more": has_more,
+    })
+    if has_more and isinstance(offset, int) and not isinstance(offset, bool):
+        candidate["next_offset"] = offset + count
+    else:
+        candidate.pop("next_offset", None)
+    candidate["truncated"] = bool(raw.get("truncated")) or count < len(results) or has_more
+    raw_truncation = raw.get("truncation")
+    truncation = dict(raw_truncation) if isinstance(raw_truncation, dict) else {}
+    truncation.update({
+        "results": candidate["truncated"],
+        "returned_count": count,
+        "total_matches": total,
+    })
+    candidate["truncation"] = truncation
+    raw_coverage = raw.get("coverage")
+    coverage = dict(raw_coverage) if isinstance(raw_coverage, dict) else {}
+    coverage.update({"returned": count, "offset": offset, "limit": requested_limit})
+    if not isinstance(raw_coverage, dict) or raw_coverage.get("complete") is not True or count < len(results):
+        coverage["complete"] = False
+    candidate["coverage"] = coverage
+    candidate.pop("error", None)
+    candidate.pop("status_code", None)
+    candidate.pop("terminal", None)
+    candidate.pop("retryable", None)
+    response_budget = candidate.get("response_budget")
+    if isinstance(response_budget, dict):
+        response_budget.pop("rejected", None)
+    return candidate
+
+
+def _search_prefix_fitting(
+    base: dict[str, Any], raw: dict[str, Any], results: list[Any], requested: int,
+    *, wire_budget: bool = False,
+) -> dict[str, Any] | None:
+    """Fit a whole-result prefix, reducing optional result detail only as needed."""
+    minimal_results = [
+        {
+            key: (
+                item[key][:160] + "..."
+                if key == "text" and isinstance(item.get("text"), str) and len(item[key]) > 160
+                else item[key]
+            )
+            for key in ("path", "start_line", "end_line", "score", "evidence_id", "text")
+            if key in item
+        }
+        if isinstance(item, dict) else item
+        for item in results
+    ]
+    essential_results = [
+        {
+            key: item[key] for key in ("path", "start_line", "end_line", "score", "evidence_id")
+            if key in item
+        }
+        if isinstance(item, dict) else item
+        for item in results
+    ]
+
+    shapes = (
+        (results, False, False),
+        (minimal_results, True, False),
+        (essential_results, True, True),
+    )
+
+    for source_results, reduced, compact_metadata in shapes:
+        if reduced and source_results == results and not compact_metadata:
+            continue
+        min_count = 1 if source_results else 0
+        for count in range(len(source_results), min_count - 1, -1):
+            candidate = _search_page_with_prefix(base, raw, source_results, count)
+            if compact_metadata:
+                for key in ("workspace_cache", "path_hint_usage", "engine", "scanned_files", "terms"):
+                    candidate.pop(key, None)
+            candidate = _normalize_deterministic(account_projection(raw, candidate))
+            if json_tokens(candidate) > requested:
+                continue
+            if wire_budget:
+                wire = {
+                    "content": [{"type": "text", "text": json_dumps(candidate)}],
+                    "structuredContent": candidate,
+                    "isError": False,
+                }
+                if json_tokens(wire) > requested:
+                    continue
+            return candidate
+    return None
+
+
+
 def _compact(
     value: Any, task_kind: str = "general", extra_fields: list[str] | None = None,
     *, page_key: str | None = None, identity: dict[str, Any] | None = None,
@@ -1423,22 +1534,32 @@ def _compact(
         and not raw_value.get("artifact_id")
     ):
         page_key = "results"
-        expected_count = len(raw_value[page_key])
-        returned_results = compacted.get(page_key) if isinstance(compacted, dict) else None
-        if not isinstance(returned_results, list) or len(returned_results) < expected_count:
-            compacted = {
-                "success": False,
-                "status_code": 413,
-                "terminal": True,
-                "retryable": False,
-                "error": f"The requested {task_kind} page exceeds the configured MCP response budget; reduce limit.",
-                "root": raw_value.get("root"),
-                "offset": raw_value.get("offset", 0),
-                "limit": raw_value.get("limit", 24),
-                "total_matches": raw_value.get("total_matches", 0),
-                "has_more": raw_value.get("has_more", False),
-                page_key: [],
-            }
+        requested, _profile, _reuse_key, enabled = _response_budget(task_kind, options)
+        if enabled:
+            raw_items = raw_value[page_key]
+            fitted = _search_prefix_fitting(
+                compacted if isinstance(compacted, dict) else {},
+                raw_value,
+                raw_items,
+                requested,
+                wire_budget=True,
+            )
+            if fitted is None or (raw_items and not fitted.get(page_key)):
+                compacted = {
+                    "success": False,
+                    "status_code": 413,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"The requested {task_kind} page exceeds the configured MCP response budget; reduce limit.",
+                    "root": raw_value.get("root"),
+                    "offset": raw_value.get("offset", 0),
+                    "limit": raw_value.get("limit", 24),
+                    "total_matches": raw_value.get("total_matches", 0),
+                    "has_more": raw_value.get("has_more", False),
+                    page_key: [],
+                }
+            else:
+                compacted = fitted
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
 
@@ -2522,8 +2643,11 @@ def local_ai_task(
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
     # the task so callers keep the operation and receive a complete answer.
-    if action in {"delegate", "explore", "reason", "review", "second_opinion"} and max_tokens:
-        max_tokens = max(160, int(max_tokens))
+    if action in {"delegate", "explore", "reason", "review", "second_opinion", "compress"}:
+        if max_tokens:
+            max_tokens = max(160, int(max_tokens))
+        if not task and prompt:
+            task = prompt
     if action in {"candidate_create", "candidate_promote"}:
         if action == "candidate_create":
             return _compact(CLIENT.post("/api/agent-state/learning", {
@@ -5277,7 +5401,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                             **{
                                 key: value[key]
                                 for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
-                                            "mutation_applied", "operation_not_started")
+                                            "mutation_applied", "operation_not_started",
+                                            "total_matches", "has_more", "offset", "limit")
                                 if key in value and key not in dropped
                             },
                         }
@@ -5303,6 +5428,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                 for key in (
                                                     "evidence", "evidence_id", "evidence_ids",
                                                     "mutation_applied", "operation_not_started",
+                                                    "total_matches", "has_more", "offset", "limit",
                                                 )
                                                 if key in trial
                                             },
@@ -5318,6 +5444,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                     "mutation_applied", "operation_not_started",
                                                     "request_id", "execution_id",
                                                     "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
+                                                    "total_matches", "has_more", "offset", "limit",
                                                 )
                                                 if key in trial
                                             },
@@ -5343,6 +5470,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
             "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
             "mutation_applied", "operation_not_started",
+            "total_matches", "has_more", "offset", "limit",
         )
         for include_optional in (True, False):
             for error_chars in (None, 512, 256, 128, 64, 32, 16, 8, 1):
@@ -5549,6 +5677,59 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             else:
                 content = [mcp_types.TextContent(type="text", text=json_dumps(fitted_page))]
                 return content, fitted_page
+
+        if (name == "local_ai_repo" and action == "search" and isinstance(value, dict)
+                and value.get("success") is True and isinstance(value.get("results"), list)):
+            items = value["results"]
+            outer_metadata = {
+                "requested_tokens": requested,
+                "original_tokens": original_tokens,
+                "returned_tokens": 0,
+                "truncated": original_tokens > requested,
+                "reused": bool((value.get("response_budget") or {}).get("reused"))
+                if isinstance(value.get("response_budget"), dict) else False,
+                "unit": "estimated_tokens",
+            }
+            for _ in range(16):
+                base = dict(value)
+                base["response_budget"] = dict(outer_metadata)
+                fitted = _search_prefix_fitting(
+                    base, value, items, requested, wire_budget=True,
+                )
+                if fitted is None or (items and not fitted.get("results")):
+                    failure = {
+                        "success": False, "status_code": 413, "terminal": True,
+                        "retryable": False,
+                        "error": "The requested search page exceeds the configured MCP response budget; reduce limit.",
+                        "root": value.get("root"),
+                        "offset": value.get("offset", 0),
+                        "limit": value.get("limit", 24),
+                        "total_matches": value.get("total_matches", 0),
+                        "has_more": value.get("has_more", False),
+                        "results": [],
+                    }
+                    bounded = _mcp_bounded_error(failure, requested)
+                    if bounded is not None:
+                        return bounded
+                    break
+                returned = json_tokens(_mcp_wire_view(fitted, structured=True))
+                fitted["response_budget"]["returned_tokens"] = returned
+                fitted["response_budget"]["truncated"] = returned < original_tokens
+                accounting = fitted.get("token_efficiency")
+                if isinstance(accounting, dict):
+                    accounting["protocol_tokens_est"] = tool_request_tokens(name, arguments) + returned
+                    baseline = accounting.get("baseline_tokens_est")
+                    if isinstance(baseline, int) and not isinstance(baseline, bool):
+                        signed_delta = baseline - returned
+                        accounting["token_savings_delta_est"] = signed_delta
+                        accounting["avoided_payload_tokens_est"] = max(0, signed_delta)
+                finalized = json_tokens(_mcp_wire_view(fitted, structured=True))
+                if finalized == returned and finalized <= requested:
+                    content = [mcp_types.TextContent(type="text", text=json_dumps(fitted))]
+                    return content, fitted
+                outer_metadata["returned_tokens"] = returned
+                if finalized > requested:
+                    outer_metadata["returned_tokens"] = 0
 
         if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
             pack = value.get("adaptive_context_pack")

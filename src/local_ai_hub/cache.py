@@ -804,13 +804,18 @@ class SQLiteCache:
         return int(self._safe(op, 0))
 
     def stats(self) -> dict[str, Any]:
+        now = time.monotonic()
+        cached = getattr(self, "_cached_stats", None)
+        if cached is not None and now - cached[0] < 3.0:
+            return dict(cached[1])
+
         def op() -> dict[str, Any]:
             with closing(self._connect()) as con:
                 row = con.execute(
                     "SELECT COUNT(*), COALESCE(SUM(hits),0), COALESCE(MIN(created_at),0), COALESCE(MAX(accessed_at),0) FROM cache_entries WHERE namespace=?",
                     (self.namespace,),
                 ).fetchone()
-            return {
+            res = {
                 "namespace": self.namespace,
                 "entries": int(row[0]),
                 "hits": int(row[1]),
@@ -818,7 +823,15 @@ class SQLiteCache:
                 "latest_accessed_at": float(row[3]),
                 "busy_fallbacks": self.busy_fallbacks,
             }
-        return self._safe(op, {"namespace": self.namespace, "entries": 0, "hits": 0, "busy_fallbacks": self.busy_fallbacks, "degraded": True})
+            self._cached_stats = (now, res)
+            return res
+
+        fallback = (
+            dict(cached[1])
+            if cached is not None
+            else {"namespace": self.namespace, "entries": 0, "hits": 0, "busy_fallbacks": self.busy_fallbacks, "degraded": False}
+        )
+        return self._safe(op, fallback)
 
 
 class TieredCache:

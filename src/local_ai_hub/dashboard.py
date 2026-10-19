@@ -392,9 +392,10 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   </section>
   <div class="dash-group">
     <div class="group-title"><span>Host &amp; System Health</span><span class="tiny muted">Core runtime state, capacity and supervisory control</span></div>
-    <div class="grid grid-3">
+    <div class="grid grid-3" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
       <div class="card" id="hubHealthCard" style="cursor:pointer" title="Click to open Reliability &amp; Restart history"><div class="label" style="display:flex;justify-content:space-between"><span>Hub health</span><span>↗</span></div><div class="value primary-metric" id="health">…</div><div class="sub" id="uptime"></div></div>
       <div class="card system-card"><div class="label">Host Hardware</div><div class="value" id="sysUtil">…</div><div class="sub" id="sysSub"></div></div>
+      <div class="card" id="loadedModelCard" style="cursor:pointer" title="Click to open Models &amp; RAG tab"><div class="label" style="display:flex;justify-content:space-between"><span>Loaded Model</span><span>↗</span></div><div class="value primary-metric" id="loadedModelVal">…</div><div class="sub" id="loadedModelSub"></div></div>
       <div class="card" id="agentStateCard" style="cursor:pointer" title="Click to open Agent OS inspector"><div class="label" style="display:flex;justify-content:space-between"><span>Agent OS State</span><span>↗</span></div><div class="value primary-metric" id="agentStateVal">…</div><div class="sub" id="agentStateSub"></div></div>
     </div>
   </div>
@@ -447,7 +448,13 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   <div id="agentOsDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Agent OS feature is disabled in configuration</b> (<code>features.agent_os = false</code>). Durable task tracking and memory are inactive.</div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState">0 active · 0 total tasks · 0 memories</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn primary" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
-    <div class="project-toolbar"><input id="agentOsRoot" list="worktreeRoots" aria-label="Repository root for Agent OS" placeholder="Choose or enter repository root"><span class="tiny muted">Select a repository and use Refresh. Access stays scoped to the current client.</span></div>
+    <div class="project-toolbar">
+      <select id="agentOsRepoSelect" aria-label="Repository filter for Agent OS" style="max-width:240px">
+        <option value="">All repositories (všechny repozitáře)</option>
+      </select>
+      <input id="agentOsRoot" list="worktreeRoots" aria-label="Repository root for Agent OS" placeholder="Or enter specific repository root" style="flex:1">
+      <span class="tiny muted">Viewing tasks across all repositories or select specific root.</span>
+    </div>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
@@ -465,7 +472,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
         <button class="btn primary" id="agentOsCreateTaskBtn" style="padding:5px 9px">+ Create Task</button>
         <span class="tiny project-summary" id="agentOsSummary"></span>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Status</th><th>Task ID</th><th>Goal</th><th>Scope</th><th>Phase / Next Action</th><th>Criteria</th><th>Updated</th></tr></thead><tbody id="agentOsTasksBody"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Status</th><th>Task ID</th><th>Repository</th><th>Goal</th><th>Scope</th><th>Phase / Next Action</th><th>Criteria</th><th>Updated</th></tr></thead><tbody id="agentOsTasksBody"></tbody></table></div>
     </section>
   </div>
 
@@ -597,6 +604,11 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
     </div>
   </section>
 
+  <section class="section" style="margin-top:12px">
+    <h2>Loaded Runtime Models &amp; Context <span class="tiny">Resident models in Ollama with allocated context length and VRAM</span></h2>
+    <div class="table-wrap"><table><thead><tr><th>Model</th><th>Context Window</th><th>Params</th><th>Quant</th><th>VRAM / Memory</th><th>GPU Offload</th><th>Status / TTL</th></tr></thead><tbody id="loadedModelsBody"></tbody></table></div>
+  </section>
+
   <section class="section" style="margin-top:12px"><h2>Execution profiles <span class="tiny">configured capacity; context packing remains adaptive</span></h2>
 <div class="table-wrap"><table><thead><tr><th>Model</th><th>Tier</th><th>Context</th><th>Max</th><th>Parallel</th><th>Thinking</th><th>Prompt cap</th></tr></thead><tbody id="executionProfiles"></tbody></table></div></section>
   <div class="split"><section class="section"><h2>Model statistics <span class="tiny">Selected metrics period · retained samples</span></h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>Load</th><th>Fails</th></tr></thead><tbody id="models"></tbody></table></div></section><section class="section"><h2>Cache layers</h2><div class="table-wrap"><table><thead><tr><th>Layer</th><th>Calls</th><th>Avg</th><th>Context tokens avoided</th></tr></thead><tbody id="cacheLayers"></tbody></table></div></section></div>
@@ -676,7 +688,7 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
  document.head.insertAdjacentHTML('beforeend','<style>.trace-inspector-context{display:flex;align-items:flex-end;gap:8px;flex-direction:column}.trace-project-label{border:1px solid #41659a;border-radius:999px;padding:4px 8px;color:#c7dcff;font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-search-presentation,.trace-model-presentation{border:1px solid #33485f;border-radius:8px;background:#0c121a;padding:12px}.trace-search-query{border:1px solid #2d4965;border-left:3px solid #5b8def;border-radius:6px;background:#111b26;padding:9px 10px;overflow-wrap:anywhere}.trace-search-query strong,.trace-search-answer strong{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}.trace-search-spec{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}.trace-search-spec span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-search-results{margin-top:12px}.trace-search-results h3{margin:0 0 5px;font-size:11px}.trace-search-result-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:start;border-top:1px solid #273544;padding:8px 0;min-width:0}.trace-search-rank{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#1c3042;color:#c7dcff;font-size:10px}.trace-search-result-main{min-width:0;overflow-wrap:anywhere}.trace-search-result-main strong{display:block;overflow-wrap:anywhere}.trace-search-result-main>.tiny{display:block;margin-top:2px}.trace-search-snippet{color:#c9d5e2;font-size:11px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere}.trace-search-score{color:var(--muted);font-size:10px;padding-top:3px}.trace-search-answer{border-top:1px solid #273544;margin-top:8px;padding-top:9px;overflow-wrap:anywhere}.trace-model-presentation .trace-primary-card{min-height:0}.trace-model-presentation .trace-chat-message{border-top:0;padding:0}.trace-model-presentation .trace-chat-role{display:none}.trace-model-presentation .prompt-pre{max-height:260px}.trace-summary-card,.trace-code-card,.trace-list-card{border:1px solid #273544;border-radius:6px;background:#0d141c;padding:10px;margin-bottom:8px}.trace-summary-card h3,.trace-code-card h3,.trace-list-card h3{margin:0 0 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.trace-summary-value{overflow-wrap:anywhere}.trace-chip{display:inline-block;padding:2px 6px;border-radius:4px;background:#172535;border:1px solid #2d4965;font-size:11px;margin:2px}.trace-obj-field{margin-bottom:4px;overflow-wrap:anywhere}.trace-obj-key{color:var(--muted);font-size:11px;font-weight:600}.trace-obj-val{font-size:11px}.trace-primary-groups{display:grid;gap:8px;margin-top:10px}.trace-primary-group{border:1px solid #273544;border-radius:6px;background:#0d141c}.trace-primary-group>summary{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;color:var(--fg);font-size:11px;font-weight:700;list-style:none}.trace-primary-group>summary::-webkit-details-marker{display:none}.trace-primary-group>summary::after{content:\"+\";color:var(--muted);font-size:15px;line-height:1}.trace-primary-group[open]>summary::after{content:\"−\"}.trace-primary-group-body{padding:0 10px 10px}.trace-primary-group .trace-primary-card{border:0;background:transparent;padding:0;margin:0}.trace-primary-group .trace-primary-card h3{display:none}.trace-primary-group .trace-primary-value{padding-top:2px}@media(max-width:700px){.trace-inspector-context{align-items:flex-end}.trace-project-label{max-width:150px}}</style>');
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
-const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
+const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000), formatBytes=b=>{b=Number(b||0);if(b<=0)return '0 B';const u=['B','KB','MB','GB','TB'],i=Math.min(u.length-1,Math.floor(Math.log(b)/Math.log(1024)));return (b/Math.pow(1024,i)).toFixed(i>1?1:0)+' '+u[i];};
 
 function dashboardPreprocessingHealth(preprocessing={},dependencies={},features={}){
   const disabled=features.preprocessing===false||preprocessing.enabled===false;
@@ -723,7 +735,7 @@ function dashboardTelemetryState(observability={}){
   const detailIncomplete=observability.detail?.incomplete===true||observability.detail?.status==='incomplete';
   const available=observability.enabled!==false&&observability.data_available!==false&&observability.stale!==true&&
     (observability.data_available===true||Object.hasOwn(observability,'net_cloud_token_delta_est'));
-  const complete=available&&metricsAvailable&&activityObserved&&accountingBalanced&&pending===0&&dropped===0&&errors===0&&!summaryCacheStale&&!detailIncomplete&&!observability.accounting_boundary_incomplete;
+  const complete=available&&metricsAvailable&&activityObserved&&accountingBalanced&&pending<=20&&dropped===0&&errors===0&&!summaryCacheStale&&!detailIncomplete&&!observability.accounting_boundary_incomplete;
   return {available,complete,metricsAvailable,requestFailures,requestEvents,policyRejections,dropped,errors,pending,accepted,written,activityObserved,accountingBalanced,summaryCacheStale,detailIncomplete};
 }
 
@@ -816,7 +828,7 @@ function dashboardHealth(snapshot={}){
   const terminalStatuses=['down','offline','unavailable','crashed','stopped'];
   const processLiveness=hubOnline===false||terminalStatuses.includes(status)?'offline':heartbeatStale||status==='stale'?'stale':hubOnline===true||['running','healthy','ok','online'].includes(status)?'live':'unknown';
   const signals=[];
-  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
+  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
   const features=snapshot.features||current.features||{};
@@ -837,7 +849,7 @@ function dashboardHealth(snapshot={}){
     if(!telemetry.available)signals.push('telemetry data is unavailable or stale');
     else if(!telemetry.activityObserved)signals.push('telemetry writer activity is unobserved');
     else if(!telemetry.accountingBalanced)signals.push('telemetry writer accounting is unbalanced');
-    else if(telemetry.pending)signals.push(`telemetry writer has ${telemetry.pending} pending record${telemetry.pending===1?'':'s'}`);
+    else if(telemetry.pending>20)signals.push(`telemetry writer has ${telemetry.pending} pending record${telemetry.pending===1?'':'s'}`);
     else if(telemetry.summaryCacheStale)signals.push('telemetry summary is stale');
     else if(!telemetry.complete)signals.push('telemetry coverage is incomplete');
   }
@@ -2702,6 +2714,11 @@ function openCreateTaskModal(){
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitCreateTask(event)">
         <div class="form-group">
+          <label for="newTaskRoot">Repository Root *</label>
+          <input type="text" id="newTaskRoot" list="worktreeRoots" required placeholder="Select or enter repository root" value="${esc($('agentOsRoot')?.value?.trim()||$('agentOsRepoSelect')?.value?.trim()||'')}">
+          <span class="form-hint">Physical repository root bound to the task.</span>
+        </div>
+        <div class="form-group">
           <label for="newTaskGoal">Task Goal *</label>
           <textarea id="newTaskGoal" rows="3" required placeholder="Describe the goal and expected outcome..." autofocus></textarea>
           <span class="form-hint">A clear specification of the objective.</span>
@@ -2746,6 +2763,7 @@ async function submitCreateTask(e){
   e.preventDefault();
   const goal=$('newTaskGoal')?.value?.trim();
   if(!goal)return;
+  const root=$('newTaskRoot')?.value?.trim()||$('agentOsRoot')?.value?.trim()||$('agentOsRepoSelect')?.value?.trim();
   const rawCrit=$('newTaskCriteria')?.value||'';
   const criteria=rawCrit.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
   const scope=$('newTaskScope')?.value||'task';
@@ -2754,10 +2772,12 @@ async function submitCreateTask(e){
   if(statusEl)statusEl.textContent='Creating task…';
 
   try{
-    const res=await post('/api/agent-state/tasks',{
+    const payload={
       action:'create',
       contract:{goal,acceptance_criteria:criteria,scope,risk_profile:risk}
-    });
+    };
+    if(root)payload.root=root;
+    const res=await post('/api/agent-state/tasks',payload);
     if(res.success&&res.task){
       await loadAgentOsView();
       renderTaskModal(res.task);
@@ -3249,6 +3269,13 @@ function renderProjectModal(p){
       </div>
 
       <div class="modal-card">
+        <div class="modal-card-head"><span style="display:flex;align-items:center;gap:6px">⚙️ Project Settings &amp; Configuration (.local-ai.toml)</span></div>
+        <div class="modal-card-body" id="modalProjectSettingsBody">
+          <div class="tiny muted">Loading project settings…</div>
+        </div>
+      </div>
+
+      <div class="modal-card">
         <div class="modal-card-head"><span>Workspace Controls</span></div>
         <div class="modal-card-body">
           <div class="modal-actions-bar">
@@ -3263,6 +3290,39 @@ function renderProjectModal(p){
       <details class="raw-json"><summary>Raw Project Metadata</summary><pre>${esc(JSON.stringify(p,null,2))}</pre></details>
     </div>
   `;
+  loadProjectSettings(p.root);
+}
+
+async function loadProjectSettings(root){
+  const body=$('modalProjectSettingsBody');
+  if(!body)return;
+  try{
+    const d=await fetchDashboardJson('/api/project/config?root='+encodeURIComponent(root));
+    if(!d||!d.success){
+      body.innerHTML='<div class="tiny muted">Default repository settings active (no project overrides).</div>';
+      return;
+    }
+    const s=d.settings||{};
+    const hasExcludes=(s.exclude_paths||[]).length>0;
+    const hasForce=(s.force_include_paths||[]).length>0;
+    const hasExts=(s.custom_extensions||[]).length>0;
+    const hasSkip=(s.skip_phases||[]).length>0;
+    const hasCmds=Object.keys(s.commands||{}).length>0;
+    const sources=(d.sources||[]).join(', ');
+
+    let html=`<div class="kv" style="padding:0">
+      <div>Config Source</div><div><b>${esc(d.config_exists?'.local-ai.toml (project active)':(d.sources||[]).join(', ')||'defaults')}</b></div>
+      <div>Custom Extensions</div><div>${hasExts?s.custom_extensions.map(x=>`<span class="chip">${esc(x)}</span>`).join(' '):'<span class="tiny muted">defaults</span>'}</div>
+      <div>Excluded Paths</div><div>${hasExcludes?s.exclude_paths.map(x=>`<span class="chip bad-t">${esc(x)}</span>`).join(' '):'<span class="tiny muted">none</span>'}</div>
+      <div>Force Included</div><div>${hasForce?s.force_include_paths.map(x=>`<span class="chip ok">${esc(x)}</span>`).join(' '):'<span class="tiny muted">none</span>'}</div>
+      <div>Skipped Phases</div><div>${hasSkip?s.skip_phases.map(x=>`<span class="chip warn-t">${esc(x)}</span>`).join(' '):'<span class="tiny muted">none (all 13 phases enabled)</span>'}</div>
+      <div>Defined Commands</div><div>${hasCmds?Object.entries(s.commands).map(([k,v])=>`<code>${esc(k)}</code>: <code>${esc(Array.isArray(v)?v.join(' '):String(v))}</code>`).join('<br>'):'<span class="tiny muted">none</span>'}</div>
+      <div>Max File Size</div><div>${s.max_file_size_bytes?n(s.max_file_size_bytes)+' bytes':'<span class="tiny muted">default (512 KB)</span>'}</div>
+    </div>`;
+    body.innerHTML=html;
+  }catch(e){
+    body.innerHTML='<div class="tiny muted">Settings: using default repository configuration.</div>';
+  }
 }
 
 function openRegisterProjectModal(){
@@ -4528,12 +4588,30 @@ function render(s){
   })();
 
   if($('worktreeRoots'))$('worktreeRoots').innerHTML=[...new Set((p.projects||[]).map(project=>project.root).filter(Boolean))].sort().map(root=>`<option value="${esc(root)}"></option>`).join('');
+  const repoSelect=$('agentOsRepoSelect');
+  if(repoSelect){
+    const currentVal=repoSelect.value;
+    const projectRoots=(p.projects||[]).map(x=>x.root).filter(Boolean);
+    const uniqueRoots=[...new Set(projectRoots)].sort();
+    const rootsKey=uniqueRoots.join('|');
+    if(repoSelect.dataset.renderedRoots!==rootsKey){
+      let optHtml='<option value="">All repositories (všechny repozitáře)</option>';
+      uniqueRoots.forEach(root=>{
+        const proj=(p.projects||[]).find(x=>x.root===root);
+        const name=(proj&&proj.project)?`${proj.project} (${root})`:root;
+        optHtml+=`<option value="${esc(root)}">${esc(name)}</option>`;
+      });
+      repoSelect.innerHTML=optHtml;
+      repoSelect.dataset.renderedRoots=rootsKey;
+      if(currentVal)repoSelect.value=currentVal;
+    }
+  }
 
   const statusBadge=dashboardHealthBadge(s);
   $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online==null?'hub ?':s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online==null?'ollama ?':s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
   $('uptime').textContent='uptime '+durSec(s.uptime_seconds)+' · supervisor restarts '+n(h.restarts);
 
-  const ep=(rp.execution||{}).models||[];
+  const ep=(rp.execution||{}).models||(s.model_execution||{}).models||[];
   const httpTail=o.http_tail_latency||{};
   rows('httpTail',httpTail.by_action||[],x=>clickableRow(x,`<td>${esc(x.action)}</td><td>${n(x.events)}</td><td>${ms(x.p50_duration_ms)}</td><td>${ms(x.p95_duration_ms)}</td><td>${ms(x.p99_duration_ms)}</td><td>${n(x.failures)}</td>`,'http_tail'),6);
 
@@ -4586,6 +4664,27 @@ function render(s){
     }
   }
   if($('agentStateCard'))$('agentStateCard').onclick=()=>switchTab('agentos');
+
+  const loadedModels=s.loaded_model_details||[];
+  const loadedVal=$('loadedModelVal'),loadedSub=$('loadedModelSub');
+  if(loadedVal&&loadedSub){
+    if(loadedModels.length>0){
+      const primary=loadedModels[0];
+      const others=loadedModels.length>1?` (+${loadedModels.length-1} more)`:'';
+      loadedVal.textContent=primary.name+others;
+      const ctxStr=primary.context_length?`${n(primary.context_length)} ctx`:'Dynamic ctx';
+      const vramStr=primary.vram_bytes?`${formatBytes(primary.vram_bytes)} VRAM`:(primary.size_bytes?formatBytes(primary.size_bytes):'');
+      const paramStr=primary.parameter_size||primary.quantization||'';
+      loadedSub.textContent=[ctxStr,paramStr,vramStr].filter(Boolean).join(' · ');
+    }else if(Array.isArray(s.loaded_models)&&s.loaded_models.length>0){
+      loadedVal.textContent=s.loaded_models.join(', ');
+      loadedSub.textContent='Resident in memory';
+    }else{
+      loadedVal.innerHTML='<span class="muted">None resident</span>';
+      loadedSub.textContent='Models load on demand';
+    }
+  }
+  if($('loadedModelCard'))$('loadedModelCard').onclick=()=>switchTab('performance');
 
   $('prep').textContent=(p.paused?'paused':(p.processing_projects?'active':'idle'))+' · '+n(p.steps)+' steps';
   const prepStatus=preprocessingSummary(p,s.dependency_status||{},s.features||{});
@@ -4656,6 +4755,16 @@ function render(s){
   $('prepToggle').textContent=prepPaused?'Resume preprocessing':'Pause preprocessing';
   $('prepAllToggle').textContent=prepPaused?'Resume all projects':'Pause all projects';
   renderProjects(p.projects||[]);
+
+  rows('loadedModelsBody',loadedModels,m=>{
+    const ctx=m.context_length?`${n(m.context_length)} tokens`:'<span class="muted">Dynamic</span>';
+    const params=esc(m.parameter_size||'—');
+    const quant=m.quantization?`<span class="chip">${esc(m.quantization)}</span>`:'<span class="muted">—</span>';
+    const memStr=`${formatBytes(m.vram_bytes||0)} VRAM / ${formatBytes(m.size_bytes||0)} total`;
+    const offload=`${Math.round((m.gpu_fraction||0)*100)}% GPU / ${Math.round((m.cpu_offload_fraction||0)*100)}% CPU`;
+    const statusChip=m.expires_at?`<span class="chip ok">expires ${new Date(m.expires_at).toLocaleTimeString()}</span>`:'<span class="chip">Resident</span>';
+    return `<tr><td><strong>${esc(m.name)}</strong></td><td>${ctx}</td><td>${params}</td><td>${quant}</td><td class="mono tiny">${memStr}</td><td class="tiny">${offload}</td><td>${statusChip}</td></tr>`;
+  },7,'No models currently resident in VRAM/memory.');
 
   rows('executionProfiles',ep,x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${esc(x.tier)}</td><td>${n(x.num_ctx)}</td><td>${n(x.max_ctx)}</td><td>${n(x.parallel_limit)}</td><td>${x.think?'on':'role-gated/off'}</td><td>${n(x.prompt_budget_tokens)}</td>`,'execution_profile'),7);
   rows('models',o.by_model||[],x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${ms(x.avg_load_ms)}</td><td>${n(x.failures)}</td>`,'model_stat'),5);
@@ -4892,25 +5001,45 @@ function setAgentOsScopeReady(ready){
   ['agentOsCreateTaskBtn','agentOsRecordMemBtn','agentOsRecordIncBtn','agentOsCleanup'].forEach(id=>{if($(id))$(id).disabled=!ready});
 }
 async function loadAgentOsView(){
-  const selectedRoot=$('agentOsRoot')?.value?.trim();
-  setAgentOsScopeReady(false);
-  if(!selectedRoot){
-    agentOsTasks=[];agentOsMemories=[];agentOsIncidents=[];
-    agentOsLoadErrors={tasks:'Choose a repository root above',memory:'Choose a repository root above',incidents:'Choose a repository root above'};
-    renderAgentOsView();return;
+  const repoVal=$('agentOsRepoSelect')?.value?.trim()||'';
+  const rootVal=$('agentOsRoot')?.value?.trim()||'';
+  const selectedRoot=rootVal||repoVal||'';
+  const isAll=!selectedRoot||selectedRoot.toLowerCase()==='all'||selectedRoot==='__all__';
+  setAgentOsScopeReady(!isAll&&Boolean(selectedRoot));
+
+  const tasksUrl=isAll?'/api/agent-state/tasks':`/api/agent-state/tasks?root=${encodeURIComponent(selectedRoot)}`;
+  const memUrl=isAll?'/api/agent-state/memory':`/api/agent-state/memory?root=${encodeURIComponent(selectedRoot)}`;
+
+  const promises=[
+    fetchDashboardJson(tasksUrl,{cache:'no-store'}),
+    fetchDashboardJson(memUrl,{cache:'no-store'})
+  ];
+  if(!isAll){
+    promises.push(fetchDashboardJson('/api/agent-state/incidents',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'find',root:selectedRoot,limit:100})
+    }));
   }
-  const results=await Promise.allSettled([
-    fetchDashboardJson('/api/agent-state/tasks',{cache:'no-store'}),
-    fetchDashboardJson('/api/agent-state/memory',{cache:'no-store'}),
-    fetchDashboardJson('/api/agent-state/incidents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'find',limit:100})})
-  ]);
-  if($('agentOsRoot')?.value?.trim()!==selectedRoot)return;
+  const results=await Promise.allSettled(promises);
+  if(($('agentOsRoot')?.value?.trim()||'')!==rootVal)return;
+
   agentOsLoadErrors={};
-  ['tasks','memory','incidents'].forEach((key,index)=>{if(results[index].status==='rejected')agentOsLoadErrors[key]=String(results[index].reason?.message||results[index].reason)});
+  if(results[0].status==='rejected'){
+    agentOsLoadErrors.tasks=String(results[0].reason?.message||results[0].reason);
+  }
+  if(results[1].status==='rejected'){
+    agentOsLoadErrors.memory=String(results[1].reason?.message||results[1].reason);
+  }
+  if(isAll){
+    agentOsLoadErrors.incidents='Select a specific repository above to inspect negative knowledge & incidents.';
+  }else if(results[2]?.status==='rejected'){
+    agentOsLoadErrors.incidents=String(results[2].reason?.message||results[2].reason);
+  }
+
   agentOsTasks=results[0].status==='fulfilled'?(results[0].value.tasks||[]):[];
   agentOsMemories=results[1].status==='fulfilled'?(results[1].value.records||[]):[];
-  agentOsIncidents=results[2].status==='fulfilled'?(results[2].value.incidents||[]):[];
-  setAgentOsScopeReady(Object.keys(agentOsLoadErrors).length===0);
+  agentOsIncidents=(!isAll&&results[2]?.status==='fulfilled')?(results[2].value.incidents||[]):[];
   renderAgentOsView();
 }
 
@@ -4938,7 +5067,7 @@ function renderAgentOsView(){
     const st=String(t.status||'').toLowerCase();
     if(statusFilter&&st!==statusFilter)return false;
     if(!query)return true;
-    const hay=[t.task_id,t.contract?.goal,t.checkpoint?.phase,t.checkpoint?.next_action].join(' ').toLowerCase();
+    const hay=[t.task_id,t.contract?.goal,t.checkpoint?.phase,t.checkpoint?.next_action,t.repo_root].join(' ').toLowerCase();
     return hay.includes(query);
   });
 
@@ -4966,7 +5095,8 @@ function renderAgentOsView(){
   if($('agentOsSummary'))$('agentOsSummary').textContent=`${filteredTasks.length} tasks · ${filteredMem.length} memories · ${filteredInc.length} incidents`;
   if($('agentOsState')){
     const act=agentOsTasks.filter(t=>String(t.status).toLowerCase()==='active').length;
-    $('agentOsState').textContent=`${act} active · ${agentOsTasks.length} total tasks · ${agentOsMemories.length} memories`;
+    const isAll=!$('agentOsRoot')?.value?.trim()&&!$('agentOsRepoSelect')?.value?.trim();
+    $('agentOsState').textContent=`${act} active · ${agentOsTasks.length} total tasks${isAll?' (all repositories)':''} · ${agentOsMemories.length} memories`;
   }
 
   rows('agentOsTasksBody',filteredTasks,t=>{
@@ -4976,8 +5106,9 @@ function renderAgentOsView(){
     const chk=t.checkpoint?`${esc(t.checkpoint.phase||'')} ➔ ${esc(t.checkpoint.next_action||'')}`:'—';
     const crit=(t.contract?.acceptance_criteria||[]).length?(t.contract.acceptance_criteria.length+' criteria'):'—';
     const dt=t.updated_at?new Date(t.updated_at*1000).toLocaleTimeString():'—';
-    return clickableRow(t,`<td><span class="badge-status ${cls}">${esc(st.toUpperCase())}</span></td><td><strong>${esc(t.task_id)}</strong></td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${goal}">${goal}</td><td><span class="chip">${esc(t.contract?.scope||'task')}</span></td><td class="tiny">${chk}</td><td class="tiny">${esc(crit)}</td><td class="tiny">${dt}</td>`,'task',t.task_id);
-  },7);
+    const repoLabel=t.repo_root?(t.repo_root.split(/[\\/]/).filter(Boolean).pop()||t.repo_root):(t.context?.repository_id||'—');
+    return clickableRow(t,`<td><span class="badge-status ${cls}">${esc(st.toUpperCase())}</span></td><td><strong>${esc(t.task_id)}</strong></td><td title="${esc(t.repo_root||'')}"><span class="chip" style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(repoLabel)}</span></td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${goal}">${goal}</td><td><span class="chip">${esc(t.contract?.scope||'task')}</span></td><td class="tiny">${chk}</td><td class="tiny">${esc(crit)}</td><td class="tiny">${dt}</td>`,'task',t.task_id);
+  },8,'No Agent OS tasks found.');
 
   rows('agentOsMemoryBody',filteredMem,m=>{
     const sc=esc(m.scope||'task');
@@ -5007,30 +5138,26 @@ function renderAgentOsView(){
 }
 
 function renderAgentOsLoadErrors(){
-  if(!$('agentOsRoot')?.value?.trim()){
-    if($('agentOsState'))$('agentOsState').textContent='Select a repository';
-    if($('agentOsSummary'))$('agentOsSummary').textContent='Choose a repository above, then refresh to view its records.';
-    for(const [id,columns] of [['agentOsTasksBody',7],['agentOsMemoryBody',7],['agentOsIncBody',8]]){
-      if($(id))$(id).innerHTML=`<tr><td colspan="${columns}" class="empty">Choose a repository to view its records.</td></tr>`;
-    }
-    return;
-  }
   const failed=Object.keys(agentOsLoadErrors);
-  if(failed.length){
-    if($('agentOsState'))$('agentOsState').textContent=$('agentOsRoot')?.value?.trim()?'Partially unavailable · '+failed.join(', '):'Select a repository';
+  if(failed.length&&!$('agentOsTasksBody')?.children?.length){
+    if($('agentOsState'))$('agentOsState').textContent='Partially unavailable · '+failed.join(', ');
     if($('agentOsSummary'))$('agentOsSummary').textContent='Some data could not be loaded. Refresh to retry.';
   }
-  [['tasks','agentOsTasksBody',7],['memory','agentOsMemoryBody',7],['incidents','agentOsIncBody',8]].forEach(([key,id,columns])=>{
-    if(agentOsLoadErrors[key]&&$(id))$(id).innerHTML=`<tr><td colspan="${columns}" class="empty warn-t">Unavailable: ${esc(agentOsLoadErrors[key])}. Use Refresh to retry.</td></tr>`;
+  [['tasks','agentOsTasksBody',8],['memory','agentOsMemoryBody',7],['incidents','agentOsIncBody',8]].forEach(([key,id,columns])=>{
+    if(agentOsLoadErrors[key]&&$(id))$(id).innerHTML=`<tr><td colspan="${columns}" class="empty warn-t">${esc(agentOsLoadErrors[key])}</td></tr>`;
   });
 }
 
 $('agentOsRefresh')?.addEventListener('click',loadAgentOsView);
-$('agentOsRoot')?.addEventListener('input',()=>{
-  setAgentOsScopeReady(false);
-  agentOsTasks=[];agentOsMemories=[];agentOsIncidents=[];
-  agentOsLoadErrors={tasks:'Repository selection changed. Use Refresh',memory:'Repository selection changed. Use Refresh',incidents:'Repository selection changed. Use Refresh'};
-  renderAgentOsView();
+$('agentOsRepoSelect')?.addEventListener('change',()=>{
+  const val=$('agentOsRepoSelect').value;
+  if($('agentOsRoot'))$('agentOsRoot').value=val;
+  loadAgentOsView();
+});
+$('agentOsRoot')?.addEventListener('change',()=>{
+  const val=$('agentOsRoot').value.trim();
+  if($('agentOsRepoSelect'))$('agentOsRepoSelect').value=val;
+  loadAgentOsView();
 });
 $('agentOsRoot')?.addEventListener('keydown',event=>{if(event.key==='Enter')loadAgentOsView()});
 $('agentOsCleanup')?.addEventListener('click',openCleanupModal);

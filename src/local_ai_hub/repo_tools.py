@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -279,7 +280,7 @@ class RepositoryTools:
         self.ripgrep_timeout = max(0.5, float(search.get("ripgrep_timeout_seconds", 15.0)))
         self.ripgrep_slow_cooldown = max(1.0, float(search.get("ripgrep_slow_cooldown_seconds", 15.0)))
         self.git_grep_timeout = max(0.5, float(search.get("git_grep_timeout_seconds", min(10.0, self.ripgrep_timeout))))
-        self.git_files_timeout = max(0.5, float(search.get("git_files_timeout_seconds", 5.0)))
+        self.git_files_timeout = max(0.5, float(search.get("git_files_timeout_seconds", 15.0)))
         self.git_files_cache_ttl = max(0.0, float(search.get("git_files_cache_ttl_seconds", 3.0)))
         self.git_files_slow_cooldown = max(1.0, float(search.get("git_files_slow_cooldown_seconds", 15.0)))
         self.use_git_grep = bool(search.get("use_git_grep_fallback", True))
@@ -318,7 +319,7 @@ class RepositoryTools:
         """Stream a bounded tracked + untracked Git inventory.
 
         At most ``max_files`` paths are retained (the default hard bound is
-        ``self.max_files``); ``complete=False`` marks a further eligible path.
+        ``MAX_EXACT_GIT_PATHS``); ``complete=False`` marks a further eligible path.
         The NUL-delimited subprocess output is consumed in fixed-size chunks.
         """
         if not self.prefer_git or not (root / ".git").exists():
@@ -326,12 +327,13 @@ class RepositoryTools:
         limit = self.max_files if max_files is None else max(0, int(max_files))
         key = str(root)
         now = time.monotonic()
+        root_resolved = root.resolve(strict=False)
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
             if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                 self._git_stats["file_list_hits"] += 1
                 return GitFileInventory(
-                    [(root / rel).resolve(strict=False) for rel in cached[1][:limit]],
+                    [(root_resolved / rel) for rel in cached[1][:limit]],
                     complete=len(cached[1]) <= limit,
                 )
             if now < self._git_files_slow_until.get(key, 0.0):
@@ -353,7 +355,7 @@ class RepositoryTools:
                     self._git_stats["file_list_hits"] += 1
                     self._git_stats["file_list_coalesced"] += 1
                     return GitFileInventory(
-                        [(root / rel).resolve(strict=False) for rel in cached[1][:limit]],
+                        [(root_resolved / rel) for rel in cached[1][:limit]],
                         complete=len(cached[1]) <= limit,
                     )
                 if now < self._git_files_slow_until.get(key, 0.0):
@@ -394,21 +396,22 @@ class RepositoryTools:
                     scan_capped = True
                     return False
                 rel = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-                candidate = (root / rel).resolve(strict=False)
-                try:
-                    candidate.relative_to(root)
-                except ValueError:
-                    return True
+                if ".." in rel.split("/") or rel.startswith("/"):
+                    candidate = (root / rel).resolve(strict=False)
+                    try:
+                        candidate.relative_to(root)
+                    except ValueError:
+                        return True
                 if max_files is not None:
                     relative = Path(rel)
                     if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
                         return True
-                    if candidate.suffix.lower() in self.ignore_extensions:
+                    if relative.suffix.lower() in self.ignore_extensions:
                         return True
-                    if self.extensions and candidate.suffix.lower() not in self.extensions and candidate.name.lower() not in self.special_filenames:
+                    if self.extensions and relative.suffix.lower() not in self.extensions and relative.name.lower() not in self.special_filenames:
                         return True
                     try:
-                        if candidate.stat().st_size > self.max_file_bytes:
+                        if (root / rel).stat().st_size > self.max_file_bytes:
                             return True
                     except OSError:
                         return True
@@ -453,10 +456,10 @@ class RepositoryTools:
                 return None
             complete = within_limit and not scan_capped
             inventory = GitFileInventory(
-                [(root / rel).resolve(strict=False) for rel in rels], complete=complete,
+                [(root_resolved / rel) for rel in rels], complete=complete,
             )
             with self._git_files_lock:
-                if max_files is None and complete:
+                if (max_files is None or max_files >= self.max_files) and complete:
                     self._git_files_cache[key] = (time.monotonic(), tuple(rels))
                     if len(self._git_files_cache) > 64:
                         for cache_key in list(self._git_files_cache.keys())[:-32]:
@@ -1655,6 +1658,52 @@ class RepositoryTools:
         extension_check = getattr(self, "_path_extension_is_searchable", None)
         force_patterns = tuple(force_include_paths or ())
 
+        matching_relpaths: set[str] | None = None
+        if self.use_ripgrep and self._rg and terms:
+            rg_cmd = [
+                self._rg, "--glob-case-insensitive", "--files-with-matches",
+                "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore",
+                "--no-messages", "-g", "!.git/**",
+            ]
+            for d in ("logs", "temp", "library", ".serena", ".local-ai-hub", "bin", "obj", "build", "dist"):
+                rg_cmd.extend(["-g", f"!**/{d}/**"])
+            for term in terms[:16]:
+                rg_cmd.extend(["-e", term])
+            if phrase and len(phrase) <= 120 and phrase not in terms:
+                rg_cmd.extend(["-e", phrase])
+            rg_cmd.append(".")
+            try:
+                proc = subprocess.run(
+                    rg_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(self.ripgrep_timeout, 10.0),
+                    check=False,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=str(base),
+                    **hidden_run_kwargs(),
+                )
+                if proc.returncode in (0, 1):
+                    matching_relpaths = set()
+                    for line in proc.stdout.splitlines():
+                        raw_line = line.strip()
+                        if not raw_line:
+                            continue
+                        try:
+                            p = Path(raw_line)
+                            if p.is_absolute():
+                                rel_p = p.resolve(strict=False).relative_to(base).as_posix()
+                            else:
+                                rel_p = p.as_posix()
+                                if rel_p.startswith("./"):
+                                    rel_p = rel_p[2:]
+                            matching_relpaths.add(rel_p)
+                        except (OSError, ValueError):
+                            continue
+            except Exception:
+                matching_relpaths = None
+
         def candidates() -> Iterable[Path]:
             if git_inventory is not _UNSET_GIT_INVENTORY and getattr(git_inventory, "complete", True) is False:
                 raise _IncompleteGitInventory(
@@ -1799,9 +1848,14 @@ class RepositoryTools:
                 try:
                     if path.is_symlink():
                         continue
-                    path = path.resolve(strict=True)
-                    path.relative_to(base)
-                    relative = path.relative_to(base)
+                    try:
+                        relative = path.relative_to(base)
+                    except ValueError:
+                        try:
+                            path = path.resolve(strict=True)
+                            relative = path.relative_to(base)
+                        except (OSError, RuntimeError, ValueError):
+                            continue
                     rel = relative.as_posix()
                     forced = any(self._path_control_matches(rel, (pattern,)) for pattern in force_patterns)
                     if project_settings is None:
@@ -1821,9 +1875,13 @@ class RepositoryTools:
                     # with one path of state rather than a repository-sized set.
                     if rel == previous_relative_path:
                         continue
-                    if not path.is_file():
+                    try:
+                        st = path.stat()
+                    except OSError:
                         continue
-                    if path.stat().st_size > self.max_file_bytes:
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    if st.st_size > self.max_file_bytes:
                         continue
                     if scanned >= file_cap:
                         return {
@@ -1833,6 +1891,15 @@ class RepositoryTools:
                         }
                     scanned += 1
                     previous_relative_path = rel
+
+                    if matching_relpaths is not None and rel not in matching_relpaths and not forced:
+                        continue
+
+                    try:
+                        path = path.resolve(strict=True)
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+
                     file_hash, lines = self._read_snapshot(
                         path, max_bytes=self.max_file_bytes,
                     )
@@ -2960,7 +3027,10 @@ class RepositoryTools:
                 "results": [], "scanned_files": 0, "targeted": True,
             }
         if git_inventory is _UNSET_GIT_INVENTORY:
-            git_inventory = self._git_files(base)
+            try:
+                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS)
+            except TypeError:
+                git_inventory = self._git_files(base)
         git_metadata = base / ".git"
         valid_git_metadata = (
             (git_metadata.is_dir() and (git_metadata / "HEAD").is_file())
@@ -2973,11 +3043,13 @@ class RepositoryTools:
                 "results": [], "scanned_files": 0, "targeted": True,
             }
         git_paths = None
+        git_inventory_complete = True
         if git_inventory is not None:
+            git_inventory_complete = getattr(git_inventory, "complete", True)
             git_paths = set()
             for candidate in git_inventory:
                 try:
-                    git_paths.add(candidate.resolve(strict=False).relative_to(base).as_posix())
+                    git_paths.add(candidate.relative_to(base).as_posix())
                 except (OSError, RuntimeError, ValueError):
                     continue
         if not isinstance(paths, (list, tuple)):
@@ -3074,8 +3146,14 @@ class RepositoryTools:
                 continue
             if not path.is_file():
                 continue
-            if git_paths is not None and rel not in git_paths and not forced and not path_is_allowed(
-                base, rel, project_settings, phase="search", soft_ignored=True,
+            if (
+                git_paths is not None
+                and git_inventory_complete
+                and rel not in git_paths
+                and not forced
+                and not path_is_allowed(
+                    base, rel, project_settings, phase="search", soft_ignored=True,
+                )
             ):
                 continue
             scanned += 1
