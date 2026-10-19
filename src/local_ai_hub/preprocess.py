@@ -3175,17 +3175,24 @@ class ProjectPreprocessor:
 
         try:
             result = self.code_index.update_files_batch(root, pending)
-            progressed = int(result.get("files_processed", 0)) + int(result.get("cached", 0))
+            files_processed = int(result.get("files_processed", 0))
+            progressed = files_processed + int(result.get("cached", 0))
         except Exception:
+            files_processed = 0
             progressed = 0
             for p, digest in pending:
                 try:
-                    progressed += int(bool(self.code_index.update_file(root, p, digest).get("success")))
+                    updated = bool(self.code_index.update_file(root, p, digest).get("success"))
+                    progressed += int(updated)
+                    if updated:
+                        files_processed += 1
                 except Exception as index_exc:
                     logger.warning("Code-index file update failed (%s)", type(index_exc).__name__)
         with self._stats_lock:
             self._stats["code_index_files"] += progressed
         self._record_progress(root, len(pending))
+        if len(pending) < limit or files_processed == 0:
+            self._set_project(root, phase="deterministic")
         return True
 
     @staticmethod
