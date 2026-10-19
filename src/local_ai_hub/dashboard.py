@@ -330,8 +330,23 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 @media(min-width:1100px){.grid-6{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:1000px){.split{grid-template-columns:1fr}.group-title>.tiny{width:100%}.section h2>.tiny{width:100%}}
 @media(max-width:600px){.page{padding:20px 14px 32px}.page-heading{margin-bottom:20px}.page-heading h1{font-size:24px}.page-heading p{font-size:13px}.toolbar{padding:12px 14px;gap:8px}.tabs{padding:0 14px 10px}.tabbtn{font-size:12px;padding:9px 11px}.toolbar>.spacer{flex-basis:100%;margin-left:0}.control-menu{margin-left:auto}.control-popover{position:fixed;left:12px;right:12px;top:110px;width:auto;min-width:0;max-height:calc(100dvh - 134px)}.grid-6{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:16px;min-height:132px}.value,.primary-metric{font-size:23px}.group-title>.tiny{display:none}.section h2{padding:14px 16px}.section h2 .spacer{margin-left:0}.project-toolbar,.request-filter{padding:12px}.project-toolbar input:not([type=checkbox]):not([type=radio]),.request-filter input{min-width:0;flex-basis:100%}.project-toolbar select,.request-filter select{flex:1;min-width:130px}.project-toolbar .project-summary{width:100%}.arena-grid{grid-template-columns:1fr}.kv{grid-template-columns:1fr;gap:4px}.kv>div:nth-child(even){margin-bottom:12px}.modal-bg{padding:8px}.modal{max-height:94dvh}.modal-form{grid-template-columns:1fr}.reliability-footer{align-items:stretch!important}.reliability-footer>div{flex-wrap:wrap}.reliability-footer .btn{white-space:normal}}
-@media(max-width:380px){.grid-6{grid-template-columns:1fr}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+.kanban-board{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:14px}
+.kanban-col{background:#111a26;border:1px solid #1f2e42;border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:420px}
+.kanban-col.col-planned{border-top:3px solid #64748b}
+.kanban-col.col-in_progress{border-top:3px solid #38bdf8}
+.kanban-col.col-done{border-top:3px solid #4ade80}
+.kanban-col.col-blocked{border-top:3px solid #f87171}
+.kanban-col.col-cancelled{border-top:3px solid #475569}
+.kanban-col-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #1f2e42;font-weight:600;font-size:13px}
+.kanban-cards{display:flex;flex-direction:column;gap:8px;flex:1}
+.kanban-card{background:#172233;border:1px solid #283a52;border-radius:6px;padding:11px;font-size:12px;transition:all .15s;display:flex;flex-direction:column;gap:6px}
+.kanban-card:hover{border-color:var(--accent);box-shadow:0 4px 12px rgba(0,0,0,0.25)}
+.kanban-card-title{font-weight:600;color:#f1f5f9;font-size:13px;line-height:1.4}
+.kanban-card-meta{display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:11px}
+.kanban-card-actions{display:flex;gap:4px;margin-top:auto;padding-top:8px;border-top:1px dashed #24354a;justify-content:space-between;align-items:center}
+.milestone-card{background:#111a26;border:1px solid #1f2e42;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.progress-bar{background:#1e293b;border-radius:999px;height:8px;overflow:hidden;margin:6px 0}
+.progress-fill{background:var(--accent);height:100%;border-radius:999px;transition:width .3s ease}
 </style></head><body>
 <div class="top">
   <div class="toolbar">
@@ -369,6 +384,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
     <button class="tabbtn active" data-tab="overview">📊 Overview</button>
     <button class="tabbtn" data-tab="work">⚡ Queue &amp; requests</button>
     <button class="tabbtn" data-tab="agentos" data-feature="agent_os">🤖 Agent OS</button>
+    <button class="tabbtn" data-tab="coordination" data-feature="agent_os">📋 Board &amp; Coordination</button>
     <button class="tabbtn" data-tab="projects" data-feature="preprocessing">📁 Projects</button>
     <button class="tabbtn" data-tab="commands" data-feature="commands">💻 Commands</button>
     <button class="tabbtn" data-tab="performance">🧠 Models &amp; RAG</button>
@@ -415,10 +431,12 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   </div>
 
   <div class="dash-group">
-    <div class="group-title"><span>Queues &amp; Execution</span><span class="tiny muted">Foreground scheduler and background workers</span></div>
-    <div class="grid grid-2">
+    <div class="group-title"><span>Queues &amp; Execution</span><span class="tiny muted">Foreground scheduler, background workers and agent coordination</span></div>
+    <div class="grid grid-4">
       <div class="card"><div class="label">Scheduler Queue</div><div class="value primary-metric" id="fgQueue">…</div><div class="sub" id="bgQueue"></div></div>
       <div class="card"><div class="label">Preprocessing Pipeline</div><div class="value primary-metric" id="prep">…</div><div class="sub" id="prepSub"></div></div>
+      <div class="card" id="coordBoardCard" style="cursor:pointer" title="Click to open Project Board &amp; Coordination"><div class="label" style="display:flex;justify-content:space-between"><span>Project Board</span><span>↗</span></div><div class="value primary-metric" id="overviewBoardCount">…</div><div class="sub" id="overviewBoardSub">Kanban items</div></div>
+      <div class="card" id="coordSemCard" style="cursor:pointer" title="Click to open Semaphores &amp; Locks"><div class="label" style="display:flex;justify-content:space-between"><span>Semaphores &amp; Locks</span><span>↗</span></div><div class="value primary-metric" id="overviewSemCount">…</div><div class="sub" id="overviewSemSub">Active resource locks</div></div>
     </div>
   </div>
 
@@ -457,6 +475,9 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
     </div>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
+      <button class="subtab-btn" id="subtabBoard" data-agentos-tab="board">📌 Project Board</button>
+      <button class="subtab-btn" id="subtabSemaphores" data-agentos-tab="semaphores">🔒 Semaphores &amp; Locks</button>
+      <button class="subtab-btn" id="subtabMilestones" data-agentos-tab="milestones">🎯 Milestones</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
       <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Negative Knowledge &amp; Incidents</button>
       <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Run History &amp; Inspect</button>
@@ -522,6 +543,81 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       <p class="tiny" id="tracePrivacyNotice">Podrobný obsah je vypnutý ve výchozím stavu. Podrobná telemetrie ukládá úplný endpoint input/output lokálně.</p>
       <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><button class="btn ok" id="visionReviewOpen" style="padding:4px 8px;font-size:11px">Frontend vision review</button><select id="traceKind" aria-label="Trace kind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
+    </section>
+  </div>
+</div>
+
+
+<div id="coordination" class="page">
+  <header class="page-heading">
+    <h1 tabindex="-1" id="page-title-coordination">Project Board &amp; Coordination</h1>
+    <p>Visual cross-agent Kanban board, generic resource semaphores, milestones, and session briefings.</p>
+  </header>
+
+  <div class="subtabs" style="margin-bottom:14px">
+    <button class="subtab-btn active" id="subtabCoordBoard" data-coord-subtab="board">📌 Project Board (Kanban)</button>
+    <button class="subtab-btn" id="subtabCoordSemaphores" data-coord-subtab="semaphores">🔒 Resource Semaphores</button>
+    <button class="subtab-btn" id="subtabCoordMilestones" data-coord-subtab="milestones">🎯 Milestones</button>
+    <button class="subtab-btn" id="subtabCoordBriefing" data-coord-subtab="briefing">📝 Session Briefing</button>
+  </div>
+
+  <div id="coordBoardSec" style="display:block">
+    <section class="section">
+      <div class="project-toolbar" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn primary" id="coordNewCardBtn">+ Add Card</button>
+          <button class="btn" id="coordRefreshBoardBtn">↻ Refresh Board</button>
+          <input id="coordBoardSearch" type="search" placeholder="Filter cards by title, tag, assignee..." style="min-width:240px">
+        </div>
+        <div id="coordBoardSummaryText" class="tiny muted">Loading board...</div>
+      </div>
+      <div class="kanban-board" id="kanbanBoardContainer"></div>
+    </section>
+  </div>
+
+  <div id="coordSemaphoresSec" style="display:none">
+    <section class="section">
+      <div class="project-toolbar" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn primary" id="coordAcquireSemBtn">+ Acquire Semaphore</button>
+          <button class="btn" id="coordRefreshSemBtn">↻ Refresh</button>
+        </div>
+        <span class="tiny muted" id="coordSemSummary">0 semaphores</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Semaphore Name</th><th>Capacity</th><th>Active / Held</th><th>Holders &amp; Leases</th><th>Waiting Queue</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="coordSemaphoresBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div id="coordMilestonesSec" style="display:none">
+    <section class="section">
+      <div class="project-toolbar" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn primary" id="coordNewMilestoneBtn">+ Create Milestone</button>
+          <button class="btn" id="coordRefreshMilestoneBtn">↻ Refresh</button>
+        </div>
+        <span class="tiny muted" id="coordMilestoneSummary">Milestone progress across board items</span>
+      </div>
+      <div id="coordMilestonesGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-top:12px;padding:12px"></div>
+    </section>
+  </div>
+
+  <div id="coordBriefingSec" style="display:none">
+    <section class="section">
+      <div class="project-toolbar" style="display:flex;gap:10px;align-items:center">
+        <input id="coordBriefingAgentId" placeholder="Agent ID (e.g. primary_agent)" value="primary_agent" style="width:200px">
+        <button class="btn primary" id="coordGenerateBriefingBtn">⚡ Generate Session Briefing</button>
+        <span class="tiny muted">Generates a concise markdown briefing containing current board items, semaphores, and active tasks.</span>
+      </div>
+      <div style="padding:14px">
+        <pre id="coordBriefingOutput" class="code-box" style="min-height:220px;font-size:12px">Click 'Generate Session Briefing' to compile latest status.</pre>
+      </div>
     </section>
   </div>
 </div>
@@ -4125,6 +4221,7 @@ function switchTab(tabId){
   if(location.hash.replace('#','')!==tabId)history.replaceState(null,'','#'+tabId);
   if(tabId==='config')loadConfigView();
   if(tabId==='agentos')loadAgentOsView();
+  if(tabId==='coordination')loadCoordinationView();
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();}
   if(tabId==='commands')loadWorktrees();
   if(tabId==='reliability')loadLogsTail();
@@ -5044,6 +5141,11 @@ async function loadAgentOsView(){
 }
 
 function switchAgentOsSubtab(tabKey){
+  if(['board','semaphores','milestones'].includes(tabKey)){
+    switchTab('coordination');
+    switchCoordSubtab(tabKey);
+    return;
+  }
   const subtabs=['tasks','memory','incidents','trajectories'];
   subtabs.forEach(t=>{
     const btn=$('subtab'+t.charAt(0).toUpperCase()+t.slice(1));
@@ -5574,6 +5676,490 @@ document.addEventListener('click',e=>{
   }
 });
 
+// ── Coordination, Project Board & Resource Semaphores ────────────────────────
+let cachedBoardItems = [];
+let cachedSemaphores = {};
+
+async function loadCoordinationView(){
+  try{
+    const [boardRes, semRes, mileRes] = await Promise.allSettled([
+      post('/api/coord/board_item_list', {}),
+      post('/api/coord/semaphore_status', {}),
+      post('/api/coord/milestone_status', {})
+    ]);
+
+    if(boardRes.status === 'fulfilled' && boardRes.value?.success){
+      cachedBoardItems = boardRes.value.items || [];
+      renderKanbanBoard();
+    }
+    if(semRes.status === 'fulfilled' && semRes.value?.success){
+      cachedSemaphores = semRes.value.semaphores || {};
+      renderSemaphoresTable();
+    }
+    if(mileRes.status === 'fulfilled' && mileRes.value?.success){
+      renderMilestonesView(mileRes.value);
+    }
+    updateCoordOverviewCards();
+  }catch(err){
+    console.warn('Coordination load error:', err);
+  }
+}
+
+function renderKanbanBoard(){
+  const query = String($('coordBoardSearch')?.value || '').trim().toLowerCase();
+  const container = $('kanbanBoardContainer');
+  if(!container) return;
+
+  const cols = [
+    {key: 'planned', label: 'Planned', icon: '📋'},
+    {key: 'in_progress', label: 'In Progress', icon: '⚡'},
+    {key: 'done', label: 'Done', icon: '✅'},
+    {key: 'blocked', label: 'Blocked', icon: '⛔'},
+    {key: 'cancelled', label: 'Cancelled', icon: '❌'}
+  ];
+
+  const filtered = cachedBoardItems.filter(item => {
+    if(!query) return true;
+    const text = [item.item_id, item.title, item.status, item.priority, item.assignee, item.milestone, (item.labels || []).join(' ')].join(' ').toLowerCase();
+    return text.includes(query);
+  });
+
+  const counts = {};
+  cols.forEach(c => counts[c.key] = 0);
+  filtered.forEach(item => {
+    const st = String(item.status || 'planned').toLowerCase();
+    counts[st] = (counts[st] || 0) + 1;
+  });
+
+  if($('coordBoardSummaryText')){
+    $('coordBoardSummaryText').textContent = `${filtered.length} total cards · ${counts.in_progress || 0} active · ${counts.blocked || 0} blocked`;
+  }
+
+  container.innerHTML = cols.map(c => {
+    const colItems = filtered.filter(item => String(item.status || 'planned').toLowerCase() === c.key);
+    const cardsHtml = colItems.length ? colItems.map(item => {
+      const pri = String(item.priority || 'normal').toLowerCase();
+      const priClass = pri === 'critical' ? 'bad-t' : (pri === 'high' ? 'warn-t' : (pri === 'low' ? 'muted' : 'ok'));
+      const assigneeBadge = item.assignee ? `<span class="chip" title="Assignee">👤 ${esc(item.assignee)}</span>` : '';
+      const milestoneBadge = item.milestone ? `<span class="chip" title="Milestone">🎯 ${esc(item.milestone)}</span>` : '';
+      const taskBadge = item.linked_task_id ? `<span class="chip mono" title="Linked Task">🔗 ${esc(item.linked_task_id)}</span>` : '';
+      const labels = (item.labels || []).map(l => `<span class="chip">${esc(l)}</span>`).join('');
+      
+      const moveOptions = cols.map(targetCol => 
+        `<option value="${targetCol.key}" ${targetCol.key === c.key ? 'selected' : ''}>${targetCol.label}</option>`
+      ).join('');
+
+      return `
+        <div class="kanban-card" data-item-id="${esc(item.item_id)}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+            <span class="kanban-card-title">${esc(item.title || item.item_id)}</span>
+            <span class="chip ${priClass}" style="text-transform:uppercase;font-size:10px;font-weight:700">${esc(pri)}</span>
+          </div>
+          <div class="kanban-card-meta">
+            ${assigneeBadge}
+            ${milestoneBadge}
+            ${taskBadge}
+            ${labels}
+          </div>
+          <div class="kanban-card-actions">
+            <select class="action-btn-sm" style="font-size:11px;padding:2px 6px;height:26px" onchange="updateCardStatus('${esc(item.item_id)}', this.value)">
+              ${moveOptions}
+            </select>
+            <button class="action-btn-sm danger" style="padding:2px 7px;font-size:11px" onclick="deleteBoardCard('${esc(item.item_id)}')">✕</button>
+          </div>
+        </div>
+      `;
+    }).join('') : '<div class="empty tiny" style="padding:24px 8px">No cards</div>';
+
+    return `
+      <div class="kanban-col col-${c.key}">
+        <div class="kanban-col-head">
+          <span>${c.icon} ${c.label}</span>
+          <span class="chip">${counts[c.key] || 0}</span>
+        </div>
+        <div class="kanban-cards">
+          ${cardsHtml}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderSemaphoresTable(){
+  const body = $('coordSemaphoresBody');
+  if(!body) return;
+  const list = Object.values(cachedSemaphores);
+  if($('coordSemSummary')) $('coordSemSummary').textContent = `${list.length} registered semaphores`;
+  if(!list.length){
+    body.innerHTML = '<tr><td colspan="6" class="empty">No semaphores configured yet. Use "+ Acquire Semaphore" to create one.</td></tr>';
+    return;
+  }
+  body.innerHTML = list.map(s => {
+    const active = s.active_count || (s.active_holders || []).length || 0;
+    const cap = s.capacity || 1;
+    const ratio = `${active} / ${cap}`;
+    const badge = active >= cap ? '<span class="chip bad-t">Full (Locked)</span>' : (active > 0 ? '<span class="chip warn-t">Partially Held</span>' : '<span class="chip ok">Available</span>');
+    const holdersHtml = (s.active_holders || []).map(h => {
+      const exp = Math.max(0, Math.round((h.expires_at || 0) - (Date.now() / 1000)));
+      return `<div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span class="chip mono">${esc(h.owner || 'agent')} (${exp}s)</span> <button class="action-btn-sm danger" style="padding:1px 5px;font-size:10px" onclick="releaseSemaphore('${esc(s.name)}', '${esc(h.lease_id)}')">Release</button></div>`;
+    }).join('') || '<span class="muted tiny">None</span>';
+    const qLen = s.queue_length || 0;
+    const qBadge = qLen > 0 ? `<span class="chip warn-t">${qLen} waiting</span>` : '<span class="muted tiny">0</span>';
+    const act = `<button class="action-btn-sm" onclick="quickAcquireSem('${esc(s.name)}', ${cap})">+ Acquire</button>`;
+    return `<tr><td><strong>${esc(s.name)}</strong></td><td>${cap}</td><td>${badge} <span class="tiny mono">(${ratio})</span></td><td>${holdersHtml}</td><td>${qBadge}</td><td>${act}</td></tr>`;
+  }).join('');
+}
+
+function renderMilestonesView(statusData){
+  const grid = $('coordMilestonesGrid');
+  if(!grid) return;
+  const milestoneMap = {};
+  cachedBoardItems.forEach(item => {
+    const m = item.milestone || 'General Backlog';
+    if(!milestoneMap[m]) milestoneMap[m] = {total: 0, done: 0, in_progress: 0, blocked: 0, planned: 0};
+    milestoneMap[m].total++;
+    const st = String(item.status || 'planned').toLowerCase();
+    if(st === 'done') milestoneMap[m].done++;
+    else if(st === 'in_progress') milestoneMap[m].in_progress++;
+    else if(st === 'blocked') milestoneMap[m].blocked++;
+    else milestoneMap[m].planned++;
+  });
+
+  const keys = Object.keys(milestoneMap);
+  if(!keys.length){
+    grid.innerHTML = '<div class="empty" style="grid-column:1/-1">No milestones recorded yet. Create board cards with milestone tags.</div>';
+    return;
+  }
+
+  grid.innerHTML = keys.map(k => {
+    const data = milestoneMap[k];
+    const pct = data.total > 0 ? Math.round((data.done / data.total) * 100) : 0;
+    return `
+      <div class="milestone-card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong style="font-size:14px">🎯 ${esc(k)}</strong>
+          <span class="chip ${pct === 100 ? 'ok' : (pct > 0 ? 'warn-t' : '')}">${pct}% complete</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <div class="tiny" style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="chip ok">✅ ${data.done} Done</span>
+          <span class="chip">⚡ ${data.in_progress} In Progress</span>
+          <span class="chip">📋 ${data.planned} Planned</span>
+          ${data.blocked ? `<span class="chip bad-t">⛔ ${data.blocked} Blocked</span>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateCoordOverviewCards(){
+  if($('overviewBoardCount')){
+    const inProg = cachedBoardItems.filter(i => String(i.status || '').toLowerCase() === 'in_progress').length;
+    $('overviewBoardCount').textContent = `${inProg} / ${cachedBoardItems.length}`;
+  }
+  if($('overviewBoardSub')){
+    const blocked = cachedBoardItems.filter(i => String(i.status || '').toLowerCase() === 'blocked').length;
+    $('overviewBoardSub').textContent = `${cachedBoardItems.length} items${blocked ? ` · ${blocked} blocked` : ' · healthy'}`;
+  }
+  if($('overviewSemCount')){
+    const sems = Object.values(cachedSemaphores);
+    const held = sems.filter(s => (s.active_count || 0) > 0).length;
+    $('overviewSemCount').textContent = `${held} / ${sems.length}`;
+  }
+  if($('overviewSemSub')){
+    $('overviewSemSub').textContent = `${Object.keys(cachedSemaphores).length} semaphores configured`;
+  }
+}
+
+async function updateCardStatus(itemId, newStatus){
+  try{
+    const res = await post('/api/coord/board_item_update', {item_id: itemId, status: newStatus});
+    if(res.success === false) throw new Error(res.error || 'Failed to update card');
+    await loadCoordinationView();
+  }catch(e){
+    alert('Failed to move card: ' + (e.message || e));
+  }
+}
+
+async function deleteBoardCard(itemId){
+  if(!confirm(`Delete board card "${itemId}"?`)) return;
+  try{
+    const res = await post('/api/coord/board_item_delete', {item_id: itemId});
+    if(res.success === false) throw new Error(res.error || 'Failed to delete card');
+    await loadCoordinationView();
+  }catch(e){
+    alert('Failed to delete card: ' + (e.message || e));
+  }
+}
+
+async function releaseSemaphore(name, leaseId){
+  if(!confirm(`Release semaphore "${name}" (lease ${leaseId})?`)) return;
+  try{
+    const res = await post('/api/coord/semaphore_release', {name, lease_id: leaseId});
+    if(res.success === false) throw new Error(res.error || 'Failed to release');
+    await loadCoordinationView();
+  }catch(e){
+    alert('Failed to release semaphore: ' + (e.message || e));
+  }
+}
+
+async function quickAcquireSem(name, capacity){
+  const owner = prompt('Enter holder/owner ID:', 'agent_' + Math.random().toString(36).slice(2, 7));
+  if(!owner) return;
+  try{
+    const res = await post('/api/coord/semaphore_acquire', {name, owner, capacity, ttl_seconds: 300});
+    if(res.acquired){
+      alert(`Acquired lock! Lease ID: ${res.lease_id}`);
+    }else{
+      alert(`Could not acquire: ${res.reason || 'Capacity reached'}`);
+    }
+    await loadCoordinationView();
+  }catch(e){
+    alert('Acquire error: ' + (e.message || e));
+  }
+}
+
+function openAddCardModal(){
+  if($('modalTitle')) $('modalTitle').textContent = 'Add Kanban Board Card';
+  if($('modalLive')) $('modalLive').textContent = '';
+  if($('modalBody')) $('modalBody').innerHTML = `
+    <div class="modal-body-wrap">
+      <form class="modal-form" onsubmit="submitAddCard(event)">
+        <div class="form-group">
+          <label for="newCardTitle">Card Title *</label>
+          <input type="text" id="newCardTitle" required placeholder="Card title or task objective..." autofocus>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label for="newCardStatus">Status</label>
+            <select id="newCardStatus">
+              <option value="planned" selected>Planned</option>
+              <option value="in_progress">In Progress</option>
+              <option value="done">Done</option>
+              <option value="blocked">Blocked</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="newCardPriority">Priority</label>
+            <select id="newCardPriority">
+              <option value="low">Low</option>
+              <option value="normal" selected>Normal</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label for="newCardAssignee">Assignee</label>
+            <input type="text" id="newCardAssignee" placeholder="e.g. primary_agent, coder_1">
+          </div>
+          <div class="form-group">
+            <label for="newCardMilestone">Milestone</label>
+            <input type="text" id="newCardMilestone" placeholder="e.g. v1.0, Sprint 4">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="newCardTask">Linked Task ID (optional)</label>
+          <input type="text" id="newCardTask" placeholder="e.g. task-930">
+        </div>
+        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
+          <button type="submit" class="btn ok">Create Card</button>
+        </div>
+      </form>
+    </div>
+  `;
+  $('modalBg')?.classList.add('open');
+}
+
+async function submitAddCard(e){
+  e.preventDefault();
+  const title = $('newCardTitle')?.value?.trim();
+  const status = $('newCardStatus')?.value || 'planned';
+  const priority = $('newCardPriority')?.value || 'normal';
+  const assignee = $('newCardAssignee')?.value?.trim() || '';
+  const milestone = $('newCardMilestone')?.value?.trim() || '';
+  const linked_task_id = $('newCardTask')?.value?.trim() || '';
+  if(!title) return;
+  try{
+    const res = await post('/api/coord/board_item_create', {
+      title, status, priority, assignee, milestone, linked_task_id
+    });
+    if(res.success === false) throw new Error(res.error || 'Failed to create card');
+    $('modalClose')?.click();
+    await loadCoordinationView();
+  }catch(err){
+    alert('Create card error: ' + (err.message || err));
+  }
+}
+
+function openAcquireSemModal(){
+  if($('modalTitle')) $('modalTitle').textContent = 'Acquire Resource Semaphore';
+  if($('modalLive')) $('modalLive').textContent = '';
+  if($('modalBody')) $('modalBody').innerHTML = `
+    <div class="modal-body-wrap">
+      <form class="modal-form" onsubmit="submitAcquireSem(event)">
+        <div class="form-group">
+          <label for="newSemName">Semaphore Name *</label>
+          <input type="text" id="newSemName" required placeholder="e.g. unity_editor, gpu_lock, git_writer" autofocus>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label for="newSemOwner">Holder / Owner ID *</label>
+            <input type="text" id="newSemOwner" required placeholder="e.g. agent_1, session_123" value="agent_${Math.random().toString(36).slice(2,7)}">
+          </div>
+          <div class="form-group">
+            <label for="newSemCapacity">Capacity (Slots)</label>
+            <input type="number" id="newSemCapacity" min="1" max="100" value="1">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label for="newSemTtl">TTL (Seconds)</label>
+            <input type="number" id="newSemTtl" min="1" max="3600" value="300">
+          </div>
+          <div class="form-group">
+            <label for="newSemTimeout">Wait Timeout (Seconds)</label>
+            <input type="number" id="newSemTimeout" min="0" max="600" value="0">
+          </div>
+        </div>
+        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
+          <button type="submit" class="btn ok">Acquire / Create</button>
+        </div>
+      </form>
+    </div>
+  `;
+  $('modalBg')?.classList.add('open');
+}
+
+async function submitAcquireSem(e){
+  e.preventDefault();
+  const name = $('newSemName')?.value?.trim();
+  const owner = $('newSemOwner')?.value?.trim() || 'agent';
+  const capacity = parseInt($('newSemCapacity')?.value || '1', 10);
+  const ttl_seconds = parseFloat($('newSemTtl')?.value || '300');
+  const timeout = parseFloat($('newSemTimeout')?.value || '0');
+  if(!name) return;
+  try{
+    const res = await post('/api/coord/semaphore_acquire', {
+      name, owner, capacity, ttl_seconds, timeout
+    });
+    $('modalClose')?.click();
+    if(res.acquired){
+      alert(`Acquired semaphore "${name}"! Lease ID: ${res.lease_id}`);
+    }else{
+      alert(`Could not acquire semaphore: ${res.reason || 'Capacity reached'}`);
+    }
+    await loadCoordinationView();
+  }catch(err){
+    alert('Acquire semaphore error: ' + (err.message || err));
+  }
+}
+
+function openAddMilestoneModal(){
+  if($('modalTitle')) $('modalTitle').textContent = 'Create Milestone';
+  if($('modalLive')) $('modalLive').textContent = '';
+  if($('modalBody')) $('modalBody').innerHTML = `
+    <div class="modal-body-wrap">
+      <form class="modal-form" onsubmit="submitAddMilestone(event)">
+        <div class="form-group">
+          <label for="newMileName">Milestone Name *</label>
+          <input type="text" id="newMileName" required placeholder="e.g. v1.0 Release, Core Engine" autofocus>
+        </div>
+        <div class="form-group">
+          <label for="newMileTarget">Target Date</label>
+          <input type="date" id="newMileTarget">
+        </div>
+        <div class="form-group">
+          <label for="newMileDesc">Description</label>
+          <textarea id="newMileDesc" rows="3" placeholder="Milestone deliverables and scope..."></textarea>
+        </div>
+        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
+          <button type="submit" class="btn ok">Create Milestone</button>
+        </div>
+      </form>
+    </div>
+  `;
+  $('modalBg')?.classList.add('open');
+}
+
+async function submitAddMilestone(e){
+  e.preventDefault();
+  const milestone = $('newMileName')?.value?.trim();
+  const target_date = $('newMileTarget')?.value || '';
+  const description = $('newMileDesc')?.value?.trim() || '';
+  if(!milestone) return;
+  try{
+    const res = await post('/api/coord/milestone_create', {milestone, target_date, description});
+    if(res.success === false) throw new Error(res.error || 'Failed to create milestone');
+    $('modalClose')?.click();
+    await loadCoordinationView();
+  }catch(err){
+    alert('Create milestone error: ' + (err.message || err));
+  }
+}
+
+async function generateSessionBriefing(){
+  const agentId = $('coordBriefingAgentId')?.value?.trim() || 'primary_agent';
+  const out = $('coordBriefingOutput');
+  if(!out) return;
+  out.textContent = 'Compiling session briefing...';
+  try{
+    const res = await post('/api/coord/session_briefing', {agent_id: agentId});
+    if(res.success === false) throw new Error(res.error || 'Failed to compile briefing');
+    const b = res.board_summary?.counts || res.board?.summary?.counts || {};
+    const sems = Object.values(res.semaphores?.semaphores || {});
+    const md = [
+      `# Session Briefing for \`${agentId}\` (${new Date((res.timestamp || Date.now() / 1000) * 1000).toLocaleString()})`,
+      '',
+      `## Project Board Status`,
+      `- Total items: **${b.total || 0}**`,
+      `- In progress: **${b.in_progress || 0}**`,
+      `- Planned: **${b.planned || 0}**`,
+      `- Done: **${b.done || 0}**`,
+      `- Blocked: **${b.blocked || 0}**`,
+      '',
+      `## Resource Semaphores`,
+      sems.length ? sems.map(s => `- **${s.name}**: ${s.active_count || 0}/${s.capacity} held (${s.queue_length || 0} waiting)`).join('\n') : '- No active semaphores',
+      '',
+      `## Active Tasks`,
+      (res.active_tasks || []).length ? res.active_tasks.map(t => `- **${t.task_id}**: ${t.goal || 'No goal stated'}`).join('\n') : '- No active tasks reported'
+    ].join('\n');
+    out.textContent = md;
+  }catch(e){
+    out.textContent = 'Briefing compilation error: ' + (e.message || e);
+  }
+}
+
+function switchCoordSubtab(tabKey){
+  ['board', 'semaphores', 'milestones', 'briefing'].forEach(t => {
+    const btn = $('subtabCoord' + t.charAt(0).toUpperCase() + t.slice(1));
+    const sec = $('coord' + t.charAt(0).toUpperCase() + t.slice(1) + 'Sec');
+    if(btn) btn.classList.toggle('active', t === tabKey);
+    if(sec) sec.style.display = t === tabKey ? 'block' : 'none';
+  });
+}
+
+document.querySelectorAll('.subtab-btn[data-coord-subtab]').forEach(btn => {
+  btn.addEventListener('click', () => switchCoordSubtab(btn.dataset.coordSubtab));
+});
+
+$('coordRefreshBoardBtn')?.addEventListener('click', loadCoordinationView);
+$('coordBoardSearch')?.addEventListener('input', renderKanbanBoard);
+$('coordNewCardBtn')?.addEventListener('click', openAddCardModal);
+$('coordRefreshSemBtn')?.addEventListener('click', loadCoordinationView);
+$('coordAcquireSemBtn')?.addEventListener('click', openAcquireSemModal);
+$('coordRefreshMilestoneBtn')?.addEventListener('click', loadCoordinationView);
+$('coordNewMilestoneBtn')?.addEventListener('click', openAddMilestoneModal);
+$('coordGenerateBriefingBtn')?.addEventListener('click', generateSessionBriefing);
+
+if($('coordBoardCard')) $('coordBoardCard').onclick = () => switchTab('coordination');
+if($('coordSemCard')) $('coordSemCard').onclick = () => { switchTab('coordination'); switchCoordSubtab('semaphores'); };
+
 // Quick keyboard tab shortcuts
 window.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='SELECT')return;
@@ -5581,6 +6167,7 @@ window.addEventListener('keydown',e=>{
   if(e.key==='2')switchTab('work');
   if(e.key==='3')switchTab('agentos');
   if(e.key==='4')switchTab('projects');
+  if(e.key==='5')switchTab('coordination');
   if(e.key==='6')switchTab('commands');
   if(e.key==='8')switchTab('performance');
   if(e.key==='9')switchTab('reliability');
@@ -5590,4 +6177,5 @@ window.addEventListener('keydown',e=>{
 let initTab = 'overview';
 try{initTab = location.hash.replace('#','') || localStorage.getItem('activeTab') || 'overview';}catch{initTab = location.hash.replace('#','') || 'overview';}
 switchTab(initTab);
+loadCoordinationView();
 </script></body></html>"""
