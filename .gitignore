@@ -62,6 +62,12 @@ config.runtime.toml
 # Historical scratch/receipt payloads are archived outside the source tree.
 /.merge-checks/
 /handoff/
+/.handoff/
+/.validation/
+/.t[0-9]*/
+/T[0-9]*/
+/*.patch
+/*.manifest.*
 /artifacts/
 /.t17-merge-tmp/
 /.sync-checks/
