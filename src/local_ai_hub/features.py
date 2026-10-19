@@ -275,6 +275,10 @@ class FeatureSet:
         coord_actions = set(self.supported_coord_actions())
         if coord_actions & {"swarm_dispatch", "blackboard_update", "worktree_lease"}:
             lines.append("- multi-agent swarms, shared blackboard, and isolated worktrees: `local_ai_coord` swarm, blackboard, and worktree actions")
+        if coord_actions & {"semaphore_acquire", "wait_for_event"}:
+            lines.append("- cross-agent resource semaphores and signal sync: `local_ai_coord(action=\"semaphore_acquire\"|\"semaphore_release\"|\"semaphore_status\"|\"wait_for_event\")`. Guard exclusive resources and await events without polling.")
+        if coord_actions & {"board_item_create", "board_summary", "session_briefing"}:
+            lines.append("- project board, milestones, and session briefing: `local_ai_coord(action=\"board_item_create\"|\"board_item_update\"|\"board_item_list\"|\"board_summary\"|\"milestone_create\"|\"milestone_status\"|\"session_briefing\")`. Track Kanban deliverables and query briefings.")
 
         repo_actions = set(self.supported_repo_actions())
         if repo_actions & {"cross_project_graph", "cross_project_symbols", "cross_project_impact", "cross_repo_contract"}:

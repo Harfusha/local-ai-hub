@@ -661,12 +661,22 @@ Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile=
     )
     agent_os_multi_agent_note = " Agent OS through `local_ai_coord` handles non-trivial multi-step, long-running, delegated, or acceptance-criteria work: create a task contract, checkpoint phases, and verify receipts before completion." if fs.agent_os else ""
     whole_task_multi_agent_note = " For explicitly requested closed whole-task delegation, use `local_ai_work`; routine planning and integration stay with the main agent." if fs.work_orchestrator else ""
+    coord_tools_guidance = ""
+    if fs.coord:
+        coord_tools_guidance = """
+Cross-Agent Coordination Primitives:
+- **Resource Semaphores (`semaphore_acquire`, `semaphore_release`, `semaphore_status`)**: Serialize access to exclusive single-instance tools, processes, or engines (e.g. Unity Editor, specialized hardware/ports, single-writer state) across agents and sessions. Never busy-loop; use capacity and ttl_seconds.
+- **Event-Driven Waiting (`wait_for_event`)**: Long-poll topic signals (e.g. `semaphore.<name>.released` or custom task events) instead of polling in a loop.
+- **Project Board (`board_item_create`, `board_item_update`, `board_item_list`, `board_summary`)**: Track multi-agent deliverables, update task progress across columns (`planned`, `in_progress`, `done`, `blocked`, `cancelled`), and log blockers.
+- **Milestones (`milestone_create`, `milestone_status`)**: Measure completion percentages across board deliverables.
+- **Session Briefing (`session_briefing`)**: Call at agent initialization to compile an instant overview of active tasks, held semaphores, and board deliverables.
+"""
     refs["multi-agent.md"] = f"""# Multi-agent coordination
 
 {multi_agent_desc}. External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
 {agent_os_multi_agent_note}
 {whole_task_multi_agent_note}
-
+{coord_tools_guidance}
 Rules:
 - Never duplicate the same scope across agents.
 - {"Use `local_ai_coord` leases to guard overlapping files before editing." if fs.coord else "Avoid concurrent edits on the same files across sessions."}

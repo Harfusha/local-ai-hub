@@ -31,7 +31,7 @@ Trigger map:
 - `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent
 - symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
 - Agent OS task and incident state: `local_ai_status(detail="agent_state")`
-- image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`
+- image understanding/frontend review via `qwen3.5:9b`: `local_ai_task(action="vision")`
 - audio transcription: `local_ai_task(action="transcribe")`
 - local-model or device benchmarking: `local_ai_task` benchmark actions
 - model/prompt evaluation and drift checks: `local_ai_task` evaluation actions
@@ -42,6 +42,8 @@ Trigger map:
 - requested automated repair, affected-test selection, formatting, or lint fixes: `local_ai_command` specialized actions
 - local mock, replay, and flaky-test workflows: `local_ai_command` specialized actions
 - multi-agent swarms, shared blackboard, and isolated worktrees: `local_ai_coord` swarm, blackboard, and worktree actions
+- cross-agent resource semaphores and signal sync: `local_ai_coord(action="semaphore_acquire"|"semaphore_release"|"semaphore_status"|"wait_for_event")`. Guard exclusive resources and await events without polling.
+- project board, milestones, and session briefing: `local_ai_coord(action="board_item_create"|"board_item_update"|"board_item_list"|"board_summary"|"milestone_create"|"milestone_status"|"session_briefing")`. Track Kanban deliverables and query briefings.
 - cross-project dependencies and contracts: `local_ai_repo` cross_project and cross_repo actions
 - repository audits, dead code, secret scanning, and test matrices: `local_ai_repo(action="security_audit"|"dead_code"|"secret_scan"|"test_matrix")`
 - operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks
