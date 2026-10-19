@@ -72,6 +72,8 @@ Use existing Hub API paths and payload schemas. The client is a transport wrappe
 | Repository analysis | `circular_dependencies`, `generate_types`, `complexity`, `api_spec`, `dependency_slice`, `migration_drift`, `package_audit`, `git_diff`, `git_history_search`, `hotspots`, `generate_tests_for_diff`, `cross_repo_contract` |
 | Other workflows | `diff_hunk_stage`, `flaky_detect`, `webhook_replay`, `eval_drift`, `mock_server`, `ingest_diagram`, `curate_training_dataset` |
 
+Coordination methods use `POST /api/coord/wait_for_event`, `POST /api/coord/semaphore_acquire`, `POST /api/coord/semaphore_release`, and `POST /api/coord/semaphore_status` for bounded event waits and resource semaphores. Project boards use `POST /api/coord/board_item_create`, `POST /api/coord/board_item_update`, `POST /api/coord/board_item_get`, `POST /api/coord/board_item_delete`, `POST /api/coord/board_item_list`, `POST /api/coord/board_summary`, `POST /api/coord/milestone_create`, `POST /api/coord/milestone_status`, and `POST /api/coord/session_briefing`.
+
 The generated [API coverage inventory](API_COVERAGE.md) has a `HubClient method` row for each method and a `HubClient target` row for each HTTP target. Those rows record the payload, status, timeout, side-effect, and backend-availability evidence. A value marked `unverified` means the inventory lacks evidence; treat it as unknown.
 
 ### Method-to-request mapping

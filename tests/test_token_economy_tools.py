@@ -115,7 +115,7 @@ def test_token_economy_policy_generation():
     policy = generate_token_economy_policy()
     assert "<!-- BEGIN TOKEN ECONOMY POLICY -->" in policy
     assert "<!-- END TOKEN ECONOMY POLICY -->" in policy
-    trigger = next(line for line in policy.splitlines() if line.startswith("- Before any repository task"))
+    trigger = next(line for line in policy.splitlines() if line.startswith("- Before coding or repository work"))
     assert "repo-map" in policy
     assert "trim-run" in policy
     assert "tokcount" in policy

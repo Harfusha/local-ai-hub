@@ -308,14 +308,14 @@ class LlamaCppManagedRuntime:
             if context_length < 0 or isinstance(raw_context, bool) or (isinstance(raw_context, float) and not raw_context.is_integer()):
                 raise ValueError(f"Invalid llama.cpp context_length for {logical}")
             alias_contexts[alias] = context_length
-            sections.extend([f"[{alias}]", f'model = "{path_value}"', f'alias = "{alias}"', f"load-on-startup = {'true' if alias == default_alias else 'false'}"])
+            sections.extend([f"[{alias}]", f"model = {path_value}", f'alias = "{alias}"', f"load-on-startup = {'true' if alias == default_alias else 'false'}"])
             if context_length:
                 sections.append(f"ctx-size = {context_length}")
             sections.append("")
             fallback = recovery_route(logical, entry)
             if fallback is not None:
                 fallback_alias = fallback["served_model"]
-                sections.extend([f"[{fallback_alias}]", f'model = "{path_value}"',
+                sections.extend([f"[{fallback_alias}]", f"model = {path_value}",
                                  "load-on-startup = false", f"ctx-size = {fallback['context_length']}", ""])
                 recoveries[logical] = fallback
         if isinstance(configured, dict):

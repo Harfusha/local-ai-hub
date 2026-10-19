@@ -105,11 +105,11 @@ class BoardStore:
                             title.strip(),
                             valid_status,
                             priority.lower(),
-                            json.dumps(labels or []),
+                            json.dumps(labels or [], separators=(",", ":")),
                             assignee.strip(),
                             milestone.strip(),
                             linked_task_id.strip(),
-                            json.dumps(details or {}),
+                            json.dumps(details or {}, separators=(",", ":")),
                             now,
                             now,
                         ),
@@ -154,11 +154,11 @@ class BoardStore:
 
                 new_status = status.lower() if status else row[2]
                 new_priority = priority.lower() if priority else row[3]
-                new_labels = json.dumps(labels) if labels is not None else row[4]
+                new_labels = json.dumps(labels, separators=(",", ":")) if labels is not None else row[4]
                 new_assignee = assignee.strip() if assignee is not None else row[5]
                 new_milestone = milestone.strip() if milestone is not None else row[6]
                 new_linked = linked_task_id.strip() if linked_task_id is not None else row[7]
-                new_details = json.dumps(details) if details is not None else row[8]
+                new_details = json.dumps(details, separators=(",", ":")) if details is not None else row[8]
 
                 with con:
                     con.execute(

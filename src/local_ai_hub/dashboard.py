@@ -567,7 +567,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn primary" id="coordNewCardBtn">+ Add Card</button>
           <button class="btn" id="coordRefreshBoardBtn">↻ Refresh Board</button>
-          <input id="coordBoardSearch" type="search" placeholder="Filter cards by title, tag, assignee..." style="min-width:240px">
+          <input id="coordBoardSearch" type="search" aria-label="Search project board cards" placeholder="Filter cards by title, tag, assignee..." style="min-width:240px">
         </div>
         <div id="coordBoardSummaryText" class="tiny muted">Loading board...</div>
       </div>
@@ -611,7 +611,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   <div id="coordBriefingSec" style="display:none">
     <section class="section">
       <div class="project-toolbar" style="display:flex;gap:10px;align-items:center">
-        <input id="coordBriefingAgentId" placeholder="Agent ID (e.g. primary_agent)" value="primary_agent" style="width:200px">
+        <input id="coordBriefingAgentId" aria-label="Briefing agent ID" placeholder="Agent ID (e.g. primary_agent)" value="primary_agent" style="width:200px">
         <button class="btn primary" id="coordGenerateBriefingBtn">⚡ Generate Session Briefing</button>
         <span class="tiny muted">Generates a concise markdown briefing containing current board items, semaphores, and active tasks.</span>
       </div>
@@ -945,7 +945,7 @@ function dashboardHealth(snapshot={}){
     if(!telemetry.available)signals.push('telemetry data is unavailable or stale');
     else if(!telemetry.activityObserved)signals.push('telemetry writer activity is unobserved');
     else if(!telemetry.accountingBalanced)signals.push('telemetry writer accounting is unbalanced');
-    else if(telemetry.pending>20)signals.push(`telemetry writer has ${telemetry.pending} pending record${telemetry.pending===1?'':'s'}`);
+    else if(telemetry.pending>20)signals.push(`telemetry writer has ${telemetry.pending} pending records`);
     else if(telemetry.summaryCacheStale)signals.push('telemetry summary is stale');
     else if(!telemetry.complete)signals.push('telemetry coverage is incomplete');
   }
@@ -5765,7 +5765,7 @@ function renderKanbanBoard(){
             <select class="action-btn-sm" style="font-size:11px;padding:2px 6px;height:26px" onchange="updateCardStatus('${esc(item.item_id)}', this.value)">
               ${moveOptions}
             </select>
-            <button class="action-btn-sm danger" style="padding:2px 7px;font-size:11px" onclick="deleteBoardCard('${esc(item.item_id)}')">✕</button>
+            <button class="action-btn-sm danger" style="padding:2px 7px;font-size:11px" onclick="deleteBoardCard(this.dataset.itemId)" data-item-id="${esc(item.item_id)}">✕</button>
           </div>
         </div>
       `;
@@ -5801,11 +5801,11 @@ function renderSemaphoresTable(){
     const badge = active >= cap ? '<span class="chip bad-t">Full (Locked)</span>' : (active > 0 ? '<span class="chip warn-t">Partially Held</span>' : '<span class="chip ok">Available</span>');
     const holdersHtml = (s.active_holders || []).map(h => {
       const exp = Math.max(0, Math.round((h.expires_at || 0) - (Date.now() / 1000)));
-      return `<div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span class="chip mono">${esc(h.owner || 'agent')} (${exp}s)</span> <button class="action-btn-sm danger" style="padding:1px 5px;font-size:10px" onclick="releaseSemaphore('${esc(s.name)}', '${esc(h.lease_id)}')">Release</button></div>`;
+      return `<div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span class="chip mono">${esc(h.owner || 'agent')} (${exp}s)</span> <button class="action-btn-sm danger" style="padding:1px 5px;font-size:10px" onclick="releaseSemaphore(this.dataset.name, this.dataset.leaseId)" data-name="${esc(s.name)}" data-lease-id="${esc(h.lease_id)}">Release</button></div>`;
     }).join('') || '<span class="muted tiny">None</span>';
     const qLen = s.queue_length || 0;
     const qBadge = qLen > 0 ? `<span class="chip warn-t">${qLen} waiting</span>` : '<span class="muted tiny">0</span>';
-    const act = `<button class="action-btn-sm" onclick="quickAcquireSem('${esc(s.name)}', ${cap})">+ Acquire</button>`;
+    const act = `<button class="action-btn-sm" onclick="quickAcquireSem(this.dataset.name, ${cap})" data-name="${esc(s.name)}">+ Acquire</button>`;
     return `<tr><td><strong>${esc(s.name)}</strong></td><td>${cap}</td><td>${badge} <span class="tiny mono">(${ratio})</span></td><td>${holdersHtml}</td><td>${qBadge}</td><td>${act}</td></tr>`;
   }).join('');
 }

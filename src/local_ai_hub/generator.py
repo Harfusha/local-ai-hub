@@ -935,13 +935,19 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     )
     return (
         "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
-        "- Before any coding or repository task, load and follow `local-ai-orchestrator` and `token-economizer` skills when installed; this trigger applies even under deadline pressure.\n"
-        "- Zero full-file dumping: Never read files >80 lines in their entirety. Use `local_ai_repo(action=\"context\")` or `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action=\"slice\")`.\n"
+        "- Before coding or repository work, load `local-ai-orchestrator` and `token-economizer` when installed, even under deadline pressure.\n"
+        "- Zero full-file dumping: Never read >80-line files in full; use `local_ai_repo(action=\"context\")`/`repo-map`, `grep-ast`, targeted line slices, or `local_ai_artifact(action=\"slice\")`.\n"
         "- Fast code search: Use `local_ai_repo(action=\"code_index\"|\"search\")` or Serena LSP first; use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for fallback discovery before opening files.\n"
         "- AST & structural code search: Use `local_ai_repo(action=\"code_index\")`, Serena LSP (`find_symbol`, `find_referencing_symbols`), or `ast-grep` (`sg`) before opening files.\n"
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
+        + "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
+        + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
+        + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
+        + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
+        + "- Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
+        + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )

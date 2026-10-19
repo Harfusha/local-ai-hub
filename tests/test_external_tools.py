@@ -493,7 +493,7 @@ def test_managed_context_intelligence_defaults_expose_serena_only():
 def test_code_intelligence_timeouts_and_session_pool_defaults(tmp_path: Path):
     from local_ai_hub.config import load_config, validate_config, ConfigError
 
-    cfg = load_config()
+    cfg = load_config(probe_hardware=False)
     intel = cfg.get("code_intelligence", {})
     assert intel.get("startup_timeout_seconds") == 60
     assert intel.get("query_timeout_seconds") == 60

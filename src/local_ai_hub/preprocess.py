@@ -4056,10 +4056,16 @@ class ProjectPreprocessor:
                 raise ValueError(
                     "Windows batch files are not permitted as idle diagnostic commands"
                 )
+            child_env = os.environ.copy()
+            if Path(argv[0]).name.casefold().startswith(("python", "pypy")):
+                # Python otherwise uses the active Windows code page for stdout,
+                # while this capture is decoded as UTF-8 below.
+                child_env["PYTHONIOENCODING"] = "utf-8"
             completed = run_hidden(
                 argv,
                 shell=False,
                 cwd=root,
+                env=child_env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

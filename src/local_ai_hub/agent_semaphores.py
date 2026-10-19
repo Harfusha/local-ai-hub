@@ -116,8 +116,8 @@ class SemaphoreStore:
                             (
                                 clean_name,
                                 effective_capacity,
-                                json.dumps(active_holders),
-                                json.dumps(wait_queue),
+                                json.dumps(active_holders, separators=(",", ":")),
+                                json.dumps(wait_queue, separators=(",", ":")),
                                 now,
                                 now,
                             ),
@@ -158,8 +158,8 @@ class SemaphoreStore:
                             (
                                 clean_name,
                                 effective_capacity,
-                                json.dumps(active_holders),
-                                json.dumps(wait_queue),
+                                json.dumps(active_holders, separators=(",", ":")),
+                                json.dumps(wait_queue, separators=(",", ":")),
                                 now,
                                 now,
                             ),
@@ -225,7 +225,7 @@ class SemaphoreStore:
 
                     con.execute(
                         "UPDATE agent_semaphores SET holders_json = ?, queue_json = ?, updated_at = ? WHERE name = ?",
-                        (json.dumps(remaining_holders), json.dumps(wait_queue), now, clean_name),
+                        (json.dumps(remaining_holders, separators=(",", ":")), json.dumps(wait_queue, separators=(",", ":")), now, clean_name),
                     )
             finally:
                 con.close()

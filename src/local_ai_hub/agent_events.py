@@ -193,6 +193,7 @@ class AppendResult:
 
 
 class AgentStateStore:
+    _schema_init_guard = threading.RLock()
     _append_publish_locks_guard = threading.Lock()
     _append_publish_locks: dict[str, Any] = {}
     # PRAGMA user_version belongs to the canonical database-wide core schema.
@@ -304,7 +305,7 @@ class AgentStateStore:
     def _ensure_schema(self) -> None:
         if self._initialized or not self.enabled:
             return
-        with self._lock:
+        with self._schema_init_guard, self._lock:
             if self._initialized or not self.enabled:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -411,48 +412,31 @@ class AgentStateStore:
 
     def _preflight_schema_read_only(self) -> None:
         deadline = time.monotonic() + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
-        suffixes = ("", "-wal", "-journal")
-        original_paths = [Path(f"{self.db_path}{suffix}") for suffix in suffixes]
-
-        def signatures() -> tuple[tuple[bool, int, int], ...]:
-            result = []
-            for path in original_paths:
-                try:
-                    stat = path.stat()
-                except FileNotFoundError:
-                    result.append((False, 0, 0))
-                else:
-                    result.append((True, stat.st_size, stat.st_mtime_ns))
-            return tuple(result)
-
-        before = signatures()
         with tempfile.TemporaryDirectory(prefix="agent-state-preflight-") as temporary:
             snapshot_db = Path(temporary) / self.db_path.name
-            for suffix, present in zip(suffixes, before):
-                if not present[0] or suffix == "-shm":
-                    continue
-                source_path = Path(f"{self.db_path}{suffix}")
-                destination_path = Path(f"{snapshot_db}{suffix}")
-                with source_path.open("rb") as reader, destination_path.open("wb") as writer:
-                    while chunk := reader.read(1024 * 1024):
-                        writer.write(chunk)
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError("agent_state schema preflight time limit exceeded")
-            if signatures() != before:
-                raise sqlite3.OperationalError(
-                    "database is locked: agent_state changed during schema preflight"
-                )
+            source_uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+            progress_error: list[TimeoutError] = []
 
-            uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
+            def check_backup_progress(_status: int, _remaining: int, _total: int) -> None:
+                if time.monotonic() >= deadline:
+                    error = TimeoutError("agent_state schema preflight time limit exceeded")
+                    progress_error.append(error)
+                    raise error
+
             try:
+                remaining = max(0.001, deadline - time.monotonic())
+                with closing(sqlite3.connect(source_uri, uri=True, timeout=min(0.05, remaining))) as source:
+                    with closing(sqlite3.connect(snapshot_db)) as snapshot:
+                        source.backup(snapshot, pages=128, progress=check_backup_progress, sleep=0.01)
+                        snapshot.commit()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("agent_state schema preflight time limit exceeded")
+                uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
                 remaining = max(0.001, deadline - time.monotonic())
                 with closing(sqlite3.connect(uri, uri=True, timeout=min(0.01, remaining))) as con:
                     busy_ms = max(1, min(10, int(remaining * 1000)))
                     con.execute(f"PRAGMA busy_timeout={busy_ms}")
-                    con.set_progress_handler(
-                        lambda: 1 if time.monotonic() >= deadline else 0,
-                        1000,
-                    )
+                    con.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)
                     try:
                         self._classify_schema(con)
                     except RuntimeError as exc:
@@ -464,15 +448,13 @@ class AgentStateStore:
             except RuntimeError:
                 raise
             except sqlite3.DatabaseError as exc:
+                if progress_error:
+                    raise progress_error[-1] from exc
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
                 raise
             if time.monotonic() >= deadline:
                 raise TimeoutError("agent_state schema preflight time limit exceeded")
-            if signatures() != before:
-                raise sqlite3.OperationalError(
-                    "database is locked: agent_state changed during schema preflight"
-                )
 
     @classmethod
     def _classify_schema(cls, con: sqlite3.Connection) -> tuple[Any, ...]:

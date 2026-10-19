@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.0.0 — 2026-10-19
+
+- Aligned HTTP, MCP, telemetry, derived state, caches and dashboard rendering on the single-owner runtime contract.
+- Added bounded agent event waiting, generic semaphores and project board coordination.
+- Updated the managed runtime and generated agent policies for the 5.0.0 release.
+
 ## 4.0.0 — 2026-09-21
 
 - Unified task context joins Agent OS state, repository evidence, revisions, freshness and bounded deltas.
