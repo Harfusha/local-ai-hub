@@ -1141,6 +1141,14 @@ class CodeIndex:
             pass
         return con
 
+    def optimize(self) -> None:
+        try:
+            with closing(self._connect()) as con:
+                con.execute("PRAGMA optimize")
+                con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except (sqlite3.DatabaseError, OSError):
+            pass
+
     def _schema(self, con: sqlite3.Connection) -> None:
         existing_symbols = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='symbols'"

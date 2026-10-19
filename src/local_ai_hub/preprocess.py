@@ -1498,7 +1498,22 @@ class ProjectPreprocessor:
                 failed.append(root)
                 logger.warning("deleted-project registry purge incomplete (%s)", type(exc).__name__)
 
+        # Clean up any orphaned secondary rows whose project is no longer in the registry
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                con.execute("DELETE FROM file_refs WHERE root NOT IN (SELECT root FROM projects)")
+                con.execute("DELETE FROM source_index WHERE root NOT IN (SELECT root FROM projects)")
+                con.execute("DELETE FROM source_fts WHERE root NOT IN (SELECT root FROM projects)")
+                con.execute("DELETE FROM module_cards WHERE root NOT IN (SELECT root FROM projects)")
+                con.execute("DELETE FROM project_cards WHERE root NOT IN (SELECT root FROM projects)")
+                con.execute("DELETE FROM hot_query_state WHERE root NOT IN (SELECT root FROM projects)")
+                con.execute("DELETE FROM task_capsules WHERE root NOT IN (SELECT root FROM projects)")
+                con.commit()
+        except Exception as exc:
+            logger.warning("orphaned secondary index purge incomplete (%s)", type(exc).__name__)
+
         self._vacuum_derived_databases()
+
 
         self._wake_all()
         return {
@@ -3177,7 +3192,12 @@ class ProjectPreprocessor:
             result = self.code_index.update_files_batch(root, pending)
             files_processed = int(result.get("files_processed", 0))
             progressed = files_processed + int(result.get("cached", 0))
-        except Exception:
+        except Exception as batch_exc:
+            from .project_config import ProjectConfigError
+            if isinstance(batch_exc, ProjectConfigError):
+                logger.warning("Code-index batch skipped due to project configuration error (%s)", batch_exc)
+                self._set_project(root, phase="deterministic", last_error=str(batch_exc))
+                return True
             files_processed = 0
             progressed = 0
             for p, digest in pending:
@@ -3186,6 +3206,9 @@ class ProjectPreprocessor:
                     progressed += int(updated)
                     if updated:
                         files_processed += 1
+                except ProjectConfigError as cfg_exc:
+                    logger.warning("Code-index file update skipped due to project configuration error (%s)", cfg_exc)
+                    break
                 except Exception as index_exc:
                     logger.warning("Code-index file update failed (%s)", type(index_exc).__name__)
         with self._stats_lock:
@@ -3889,6 +3912,9 @@ class ProjectPreprocessor:
     def _step_hot_query(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         workspace = str(row["workspace"])
+        if not bool(self.cfg.get("hot_queries_enabled", True)):
+            self._set_project(root, phase="diagnostics")
+            return True
         revision = self.rag.revision(workspace=workspace)
         queries = []
         if self.learner is not None:
@@ -4116,7 +4142,7 @@ class ProjectPreprocessor:
                 con.commit()
         except sqlite3.DatabaseError as maintenance_exc:
             logger.warning("Preprocessing database maintenance skipped (%s)", type(maintenance_exc).__name__)
-        for component in (self.code_index, self.deterministic):
+        for component in (self.code_index, self.deterministic, self.rag):
             try:
                 if component is not None and hasattr(component, "optimize"):
                     component.optimize()
@@ -4125,6 +4151,11 @@ class ProjectPreprocessor:
         # cleanup_deleted_projects also performs the same bounded incremental vacuum.
         self.cleanup_deleted_projects()
         self.cleanup_orphaned_indexes()
+        try:
+            from .sqlite_support import clean_quarantined_files
+            clean_quarantined_files(self.state_dir, max_age_seconds=86400 * 7)
+        except Exception as clean_exc:
+            logger.debug("Quarantined file cleanup skipped (%s)", type(clean_exc).__name__)
         self._last_db_maintenance = now
         with self._stats_lock:
             self._stats["db_maintenance_runs"] = self._stats.get("db_maintenance_runs", 0) + 1

@@ -229,7 +229,7 @@ def test_post_test_hygiene_allows_tooling_caches_but_not_runtime_db(tmp_path: Pa
 
 
 def test_release_gate_can_bind_expected_tag_version() -> None:
-    ok = run_checks(ROOT, expected_version="4.0.0", post_test=True)
+    ok = run_checks(ROOT, expected_version="5.0.0", post_test=True)
     assert not [e for e in ok["errors"] if "expected release version" in e]
     bad = run_checks(ROOT, expected_version="v9.9.9", post_test=True)
     assert any("expected release version '9.9.9'" in e for e in bad["errors"])
