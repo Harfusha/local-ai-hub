@@ -216,3 +216,27 @@ def test_snapshot_race_does_not_persist_newer_file_stat_for_old_snapshot(tmp_pat
     work = _track_snapshot_work(monkeypatch, {source: second})
     assert reopened.update_file(str(root), "src/target.py")["success"] is True
     assert work[source.resolve()] == {"bytes_read": len(second), "sha256_calls": 1}
+
+
+def test_git_blob_hash_with_matching_mtime_bypasses_files_needing_reindex(tmp_path):
+    root = tmp_path / "repo"
+    source = root / "src" / "target.py"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"def target(): return 1\n")
+    config = _index_config(tmp_path)
+    index = CodeIndex(config, repo_tools=RepositoryTools(config))
+
+    # Initial index records sha256 in files table alongside mtime_ns and size_bytes
+    assert index.update_files_batch(str(root), ["src/target.py"])["success"] is True
+
+    # Preprocess passes git blob OIDs ("git:...") which do not match sha256.
+    # When mtime_ns and size_bytes match, it must bypass reindexing.
+    git_hash = "git:1234567890abcdef1234567890abcdef12345678"
+    assert index.files_needing_reindex(str(root), [("src/target.py", git_hash)]) == []
+
+    # If mtime changes, it must be selected for reindex
+    stat_before = source.stat()
+    os.utime(source, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns + 1_000_000_000))
+    assert index.files_needing_reindex(str(root), [("src/target.py", git_hash)]) == [
+        ("src/target.py", git_hash)
+    ]

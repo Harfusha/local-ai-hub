@@ -1963,36 +1963,62 @@ class CodeIndex:
         if api is not None and settings is not None and not api.phase_is_allowed(settings, "call_graph"):
             return []
         path_policy = _resolve_code_index_path_policy(api, c_root, settings)
-        existing: dict[str, tuple[str, str, str]] = {}
+        existing: dict[str, tuple[str, str, str, int | None, int | None]] = {}
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN")
             for batch in sqlite_batches(list(dict.fromkeys(str(path) for path, _ in items))):
                 placeholders = ",".join("?" for _ in batch)
                 rows = con.execute(
-                    f"SELECT path,content_hash,analyzer_version,language FROM files WHERE root=? AND path IN ({placeholders})",
+                    f"SELECT path,content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=? AND path IN ({placeholders})",
                     (c_root, *batch),
                 ).fetchall()
                 for row in rows:
                     existing[str(row["path"])] = (
-                        str(row["content_hash"] or ""), str(row["analyzer_version"] or ""),
+                        str(row["content_hash"] or ""),
+                        str(row["analyzer_version"] or ""),
                         str(row["language"] or ""),
+                        row["mtime_ns"],
+                        row["size_bytes"],
                     )
         pending = []
         for path, content_hash in items:
             path = str(path)
+            target = Path(c_root) / path
+            try:
+                target_stat = target.stat()
+                size_bytes = target_stat.st_size
+            except OSError:
+                target_stat = None
+                size_bytes = None
             if api is not None and settings is not None:
-                target = Path(c_root) / path
-                try:
-                    size_bytes = target.stat().st_size
-                except OSError:
+                if target_stat is None:
                     continue
                 if not path_policy.allows(
                     target, phase="call_graph", size_bytes=size_bytes,
                 ):
                     continue
             language = self._language_for_path(path, settings)
-            if existing.get(path) != (str(content_hash), _PARSER_ANALYZER_VERSION, language):
-                pending.append((path, str(content_hash)))
+            ex = existing.get(path)
+            if ex is not None:
+                if (ex[0], ex[1], ex[2]) == (str(content_hash), _PARSER_ANALYZER_VERSION, language):
+                    continue
+                is_uncomparable_hash = (
+                    not content_hash
+                    or not ex[0]
+                    or (str(content_hash).startswith("git:") != str(ex[0]).startswith("git:"))
+                )
+                if (
+                    is_uncomparable_hash
+                    and target_stat is not None
+                    and ex[1] == _PARSER_ANALYZER_VERSION
+                    and ex[2] == language
+                    and ex[3] is not None
+                    and ex[4] is not None
+                    and target_stat.st_mtime_ns == ex[3]
+                    and target_stat.st_size == ex[4]
+                ):
+                    continue
+            pending.append((path, str(content_hash)))
         return pending
 
     def _mark_file_unindexable(self, root: str, path: str, language: str) -> None:
