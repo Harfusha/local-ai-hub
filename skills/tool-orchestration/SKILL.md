@@ -19,6 +19,7 @@ Coordinate available tools and capabilities systematically across six distinct e
 ### 1. Discover
 - Clarify domain, objective, and requirements.
 - Identify project boundaries, configuration, and technology stack.
+- **Session Briefing & Coordination**: Call `local_ai_coord(action="session_briefing")` or query `local_ai_coord(action="board_summary")` to inspect active multi-agent work, board deliverables, and blockers before starting.
 - **Local AI Hub Adaptive Retrieval**: reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. For non-trivial work without sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once with the task/context before broad native discovery. The orchestrator fuses deterministic/indexed evidence, CodeIndex, Serena, bounded lexical search and RAG; it ranks agreement, deduplicates and preserves path diversity. Send the task/context directly; do not manufacture a long grep-term list. Preprocess only when the root is unindexed or its evidence is stale; never wait, poll or force-refresh it. Bounded native reads of a known path and slice remain permitted when needed.
 - Use `local_ai_repo(action="solve")` only after the grounded context pack when bounded implementation reasoning is needed.
 - For external library questions: query **Context7** (`resolve-library-id`, `query-docs`).
@@ -43,6 +44,8 @@ Coordinate available tools and capabilities systematically across six distinct e
 
 ### 4. Act
 - Apply precise, localized code edits.
+- **Resource Semaphores & Signal Sync**: When accessing exclusive tools or single-instance processes (e.g. Unity Editor, specialized hardware, single-writer state), acquire lock via `local_ai_coord(action="semaphore_acquire", name="...", owner=..., capacity=1, timeout=30)` and release promptly via `semaphore_release`. Never busy-poll; use `local_ai_coord(action="wait_for_event")` to await signals.
+- **Project Board Tracking**: Keep work visible across sessions and agents by creating or updating Kanban deliverables via `local_ai_coord(action="board_item_create"|"board_item_update")`.
 - Use targeted file edits (`replace_file_content` or surgical patches).
 - **Auto-Resolve Imports**: Use `local_ai_repo(action="resolve_imports")` to automatically fill missing namespaces/imports.
 - **Diff Validation**: Use `local_ai_repo(action="validate_patch")` before committing structural edits.
