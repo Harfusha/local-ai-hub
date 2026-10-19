@@ -1317,6 +1317,9 @@ class ProjectPreprocessor:
             self._paused.set()
             try: self.pause_marker.write_text(f"paused {time.time()}\n", encoding="utf-8")
             except OSError: pass
+            def _pause_all(con: sqlite3.Connection) -> None:
+                con.execute("UPDATE projects SET paused=1, status=CASE WHEN status='running' THEN 'paused' ELSE status END, updated_at=?", (time.time(),))
+            self._write_retry(_pause_all)
             self._wake_all()
             return self.status()
         resolved = self._root(root)
@@ -2416,12 +2419,16 @@ class ProjectPreprocessor:
         # An in-flight step finishes as its existing durable checkpoint boundary.
         # The next step observes mode again; active resumes from saved phase/cursor.
         if not self._background_work_allowed():
+            if str(row.get("status")) == "running":
+                self._set_project(str(row["root"]), status="paused")
             return False
         root = str(row["root"])
         if not Path(root).is_dir():
             self.unregister(root, purge_data=True)
             return True
         if self._yield():
+            if str(row.get("status")) == "running":
+                self._set_project(str(row["root"]), status="paused")
             return False
         phase = str(row.get("phase") or "inventory")
         self._set_project(root, status="running")
