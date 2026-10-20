@@ -6,6 +6,50 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize("path,starts", [
+    ("/api/telemetry/tool-accounting", False),
+    ("/api/telemetry/tool-accounting?fixture=1", False),
+    ("/api/generate", True),
+])
+def test_private_accounting_does_not_autostart_but_foreground_requests_can(tmp_path, monkeypatch, path, starts):
+    from urllib.error import URLError
+    from local_ai_hub.client import HubClient
+    config = tmp_path / "hub.toml"
+    config.write_text("[server]\nport=1\n", encoding="utf-8")
+    client = HubClient(config_path=str(config), auto_start=True)
+    calls, attempts = [], []
+    def open_response(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            error = URLError("offline")
+            error.request_not_sent = True
+            raise error
+        return b'{"success":true}'
+    monkeypatch.setattr(client, "_open", open_response)
+    monkeypatch.setattr(client, "ensure_server", lambda **kwargs: attempts.append(kwargs) or True)
+    result = client.post(path, {"prompt": "fixture"}, timeout=0.25)
+    assert result["success"] is starts
+    assert len(attempts) == int(starts)
+    assert len(calls) == 1 + int(starts)
+    assert client.auto_start is True
+
+
+def test_accounting_close_preserves_queued_clients_order_and_idempotency(monkeypatch):
+    from local_ai_hub import mcp_server as module
+    reporter = module._ProtocolAccountingReporter()
+    monkeypatch.setattr(reporter, "_ensure_worker", lambda: None)
+    sent = []
+    monkeypatch.setattr(reporter, "_send", lambda events, client=None: sent.append((client, events)))
+    first, second = object(), object()
+    for client, event_id in ((first, "a"), (second, "b"), (first, "c")):
+        monkeypatch.setattr(module, "CLIENT", client)
+        reporter.record({"id": event_id})
+    reporter.close()
+    reporter.close()
+    assert sent == [(first, [{"id": "a"}, {"id": "c"}]), (second, [{"id": "b"}])]
+    assert reporter._queue.empty()
+
+
 @pytest.mark.parametrize("operation", ["load", "release", "count", "registered"])
 def test_cuda_lifecycle_lock_acquisition_is_bounded(monkeypatch, operation):
     import local_ai_hub.model_lifecycle as module

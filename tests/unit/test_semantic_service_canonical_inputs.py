@@ -39,7 +39,7 @@ def test_semantic_services_translate_only_canonical_http_fields(
     method, payload, expected_task, expected_context
 ):
     calls = []
-    expected = {"success": True, "answer": "done"}
+    expected = {"success": True, "text": "done"}
 
     def delegate(request):
         calls.append(request)
@@ -49,7 +49,15 @@ def test_semantic_services_translate_only_canonical_http_fields(
 
     result = method(services, payload)
 
-    assert result is expected
+    if method is LocalAIServices.review:
+        assert result is not expected
+        assert result["success"] is True and result["text"] == expected["text"]
+        assert result["advisory_only"] is True
+        assert result["review_consistency"]["status"] == "unverified"
+        assert result["review_consistency"]["semantic_truth_verified"] is False
+        assert expected == {"success": True, "text": "done"}
+    else:
+        assert result is expected
     assert calls[0]["task"] == expected_task
     assert calls[0]["context"] == expected_context
     assert "problem" not in calls[0]

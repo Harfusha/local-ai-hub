@@ -933,6 +933,8 @@ class HubClient:
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
+        # Private accounting is best effort; metadata alone must not start a Hub.
+        allow_start = self.auto_start and urlsplit(path).path != "/api/telemetry/tool-accounting"
         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
         request_id = request_id if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
         if cancel_event is not None and cancel_event.is_set():
@@ -1022,13 +1024,13 @@ class HubClient:
                 if getattr(exc, "cancelled", False):
                     return self._cancelled_response(request_id, request_not_sent=bool(getattr(exc, "request_not_sent", False)) and not server_reported_in_progress)
                 pre_send_refusal = bool(getattr(exc, "request_not_sent", False))
-                if replay_safe or (self.auto_start and pre_send_refusal):
+                if replay_safe or (allow_start and pre_send_refusal):
                     remaining = duplicate_deadline - time.monotonic()
                     try:
                         if self._inprocess_transport is not None:
                             server_ready = bool(replay_safe or pre_send_refusal)
                         else:
-                            server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                            server_ready = self.ensure_server(timeout=remaining) if allow_start and remaining > 0 else not allow_start
                     except Exception:
                         server_ready = False
                     if server_ready:

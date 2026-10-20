@@ -53,7 +53,7 @@ class _ModelProcess:
     def request(self, payload, *, timeout):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
             raise ValueError("model timeout must be finite and within (0,300]")
-        raw = json.dumps(payload, allow_nan=False).encode("utf-8")
+        raw = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode("utf-8")
         if len(raw) > _INPUT_LIMIT:
             raise ValueError("model request exceeds byte limit")
         deadline = time.monotonic() + timeout
@@ -63,7 +63,7 @@ class _ModelProcess:
             if self._closed:
                 raise RuntimeError("model process is closed")
             self._sequence += 1
-            raw = json.dumps({**payload, "request_id": self._sequence}, allow_nan=False).encode("utf-8") + b"\n"
+            raw = json.dumps({**payload, "request_id": self._sequence}, allow_nan=False, separators=(",", ":")).encode("utf-8") + b"\n"
             if len(raw) > _INPUT_LIMIT:
                 raise ValueError("model request exceeds byte limit")
             written, failures = threading.Event(), []
@@ -219,8 +219,8 @@ def worker_main():
             response = {**value, "success": True, "request_id": request_id}
         except Exception as exc:
             response = {"success": False, "request_id": request_id, "error": f"{type(exc).__name__}: {exc}"[:2000]}
-        encoded = json.dumps(response, allow_nan=False)
+        encoded = json.dumps(response, allow_nan=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > _OUTPUT_LIMIT - 1:
-            encoded = json.dumps({"success": False, "request_id": request_id, "error": "model response exceeds byte limit"})
+            encoded = json.dumps({"success": False, "request_id": request_id, "error": "model response exceeds byte limit"}, separators=(",", ":"))
         output.write(encoded + "\n")
         output.flush()

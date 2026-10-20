@@ -1982,6 +1982,13 @@ class _ProtocolAccountingReporter:
         finally:
             operational_context.reset(operational_token)
 
+    def _send_batch(self, batch: list[tuple[dict[str, Any], Any]]) -> None:
+        client_batches: dict[int, tuple[Any, list[dict[str, Any]]]] = {}
+        for event, client in batch:
+            client_batches.setdefault(id(client), (client, []))[1].append(event)
+        for client, events in client_batches.values():
+            self._send(events, client=client)
+
     def _run(self) -> None:
         batch: list[tuple[dict[str, Any], Any]] = []
         idle_since = time.monotonic()
@@ -1997,11 +2004,7 @@ class _ProtocolAccountingReporter:
                 except queue.Empty:
                     break
             if batch:
-                client_batches: dict[int, tuple[Any, list[dict[str, Any]]]] = {}
-                for event, client in batch:
-                    client_batches.setdefault(id(client), (client, []))[1].append(event)
-                for client, events in client_batches.values():
-                    self._send(events, client=client)
+                self._send_batch(batch)
                 batch.clear()
             if time.monotonic() - idle_since > 15.0:
                 # Retire atomically with submit/start. A record that races with
@@ -2012,7 +2015,7 @@ class _ProtocolAccountingReporter:
                         self._thread = None
                         return
         if batch:
-            self._send(batch)
+            self._send_batch(batch)
         with self._lock:
             if self._thread is threading.current_thread():
                 self._thread = None
@@ -2022,14 +2025,14 @@ class _ProtocolAccountingReporter:
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=0.35)
-        remaining: list[dict[str, Any]] = []
+        remaining: list[tuple[dict[str, Any], Any]] = []
         while len(remaining) < 64:
             try:
                 remaining.append(self._queue.get_nowait())
             except queue.Empty:
                 break
         if remaining:
-            self._send(remaining)
+            self._send_batch(remaining)
         client = getattr(self, "_client", None)
         if client is not None:
             try:
