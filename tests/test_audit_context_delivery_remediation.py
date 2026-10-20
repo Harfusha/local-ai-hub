@@ -3,6 +3,32 @@ from __future__ import annotations
 import pytest
 
 
+def test_nested_decisions_and_repository_identity_survive_payload_deduplication():
+    from local_ai_hub.context_delivery import prepare_context_delivery
+    identity = {"root": "/project", "task_id": "task"}
+    original = {"success": True, "complete": True, "task_context": {
+        "success": True, "complete": True, "text": "Compiled evidence.",
+        "agent_state": {"success": True, "context": identity, "memories": ["large duplicate"]},
+        "repository": {"success": False, "degraded": True, "error": "optional backend unavailable", "files": ["large duplicate"]},
+    }}
+    result = prepare_context_delivery(original, 3200)
+    assert result["task_context"]["agent_state"] == {"success": True, "context": identity}
+    assert result["task_context"]["repository"] == {
+        "success": False, "degraded": True, "error": "optional backend unavailable",
+    }
+    assert result["task_context"]["text"] == "Compiled evidence."
+    assert original["task_context"]["repository"]["files"] == ["large duplicate"]
+
+
+@pytest.mark.parametrize("section", [{}, {"files": []}, None])
+def test_empty_or_nonmapping_repository_does_not_create_diagnostic_payload(section):
+    from local_ai_hub.context_delivery import prepare_context_delivery
+    result = prepare_context_delivery({"task_context": {
+        "success": True, "complete": True, "text": "Evidence", "repository": section,
+    }}, 3200)
+    assert "repository" not in result["task_context"]
+
+
 def project(payload, budget=3200):
     import local_ai_hub.mcp_server as module
     token = module._CURRENT_RESPONSE_OPTIONS.set({"tool": "local_ai_repo", "action": "context",

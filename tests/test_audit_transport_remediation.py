@@ -10,6 +10,41 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize("clock_values,expired,consumed", [
+    ([10.0], True, False),
+    ([9.0, 10.0], True, True),
+    ([9.0, 9.5], False, True),
+])
+def test_request_head_deadline_is_checked_before_and_after_each_read(monkeypatch, clock_values, expired, consumed):
+    from local_ai_hub import http_transport
+    clock = iter(clock_values)
+    monkeypatch.setattr(http_transport.time, "monotonic", lambda: next(clock))
+    timeouts = []
+    raw = io.BytesIO(b"GET")
+    reader = http_transport.RequestHeadReader(raw, SimpleNamespace(settimeout=timeouts.append))
+    reader.deadline = 10.0
+    buffer = bytearray(3)
+    if expired:
+        with pytest.raises(TimeoutError, match="request head deadline"):
+            reader.readinto(buffer)
+    else:
+        assert reader.readinto(buffer) == 3
+        assert buffer == b"GET"
+    assert raw.tell() == (3 if consumed else 0)
+    assert timeouts == ([1.0] if consumed else [])
+    reader.close()
+
+
+def test_request_body_without_head_deadline_does_not_change_socket_timeout():
+    from local_ai_hub.http_transport import RequestHeadReader
+    timeouts = []
+    reader = RequestHeadReader(io.BytesIO(b"body"), SimpleNamespace(settimeout=timeouts.append))
+    assert reader.readable() is True
+    assert reader.readinto(bytearray(4)) == 4
+    assert timeouts == []
+    reader.close()
+
+
 def test_slow_request_head_has_one_total_deadline(monkeypatch):
     import local_ai_hub.http_server as server_module
     served = threading.Event()
