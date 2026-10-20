@@ -99,6 +99,10 @@ def test_shared_vision_service_compares_owner_global_artifacts(tmp_path):
 
 def test_mcp_adapter_routes_comparison_and_preserves_result(tmp_path, monkeypatch):
     calls = []
+    monkeypatch.setattr(mcp_server, 'CFG', {
+        **mcp_server.CFG,
+        'server': {**mcp_server.CFG.get('server', {}), 'state_dir': str(tmp_path / 'state')},
+    })
     monkeypatch.setattr(mcp_server.FEATURES, 'tasks', True)
     monkeypatch.setattr(mcp_server.FEATURES, 'vision', True)
     monkeypatch.setattr(mcp_server.FEATURES, 'has_any_model', lambda: True)
@@ -117,3 +121,15 @@ def test_mcp_adapter_routes_comparison_and_preserves_result(tmp_path, monkeypatc
     assert calls[0][0] == '/api/task/vision'
     assert calls[0][1]['baseline_screenshot_artifact_id'] == 'before'
     assert result['comparison'] == comparison
+
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path / 'state', 'gaming')
+    calls.clear()
+    blocked = mcp_server.local_ai_task(
+        action='vision', root=str(tmp_path), baseline_screenshot_artifact_id='before',
+        screenshot_artifact_id='after',
+    )
+    assert blocked['error_code'] == 'operational_mode_blocked'
+    assert blocked['mode'] == 'gaming'
+    assert calls == []
