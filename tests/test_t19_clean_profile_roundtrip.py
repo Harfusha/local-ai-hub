@@ -52,6 +52,9 @@ def _roundtrip(source_root: Path, scratch: Path) -> dict:
     # Only host discovery is substituted; config, copy, merge and generator execute.
     with (
         patch.object(Path, "home", return_value=home),
+        # Windows USERNAME and MultiGravity discovery can escape a patched
+        # HOME/USERPROFILE. This test owns exactly one synthetic home.
+        patch.object(setup, "get_user_homes", return_value=[home]),
         patch.object(hardware, "detect_hardware", return_value={"profile": "balanced"}),
         patch.object(subprocess, "Popen", side_effect=forbidden),
         patch.object(socket, "socket", side_effect=forbidden),

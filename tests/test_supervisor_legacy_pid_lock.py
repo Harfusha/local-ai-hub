@@ -27,7 +27,6 @@ def test_supervisor_preserves_unstructured_lock_without_owner_proof(tmp_path, mo
             "role": role,
         },
     )
-    monkeypatch.setattr(supervisor_module, "pid_alive", lambda _pid: False)
 
     def owner_state(owner, _path, _role):
         if isinstance(owner, dict) and owner["pid"] == current_pid:

@@ -760,20 +760,23 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     prioritization_bullets = []
     if fs.commands:
         prioritization_bullets.append(
-            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_command\", Arguments={\"action\": \"run\", \"command\": \"...\", \"cwd\": \"...\"})`). Pass `task_id` and `criterion` to auto-mint receipts. DO NOT run tests or builds directly via shell or native `run_command`!"
+            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")`. Pass `task_id` and `criterion` to auto-mint receipts. DO NOT run tests or builds directly via shell or native `run_command`!"
         )
     if fs.repo:
         prioritization_bullets.append(
-            "> - **Repository & Code Search**: Call `local_ai_repo(action=\"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", root=\"...\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_repo\", Arguments={\"action\": \"...\", \"root\": \"...\"})`). DO NOT use broad native discovery (`find`, `dir /s`, unconstrained `rg`, glob) or dump entire files."
+            "> - **Repository & Code Search**: Call `local_ai_repo(action=\"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", root=\"...\")`. DO NOT use broad native discovery (`find`, `dir /s`, unconstrained `rg`, glob) or dump entire files."
         )
     if fs.agent_os or fs.coord:
         prioritization_bullets.append(
-            "> - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...)` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_coord\", Arguments={\"action\": \"...\"})`). Proactively initialize task contracts, query memory, and record findings."
+            "> - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...)`. Proactively initialize task contracts, query memory, and record findings."
         )
     if fs.tasks and fs.has_any_model():
         prioritization_bullets.append(
-            "> - **Semantic Review & Second Opinion**: Actively call `local_ai_task(action=\"review\"|\"second_opinion\"|\"compress\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_task\", Arguments={\"action\": \"...\"})`) before finalizing non-trivial edits."
+            "> - **Semantic Review & Second Opinion**: Actively call `local_ai_task(action=\"review\"|\"second_opinion\"|\"compress\")` before finalizing non-trivial edits."
         )
+    prioritization_bullets.append(
+        '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
+    )
     prioritization_bullets.append(
         "> - **Native fallback rule**: Native shell commands, `run_command`, and direct file viewing are permitted ONLY when Local AI Hub is unavailable or returns an explicit `terminal=true` failure."
     )

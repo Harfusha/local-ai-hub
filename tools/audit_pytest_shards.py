@@ -76,8 +76,17 @@ def pytest_runtest_logreport(report):
     if _state:
         _state["reports"].append({"nodeid": report.nodeid, "phase": report.when,
                                   "outcome": report.outcome, "duration_seconds": report.duration})
-        if report.failed or len(_state["reports"]) % 30 == 0:
-            _write_manifest()
+        # Tests may temporarily replace pathlib or OS functions. Write only
+        # after fixture teardown, and keep progress failures advisory. The
+        # session-finish write below remains mandatory and fails explicitly.
+        last_flush = _state.get("progress_report_count", 0)
+        failed = any(item["outcome"] == "failed" for item in _state["reports"][-3:])
+        if report.when == "teardown" and (failed or len(_state["reports"]) - last_flush >= 30):
+            try:
+                _write_manifest()
+            except (OSError, RuntimeError, ValueError, NotImplementedError):
+                return
+            _state["progress_report_count"] = len(_state["reports"])
 
 
 def pytest_sessionfinish(session, exitstatus):

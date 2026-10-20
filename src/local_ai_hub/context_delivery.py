@@ -41,9 +41,19 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
     # The compiled text already contains the selected state/repository context.
     # Preserve decision/identity metadata without duplicating both full source trees.
     context = {key: item for key, item in context.items() if key not in {"agent_state", "repository"}}
+    decision_fields = (
+        "success", "complete", "partial", "degraded", "degraded_reason",
+        "status_code", "terminal", "retryable", "error", "warning",
+    )
+    for section in ("agent_state", "repository"):
+        original = value["task_context"].get(section)
+        if isinstance(original, dict):
+            decisions = {key: original[key] for key in decision_fields if key in original}
+            if decisions:
+                context[section] = decisions
     state = value["task_context"].get("agent_state")
     if isinstance(state, dict) and isinstance(state.get("context"), dict):
-        context["agent_state"] = {"context": state["context"]}
+        context.setdefault("agent_state", {})["context"] = state["context"]
     result["task_context"] = context
     valid = type(context.get("success")) is bool and type(context.get("complete")) is bool and isinstance(context.get("text"), str)
     if not valid:

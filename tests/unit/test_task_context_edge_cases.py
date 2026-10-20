@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import math
-from pathlib import Path
-
 import pytest
 
 from local_ai_hub.agent_context import CompiledContext, ContextElement
@@ -32,21 +29,20 @@ def _make_compiled() -> CompiledContext:
     )
 
 
-def test_build_context_request_non_mapping_and_nan_budget() -> None:
-    # Non-mapping payload must not raise AttributeError
-    req1 = build_context_request(None)  # type: ignore[arg-type]
-    assert req1.token_budget == 4000
-    assert req1.task_id == ""
+@pytest.mark.parametrize("payload", [None, "not-a-mapping"])
+def test_build_context_request_rejects_non_mapping(payload) -> None:
+    with pytest.raises(ValueError, match="payload must be an object"):
+        build_context_request(payload)
 
-    req2 = build_context_request("not-a-mapping")  # type: ignore[arg-type]
-    assert req2.token_budget == 4000
 
-    # NaN / Inf / non-numeric budget must be clamped safely without ValueError
-    req3 = build_context_request({"token_budget": float("nan")})
-    assert req3.token_budget == 4000
+@pytest.mark.parametrize("budget", [float("nan"), float("inf"), "invalid-str", False])
+def test_build_context_request_rejects_invalid_budget(budget) -> None:
+    with pytest.raises(ValueError, match="token_budget must be an integer"):
+        build_context_request({"token_budget": budget})
 
-    req4 = build_context_request({"token_budget": "invalid-str"})
-    assert req4.token_budget == 4000
+
+def test_build_context_request_retains_omitted_budget_default() -> None:
+    assert build_context_request({}).token_budget == 4000
 
 
 def test_build_context_request_rejects_retired_etag_input_alias() -> None:
@@ -54,19 +50,21 @@ def test_build_context_request_rejects_retired_etag_input_alias() -> None:
     assert req.since_hash == ""
 
 
-def test_build_context_request_null_byte_sanitization() -> None:
-    req = build_context_request({
-        "task_id": "task\x00poison",
-        "session_id": "session-1",
-        "root": "root\x00dir",
-        "changed_paths": ["path\x00one", "path/two"],
-    })
-    assert "\x00" not in req.task_id
-    assert "\x00" not in req.root
-    assert req.session_id == "session-1"
-    assert req.task_id == "taskpoison"
-    for p in req.changed_paths:
-        assert "\x00" not in p
+@pytest.mark.parametrize("field", ["root", "task_id", "session_id", "clone_id", "worktree_id", "branch"])
+def test_build_context_request_rejects_null_byte_identity(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        build_context_request({field: "identity\x00poison"})
+
+
+def test_build_context_request_rejects_null_byte_changed_path() -> None:
+    with pytest.raises(ValueError, match="without null bytes"):
+        build_context_request({"session_id": "session-1", "changed_paths": ["path\x00one", "path/two"]})
+
+
+def test_build_context_request_preserves_canonical_changed_paths() -> None:
+    request = build_context_request({"session_id": "session-1", "changed_paths": ["path/one", "path/two"]})
+    assert request.session_id == "session-1"
+    assert list(request.changed_paths) == ["path/one", "path/two"]
 
 
 @pytest.mark.parametrize("retired", ["tenant", "tenant_id", "tenant_key", "tenant_scope"])

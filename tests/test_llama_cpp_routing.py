@@ -29,6 +29,7 @@ class _Response:
     def __init__(self, value: dict | None = None, lines: list[bytes] | None = None, sock=None):
         self.value = value or {}
         self.lines = lines or []
+        self._body_offset = 0
         self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=sock)) if sock is not None else None
 
     def __enter__(self):
@@ -37,8 +38,12 @@ class _Response:
     def __exit__(self, *_args):
         return False
 
-    def read(self) -> bytes:
-        return json.dumps(self.value).encode("utf-8")
+    def read(self, size: int = -1) -> bytes:
+        body = json.dumps(self.value).encode("utf-8")
+        end = len(body) if size < 0 else self._body_offset + size
+        chunk = body[self._body_offset:end]
+        self._body_offset += len(chunk)
+        return chunk
 
     def __iter__(self):
         return iter(self.lines)

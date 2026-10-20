@@ -10,6 +10,12 @@
 
 **Spec:** `AGENTS.md`, `docs/superpowers/specs/2026-10-07-simplified-worktree-integration.md`, and the audit HTML/JSON under `C:/Users/Adam/.codex/visualizations/2026/10/20/01a1584b-7f42-7240-9b36-22be709b1257/`.
 
+**Current acceptance state:** Initial repairs are integrated in `5854caa7`. The full-suite pass exposed missing nested context diagnostics, stale test fixtures and generated policies exceeding the Antigravity cap. The follow-up repairs preserve strict identity validation, bounded HTTP reads and the unchanged 23,900-byte limit. Shard progress now waits for fixture teardown; final manifest persistence remains mandatory. Run the complete frozen-candidate suite after these repairs; interrupted or failed partitions are not acceptance evidence.
+
+**F02 data repair:** Original misfiled Shpotify record `mem_cf5858e8e065` is preserved in quarantine (`req_c6a0596eea02`). Active replacement `mem_db308e7f307d` explicitly labels external historical context and does not invent a repository root.
+
+**Production gate:** Preserve historical archives in place; back up active state, installed environment and configuration before managed setup. Complete the current 138-package advisory assessment and the hash-pinned `aiohttp`/`urllib3` security update. Preserve the actual installation, HTTP/MCP, browser and process/resource results in the existing audit checkpoint directory. Production acceptance remains pending until those gates finish.
+
 ## Current state
 
 - Owner: `audit-remediation-20261020` (Codex primary).

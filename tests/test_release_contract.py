@@ -47,6 +47,9 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         forbidden.extend((f"Version {major}.", f"version {major}.", f"/v{major}/"))
     for path in files:
         text = path.read_text(encoding="utf-8")
+        if path == ROOT / "tools" / "release_inventory.py":
+            # OSV versions its external API independently of the Hub contract.
+            text = text.replace("https://api.osv.dev/" + "v1" + "/querybatch", "OSV_QUERYBATCH")
         for token in forbidden:
             assert token not in text, f"historical contract token {token!r} in {path.relative_to(ROOT)}"
 
