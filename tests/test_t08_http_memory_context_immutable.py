@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
-from local_ai_hub import http_server, trace_context
+from local_ai_hub import http_server, project_config, trace_context
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.app import LocalAIApp
@@ -494,6 +495,22 @@ def test_public_task_memory_unavailable_is_bounded_and_redacted(
 ):
     app, root, post = _public_task_client(tmp_path, monkeypatch)
     private_backend_detail = "private backend failure detail"
+    project = project_config.resolve_project_context(root, Path(app.agent_state.db_path).parent)
+
+    def expected_project(candidate, *_args, **_kwargs):
+        assert Path(candidate).resolve() == root.resolve()
+        return project
+
+    def expected_memory_scope(goal, *, root: str, task_id: str):
+        assert goal == "Continue when advisory memory lookup is unavailable"
+        assert Path(root).resolve() == Path(project.root).resolve()
+        assert task_id == "public-memory-unavailable"
+        return nullcontext()
+
+    # Isolate the compiler-error branch from disk preparation racing the real
+    # one-second worker deadline; keep the worker and its deadline unchanged.
+    monkeypatch.setattr(project_config, "resolve_project_context", expected_project)
+    monkeypatch.setattr(app.agent_memory, "task_retrieval_scope", expected_memory_scope)
 
     class UnavailableCompiler:
         requests = []
@@ -529,6 +546,7 @@ def test_public_task_memory_unavailable_is_bounded_and_redacted(
         assert memory_context["warnings"] == [{"code": "memory_context_unavailable"}]
         assert len(compiler.requests) == 1
         assert compiler.requests[0].token_budget == 512
+        assert compiler.requests[0].coordination_id == project.coordination_id
         assert private_backend_detail not in repr(created)
         assert all(private_backend_detail not in record.getMessage() for record in caplog.records)
     finally:
