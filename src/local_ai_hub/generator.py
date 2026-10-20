@@ -17,32 +17,32 @@ from typing import Any
 SINGLE_OWNER_CONTRACT = (
     "Single-owner release contract: one Local AI Hub installation on one PC serves one human. "
     "Agents, chats, projects and worktrees are not tenants. Remove tenant selection, propagation and storage partitions; "
-    "do not substitute a constant tenant, aliases, shims or old/new dual contracts. Retired tenant fields and headers reject explicitly. "
+    "no constant tenant, aliases, shims or dual contracts. Retired tenant fields and headers reject explicitly in preflight. "
     "Preserve project/repository/clone/worktree/branch/task/session scopes, owner global scope, API token protection, command authorization, capabilities, path confinement and writer leases. "
     "Scheduler jobs use model/source/priority metadata and global limits, never tenant buckets. "
-    "Synthetic benchmark scenario items use id/prompt fields; tenant fields reject explicitly. "
+    "Synthetic benchmark items use id/prompt fields; tenant fields reject explicitly. "
     "Incident records use repository provenance only; retry and negative-knowledge require an explicit root. "
-    "MCP coordination has no tenant argument; LOCAL_AI_TENANT is retired. Session evidence uses session_id. "
+    "MCP coordination has no tenant argument; LOCAL_AI_TENANT is retired; session evidence uses session_id. "
     "HubClient options are keyword-only; requests retain API tokens without tenant headers; scope aliases reject. "
     "SDK checkpoint_task sends canonical nested checkpoint object with explicit phase, next_action, affected_paths, evidence_ids, blockers and state_data; malformed falsey values are not empty defaults. "
-    "HTTP root binding preserves owner-global memory and explicit session IDs. HTTP task creation derives context.repository_id from resolved project coordination ID; supplied IDs must match exactly. "
+    "HTTP root binding preserves owner-global memory and explicit session IDs; task creation derives context.repository_id from resolved project coordination ID (supplied IDs must match exactly). "
     "Task ownership checks repository identity; rate limiting uses one bounded installation window. "
-    "Memory context and diagnostics select repository memories by resolved coordination ID, never physical root fallback. Retired tenant provenance blocks startup pending offline conversion; runtime does not merge/rewrite records. "
-    "MemoryStore read/mutation APIs and HTTP memory dispatch have no tenant argument; mutations retain scope/provenance transaction checks without cwd or session/global fallbacks. "
-    "Task-memory adoption uses snapshot schema_version=2 with explicit context (root, coordination_id, task_id, session_id, clone_id, worktree_id, branch). Wire projection preserves this context. "
-    "Agent questions use canonical repository root and session_id with optional task association; answer_question rejects task mismatch. Question storage/API have no tenant column or selector. "
-    "Server-managed task scope uses version=2 and repo_root only; reaping retains status/heartbeat/deadline checks. Task lookup never reconstructs scope from retired metadata. Automatic task worktrees require explicit authorized physical root. "
+    "Memory context and diagnostics select repository memories by resolved coordination ID, never physical root fallback. "
+    "MemoryStore APIs and HTTP memory dispatch have no tenant argument; mutations retain scope/provenance checks without cwd or session/global fallbacks. "
+    "Task-memory adoption uses snapshot schema_version=2 with explicit context (root, coordination_id, task_id, session_id, clone_id, worktree_id, branch); wire projection preserves this context. "
+    "Agent questions use canonical repository root and session_id with optional task association; answer_question rejects task mismatch; question storage/API have no tenant column or selector. "
+    "Server-managed task scope uses version=2 and repo_root only; reaping retains status/heartbeat/deadline checks; task lookup never reconstructs scope from retired metadata. Automatic task worktrees require explicit authorized physical root. "
     "Watchdog maintenance authorizes explicit roots and retains bounded batches, cancellation and heartbeat/CAS fences. Context warmup rechecks root authorization, task revision/scope/status and active mode. "
     "Hybrid context uses explicit workspace keywords without tenant routing; retrieval backends retain independent failure handling. "
-    "Project RAG and diagram ingestion require authorized absolute root and bound workspace; files stay inside root without symlink/junction traversal. Named docsets retain owner-global namespace. "
-    "Generation uses keyword-only source and priority; telemetry and artifact dispatch must not manufacture a tenant identity. Async jobs retain repository/task/session context. Conversations use their own IDs without tenant ownership. "
-    "Writer lease owner identifies an actual task/execution; claim/release/renew use explicit owner and claim uses purpose. Coordination ttl_seconds is optional (defaults: 900s for leases, no forced memory expiry). Never derive writer owner from credentials. "
-    "Artifact put/put_json/put_bytes/compact and selectors are keyword-only; artifact access has no owner selector. Receipt evaluation uses exact task owner/root and command_execution_record.v2. Broker receipts require canonical JSON artifact persistence and server-managed task root. "
-    "Patch and repair forward actual broker receipts only; missing receipts are never synthesized. Stored receipts require explicit metadata schema with strict passed flags and mutation generations. "
-    "Writer fencing initializes only final canonical DDL; runtime ALTERs and migration tables are unsupported. Work orders keep work_id distinct from Agent OS task_id. "
-    "Context ledger reuse preserves session identity; request journaling uses request_id, action and payload fingerprint. HTTP principal helpers and security.users are removed. "
-    "Global quota limits aggregate installation usage without tenant buckets. rag.scope is retired and rejects by presence. Retired HTTP tenant headers are rejected in preflight. "
-    "Preserve configuration and durable data; conversion is an explicit offline operation with collision refusal, backups and verified record preservation, never a runtime fallback."
+    "Project RAG and diagram ingestion require authorized absolute root and bound workspace; files stay inside root without symlink/junction traversal; named docsets retain owner-global namespace. "
+    "Generation uses keyword-only source and priority; telemetry and artifact dispatch must not manufacture a tenant identity. Async jobs retain repository/task/session context; conversations use their own IDs without tenant ownership. "
+    "Writer lease owner identifies an actual task/execution; claim/release/renew use explicit owner; claim uses purpose; coordination ttl_seconds is optional (defaults: 900s for leases, no forced expiry). Never derive writer owner from credentials. "
+    "Artifact put/compact methods and selectors are keyword-only without owner selector. Receipt evaluation uses exact task owner/root and command_execution_record.v2; broker receipts require canonical JSON artifact persistence and server-managed task root. "
+    "Patch and repair forward actual broker receipts only; missing receipts are never synthesized; stored receipts require explicit metadata schema with strict passed flags and mutation generations. "
+    "Writer fencing initializes only final canonical DDL; runtime ALTERs and migration tables are unsupported; work orders keep work_id distinct from Agent OS task_id. "
+    "Context ledger reuse preserves session identity; request journaling uses request_id, action and payload fingerprint; HTTP principal helpers and security.users are removed. "
+    "Global quota limits aggregate installation usage without tenant buckets. rag.scope is retired and rejects by presence. "
+    "Retired tenant provenance blocks startup pending offline conversion; runtime does not merge/rewrite records; conversion is an explicit offline operation with collision refusal, backups and verified record preservation, never a runtime fallback."
 )
 
 
@@ -475,8 +475,11 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 {delegation_task}
 {work_delegation}
 - Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
-- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
-- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
+        "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
+"
+        "- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
+"
+        "- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
 ## Ownership and tiering
 
@@ -488,7 +491,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 
 ## READ-ONLY AUDIT CONTRACT
 
-- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
+- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects; split validation into a separately owned, explicitly side-effecting task.
 - Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.
 {audit_fallback}
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
@@ -757,7 +760,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     prioritization_bullets = []
     if fs.commands:
         prioritization_bullets.append(
-            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_command\", Arguments={\"command\": \"...\", \"cwd\": \"...\"})`). Pass `task_id` and `criterion` to auto-mint receipts. DO NOT run tests or builds directly via shell or native `run_command`!"
+            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")` (in Antigravity: `call_mcp_tool(ServerName=\"local-ai\", ToolName=\"local_ai_command\", Arguments={\"action\": \"run\", \"command\": \"...\", \"cwd\": \"...\"})`). Pass `task_id` and `criterion` to auto-mint receipts. DO NOT run tests or builds directly via shell or native `run_command`!"
         )
     if fs.repo:
         prioritization_bullets.append(
@@ -811,7 +814,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         + f"{repo_task_first}\n"
         "Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently."
         " Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list."
-        " For broader discovery, use Hub evidence before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files; exact file/symbol lookups may use their bounded direct routes."
+        ""
         " Reuse fresh evidence IDs, artifact slices, memos and cache hits;\n"
         " do not repeat the same hub action with the same root/query while repository state is unchanged.\n\n"
         "Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result;"
@@ -984,6 +987,9 @@ def generate_mcp_configs(
             },
         }
     }
+    if agent == "gemini":
+        entries["local-ai"]["force_all_tools_eager"] = True
+        entries["local-ai"]["skip_tool_name_prefix"] = True
     if bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
         if serena is not None and cfg.get("code_intelligence", {}).get("serena_enabled", True):
             context = "codex" if agent == "codex" else "claude-code" if agent == "claude" else "ide-assistant"
@@ -1092,6 +1098,25 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return schemas
 
 
+
+
+def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
+    """Generate high-priority instructions for Gemini / Antigravity MCP directory."""
+    return """# Local AI Hub MCP Instructions for Antigravity & Gemini
+
+Prioritize `local-ai` tools over native commands and raw file reading:
+- **Run commands, tests, lint, builds**: Call `local_ai_command(action="run", command="...", cwd="...")`. Pass `task_id` and `criterion` to auto-mint verification receipts. Never run tests or builds directly via shell or native `run_command`!
+- **Search code & repository facts**: Call `local_ai_repo(action="search"|"code_index"|"context"|"solve", root="...")`. Avoid unconstrained directory dumping.
+- **Semantic code review & second opinions**: Call `local_ai_task(action="review"|"second_opinion"|"compress")`.
+- **Agent OS Lifecycle & durable memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion")`.
+- **Exact file slices & artifacts**: Call `local_ai_artifact(action="slice", path="...", line_start=..., line_end=...)`.
+
+When calling via `call_mcp_tool` (if tools are lazily loaded):
+- `ServerName`: "local-ai"
+- `ToolName`: exact tool name (e.g. "local_ai_command")
+- `Arguments`: parameter dictionary (e.g. `{"action": "run", "command": "pytest", "cwd": "."}`)
+"""
+
 def write_all_generated(
     cfg: dict[str, Any],
     target_root: Path,
@@ -1175,6 +1200,11 @@ def write_all_generated(
         tool_file = schemas_dir / f"{tool_name}.json"
         tool_file.write_text(json_dumps(schema) + "\n", encoding="utf-8")
         results["schemas"].append(str(tool_file))
+
+    # 5. Generated Antigravity MCP instructions
+    instructions_path = gen_dir / "instructions.md"
+    instructions_path.write_text(generate_antigravity_instructions(cfg) + "\n", encoding="utf-8")
+    results["instructions"].append(str(instructions_path))
 
     return results
 
