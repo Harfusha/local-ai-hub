@@ -174,13 +174,20 @@ def test_stdio_handshake_starts_one_hub_for_simultaneous_cold_clients(tmp_path: 
         results = asyncio.run(asyncio.wait_for(call_both(), timeout=45))
         state_files = sorted(path.name for path in state_dir.iterdir()) if state_dir.exists() else []
         assert all(
-            result.get("success") is True
-            or (
+            result.get("hub_online") is True
+            and (result.get("success") is True or (
                 result.get("degraded") is True
                 and result.get("retryable") is True
                 and result.get("terminal") is False
                 and result.get("error") == "status snapshot is warming"
-            )
+            ) or (
+                result.get("success") is False
+                and result.get("degraded") is True
+                and isinstance(result.get("dependency_status"), dict)
+                and bool(result["dependency_status"])
+                and all(isinstance(item, dict) and item.get("degraded") is True
+                        for item in result["dependency_status"].values())
+            ))
             for result in results
         ), (
             f"cold MCP failures: {[(item.get('error'), item.get('status_code')) for item in results]!r}; "

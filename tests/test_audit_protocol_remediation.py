@@ -10,6 +10,22 @@ from local_ai_hub.rag import RAGStore
 from local_ai_hub.task_context import build_context_request
 
 
+@pytest.mark.parametrize("detail", ["brief", "cache"])
+def test_status_reports_explain_dependency_degradation(monkeypatch, detail):
+    from local_ai_hub import mcp_server as module
+    failed = {"degraded": True, "deadline_ms": 250, "status": "timeout"}
+    raw = {"success": False, "hub_online": True, "degraded": True,
+           "dependency_status": {"accelerators": failed,
+                                 "healthy": {"degraded": False},
+                                 "invalid": None, "coerced": {"degraded": "true"}}}
+    monkeypatch.setattr(module.CLIENT, "get", lambda *args, **kwargs: raw)
+    result = module.local_ai_status(detail=detail, max_response_tokens=1200)
+    assert result["success"] is False
+    assert result["hub_online"] is True
+    assert result["degraded"] is True
+    assert result["dependency_status"] == {"accelerators": failed}
+
+
 @pytest.mark.parametrize("field", ["task_id", "session_id", "repository_id", "clone_id", "worktree_id", "branch"])
 @pytest.mark.parametrize("value", [123, " invalid", "invalid\0id", "x" * 201])
 def test_context_identity_is_rejected_without_coercion(field, value):

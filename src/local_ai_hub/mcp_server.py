@@ -780,7 +780,7 @@ _STATUS_PROTECTED_KEYS = (
     "job_id", "trace_id", "task_id", "state", "artifact_id", "cancel_requested",
     "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
     "admission_state", "terminal", "retryable", "in_progress",
-    "mutation_applied", "operation_not_started",
+    "mutation_applied", "operation_not_started", "dependency_status",
     "worktree_id", "worktree_path", "lease_id", "branch",
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
@@ -2407,6 +2407,14 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
     runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
     if not isinstance(runtime_stats, dict):
         runtime_stats = {}
+    dependencies = status.get("dependency_status")
+    failed_dependencies = {}
+    if status.get("degraded") is True and isinstance(dependencies, dict):
+        failed_dependencies = _bound_context_json({
+            name: diagnostic for name, diagnostic in dependencies.items()
+            if isinstance(name, str) and isinstance(diagnostic, dict)
+            and diagnostic.get("degraded") is True
+        })
     if detail == "cache":
         projected = {
             "success": bool(status.get("hub_online", False)),
@@ -2431,6 +2439,8 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
             "commands", "lossless_router", "pipeline", "preprocessing", "tool_agent",
             "circuit_breakers", "fallback_count", "embeddings", "reranker", "token_saving", "context_ledger",
         ]
+        if failed_dependencies:
+            projected["dependency_status"] = failed_dependencies
         return _compact(_preserve_contract_state(status, projected), "status", extra_fields=cache_fields)
     sched = status.get("scheduler", {}) if isinstance(status, dict) else {}
     saving = status.get("observability", {}) if isinstance(status, dict) else {}
@@ -2449,6 +2459,8 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
     if vram and isinstance(vram, dict):
         res["vram_pressure"] = vram.get("pressure_level", "nominal")
         res["context_budget_factor"] = vram.get("context_budget_factor", 1.0)
+    if failed_dependencies:
+        res["dependency_status"] = failed_dependencies
     return _preserve_contract_state(status, res)
 
 
