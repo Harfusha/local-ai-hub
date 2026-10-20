@@ -487,6 +487,9 @@ def configure_gemini_instance(
         if schemas_dir.exists():
             for sfile in schemas_dir.glob("*.json"):
                 shutil.copy2(sfile, antigravity_mcp / sfile.name)
+        instructions_src = install_dir / "generated" / "instructions.md"
+        if instructions_src.exists():
+            shutil.copy2(instructions_src, antigravity_mcp / "instructions.md")
 
 
 def vscode_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool) -> None:
@@ -752,6 +755,9 @@ def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, 
             },
         }
     }
+    if agent == "gemini":
+        entries["local-ai"]["force_all_tools_eager"] = True
+        entries["local-ai"]["skip_tool_name_prefix"] = True
     if not bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
         return entries
     # Optional escape hatch. Default installations expose only Local AI Hub to save schemas/tokens.
