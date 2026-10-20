@@ -32,8 +32,16 @@ def test_agent_config_merge_is_idempotent_and_parses_every_supported_host(tmp_pa
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(setup, "get_user_homes", lambda: [home])
     codex_home = home / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    install_skills = setup.install_agent_skills
+
+    def confined_install_skills(install_dir, destination, **kwargs):
+        assert destination.resolve().is_relative_to(tmp_path.resolve()), destination
+        return install_skills(install_dir, destination, **kwargs)
+
+    monkeypatch.setattr(setup, "install_agent_skills", confined_install_skills)
 
     json_configs = {
         ".claude.json": "mcpServers",
