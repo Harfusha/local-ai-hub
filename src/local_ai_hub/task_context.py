@@ -35,18 +35,18 @@ def _bounded_text(value: Any, limit: int) -> str:
 
 
 def _bounded_list(value: Any, limit: int = 64) -> tuple[str, ...]:
-    if isinstance(value, str):
-        value = (value,)
-    if not isinstance(value, (list, tuple, set)):
+    if value is None:
         return ()
+    if not isinstance(value, (list, tuple)) or len(value) > limit:
+        raise ValueError("context list must be a bounded sequence")
     result: list[str] = []
     seen: set[str] = set()
     for item in value:
-        if item is None:
-            continue
-        text = str(item).replace("\x00", "").strip()
+        if not isinstance(item, str) or "\x00" in item or len(item) > 240:
+            raise ValueError("context list items must be bounded strings without null bytes")
+        text = item
         if text and text not in seen:
-            result.append(text[:240])
+            result.append(text)
             seen.add(text)
         if len(result) >= limit:
             break
@@ -61,11 +61,26 @@ def build_context_request(
     project_context: _ProjectContextInput | None = None,
 ) -> ContextRequest:
     """Build request from task fields plus explicitly trusted project context."""
-    clean_payload = dict(payload) if isinstance(payload, Mapping) else {}
+    if not isinstance(payload, Mapping):
+        raise ValueError("task context payload must be an object")
+    clean_payload = dict(payload)
     if {"tenant", "tenant_id", "tenant_key", "tenant_scope"}.intersection(clean_payload):
         raise ValueError("retired task context field")
     if "identity" in clean_payload:
         raise ValueError("retired generic task context identity")
+    for name, limit in {
+        "root": 1000, "task_id": 200, "session_id": 200, "clone_id": 200,
+        "worktree_id": 200, "branch": 200, "repository_id": 200,
+        "repository_revision": 200, "repo_revision": 200,
+        "phase": 80, "preload_profile": 120, "since_hash": 120,
+    }.items():
+        if name in clean_payload:
+            value = clean_payload[name]
+            if not isinstance(value, str) or value != value.strip() or "\x00" in value or len(value) > limit:
+                raise ValueError(f"{name} must be a bounded canonical string")
+    for name in ("include_diagnostics", "_scoped_task_only"):
+        if name in clean_payload and type(clean_payload[name]) is not bool:
+            raise ValueError(f"{name} must be boolean")
     repository_revision = _bounded_text(clean_payload.get("repository_revision"), 200)
     repo_revision = _bounded_text(clean_payload.get("repo_revision") or repository_revision, 200)
     request_root = _bounded_text(clean_payload.get("root"), 1000)
@@ -102,14 +117,9 @@ def build_context_request(
             project_digest,
         )
     raw_budget = clean_payload.get("token_budget", 4000)
-    try:
-        raw_budget_float = float(raw_budget or 4000)
-        if not math.isfinite(raw_budget_float) or raw_budget_float <= 0:
-            token_budget = 4000
-        else:
-            token_budget = max(1, min(int(raw_budget_float), 128_000))
-    except (TypeError, ValueError, OverflowError):
-        token_budget = 4000
+    if type(raw_budget) is not int or not 1 <= raw_budget <= 128_000:
+        raise ValueError("token_budget must be an integer between 1 and 128000")
+    token_budget = raw_budget
     root = _bounded_text(clean_payload.get("root"), 1000)
     coordination_id = ""
     if project_context is not None:

@@ -3577,6 +3577,11 @@ class RAGStore:
         metadata: dict[str, Any] | None = None,
             ) -> dict[str, Any]:
         """Ingest architectural diagram, flowchart, or visual asset into RAG workspace."""
+        if metadata is not None and not isinstance(metadata, dict):
+            return {"success": False, "error": "diagram metadata must be an object", "diagram_indexed": False}
+        reserved = {"type", "format", "image_path", "root", "workspace", "source", "diagram_content_mode", "vision_or_ocr_used"}
+        if reserved.intersection(metadata or {}):
+            return {"success": False, "error": "diagram metadata contains reserved provenance keys", "diagram_indexed": False}
         try:
             root_path, clean_ws = self._prepare_ingest_workspace(
                 root=root, workspace=workspace

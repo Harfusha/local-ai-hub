@@ -414,21 +414,39 @@ class AgentStateStore:
         deadline = time.monotonic() + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
         with tempfile.TemporaryDirectory(prefix="agent-state-preflight-") as temporary:
             snapshot_db = Path(temporary) / self.db_path.name
-            source_uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
-            progress_error: list[TimeoutError] = []
+            # Even mode=ro SQLite connections update live SHM read marks and may
+            # create sidecars. Only open SQLite against our private file snapshot.
+            sources = [Path(f"{self.db_path}{suffix}") for suffix in ("", "-wal", "-journal")]
 
-            def check_backup_progress(_status: int, _remaining: int, _total: int) -> None:
-                if time.monotonic() >= deadline:
-                    error = TimeoutError("agent_state schema preflight time limit exceeded")
-                    progress_error.append(error)
-                    raise error
+            def identity(path: Path) -> tuple[int, ...] | None:
+                try:
+                    metadata = path.stat()
+                except FileNotFoundError:
+                    return None
+                return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                        metadata.st_mtime_ns, metadata.st_ctime_ns)
 
             try:
-                remaining = max(0.001, deadline - time.monotonic())
-                with closing(sqlite3.connect(source_uri, uri=True, timeout=min(0.05, remaining))) as source:
-                    with closing(sqlite3.connect(snapshot_db)) as snapshot:
-                        source.backup(snapshot, pages=128, progress=check_backup_progress, sleep=0.01)
-                        snapshot.commit()
+                before = [identity(path) for path in sources]
+                for path, metadata in zip(sources, before):
+                    if metadata is None:
+                        continue
+                    destination = snapshot_db.parent / path.name
+                    try:
+                        with path.open("rb") as source, destination.open("xb") as target:
+                            remaining_bytes = metadata[2]
+                            while remaining_bytes:
+                                if time.monotonic() >= deadline:
+                                    raise TimeoutError("agent_state schema preflight time limit exceeded")
+                                chunk = source.read(min(1024 * 1024, remaining_bytes))
+                                if not chunk:
+                                    raise sqlite3.OperationalError("database is locked: schema snapshot changed")
+                                target.write(chunk)
+                                remaining_bytes -= len(chunk)
+                    except FileNotFoundError as exc:
+                        raise sqlite3.OperationalError("database is locked: schema snapshot changed") from exc
+                if [identity(path) for path in sources] != before:
+                    raise sqlite3.OperationalError("database is locked: schema snapshot changed")
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded")
                 uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
@@ -448,8 +466,6 @@ class AgentStateStore:
             except RuntimeError:
                 raise
             except sqlite3.DatabaseError as exc:
-                if progress_error:
-                    raise progress_error[-1] from exc
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
                 raise

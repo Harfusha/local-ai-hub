@@ -110,6 +110,10 @@ class _RecordingBody(BytesIO):
         self.read_sizes.append(amt)
         return super().read(amt)
 
+    def read1(self, amt: int = -1) -> bytes:
+        self.read_sizes.append(amt)
+        return super().read1(amt)
+
 
 class _RecordingHTTPError(HTTPError):
     def __init__(self, body: bytes):
@@ -141,7 +145,9 @@ def test_http_error_body_read_is_bounded(entrypoint: str, monkeypatch: pytest.Mo
         else:
             runtime.request_interruptible("/api/generate", {"model": "test"}, lambda: False, timeout=2)
 
-    assert error.read_sizes == [65_537]
+    assert error.read_sizes
+    assert all(0 < size <= 65_537 for size in error.read_sizes)
+    assert sum(error.read_sizes) <= 65_537
 
 
 def test_request_interruptible_cancels_while_waiting_for_headers():

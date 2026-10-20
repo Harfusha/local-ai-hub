@@ -7,7 +7,7 @@ state_dir = "~/.local-ai-hub/state"
 request_timeout_seconds = 900
 # Slow/broken clients cannot occupy a handler while dribbling a request body.
 request_body_timeout_seconds = 15
-# Release idle HTTP/1.1 keep-alive sockets so they do not exhaust handler slots.
+# Absolute request-line/header budget and idle socket limit; responses close the connection.
 keepalive_timeout_seconds = 5
 # Bound handler threads independently from the model queue so overload fails fast.
 max_concurrent_requests = 64
@@ -15,7 +15,7 @@ overload_wait_seconds = 0.05
 max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload has its own limit
 
 [security]
-# HTTP access is loopback-only. API tokens authorize operations for the single local owner.
+# HTTP access is loopback-only. An empty token trusts local clients; a configured token is enforced.
 api_token = "" # optional token for trusted local integrations
 
 [browser_bridge]

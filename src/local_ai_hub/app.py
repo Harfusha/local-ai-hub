@@ -915,6 +915,8 @@ class LocalAIApp:
             background_gpu, background_gpu_healthy = read("background_gpu", self.background_gpu.status, {})
             model_policy = getattr(getattr(self, "services", None), "model_policy", None)
             model_execution, model_execution_healthy = read("model_execution", model_policy.summary if model_policy else lambda: {}, {})
+            from .model_lifecycle import lifecycle_status
+            model_execution = {**model_execution, "lifecycle": lifecycle_status()}
             vram_balancer_obj = getattr(self, "vram_balancer", None)
             vram_balancer, vram_balancer_healthy = read("vram_balancer", vram_balancer_obj.status if vram_balancer_obj else lambda: {}, {})
             benchmark_obj = getattr(self, "benchmark_runner", None)
@@ -2196,73 +2198,50 @@ class LocalAIApp:
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
 
-    def close(self) -> None:
-        # ``close`` is intentionally idempotent: HTTP shutdown, service control and
-        # embedded callers can race during teardown without double-closing workers.
-        with self._close_lock:
-            if self._closed:
-                return
-            self._closed = True
+    def close(self, *, timeout: float = 5.0) -> None:
+        """Stop admission, then wait boundedly for owned component cleanup.
+
+        Inspect close_report for failed/pending phases. Repeated calls retry failed
+        phases only; an in-flight callback retains its owner and is never duplicated.
+        """
+        from .shutdown import CloseCoordinator
         self._shutdown.set()
-        try:
-            self.services.close_lint_daemons()
-        except Exception:
-            pass
-        try:
-            self.services.close_context_warmup()
-        except Exception:
-            pass
-        try:
-            self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
-        # Stop helper loops before tearing down the services they periodically touch.
-        # They are daemon threads as a final safety net, but bounded joins make normal
-        # restart/shutdown deterministic and avoid late telemetry/preprocessor calls.
-        current = threading.current_thread()
-        for thread in (self._prewarm_thread, self._watchdog_thread):
-            if thread is not None and thread is not current and thread.is_alive():
-                thread.join(timeout=1.5)
-        try:
-            self.recovery.close()
-        except Exception:
-            pass
-        try:
-            self.preprocessor.close()
-        except Exception:
-            pass
-        try:
-            self.external_tools.close()
-        except Exception:
-            pass
-        try:
-            self.work_orchestrator.close()
-        except Exception:
-            pass
-        try:
-            self.async_jobs.close()
-        except Exception:
-            pass
-        try:
-            self.background_gpu.close()
-        except Exception:
-            pass
-        try:
-            self.scheduler.close()
-        except Exception:
-            pass
-        try:
-            self.telemetry.close()
-        except Exception:
-            pass
-        for name in ("deterministic", "code_index"):
-            try:
-                component = getattr(self, name, None)
-                if component is not None:
-                    component.close()
-            except Exception:
-                pass
-        try:
-            shutdown_logging()
-        except Exception:
-            pass
+        with self._close_lock:
+            self._closed = True
+            coordinator = getattr(self, "_close_coordinator", None)
+            if coordinator is None:
+                caller = threading.current_thread()
+                def join_helpers():
+                    deadline = time.monotonic() + 1.5
+                    pending = []
+                    for thread in (self._prewarm_thread, self._watchdog_thread):
+                        if thread is None or thread is caller or thread is threading.current_thread():
+                            continue
+                        if thread.is_alive():
+                            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+                        if thread.is_alive():
+                            pending.append(thread.name)
+                    if pending:
+                        raise TimeoutError("helper thread cleanup incomplete")
+                steps = [
+                    ("lint_daemons", self.services.close_lint_daemons),
+                    ("context_warmup", self.services.close_context_warmup),
+                    ("status_dependencies", lambda: self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)),
+                    ("helper_threads", join_helpers),
+                ]
+                for name in ("recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "background_gpu", "scheduler", "telemetry", "deterministic", "code_index"):
+                    component = getattr(self, name, None)
+                    if component is not None and callable(getattr(component, "close", None)):
+                        steps.append((name, component.close))
+                steps.append(("logging", shutdown_logging))
+                coordinator = CloseCoordinator(steps)
+                self._close_coordinator = coordinator
+        report = coordinator.close(timeout)
+        self.close_report = report
+        if report["failed"] or report["pending"]:
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                try:
+                    logger.error("shutdown cleanup incomplete failed=%s pending=%s", report["failed"], report["pending"])
+                except Exception:
+                    report["logging_unconfirmed"] = True

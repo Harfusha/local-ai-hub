@@ -78,7 +78,7 @@ def test_task_store_get_active_task_filtering(tmp_path: Path):
     assert active_after.task_id == task2.task_id
 
 
-def test_command_broker_auto_binds_active_task_and_captures_incident(tmp_path: Path):
+def test_command_broker_requires_explicit_task_binding_and_captures_incident(tmp_path: Path):
     db_path = tmp_path / "state.db"
     state_store = AgentStateStore(str(db_path))
     task_store = TaskStore(state_store)
@@ -129,22 +129,44 @@ def test_command_broker_auto_binds_active_task_and_captures_incident(tmp_path: P
     )
     task_store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="start_key")
 
-    # A real passing validation command can bind only to this root-scoped active task.
+    # A root-scoped task can belong to another chat; never adopt it implicitly.
+    unbound = broker.run("git status --short", cwd=str(repo_dir), timeout=30)
+    assert unbound.get("success") is True
+    assert not unbound.get("task_id")
+    assert "verification_receipt" not in unbound
+
+    # Explicit binding retains real receipt creation.
     (repo_dir / "test_smoke.py").write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
-    res = broker.run("pytest -q test_smoke.py", cwd=str(repo_dir), timeout=60)
+    res = broker.run("pytest -q test_smoke.py", cwd=str(repo_dir), timeout=60,
+                     task_id=task.task_id, criterion="pytest unit tests pass")
     assert res.get("success") is True
     assert res.get("task_id") == task.task_id
     assert res.get("criterion") == "pytest unit tests pass"
     assert isinstance(res.get("verification_receipt"), dict)
 
     # 2. Failing validation command -> auto captures incident into IncidentStore
-    fail_res = broker.run("pytest non_existent_test_file.py", cwd=str(repo_dir), timeout=60)
+    fail_res = broker.run("pytest non_existent_test_file.py", cwd=str(repo_dir), timeout=60,
+                          task_id=task.task_id, criterion="pytest unit tests pass")
     assert fail_res.get("success") is False
     assert fail_res.get("incident_id")
     assert fail_res.get("incident_recorded") is True
 
+    from local_ai_hub.agent_policy import Budget, BudgetUnavailableError, PolicyDecision
+    def unavailable(*args, **kwargs):
+        raise BudgetUnavailableError("budget state unavailable")
+    broker.policy_engine = type("Policy", (), {
+        "authorize": staticmethod(lambda *args, **kwargs: PolicyDecision(allowed=True)),
+        "get_budget": staticmethod(lambda task_id: Budget(task_id=task_id)),
+        "consume": staticmethod(unavailable),
+    })()
+    accounting_failure = broker.run("git status --short", cwd=str(repo_dir), timeout=30,
+        task_id=task.task_id, criterion="pytest unit tests pass", bypass_cache=True)
+    assert accounting_failure.get("success") is False
+    assert accounting_failure.get("budget_accounting_unavailable") is True
+    assert not accounting_failure.get("verification_receipt", {}).get("passed")
 
-def test_http_memory_defaults_to_repository_scope_and_context_pack_injects_task(tmp_path: Path):
+
+def test_http_memory_defaults_to_repository_scope_without_implicit_task_context(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = tmp_path / "config.toml"
@@ -243,9 +265,8 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             },
         )
         assert pack_res["success"] is True
-        # The active task was auto-bound!
-        assert pack_res.get("task_id") == "auto-pack-task-1"
-        assert "task_context" in pack_res or "context" in pack_res
+        assert not pack_res.get("task_id")
+        assert "task_context" not in pack_res
 
     finally:
         server.shutdown()

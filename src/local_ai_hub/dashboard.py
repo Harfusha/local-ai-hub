@@ -501,8 +501,8 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
     <section class="section">
       <div class="project-toolbar">
         <input id="agentOsMemSearch" aria-label="Search memories" type="search" placeholder="Search memory keys and values..." autocomplete="off">
-        <select id="agentOsMemScope" aria-label="Memory scope"><option value="">All scopes</option><option value="task">Task</option><option value="session">Session</option><option value="repository">Repository</option><option value="user">User</option><option value="system">System</option></select>
-        <select id="agentOsMemKind" aria-label="Memory kind"><option value="">All kinds</option><option value="fact">Fact</option><option value="decision">Decision</option><option value="preference">Preference</option><option value="pattern">Pattern</option><option value="negative_knowledge">Negative Knowledge</option></select>
+        <select id="agentOsMemScope" aria-label="Memory scope">__MEMORY_SCOPE_OPTIONS__</select>
+        <select id="agentOsMemKind" aria-label="Memory kind">__MEMORY_KIND_OPTIONS__</select>
         <button class="btn ok" id="agentOsRecordMemBtn" style="padding:5px 9px">+ Record Memory</button>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Scope</th><th>Kind</th><th>Key</th><th>Value</th><th>Confidence</th><th>Source</th><th>Created</th></tr></thead><tbody id="agentOsMemoryBody"></tbody></table></div>
@@ -673,9 +673,11 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   </section>
 
   <section class="section" style="margin-top:12px">
-    <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
-    <div class="project-toolbar"><input id="ragWorkspaceSearch" aria-label="Search RAG workspaces" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
+    <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span><button id="residentInventoryRefresh" class="btn">Refresh resident inventory</button></h2>
+    <p class="tiny muted" id="diagramIndexingNotice">Raster diagrams are indexed as metadata only; no OCR or vision processing is performed. SVG text nodes and explicit captions can be indexed.</p>
+    <div class="project-toolbar"><input id="ragWorkspaceSearch" aria-label="Search RAG workspaces" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><select id="ragWorkspaceStateFilter" aria-label="Workspace root availability"><option value="">All root states</option><option value="available">Available</option><option value="missing">Reported missing</option><option value="unverified">Unverified</option><option value="unknown">Root unknown</option></select><button id="ragWorkspaceReviewBtn" class="btn">Review workspace inventory</button><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
     <div id="ragWorkspacesList" style="padding:12px"><div class="tiny muted">Loading RAG workspaces…</div></div>
+    <details id="ragWorkspaceReview"><summary>Workspace verification review</summary><p>No workspaces are deleted by this review. Verify ownership and preserve recoverable snapshots before removal.</p><pre id="ragWorkspaceReviewOutput" class="human-pre"></pre></details>
   </section>
 
   <section class="section" style="margin-top:12px">
@@ -4222,9 +4224,10 @@ function switchTab(tabId){
   if(tabId==='config')loadConfigView();
   if(tabId==='agentos')loadAgentOsView();
   if(tabId==='coordination')loadCoordinationView();
-  if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();}
+  if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();loadResidentInventory();}
   if(tabId==='commands')loadWorktrees();
   if(tabId==='reliability')loadLogsTail();
+  if(['work','reliability'].includes(tabId))pollTraces();else tracesPollAbortController?.abort();
   if(changed){window.scrollTo({top:0,left:0,behavior:'instant'});$(tabId).querySelector('.page-heading h1')?.focus({preventScroll:true});}
 }
 
@@ -4765,7 +4768,7 @@ function render(s){
   }
   if($('agentStateCard'))$('agentStateCard').onclick=()=>switchTab('agentos');
 
-  const loadedModels=s.loaded_model_details||[];
+  const inventory=residentInventoryFor(s),loadedModels=inventory.details;
   const loadedVal=$('loadedModelVal'),loadedSub=$('loadedModelSub');
   if(loadedVal&&loadedSub){
     if(loadedModels.length>0){
@@ -4776,12 +4779,12 @@ function render(s){
       const vramStr=primary.vram_bytes?`${formatBytes(primary.vram_bytes)} VRAM`:(primary.size_bytes?formatBytes(primary.size_bytes):'');
       const paramStr=primary.parameter_size||primary.quantization||'';
       loadedSub.textContent=[ctxStr,paramStr,vramStr].filter(Boolean).join(' · ');
-    }else if(Array.isArray(s.loaded_models)&&s.loaded_models.length>0){
-      loadedVal.textContent=s.loaded_models.join(', ');
+    }else if(inventory.state==='loaded'&&inventory.names.length>0){
+      loadedVal.textContent=inventory.names.join(', ');
       loadedSub.textContent='Resident in memory';
     }else{
-      loadedVal.innerHTML='<span class="muted">None resident</span>';
-      loadedSub.textContent='Models load on demand';
+      loadedVal.textContent=inventory.state==='none'?'None resident':inventory.state==='stale'?'Stale inventory':'Unknown';
+      loadedSub.textContent=inventory.state==='none'?'Models load on demand':inventory.state==='stale'?'Refresh Models & RAG to verify':'Resident inventory not included in this snapshot';
     }
   }
   if($('loadedModelCard'))$('loadedModelCard').onclick=()=>switchTab('performance');
@@ -4864,7 +4867,7 @@ function render(s){
     const offload=`${Math.round((m.gpu_fraction||0)*100)}% GPU / ${Math.round((m.cpu_offload_fraction||0)*100)}% CPU`;
     const statusChip=m.expires_at?`<span class="chip ok">expires ${new Date(m.expires_at).toLocaleTimeString()}</span>`:'<span class="chip">Resident</span>';
     return `<tr><td><strong>${esc(m.name)}</strong></td><td>${ctx}</td><td>${params}</td><td>${quant}</td><td class="mono tiny">${memStr}</td><td class="tiny">${offload}</td><td>${statusChip}</td></tr>`;
-  },7,'No models currently resident in VRAM/memory.');
+  },7,inventory.state==='none'?'No models currently resident in VRAM/memory.':inventory.state==='loaded'?'Resident names are available; detailed memory inventory is unavailable.':'Resident inventory unknown or stale; refresh Models & RAG to verify.');
 
   rows('executionProfiles',ep,x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${esc(x.tier)}</td><td>${n(x.num_ctx)}</td><td>${n(x.max_ctx)}</td><td>${n(x.parallel_limit)}</td><td>${x.think?'on':'role-gated/off'}</td><td>${n(x.prompt_budget_tokens)}</td>`,'execution_profile'),7);
   rows('models',o.by_model||[],x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${ms(x.avg_load_ms)}</td><td>${n(x.failures)}</td>`,'model_stat'),5);
@@ -4920,22 +4923,24 @@ function renderTraceList(items){
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
   $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x),projectMeta=[project,context].filter(Boolean).join(' · ')||x.agent||'unknown context';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(projectMeta)}</span><span class="trace-side-meta">${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
+function tracePollingNeeded(){return ['work','reliability'].includes(document.querySelector('.page.active')?.id);}
 async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
   if(!isCurrent()||tracesPollInFlight)return false;
+  if(!tracePollingNeeded())return false;
   tracesPollInFlight=true;
   const controller=typeof AbortController==='function'?new AbortController():null;
   tracesPollAbortController=controller;
   try{
     const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
-    const r=await apiFetch('/api/debug-traces?limit=200'+suffix,opts);if(!isCurrent())return false;
-    const d=await r.json();if(!isCurrent()||!d.success)return false;
+    const r=await apiFetch('/api/debug-traces?limit=200'+suffix,opts);if(!isCurrent()||!tracePollingNeeded())return false;
+    const d=await r.json();if(!isCurrent()||!tracePollingNeeded()||!d.success)return false;
     const items=Array.isArray(d.items)?d.items:[],changed=JSON.stringify(items)!==JSON.stringify(lastTraces);
     if(changed){lastTraces=items;renderTraceList(lastTraces)}
     return {changed};
   }catch(e){if(isCurrent()&&!controller?.signal.aborted)console.warn('trace refresh failed',e);return false}
   finally{tracesPollInFlight=false;if(tracesPollAbortController===controller)tracesPollAbortController=null}
 }
-$('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
+$('traceRefresh')?.addEventListener('click',()=>pollTraces());$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
 async function probeHealth(){
@@ -5295,14 +5300,18 @@ let ragWorkspaces=[];
 function ragWorkspaceIdentity(workspace){return String(workspace?.root||workspace?.repository_root||workspace?.workspace||workspace?.id||workspace||'unknown');}
 function renderRagWorkspaces(){
   const list=$('ragWorkspacesList');if(!list)return;
-  const query=String($('ragWorkspaceSearch')?.value||'').trim().toLowerCase();
-  const visible=ragWorkspaces.filter(w=>{const identity=ragWorkspaceIdentity(w);return !query||[identity,w.status,w.state,w.model].filter(Boolean).join(' ').toLowerCase().includes(query)});
-  const summary=$('ragWorkspaceSummary');if(summary)summary.textContent=`${visible.length} of ${ragWorkspaces.length} workspaces · canonical identity and index state`;
-  list.innerHTML=visible.length?`<div class="table-wrap"><table><thead><tr><th>Workspace identity</th><th>Index status</th><th>Contents</th></tr></thead><tbody>${visible.map(w=>{
-    const identity=ragWorkspaceIdentity(w),chunks=Number(w.chunks??w.document_count??w.count??0),state=String(w.status||w.state||'status unreported'),stateClass=/error|failed/i.test(state)?'bad-t':/^(ready|complete|completed)$/i.test(state)?'ok':'muted';
-    const contents=[chunks&&`${n(chunks)} chunks`,w.files&&`${n(w.files)} files`,w.embedding_model&&String(w.embedding_model)].filter(Boolean).join(' · ')||'No indexed content reported';
-    return `<tr><td><b>${esc(identity.split('/').filter(Boolean).pop()||identity)}</b><div class="tiny muted mono" title="${esc(identity)}">${esc(identity)}</div></td><td><span class="${stateClass}">${esc(humanLabel(state))}</span></td><td class="tiny">${esc(contents)}</td></tr>`;
-  }).join('')}</tbody></table></div>`:'<span class="muted">No RAG workspace matches current search.</span>';
+  const query=String($('ragWorkspaceSearch')?.value||'').trim().toLowerCase(),filter=$('ragWorkspaceStateFilter')?.value||'';
+  const visible=ragWorkspaces.filter(w=>{
+    const identity=ragWorkspaceIdentity(w),state=workspaceInventoryState(w);
+    return (!filter||state.availability===filter)&&(!query||[identity,state.root,w?.status,w?.state,w?.model].filter(Boolean).join(' ').toLowerCase().includes(query));
+  });
+  const summary=$('ragWorkspaceSummary');if(summary)summary.textContent=visible.length+' of '+ragWorkspaces.length+' workspaces · availability is separate from index status';
+  list.innerHTML=visible.length?'<div class="table-wrap"><table><thead><tr><th>Workspace identity</th><th>Root availability</th><th>Last verification</th><th>Index status</th><th>Contents</th></tr></thead><tbody>'+visible.map(w=>{
+    const identity=ragWorkspaceIdentity(w),state=workspaceInventoryState(w),chunks=Number(w?.chunks??w?.document_count??w?.count??0);
+    const indexState=String(w?.status||w?.state||'status unreported'),contents=[chunks&&n(chunks)+' chunks',w?.files&&n(w.files)+' files',w?.embedding_model].filter(Boolean).join(' · ')||'Content counts not provided';
+    const verified=state.verifiedAt?new Date(state.verifiedAt).toLocaleString():'Not provided';
+    return '<tr><td><b>'+esc(identity.split(/[\\/]/).filter(Boolean).pop()||identity)+'</b><div class="tiny muted mono">'+esc(state.root||identity)+'</div></td><td>'+esc(humanLabel(state.availability))+'<div class="tiny muted">'+esc(state.reason)+'</div></td><td class="tiny">'+esc(verified)+'</td><td>'+esc(humanLabel(indexState))+'</td><td class="tiny">'+esc(contents)+'</td></tr>';
+  }).join('')+'</tbody></table></div>':'<span class="muted">No RAG workspace matches current filters.</span>';
 }
 async function loadRagWorkspaces(){
   try{
@@ -5312,6 +5321,12 @@ async function loadRagWorkspaces(){
   }catch(e){if($('ragWorkspacesList'))$('ragWorkspacesList').textContent='Failed to load workspaces'}
 }
 $('ragWorkspaceSearch')?.addEventListener('input',renderRagWorkspaces);
+$('ragWorkspaceStateFilter')?.addEventListener('change',renderRagWorkspaces);
+$('ragWorkspaceReviewBtn')?.addEventListener('click',()=>{
+  const review=$('ragWorkspaceReview'),output=$('ragWorkspaceReviewOutput');if(!review||!output)return;
+  output.textContent=ragWorkspaces.map(w=>{const state=workspaceInventoryState(w);return ragWorkspaceIdentity(w)+' — '+state.availability+' — '+state.reason;}).join('\n');
+  review.open=true;
+});
 
 async function loadActiveLeases(){
   try{
@@ -6179,3 +6194,9 @@ try{initTab = location.hash.replace('#','') || localStorage.getItem('activeTab')
 switchTab(initTab);
 loadCoordinationView();
 </script></body></html>"""
+
+from local_ai_hub.dashboard_contracts import RESIDENT_INVENTORY_JS, WORKSPACE_INVENTORY_JS, memory_kind_options, memory_scope_options
+
+DASHBOARD_HTML = (DASHBOARD_HTML.replace("__MEMORY_SCOPE_OPTIONS__", memory_scope_options())
+                  .replace("__MEMORY_KIND_OPTIONS__", memory_kind_options())
+                  .replace("<script>", "<script>\n" + RESIDENT_INVENTORY_JS + WORKSPACE_INVENTORY_JS, 1))

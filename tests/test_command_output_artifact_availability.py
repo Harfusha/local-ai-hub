@@ -45,6 +45,7 @@ def test_command_without_full_log_artifact_does_not_publish_output_artifact_id()
     assert "artifact_id" not in result
     assert result["output_truncated"] is True
     assert not artifacts.items
+    assert result["output_recovery"] == {"available": False, "reason": "diagnostic_artifacts_disabled"}
 
 
 def test_command_with_full_log_artifact_publishes_output_artifact_id() -> None:

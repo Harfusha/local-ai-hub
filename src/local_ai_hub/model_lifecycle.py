@@ -12,7 +12,46 @@ import weakref
 
 _CUDA_MODEL_LOCK = threading.RLock()
 _CUDA_MODELS: weakref.WeakSet[Any] = weakref.WeakSet()
+_CUDA_PROCESS_MODELS: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 _MAX_LOCK_TIMEOUT_SECONDS = 86_400.0
+_METRICS_LOCK = threading.Lock()
+_METRICS: dict[str, Any] = {"lock_wait_seconds": 0.0, "operation_seconds": 0.0,
+    "acquire_timeouts": 0, "operations": 0, "active_operation": "", "active_since": 0.0}
+
+
+def lifecycle_status() -> dict[str, Any]:
+    """Observe even a blocked driver without acquiring the CUDA lifecycle lock."""
+    with _METRICS_LOCK:
+        result = dict(_METRICS)
+    started = result.pop("active_since")
+    result["active_age_seconds"] = max(0.0, time.monotonic() - started) if started else 0.0
+    result["execution_boundary"] = "caller_process"
+    result["driver_call_preemptible"] = False
+    result["cuda_nlp_execution_boundary"] = "owned_process_with_timeout_and_reap"
+    return result
+
+
+@contextmanager
+def _cuda_guard(operation: str, timeout_seconds: float = 5.0):
+    started = time.monotonic()
+    with acquire_locks((_CUDA_MODEL_LOCK,), timeout_seconds) as acquired:
+        entered = time.monotonic()
+        with _METRICS_LOCK:
+            _METRICS["lock_wait_seconds"] += entered - started
+            if not acquired:
+                _METRICS["acquire_timeouts"] += 1
+        if not acquired:
+            raise TimeoutError("CUDA lifecycle lock timed out")
+        with _METRICS_LOCK:
+            previous = (_METRICS["active_operation"], _METRICS["active_since"])
+            _METRICS["active_operation"], _METRICS["active_since"] = operation, entered
+        try:
+            yield
+        finally:
+            with _METRICS_LOCK:
+                _METRICS["operation_seconds"] += time.monotonic() - entered
+                _METRICS["operations"] += 1
+                _METRICS["active_operation"], _METRICS["active_since"] = previous
 
 
 def _safe_timeout(timeout_seconds: Any) -> float:
@@ -69,43 +108,54 @@ def uses_torch_cuda(backend: str | None, device: str | None) -> bool:
     return normalized_backend in {"torch", "sentence-transformers"} and normalized_device.startswith("cuda")
 
 
-def active_cuda_model_count() -> int:
-    with _CUDA_MODEL_LOCK:
+def active_cuda_model_count(*, lock_timeout_seconds: float = 5.0) -> int:
+    with _cuda_guard("count", lock_timeout_seconds):
         return len(_CUDA_MODELS)
 
 
-def is_cuda_model_registered(owner: Any) -> bool:
+def is_cuda_model_registered(owner: Any, *, lock_timeout_seconds: float = 5.0) -> bool:
     if owner is None:
         return False
-    with _CUDA_MODEL_LOCK:
+    with _cuda_guard("registered", lock_timeout_seconds):
         try:
             return owner in _CUDA_MODELS
         except TypeError:
             return False
 
 
-def load_model(owner: Any, *, uses_cuda: bool, factory: Callable[[], Any]) -> Any:
+def load_model(owner: Any, *, uses_cuda: bool, factory: Callable[[], Any], lock_timeout_seconds: float = 5.0) -> Any:
+    """Bound acquisition; a hard factory deadline requires an owned process boundary."""
     if not uses_cuda:
         return factory()
-    with _CUDA_MODEL_LOCK:
+    with _cuda_guard("load", lock_timeout_seconds):
         already_tracked = owner in _CUDA_MODELS
         if not already_tracked:
             _CUDA_MODELS.add(owner)
         try:
-            return factory()
+            model = factory()
+            if getattr(model, "owned_process", False) is True:
+                _CUDA_PROCESS_MODELS[owner] = model
+            return model
         except BaseException:
             if not already_tracked:
                 _CUDA_MODELS.discard(owner)
             raise
 
 
-def release_model(owner: Any, *, used_cuda: bool) -> bool:
+def release_model(owner: Any, *, used_cuda: bool, lock_timeout_seconds: float = 5.0) -> bool:
     if not used_cuda:
         return False
-    with _CUDA_MODEL_LOCK:
+    with _cuda_guard("release", lock_timeout_seconds):
         try:
             if owner not in _CUDA_MODELS:
                 return False
+            owned = _CUDA_PROCESS_MODELS.get(owner)
+            if owned is not None:
+                # Keep ownership and registration if process reaping fails.
+                owned.close()
+                del _CUDA_PROCESS_MODELS[owner]
+                _CUDA_MODELS.discard(owner)
+                return True
             _CUDA_MODELS.discard(owner)
         except TypeError:
             return False

@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 2 * * 2"
   workflow_dispatch:
     inputs:
       full_matrix:
@@ -23,6 +25,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     env:
+      RUN_FULL_SUITE: ${{ inputs.full_matrix || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') || ((github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v')) && matrix.os == 'windows-latest' && (matrix.python-version == '3.11' || matrix.python-version == '3.14')) }}
       COVERAGE_FILE: ${{ runner.temp }}/local-ai-hub-coverage
     steps:
       - uses: actions/checkout@v4
@@ -40,10 +43,10 @@ jobs:
       - run: python -m compileall -q src tools tests
       - run: pyflakes src tools
       - name: Run primary full suite
-        if: ${{ inputs.full_matrix || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') }}
+        if: ${{ env.RUN_FULL_SUITE == 'true' }}
         run: python -m coverage run -m pytest -ra
       - name: Run platform and interpreter compatibility cohort
-        if: ${{ !inputs.full_matrix && !(matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') }}
+        if: ${{ env.RUN_FULL_SUITE != 'true' }}
         run: >-
           python -m coverage run -m pytest -q -ra
           tests/test_process_utils.py
@@ -70,7 +73,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ (inputs.full_matrix || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14')) && 'full' || 'compatibility' }}-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: coverage-${{ env.RUN_FULL_SUITE == 'true' && 'full' || 'compatibility' }}-${{ matrix.os }}-py${{ matrix.python-version }}
           path: ${{ runner.temp }}/coverage.json
           if-no-files-found: warn
       - run: python tools/selftest.py
@@ -79,8 +82,58 @@ jobs:
       - run: python tools/hubctl.py generate
       - run: python tools/check_dashboard.py
 
+  critical-coverage:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      COVERAGE_FILE: ${{ runner.temp }}/critical-coverage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -e ".[dev]"
+      - name: Run fixed critical regression cohort
+        run: >-
+          python -m coverage run -m pytest -q
+          tests/test_audit_remediation.py
+          tests/test_audit_protocol_remediation.py
+          tests/test_audit_transport_remediation.py
+          tests/test_audit_dashboard_remediation.py
+          tests/test_audit_reliability_remediation.py
+          tests/test_audit_context_delivery_remediation.py
+          tests/test_audit_action_guide_remediation.py
+          tests/test_audit_pending_source_regressions.py
+          tests/test_audit_quality_gates.py
+          tests/test_audit_release_inventory.py
+          tests/test_audit_owned_model_process.py
+          tests/test_audit_review_consistency.py
+          tests/test_audit_ollama_error_deadline.py
+          tests/test_audit_validation_shards.py
+          tests/test_audit_release_security.py
+          tests/test_audit_cli_status_inventory.py
+          tests/unit/test_wheel_smoke_contract.py
+          tests/test_async_job_reliability_contract.py
+          tests/test_agent_policy.py
+      - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
+      - name: Reject per-module branch coverage regression
+        run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json
+      - name: Check fresh source-symbol and citation goldset
+        run: python tools/audit_quality_eval.py --root "${{ github.workspace }}" --output "${{ runner.temp }}/audit-quality.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: critical-coverage-windows-py3.13
+          path: ${{ runner.temp }}/critical-coverage.json
+          if-no-files-found: error
+
   package:
-    needs: test
+    needs: [test, critical-coverage]
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:

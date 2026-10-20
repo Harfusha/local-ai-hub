@@ -2078,7 +2078,19 @@ class LocalAIServices:
         payload["context"] = code
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
-        return self.delegate(payload)
+        result = self.delegate(payload)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return result
+        from .semantic_quality import assess_review_consistency
+        result = dict(result)
+        quality = assess_review_consistency(result, args.get("changed_paths", ()))
+        result["advisory_only"] = True
+        result["review_consistency"] = quality
+        if not quality["usable"]:
+            warning = f"advisory review requires verification: {quality['reason']}"
+            result["quality_warning"] = "; ".join(filter(None, (result.get("quality_warning"), warning)))
+            result.setdefault("bypass_reason", quality["reason"])
+        return result
 
     def reason(self, args: dict[str, Any]) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)

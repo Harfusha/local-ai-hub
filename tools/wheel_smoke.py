@@ -121,6 +121,8 @@ def _toml_string(value: str) -> str:
 
 
 def _write_smoke_config(directory: Path, *, port: int) -> Path:
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise SmokeError("smoke configuration requires an allocated valid HTTP port")
     state_dir = directory / "state"
     config_path = directory / "smoke.toml"
     config_path.write_text(
@@ -209,7 +211,7 @@ async def _stdio_roundtrip(config_path: Path, *, cwd: Path, timeout: float) -> d
                     if "local_ai_status" not in tool_names:
                         raise SmokeError("installed MCP server did not advertise local_ai_status")
                     result = await asyncio.wait_for(
-                        session.call_tool("local_ai_status", {"detail": "brief"}),
+                        session.call_tool("local_ai_status", {"detail": "brief", "extra_fields": ["queued", "cache_hits"]}),
                         timeout=timeout,
                     )
     except asyncio.TimeoutError as exc:
@@ -285,17 +287,14 @@ def run_smoke() -> dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="local-ai-hub-wheel-smoke-") as raw_temp:
         temp_dir = Path(raw_temp).resolve()
-        config_path = _write_smoke_config(temp_dir, port=0)
         app: LocalAIApp | None = None
         server = None
         server_thread: threading.Thread | None = None
         try:
-            app = LocalAIApp(str(config_path))
             server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
-            http_server.APP = app
-            # Keep the same temp config for the MCP child, with its actual ephemeral port.
-            app.config["server"]["port"] = int(server.server_address[1])
             config_path = _write_smoke_config(temp_dir, port=int(server.server_address[1]))
+            app = LocalAIApp(str(config_path))
+            http_server.APP = app
             server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
             server_thread.start()
             roundtrip = asyncio.run(_stdio_roundtrip(config_path, cwd=temp_dir, timeout=24.0))

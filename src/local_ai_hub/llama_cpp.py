@@ -275,7 +275,7 @@ def _http_proxy_for_url(parsed: Any) -> tuple[str, int, str | None] | None:
     return proxy.hostname, proxy.port or 80, authorization
 
 
-def _read_response_body(response: Any, deadline: float, should_stop: Any | None = None) -> bytes:
+def _read_response_body(response: Any, deadline: float, should_stop: Any | None = None, *, max_bytes: int = 8 * 1024 * 1024) -> bytes:
     """Read metadata bodies in chunks while honoring cancellation and deadline."""
     read_chunk = getattr(response, "read1", None)
     if not callable(read_chunk):
@@ -285,9 +285,15 @@ def _read_response_body(response: Any, deadline: float, should_stop: Any | None 
         if remaining <= 0:
             raise TimeoutError("request deadline expired")
         _set_response_timeout(response, remaining)
-        return response.read()
+        raw = response.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise ValueError("metadata response exceeds byte limit")
+        if time.monotonic() >= deadline:
+            raise TimeoutError("request deadline expired")
+        return raw
 
     chunks: list[bytes] = []
+    total = 0
     while True:
         if _stop_requested(should_stop):
             raise InterruptedError("request cancelled")
@@ -295,9 +301,12 @@ def _read_response_body(response: Any, deadline: float, should_stop: Any | None 
         if remaining <= 0:
             raise TimeoutError("request deadline expired")
         _set_response_timeout(response, remaining)
-        chunk = read_chunk(65536)
+        chunk = read_chunk(min(65536, max_bytes - total + 1))
         if not chunk:
             return b"".join(chunks)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("metadata response exceeds byte limit")
         chunks.append(chunk)
 
 

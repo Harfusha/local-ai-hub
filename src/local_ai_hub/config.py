@@ -3,10 +3,13 @@ from __future__ import annotations
 import copy
 import ipaddress
 import os
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from .file_locks import exclusive_file_update
 
 
 class ConfigError(ValueError):
@@ -334,7 +337,7 @@ def validate_config(data: dict[str, Any]) -> None:
         except (ValueError, OSError) as exc:
             raise ConfigError(f"security.allowed_roots invalid path: {exc}") from exc
         if security.get("allow_anonymous") is True:
-            raise ConfigError("Anonymous HTTP API access is not supported; configure [security].api_token")
+            raise ConfigError("security.allow_anonymous is unsupported; an empty api_token trusts loopback clients only, and a configured token is required for all protected requests")
         if "client_host" in server:
             raise ConfigError("server.client_host was removed; Hub clients connect only to 127.0.0.1")
         bind = str(server.get("bind", "127.0.0.1"))
@@ -400,18 +403,22 @@ def save_runtime_overrides(config_path: str | os.PathLike[str], patch: dict[str,
     """Atomically persist dashboard-managed overrides without rewriting config.toml."""
     target = runtime_override_path(config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if reset:
+    with exclusive_file_update(target):
+        if reset:
+            target.unlink(missing_ok=True)
+            return target
+        current = _read_toml(target) if target.is_file() else {}
+        text = _dump_toml_tables(deep_merge(current, patch))
+        descriptor, temporary = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
+        tmp = Path(temporary)
         try:
-            target.unlink()
-        except FileNotFoundError:
-            pass
-        return target
-    current = _read_toml(target) if target.is_file() else {}
-    merged = deep_merge(current, patch)
-    text = _dump_toml_tables(merged)
-    tmp = target.with_suffix(target.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, target)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
     return target
 
 def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: bool = True) -> dict[str, Any]:

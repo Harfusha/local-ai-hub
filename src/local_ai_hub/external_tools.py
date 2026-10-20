@@ -1027,10 +1027,19 @@ class ExternalCodeIntelligence:
                     "matches_count": len(symbols),
                 }
             elif action in {"references", "find_references", "referencing"}:
-                res = self.code_index.find_symbol(root, query or "*", relative_path=path or None, limit=limit)
-                symbols = res.get("symbols", []) if isinstance(res, dict) else []
+                # The optional Serena path identifies the definition. The built-in
+                # path filter restricts reference locations, so it is not equivalent.
+                res = self.code_index.find_referencing_symbols(root, query or "*")
+                if not isinstance(res, dict):
+                    raise ValueError("reference index returned a non-object result")
+                symbols = res.get("references", [])
+                if not isinstance(symbols, list):
+                    raise ValueError("reference index returned invalid references")
+                has_more = len(symbols) > limit or len(symbols) >= 100 or res.get("has_more") is True
+                symbols = symbols[:limit]
                 return {
-                    "success": True,
+                    **res,
+                    "success": res.get("success") is True,
                     "backend": "code_index",
                     "action": action,
                     "fallback_used": True,
@@ -1038,6 +1047,8 @@ class ExternalCodeIntelligence:
                     "references": symbols,
                     "matches": symbols,
                     "matches_count": len(symbols),
+                    "has_more": has_more,
+                    "coverage": {"complete": False, "scope": "indexed_lexical_references"},
                 }
             else:
                 res = self.code_index.query(root, query, limit=limit)

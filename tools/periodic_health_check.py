@@ -10,7 +10,6 @@ Performs a comprehensive check of:
 """
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import sys

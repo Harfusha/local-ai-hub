@@ -23,7 +23,6 @@ from .process_utils import (
     find_listening_pid,
     hidden_run_kwargs,
     open_pidfd,
-    pid_alive,
     process_identity,
     process_owner_record,
     process_owner_state,

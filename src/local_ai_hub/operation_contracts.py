@@ -240,6 +240,10 @@ _REPO_CONDITIONS = {
     "cross_project_impact": ("agent_os",),
 }
 _ACTION_SCOPED_FIELDS = {
+    "local_ai_status": {
+        "guide_tool": frozenset({"guide"}),
+        "guide_action": frozenset({"guide"}),
+    },
     "local_ai_task": {
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),
@@ -326,6 +330,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                                "pattern": "^[a-z][a-z0-9_]{0,79}$"},
             "min_duration_ms": {"type": "integer", "minimum": 0, "maximum": 86400000, "default": 0},
             "trace_action": {"type": "string", "maxLength": 64, "default": ""},
+            "guide_tool": {"type": "string", "maxLength": 64, "default": ""},
+            "guide_action": {"type": "string", "maxLength": 80, "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -1130,6 +1136,51 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
     return schema
 
 
+def operation_action_guide(tool: str, action: str, features: Any = None) -> dict[str, Any]:
+    """Return one exact action's fields; examples are data and execute nothing."""
+    contract = operation_contract(tool)
+    if contract is None or not isinstance(action, str) or action not in operation_actions(tool, features):
+        return contract_error("unsupported or disabled guide tool/action")
+    raw = operation_input_schema(tool, action)
+    # Global union conditions are redundant once the selector is fixed.
+    schema = {key: deepcopy(raw[key]) for key in ("type", "properties", "required") if key in raw}
+    schema["additionalProperties"] = False
+
+    def example_value(spec: dict[str, Any]) -> Any:
+        if spec.get("enum"):
+            return next((item for item in spec["enum"] if item != ""), spec["enum"][0])
+        kind = spec.get("type")
+        kind = kind[0] if isinstance(kind, list) else kind
+        if kind == "object":
+            return {name: example_value(spec.get("properties", {}).get(name, {})) for name in spec.get("required", [])}
+        if kind == "array":
+            return [example_value(spec.get("items", {})) for _ in range(spec.get("minItems", 0))]
+        if kind == "boolean":
+            return False
+        if kind in {"integer", "number"}:
+            return spec.get("minimum", 0)
+        return "example"
+
+    example = {name: example_value(schema["properties"][name]) for name in schema.get("required", [])}
+    example[contract["selector_field"]] = action
+    for name in ("root", "cwd"):
+        if name in schema["properties"]:
+            example[name] = "/absolute/project"
+    return {"success": True, "tool": tool, "action": action, "input_schema": schema,
+            "example": example, "examples_execute": False,
+            "validation_note": "Server validation also enforces ownership, feature gates and cross-field constraints."}
+
+
+def operation_argument_hint(tool: str, action: str) -> dict[str, Any]:
+    contract = operation_contract(tool)
+    if contract is None or not isinstance(action, str) or action not in contract["actions"]:
+        return {}
+    schema = operation_input_schema(tool, action)
+    return {"allowed_arguments": sorted(schema.get("properties", {})),
+            "required_arguments": schema.get("required", []),
+            "help_call": {"detail": "guide", "guide_tool": tool, "guide_action": action}}
+
+
 def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, Any]:
     """Return the MCP tool schema with action-specific requirements encoded."""
     contract = operation_contract(tool)
@@ -1272,6 +1323,17 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
                     }, "additionalProperties": True,
                 }},
                 "schema_token_reduction_verified": {"const": False},
+            }, "additionalProperties": True,
+        }, {
+            "type": "object",
+            "required": ["success", "tool", "action", "input_schema", "example", "examples_execute"],
+            "properties": {
+                "success": {"const": True},
+                "tool": {"type": "string", "enum": sorted(OPERATION_CONTRACTS)},
+                "action": {"type": "string", "minLength": 1},
+                "input_schema": {"type": "object"},
+                "example": {"type": "object"},
+                "examples_execute": {"const": False},
             }, "additionalProperties": True,
         }, failure]
     if action == "brief":

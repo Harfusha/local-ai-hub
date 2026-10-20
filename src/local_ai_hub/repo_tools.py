@@ -3297,18 +3297,18 @@ class RepositoryTools:
         base = self._root(root)
         items: list[dict[str, Any]] = []
         total_bytes = 0
-        for path, stat in self._iter_files_with_stat(str(base)):
+        for path, file_stat in self._iter_files_with_stat(str(base)):
             try:
                 rel = str(path.relative_to(base)).replace("\\", "/")
                 item: dict[str, Any] = {
-                    "path": rel, "size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns),
+                    "path": rel, "size": int(file_stat.st_size), "mtime_ns": int(file_stat.st_mtime_ns),
                     "extension": path.suffix.lower(),
                 }
                 if include_hashes:
-                    digest, _lines = self._read_snapshot(path, stat=stat)
+                    digest, _lines = self._read_snapshot(path, stat=file_stat)
                     item["sha256"] = digest
                 items.append(item)
-                total_bytes += int(stat.st_size)
+                total_bytes += int(file_stat.st_size)
             except Exception:
                 continue
         items.sort(key=lambda x: x["path"])

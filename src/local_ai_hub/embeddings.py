@@ -356,7 +356,6 @@ class EmbeddingModel:
         self._st_candidates = candidates
         self._st_candidate_index = index
         try:
-            from sentence_transformers import SentenceTransformer
             loaded_model_name = self.model_name
             kwargs: dict[str, Any] = {
                 "device": str(device).lower(),
@@ -384,7 +383,8 @@ class EmbeddingModel:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
-            def _load_st(name: str, kw: dict[str, Any]) -> SentenceTransformer:
+            def _load_st(name: str, kw: dict[str, Any]) -> Any:
+                from sentence_transformers import SentenceTransformer
                 try:
                     return SentenceTransformer(name, local_files_only=True, **kw)
                 except Exception:
@@ -394,6 +394,13 @@ class EmbeddingModel:
 
             def create_model():
                 nonlocal loaded_model_name
+                if uses_torch_cuda(backend, device):
+                    from .owned_model import OwnedNLPModel
+                    model = OwnedNLPModel("embedding", self.model_name, kwargs,
+                        max_length=self.max_seq_length,
+                        allow_downloads=self.config.get("models", {}).get("allow_hf_downloads") is True)
+                    loaded_model_name = model.model_name
+                    return model
                 try:
                     model = _load_st(self.model_name, kwargs)
                 except Exception:
@@ -462,6 +469,8 @@ class EmbeddingModel:
             model = self._model
             if model is None:
                 return False
+            if getattr(model, "owned_process", False) is True:
+                model.close()
             used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
             self._model = None
             self.active_backend = None

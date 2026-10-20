@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import inspect
+import io
 import json
 import math
 import os
@@ -29,6 +30,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp
+from .http_transport import RequestHeadReader
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TOTAL_BUDGET_SECONDS = 1.0
@@ -119,7 +121,6 @@ from .browser_bridge import (
 )
 from .operational_mode import (
     load_operational_mode,
-    operational_mode_gate_error,
     set_operational_mode,
 )
 
@@ -678,8 +679,9 @@ def _http_mode_gate_error(
             return None
         if not snapshot.degraded and snapshot.mode == "gaming" and policy == "gaming_read":
             return None
-        if globals().get("operational_mode_gate_error") is not _op_mod.operational_mode_gate_error:
-            gate_fn = globals()["operational_mode_gate_error"]
+        gate_override = globals().get("operational_mode_gate_error")
+        if gate_override is not None and gate_override is not _op_mod.operational_mode_gate_error:
+            gate_fn = gate_override
         else:
             gate_fn = getattr(api, "operational_mode_gate_error", _op_mod.operational_mode_gate_error)
         rejection = gate_fn(
@@ -1499,6 +1501,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup(self) -> None:
         super().setup()
+        self._head_reader = None
+        if isinstance(self.rfile, io.BufferedReader):
+            self._head_reader = RequestHeadReader(self.rfile.detach(), self.connection)
+            self.rfile = io.BufferedReader(self._head_reader)
         try:
             keepalive = float(APP.config.get("server", {}).get("keepalive_timeout_seconds", 5.0)) if APP is not None else 5.0
             self.connection.settimeout(max(1.0, keepalive))
@@ -1515,6 +1521,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             keepalive = float(APP.config.get("server", {}).get("keepalive_timeout_seconds", 5.0)) if APP is not None else 5.0
             request_timeout = float(APP.config.get("server", {}).get("request_timeout_seconds", 210.0)) if APP is not None else 210.0
+            head_reader = getattr(self, "_head_reader", None)
+            if head_reader is not None:
+                head_reader.idle_timeout = max(1.0, keepalive)
+                head_reader.deadline = time.monotonic() + max(1.0, min(keepalive, request_timeout))
             try:
                 self.connection.settimeout(max(1.0, keepalive))
             except OSError:
@@ -1536,6 +1546,8 @@ class Handler(BaseHTTPRequestHandler):
             if not self.parse_request():
                 self.close_connection = True
                 return
+            if head_reader is not None:
+                head_reader.deadline = None
             mname = 'do_' + self.command
             if not hasattr(self, mname):
                 self.send_error(501, f"Unsupported method ({self.command!r})")
@@ -5856,27 +5868,11 @@ class Handler(BaseHTTPRequestHandler):
                 requested = payload.get("settings", {})
                 if not isinstance(requested, dict):
                     self._send(400, {"success": False, "error": "settings must be an object"}); return
-                allowed = {
-                    "hardware.profile": {"auto", "cpu", "integrated", "low", "balanced", "high", "max"},
-                    "debug_traces.enabled": {True, False},
-                    "preprocessing.enabled": {True, False},
-                    "code_intelligence.enabled": {True, False},
-                    "code_intelligence.serena_enabled": {True, False},
-                                        "monitoring.dashboard_enabled": {True, False},
-                    **{f"features.{feat_name}": {True, False} for feat_name in (
-                        "status", "repo", "tasks", "rag", "commands", "coord",
-                        "artifacts", "code_intelligence", "preprocessing",
-                        "subagents", "agent_os", "dashboard", "work_orchestrator",
-                    )},
-                }
-                patch: dict[str, Any] = {}
-                for dotted, value in requested.items():
-                    if dotted not in allowed or value not in allowed[dotted]:
-                        self._send(400, {"success": False, "error": f"unsupported or invalid setting: {dotted}"}); return
-                    cursor = patch
-                    parts = dotted.split(".")
-                    for part in parts[:-1]: cursor = cursor.setdefault(part, {})
-                    cursor[parts[-1]] = value
+                from .dashboard_contracts import dashboard_settings_patch
+                try:
+                    patch = dashboard_settings_patch(requested)
+                except ValueError as exc:
+                    self._send(400, {"success": False, "error": str(exc)}); return
                 try:
                     prospective = deep_merge(APP.config, patch)
                     validate_config(prospective)
@@ -7748,14 +7744,6 @@ class Handler(BaseHTTPRequestHandler):
                             "delivery_mode": mode,
                         }); return
                 auto_injected_task = False
-                if not str(payload.get("task_id", "")).strip() and getattr(APP, "agent_tasks", None):
-                    try:
-                        active_task = APP.agent_tasks.get_active_task(repo_root=root)
-                        if active_task is not None:
-                            payload["task_id"] = active_task.task_id
-                            auto_injected_task = True
-                    except Exception:
-                        pass
                 guarded = payload.get("guarded", False)
                 if not isinstance(guarded, bool):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
@@ -7881,6 +7869,7 @@ class Handler(BaseHTTPRequestHandler):
                                 isinstance(unified, dict)
                                 and unified.get("success") is True
                                 and unified.get("complete") is True
+                                and isinstance(unified.get("text"), str)
                                 and str(unified.get("context_id") or "").strip()
                                 and str(unified.get("etag") or "").strip()
                                 and isinstance(provenance, dict)
@@ -7897,6 +7886,17 @@ class Handler(BaseHTTPRequestHandler):
                                     }); return
                             else:
                                 if isinstance(result, dict):
+                                    from .context_delivery import persist_compiled_context
+                                    try:
+                                        context_artifact_id = persist_compiled_context(
+                                            APP.artifacts, unified, root=root,
+                                            coordination_id=task_request.coordination_id,
+                                            session_id=task_request.session_id,
+                                        )
+                                        unified["artifact_id"] = context_artifact_id
+                                        result["task_context_artifact_id"] = context_artifact_id
+                                    except Exception:
+                                        unified["artifact_unavailable"] = True
                                     result["task_context"] = unified
                                     result["task_context_id"] = unified["context_id"]
                                     if auto_injected_task:

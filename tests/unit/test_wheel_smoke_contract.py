@@ -88,14 +88,14 @@ def test_local_wheel_provenance_returns_canonical_archive_identity(monkeypatch) 
 
 
 def test_smoke_configuration_is_temporary_and_disables_background_startup(tmp_path: Path) -> None:
-    config_path = wheel_smoke._write_smoke_config(tmp_path, port=0)
+    config_path = wheel_smoke._write_smoke_config(tmp_path, port=54321)
     with config_path.open("rb") as handle:
         config = tomllib.load(handle)
 
     assert config_path.parent == tmp_path
     assert Path(config["server"]["state_dir"]).parent == tmp_path
     assert config["server"]["bind"] == "127.0.0.1"
-    assert config["server"]["port"] == 0
+    assert config["server"]["port"] == 54321
     assert config["server"]["auto_start_ollama"] is False
     assert config["hardware"]["profile"] == "cpu"
     assert config["hardware"]["auto_tune"] is False
@@ -107,6 +107,12 @@ def test_smoke_configuration_is_temporary_and_disables_background_startup(tmp_pa
     assert config["ollama"]["enabled"] is False
     assert config["llama_cpp"]["mode"] == "off"
     assert config["server"]["ollama_url"] == "http://127.0.0.1:9"
+
+
+@pytest.mark.parametrize("port", [0, False, 65536, -1])
+def test_smoke_config_never_writes_an_invalid_listener_port(tmp_path, port):
+    with pytest.raises(wheel_smoke.SmokeError):
+        wheel_smoke._write_smoke_config(tmp_path, port=port)
 
 
 def test_stdio_child_disables_autostart_before_mcp_server_main() -> None:

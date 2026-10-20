@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import logging
 import math
@@ -28,6 +28,10 @@ class RiskClass(str, Enum):
 
 POLICY_OWNER = "agent_policy"
 LOGGER = logging.getLogger(__name__)
+
+
+class BudgetUnavailableError(RuntimeError):
+    """Durable budget authority is unavailable; execution must fail closed."""
 
 # Auxiliary command names are normalized at the policy boundary so callers
 # cannot lower their risk by supplying a read-only ActionRequest.
@@ -428,6 +432,7 @@ class PolicyEngine:
                 LOGGER.warning(
                     "budget state initialization failed (%s)", type(exc).__name__
                 )
+                raise BudgetUnavailableError("budget state unavailable") from None
 
     def authorize(
         self,
@@ -485,12 +490,15 @@ class PolicyEngine:
 
         # 1. Check budget expiration
         if task and task.task_id:
-            budget = self.get_budget(task.task_id)
+            try:
+                budget = self.get_budget(task.task_id)
+            except BudgetUnavailableError:
+                return PolicyDecision(allowed=False, reason="budget state unavailable", owner=POLICY_OWNER, side_effect_class=side_effect_class)
             if budget.is_exhausted():
                 return PolicyDecision(
                     allowed=False,
                     requires_approval=False,
-                    reason=f"task budget exhausted ({task.task_id}): tokens={budget.used_tokens}/{budget.max_tokens}, time={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s",
+                    reason=f"task budget exhausted ({task.task_id}): tokens={budget.used_tokens}/{budget.max_tokens}, time={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s, external_calls={budget.used_external_calls}/{budget.max_external_calls}",
                     owner=POLICY_OWNER,
                     side_effect_class=side_effect_class,
                 )
@@ -658,6 +666,7 @@ class PolicyEngine:
                     return b
             except sqlite3.Error as exc:
                 LOGGER.warning("budget state read failed (%s)", type(exc).__name__)
+                raise BudgetUnavailableError("budget state unavailable") from None
 
         with self._lock:
             if len(self._budgets) > 512:
@@ -674,34 +683,68 @@ class PolicyEngine:
         max_compute_seconds: float | None = None,
         max_external_calls: int | None = None,
     ) -> Budget:
-        curr = self.get_budget(task_id)
-        updated = Budget(
-            task_id=task_id,
-            max_tokens=max_tokens if max_tokens is not None else curr.max_tokens,
-            used_tokens=curr.used_tokens,
-            max_compute_seconds=max_compute_seconds if max_compute_seconds is not None else curr.max_compute_seconds,
-            used_compute_seconds=curr.used_compute_seconds,
-            max_external_calls=max_external_calls if max_external_calls is not None else curr.max_external_calls,
-            used_external_calls=curr.used_external_calls,
-        )
-        self._persist_budget(updated)
-        self._budgets[task_id] = updated
-        return updated
+        return self._mutate_budget(task_id, limits={
+            key: value for key, value in {
+                "max_tokens": max_tokens,
+                "max_compute_seconds": max_compute_seconds,
+                "max_external_calls": max_external_calls,
+            }.items() if value is not None
+        })
 
     def consume(self, task_id: str, cost: BudgetCost) -> Budget:
-        curr = self.get_budget(task_id)
-        updated = Budget(
-            task_id=task_id,
-            max_tokens=curr.max_tokens,
-            used_tokens=curr.used_tokens + cost.tokens,
-            max_compute_seconds=curr.max_compute_seconds,
-            used_compute_seconds=curr.used_compute_seconds + cost.compute_seconds,
-            max_external_calls=curr.max_external_calls,
-            used_external_calls=curr.used_external_calls + cost.external_calls,
+        return self._mutate_budget(task_id, cost=cost)
+
+    def _mutate_budget(
+        self, task_id: str, *, cost: BudgetCost | None = None,
+        limits: dict[str, Any] | None = None, reset: bool = False,
+    ) -> Budget:
+        def updated(current: Budget) -> Budget:
+            return replace(
+                current, **(limits or {}),
+                used_tokens=0 if reset else current.used_tokens + (cost.tokens if cost else 0),
+                used_compute_seconds=0.0 if reset else current.used_compute_seconds + (cost.compute_seconds if cost else 0),
+                used_external_calls=0 if reset else current.used_external_calls + (cost.external_calls if cost else 0),
+            )
+
+        with self._lock:
+            if self.state_store and getattr(self.state_store, "enabled", False) and getattr(self.state_store, "db_path", None):
+                self._init_table()
+
+                def mutate() -> Budget:
+                    with closing(connect_sqlite(self.state_store.db_path)) as con, con:
+                        # Serialize the complete read/modify/write across engine instances.
+                        con.execute("BEGIN IMMEDIATE")
+                        row = con.execute(
+                            "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls FROM agent_budgets WHERE task_id=?",
+                            (task_id,),
+                        ).fetchone()
+                        current = Budget(*row) if row is not None else Budget(task_id=task_id)
+                        candidate = updated(current)
+                        self._write_budget(con, candidate)
+                    return candidate
+
+                try:
+                    result = retry_busy(mutate, retries=5, base_delay_seconds=0.01)
+                except sqlite3.Error as exc:
+                    LOGGER.warning("budget state persistence failed (%s)", type(exc).__name__)
+                    raise BudgetUnavailableError("budget state unavailable") from None
+            else:
+                result = updated(self.get_budget(task_id))
+                self._persist_budget(result)
+            self._budgets[task_id] = result
+            return result
+
+    @staticmethod
+    def _write_budget(con: sqlite3.Connection, budget: Budget) -> None:
+        con.execute(
+            "INSERT INTO agent_budgets(task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET "
+            "max_tokens=excluded.max_tokens,used_tokens=excluded.used_tokens,"
+            "max_compute_seconds=excluded.max_compute_seconds,used_compute_seconds=excluded.used_compute_seconds,"
+            "max_external_calls=excluded.max_external_calls,used_external_calls=excluded.used_external_calls,updated_at=excluded.updated_at",
+            (budget.task_id, budget.max_tokens, budget.used_tokens, budget.max_compute_seconds,
+             budget.used_compute_seconds, budget.max_external_calls, budget.used_external_calls, time.time()),
         )
-        self._persist_budget(updated)
-        self._budgets[task_id] = updated
-        return updated
 
     def _persist_budget(self, budget: Budget) -> None:
         if not self.state_store or not getattr(self.state_store, "enabled", False) or not getattr(self.state_store, "db_path", None):
@@ -736,6 +779,7 @@ class PolicyEngine:
             retry_busy(_save, retries=5, base_delay_seconds=0.01)
         except sqlite3.Error as exc:
             LOGGER.warning("budget state persistence failed (%s)", type(exc).__name__)
+            raise BudgetUnavailableError("budget state unavailable") from None
 
     def has_budget(self, task_id: str) -> bool:
         clean_id = str(task_id or "").replace("\x00", "").strip()
@@ -758,20 +802,7 @@ class PolicyEngine:
 
     def reset_budget(self, task_id: str) -> Budget:
         clean_id = str(task_id or "").replace("\x00", "").strip()
-        curr = self.get_budget(clean_id)
-        updated = Budget(
-            task_id=clean_id,
-            max_tokens=curr.max_tokens,
-            used_tokens=0,
-            max_compute_seconds=curr.max_compute_seconds,
-            used_compute_seconds=0.0,
-            max_external_calls=curr.max_external_calls,
-            used_external_calls=0,
-        )
-        self._persist_budget(updated)
-        with self._lock:
-            self._budgets[clean_id] = updated
-        return updated
+        return self._mutate_budget(clean_id, reset=True)
 
     def delete_budget(self, task_id: str) -> bool:
         clean_id = str(task_id or "").replace("\x00", "").strip()

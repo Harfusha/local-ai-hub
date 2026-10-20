@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.mark.parametrize("tool,action,required,excluded", [
+    ("local_ai_repo", "context", "query", "task"),
+    ("local_ai_repo", "solve", "task", "task_id"),
+    ("local_ai_coord", "memory_find", None, "limit"),
+])
+def test_action_guide_is_narrowed_from_the_canonical_contract(tool, action, required, excluded):
+    import local_ai_hub.operation_contracts as module
+    guide = getattr(module, "operation_action_guide", None)
+    assert callable(guide), "action-specific help must come from the canonical registry"
+    result = guide(tool, action)
+    assert result["success"] is True, result
+    assert excluded not in result["input_schema"]["properties"]
+    if required:
+        assert required in result["input_schema"]["required"]
+    assert module.validate_operation_arguments(tool, action, result["example"]) is None
+
+
+def test_public_guide_uses_explicit_help_fields_without_health_queries(monkeypatch):
+    import local_ai_hub.mcp_server as module
+    monkeypatch.setattr(module.CLIENT, "status", lambda *args, **kwargs: pytest.fail("guide must not query runtime health"))
+    monkeypatch.setattr(module, "_record_tool_accounting", lambda **kwargs: None)
+    result = module.local_ai_status(detail="guide", guide_tool="local_ai_repo", guide_action="context", max_response_tokens=6000)
+    assert result["success"] is True, result.get("error", repr(result))
+    assert result["action"] == "context"
+    assert "query" in result["input_schema"]["required"]
+
+
+def test_guide_fields_are_rejected_for_regular_status_actions():
+    from local_ai_hub.operation_contracts import validate_operation_call
+    result = validate_operation_call("local_ai_status", {"detail": "brief", "guide_tool": "local_ai_repo", "guide_action": "context"})
+    assert result and result[0] == 400
+
+
+def test_argument_hint_lists_only_fields_allowed_for_the_selected_action():
+    import local_ai_hub.operation_contracts as module
+    hint = getattr(module, "operation_argument_hint", None)
+    assert callable(hint)
+    result = hint("local_ai_coord", "memory_find")
+    assert "limit" not in result["allowed_arguments"]
+    assert result["help_call"]["detail"] == "guide"

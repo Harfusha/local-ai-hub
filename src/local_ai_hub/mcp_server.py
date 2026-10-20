@@ -810,7 +810,7 @@ _COMPLEXITY_PROTECTED_KEYS = (
     "total_functions", "high_risk_count", "include_tests",
 )
 _COMMAND_PROTECTED_KEYS = (
-    "test_summary", "cache_hit", "coalesced",
+    "test_summary", "cache_hit", "coalesced", "output_recovery",
     "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
     "output_artifact_id", "output_truncated", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
 )
@@ -825,7 +825,7 @@ _GUARDED_CONTEXT_TOP_LEVEL = frozenset({
     "task_status", "waiting", "contract", "reuse", "reuse_candidates", "mappings", "model_warnings",
     "relevance", "model_degraded", "model_degraded_reason", "response_budget", "reuse_key", "reused",
     "unchanged", "preload_profile", "preload_evidence_ids",
-    "task_context", "complete", "partial", "text", "source_layers", "agent_state", "repository",
+    "task_context", "task_context_artifact_id", "task_id", "complete", "partial", "text", "source_layers", "agent_state", "repository",
     "provenance", "omitted_sections", "next_action", "estimated_tokens", "truncated",
 })
 _GUARDED_CONTEXT_PACK = frozenset({
@@ -1005,12 +1005,15 @@ def _code_index_page_with_prefix(
             for term in symbol["matched_terms"]
         })
         terms = raw.get("terms") if isinstance(raw.get("terms"), list) else []
-        query_term_count = len(terms)
+        raw_coverage = raw.get("coverage") if isinstance(raw.get("coverage"), dict) else {}
+        declared_count = raw_coverage.get("query_term_count")
+        query_term_count = len(terms) if terms else declared_count if type(declared_count) is int and declared_count >= 0 else 0
         candidate["coverage"] = {
             "query_term_count": query_term_count,
             "matched_term_count": len(matched_terms),
             "matched_terms": matched_terms,
-            "query_term_coverage": round(len(matched_terms) / max(1, query_term_count), 3),
+            "query_term_coverage": min(1.0, round(len(matched_terms) / query_term_count, 3)) if query_term_count else 0.0,
+            "coverage_available": query_term_count > 0,
             "candidate_match_count": total,
             "returned_symbol_count": count,
             "complete": False,
@@ -1342,7 +1345,7 @@ def _compact(
     options = _CURRENT_RESPONSE_OPTIONS.get()
     if task_kind == "command":
         extra_fields = list(dict.fromkeys([
-            *(extra_fields or ()), "cache_hit", "coalesced",
+            *(extra_fields or ()), "cache_hit", "coalesced", "output_recovery",
             *(("classification",) if options.get("action") == "classify" else ()),
         ]))
     rejection = _subminimum_budget_rejection(options)
@@ -2114,7 +2117,7 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     if str(arguments.get("response_profile") or "").lower() == "debug":
         return _reconcile_existing_budget(value) or value
     action = str(arguments.get("action") or arguments.get("detail") or "").lower()
-    if tool == "local_ai_status" and action in {"cache", "telemetry", "full", "agent_state"}:
+    if tool == "local_ai_status" and action in {"cache", "telemetry", "full", "agent_state", "guide"}:
         return _reconcile_existing_budget(value) or value
     requested = set(arguments.get("extra_fields") or ())
     if action in {"diagnostics", "route", "stats"}:
@@ -2337,7 +2340,7 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", min_duration_ms: int = 0, trace_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", min_duration_ms: int = 0, trace_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", guide_tool: str = "", guide_action: str = "") -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state, traces, guide. Guide returns local feature-aware tool cards without a health query. Traces accepts min_duration_ms and trace_action filters. scope: process (default) or window. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, telemetry, guide or debug-trace query. Skip when: repository evidence or task work is needed."""
     if not isinstance(detail, str) or detail not in StatusDetail.__args__:
         return contract_error(f"detail must be one of: {', '.join(STATUS_DETAILS)}")
@@ -2363,6 +2366,11 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
         return contract_error("scope must be process or window")
 
     if detail == "guide":
+        if guide_tool or guide_action:
+            from .operation_contracts import operation_action_guide
+            return _compact(operation_action_guide(guide_tool, guide_action, FEATURES), "status", extra_fields=[
+                *(extra_fields or []), "tool", "action", "input_schema", "example", "examples_execute", "validation_note",
+            ])
         return _compact(operation_guide_cards(FEATURES), "status", extra_fields=[
             *(extra_fields or []), "guide_cards", "guide_scope", "guide_tips", "schema_token_reduction_verified",
         ])
@@ -3015,6 +3023,9 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     if not isinstance(value, dict):
         return {"success": False, "status_code": 502, "terminal": True, "retryable": True, "error": "context pack response must be a JSON object"}
     options = _CURRENT_RESPONSE_OPTIONS.get()
+    from .context_delivery import prepare_context_delivery
+    requested_context_budget, _, _, _ = _response_budget("context", options)
+    value = prepare_context_delivery(value, requested_context_budget)
     rejection = _subminimum_budget_rejection(options)
     if rejection is not None:
         return rejection
@@ -3032,7 +3043,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     pack_key = "adaptive_context_pack" if isinstance(safe_value.get("adaptive_context_pack"), dict) else "context_pack"
     authoritative: dict[str, Any] = {}
     for key in (
-        "context_id", "warnings", "repo_revision", "changed_paths", "stale",
+        "context_id", "task_context_artifact_id", "task_id", "next_action", "warnings", "repo_revision", "changed_paths", "stale",
         "delta_from", "since_hash", "unchanged", "reuse_pointer",
     ):
         if key in pack:
@@ -3133,7 +3144,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         )
         protected_context_keys += tuple(
             key for key in (
-                "complete", "partial", "task_context", "etag", "omitted_sections",
+                "complete", "partial", "task_context", "task_context_artifact_id", "task_id", "next_action", "etag", "omitted_sections",
                 "stop_code", "degraded_reason", "context_truncated", "context_chars",
                 "requires_override", "requires_approval", "decision_recorded",
                 "decision_persisted", "task_status", "waiting", "unchanged", "reuse_pointer",
@@ -6012,10 +6023,13 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             validation = validate_operation_call(name, validation_arguments, features=FEATURES)
             if validation is not None:
                 status_code, error = validation
+                from .operation_contracts import operation_argument_hint
+                hint = operation_argument_hint(name, validation_arguments.get(selector, "")) if status_code == 400 else {}
                 payload = {
                     "success": False, "status_code": status_code,
                     "terminal": True, "retryable": False, "error": error,
                     **({"unsupported": True} if status_code == 403 and "disabled" in error.casefold() else {}),
+                    **({"argument_help": hint} if hint else {}),
                 }
                 return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             try:

@@ -1,5 +1,4 @@
 import sqlite3
-import json
 
 with sqlite3.connect("file:state/debug_traces.sqlite3?mode=ro", uri=True) as con:
     cur = con.cursor()

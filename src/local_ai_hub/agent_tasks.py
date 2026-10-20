@@ -4,7 +4,6 @@ from .json_utils import dumps as json_dumps
 
 import json
 import sqlite3
-import hashlib
 import contextvars
 import queue
 import math

@@ -131,14 +131,13 @@ class Reranker:
         self._candidates = candidates
         self._candidate_index = index
         try:
-            if backend == "torch" or str(device).lower() == "cpu":
+            if (backend == "torch" or str(device).lower() == "cpu") and not uses_torch_cuda(backend, device):
                 try:
                     import torch
                     if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
                         torch.set_num_threads(max(1, min(4, (os.cpu_count() or 4) // 2)))
                 except Exception:
                     pass
-            from sentence_transformers import CrossEncoder
             kwargs: dict[str, Any] = {
                 "device": str(device).lower(),
                 "max_length": self.max_length,
@@ -156,6 +155,13 @@ class Reranker:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
             def _create_cross_encoder():
+                if uses_torch_cuda(backend, device):
+                    from .owned_model import OwnedNLPModel
+                    models_cfg = self.config.get("models", {})
+                    return OwnedNLPModel("reranker", self.model_name, kwargs,
+                        max_length=self.max_length,
+                        allow_downloads=models_cfg.get("allow_hf_downloads") is True)
+                from sentence_transformers import CrossEncoder
                 try:
                     return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
@@ -209,6 +215,8 @@ class Reranker:
             model = self._model
             if model is None:
                 return False
+            if getattr(model, "owned_process", False) is True:
+                model.close()
             used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
             self._model = None
             self.active_backend = None

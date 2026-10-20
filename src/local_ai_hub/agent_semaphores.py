@@ -209,7 +209,7 @@ class SemaphoreStore:
                     ).fetchone()
                     if row is None:
                         return {"success": False, "error": f"semaphore '{clean_name}' not found", "released": False}
-                    capacity = int(row[0])
+                    int(row[0])  # Validate stored capacity even on the release path.
                     holders = json.loads(row[1])
                     wait_queue = json.loads(row[2])
 

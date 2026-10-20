@@ -51,9 +51,36 @@ def _oom_context_request(payload: dict[str, Any], default_context: int) -> tuple
     return adjusted, recovery
 
 
-def _read_http_error_body(error: HTTPError) -> str:
+def _read_http_error_body(error: HTTPError, deadline: float | None = None, should_stop: Any | None = None) -> str:
     try:
-        raw = error.read(_HTTP_ERROR_BODY_LIMIT + 1)
+        with _cancel_response_on_stop(error, should_stop, deadline):
+            if deadline is None:
+                raw = error.read(_HTTP_ERROR_BODY_LIMIT + 1)
+            else:
+                chunks: list[bytes] = []
+                total = 0
+                read_chunk = getattr(error, "read1", None) or error.read
+                while total <= _HTTP_ERROR_BODY_LIMIT:
+                    if _stop_requested(should_stop):
+                        raise InterruptedError("request cancelled")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("request deadline expired")
+                    _set_response_timeout(error, remaining)
+                    chunk = read_chunk(min(65536, _HTTP_ERROR_BODY_LIMIT + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("request deadline expired")
+                raw = b"".join(chunks)
+    except Exception:
+        if _stop_requested(should_stop):
+            raise InterruptedError("request cancelled") from None
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("request deadline expired") from None
+        raise
     finally:
         error.close()
     truncated = len(raw) > _HTTP_ERROR_BODY_LIMIT
@@ -330,14 +357,18 @@ class OllamaRuntime:
                 break
             req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
             try:
-                with urlopen(req, timeout=max(0.05, remaining)) as response:
-                    raw = response.read().decode("utf-8")
+                with urlopen(req, timeout=max(0.05, remaining)) as response, _cancel_response_on_stop(response, None, request_deadline):
+                    raw = _read_response_body(response, request_deadline).decode("utf-8")
                     result = json.loads(raw) if raw else {}
                     if isinstance(result, dict):
                         result["_lah_retry_count"] = max(0, attempt - 1)
                     return result
             except HTTPError as exc:
-                raw = _read_http_error_body(exc)
+                try:
+                    raw = _read_http_error_body(exc, request_deadline)
+                except (socket.timeout, TimeoutError) as read_error:
+                    last_error = f"Ollama request timed out: {read_error}"
+                    break
                 last_error = f"HTTP {exc.code}: {raw}"
                 if exc.code < 500 or attempt >= attempts:
                     return {"error": last_error, "_lah_retry_count": max(0, attempt - 1)}
@@ -417,7 +448,14 @@ class OllamaRuntime:
                         return result
                     return {"error": "Ollama returned a non-object JSON response", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
             except HTTPError as exc:
-                last_error = f"HTTP {exc.code}: {_read_http_error_body(exc)}"
+                try:
+                    raw = _read_http_error_body(exc, request_deadline, should_stop)
+                except InterruptedError:
+                    return {"success": False, "preempted": True, "error": "request cancelled during Ollama request", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
+                except (socket.timeout, TimeoutError) as read_error:
+                    last_error = f"Ollama request timed out: {read_error}"
+                    break
+                last_error = f"HTTP {exc.code}: {raw}"
                 retryable = exc.code >= 500
             except URLError as exc:
                 reason = getattr(exc, "reason", exc)

@@ -218,6 +218,29 @@ def start(verbose: bool = True) -> bool:
     return client().ensure_server()
 
 
+def status_inventory_lines(st: dict) -> tuple[str, str]:
+    """Do not present omitted process-scope inventories as empty global state."""
+    models = st.get("installed_models")
+    if st.get("snapshot_stale") is True:
+        model_line = "Models:       Stale inventory (unverified)"
+    elif (st.get("installed_models_available") is not False and isinstance(models, list)
+          and all(isinstance(name, str) and name.strip() for name in models)):
+        sample = f" ({', '.join(models[:3])}{'...' if len(models) > 3 else ''})" if models else ""
+        model_line = f"Models:       {len(models)} installed{sample}"
+    else:
+        model_line = "Models:       Inventory unreported"
+    state = st.get("agent_state")
+    state = state if isinstance(state, dict) else {}
+    labels = []
+    for key in ("tasks", "leases"):
+        items = state.get(key)
+        if isinstance(items, list) and all(isinstance(item, dict) for item in items):
+            labels.append(f"{len(items)} reported {key}")
+        else:
+            labels.append(f"{key} unreported")
+    return model_line, "Agent OS:     " + ", ".join(labels)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
     parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs", "pause", "resume", "mode"])
@@ -505,7 +528,6 @@ def main() -> int:
         ollama_cfg = cfg.get("ollama", {})
         ollama_enabled = bool(ollama_cfg.get("enabled", False)) if isinstance(ollama_cfg, dict) else False
         active_model = (st.get("scheduler") or {}).get("active_model") or "None"
-        installed_models = st.get("installed_models", [])
         llama_status = (st.get("ollama_profile") or {}).get("llama_cpp", {})
         llama_models = llama_status.get("online_models", []) if isinstance(llama_status, dict) else []
         hardware = st.get("hardware") or {}
@@ -517,9 +539,7 @@ def main() -> int:
         cache_hits = gen_cache.get("hits", 0) or 0
         cache_misses = gen_cache.get("misses", 0) or 0
 
-        agent_st = st.get("agent_state") or {}
-        tasks_cnt = len(agent_st.get("tasks", [])) if isinstance(agent_st.get("tasks"), list) else 0
-        leases_cnt = len(agent_st.get("leases", [])) if isinstance(agent_st.get("leases"), list) else 0
+        model_inventory_line, agent_inventory_line = status_inventory_lines(st)
 
         print(f"Local AI Hub v{ver} - Online (PID: {pid})")
         print("=" * 55)
@@ -541,13 +561,12 @@ def main() -> int:
             print(f"Backend:      {provider} {llama_state} ({len(llama_models)} models online{suffix})")
         if provider != "ollama":
             print(f"Ollama:       {'Enabled' if ollama_enabled else 'Disabled by policy'}")
-        model_sample = f" ({', '.join(installed_models[:3])}{'...' if len(installed_models) > 3 else ''})" if installed_models else ""
-        print(f"Models:       {len(installed_models)} installed{model_sample}")
+        print(model_inventory_line)
         if gpu_name != "N/A":
             vram_str = f" ({vram_mb // 1024} GB)" if vram_mb else ""
             print(f"GPU:          {gpu_name}{vram_str}")
         print(f"Cache:        {cache_hits} hits, {cache_misses} misses")
-        print(f"Agent OS:     {tasks_cnt} tasks, {leases_cnt} leases active")
+        print(agent_inventory_line)
         return 0
     if args.action == "stop":
         ok = stop(); print("stopped" if ok else "stop failed"); return 0 if ok else 1

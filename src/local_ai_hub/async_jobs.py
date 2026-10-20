@@ -21,6 +21,7 @@ from .process_utils import terminate_tree
 
 _JOB_PROGRESS: ContextVar[Callable[[float, str], bool] | None] = ContextVar("async_job_progress", default=None)
 _JOB_CANCELLED: ContextVar[Callable[[], bool] | None] = ContextVar("async_job_cancelled", default=None)
+_JOB_ATTEMPT: ContextVar[tuple[str, int] | None] = ContextVar("async_job_attempt", default=None)
 
 
 def current_job_should_stop() -> bool:
@@ -764,15 +765,24 @@ class AsyncJobManager:
 
     def register_process(self, job_id: str, process_or_pid: Any) -> None:
         """Register child process so cancellation/close can terminate its process tree."""
+        scope = _JOB_ATTEMPT.get()
+        key = scope if scope is not None and scope[0] == str(job_id) else str(job_id)
         with self._lock:
-            processes = self._processes.setdefault(str(job_id), [])
+            processes = self._processes.setdefault(key, [])
             if not any(existing is process_or_pid for existing in processes):
                 processes.append(process_or_pid)
 
-    def _cleanup_processes(self, job_id: str) -> bool:
-        with self._lock:
-            processes = list(self._processes.pop(str(job_id), []))
+    def _cleanup_processes(self, job_id: str, *, attempt: int | None = None) -> bool:
         cleanup_confirmed = True
+        if attempt is None:
+            with self._lock:
+                attempts = [key[1] for key in self._processes if isinstance(key, tuple) and key[0] == str(job_id)]
+            for owned_attempt in attempts:
+                cleaned = self._cleanup_processes(job_id, attempt=owned_attempt)
+                cleanup_confirmed = cleaned and cleanup_confirmed
+        key = (str(job_id), attempt) if attempt is not None else str(job_id)
+        with self._lock:
+            processes = list(self._processes.pop(key, []))
         retry: list[Any] = []
         for process in processes:
             if hasattr(process, "poll") and hasattr(process, "terminate"):
@@ -835,7 +845,7 @@ class AsyncJobManager:
                     cleanup_confirmed = False
         if retry:
             with self._lock:
-                remaining = self._processes.setdefault(str(job_id), [])
+                remaining = self._processes.setdefault(key, [])
                 for process in retry:
                     if not any(existing is process for existing in remaining):
                         remaining.append(process)
@@ -1176,6 +1186,7 @@ class AsyncJobManager:
                 pass
         progress_token = _JOB_PROGRESS.set(self._progress_callback(job_id, int(row["attempts"]) + 1))
         cancel_token = _JOB_CANCELLED.set(self._cancellation_callback(job_id, int(row["attempts"]) + 1))
+        attempt_token = _JOB_ATTEMPT.set((job_id, int(row["attempts"]) + 1))
         try:
             result = self._invoke_executor_if_allowed(job_id, action, payload)
             report_job_progress(99.0, "finalizing")
@@ -1190,11 +1201,26 @@ class AsyncJobManager:
         finally:
             _JOB_PROGRESS.reset(progress_token)
             _JOB_CANCELLED.reset(cancel_token)
-            cleanup_confirmed = self._cleanup_processes(job_id)
+            _JOB_ATTEMPT.reset(attempt_token)
+            cleanup_confirmed = self._cleanup_processes(job_id, attempt=int(row["attempts"]) + 1)
         deferred_for_resource_release = False
+        if type(result.get("success")) is not bool:
+            result = {"success": False, "error": "async executor success must be an explicit boolean", "retryable": False}
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
             result = {"success": False, "error": "async executor returned non-terminal state", "retryable": True}
         with self._lock, closing(self._connect()) as con:
+            # Hold the SQLite writer fence through validation and final persistence.
+            # A process-local lock alone cannot exclude another manager instance.
+            con.execute("BEGIN IMMEDIATE")
+            owner = con.execute(
+                "SELECT state,attempts,lease_until,expires_at FROM async_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            now = time.time()
+            if (owner is None or owner[0] != "running"
+                    or int(owner[1]) != int(row["attempts"]) + 1
+                    or float(owner[2]) <= now or float(owner[3]) <= now):
+                return {"success": False, "job_id": job_id, "error": "async job attempt ownership lost", "error_code": "stale_attempt", "terminal": True, "retryable": False}
             cur_cancel = con.execute("SELECT cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             cancelled = bool(cur_cancel[0]) if cur_cancel else False
             if not cleanup_confirmed or result.get("cleanup_unconfirmed") or result.get("outcome_unknown"):
@@ -1236,7 +1262,7 @@ class AsyncJobManager:
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), str(final.get("error", "resource release in progress"))[:500], time.time(), job_id),
                 )
                 deferred_for_resource_release = True
-            elif result.get("success"):
+            elif result.get("success") is True:
                 artifact_id = ""
                 try:
                     stored_id = self.artifacts.put(
@@ -1246,6 +1272,8 @@ class AsyncJobManager:
                     artifact_id = str(stored_id or "").strip()
                 except Exception:
                     pass
+                if time.time() >= min(float(owner[2]), float(owner[3])):
+                    return {"success": False, "job_id": job_id, "error": "async job attempt expired during finalization", "error_code": "stale_attempt", "terminal": True, "retryable": False}
                 if not self._result_artifact_available(artifact_id):
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": "async job result artifact unavailable", "terminal": True, "retryable": False}
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,artifact_id='',error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id))
@@ -1598,8 +1626,6 @@ class AsyncJobManager:
         self.close()
 
     def close(self) -> None:
-        if self._shutdown.is_set():
-            return
         self._shutdown.set()
         with self._lock:
             waiters = list(self._events.values())
@@ -1609,14 +1635,22 @@ class AsyncJobManager:
             resource_release_workers = list(self._resource_release_workers.values())
             self._delayed_dispatch.clear()
             self._resource_release_waiters.clear()
-        with self._lock, closing(self._connect()) as con:
-            con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
-            con.commit()
+        persistence_error = None
+        try:
+            with self._lock:
+                if not getattr(self, "_close_persisted", False):
+                    with closing(self._connect()) as con:
+                        con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
+                        con.commit()
+                    self._close_persisted = True
+        except sqlite3.Error as exc:
+            # Complete local cleanup before surfacing durable cancellation failure.
+            persistence_error = exc
         for timer in delayed:
             timer.cancel()
         for event in waiters:
             event.set()
-        for job_id in list(self._processes):
+        for job_id in {key[0] if isinstance(key, tuple) else key for key in list(self._processes)}:
             self._cleanup_processes(job_id)
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
@@ -1630,6 +1664,8 @@ class AsyncJobManager:
         with self._lock:
             self._dispatchers = {thread for thread in self._dispatchers if thread.is_alive()}
             self._workers = {thread for thread in self._workers if thread.is_alive()}
+        if persistence_error is not None:
+            raise persistence_error
 
     def stats(self) -> dict[str, Any]:
         def read() -> dict[str, int]:

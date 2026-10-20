@@ -18,10 +18,7 @@ from local_ai_hub.config import load_config
 from local_ai_hub.doctor_support import (
     installed_models_from_status,
     managed_serena_executable,
-    optional_component_lines,
-    optional_component_status,
     probe_hub_status,
-    serena_backend_status,
 )
 from local_ai_hub.http_server import validate_network_security
 from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection

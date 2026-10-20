@@ -9138,117 +9138,52 @@ def test_{sym}_regression_edge_cases():
         }
 
     def package_audit(self, root: str, lockfile_path: str | None = None) -> dict[str, Any]:
-        """Offline security audit scanning lockfiles for known vulnerabilities."""
-        p_root = Path(root).expanduser().resolve(strict=False)
-        target_lock: Path | None = None
-        if lockfile_path:
-            p = Path(lockfile_path)
-            target_lock = p if p.is_absolute() else (p_root / p)
-        else:
-            candidates = ["poetry.lock", "requirements.txt", "package-lock.json", "composer.lock", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "uv.lock", "pyproject.toml"]
-            for c in candidates:
-                cand = p_root / c
-                if cand.is_file():
-                    target_lock = cand
-                    break
-
-        if not target_lock or not target_lock.is_file():
-            return {"success": False, "error": "no supported dependency manifest or lockfile found in root", "terminal": True, "retryable": False}
-
-        KNOWN_CVES: list[dict[str, Any]] = [
-            {"package": "requests", "max_version": "2.31.0", "cve": "CVE-2023-32681", "severity": "MEDIUM", "fix": ">=2.31.0"},
-            {"package": "urllib3", "max_version": "2.0.7", "cve": "CVE-2023-45803", "severity": "HIGH", "fix": ">=2.0.7"},
-            {"package": "pyyaml", "max_version": "5.4.0", "cve": "CVE-2020-14343", "severity": "CRITICAL", "fix": ">=5.4"},
-            {"package": "jinja2", "max_version": "3.1.3", "cve": "CVE-2024-22195", "severity": "HIGH", "fix": ">=3.1.3"},
-            {"package": "cryptography", "max_version": "41.0.6", "cve": "CVE-2023-49083", "severity": "HIGH", "fix": ">=41.0.6"},
-            {"package": "lodash", "max_version": "4.17.21", "cve": "CVE-2021-23337", "severity": "HIGH", "fix": ">=4.17.21"},
-            {"package": "jsonwebtoken", "max_version": "9.0.0", "cve": "CVE-2022-23529", "severity": "HIGH", "fix": ">=9.0.0"},
-            {"package": "axios", "max_version": "1.7.4", "cve": "CVE-2024-39338", "severity": "MEDIUM", "fix": ">=1.7.4"},
-            {"package": "guzzlehttp/guzzle", "max_version": "7.4.5", "cve": "CVE-2022-31090", "severity": "HIGH", "fix": ">=7.4.5"},
-            {"package": "laravel/framework", "max_version": "9.1.8", "cve": "CVE-2022-40482", "severity": "HIGH", "fix": ">=9.1.8"},
-        ]
-
-        text = target_lock.read_text(encoding="utf-8", errors="replace")
-        scanned_pkgs: dict[str, str] = {}
-
-        if target_lock.name in {"requirements.txt"}:
-            for line in text.splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "==" in line:
-                    parts = line.split("==")
-                    scanned_pkgs[parts[0].strip().lower()] = parts[1].strip()
-        elif target_lock.name in {"poetry.lock"}:
-            curr_name = ""
-            for line in text.splitlines():
-                line = line.strip()
-                if line.startswith("name = "):
-                    curr_name = line.split("=")[1].strip().strip('"').lower()
-                elif line.startswith("version = ") and curr_name:
-                    scanned_pkgs[curr_name] = line.split("=")[1].strip().strip('"')
-                    curr_name = ""
-        elif target_lock.name in {"package-lock.json"}:
-            try:
-                pkg_data = json.loads(text)
-                deps = pkg_data.get("packages", pkg_data.get("dependencies", {}))
-                for k, v in deps.items():
-                    clean_name = k.replace("node_modules/", "").lower()
-                    if isinstance(v, dict) and "version" in v:
-                        scanned_pkgs[clean_name] = str(v["version"])
-            except Exception:
-                pass
-        elif target_lock.name in {"composer.lock"}:
-            try:
-                comp_data = json.loads(text)
-                for p_item in (comp_data.get("packages", []) or []) + (comp_data.get("packages-dev", []) or []):
-                    if isinstance(p_item, dict) and "name" in p_item and "version" in p_item:
-                        scanned_pkgs[str(p_item["name"]).lower()] = str(p_item["version"]).lstrip("v")
-            except Exception:
-                pass
-        elif target_lock.name == "pyproject.toml":
-            try:
-                project = tomllib.loads(text).get("project", {})
-                dependencies = list(project.get("dependencies", []) or [])
-                optional = project.get("optional-dependencies", {}) or {}
-                for values in optional.values() if isinstance(optional, dict) else []:
-                    dependencies.extend(values or [])
-                for requirement in dependencies:
-                    match = re.match(r"\s*([A-Za-z0-9_.-]+)\s*(?:\(==|==)\s*([0-9][^;,) ]*)", str(requirement))
-                    if match:
-                        scanned_pkgs[match.group(1).lower()] = match.group(2)
-                    else:
-                        name = re.match(r"\s*([A-Za-z0-9_.-]+)", str(requirement))
-                        if name:
-                            scanned_pkgs.setdefault(name.group(1).lower(), "unresolved")
-            except Exception:
-                return {"success": False, "error": "invalid pyproject.toml dependency manifest", "terminal": True, "retryable": False}
-
-        vulnerabilities: list[dict[str, Any]] = []
-        for rule in KNOWN_CVES:
-            pkg = rule["package"]
-            if pkg in scanned_pkgs:
-                inst = scanned_pkgs[pkg]
-                def parse_v(v_str: str) -> tuple[int, ...]:
-                    return tuple(int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", v_str)[:3])
-                if inst != "unresolved" and parse_v(inst) < parse_v(rule["max_version"]):
-                    vulnerabilities.append({
-                        "package": pkg,
-                        "installed_version": inst,
-                        "vulnerable_below": rule["max_version"],
-                        "cve": rule["cve"],
-                        "severity": rule["severity"],
-                        "recommendation": f"Upgrade {pkg} to {rule['fix']}",
-                    })
-
-        return {
-            "success": True,
-            "lockfile": str(target_lock) if target_lock.name != "pyproject.toml" else None,
-            "manifest": str(target_lock),
-            "manifest_only": target_lock.name == "pyproject.toml",
-            "packages_scanned": len(scanned_pkgs),
-            "vulnerabilities_found": len(vulnerabilities),
-            "vulnerabilities": vulnerabilities,
-            "status": "clean" if not vulnerabilities else "vulnerabilities_detected",
-        }
+        from .dependency_audit import MAX_MANIFEST_BYTES, audit_manifest
+        try:
+            lexical_root = Path(root).expanduser()
+            if not lexical_root.is_absolute():
+                raise ValueError("repository root must be absolute")
+            p_root = lexical_root.resolve(strict=True)
+            if not p_root.is_dir():
+                raise ValueError("repository root must be a directory")
+            target = None
+            if lockfile_path:
+                candidate = Path(lockfile_path)
+                target = candidate if candidate.is_absolute() else p_root / candidate
+            else:
+                for name in ("poetry.lock", "requirements.txt", "package-lock.json", "composer.lock", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "uv.lock", "pyproject.toml"):
+                    candidate = p_root / name
+                    if candidate.exists() or candidate.is_symlink():
+                        target = candidate
+                        break
+            if target is None:
+                raise ValueError("no supported dependency manifest or lockfile found in root")
+            relative = target.relative_to(p_root)
+            if ".." in relative.parts:
+                raise PermissionError("manifest must stay inside repository root")
+            cursor = p_root
+            for part in relative.parts:
+                cursor = cursor / part
+                if _is_symlink_or_reparse_point(cursor):
+                    raise PermissionError("manifest cannot traverse symlinks or reparse points")
+            target = target.resolve(strict=True)
+            target.relative_to(p_root)
+            before = target.stat(follow_symlinks=False)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_MANIFEST_BYTES:
+                raise ValueError("manifest must be a regular file within the byte limit")
+            descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino) or not stat.S_ISREG(opened.st_mode):
+                    raise PermissionError("manifest changed during authorization")
+                data = stream.read(MAX_MANIFEST_BYTES + 1)
+            if len(data) > MAX_MANIFEST_BYTES:
+                raise ValueError("manifest exceeded byte limit")
+            return audit_manifest(target, data.decode("utf-8"))
+        except (OSError, RuntimeError, ValueError, UnicodeError):
+            return {"success": False, "status": "invalid", "parse_complete": False,
+                    "advisory_complete": False, "error": "manifest unavailable or outside permitted repository input",
+                    "terminal": True, "retryable": False}
 
     def structural_search(
         self,

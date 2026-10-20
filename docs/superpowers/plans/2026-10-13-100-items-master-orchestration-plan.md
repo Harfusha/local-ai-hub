@@ -1,5 +1,13 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
+## Current status — audit remediation, 2026-10-20
+
+- **Owner / work item:** Codex primary, `audit-remediation-20261020`; direct `master` baseline `9dbd92fe0d8e26d291497db979b3ca44196196bf`.
+- **Canonical current ledger:** [2026-10-20 audit remediation](2026-10-20-audit-remediation.md), covering F01–F24 and R01–R16 without duplicate chats or worktrees.
+- **Status:** implementation in progress. Integrity cohort: 94 passed / 1 skipped (`req_3c9ff40876be`). Ownership/protocol cohort: 46 passed (`req_30f623663fbe`). These results prove their specific source snapshots, not the unfinished final candidate.
+- **Next:** finish remaining protocol/transport/dashboard/reliability work, synchronize prompts, then validate the integrated candidate and record final limits.
+- **Evidence boundary:** all sections below are chronological history. Older deferred-test instructions, success reports and candidate IDs are not the current gate or current-source/runtime proof. No deployment or production data conversion has occurred in this remediation.
+
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
 **Binding tenancy contract:** `docs/superpowers/specs/2026-10-18-single-user-no-tenancy.md` supersedes older tenant-routing requirements. A bounded source scan found only explicit rejection of retired fields, configuration, headers and environment names, plus fail-closed detection of old durable schemas; token/principal selection and tenant partitions are absent from the inspected runtime paths. Project, repository, clone, worktree, branch, task, session and global-owner scopes remain required. The root operator config still has the two retired scheduler quota keys; its bytes remain preserved while the explicit candidate conversion and backup procedure remain unactivated. The canonical install/update prompts now require the complete source bundle before tests and a separately verified, collision-explicit offline conversion.

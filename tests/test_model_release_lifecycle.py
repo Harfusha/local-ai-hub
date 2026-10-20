@@ -14,6 +14,27 @@ from local_ai_hub.embeddings import EmbeddingModel
 from local_ai_hub.reranker import Reranker
 
 
+@pytest.fixture(autouse=True)
+def fake_owned_cuda_backend(monkeypatch):
+    """Keep these lock/race tests deterministic at the new process boundary."""
+    from local_ai_hub import owned_model
+    class Model:
+        owned_process = True
+        def __init__(self, kind, name, kwargs, **_options):
+            backend = sys.modules["sentence_transformers"]
+            constructor = backend.SentenceTransformer if kind == "embedding" else backend.CrossEncoder
+            self._inner = constructor(name, **kwargs)
+            self.model_name = name
+            self._torch = sys.modules["torch"]
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+        def close(self):
+            if self._inner is not None:
+                self._torch.worker_close_calls = getattr(self._torch, "worker_close_calls", 0) + 1
+                self._inner = None
+    monkeypatch.setattr(owned_model, "OwnedNLPModel", Model)
+
+
 class FakeTorch(types.ModuleType):
     def __init__(self):
         super().__init__("torch")
@@ -132,10 +153,11 @@ def test_embedding_release_waits_for_inference_and_cache_waits_for_other_cuda_mo
     assert torch.empty_cache_calls == 0
     reranker.release()
     assert reranker._model is None
-    assert torch.empty_cache_calls == 1
-    assert torch.synchronize_calls == 1
+    assert torch.empty_cache_calls == 0
+    assert torch.synchronize_calls == 0
+    assert torch.worker_close_calls == 2
     assert reranker.release() is False
-    assert torch.empty_cache_calls == 1
+    assert torch.empty_cache_calls == 0
 
 
 def test_reranker_release_waits_for_inference_and_embedding_can_reload(
@@ -183,15 +205,17 @@ def test_reranker_release_waits_for_inference_and_embedding_can_reload(
     reranker.release()
 
     embedding.release()
-    assert torch.empty_cache_calls == 1
-    assert torch.synchronize_calls == 1
+    assert torch.empty_cache_calls == 0
+    assert torch.synchronize_calls == 0
+    assert torch.worker_close_calls == 3
     vectors, backend = embedding._encode_st_batch(["reload"], query=False, priority=1)
     assert vectors == [[6.0, 1.0]]
     assert backend == "sentence-transformers"
     assert loads["embedding"] == 2
     embedding.release()
-    assert torch.empty_cache_calls == 2
-    assert torch.synchronize_calls == 2
+    assert torch.empty_cache_calls == 0
+    assert torch.synchronize_calls == 0
+    assert torch.worker_close_calls == 4
 
 
 def test_non_cuda_backend_release_never_empties_cuda_cache(
@@ -252,7 +276,8 @@ def test_release_timeout_preserves_models_until_inference_can_finish(
     assert embedding.release()
     assert torch.empty_cache_calls == 0
     assert reranker.release()
-    assert torch.empty_cache_calls == 1
+    assert torch.empty_cache_calls == 0
+    assert torch.worker_close_calls == 2
 
 
 def test_release_drops_last_strong_model_references(
@@ -277,8 +302,9 @@ def test_release_drops_last_strong_model_references(
     assert reranker.active_device is None
     gc.collect()
     assert reranker_model() is None
-    assert torch.synchronize_calls == 1
-    assert torch.empty_cache_calls == 1
+    assert torch.synchronize_calls == 0
+    assert torch.empty_cache_calls == 0
+    assert torch.worker_close_calls == 2
 
 
 def test_reranker_rechecks_model_after_release_races_with_prediction(
@@ -318,4 +344,5 @@ def test_reranker_rechecks_model_after_release_races_with_prediction(
     reranker.release()
     assert torch.empty_cache_calls == 0
     embedding.release()
-    assert torch.empty_cache_calls == 1
+    assert torch.empty_cache_calls == 0
+    assert torch.worker_close_calls == 3

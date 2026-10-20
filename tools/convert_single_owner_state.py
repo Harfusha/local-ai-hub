@@ -774,7 +774,6 @@ def _source_store_shape(connection: sqlite3.Connection) -> tuple[str, dict[str, 
         for row in source_info:
             if str(row[1]) in retired and str(row[2]).upper() != "TEXT":
                 raise ConversionError(f"unsupported non-text retired identity in {store}.{table}")
-        retained = [column for column in source_columns if column not in retired]
         memory = sqlite3.connect(":memory:")
         try:
             memory.execute(target_ddl)

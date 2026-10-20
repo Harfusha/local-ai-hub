@@ -9,7 +9,6 @@ import hashlib
 import http.client
 import io
 import ipaddress
-import inspect
 import json
 import logging
 import math
@@ -7999,7 +7998,10 @@ class CommandBroker:
                     BudgetCost(compute_seconds=elapsed_s, external_calls=1),
                 )
             except Exception:
-                pass
+                # The command has run, but failed accounting cannot authorize a
+                # positive receipt or silently turn durable state into memory state.
+                result = {**result, "success": False, "budget_accounting_unavailable": True,
+                          "error": "budget accounting unavailable", "terminal": True, "retryable": False}
 
         compacted = self._compact(result, command)
         compacted["execution_id"] = execution_id
@@ -8026,61 +8028,13 @@ class CommandBroker:
         return compacted
 
     def run_parallel(
-        self,
-        commands: list[dict[str, Any] | str],
-        cwd: str | None = None,
-        *,
-        max_concurrency: int = 4,
-        timeout: int | None = None,
+        self, commands: list[dict[str, Any] | str], cwd: str | None = None, *,
+        max_concurrency: int = 4, timeout: int | None = None,
         multiplexer: StreamMultiplexer | None = None,
     ) -> dict[str, Any]:
-        """Run multiple commands concurrently, multiplexing their stdout/stderr output streams."""
-        import concurrent.futures
-
-        mux = multiplexer or StreamMultiplexer()
-        normalized_commands: list[tuple[str, str, dict[str, Any]]] = []
-        for idx, item in enumerate(commands):
-            if isinstance(item, str):
-                cmd_id = f"cmd-{idx + 1}"
-                cmd_str = item
-                extra_kwargs = {}
-            elif isinstance(item, dict):
-                cmd_id = str(item.get("id", f"cmd-{idx + 1}"))
-                cmd_str = str(item.get("cmd") or item.get("command") or "")
-                extra_kwargs = {k: v for k, v in item.items() if k not in {"id", "cmd", "command"}}
-            else:
-                continue
-            normalized_commands.append((cmd_id, cmd_str, extra_kwargs))
-
-        results: dict[str, dict[str, Any]] = {}
-
-        def _execute_single(cmd_id: str, cmd_str: str, extra: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-            def _log_cb(stream_name: str, chunk: str) -> None:
-                mux.write(cmd_id, stream_name, chunk)
-
-            cmd_cwd = str(extra.get("cwd", cwd or "."))
-            cmd_timeout = extra.get("timeout", timeout)
-            res = self.run(cmd_str, cwd=cmd_cwd, timeout=cmd_timeout, log_callback=_log_cb)
-            return cmd_id, res
-
-        concurrency = min(max(1, max_concurrency), len(normalized_commands) or 1)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [
-                executor.submit(_execute_single, cmd_id, cmd_str, extra)
-                for cmd_id, cmd_str, extra in normalized_commands
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                cmd_id, res = future.result()
-                results[cmd_id] = res
-
-        mux.flush()
-        all_success = bool(results) and all(bool(r.get("success", False)) for r in results.values())
-        return {
-            "success": all_success,
-            "results": results,
-            "multiplexed_output": mux.format_unified(tag_prefix=True),
-            "events": [ev.to_dict() for ev in mux.get_events()],
-        }
+        from .command_batches import run_parallel
+        return run_parallel(self.run, commands, cwd=cwd, max_concurrency=max_concurrency,
+                            timeout=timeout, multiplexer=multiplexer or StreamMultiplexer())
 
     @_stable_rollback_status
     def run(
@@ -8129,30 +8083,6 @@ class CommandBroker:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
         auto_bound_task = False
-        if not task_id and getattr(self, "task_store", None) is not None:
-            try:
-                active_task = self.task_store.get_active_task(repo_root=cwd)
-                if active_task is not None:
-                    can_bind = True
-                    cmd_str = command if isinstance(command, str) else " ".join(command.argv if hasattr(command, "argv") else [])
-                    cmd_cls = self.classify(cmd_str).get("class")
-                    if cmd_cls in {"mutating", "unknown"}:
-                        wt_err = self._require_task_worktree(active_task.task_id, cwd, command)
-                        if wt_err:
-                            can_bind = False
-                    if can_bind:
-                        task_id = active_task.task_id
-                        auto_bound_task = True
-                        if not criterion and active_task.contract.acceptance_criteria:
-                            from .agent_verification import classify_verification_command, criterion_evidence_type
-                            evidence_type = classify_verification_command(cmd_str)
-                            matching = [c for c in active_task.contract.acceptance_criteria if criterion_evidence_type(c) == evidence_type]
-                            if len(matching) == 1:
-                                criterion = matching[0]
-                            elif len(active_task.contract.acceptance_criteria) == 1:
-                                criterion = active_task.contract.acceptance_criteria[0]
-            except Exception:
-                pass
         project_alias_required = False
         if record_verification and task_id and criterion and _project_command_context is None:
             try:
@@ -11760,6 +11690,12 @@ class CommandBroker:
             result["output_truncated"] = True
         else:
             result["output_truncated"] = bool(result.get("output_truncated")) or bool(previously_discarded)
+        if result["output_truncated"]:
+            if result.get("output_artifact_id"):
+                result["output_recovery"] = {"available": True, "artifact_id": result["output_artifact_id"]}
+            else:
+                reason = "capture_incomplete" if capture_incomplete else "diagnostic_artifacts_disabled" if not diagnostic_artifacts_enabled else "artifact_unavailable"
+                result["output_recovery"] = {"available": False, "reason": reason}
         return result
 
     def stats(self) -> dict[str, Any]:

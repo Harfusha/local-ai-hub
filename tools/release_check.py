@@ -324,7 +324,6 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             errors.append("live health check failed")
 
         status = client.status(detail="brief")
-        scheduler = status.get("scheduler") if isinstance(status.get("scheduler"), dict) else {}
         benchmark_model, benchmark_model_state = _configured_foreground_model(
             status, installed_models, ("fast_code", "general", "heavy_code", "reasoning"),
         )

@@ -4,7 +4,6 @@ from .json_utils import dumps as json_dumps
 
 import copy
 import math
-from pathlib import Path
 from typing import Any
 
 from . import __version__

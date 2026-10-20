@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "environment": "win32-py3.13",
+  "repository_revision": "133eaa7c98c695147a8f5189a825ebbf6494b671c87fe9dfa3ffda1f43cd4847",
+  "cohort": "audit-critical-183-tests",
+  "modules": {
+    "src/local_ai_hub/agent_policy.py": {
+      "covered_branches": 56,
+      "num_branches": 134
+    },
+    "src/local_ai_hub/async_jobs.py": {
+      "covered_branches": 226,
+      "num_branches": 442
+    },
+    "src/local_ai_hub/file_locks.py": {
+      "covered_branches": 7,
+      "num_branches": 14
+    },
+    "src/local_ai_hub/http_transport.py": {
+      "covered_branches": 4,
+      "num_branches": 6
+    },
+    "src/local_ai_hub/context_delivery.py": {
+      "covered_branches": 18,
+      "num_branches": 26
+    },
+    "src/local_ai_hub/command_batches.py": {
+      "covered_branches": 17,
+      "num_branches": 24
+    },
+    "src/local_ai_hub/dashboard_contracts.py": {
+      "covered_branches": 5,
+      "num_branches": 10
+    },
+    "src/local_ai_hub/shutdown.py": {
+      "covered_branches": 10,
+      "num_branches": 12
+    },
+    "src/local_ai_hub/owned_model.py": {
+      "covered_branches": 24,
+      "num_branches": 54
+    },
+    "src/local_ai_hub/model_lifecycle.py": {
+      "covered_branches": 22,
+      "num_branches": 46
+    },
+    "src/local_ai_hub/semantic_quality.py": {
+      "covered_branches": 32,
+      "num_branches": 86
+    }
+  },
+  "source_report_sha256": "1ad1464a914f8a1fc1e39f2cb1509a3f5af48102197ab194368ba09339f22e59"
+}

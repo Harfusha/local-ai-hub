@@ -1730,19 +1730,31 @@ class TelemetryStore:
             self._stats["lost_after_acceptance"] += abandoned
 
     def flush(self, timeout: float = 3.0) -> bool:
+        """True only when accepted records through the boundary were persisted."""
+        return self.flush_status(timeout)["durable"]
+
+    def flush_status(self, timeout: float = 3.0) -> dict[str, Any]:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout < 0:
+            raise ValueError("flush timeout must be finite and nonnegative")
         if not self.enabled:
-            return True
+            return {"enabled": False, "drained": True, "durable": True, "accepted_target": 0,
+                    "processed": 0, "written": 0, "lost_after_acceptance": 0, "timed_out": False}
         with self._stats_lock:
             target = int(self._stats["queued"])
-        deadline = time.monotonic() + max(0.05, float(timeout))
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + min(float(timeout), 3600.0)
+        while True:
             with self._stats_lock:
                 completed = int(self._stats["processed"])
-            if completed >= target:
-                return True
-            time.sleep(0.02)
-        with self._stats_lock:
-            return int(self._stats["processed"]) >= target
+                written = int(self._stats.get("written", 0))
+                lost = int(self._stats.get("lost_after_acceptance", 0))
+            remaining = deadline - time.monotonic()
+            if completed >= target or remaining <= 0:
+                drained = completed >= target
+                return {"enabled": True, "accepted_target": target, "processed": completed,
+                        "written": written, "lost_after_acceptance": lost,
+                        "drained": drained, "durable": drained and written >= target and lost == 0,
+                        "timed_out": not drained}
+            time.sleep(min(0.02, remaining))
 
     def _cutoff(self, days: int) -> float:
         bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
@@ -2165,12 +2177,12 @@ class TelemetryStore:
                 ).fetchone()[0]
                 accounting_boundary_incomplete = boundary_rollup > boundary_raw
                 pricing_table = (
-                    f"(SELECT events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
-                    f"tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM daily_rollups "
-                    f"WHERE day>? AND event_type='tool_accounting' "
-                    f"UNION ALL SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
-                    f"tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
-                    f"WHERE created_at>=? AND created_at<? AND event_type='tool_accounting')"
+                    "(SELECT events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
+                    "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM daily_rollups "
+                    "WHERE day>? AND event_type='tool_accounting' "
+                    "UNION ALL SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
+                    "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
+                    "WHERE created_at>=? AND created_at<? AND event_type='tool_accounting')"
                 )
                 pricing_table_params = (day, cutoff, boundary_end)
                 pricing_rollup_rows = int(con.execute(

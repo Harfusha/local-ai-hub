@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import posixpath
+import json
 import re
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -13,6 +14,49 @@ MAX_PATH_CHARS = 240
 MAX_TASK_CHARS = 4096
 MAX_OUTPUT_CHARS = 12_000
 MAX_REPORTED_PATHS = 8
+
+
+def assess_review_consistency(output: Any, evidence_paths: Iterable[str] = ()) -> dict[str, Any]:
+    """Check declared review structure, never the truth of a model assertion."""
+    result: dict[str, Any] = {
+        "usable": False, "status": "unverified", "verdict_consistent": None,
+        "semantic_truth_verified": False, "advisory_only": True,
+        "citation_scope": "not_verified", "invalid_citation_indices": [],
+    }
+    text, error = _model_text(output)
+    paths, path_error = _bounded_paths(evidence_paths)
+    if error or path_error or text is None or len(text) > MAX_OUTPUT_CHARS:
+        result["reason"] = error or path_error or "output_too_large"
+        return result
+    stripped = text.strip()
+    if stripped.startswith("```json\n") and stripped.endswith("\n```"):
+        stripped = stripped[8:-4]
+    try:
+        report = json.loads(stripped)
+    except (ValueError, TypeError):
+        result["reason"] = "structured_review_unavailable"
+        return result
+    if not isinstance(report, dict) or report.get("verdict") not in ("pass", "fail") or not isinstance(report.get("findings"), list):
+        result["reason"] = "malformed_review"
+        return result
+    findings = report["findings"]
+    consistent = (report["verdict"] == "pass") == (not findings)
+    invalid = []
+    for index, finding in enumerate(findings):
+        citation = finding.get("citation") if isinstance(finding, dict) else None
+        path = citation.get("path") if isinstance(citation, dict) else None
+        line = citation.get("line") if isinstance(citation, dict) else None
+        normalized = _normalize_path(path) if isinstance(path, str) else None
+        if (normalized is None or type(line) is not int or line < 1
+                or (paths and not _matches_evidence(normalized, paths))):
+            invalid.append(index)
+    result.update({
+        "usable": consistent and not invalid, "status": "structure_checked",
+        "verdict_consistent": consistent, "invalid_citation_indices": invalid,
+        "citation_scope": "supplied_paths_and_positive_line_only" if paths else "citation_shape_only",
+        "reason": "verdict_contradiction" if not consistent else "invalid_citation" if invalid else "structure_consistent",
+    })
+    return result
 
 _QUEUED_STATES = {"queued", "pending", "running", "in_progress"}
 _ERROR_MARKER = re.compile(

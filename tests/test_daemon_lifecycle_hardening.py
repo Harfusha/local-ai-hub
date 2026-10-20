@@ -504,6 +504,8 @@ def test_spawn_daemon_policy_enforces_task_budget(tmp_path: Path, monkeypatch: p
         max_tokens=12,
         used_compute_seconds=5.0,
         max_compute_seconds=5.0,
+        used_external_calls=0,
+        max_external_calls=50,
     )
     monkeypatch.setattr(broker.policy_engine, "get_budget", lambda task_id: exhausted_budget)
 
