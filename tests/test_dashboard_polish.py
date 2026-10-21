@@ -78,7 +78,7 @@ def test_retired_panels_do_not_keep_background_requests():
 
 
 def test_incident_ui_uses_only_supported_read_and_record_actions():
-    assert "action:'find',limit:100" in DASHBOARD_HTML
+    assert "fetchDashboardJson('/api/agent-state/incidents',{cache:'no-store',unscoped:isAll})" in DASHBOARD_HTML
     for retired in ("resolveIncidentAction", "setIncidentIgnoredAction", "resolveFixInput", '<option value="ignored">Ignored</option>'):
         assert retired not in DASHBOARD_HTML
 

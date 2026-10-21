@@ -2,21 +2,21 @@ from __future__ import annotations
 
 DASHBOARD_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Local AI Hub — realtime</title>
+<title>Local AI Hub</title>
 <style>
 :root{
   color-scheme:dark;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Inter",ui-sans-serif,system-ui,sans-serif;
-  --bg:#090d14;--panel:#0f1724;--panel2:#141f30;--panel-head:#131d2e;
-  --line:#1e293b;--line-light:#334155;--muted:#94a3b8;--fg:#e2e8f0;--fg-bright:#f8fafc;
-  --ok:#34d399;--warn:#fbbf24;--bad:#f87171;--accent:#38bdf8;--accent2:#818cf8;
+  --bg:#151615;--panel:#1c1e1c;--panel2:#242723;--panel-head:#20231f;
+  --line:#343b2d;--line-light:#4c5840;--muted:#abb2a5;--fg:#e0e4db;--fg-bright:#f5f3e9;
+  --ok:#34d399;--warn:#fbbf24;--bad:#f87171;--accent:#efb76f;--accent2:#b9c8a3;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);line-height:1.45;font-size:12px}
 button,input,select,textarea{font:inherit}
 .top{position:sticky;top:0;z-index:25;background:rgba(9,13,20,0.92);border-bottom:1px solid var(--line);backdrop-filter:blur(14px)}
 .toolbar{display:flex;align-items:center;gap:10px;padding:9px 16px;flex-wrap:wrap}
-.toolbar select{background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:5px;padding:3px 8px;font-size:11px}
+.toolbar select{background:#282e22;color:var(--fg);border:1px solid #505d44;border-radius:5px;padding:3px 8px;font-size:11px}
 .brand-wrap{display:flex;align-items:center;gap:8px;margin-right:6px}
 .brand{font-weight:750;font-size:14px;color:var(--fg-bright);letter-spacing:-.015em}
 .brand-icon{color:var(--accent);font-size:16px}
@@ -24,7 +24,7 @@ button,input,select,textarea{font:inherit}
 .pill.ok{border-color:#065f46;color:var(--ok);background:#064e3b22}
 .pill.warn-t{border-color:#78350f;color:var(--warn);background:#78350f22}
 .pill.bad-t{border-color:#7f1d1d;color:var(--bad);background:#7f1d1d22}
-.btn{background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:5px 11px;font-size:11px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s}
+.btn{background:#282e22;color:var(--fg);border:1px solid #505d44;border-radius:6px;padding:5px 11px;font-size:11px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s}
 .btn:hover{background:#223249;border-color:#3d5578;color:#fff}
 .btn.ok{background:#064e3b33;border-color:#059669;color:#6ee7b7}
 .btn.ok:hover{background:#065f4655;border-color:#10b981;color:#a7f3d0}
@@ -38,15 +38,15 @@ button,input,select,textarea{font:inherit}
 .warn-t{color:var(--warn)}
 .bad-t{color:var(--bad)}
 .tabs{display:flex;gap:4px;padding:0 14px 8px;overflow-x:auto}
-.tabbtn{border:0;background:transparent;color:#94a3b8;padding:7px 11px;border-radius:6px;cursor:pointer;white-space:nowrap;font-size:12px;font-weight:500;transition:all .15s}
-.tabbtn:hover{background:#162233;color:#fff}
-.tabbtn.active{background:#1e2d44;color:var(--accent);font-weight:600;box-shadow:inset 0 -2px 0 var(--accent)}
-.tabbtn.tab-disabled{opacity:.55;color:#64748b}
+.tabbtn{border:0;background:transparent;color:#abb2a5;padding:7px 11px;border-radius:6px;cursor:pointer;white-space:nowrap;font-size:12px;font-weight:500;transition:all .15s}
+.tabbtn:hover{background:#242c1d;color:#fff}
+.tabbtn.active{background:#303a25;color:var(--accent);font-weight:600;box-shadow:inset 0 -2px 0 var(--accent)}
+.tabbtn.tab-disabled{opacity:.55;color:#8d9980}
 .tabbtn .tab-badge{font-size:10px;margin-left:4px}
 .subtabs{display:flex;gap:6px;padding:8px 12px;background:var(--panel-head);border-bottom:1px solid var(--line);flex-wrap:wrap}
-.subtab-btn{background:#172233;color:var(--muted);border:1px solid #29384d;border-radius:5px;padding:4px 9px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s}
+.subtab-btn{background:#282e22;color:var(--muted);border:1px solid #29384d;border-radius:5px;padding:4px 9px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s}
 .subtab-btn:hover{color:#fff;background:#202e42}
-.subtab-btn.active{background:#1d3557;border-color:var(--accent);color:var(--accent);font-weight:600}
+.subtab-btn.active{background:#354128;border-color:var(--accent);color:var(--accent);font-weight:600}
 .page{display:none;padding:14px}
 .page.active{display:block}
 .dash-group{margin-bottom:14px}
@@ -61,13 +61,13 @@ button,input,select,textarea{font:inherit}
 .card:hover{border-color:var(--line-light)}
 .label{color:var(--muted);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
 .value{font-size:21px;font-weight:700;margin-top:5px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;color:var(--fg-bright)}
-.sub{color:#94a3b8;font-size:11px;margin-top:5px;line-height:1.45}
+.sub{color:#abb2a5;font-size:11px;margin-top:5px;line-height:1.45}
 .section{margin-top:12px;overflow:hidden;border-radius:9px}
 .section h2{font-size:12.5px;margin:0;padding:10px 14px;background:var(--panel-head);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600}
 .table-wrap{overflow:auto;max-height:520px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1a2538;white-space:nowrap}
-th{position:sticky;top:0;background:var(--panel-head);color:#94a3b8;font-weight:600;z-index:2;letter-spacing:.02em}
+th{position:sticky;top:0;background:var(--panel-head);color:#abb2a5;font-weight:600;z-index:2;letter-spacing:.02em}
 tbody tr.click{cursor:pointer;transition:background .1s}
 tbody tr.click:hover{background:#162338}
 .kv{display:grid;grid-template-columns:minmax(140px,220px) 1fr;gap:8px 14px;padding:12px 14px;font-size:12px}
@@ -76,7 +76,7 @@ tbody tr.click:hover{background:#162338}
 .split{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
 @media(max-width:860px){.split{grid-template-columns:1fr}.hide-sm{display:none}}
 .bar{height:5px;background:#202c3e;border-radius:4px;overflow:hidden;margin-top:6px}
-.bar>i{display:block;height:100%;background:#38bdf8}
+.bar>i{display:block;height:100%;background:#efb76f}
 .event-header{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid var(--line-light);padding:8px 10px;font-size:11px;font-weight:600;color:var(--muted);background:var(--panel-head)}
 .event{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid #1a2538;padding:7px 10px;font-size:11px}
 .event:hover{background:#162338}
@@ -93,35 +93,35 @@ tbody tr.click:hover{background:#162338}
 #modalBody::-webkit-scrollbar-track{background:#0b1118}
 #modalBody::-webkit-scrollbar-thumb{background:#283a50;border-radius:4px}
 #modalBody::-webkit-scrollbar-thumb:hover{background:#3b5678}
-.modal pre{white-space:pre-wrap;word-break:break-word;padding:14px;margin:0;color:#c9d6e4;font-size:12px}
+.modal pre{white-space:pre-wrap;word-break:break-word;padding:14px;margin:0;color:#d9e0d0;font-size:12px}
 .badge-status{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
 .badge-running{background:#112238;color:#93c5fd;border:1px solid #2563eb}
 .badge-complete{background:#0c2e1f;color:#86efac;border:1px solid #16a34a}
 .badge-paused{background:#351f08;color:#fde047;border:1px solid #b45309}
-.badge-waiting{background:#1f2937;color:#cbd5e1;border:1px solid #64748b}
+.badge-waiting{background:#1f2937;color:#dce2d3;border:1px solid #8d9980}
 .badge-error{background:#350c0c;color:#fca5a5;border:1px solid #b91c1c}
-.pulse-dot{width:6px;height:6px;border-radius:50%;background:#38bdf8;box-shadow:0 0 6px #38bdf8;animation:pulse 1.2s infinite;display:inline-block}
+.pulse-dot{width:6px;height:6px;border-radius:50%;background:#efb76f;box-shadow:0 0 6px #efb76f;animation:pulse 1.2s infinite;display:inline-block}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.3;transform:scale(0.8)}}
 .pipeline-stepper{display:flex;align-items:center;gap:2px;margin-top:4px}
 .pipe-step{width:15px;height:15px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:bold;cursor:help;line-height:1}
 .pipe-done{background:#14532d;color:#86efac;border:1px solid #16a34a}
 .pipe-curr{background:#1e3a8a;color:#bfdbfe;border:1px solid #3b82f6;box-shadow:0 0 8px #3b82f6cc}
-.pipe-pend{background:#17202c;color:#64748b;border:1px solid #263342}
-.action-btn-sm{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:4px;padding:3px 7px;font-size:10px;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+.pipe-pend{background:#17202c;color:#8d9980;border:1px solid #263342}
+.action-btn-sm{background:#242b1e;color:var(--fg);border:1px solid #566349;border-radius:4px;padding:3px 7px;font-size:10px;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
 .action-btn-sm:hover{background:#263545;color:#fff}
 .action-btn-sm.danger:hover{background:#7f1d1d;color:#fca5a5;border-color:#b91c1c}
 .diag-banner{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;font-size:12px;margin:8px 0 10px;line-height:1.4}
 .diag-banner.ok{background:#0c2e1f;border:1px solid #16a34a;color:#86efac}
 .diag-banner.warn{background:#351f08;border:1px solid #b45309;color:#fde047}
 .diag-banner.bad{background:#350c0c;border:1px solid #b91c1c;color:#fca5a5}
-.diag-banner.info{background:#0f1d2e;border:1px solid #2563eb;color:#93c5fd}
-.control-menu{position:relative;margin-left:auto}.control-menu summary{list-style:none;cursor:pointer;background:#19232d;border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:11px}.control-menu summary::-webkit-details-marker{display:none}.control-menu[open] summary{background:#243343;color:#fff}
-.control-popover{position:absolute;right:0;top:calc(100% + 7px);z-index:30;min-width:330px;padding:10px;background:#10161d;border:1px solid #394758;border-radius:8px;box-shadow:0 16px 45px #000b;display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.diag-banner.info{background:var(--panel2);border:1px solid var(--line-light);color:var(--fg)}
+.control-menu{position:relative;margin-left:auto}.control-menu summary{list-style:none;cursor:pointer;background:#242b1e;border:1px solid #566349;border-radius:6px;padding:6px 10px;font-size:11px}.control-menu summary::-webkit-details-marker{display:none}.control-menu[open] summary{background:#243343;color:#fff}
+.control-popover{position:absolute;right:0;top:calc(100% + 7px);z-index:30;min-width:330px;padding:10px;background:#10161d;border:1px solid #566349;border-radius:8px;box-shadow:0 16px 45px #000b;display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .control-popover .tiny.muted{grid-column:1/-1;padding-top:4px;font-weight:600;color:var(--muted);letter-spacing:0.02em}
 .control-popover>button{width:100%}
 .control-notice{grid-column:1/-1;white-space:normal;line-height:1.5;color:var(--muted);margin:2px 0 4px}
 .project-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font-size:11px}
+.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select{background:#242b1e;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:7px 9px;font-size:11px}
 .project-toolbar input:not([type=checkbox]):not([type=radio]){flex:1;min-width:180px}
 .project-toolbar select{min-width:118px}
 .project-summary{margin-left:auto}
@@ -141,8 +141,8 @@ tbody tr.click:hover{background:#162338}
 @media(max-width:700px){.toolbar{padding:8px;gap:6px}.toolbar .brand{font-size:12px}.toolbar>.tiny{display:none}.control-menu{margin-left:0}.control-popover{position:fixed;left:8px;right:8px;top:72px;min-width:0}.tabs{padding:0 6px 6px}.tabbtn{padding:6px 8px}.project-toolbar{align-items:stretch}.project-toolbar input:not([type=checkbox]):not([type=radio]){flex-basis:100%}.project-summary{margin-left:0;width:100%}}
 
 .settings-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
-.settings-options label{display:flex;align-items:center;gap:10px;padding:13px 14px;border:1px solid var(--line);border-radius:8px;background:#111c29;cursor:pointer;min-width:0;font-size:13px}
-.settings-options label:has(input:checked){border-color:#2c5c79;background:#102336}
+.settings-options label{display:flex;align-items:center;gap:10px;padding:13px 14px;border:1px solid var(--line);border-radius:8px;background:#1b2116;cursor:pointer;min-width:0;font-size:13px}
+.settings-options label:has(input:checked){border-color:var(--accent);background:#2b3027}
 .settings-options label:has(input:disabled){cursor:not-allowed;opacity:.6}
 .feature-details summary{font-size:13px}.feature-details .label{display:none}
 @media(max-width:900px){.settings-options{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -152,7 +152,7 @@ tbody tr.click:hover{background:#162338}
 .bundle-table{table-layout:fixed}.bundle-table th:nth-child(1){width:35%}.bundle-table th:nth-child(2){width:22%}.bundle-table th:nth-child(3){width:24%}.bundle-table th:nth-child(4){width:19%}
 .bundle-table td{white-space:normal;overflow-wrap:anywhere;font-size:12px}.bundle-table td .btn{white-space:normal;padding:7px 9px;font-size:12px}
 .bundle-table td:nth-child(1)>div{font-size:11px}.bundle-table td:nth-child(3){color:var(--muted)}
-input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-button{font:inherit;color:var(--fg);background:#22354b;border:1px solid #405671;border-radius:5px;padding:5px 9px;margin-right:10px;cursor:pointer}
+input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-button{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line-light);border-radius:4px;padding:5px 9px;margin-right:10px;cursor:pointer}
 @media(max-width:1000px){.bundle-layout{grid-template-columns:1fr}}
 @media(max-width:600px){.bundle-table,.bundle-table tbody{display:block;width:100%}.bundle-table thead{display:none}.bundle-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px 0;border-bottom:1px solid var(--line);gap:8px 12px}.bundle-table td{display:block;padding:0;border:0;min-width:0}.bundle-table td:first-child,.bundle-table td:last-child{grid-column:1/-1}.bundle-table td:last-child .btn{width:100%;justify-content:center}}
 </style><style>
@@ -162,38 +162,38 @@ input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-but
 .trace-failed{color:var(--bad)}
 .trace-queued{color:var(--warn)}
 .trace-toolbar{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.trace-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:5px 8px;font:inherit;font-size:11px}
+.trace-toolbar select{background:#242b1e;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:5px 8px;font:inherit;font-size:11px}
 .request-filter{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.request-filter input,.request-filter select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px;font:inherit;font-size:11px}
+.request-filter input,.request-filter select{background:#242b1e;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:6px 8px;font:inherit;font-size:11px}
 .request-filter input{flex:1;min-width:220px}
 .request-summary{margin-left:auto}
 .human-shell{padding:12px}
 .human-summary{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-.human-summary .badge{border:1px solid #394758;border-radius:999px;padding:3px 8px;font-size:11px}
+.human-summary .badge{border:1px solid #566349;border-radius:999px;padding:3px 8px;font-size:11px}
 .human-summary .badge.ok{border-color:#16a34a}
 .human-summary .badge.bad{border-color:#b91c1c}
 .human-section{border:1px solid var(--line);border-radius:7px;margin:9px 0;overflow:hidden}
-.human-section>h3{font-size:12px;margin:0;padding:8px 10px;background:#151d26;border-bottom:1px solid var(--line)}
+.human-section>h3{font-size:12px;margin:0;padding:8px 10px;background:#20251c;border-bottom:1px solid var(--line)}
 .human-grid{display:grid;grid-template-columns:minmax(130px,220px) 1fr;gap:6px 12px;padding:10px;font-size:11px}
 .human-grid>div:nth-child(odd){color:var(--muted)}
 .human-value{white-space:pre-wrap;word-break:break-word;color:var(--fg)}
-.human-pre{margin:0;padding:10px;background:#0d1219;color:#c9d6e4;white-space:pre-wrap;word-break:break-word;font:inherit;line-height:1.45;max-height:360px;overflow:auto}
+.human-pre{margin:0;padding:10px;background:#141811;color:#d9e0d0;white-space:pre-wrap;word-break:break-word;font:inherit;line-height:1.45;max-height:360px;overflow:auto}
 .human-list{padding:8px 10px}
-.human-item{padding:7px 0;border-bottom:1px solid #202a35}
+.human-item{padding:7px 0;border-bottom:1px solid #343c2b}
 .human-item:last-child{border-bottom:0}
-.event-card{padding:8px 10px;border-bottom:1px solid #202a35}
+.event-card{padding:8px 10px;border-bottom:1px solid #343c2b}
 .event-head{display:flex;gap:9px;align-items:center;margin-bottom:5px}
 .event-type{color:var(--accent);font-weight:600}
 .event-time{color:var(--muted);font-size:10px}
 .trace-timeline{padding:10px}
 .trace-step{border-left:2px solid #30445e;margin-left:9px;padding-left:12px;padding-bottom:10px}
 .trace-step:last-child{padding-bottom:0}
-.trace-step-head{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#151d26;color:var(--fg);border:1px solid #334355;border-radius:6px;padding:8px 10px;cursor:pointer;font:inherit}
+.trace-step-head{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#20251c;color:var(--fg);border:1px solid #4b5a3e;border-radius:6px;padding:8px 10px;cursor:pointer;font:inherit}
 .trace-step-head:hover{background:#1b2a38}
 .trace-step-index{color:var(--accent);font-weight:700}
 .trace-step-chevron{margin-left:auto;color:var(--muted);transition:transform .15s}
 .trace-step.open .trace-step-chevron{transform:rotate(90deg)}
-.trace-step-body{display:none;margin-top:5px;border:1px solid #273544;border-radius:6px;overflow:hidden}
+.trace-step-body{display:none;margin-top:5px;border:1px solid #414c35;border-radius:6px;overflow:hidden}
 .trace-step.open .trace-step-body{display:block}
 .trace-event-content{display:grid;gap:8px;padding:2px 0}
 .trace-event-glance{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
@@ -202,33 +202,33 @@ input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-but
 .trace-progress-track{height:7px;overflow:hidden;border-radius:99px;background:#263341}
 .trace-progress-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,#6b9fff,#61c79a);transition:width .2s ease}
 .trace-progress-label{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
-.trace-event-status,.trace-event-chip{display:inline-flex;align-items:center;border:1px solid #394758;border-radius:999px;padding:2px 7px;font-size:10px;color:var(--muted)}
+.trace-event-status,.trace-event-chip{display:inline-flex;align-items:center;border:1px solid #566349;border-radius:999px;padding:2px 7px;font-size:10px;color:var(--muted)}
 .trace-event-status.ok{color:#79d2a3;border-color:#326a4c;background:#163123}
 .trace-event-status.warn{color:#e8c77a;border-color:#776235;background:#302816}
 .trace-event-status.bad{color:#ff9999;border-color:#784747;background:#351e22}
-.trace-event-section{display:grid;grid-template-columns:54px minmax(0,1fr);gap:8px;align-items:start;width:100%;padding:7px 0;border-top:1px solid #273544;min-width:0}
+.trace-event-section{display:grid;grid-template-columns:54px minmax(0,1fr);gap:8px;align-items:start;width:100%;padding:7px 0;border-top:1px solid #414c35;min-width:0}
 .trace-event-label{padding-top:2px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .trace-event-section[data-kind="input"] .trace-event-label{color:#8eb4ff}
 .trace-event-section[data-kind="output"] .trace-event-label{color:#79d2a3}
 .trace-event-value{min-width:0;width:100%;overflow-wrap:anywhere}
 .trace-event-value .human-grid{width:100%}
 .trace-empty-output{color:var(--muted);font-size:11px}
-.trace-event-meta{min-width:0;border-top:1px solid #273544;padding-top:6px}
+.trace-event-meta{min-width:0;border-top:1px solid #414c35;padding-top:6px}
 .trace-event-meta summary{cursor:pointer;color:var(--muted);font-size:11px}
 .trace-event-meta .human-grid{margin-top:7px}
-.trace-event{padding:8px 10px;border-bottom:1px solid #202a35}
+.trace-event{padding:8px 10px;border-bottom:1px solid #343c2b}
 .trace-event:last-child{border-bottom:0}
-.trace-output{color:#c9d6e4;white-space:pre-wrap;word-break:break-word;background:#0d1219;padding:8px;max-height:260px;overflow:auto}
-.trace-stream-summary{background:#0d1219;border:1px solid #263546;border-radius:6px;padding:8px}
+.trace-output{color:#d9e0d0;white-space:pre-wrap;word-break:break-word;background:#141811;padding:8px;max-height:260px;overflow:auto}
+.trace-stream-summary{background:#141811;border:1px solid #263546;border-radius:6px;padding:8px}
 .trace-stream-summary strong{display:block;color:var(--fg);font-size:11px;margin-bottom:6px}
 .trace-stream-summary .trace-output{padding:0;border:0;max-height:180px}
 .raw-json{margin-top:10px;border:1px solid #303c4a;border-radius:6px}
 .raw-json summary{cursor:pointer;padding:8px 10px;color:var(--muted);font-size:11px}
 .raw-json pre{max-height:320px}
 .empty-human{padding:12px;color:var(--muted);font-size:11px}
-.modal-hero{flex:0 0 auto;padding:14px 16px;background:linear-gradient(135deg,#131d2e,#0c1420);border-bottom:1px solid var(--line)}
+.modal-hero{flex:0 0 auto;padding:14px 16px;background:linear-gradient(135deg,#20231f,#0c1420);border-bottom:1px solid var(--line)}
 .modal-body-wrap{padding:16px;display:flex;flex-direction:column;gap:14px}
-.modal-card{flex-shrink:0;background:#0c121a;border:1px solid #243447;border-radius:8px;overflow:hidden}
+.modal-card{flex-shrink:0;background:#161a13;border:1px solid #243447;border-radius:8px;overflow:hidden}
 .modal-card,.modal-actions-bar,.raw-json,.modal-form,.modal-checklist{flex-shrink:0}
 .modal-card-head{padding:8px 12px;background:#131d2b;border-bottom:1px solid #202e3f;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;justify-content:space-between;align-items:center}
 .modal-card-body{padding:12px;overflow-wrap:anywhere}
@@ -247,16 +247,16 @@ input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-but
 .task-criterion-state.is-pending{background:#30230a;color:#fcd34d;border-color:#a16207}
 .task-criterion-state.is-failed{background:#2b1215;color:#fecaca;border-color:#b91c1c}
 .task-criterion-state.is-stale{background:#30230a;color:#fde68a;border-color:#a16207}
-.task-criterion-state.is-unavailable{background:#1b2532;color:#cbd5e1;border-color:#64748b}
-.task-criteria-summary{font-size:11px;font-weight:700;color:#cbd5e1}
+.task-criterion-state.is-unavailable{background:#1b2532;color:#dce2d3;border-color:#8d9980}
+.task-criteria-summary{font-size:11px;font-weight:700;color:#dce2d3}
 .task-criteria-summary.is-verified{color:#86efac}
 .task-criteria-summary.is-pending{color:#fcd34d}
 .task-criteria-summary.is-failed{color:#fecaca}
-.task-gate-result{margin-top:10px;padding:10px 12px;border:1px solid #64748b;border-radius:7px;background:#111b29;color:#dbe4ee;font-size:12px;line-height:1.45}
+.task-gate-result{margin-top:10px;padding:10px 12px;border:1px solid #8d9980;border-radius:7px;background:#111b29;color:#dbe4ee;font-size:12px;line-height:1.45}
 .task-gate-result.is-ok{background:#0c241b;border-color:#15803d;color:#bbf7d0}
 .task-gate-result.is-warning{background:#2b210d;border-color:#a16207;color:#fde68a}
 .task-gate-result.is-failed{background:#2b1215;border-color:#b91c1c;color:#fecaca}
-.task-terminal-state{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #334155;border-radius:7px;background:#111b29;color:#dbe4ee;line-height:1.45}
+.task-terminal-state{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #4c5840;border-radius:7px;background:#111b29;color:#dbe4ee;line-height:1.45}
 .task-terminal-state.is-completed{background:#0c241b;border-color:#15803d;color:#bbf7d0}
 .task-terminal-state.is-failed{background:#2b1215;border-color:#b91c1c;color:#fecaca}
 .task-terminal-state strong{font-size:11px;letter-spacing:.04em;text-transform:uppercase}
@@ -270,7 +270,7 @@ input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-but
 .doc-check-detail{font-size:11px;color:var(--muted)}
 .copy-btn{background:#192535;border:1px solid #2b3d54;border-radius:4px;color:var(--fg);padding:2px 7px;font-size:10px;cursor:pointer}
 .copy-btn:hover{background:#23354a;color:#fff}
-.code-box{background:#0b1017;border:1px solid #212e3e;border-radius:6px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;color:#d7e2ef;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.code-box{background:#141811;border:1px solid #3a4631;border-radius:6px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;color:#dfe6d5;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 /* Shared dashboard visual system. */
 body{font-size:14px;line-height:1.55}
 .page{padding:28px 24px 48px;max-width:1480px;margin-inline:auto;min-width:0}
@@ -287,10 +287,11 @@ body{font-size:14px;line-height:1.55}
 .btn.primary:hover{background:#205173;border-color:var(--accent)}
 .btn:disabled,button:disabled{opacity:.5;cursor:not-allowed}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-input:not([type=checkbox]):not([type=radio]),select,textarea{background:#111c29;color:var(--fg);border:1px solid #34465e;border-radius:7px;padding:8px 11px;font:inherit;font-size:13px;min-height:36px;max-width:100%}
+.grid>.card:focus-visible{outline-offset:-3px}
+input:not([type=checkbox]):not([type=radio]),select,textarea{background:#1b2116;color:var(--fg);border:1px solid #34465e;border-radius:7px;padding:8px 11px;font:inherit;font-size:13px;min-height:36px;max-width:100%}
 input::placeholder,textarea::placeholder{color:#8d9db3;opacity:1}
 input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:16px;height:16px;flex:0 0 auto;margin:0;vertical-align:middle}
-.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select,.request-filter input,.request-filter select,.modal-form input,.modal-form select,.modal-form textarea,.toolbar select{font-size:13px;padding:8px 11px;background:#111c29;border-color:#34465e;border-radius:7px}
+.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select,.request-filter input,.request-filter select,.modal-form input,.modal-form select,.modal-form textarea,.toolbar select{font-size:13px;padding:8px 11px;background:#1b2116;border-color:#34465e;border-radius:7px}
 .project-toolbar,.request-filter{padding:14px 16px;gap:10px}
 .project-toolbar label{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 .project-summary,.request-summary{font-size:12px;color:var(--muted)}
@@ -331,28 +332,100 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 @media(max-width:1000px){.split{grid-template-columns:1fr}.group-title>.tiny{width:100%}.section h2>.tiny{width:100%}}
 @media(max-width:600px){.page{padding:20px 14px 32px}.page-heading{margin-bottom:20px}.page-heading h1{font-size:24px}.page-heading p{font-size:13px}.toolbar{padding:12px 14px;gap:8px}.tabs{padding:0 14px 10px}.tabbtn{font-size:12px;padding:9px 11px}.toolbar>.spacer{flex-basis:100%;margin-left:0}.control-menu{margin-left:auto}.control-popover{position:fixed;left:12px;right:12px;top:110px;width:auto;min-width:0;max-height:calc(100dvh - 134px)}.grid-6{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:16px;min-height:132px}.value,.primary-metric{font-size:23px}.group-title>.tiny{display:none}.section h2{padding:14px 16px}.section h2 .spacer{margin-left:0}.project-toolbar,.request-filter{padding:12px}.project-toolbar input:not([type=checkbox]):not([type=radio]),.request-filter input{min-width:0;flex-basis:100%}.project-toolbar select,.request-filter select{flex:1;min-width:130px}.project-toolbar .project-summary{width:100%}.arena-grid{grid-template-columns:1fr}.kv{grid-template-columns:1fr;gap:4px}.kv>div:nth-child(even){margin-bottom:12px}.modal-bg{padding:8px}.modal{max-height:94dvh}.modal-form{grid-template-columns:1fr}.reliability-footer{align-items:stretch!important}.reliability-footer>div{flex-wrap:wrap}.reliability-footer .btn{white-space:normal}}
 .kanban-board{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:14px}
-.kanban-col{background:#111a26;border:1px solid #1f2e42;border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:420px}
-.kanban-col.col-planned{border-top:3px solid #64748b}
-.kanban-col.col-in_progress{border-top:3px solid #38bdf8}
+.kanban-col{background:#1c2217;border:1px solid #1f2e42;border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:420px}
+.kanban-col.col-planned{border-top:3px solid #8d9980}
+.kanban-col.col-in_progress{border-top:3px solid #efb76f}
 .kanban-col.col-done{border-top:3px solid #4ade80}
 .kanban-col.col-blocked{border-top:3px solid #f87171}
 .kanban-col.col-cancelled{border-top:3px solid #475569}
 .kanban-col-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #1f2e42;font-weight:600;font-size:13px}
 .kanban-cards{display:flex;flex-direction:column;gap:8px;flex:1}
-.kanban-card{background:#172233;border:1px solid #283a52;border-radius:6px;padding:11px;font-size:12px;transition:all .15s;display:flex;flex-direction:column;gap:6px}
+.kanban-card{background:#282e22;border:1px solid #4b5a3e;border-radius:6px;padding:11px;font-size:12px;transition:all .15s;display:flex;flex-direction:column;gap:6px}
 .kanban-card:hover{border-color:var(--accent);box-shadow:0 4px 12px rgba(0,0,0,0.25)}
-.kanban-card-title{font-weight:600;color:#f1f5f9;font-size:13px;line-height:1.4}
+.kanban-card-title{font-weight:600;color:#eff1e6;font-size:13px;line-height:1.4}
 .kanban-card-meta{display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:11px}
 .kanban-card-actions{display:flex;gap:4px;margin-top:auto;padding-top:8px;border-top:1px dashed #24354a;justify-content:space-between;align-items:center}
-.milestone-card{background:#111a26;border:1px solid #1f2e42;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px}
-.progress-bar{background:#1e293b;border-radius:999px;height:8px;overflow:hidden;margin:6px 0}
+.milestone-card{background:#1c2217;border:1px solid #1f2e42;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.progress-bar{background:#343b2d;border-radius:999px;height:8px;overflow:hidden;margin:6px 0}
 .progress-fill{background:var(--accent);height:100%;border-radius:999px;transition:width .3s ease}
+/* Hub identity: warm instrument panel, quiet surfaces, one signal color. */
+:root{color-scheme:dark;--bg:#151615;--panel:#1c1e1c;--panel2:#242723;--panel-head:#20231f;--line:#343831;--line-light:#555d50;--muted:#abb2a5;--fg:#e0e4db;--fg-bright:#f5f3e9;--ok:#a8d5b3;--warn:#edc47e;--bad:#f09b8d;--accent:#efb76f;--accent2:#b9c8a3;font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+body{font-size:14px;line-height:1.6;background:var(--bg)}
+.top{background:var(--bg);backdrop-filter:none;border-bottom:1px solid var(--line)}
+.toolbar{max-width:none;min-height:84px;margin-left:218px;padding:18px 32px;gap:12px}
+.brand-wrap{position:fixed;left:22px;top:24px;z-index:40;gap:11px;align-items:flex-start}
+.brand-icon{color:var(--accent);display:flex;width:26px;height:32px;align-items:center}
+.brand-icon svg{width:26px;height:26px}
+.brand{font-size:16px;font-weight:650;letter-spacing:-.035em;line-height:1.25}
+.brand small{display:block;color:var(--muted);font-size:9px;letter-spacing:.16em;font-weight:500;margin-top:6px}
+.tabs{position:fixed;inset:0 auto 0 0;width:218px;max-width:none;margin:0;padding:106px 14px 24px;background:#191b18;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:3px;overflow:auto;counter-reset:hub-nav}
+.tabbtn{display:flex;align-items:center;text-align:left;gap:12px;min-height:40px;padding:9px 12px;font-size:12px;font-weight:500;color:var(--muted);border:1px solid transparent;border-radius:4px;transition:background .15s,color .15s;counter-increment:hub-nav}
+.tabbtn::before{content:counter(hub-nav,decimal-leading-zero);font:10px/1.3 Consolas,monospace;color:#909b87}
+.tabbtn:hover{background:#252922;color:var(--fg-bright)}
+.tabbtn.active{color:var(--fg-bright);background:#2b3027;border-color:#424a38;box-shadow:inset 2px 0 var(--accent);font-weight:600}
+.tabbtn.active::before{color:var(--accent)}
+.tabbtn.tab-disabled{opacity:.6;color:var(--muted)}
+.page,.page.active{max-width:1600px;margin-left:218px;padding:34px 32px 56px}
+.page-heading{max-width:none;margin-bottom:30px;padding-bottom:24px;border-bottom:1px solid var(--line)}
+.page-heading::before{content:attr(data-section);display:block;color:var(--accent);font:10px/1.5 Consolas,monospace;letter-spacing:.14em;text-transform:uppercase;margin-bottom:12px}
+.page-heading h1{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-size:36px;font-weight:550;letter-spacing:-.045em;line-height:1.16;margin-bottom:10px}
+.page-heading p{font-size:14px;line-height:1.7;max-width:76ch;color:var(--muted)}
+.group-title{font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;margin:28px 0 14px;color:var(--fg)}
+.group-title>.tiny{max-width:64ch;text-align:right;font-size:11px;color:var(--muted)}
+.grid{gap:1px;background:var(--line);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.grid>.card{border:0;border-radius:0;box-shadow:none;background:var(--panel);padding:22px;min-height:144px}
+.card .label{font-size:11px;font-weight:500;text-transform:none;letter-spacing:0;color:var(--muted)}
+.value,.primary-metric{font-size:30px;line-height:1.25;letter-spacing:-.04em;font-weight:550;font-variant-numeric:tabular-nums}
+.card .sub{font-size:12px;line-height:1.65}
+.card[style*="cursor:pointer"]:hover{background:#252922;box-shadow:none;border-color:var(--line-light)}
+.section{border-radius:5px;background:var(--panel);box-shadow:none;border-color:var(--line);margin-top:22px}
+.section h2{font-size:14px;font-weight:600;padding:17px 20px;background:var(--panel-head);border-bottom:1px solid var(--line);gap:10px}
+.section h2>.tiny{font-size:11px;line-height:1.6}
+#overviewHealthSummary{background:#20231d;padding:22px!important;border-left-width:2px!important}
+#overviewHealthLevel{font-size:26px;margin:4px 0 10px}
+#overviewHealthEvidence{max-width:100ch;line-height:1.8;font-size:13px}
+#overviewHistorySummary{border-top:1px solid var(--line);padding-top:12px;margin-top:14px!important}
+.btn,.action-btn-sm,.copy-btn,.subtab-btn,.control-menu summary{background:#282c25;color:var(--fg);border:1px solid #454d3e;border-radius:4px;min-height:36px;box-shadow:none;font-weight:500}
+.btn:hover,.action-btn-sm:hover,.copy-btn:hover,.subtab-btn:hover,.control-menu summary:hover{background:#343b2d;border-color:#657057;color:var(--fg-bright)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#231c12;font-weight:650}
+.btn.primary:hover{background:#f4c68b;border-color:#f4c68b;color:#231c12}
+.btn.ok{background:#263a2b;border-color:#53775c;color:#c1dfc8}.btn.warn{background:#3d3321;border-color:#8b7346;color:#f4d4a2}.btn.bad{background:#3e2822;border-color:#8d5548;color:#fac1b5}
+.pill,.chip,.badge-status{border-radius:4px;border-color:#454d3e;background:#252922;color:var(--fg);font-size:10px}
+.pill.ok{background:#203126;border-color:#3d5b44;color:var(--ok)}.pill.warn-t{background:#352d20;border-color:#675537;color:var(--warn)}.pill.bad-t{background:#382520;border-color:#754b41;color:var(--bad)}
+.subtabs{background:transparent;padding:0 0 14px;gap:8px;border-bottom:1px solid var(--line)}
+.subtab-btn.active{background:#343a2c;color:var(--accent);border-color:#6c765a}
+input:not([type=checkbox]):not([type=radio]),select,textarea,.toolbar select,.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select,.request-filter input,.request-filter select,.modal-form input,.modal-form select,.modal-form textarea{background:#171a15;color:var(--fg);border-color:#4a5342;border-radius:4px;min-height:38px}
+input::placeholder,textarea::placeholder{color:#909b87}
+.project-toolbar,.request-filter{background:transparent;padding:16px 20px;gap:10px}
+th{background:#22261f;color:#bdc5b5;font-size:11px;text-transform:none;letter-spacing:0;font-weight:500}
+td{border-color:var(--line);line-height:1.6}tbody tr:hover{background:#252b20}
+.empty{color:var(--muted);padding:36px 20px}
+.code-box,pre,.log-tail{background:#141711;border-color:var(--line);border-radius:4px}
+.modal{background:var(--panel);border-color:var(--line-light);border-radius:7px}.modal-head{background:var(--panel-head);border-color:var(--line)}
+.modal-actions-bar,.trace-primary-head,.trace-primary-card-head{background:var(--panel-head);border-color:var(--line)}
+.control-popover{background:var(--panel);border-color:var(--line-light);border-radius:6px}
+.metric-details{border-radius:4px;background:#191d16;border-color:var(--line)}
+.metric-status{font-size:12px}.spark-canvas{opacity:.8}
+.kanban-board{gap:12px;padding:20px}.kanban-col{background:#171b14;border-color:var(--line);border-radius:4px;min-width:210px}
+.kanban-col-head{border-color:var(--line);font-size:12px}.kanban-card{background:#292f23;border-color:#47513b;border-radius:4px;box-shadow:none}.kanban-card-title{color:var(--fg-bright);font-weight:550}.kanban-card-actions{border-color:var(--line-light)}
+.milestone-card{background:#23291d;border-color:var(--line);border-radius:4px}.progress-bar{background:#343c2b}.progress-fill{background:var(--accent)}
+.trace-page,.trace-primary,.trace-primary-card,.trace-sidebar,.trace-summary-card,.trace-inspector-head{background:var(--panel);border-color:var(--line);border-radius:5px}
+.trace-sidebar{background:#191d16}.trace-sidebar-head,.trace-primary-head{background:var(--panel-head)}
+.page.work-page.active{display:flex!important;flex-direction:column;gap:18px}.work-page>.page-heading{order:-2;width:100%}.work-page>.work-summary{order:-1;width:100%}.work-page>.work-panel{width:100%}.work-page .work-summary{padding:20px!important}.work-page .work-kpis>div{background:var(--panel2);border-color:var(--line);border-radius:4px}.work-page .work-filter input,.work-page .work-filter select{background:var(--bg);border-color:var(--line-light);font-size:12px}.work-page .work-filter-summary{font-size:11px}
+.event,.event-header{border-color:var(--line)}.event:hover{background:#252b20}.event-header{background:var(--panel-head);color:var(--muted)}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(min-width:1600px){.page,.page.active{padding-inline:48px}.toolbar{padding-inline:48px}}
+@media(max-width:1100px){.toolbar{margin-left:0;min-height:76px;padding:18px 24px}.brand-wrap{position:static;align-items:center;margin-right:auto}.brand small{display:none}.tabs{position:static;width:auto;height:auto;max-width:none;padding:0 18px 10px;flex-direction:row;border:0;background:var(--bg);gap:4px;overflow-x:auto}.tabbtn{min-height:38px;flex-shrink:0}.tabbtn::before{display:none}.tabbtn.active{box-shadow:inset 0 -2px var(--accent)}.page,.page.active{margin-left:0;padding:28px 24px 44px}.page-heading h1{font-size:32px}}
+@media(max-width:600px){.toolbar{padding:14px;gap:8px}.toolbar>.tiny#updated{margin-left:auto}.toolbar>label.tiny{order:5}.toolbar>#featSummary{order:6}.control-menu{margin-left:auto}.tabs{padding:0 10px 10px}.tabbtn{padding:9px 10px;font-size:12px}.page,.page.active{padding:24px 14px 36px}.page-heading{padding-bottom:20px;margin-bottom:22px}.page-heading h1{font-size:30px}.page-heading p{font-size:13px}.group-title>.tiny{text-align:left;max-width:none}.grid>.card{padding:18px;min-height:130px}.grid-6{grid-template-columns:minmax(0,1fr)}.section h2{padding:15px}.project-toolbar,.request-filter{padding:14px}.subtabs{gap:6px}.kanban-board{padding:14px}.value,.primary-metric{font-size:28px}#overviewHealthSummary{padding:18px!important}.control-popover{top:110px}.brand-icon{width:22px}.brand{font-size:15px}}
+.human-grid>div{min-width:0;overflow-wrap:anywhere}@media(max-width:600px){.human-grid{grid-template-columns:minmax(0,1fr);gap:4px}.human-grid>div:nth-child(even){margin-bottom:10px}.doc-check-grid{grid-template-columns:minmax(0,1fr)}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
 </style></head><body>
 <div class="top">
   <div class="toolbar">
     <div class="brand-wrap">
-      <span class="brand-icon">⚡</span>
-      <span class="brand">Local AI Hub</span>
+      <span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="M3 5h9v7H3zM16 16h9v7h-9zM3 16h9v7H3z" stroke="currentColor" stroke-width="1.6"/><path d="M16 5h9v7h-9z" fill="currentColor"/></svg></span>
+      <span class="brand">Local AI Hub<small>LOCAL RUNTIME</small></span>
     </div>
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
     <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
@@ -364,7 +437,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       <div class="control-popover">
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
-        <span class="tiny control-notice">Agent debug traces · off by default; payloads available when enabled</span>
+        <span class="tiny control-notice">Capture request details for troubleshooting. Off by default.</span>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
@@ -381,22 +454,22 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
     </details>
   </div>
   <div class="tabs">
-    <button class="tabbtn active" data-tab="overview">📊 Overview</button>
-    <button class="tabbtn" data-tab="work">⚡ Queue &amp; requests</button>
-    <button class="tabbtn" data-tab="agentos" data-feature="agent_os">🤖 Agent OS</button>
-    <button class="tabbtn" data-tab="coordination" data-feature="agent_os">📋 Board &amp; Coordination</button>
-    <button class="tabbtn" data-tab="projects" data-feature="preprocessing">📁 Projects</button>
-    <button class="tabbtn" data-tab="commands" data-feature="commands">💻 Commands</button>
-    <button class="tabbtn" data-tab="performance">🧠 Models &amp; RAG</button>
-    <button class="tabbtn" data-tab="reliability">🛡️ Reliability &amp; Logs</button>
-    <button class="tabbtn" data-tab="config">⚙️ Configuration</button>
-    <button class="tabbtn" data-tab="bundles" data-feature="preprocessing">📦 Bundles</button>
-    <button class="tabbtn" data-tab="events">📡 Live events</button>
+    <button class="tabbtn active" data-tab="overview">Overview</button>
+    <button class="tabbtn" data-tab="work">Requests</button>
+    <button class="tabbtn" data-tab="agentos" data-feature="agent_os">Tasks</button>
+    <button class="tabbtn" data-tab="coordination" data-feature="agent_os">Coordination</button>
+    <button class="tabbtn" data-tab="projects" data-feature="preprocessing">Projects</button>
+    <button class="tabbtn" data-tab="commands" data-feature="commands">Commands</button>
+    <button class="tabbtn" data-tab="performance">Models &amp; search</button>
+    <button class="tabbtn" data-tab="reliability">Service health</button>
+    <button class="tabbtn" data-tab="config">Settings</button>
+    <button class="tabbtn" data-tab="bundles" data-feature="preprocessing">Transfers</button>
+    <button class="tabbtn" data-tab="events">Activity</button>
   </div>
 </div>
 
 <div id="overview" class="page active">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-overview">Overview</h1><p>Current runtime, workload and token efficiency.</p></header>
+  <header class="page-heading" data-section="01 / Overview"><h1 tabindex="-1" id="page-title-overview">Overview</h1><p>Models, indexing, and current activity on this machine.</p></header>
   <section id="overviewHealthSummary" class="section" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
     <div class="label">Current runtime health</div>
     <div class="value primary-metric" id="overviewHealthLevel">Loading runtime health…</div>
@@ -407,7 +480,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
     <div id="overviewAnnouncement" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0"></div>
   </section>
   <div class="dash-group">
-    <div class="group-title"><span>Host &amp; System Health</span><span class="tiny muted">Core runtime state, capacity and supervisory control</span></div>
+    <div class="group-title"><span>Machine &amp; services</span><span class="tiny muted">Services and resources on this machine</span></div>
     <div class="grid grid-3" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
       <div class="card" id="hubHealthCard" style="cursor:pointer" title="Click to open Reliability &amp; Restart history"><div class="label" style="display:flex;justify-content:space-between"><span>Hub health</span><span>↗</span></div><div class="value primary-metric" id="health">…</div><div class="sub" id="uptime"></div></div>
       <div class="card system-card"><div class="label">Host Hardware</div><div class="value" id="sysUtil">…</div><div class="sub" id="sysSub"></div></div>
@@ -417,7 +490,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   </div>
 
   <div class="dash-group">
-    <div class="group-title"><span>Performance &amp; Token Efficiency</span><span class="tiny muted">Net cloud avoidance after agent tool-call/read overhead, local compute reuse and tail latency</span></div>
+    <div class="group-title"><span>Tokens &amp; response times</span><span class="tiny muted">Token balance, reuse, and response times</span></div>
     <p id="efficiencyStatus" class="metric-status" role="status">Loading telemetry…</p>
     <div class="grid grid-6">
       <div class="card"><div class="label">Requests handled</div><div class="value primary-metric" id="handledRequests">…</div><div class="sub" id="handledRequestsSub"></div><canvas id="throughputSpark" class="spark-canvas" width="160" height="30"></canvas></div>
@@ -427,11 +500,11 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       <div class="card"><div class="label">Latency p50 / p95 / p99</div><div class="value" id="latency">…</div><div class="sub" id="queueWait"></div><canvas id="latencySpark" class="spark-canvas" width="160" height="30"></canvas></div>
       <div class="card"><div class="label">Recorded request failures</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
     </div>
-    <details class="metric-details"><summary>How token savings are estimated</summary><p>Signed source/context baseline minus the tokens spent calling tools and reading their responses. Negative values mean additional cloud token cost. Local compute reuse and schema exposure are separate diagnostics.</p><pre id="efficiencyBreakdown">Waiting for accounting data.</pre></details>
+    <details class="metric-details"><summary>How token savings are estimated</summary><p>The baseline estimate minus tokens spent calling tools and reading responses. A negative balance means extra cloud tokens were used. Local reuse and tool schema tokens are shown separately.</p><pre id="efficiencyBreakdown">Waiting for accounting data.</pre></details>
   </div>
 
   <div class="dash-group">
-    <div class="group-title"><span>Queues &amp; Execution</span><span class="tiny muted">Foreground scheduler, background workers and agent coordination</span></div>
+    <div class="group-title"><span>Work in progress</span><span class="tiny muted">Active work and background indexing</span></div>
     <div class="grid grid-4">
       <div class="card"><div class="label">Scheduler Queue</div><div class="value primary-metric" id="fgQueue">…</div><div class="sub" id="bgQueue"></div></div>
       <div class="card"><div class="label">Preprocessing Pipeline</div><div class="value primary-metric" id="prep">…</div><div class="sub" id="prepSub"></div></div>
@@ -442,7 +515,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 
   <details class="metric-details feature-details"><summary>Enabled capabilities</summary>
     <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0 8px">
-      <div><span class="label" style="font-size:11.5px">Configured Feature Modules</span><span class="tiny muted" style="margin-left:8px">Granular subsystem status &amp; tool projection</span></div>
+      <div><span class="label" style="font-size:11.5px">Configured features</span><span class="tiny muted" style="margin-left:8px">Which features and tools are enabled</span></div>
       <span class="tiny muted" id="featStatusText">Loading capability settings…</span>
     </div>
     <div id="featurePills" style="display:flex;gap:8px;flex-wrap:wrap"></div>
@@ -450,37 +523,37 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 
   <div class="split" style="margin-top:12px">
     <section class="section"><h2>Current workload <span class="tiny" id="currentSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Agent</th><th>Source</th><th>Model</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="overviewJobs"></tbody></table></div></section>
-    <section class="section"><h2>Historical telemetry hotspots <span class="tiny">Selected metrics period · retained samples</span></h2><div id="hotspots" class="kv"></div></section>
+    <section class="section"><h2>Recent patterns <span class="tiny">Selected metrics period · retained samples</span></h2><div id="hotspots" class="kv"></div></section>
   </div>
 </div>
 
 <div id="work" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-work">Queue &amp; requests</h1><p>Follow live work and inspect retained request history.</p></header>
+  <header class="page-heading" data-section="02 / Requests"><h1 tabindex="-1" id="page-title-work">Requests</h1><p>See what’s running, what’s waiting, and how each request finished.</p></header>
   <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" aria-label="Search request history" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
+  <section class="section"><h2>Request history <span class="tiny">Saved API requests. Queue jobs and task runs appear in their own views.</span></h2><div class="request-filter"><input id="requestHistorySearch" aria-label="Search request history" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-agentos">Agent OS</h1><p>Tasks, memory and incident knowledge for a selected repository.</p></header>
+  <header class="page-heading" data-section="03 / Tasks"><h1 tabindex="-1" id="page-title-agentos">Tasks</h1><p>Pick up a task, review saved knowledge, or inspect a previous run.</p></header>
   <div id="agentOsDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Agent OS feature is disabled in configuration</b> (<code>features.agent_os = false</code>). Durable task tracking and memory are inactive.</div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState">0 active · 0 total tasks · 0 memories</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn primary" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
     <div class="project-toolbar">
       <select id="agentOsRepoSelect" aria-label="Repository filter for Agent OS" style="max-width:240px">
-        <option value="">All repositories (všechny repozitáře)</option>
+        <option value="">All repositories</option>
       </select>
-      <input id="agentOsRoot" list="worktreeRoots" aria-label="Repository root for Agent OS" placeholder="Or enter specific repository root" style="flex:1">
-      <span class="tiny muted">Viewing tasks across all repositories or select specific root.</span>
+      <input id="agentOsRoot" list="worktreeRoots" aria-label="Repository root for Agent OS" placeholder="Or enter a repository path" style="flex:1">
+      <span class="tiny muted">View all repositories, or choose one to narrow the results.</span>
     </div>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
-      <button class="subtab-btn" id="subtabBoard" data-agentos-tab="board">📌 Project Board</button>
-      <button class="subtab-btn" id="subtabSemaphores" data-agentos-tab="semaphores">🔒 Semaphores &amp; Locks</button>
-      <button class="subtab-btn" id="subtabMilestones" data-agentos-tab="milestones">🎯 Milestones</button>
+      <button class="subtab-btn" id="subtabBoard" data-agentos-tab="board">Project Board</button>
+      <button class="subtab-btn" id="subtabSemaphores" data-agentos-tab="semaphores">Semaphores &amp; Locks</button>
+      <button class="subtab-btn" id="subtabMilestones" data-agentos-tab="milestones">Milestones</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
-      <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Negative Knowledge &amp; Incidents</button>
-      <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Run History &amp; Inspect</button>
+      <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Incidents &amp; lessons</button>
+      <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Run history</button>
     </div>
   </section>
 
@@ -514,7 +587,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       <div class="project-toolbar">
         <input id="agentOsIncSearch" aria-label="Search incidents" type="search" placeholder="Search error class, root cause, verified fix..." autocomplete="off">
         <select id="agentOsIncFilter" aria-label="Incident status"><option value="">All incidents</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved with fix</option></select>
-        <button class="btn warn" id="agentOsRecordIncBtn" style="padding:5px 9px">+ Record Anti-Pattern</button>
+        <button class="btn warn" id="agentOsRecordIncBtn" style="padding:5px 9px">+ Record incident</button>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Incident ID</th><th>Status</th><th>Attempts</th><th>Operation</th><th>Error Class</th><th>Redacted Message</th><th>Root Cause</th><th>Verified Fix</th></tr></thead><tbody id="agentOsIncBody"></tbody></table></div>
     </section>
@@ -539,8 +612,8 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       </div>
     </section>
     <section class="section">
-      <h2>Request trace inspector <span class="tiny" id="traceSummary">Request/model/tool evidence; separate from Agent task runs.</span></h2>
-      <p class="tiny" id="tracePrivacyNotice">Podrobný obsah je vypnutý ve výchozím stavu. Podrobná telemetrie ukládá úplný endpoint input/output lokálně.</p>
+      <h2>Request trace inspector <span class="tiny" id="traceSummary">Request, model, and tool details. Task runs are listed separately.</span></h2>
+      <p class="tiny" id="tracePrivacyNotice">Detailed capture is off by default. Full inputs and outputs are captured only when enabled. Stored details appear as recorded, with local access only and a separate local retention policy.</p>
       <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><button class="btn ok" id="visionReviewOpen" style="padding:4px 8px;font-size:11px">Frontend vision review</button><select id="traceKind" aria-label="Trace kind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
@@ -549,16 +622,16 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 
 
 <div id="coordination" class="page">
-  <header class="page-heading">
-    <h1 tabindex="-1" id="page-title-coordination">Project Board &amp; Coordination</h1>
-    <p>Visual cross-agent Kanban board, generic resource semaphores, milestones, and session briefings.</p>
+  <header class="page-heading" data-section="04 / Coordination">
+    <h1 tabindex="-1" id="page-title-coordination">Coordination</h1>
+    <p>Track tasks, shared resources, and milestones in one place.</p>
   </header>
 
   <div class="subtabs" style="margin-bottom:14px">
-    <button class="subtab-btn active" id="subtabCoordBoard" data-coord-subtab="board">📌 Project Board (Kanban)</button>
-    <button class="subtab-btn" id="subtabCoordSemaphores" data-coord-subtab="semaphores">🔒 Resource Semaphores</button>
-    <button class="subtab-btn" id="subtabCoordMilestones" data-coord-subtab="milestones">🎯 Milestones</button>
-    <button class="subtab-btn" id="subtabCoordBriefing" data-coord-subtab="briefing">📝 Session Briefing</button>
+    <button class="subtab-btn active" id="subtabCoordBoard" data-coord-subtab="board">Project Board (Kanban)</button>
+    <button class="subtab-btn" id="subtabCoordSemaphores" data-coord-subtab="semaphores">Resource Semaphores</button>
+    <button class="subtab-btn" id="subtabCoordMilestones" data-coord-subtab="milestones">Milestones</button>
+    <button class="subtab-btn" id="subtabCoordBriefing" data-coord-subtab="briefing">Session Briefing</button>
   </div>
 
   <div id="coordBoardSec" style="display:block">
@@ -613,10 +686,10 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       <div class="project-toolbar" style="display:flex;gap:10px;align-items:center">
         <input id="coordBriefingAgentId" aria-label="Briefing agent ID" placeholder="Agent ID (e.g. primary_agent)" value="primary_agent" style="width:200px">
         <button class="btn primary" id="coordGenerateBriefingBtn">⚡ Generate Session Briefing</button>
-        <span class="tiny muted">Generates a concise markdown briefing containing current board items, semaphores, and active tasks.</span>
+        <span class="tiny muted">Summarize the board, shared resources, and active tasks.</span>
       </div>
       <div style="padding:14px">
-        <pre id="coordBriefingOutput" class="code-box" style="min-height:220px;font-size:12px">Click 'Generate Session Briefing' to compile latest status.</pre>
+        <pre id="coordBriefingOutput" class="code-box" style="min-height:220px;font-size:12px">Generate a briefing to see the current state of work.</pre>
       </div>
     </section>
   </div>
@@ -624,7 +697,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 
 
 <div id="projects" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-projects">Projects</h1><p>Manage registered repositories and follow indexing progress.</p></header>
+  <header class="page-heading" data-section="05 / Projects"><h1 tabindex="-1" id="page-title-projects">Projects</h1><p>Connect repositories and see when their indexes are ready.</p></header>
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn primary" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
@@ -634,18 +707,18 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 </div>
 
 <div id="commands" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-commands">Commands</h1><p>Running commands, broker activity and repository worktrees.</p></header>
+  <header class="page-heading" data-section="06 / Commands"><h1 tabindex="-1" id="page-title-commands">Commands</h1><p>Follow command runs, review blocked actions, and manage worktrees.</p></header>
   <div id="cmdDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Commands feature is disabled in configuration</b> (<code>features.commands = false</code>). Command classification and execution are blocked.</div>
   <section class="section"><h2>Running commands <span class="tiny" id="commandState">0 running</span></h2><div class="table-wrap"><table><thead><tr><th>Command</th><th>CWD</th><th>Class</th><th>Age</th><th>Timeout</th></tr></thead><tbody id="activeCommands"></tbody></table></div></section>
   <div class="split"><section class="section"><h2>Command broker statistics <span class="tiny">Since restart</span></h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
   <section class="section" style="margin-top:12px">
-    <h2>Registered Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">Choose a repository root</span></h2>
+    <h2>Git worktrees <span class="tiny" id="worktreeSummary">Choose a repository root</span></h2>
     <div class="project-toolbar">
       <input id="worktreeRoot" aria-label="Repository root for worktrees" placeholder="Choose or enter repository root" list="worktreeRoots" style="flex:1;min-width:220px">
       <datalist id="worktreeRoots"></datalist>
       <button class="btn primary" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
       <button class="btn warn" id="pruneWorktreesBtn">🧹 Prune Stale Worktrees</button>
-      <span class="tiny muted project-summary">Isolated worktrees prevent concurrent file write collisions</span>
+      <span class="tiny muted project-summary">Separate working directories for parallel changes.</span>
     </div>
     <div class="table-wrap">
       <table>
@@ -658,44 +731,44 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 
 
 <div id="performance" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-performance">Models &amp; RAG</h1><p>Model performance, semantic indexes and execution profiles.</p></header>
+  <header class="page-heading" data-section="07 / Models & search"><h1 tabindex="-1" id="page-title-performance">Models &amp; search</h1><p>See your loaded models, compare results, and explore repository indexes.</p></header>
   <section class="section">
     <h2>Telemetry snapshots <span class="tiny" id="performanceMetricsScope">Selected metrics period · retained samples</span></h2>
     <div style="padding:12px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px">
-        <span><span class="chip" style="border-color:#38bdf8;color:#38bdf8">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Period average queue wait</span></span>
+        <span><span class="chip" style="border-color:#efb76f;color:#efb76f">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Period average queue wait</span></span>
         <span class="tiny muted">Last 30 status snapshots · not individual requests</span>
       </div>
-      <canvas id="liveChartCanvas" role="img" aria-label="Live telemetry graph. Waiting for samples." width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
+      <canvas id="liveChartCanvas" role="img" aria-label="Live telemetry graph. Waiting for samples." width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #343b2d;display:block"></canvas>
       <div id="liveChartEmpty" class="tiny muted" style="display:none;padding-top:8px">No latency or queue samples yet.</div>
       <div id="liveChartSummary" class="tiny muted" style="padding-top:8px">Waiting for telemetry samples.</div>
     </div>
   </section>
 
   <section class="section" style="margin-top:12px">
-    <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span><button id="residentInventoryRefresh" class="btn">Refresh resident inventory</button></h2>
+    <h2>Repository indexes <span class="tiny">Persistent semantic code index</span><button id="residentInventoryRefresh" class="btn">Refresh resident inventory</button></h2>
     <p class="tiny muted" id="diagramIndexingNotice">Raster diagrams are indexed as metadata only; no OCR or vision processing is performed. SVG text nodes and explicit captions can be indexed.</p>
-    <div class="project-toolbar"><input id="ragWorkspaceSearch" aria-label="Search RAG workspaces" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><select id="ragWorkspaceStateFilter" aria-label="Workspace root availability"><option value="">All root states</option><option value="available">Available</option><option value="missing">Reported missing</option><option value="unverified">Unverified</option><option value="unknown">Root unknown</option></select><button id="ragWorkspaceReviewBtn" class="btn">Review workspace inventory</button><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
-    <div id="ragWorkspacesList" style="padding:12px"><div class="tiny muted">Loading RAG workspaces…</div></div>
-    <details id="ragWorkspaceReview"><summary>Workspace verification review</summary><p>No workspaces are deleted by this review. Verify ownership and preserve recoverable snapshots before removal.</p><pre id="ragWorkspaceReviewOutput" class="human-pre"></pre></details>
+    <div class="project-toolbar"><input id="ragWorkspaceSearch" aria-label="Search RAG workspaces" type="search" placeholder="Search repository indexes…" autocomplete="off"><select id="ragWorkspaceStateFilter" aria-label="Workspace root availability"><option value="">All root states</option><option value="available">Available</option><option value="missing">Reported missing</option><option value="unverified">Unverified</option><option value="unknown">Root unknown</option></select><button id="ragWorkspaceReviewBtn" class="btn">Review indexes</button><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
+    <div id="ragWorkspacesList" style="padding:12px"><div class="tiny muted">Loading repository indexes…</div></div>
+    <details id="ragWorkspaceReview"><summary>Index review</summary><p>This review only lists indexes. Before removing one, check who uses it and keep a recoverable copy.</p><pre id="ragWorkspaceReviewOutput" class="human-pre"></pre></details>
   </section>
 
   <section class="section" style="margin-top:12px">
-    <h2>Local Model Arena <span class="tiny">Side-by-side prompt testbed comparing fast tier vs smart tier</span></h2>
+    <h2>Compare models <span class="tiny">Compare a prompt across two model tiers.</span></h2>
     <div style="padding:12px">
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <input type="text" id="arenaPromptInput" aria-label="Arena test prompt" placeholder="Test prompt (e.g. Write a Python function with LRU cache to solve knapsack problem)..." style="flex:1;min-width:min(320px,100%)">
-        <button class="btn primary" id="arenaRunBtn">Run Arena Benchmark</button>
+        <button class="btn primary" id="arenaRunBtn">Run comparison</button>
       </div>
       <div class="arena-grid">
         <div class="card" style="min-height:180px">
           <div class="label" id="arenaFastLabel">Fast Tier (Auto)</div>
-          <div id="arenaFastStats" class="tiny muted" style="margin:4px 0">Ready</div>
+          <div id="arenaFastStats" class="tiny muted" style="margin:4px 0">Not run yet</div>
           <pre id="arenaFastOutput" class="code-box" style="margin-top:6px;min-height:120px"></pre>
         </div>
         <div class="card" style="min-height:180px">
           <div class="label" id="arenaSmartLabel">Smart Tier (High Complexity)</div>
-          <div id="arenaSmartStats" class="tiny muted" style="margin:4px 0">Ready</div>
+          <div id="arenaSmartStats" class="tiny muted" style="margin:4px 0">Not run yet</div>
           <pre id="arenaSmartOutput" class="code-box" style="margin-top:6px;min-height:120px"></pre>
         </div>
       </div>
@@ -703,7 +776,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   </section>
 
   <section class="section" style="margin-top:12px">
-    <h2>Loaded Runtime Models &amp; Context <span class="tiny">Resident models in Ollama with allocated context length and VRAM</span></h2>
+    <h2>Loaded models <span class="tiny">Models in memory, context size, and memory use</span></h2>
     <div class="table-wrap"><table><thead><tr><th>Model</th><th>Context Window</th><th>Params</th><th>Quant</th><th>VRAM / Memory</th><th>GPU Offload</th><th>Status / TTL</th></tr></thead><tbody id="loadedModelsBody"></tbody></table></div>
   </section>
 
@@ -716,8 +789,8 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 </div>
 
 <div id="reliability" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-reliability">Reliability &amp; logs</h1><p>Current service checks, recorded errors and process history.</p></header>
-  <section class="section" id="reliabilitySummary"><h2>Runtime health &amp; recorded history <span class="tiny">Current checks and historical totals are independent.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Historical telemetry loading…</div><button class="btn" id="reliabilityAction">Open request history</button></div></section>
+  <header class="page-heading" data-section="08 / Service health"><h1 tabindex="-1" id="page-title-reliability">Service health</h1><p>Check the Hub’s health and investigate past errors.</p></header>
+  <section class="section" id="reliabilitySummary"><h2>Runtime health &amp; recorded history <span class="tiny">Current health checks and recorded history are shown separately.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Historical telemetry loading…</div><button class="btn" id="reliabilityAction">Open request history</button></div></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters <span class="tiny">Since restart · independent of metrics period</span></h2><div id="runtimeCounters" class="kv"></div></section>
@@ -735,12 +808,12 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
   </section>
   <section class="section">
     <h2><span>Operational log tail</span><div style="display:flex;gap:6px;align-items:center"><input type="text" id="logFilterInput" aria-label="Filter operational logs" placeholder="Filter logs…" style="width:150px"><select id="logLinesSelect" aria-label="Log line count" ><option value="100">100 lines</option><option value="250" selected>250 lines</option><option value="500">500 lines</option></select><button class="btn" id="loadLogs" style="padding:3px 8px">Refresh</button><button class="btn" id="copyLogsBtn" style="padding:3px 8px">Copy</button></div></h2>
-    <pre id="logTail" style="margin:0;padding:12px;white-space:pre-wrap;max-height:420px;overflow:auto;background:#0d1219;color:#c9d6e4;font-size:11px">Click Refresh to load logs.</pre>
+    <pre id="logTail" style="margin:0;padding:12px;white-space:pre-wrap;max-height:420px;overflow:auto;background:#141811;color:#d9e0d0;font-size:11px">Click Refresh to load logs.</pre>
   </section>
 </div>
 
 <div id="config" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-config">Configuration</h1><p>Review settings and save deliberate changes to the Hub.</p></header>
+  <header class="page-heading" data-section="09 / Settings"><h1 tabindex="-1" id="page-title-config">Settings</h1><p>Set up the Hub for your machine. Saved changes apply after restart.</p></header>
   <section class="section">
     <h2>Runtime configuration <span class="tiny">Saved changes apply after restart</span></h2>
     <div style="padding:14px">
@@ -748,18 +821,18 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div class="settings-options"><label><input type="checkbox" id="cfgFeatStatus"> Status checks</label><label><input type="checkbox" id="cfgFeatRepo"> Repository tools</label><label><input type="checkbox" id="cfgFeatTasks"> Local AI tasks</label><label><input type="checkbox" id="cfgFeatRag"> RAG search</label><label><input type="checkbox" id="cfgFeatCommands"> Command broker</label><label><input type="checkbox" id="cfgFeatCoord"> Coordination</label><label><input type="checkbox" id="cfgFeatArtifacts"> Artifacts</label></div></div>
       <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div class="settings-options"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div class="settings-options"><label><input type="checkbox" id="cfgFeatSubagents"> Local AI workers</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS</label><label><input type="checkbox" id="cfgFeatDashboard"> Dashboard</label></div></div>
-      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn primary" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus" role="status"></span></div>
+      <div class="tiny muted" style="margin:4px 0 7px">Only dashboard overrides are saved. Restart to apply changes; reset removes these overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn primary" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus" role="status"></span></div>
     </div>
   </section>
-  <details class="metric-details"><summary>Advanced: effective configuration <span class="tiny" id="cfgPath"></span></summary><pre id="cfgPreview" style="margin:12px 0 0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#090d14;color:#c9d6e4;font-size:12px"></pre></details>
+  <details class="metric-details"><summary>Advanced: effective configuration <span class="tiny" id="cfgPath"></span></summary><pre id="cfgPreview" style="margin:12px 0 0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#151615;color:#d9e0d0;font-size:12px"></pre></details>
 </div>
 
 <div id="bundles" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-bundles">Bundles</h1><p>Export available indexes or import a repository bundle.</p></header>
+  <header class="page-heading" data-section="10 / Transfers"><h1 tabindex="-1" id="page-title-bundles">Transfers</h1><p>Move repository indexes between machines without starting again.</p></header>
   <section class="section">
-    <h2>Project Bundles — Export &amp; Import</h2>
+    <h2>Transfer indexes</h2>
     <div style="padding:12px">
-      <p class="tiny muted">Bundles compress preprocessed index (AST, deterministic facts, RAG vectors and semantic cards) for instant restore on a different machine without re-indexing.</p>
+      <p class="tiny muted">Export an indexed repository as a ZIP, then import it on another machine. Bundles include code structure, search vectors, and semantic cards.</p>
       <div class="split bundle-layout" style="margin-top:10px">
         <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><div class="table-wrap"><table class="bundle-table"><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div></div>
         <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" aria-label="Bundle ZIP file" accept=".zip,application/zip" ><input type="text" id="bundleTargetRoot" aria-label="Target repository root" placeholder="Optional target repository root" ><button class="btn primary" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
@@ -769,7 +842,7 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 </div>
 
 <div id="events" class="page">
-  <header class="page-heading"><h1 tabindex="-1" id="page-title-events">Live events</h1><p>Recent activity from the runtime event buffer.</p></header><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option><option value="info">Informational / result unreported</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
+  <header class="page-heading" data-section="11 / Activity"><h1 tabindex="-1" id="page-title-events">Activity</h1><p>Follow the latest activity as it happens.</p></header><section class="section"><h2>Live activity <span class="tiny">Recent events · pausing this view keeps the Hub running</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option><option value="info">Informational / result unreported</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 <div id="visionReviewModal" class="modal-bg" role="dialog" aria-modal="true" aria-label="Frontend vision review"><div class="modal vision-review-modal"><div class="modal-head"><strong>Frontend vision review</strong><span class="tiny" id="visionReviewStatus" aria-live="polite"></span><button class="btn spacer" id="visionReviewClose">Close</button></div><div id="visionReviewBody" class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Review input</span><span class="tiny">PNG/JPEG or current-tab evidence</span></div><div class="modal-card-body"><label class="modal-form"><span>Screenshot</span><input id="visionScreenshot" aria-label="Screenshot for frontend review" type="file" accept="image/png,image/jpeg,image/webp"></label><label class="modal-form"><span>Prompt</span><textarea id="visionPrompt" aria-label="Frontend review instructions" rows="4" maxlength="20000" placeholder="What should the visual critic inspect?"></textarea></label><div class="modal-actions-bar"><button class="btn" id="visionCaptureCurrentTab" type="button">Capture current tab</button><span id="visionCaptureState" class="trace-capture-state not-captured" data-capture-state="not_captured">Capture state · Not captured</span></div><div id="visionCaptureError" class="diag-banner bad" role="alert" style="display:none"></div><input id="visionFindingId" type="hidden"><button class="btn ok" id="visionReviewSubmit" type="button">Run vision review</button></div></div><div id="visionReviewResult" aria-live="polite"></div></div></div></div>
@@ -781,9 +854,9 @@ let lastChartSnapshot=null,lastChartScope=null;
 
 const traceStyles=document.createElement('style');
 document.head.append(traceStyles);
-traceStyles.textContent+='.trace-main-head #tracePageTitle,.trace-main-head #tracePageLive{display:none}.trace-inspector-head{align-items:center}.trace-header-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.trace-header-title h1{margin:0;font-size:16px;overflow-wrap:anywhere}.trace-header-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:11px}.trace-header-time{font-variant-numeric:tabular-nums}.trace-primary{margin:10px 0 14px}.trace-primary-grid{display:grid;grid-template-columns:1fr;gap:10px}.trace-primary-card{min-width:0;border:1px solid #33485f;border-radius:8px;background:#0d141c;overflow:hidden}.trace-primary-card.input{border-color:#41659a}.trace-primary-card.output{border-color:#397658}.trace-primary-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 11px;background:#151d26}.trace-primary-card-head h2{margin:0;font-size:12px}.trace-primary-card pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px;max-height:60vh;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.trace-primary-empty{padding:12px;color:var(--muted);font-size:12px}.trace-metrics{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 0;color:var(--muted);font-size:11px}.trace-metrics span{border:1px solid #2b3948;border-radius:999px;padding:4px 8px}.trace-optional-details{margin-top:12px}@media(max-width:700px){.trace-inspector-head{align-items:flex-start;flex-direction:column}.trace-primary-card pre{max-height:50vh}}';
-document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:min(980px,96vw)}.vision-review-modal .modal-body-wrap{padding:12px;overflow-y:auto}.vision-review-modal .modal-card-body{display:grid;gap:10px}.vision-review-modal textarea{width:100%;box-sizing:border-box;background:#0d141c;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px;font:inherit;resize:vertical}.vision-review-modal input[type=file]{color:var(--fg)}.vision-review-modal .modal-actions-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.trace-vision-provenance{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0}.trace-vision-provenance span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-vision-summary{border-color:#41659a}.trace-vision-findings{display:grid;gap:8px}.trace-vision-finding{border:1px solid #33485f;border-left:3px solid var(--accent);border-radius:7px;background:#0d141c;padding:10px}.trace-vision-finding.blocker,.trace-vision-finding.high{border-left-color:var(--bad)}.trace-vision-finding-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.trace-vision-finding-head strong{overflow-wrap:anywhere}.trace-vision-finding .trace-chip{margin:0}.trace-vision-finding-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.trace-vision-evidence{margin-top:8px}.trace-vision-evidence img{max-width:100%;height:auto;border:1px solid #33485f;border-radius:5px}.trace-vision-error{border-color:#784747;color:#ffb1b1}.trace-vision-empty{color:var(--muted);padding:8px 0}</style>');
- document.head.insertAdjacentHTML('beforeend','<style>.trace-inspector-context{display:flex;align-items:flex-end;gap:8px;flex-direction:column}.trace-project-label{border:1px solid #41659a;border-radius:999px;padding:4px 8px;color:#c7dcff;font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-search-presentation,.trace-model-presentation{border:1px solid #33485f;border-radius:8px;background:#0c121a;padding:12px}.trace-search-query{border:1px solid #2d4965;border-left:3px solid #5b8def;border-radius:6px;background:#111b26;padding:9px 10px;overflow-wrap:anywhere}.trace-search-query strong,.trace-search-answer strong{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}.trace-search-spec{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}.trace-search-spec span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-search-results{margin-top:12px}.trace-search-results h3{margin:0 0 5px;font-size:11px}.trace-search-result-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:start;border-top:1px solid #273544;padding:8px 0;min-width:0}.trace-search-rank{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#1c3042;color:#c7dcff;font-size:10px}.trace-search-result-main{min-width:0;overflow-wrap:anywhere}.trace-search-result-main strong{display:block;overflow-wrap:anywhere}.trace-search-result-main>.tiny{display:block;margin-top:2px}.trace-search-snippet{color:#c9d5e2;font-size:11px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere}.trace-search-score{color:var(--muted);font-size:10px;padding-top:3px}.trace-search-answer{border-top:1px solid #273544;margin-top:8px;padding-top:9px;overflow-wrap:anywhere}.trace-model-presentation .trace-primary-card{min-height:0}.trace-model-presentation .trace-chat-message{border-top:0;padding:0}.trace-model-presentation .trace-chat-role{display:none}.trace-model-presentation .prompt-pre{max-height:260px}.trace-summary-card,.trace-code-card,.trace-list-card{border:1px solid #273544;border-radius:6px;background:#0d141c;padding:10px;margin-bottom:8px}.trace-summary-card h3,.trace-code-card h3,.trace-list-card h3{margin:0 0 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.trace-summary-value{overflow-wrap:anywhere}.trace-chip{display:inline-block;padding:2px 6px;border-radius:4px;background:#172535;border:1px solid #2d4965;font-size:11px;margin:2px}.trace-obj-field{margin-bottom:4px;overflow-wrap:anywhere}.trace-obj-key{color:var(--muted);font-size:11px;font-weight:600}.trace-obj-val{font-size:11px}.trace-primary-groups{display:grid;gap:8px;margin-top:10px}.trace-primary-group{border:1px solid #273544;border-radius:6px;background:#0d141c}.trace-primary-group>summary{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;color:var(--fg);font-size:11px;font-weight:700;list-style:none}.trace-primary-group>summary::-webkit-details-marker{display:none}.trace-primary-group>summary::after{content:\"+\";color:var(--muted);font-size:15px;line-height:1}.trace-primary-group[open]>summary::after{content:\"−\"}.trace-primary-group-body{padding:0 10px 10px}.trace-primary-group .trace-primary-card{border:0;background:transparent;padding:0;margin:0}.trace-primary-group .trace-primary-card h3{display:none}.trace-primary-group .trace-primary-value{padding-top:2px}@media(max-width:700px){.trace-inspector-context{align-items:flex-end}.trace-project-label{max-width:150px}}</style>');
+traceStyles.textContent+='.trace-main-head #tracePageTitle,.trace-main-head #tracePageLive{display:none}.trace-inspector-head{align-items:center}.trace-header-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.trace-header-title h1{margin:0;font-size:16px;overflow-wrap:anywhere}.trace-header-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:11px}.trace-header-time{font-variant-numeric:tabular-nums}.trace-primary{margin:10px 0 14px}.trace-primary-grid{display:grid;grid-template-columns:1fr;gap:10px}.trace-primary-card{min-width:0;border:1px solid #526144;border-radius:8px;background:#171b14;overflow:hidden}.trace-primary-card.input{border-color:#9b8756}.trace-primary-card.output{border-color:#397658}.trace-primary-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 11px;background:#20251c}.trace-primary-card-head h2{margin:0;font-size:12px}.trace-primary-card pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px;max-height:60vh;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.trace-primary-empty{padding:12px;color:var(--muted);font-size:12px}.trace-metrics{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 0;color:var(--muted);font-size:11px}.trace-metrics span{border:1px solid #434f37;border-radius:999px;padding:4px 8px}.trace-optional-details{margin-top:12px}@media(max-width:700px){.trace-inspector-head{align-items:flex-start;flex-direction:column}.trace-primary-card pre{max-height:50vh}}';
+document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:min(980px,96vw)}.vision-review-modal .modal-body-wrap{padding:12px;overflow-y:auto}.vision-review-modal .modal-card-body{display:grid;gap:10px}.vision-review-modal textarea{width:100%;box-sizing:border-box;background:#171b14;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:8px;font:inherit;resize:vertical}.vision-review-modal input[type=file]{color:var(--fg)}.vision-review-modal .modal-actions-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.trace-vision-provenance{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0}.trace-vision-provenance span{border:1px solid #434f37;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-vision-summary{border-color:#9b8756}.trace-vision-findings{display:grid;gap:8px}.trace-vision-finding{border:1px solid #526144;border-left:3px solid var(--accent);border-radius:7px;background:#171b14;padding:10px}.trace-vision-finding.blocker,.trace-vision-finding.high{border-left-color:var(--bad)}.trace-vision-finding-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.trace-vision-finding-head strong{overflow-wrap:anywhere}.trace-vision-finding .trace-chip{margin:0}.trace-vision-finding-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.trace-vision-evidence{margin-top:8px}.trace-vision-evidence img{max-width:100%;height:auto;border:1px solid #526144;border-radius:5px}.trace-vision-error{border-color:#784747;color:#ffb1b1}.trace-vision-empty{color:var(--muted);padding:8px 0}</style>');
+ document.head.insertAdjacentHTML('beforeend','<style>.trace-inspector-context{display:flex;align-items:flex-end;gap:8px;flex-direction:column}.trace-project-label{border:1px solid #9b8756;border-radius:999px;padding:4px 8px;color:#c7dcff;font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-search-presentation,.trace-model-presentation{border:1px solid #526144;border-radius:8px;background:#161a13;padding:12px}.trace-search-query{border:1px solid #2d4965;border-left:3px solid #5b8def;border-radius:6px;background:#111b26;padding:9px 10px;overflow-wrap:anywhere}.trace-search-query strong,.trace-search-answer strong{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}.trace-search-spec{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}.trace-search-spec span{border:1px solid #434f37;border-radius:999px;padding:3px 7px}.trace-search-results{margin-top:12px}.trace-search-results h3{margin:0 0 5px;font-size:11px}.trace-search-result-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:start;border-top:1px solid #414c35;padding:8px 0;min-width:0}.trace-search-rank{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#343e29;color:#c7dcff;font-size:10px}.trace-search-result-main{min-width:0;overflow-wrap:anywhere}.trace-search-result-main strong{display:block;overflow-wrap:anywhere}.trace-search-result-main>.tiny{display:block;margin-top:2px}.trace-search-snippet{color:#c9d5e2;font-size:11px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere}.trace-search-score{color:var(--muted);font-size:10px;padding-top:3px}.trace-search-answer{border-top:1px solid #414c35;margin-top:8px;padding-top:9px;overflow-wrap:anywhere}.trace-model-presentation .trace-primary-card{min-height:0}.trace-model-presentation .trace-chat-message{border-top:0;padding:0}.trace-model-presentation .trace-chat-role{display:none}.trace-model-presentation .prompt-pre{max-height:260px}.trace-summary-card,.trace-code-card,.trace-list-card{border:1px solid #414c35;border-radius:6px;background:#171b14;padding:10px;margin-bottom:8px}.trace-summary-card h3,.trace-code-card h3,.trace-list-card h3{margin:0 0 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.trace-summary-value{overflow-wrap:anywhere}.trace-chip{display:inline-block;padding:2px 6px;border-radius:4px;background:#172535;border:1px solid #2d4965;font-size:11px;margin:2px}.trace-obj-field{margin-bottom:4px;overflow-wrap:anywhere}.trace-obj-key{color:var(--muted);font-size:11px;font-weight:600}.trace-obj-val{font-size:11px}.trace-primary-groups{display:grid;gap:8px;margin-top:10px}.trace-primary-group{border:1px solid #414c35;border-radius:6px;background:#171b14}.trace-primary-group>summary{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;color:var(--fg);font-size:11px;font-weight:700;list-style:none}.trace-primary-group>summary::-webkit-details-marker{display:none}.trace-primary-group>summary::after{content:\"+\";color:var(--muted);font-size:15px;line-height:1}.trace-primary-group[open]>summary::after{content:\"−\"}.trace-primary-group-body{padding:0 10px 10px}.trace-primary-group .trace-primary-card{border:0;background:transparent;padding:0;margin:0}.trace-primary-group .trace-primary-card h3{display:none}.trace-primary-group .trace-primary-value{padding-top:2px}@media(max-width:700px){.trace-inspector-context{align-items:flex-end}.trace-project-label{max-width:150px}}</style>');
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000), formatBytes=b=>{b=Number(b||0);if(b<=0)return '0 B';const u=['B','KB','MB','GB','TB'],i=Math.min(u.length-1,Math.floor(Math.log(b)/Math.log(1024)));return (b/Math.pow(1024,i)).toFixed(i>1?1:0)+' '+u[i];};
@@ -1093,30 +1166,30 @@ function drawDualChart(canvasId, series1, series2){
     ctx.lineWidth=2;
     ctx.stroke();
   };
-  renderLine(series1, '#38bdf8', 'rgba(56,189,248,0.1)');
+  renderLine(series1, '#efb76f', 'rgba(56,189,248,0.1)');
   renderLine(series2, '#34d399', 'rgba(52,211,153,0.1)');
 }
 
 const tracePageStyles=document.createElement('style');
-tracePageStyles.textContent='.trace-page{height:calc(100vh - 112px);min-height:560px;padding:12px!important}.trace-layout{display:grid;grid-template-columns:300px minmax(0,1fr);height:100%;min-height:0;gap:12px}.trace-sidebar,.trace-main{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-height:0;overflow:hidden}.trace-sidebar{display:flex;flex-direction:column}.trace-sidebar-head{padding:12px;border-bottom:1px solid var(--line);background:#151d26}.trace-sidebar-head strong{display:block;font-size:14px;margin:7px 0 3px}.trace-sidebar-list{overflow:auto;padding:6px}.trace-side-item{display:block;width:100%;text-align:left;background:transparent;color:var(--fg);border:1px solid transparent;border-radius:7px;padding:9px;margin:2px 0;cursor:pointer}.trace-side-item:hover{background:#1a2734;border-color:#33485f}.trace-side-item.active{background:#1c3042;border-color:var(--accent)}.trace-side-top{display:flex;align-items:center;gap:7px}.trace-side-state{width:7px;height:7px;border-radius:50%;background:var(--warn);flex:0 0 auto}.trace-side-state.done{background:var(--ok)}.trace-side-state.failed{background:var(--bad)}.trace-side-action{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-side-meta{display:block;color:var(--muted);font-size:10px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-main{overflow:auto;padding:18px}.trace-main-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}.trace-main-head h1{font-size:18px;margin:0;overflow-wrap:anywhere}.trace-main-head .spacer{margin-left:auto}.trace-select-empty{display:grid;place-items:center;min-height:420px;color:var(--muted);text-align:center;border:1px dashed #33485f;border-radius:8px}.trace-main .human-shell{padding:0}.trace-main .human-section{margin:12px 0}.trace-main .trace-timeline{padding:12px}.trace-page .trace-raw-panel{max-width:none}@media(max-width:900px){.trace-page{height:auto;min-height:calc(100vh - 112px)}.trace-layout{grid-template-columns:1fr}.trace-sidebar{max-height:280px}.trace-main{min-height:620px}}';
+tracePageStyles.textContent='.trace-page{height:calc(100vh - 112px);min-height:560px;padding:12px!important}.trace-layout{display:grid;grid-template-columns:300px minmax(0,1fr);height:100%;min-height:0;gap:12px}.trace-sidebar,.trace-main{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-height:0;overflow:hidden}.trace-sidebar{display:flex;flex-direction:column}.trace-sidebar-head{padding:12px;border-bottom:1px solid var(--line);background:#20251c}.trace-sidebar-head strong{display:block;font-size:14px;margin:7px 0 3px}.trace-sidebar-list{overflow:auto;padding:6px}.trace-side-item{display:block;width:100%;text-align:left;background:transparent;color:var(--fg);border:1px solid transparent;border-radius:7px;padding:9px;margin:2px 0;cursor:pointer}.trace-side-item:hover{background:#2c3524;border-color:#526144}.trace-side-item.active{background:#343e29;border-color:var(--accent)}.trace-side-top{display:flex;align-items:center;gap:7px}.trace-side-state{width:7px;height:7px;border-radius:50%;background:var(--warn);flex:0 0 auto}.trace-side-state.done{background:var(--ok)}.trace-side-state.failed{background:var(--bad)}.trace-side-action{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-side-meta{display:block;color:var(--muted);font-size:10px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-main{overflow:auto;padding:18px}.trace-main-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}.trace-main-head h1{font-size:18px;margin:0;overflow-wrap:anywhere}.trace-main-head .spacer{margin-left:auto}.trace-select-empty{display:grid;place-items:center;min-height:420px;color:var(--muted);text-align:center;border:1px dashed #526144;border-radius:8px}.trace-main .human-shell{padding:0}.trace-main .human-section{margin:12px 0}.trace-main .trace-timeline{padding:12px}.trace-page .trace-raw-panel{max-width:none}@media(max-width:900px){.trace-page{height:auto;min-height:calc(100vh - 112px)}.trace-layout{grid-template-columns:1fr}.trace-sidebar{max-height:280px}.trace-main{min-height:620px}}';
 document.head.append(tracePageStyles);
 
 const workPageStyles=document.createElement('style');
-workPageStyles.textContent='.work-page{display:grid!important;grid-template-columns:minmax(0,1.55fr) minmax(320px,.9fr);gap:12px;align-items:start}.work-page>.work-summary{grid-column:1/-1}.work-panel{min-width:0}.work-panel-1{grid-column:1;grid-row:2}.work-panel-2{grid-column:2;grid-row:2}.work-panel-3{grid-column:1;grid-row:3}.work-panel-4{grid-column:2;grid-row:3}.work-summary{padding:14px!important}.work-summary-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.work-kicker{color:var(--accent);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}.work-summary h2{margin:0}.work-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:14px}.work-kpis>div{background:#0d141c;border:1px solid #2b3948;border-radius:7px;padding:9px 10px}.work-kpis span{display:block;color:var(--muted);font-size:10px}.work-kpis strong{display:block;font-size:18px;margin-top:3px}.work-panel h2{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.work-panel .table-wrap{max-height:390px;overflow:auto}.work-panel table{width:100%;table-layout:fixed}.work-panel th{position:sticky;top:0;z-index:1;background:#151d26}.work-panel td{vertical-align:top;overflow-wrap:anywhere}.work-panel-1 th:nth-child(1){width:13%}.work-panel-1 th:nth-child(2){width:20%}.work-panel-1 th:nth-child(3){width:24%}.work-panel-1 th:nth-child(4){width:17%}.work-panel-1 th:nth-child(5){width:26%}.work-panel-2 th:nth-child(1){width:27%}.work-panel-2 th:nth-child(2){width:30%}.work-panel-2 th:nth-child(3){width:27%}.work-panel-2 th:nth-child(4){width:16%}.work-panel-3 th:nth-child(1){width:12%}.work-panel-3 th:nth-child(2){width:14%}.work-panel-3 th:nth-child(3){width:9%}.work-panel-3 th:nth-child(4){width:14%}.work-panel-3 th:nth-child(5){width:31%}.work-panel-3 th:nth-child(6){width:10%}.work-panel-3 th:nth-child(7){width:10%}.work-panel-3 td{white-space:normal;overflow-wrap:anywhere;word-break:break-word}.work-panel-4 th:nth-child(1){width:13%}.work-panel-4 th:nth-child(2){width:22%}.work-panel-4 th:nth-child(3){width:22%}.work-panel-4 th:nth-child(4){width:18%}.work-panel-4 th:nth-child(5){width:15%}.work-panel-4 th:nth-child(6){width:10%}.work-state{display:inline-block;border:1px solid #3b4b5e;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px;white-space:nowrap}.work-state.live{border-color:#4f8edb;color:var(--accent)}.work-state.bad{border-color:#a64c4c;color:var(--bad)}.timing-label{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.work-panel-4 .tiny{line-height:1.35}@media(max-width:1050px){.work-page{grid-template-columns:1fr}.work-page>.work-summary,.work-panel-1,.work-panel-2,.work-panel-3,.work-panel-4{grid-column:1;grid-row:auto}.work-panel .table-wrap{max-height:320px}}@media(max-width:620px){.work-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.work-summary-head{display:block}.work-summary-head>.tiny{display:block;margin-top:6px}.work-panel table{table-layout:auto;min-width:650px}.work-panel .table-wrap{overflow:auto}}';
+workPageStyles.textContent='.work-page{display:grid!important;grid-template-columns:minmax(0,1.55fr) minmax(320px,.9fr);gap:12px;align-items:start}.work-page>.work-summary{grid-column:1/-1}.work-panel{min-width:0}.work-panel-1{grid-column:1;grid-row:2}.work-panel-2{grid-column:2;grid-row:2}.work-panel-3{grid-column:1;grid-row:3}.work-panel-4{grid-column:2;grid-row:3}.work-summary{padding:14px!important}.work-summary-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.work-kicker{color:var(--accent);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}.work-summary h2{margin:0}.work-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:14px}.work-kpis>div{background:#171b14;border:1px solid #434f37;border-radius:7px;padding:9px 10px}.work-kpis span{display:block;color:var(--muted);font-size:10px}.work-kpis strong{display:block;font-size:18px;margin-top:3px}.work-panel h2{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.work-panel .table-wrap{max-height:390px;overflow:auto}.work-panel table{width:100%;table-layout:fixed}.work-panel th{position:sticky;top:0;z-index:1;background:#20251c}.work-panel td{vertical-align:top;overflow-wrap:anywhere}.work-panel-1 th:nth-child(1){width:13%}.work-panel-1 th:nth-child(2){width:20%}.work-panel-1 th:nth-child(3){width:24%}.work-panel-1 th:nth-child(4){width:17%}.work-panel-1 th:nth-child(5){width:26%}.work-panel-2 th:nth-child(1){width:27%}.work-panel-2 th:nth-child(2){width:30%}.work-panel-2 th:nth-child(3){width:27%}.work-panel-2 th:nth-child(4){width:16%}.work-panel-3 th:nth-child(1){width:12%}.work-panel-3 th:nth-child(2){width:14%}.work-panel-3 th:nth-child(3){width:9%}.work-panel-3 th:nth-child(4){width:14%}.work-panel-3 th:nth-child(5){width:31%}.work-panel-3 th:nth-child(6){width:10%}.work-panel-3 th:nth-child(7){width:10%}.work-panel-3 td{white-space:normal;overflow-wrap:anywhere;word-break:break-word}.work-panel-4 th:nth-child(1){width:13%}.work-panel-4 th:nth-child(2){width:22%}.work-panel-4 th:nth-child(3){width:22%}.work-panel-4 th:nth-child(4){width:18%}.work-panel-4 th:nth-child(5){width:15%}.work-panel-4 th:nth-child(6){width:10%}.work-state{display:inline-block;border:1px solid #3b4b5e;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px;white-space:nowrap}.work-state.live{border-color:#4f8edb;color:var(--accent)}.work-state.bad{border-color:#a64c4c;color:var(--bad)}.timing-label{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.work-panel-4 .tiny{line-height:1.35}@media(max-width:1050px){.work-page{grid-template-columns:1fr}.work-page>.work-summary,.work-panel-1,.work-panel-2,.work-panel-3,.work-panel-4{grid-column:1;grid-row:auto}.work-panel .table-wrap{max-height:320px}}@media(max-width:620px){.work-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.work-summary-head{display:block}.work-summary-head>.tiny{display:block;margin-top:6px}.work-panel table{table-layout:auto;min-width:650px}.work-panel .table-wrap{overflow:auto}}';
 document.head.append(workPageStyles);
 document.head.insertAdjacentHTML('beforeend','<style>.trace-side-state.interrupted{background:var(--warn)}.trace-interrupted{color:var(--warn)}.work-page{display:none!important}.work-page.active{display:grid!important}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.work-page.active .work-panel-4{grid-column:1/-1!important;grid-row:3!important}.work-page.active .work-panel-4 .table-wrap{max-height:460px}.work-page.active .work-panel-3{grid-column:1/-1!important;grid-row:4!important}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.work-panel-3 th:nth-child(1){width:10%}.work-panel-3 th:nth-child(2){width:12%}.work-panel-3 th:nth-child(3){width:9%}.work-panel-3 th:nth-child(4){width:10%}.work-panel-3 th:nth-child(5){width:20%}.work-panel-3 th:nth-child(6){width:11%}.work-panel-3 th:nth-child(7){width:9%}.work-panel-3 th:nth-child(8){width:12%}.work-panel-3 th:nth-child(9){width:7%}.work-panel-3 td:nth-child(8),.work-panel-3 td:nth-child(9){white-space:nowrap;overflow-wrap:normal;word-break:normal}</style>');
 
 const workFilterStyles=document.createElement('style');
-workFilterStyles.textContent='.work-filter{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px}.work-filter input,.work-filter select{background:#0d141c;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font:inherit;font-size:11px}.work-filter input{flex:1;min-width:220px}.work-filter select{min-width:125px}.work-filter .btn{padding:6px 9px;font-size:11px}.work-filter-summary{color:var(--muted);font-size:10px}';
+workFilterStyles.textContent='.work-filter{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px}.work-filter input,.work-filter select{background:#171b14;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:7px 9px;font:inherit;font-size:11px}.work-filter input{flex:1;min-width:220px}.work-filter select{min-width:125px}.work-filter .btn{padding:6px 9px;font-size:11px}.work-filter-summary{color:var(--muted);font-size:10px}';
 document.head.append(workFilterStyles);
-document.head.insertAdjacentHTML('beforeend','<style>.trace-sidebar-controls{display:flex;gap:6px;padding:8px 8px 2px}.trace-sidebar-controls input,.trace-sidebar-controls select{min-width:0;width:100%;background:#0d141c;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 7px;font:inherit;font-size:10px}.trace-sidebar-controls select{width:116px;flex:0 0 116px}</style>');
-document.head.insertAdjacentHTML('beforeend','<style>.trace-main,.trace-step-body,.trace-event,.human-section{min-width:0}.prompt-meta{display:flex;gap:5px;flex-wrap:wrap;padding:7px 8px;border-bottom:1px solid #202a35}.prompt-chip{border:1px solid #394758;border-radius:999px;padding:2px 7px;color:var(--muted);font-size:9px}.prompt-chip strong{color:var(--fg)}.prompt-messages{display:grid;gap:6px;padding:7px}.prompt-card{border:1px solid #2d3d4e;border-left:3px solid #5b8def;border-radius:6px;overflow:hidden}.prompt-card.role-system{border-left-color:#a78bfa}.prompt-card.role-user{border-left-color:#38bdf8}.prompt-card.role-assistant{border-left-color:#4ade80}.prompt-card-head{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#151d26;color:var(--fg);font-size:10px;font-weight:700}.prompt-card-head .tiny{margin-left:auto}.prompt-pre{margin:0;padding:7px 8px;background:#0d1219;color:#d7e2ef;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3;font-size:11px;max-height:150px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.prompt-context{margin:0 8px 8px;border:1px solid #334355;border-radius:5px;background:#111923}.prompt-context summary{cursor:pointer;padding:6px 8px;color:var(--muted);font-size:9px}.prompt-context .prompt-pre{max-height:180px;border-top:1px solid #273544}.prompt-fallback{padding:8px}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-sidebar-controls{display:flex;gap:6px;padding:8px 8px 2px}.trace-sidebar-controls input,.trace-sidebar-controls select{min-width:0;width:100%;background:#171b14;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:6px 7px;font:inherit;font-size:10px}.trace-sidebar-controls select{width:116px;flex:0 0 116px}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-main,.trace-step-body,.trace-event,.human-section{min-width:0}.prompt-meta{display:flex;gap:5px;flex-wrap:wrap;padding:7px 8px;border-bottom:1px solid #343c2b}.prompt-chip{border:1px solid #566349;border-radius:999px;padding:2px 7px;color:var(--muted);font-size:9px}.prompt-chip strong{color:var(--fg)}.prompt-messages{display:grid;gap:6px;padding:7px}.prompt-card{border:1px solid #46543a;border-left:3px solid #5b8def;border-radius:6px;overflow:hidden}.prompt-card.role-system{border-left-color:#a78bfa}.prompt-card.role-user{border-left-color:#efb76f}.prompt-card.role-assistant{border-left-color:#4ade80}.prompt-card-head{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#20251c;color:var(--fg);font-size:10px;font-weight:700}.prompt-card-head .tiny{margin-left:auto}.prompt-pre{margin:0;padding:7px 8px;background:#141811;color:#dfe6d5;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3;font-size:11px;max-height:150px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.prompt-context{margin:0 8px 8px;border:1px solid #4b5a3e;border-radius:5px;background:#1b2116}.prompt-context summary{cursor:pointer;padding:6px 8px;color:var(--muted);font-size:9px}.prompt-context .prompt-pre{max-height:180px;border-top:1px solid #414c35}.prompt-fallback{padding:8px}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.trace-codex-timeline,.trace-codex-timeline *{min-width:0;max-width:100%;box-sizing:border-box}.trace-codex-timeline .trace-timeline-event,.trace-codex-timeline .trace-tool-card{overflow:hidden;overflow-wrap:anywhere;word-break:break-word}.trace-codex-timeline .trace-timeline-marker,.trace-codex-timeline h4,.trace-codex-timeline .trace-tool-field,.trace-codex-timeline .human-grid,.trace-codex-timeline .human-value{overflow-wrap:anywhere;word-break:break-word}.trace-codex-timeline pre{max-width:100%;white-space:pre-wrap;overflow:auto}</style>');
-document.head.insertAdjacentHTML('beforeend','<style>.trace-primary{margin:0 0 14px}.trace-primary-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px}.trace-primary-head h2{margin:0;font-size:14px}.trace-primary-grid{display:grid;grid-template-columns:1fr;gap:10px}.trace-primary-card{min-width:0;border:1px solid #33485f;border-radius:8px;overflow:hidden;background:#0d141c}.trace-primary-card.input{border-color:#41659a}.trace-primary-card.output{border-color:#397658}.trace-primary-card h3{margin:0;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:#151d26}.trace-primary-card.input h3{color:#a9c6ff}.trace-primary-card.output h3{color:#9be7b8}.trace-primary-value{min-width:0;padding:10px;overflow-wrap:anywhere}.trace-primary-value .human-grid{padding:0}.trace-primary-empty{color:var(--muted);font-size:11px}.trace-presentation-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex-wrap:wrap;margin:0 0 8px}.trace-presentation-actions .btn{padding:4px 7px;font-size:10px}.trace-capture-state{display:inline-flex;align-items:center;border:1px solid #394758;border-radius:999px;padding:3px 7px;font-size:10px;white-space:nowrap}.trace-capture-state.produced{border-color:#397658;color:#9be7b8}.trace-capture-state.empty{border-color:#8b6d31;color:#f4d58b}.trace-capture-state.not-captured{border-color:#536274;color:#aeb9c7}.trace-capture-state.redacted{border-color:#795a9b;color:#d9b8ff}.trace-optional-details{width:100%;box-sizing:border-box;border:1px solid #2d3d4e;border-radius:8px;background:#0c121a}.trace-optional-details>summary{cursor:pointer;padding:10px 12px;color:var(--fg);font-size:11px;font-weight:700}.trace-optional-details>summary::marker{color:var(--accent)}.trace-optional-details[open]>summary{border-bottom:1px solid #273544}.trace-optional-body{padding:0 12px 12px;min-width:0;overflow-wrap:anywhere}.trace-optional-body .human-section:first-child{margin-top:12px}.trace-chat-columns{display:grid;grid-template-columns:1fr;gap:10px;align-items:start}.trace-chat-column{min-width:0}.trace-chat-input{border-color:#41659a}.trace-chat-output{border-color:#397658}.trace-chat-message{border-top:1px solid #273544;padding:9px 0}.trace-chat-message:first-child{border-top:0;padding-top:0}.trace-chat-role{color:var(--accent);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.trace-chat-meta{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 8px}.trace-chat-meta span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-tool-timeline{display:grid;gap:8px;margin-top:10px}.trace-tool-card{border:1px solid #33485f;border-left:3px solid var(--accent);border-radius:6px;background:#0b131b;padding:9px}.trace-tool-card.error{border-left-color:var(--bad)}.trace-tool-card h4{margin:0 0 6px;font-size:11px}.trace-tool-card pre{max-height:220px;overflow:auto;margin:4px 0 0}.trace-tool-field{margin-top:7px}.trace-tool-field strong{color:var(--muted);font-size:10px;text-transform:uppercase}.trace-tool-field .human-pre{margin:4px 0 0}@media(max-width:700px){.trace-primary-grid,.trace-chat-columns{grid-template-columns:1fr}}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-primary{margin:0 0 14px}.trace-primary-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px}.trace-primary-head h2{margin:0;font-size:14px}.trace-primary-grid{display:grid;grid-template-columns:1fr;gap:10px}.trace-primary-card{min-width:0;border:1px solid #526144;border-radius:8px;overflow:hidden;background:#171b14}.trace-primary-card.input{border-color:#9b8756}.trace-primary-card.output{border-color:#397658}.trace-primary-card h3{margin:0;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:#20251c}.trace-primary-card.input h3{color:#a9c6ff}.trace-primary-card.output h3{color:#9be7b8}.trace-primary-value{min-width:0;padding:10px;overflow-wrap:anywhere}.trace-primary-value .human-grid{padding:0}.trace-primary-empty{color:var(--muted);font-size:11px}.trace-presentation-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex-wrap:wrap;margin:0 0 8px}.trace-presentation-actions .btn{padding:4px 7px;font-size:10px}.trace-capture-state{display:inline-flex;align-items:center;border:1px solid #566349;border-radius:999px;padding:3px 7px;font-size:10px;white-space:nowrap}.trace-capture-state.produced{border-color:#397658;color:#9be7b8}.trace-capture-state.empty{border-color:#8b6d31;color:#f4d58b}.trace-capture-state.not-captured{border-color:#536274;color:#aeb9c7}.trace-capture-state.redacted{border-color:#795a9b;color:#d9b8ff}.trace-optional-details{width:100%;box-sizing:border-box;border:1px solid #46543a;border-radius:8px;background:#161a13}.trace-optional-details>summary{cursor:pointer;padding:10px 12px;color:var(--fg);font-size:11px;font-weight:700}.trace-optional-details>summary::marker{color:var(--accent)}.trace-optional-details[open]>summary{border-bottom:1px solid #414c35}.trace-optional-body{padding:0 12px 12px;min-width:0;overflow-wrap:anywhere}.trace-optional-body .human-section:first-child{margin-top:12px}.trace-chat-columns{display:grid;grid-template-columns:1fr;gap:10px;align-items:start}.trace-chat-column{min-width:0}.trace-chat-input{border-color:#9b8756}.trace-chat-output{border-color:#397658}.trace-chat-message{border-top:1px solid #414c35;padding:9px 0}.trace-chat-message:first-child{border-top:0;padding-top:0}.trace-chat-role{color:var(--accent);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.trace-chat-meta{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 8px}.trace-chat-meta span{border:1px solid #434f37;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-tool-timeline{display:grid;gap:8px;margin-top:10px}.trace-tool-card{border:1px solid #526144;border-left:3px solid var(--accent);border-radius:6px;background:#0b131b;padding:9px}.trace-tool-card.error{border-left-color:var(--bad)}.trace-tool-card h4{margin:0 0 6px;font-size:11px}.trace-tool-card pre{max-height:220px;overflow:auto;margin:4px 0 0}.trace-tool-field{margin-top:7px}.trace-tool-field strong{color:var(--muted);font-size:10px;text-transform:uppercase}.trace-tool-field .human-pre{margin:4px 0 0}@media(max-width:700px){.trace-primary-grid,.trace-chat-columns{grid-template-columns:1fr}}</style>');
 
-document.head.insertAdjacentHTML('beforeend','<style>.trace-presentation-field{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:6px 12px;align-items:start;padding:7px 0;min-width:0}.trace-presentation-field+ .trace-presentation-field{border-top:1px solid #273544}.trace-presentation-field>strong{color:var(--muted);font-size:10px;line-height:1.4;overflow-wrap:anywhere}.trace-presentation-field>div,.trace-presentation-field>span,.trace-presentation-field>pre,.trace-presentation-field>details{min-width:0;overflow-wrap:anywhere}.trace-command-top{border:1px solid #2d3d4e;border-radius:8px;background:#0c121a;padding:10px;margin:0 0 14px}.trace-command-top>h3{margin:0 0 4px;font-size:12px;color:var(--fg)}@media(max-width:700px){.trace-presentation-field{grid-template-columns:1fr;gap:3px}.trace-command-top{padding:8px}}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-presentation-field{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:6px 12px;align-items:start;padding:7px 0;min-width:0}.trace-presentation-field+ .trace-presentation-field{border-top:1px solid #414c35}.trace-presentation-field>strong{color:var(--muted);font-size:10px;line-height:1.4;overflow-wrap:anywhere}.trace-presentation-field>div,.trace-presentation-field>span,.trace-presentation-field>pre,.trace-presentation-field>details{min-width:0;overflow-wrap:anywhere}.trace-command-top{border:1px solid #46543a;border-radius:8px;background:#161a13;padding:10px;margin:0 0 14px}.trace-command-top>h3{margin:0 0 4px;font-size:12px;color:var(--fg)}@media(max-width:700px){.trace-presentation-field{grid-template-columns:1fr;gap:3px}.trace-command-top{padding:8px}}</style>');
 const nativeFetch=window.fetch.bind(window);
 function setupTraceInspector(){
   if($('traceInspector'))return;
@@ -2627,7 +2700,7 @@ function renderTaskModal(t){
             <button class="btn bad" onclick="showFailTaskInput()">✗ Mark Failed</button>
             <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
               <label class="tiny muted" for="taskTransStatus">Status:</label>
-              <select id="taskTransStatus" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:5px;padding:4px 8px;font-size:11px">
+              <select id="taskTransStatus" style="background:#282e22;color:var(--fg);border:1px solid #505d44;border-radius:5px;padding:4px 8px;font-size:11px">
                 <option value="active" ${st==='active'?'selected':''}>active</option>
                 <option value="verifying" ${st==='verifying'?'selected':''}>verifying</option>
                 <option value="blocked" ${st==='blocked'?'selected':''}>blocked</option>
@@ -2639,7 +2712,7 @@ function renderTaskModal(t){
           <div id="failTaskBox" style="display:none;margin-top:10px;padding:8px;background:#181216;border:1px solid #7f1d1d;border-radius:6px">
             <label for="failTaskReason" style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;color:#fca5a5">Failure Reason *</label>
             <div style="display:flex;gap:6px">
-              <input type="text" id="failTaskReason" placeholder="Why did this task fail?" style="flex:1;background:#0d1219;border:1px solid #2d3f56;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:11px">
+              <input type="text" id="failTaskReason" placeholder="Why did this task fail?" style="flex:1;background:#141811;border:1px solid #2d3f56;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:11px">
               <button class="btn bad" onclick="submitFailTask(${escJs(t.task_id)})">Confirm Fail</button>
               <button class="btn" onclick="$('failTaskBox').style.display='none'">Cancel</button>
             </div>
@@ -2764,7 +2837,7 @@ async function submitFailTask(taskId){
       await loadAgentOsView();
       if(res.task)renderTaskModal(res.task);
     }else{
-      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Failed to fail')}</span>`;
+      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Could not mark the task as failed.')}</span>`;
     }
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
@@ -2781,7 +2854,7 @@ async function completeTaskAction(taskId){
       await loadAgentOsView();
       if(res.task)renderTaskModal(res.task);
     }else{
-      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Failed to complete')}</span>`;
+      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Could not complete the task.')}</span>`;
     }
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
@@ -2817,12 +2890,12 @@ function openCreateTaskModal(){
         <div class="form-group">
           <label for="newTaskRoot">Repository Root *</label>
           <input type="text" id="newTaskRoot" list="worktreeRoots" required placeholder="Select or enter repository root" value="${esc($('agentOsRoot')?.value?.trim()||$('agentOsRepoSelect')?.value?.trim()||'')}">
-          <span class="form-hint">Physical repository root bound to the task.</span>
+          <span class="form-hint">The repository this task belongs to.</span>
         </div>
         <div class="form-group">
           <label for="newTaskGoal">Task Goal *</label>
           <textarea id="newTaskGoal" rows="3" required placeholder="Describe the goal and expected outcome..." autofocus></textarea>
-          <span class="form-hint">A clear specification of the objective.</span>
+          <span class="form-hint">What should be done?</span>
         </div>
         <div class="form-group">
           <label for="newTaskCriteria">Acceptance Criteria</label>
@@ -2981,12 +3054,12 @@ function openRecordMemoryModal(){
         <div class="form-group">
           <label for="newMemKey">Memory Key *</label>
           <input type="text" id="newMemKey" required placeholder="e.g. auth_service_port or prefer_relative_imports" autofocus>
-          <span class="form-hint">Unique lookup key within the chosen scope.</span>
+          <span class="form-hint">A unique name for this memory in the selected scope.</span>
         </div>
         <div class="form-group">
           <label for="newMemVal">Memory Value *</label>
           <textarea id="newMemVal" rows="4" required placeholder="Text value or JSON object..."></textarea>
-          <span class="form-hint">String value, fact description, or JSON payload.</span>
+          <span class="form-hint">Write a fact, add a note, or paste JSON.</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="form-group">
@@ -3071,12 +3144,14 @@ function renderIncidentModal(i){
   const fix=i.verified_fix||'—';
   const status=String(i.status||(i.verified_fix?'resolved':'unresolved'));
   const isResolved=status==='resolved';
+  const isIgnored=i.ignored===true||status==='ignored';
+  if($('modalTitle'))$('modalTitle').textContent='Incident';
 
   $('modalBody').innerHTML=`
     <div class="modal-hero">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div>
-          <div class="tiny muted mono">NEGATIVE KNOWLEDGE / ANTI-PATTERN</div>
+          <div class="tiny muted mono">INCIDENT &amp; LESSON</div>
           <h2 style="margin:2px 0 0;font-size:16px;display:flex;align-items:center;gap:8px">
             <span class="badge-status badge-error">${esc(errorClass)}</span>
             <span class="mono tiny muted">#${esc(id)}</span>
@@ -3086,7 +3161,7 @@ function renderIncidentModal(i){
             <span class="badge-status ${isIgnored?'badge-waiting':isResolved?'badge-complete':'badge-waiting'}">${isIgnored?'IGNORED':isResolved?'✓ RESOLVED WITH FIX':'UNRESOLVED'}</span>
         </div>
       </div>
-      <div class="tiny muted" style="margin-top:8px">Tool/Operation: <b>${esc(op)}</b></div>
+      <div class="tiny muted" style="margin-top:8px">Operation: <b>${esc(op)}</b></div>
     </div>
     <div class="modal-body-wrap">
       <div class="modal-card">
@@ -3103,7 +3178,7 @@ function renderIncidentModal(i){
         </div>
       </div>
 
-      <div class="modal-card" style="border-color:${isResolved?'var(--ok)':'#334155'}">
+      <div class="modal-card" style="border-color:${isResolved?'var(--ok)':'#4c5840'}">
         <div class="modal-card-head" style="background:${isResolved?'#0c2e1f':'#131d2b'}">
           <span class="${isResolved?'ok':''}">Verified Prevention Rule / Fix</span>
           ${fix!=='—'?`<button class="copy-btn" onclick="copyText(${escJs(fix)},this)">Copy Fix</button>`:''}
@@ -3119,15 +3194,15 @@ function renderIncidentModal(i){
 }
 
 function openRecordIncidentModal(){
-  if($('modalTitle'))$('modalTitle').textContent='Record Failure Anti-Pattern';
+  if($('modalTitle'))$('modalTitle').textContent='Record incident';
   if($('modalLive'))$('modalLive').textContent='';
   if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRecordIncident(event)">
         <div class="form-group">
-          <label for="newIncClass">Error Class *</label>
-          <input type="text" id="newIncClass" required value="LogicError" placeholder="e.g. StaleCacheError, PolicyRejection" autofocus>
-          <span class="form-hint">Categorization for fingerprint matching.</span>
+          <label for="newIncClass">Operation *</label>
+          <input type="text" id="newIncClass" required value="indexing" placeholder="e.g. indexing, command, repository search" autofocus>
+          <span class="form-hint">Name the operation that failed. The Hub classifies the error.</span>
         </div>
         <div class="form-group">
           <label for="newIncMsg">Failure Description</label>
@@ -3140,12 +3215,12 @@ function openRecordIncidentModal(){
         <div class="form-group">
           <label for="newIncFix">Verified Fix / Prevention Rule *</label>
           <textarea id="newIncFix" rows="3" required placeholder="Exact rule or guard to prevent this error from recurring"></textarea>
-          <span class="form-hint">Stored in persistent negative knowledge to guide future agent runs.</span>
+          <span class="form-hint">Saved so future runs can avoid the same problem.</span>
         </div>
         <div id="recordIncStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
           <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
-          <button type="submit" class="btn warn">Record Anti-Pattern</button>
+          <button type="submit" class="btn warn">Record incident</button>
         </div>
       </form>
     </div>
@@ -3156,26 +3231,26 @@ function openRecordIncidentModal(){
 
 async function submitRecordIncident(e){
   e.preventDefault();
-  const errorClass=$('newIncClass')?.value?.trim()||'LogicError';
+  const operationClass=$('newIncClass')?.value?.trim()||'indexing';
   const msg=$('newIncMsg')?.value?.trim()||'';
   const rootCause=$('newIncCause')?.value?.trim()||'';
   const verifiedFix=$('newIncFix')?.value?.trim()||'';
   const statusEl=$('recordIncStatus');
-  if(statusEl)statusEl.textContent='Saving anti-pattern…';
+  if(statusEl)statusEl.textContent='Saving incident…';
 
   try{
     const res=await post('/api/agent-state/incidents',{
       action:'record',
-      error_class:errorClass,
+      operation_class:operationClass,
       message:msg,
       root_cause:rootCause,
       verified_fix:verifiedFix
     });
     if(res.success){
       await loadAgentOsView();
-      renderIncidentModal(res.incident||{incident_id:'new',error_class:errorClass,redacted_message:msg,root_cause:rootCause,verified_fix:verifiedFix});
+      renderIncidentModal(res.incident||{incident_id:'new',operation_class:operationClass,redacted_message:msg,root_cause:rootCause,verified_fix:verifiedFix});
     }else{
-      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Failed to record')}</span>`;
+      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Could not save the incident.')}</span>`;
     }
   }catch(err){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(err.message||err)}</span>`;
@@ -3380,7 +3455,7 @@ function renderProjectModal(p){
         <div class="modal-card-head"><span>Workspace Controls</span></div>
         <div class="modal-card-body">
           <div class="modal-actions-bar">
-            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose')?.click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
+            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose')?.click()">${state==='paused'?'Resume indexing':'⏸ Pause Preprocessing'}</button>
             <button class="btn ok" onclick="projectAction(${escJs(p.root)},'refresh');$('modalClose')?.click()">↻ Force Re-scan</button>
             <button class="btn" onclick="exportBundle(${escJs(p.root)})">📦 Export Bundle</button>
             <button class="btn bad" style="margin-left:auto" onclick="deleteProjectDialog(${escJs(p.root)},${escJs(p.project)})">🗑 Unregister / Delete</button>
@@ -3435,7 +3510,7 @@ function openRegisterProjectModal(){
         <div class="form-group">
           <label for="regProjRoot">Repository Root Path *</label>
           <input type="text" id="regProjRoot" required placeholder="C:/Projects/my-app or /home/user/repo" autofocus>
-          <span class="form-hint">Absolute directory path to repository.</span>
+          <span class="form-hint">Full path to the repository folder.</span>
         </div>
         <div style="margin-top:6px">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -4565,7 +4640,7 @@ function setupWorkLayout(){
   const sections=[...work.children].filter(x=>x.classList.contains('section'));sections.forEach((x,i)=>x.classList.add('work-panel','work-panel-'+(i+1)));
   const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent','Action','Age'],['Time','Request ID','Project','Agent','Action / context','Result','Trace availability','Duration'],['State','Kind','Project','Action / context','Agent','Model','Created','Updated / duration','Links']];
   sections.forEach((section,index)=>{const row=section.querySelector('thead tr');if(row&&headers[index])row.innerHTML=headers[index].map(x=>`<th>${x}</th>`).join('')});
-  work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Operations center</div><h2>Live work <span class="tiny">prioritized view</span></h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search project, agent, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
+  work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Requests</div><h2>Live work</h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search project, agent, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
   $('workSearch').oninput=()=>last&&render(last);$('workState').onchange=()=>last&&render(last);$('workReset').onclick=()=>{$('workSearch').value='';$('workState').value='';if(last)render(last)};
   if($('requestHistoryReset')&&!$('requestHistorySort'))$('requestHistoryReset').insertAdjacentHTML('beforebegin','<select id="requestHistorySort" aria-label="Sort recent API requests"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="duration-desc">Longest duration</option><option value="status">Status</option><option value="endpoint">Endpoint A–Z</option></select>');
   if($('traceKind')&&!$('traceTableSearch'))$('traceKind').insertAdjacentHTML('beforebegin','<input id="traceTableSearch" type="search" aria-label="Search agent traces" placeholder="Search request, action, trace ID…" style="width:220px"><select id="traceTableState" aria-label="Filter traces by state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="interrupted">Interrupted</option></select><select id="traceTableSort" aria-label="Sort agent traces"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="action">Action A–Z</option><option value="duration">Longest run</option><option value="state">State</option></select><button class="btn" id="traceTableReset">Reset</button>');
@@ -4699,7 +4774,7 @@ function render(s){
     const uniqueRoots=[...new Set(projectRoots)].sort();
     const rootsKey=uniqueRoots.join('|');
     if(repoSelect.dataset.renderedRoots!==rootsKey){
-      let optHtml='<option value="">All repositories (všechny repozitáře)</option>';
+      let optHtml='<option value="">All repositories</option>';
       uniqueRoots.forEach(root=>{
         const proj=(p.projects||[]).find(x=>x.root===root);
         const name=(proj&&proj.project)?`${proj.project} (${root})`:root;
@@ -4745,7 +4820,7 @@ function render(s){
   const curRps=Number(agentHttp.events||0);
   recordTelemetrySnapshot(o);
 
-  drawSpark('latencySpark', latencySparkData, '#38bdf8', 'rgba(56,189,248,0.12)');
+  drawSpark('latencySpark', latencySparkData, '#efb76f', 'rgba(56,189,248,0.12)');
   drawSpark('throughputSpark', throughputSparkData, '#34d399', 'rgba(52,211,153,0.12)');
   drawDualChart('liveChartCanvas', liveChartLatency, liveChartQueue);
   const liveChartEmpty=$('liveChartEmpty');
@@ -4827,27 +4902,27 @@ function render(s){
       diagBar.textContent='Project status is unavailable. This does not mean that no projects are registered. Refresh status to retry.';
     }else if(!isEnabled){
       diagBar.className='diag-banner bad';
-      diagBar.innerHTML=`<span>❌ <b>Preprocessing is disabled in configuration</b> (<code>preprocessing.enabled = false</code>). Enable it in the Configuration tab.</span>`;
+      diagBar.innerHTML=`<span><b>Project indexing is turned off.</b> Enable it in Settings to prepare repository indexes.</span>`;
     }else if(isGlobPaused){
       diagBar.className='diag-banner warn';
-      diagBar.innerHTML=`<span style="flex:1">⏸ <b>Preprocessing is GLOBALLY PAUSED</b>. Background workers and real-time synchronization are stopped.</span><button class="btn ok" onclick="setPreprocessing('resume')" style="padding:3px 8px;font-size:11px">▶ Resume Preprocessing</button>`;
+      diagBar.innerHTML=`<span style="flex:1"><b>Indexing is paused.</b> Background indexing and file synchronization are stopped.</span><button class="btn ok" onclick="setPreprocessing('resume')" style="padding:3px 8px;font-size:11px">Resume indexing</button>`;
     }else if(!projs.length){
       diagBar.className='diag-banner info';
-      diagBar.innerHTML=`<span style="flex:1">ℹ️ <b>No projects currently registered</b>. Preprocessing is idle waiting for workspace registration. Click <b>+ Register Project</b> or call <code>local_ai_repo(action='preprocess')</code> from an agent.</span><button class="btn ok" onclick="$('regProjectBtn').click()" style="padding:3px 8px;font-size:11px">+ Register Project</button>`;
+      diagBar.innerHTML=`<span style="flex:1"><b>No repositories connected yet.</b> Add a repository to prepare its search index.</span><button class="btn ok" onclick="$('regProjectBtn').click()" style="padding:3px 8px;font-size:11px">+ Register Project</button>`;
     }else if(hasErr){
       const errProjs=projs.filter(x=>String(x.status||'').toLowerCase()==='error').map(x=>x.project||x.root).join(', ');
       diagBar.className='diag-banner bad';
-      diagBar.innerHTML=`<span style="flex:1">⚠️ <b>Errors detected in project preprocessing:</b> ${esc(errProjs)}. Check status column below for error details.</span><button class="btn" onclick="pollStatus()" style="padding:3px 8px;font-size:11px">Refresh status</button>`;
+      diagBar.innerHTML=`<span style="flex:1"><b>Some repositories could not be indexed:</b> ${esc(errProjs)}. Check status column below for error details.</span><button class="btn" onclick="pollStatus()" style="padding:3px 8px;font-size:11px">Refresh status</button>`;
     }else if(allDone){
       diagBar.className='diag-banner ok';
       diagBar.innerHTML=`<span><b>All ${projs.length} registered project entries report complete indexing progress</b>. This snapshot does not verify synchronization with later file changes.</span>`;
     }else if(bgYield){
       diagBar.className='diag-banner warn';
-      diagBar.innerHTML=`<span>⏳ <b>Background preprocessing is yielding:</b> Foreground agent requests are currently active on GPU/models. Preprocessing will resume automatically when queue clears.</span>`;
+      diagBar.innerHTML=`<span><b>Indexing is waiting for active requests.</b> It will resume automatically when the model queue is free.</span>`;
     }else{
       const runningNames=projs.filter(x=>x.status==='running').map(x=>x.project).join(', ');
       diagBar.className='diag-banner info';
-      diagBar.innerHTML=runningNames?`<span><b>Preprocessing is processing:</b> ${esc(runningNames)}</span>`:'<span>Preprocessing is enabled. No project reports active processing in this snapshot.</span>';
+      diagBar.innerHTML=runningNames?`<span><b>Indexing:</b> ${esc(runningNames)}</span>`:'<span>Preprocessing is enabled. No project reports active processing in this snapshot.</span>';
     }
   }
 
@@ -4887,7 +4962,7 @@ function render(s){
 
   if($('hubHealthCard'))$('hubHealthCard').onclick=()=>switchTab('reliability');
   rows('sessionRows',o.sessions||[],x=>{
-    const st=x.status||'unknown',stBadge=st==='active'?`<span class="badge ok">Active (PID ${n(x.pid)})</span>`:st==='clean_stop'?`<span class="badge" style="background:#1e293b;color:#94a3b8;border:1px solid #334155">Clean stop</span>`:st==='crashed'?`<span class="badge bad" title="No clean shutdown recorded; the termination cause is unknown">Unclean exit</span>`:'<span class="badge">Status unknown</span>',hitPct=((Number(x.cache_hit_rate||0))*100).toFixed(1),started=x.started_at?new Date(x.started_at*1000).toLocaleString():'—';
+    const st=x.status||'unknown',stBadge=st==='active'?`<span class="badge ok">Active (PID ${n(x.pid)})</span>`:st==='clean_stop'?`<span class="badge" style="background:#343b2d;color:#abb2a5;border:1px solid #4c5840">Clean stop</span>`:st==='crashed'?`<span class="badge bad" title="No clean shutdown recorded; the termination cause is unknown">Unclean exit</span>`:'<span class="badge">Status unknown</span>',hitPct=((Number(x.cache_hit_rate||0))*100).toFixed(1),started=x.started_at?new Date(x.started_at*1000).toLocaleString():'—';
     return clickableRow(x,`<td>${started}</td><td>${durSec(x.duration_seconds)}</td><td>${stBadge}</td><td>${n(x.events)}</td><td>${hitPct}% <span class="tiny muted">(${n(x.cache_hits)})</span></td><td>${n(x.tokens_saved)}</td><td><code>${esc(x.version||'—')}</code></td>`,'session');
   },7);
 
@@ -5117,15 +5192,7 @@ async function loadAgentOsView(){
     fetchDashboardJson('/api/agent-state/tasks',{cache:'no-store',unscoped:isAll}),
     fetchDashboardJson('/api/agent-state/memory',{cache:'no-store',unscoped:isAll})
   ];
-  if(isAll){
-    promises.push(fetchDashboardJson('/api/agent-state/incidents',{cache:'no-store',unscoped:true}));
-  }else{
-    promises.push(fetchDashboardJson('/api/agent-state/incidents',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'find',limit:100})
-    }));
-  }
+  promises.push(fetchDashboardJson('/api/agent-state/incidents',{cache:'no-store',unscoped:isAll}));
   const results=await Promise.allSettled(promises);
   if(($('agentOsRoot')?.value?.trim()||'')!==rootVal)return;
 
@@ -5418,7 +5485,7 @@ document.addEventListener('click',async e=>{
   }catch(err){alert('Remove worktree error: '+err)}
 });
 
-// ── Local Model Arena Benchmark ───────────────────────────────────────────
+// ── Compare models Benchmark ───────────────────────────────────────────
 $('arenaRunBtn')?.addEventListener('click',async()=>{
   const prompt=$('arenaPromptInput')?.value?.trim()||'Write a Python function with LRU cache to solve knapsack problem.';
   const btn=$('arenaRunBtn');
@@ -5452,7 +5519,7 @@ $('arenaRunBtn')?.addEventListener('click',async()=>{
       runTier('high',$('arenaSmartLabel'),$('arenaSmartStats'),$('arenaSmartOutput'))
     ]);
   }finally{
-    btn.disabled=false;btn.textContent='Run Arena Benchmark';
+    btn.disabled=false;btn.textContent='Run comparison';
   }
 });
 
@@ -5652,12 +5719,12 @@ async function viewTrajectory(taskId, afterSeq=0, append=false){
       const timestamp=ev.created_at??ev.timestamp;
       const time=timestamp?new Date(timestamp*1000).toLocaleTimeString():'';
       const payload=traceOutputValueMarkup(ev.payload, null, 5000);
-      list.insertAdjacentHTML('beforeend',`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
+      list.insertAdjacentHTML('beforeend',`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#141811;border-radius:4px">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px">
           <span class="chip"><b>${kind}</b></span>
           <span class="tiny muted">#${esc(item.seq||0)} · ${time}</span>
         </div>
-        <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
+        <div style="margin:0;font-size:11px;color:#dfe6d5;max-height:220px;overflow:auto">${payload}</div>
       </div>`);
     });
     const cursorToken=readRawInteger(responseText,'next_seq')??String(d.next_seq??afterSeq);

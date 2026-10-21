@@ -16,8 +16,8 @@ def test_dashboard_template_keeps_primary_content_and_faithful_raw_payload():
 
 def test_served_dashboard_discloses_trace_access_and_retention_policy():
     html = http_server._dashboard_html_with_trace_notice()
-    assert "full input/output only when enabled" in html
-    assert "complete stored details shown as recorded" in html
+    assert "Full inputs and outputs are captured only when enabled" in html
+    assert "Stored details appear as recorded" in html
     assert "local access only" in html
     assert "separate local retention policy" in html
 
@@ -38,7 +38,7 @@ def test_operations_views_name_distinct_records_and_trace_availability() -> None
     assert "Live scheduler work" in DASHBOARD_HTML
     assert "Request history" in DASHBOARD_HTML
     assert "Trace availability" in DASHBOARD_HTML
-    assert "Agent task runs" in DASHBOARD_HTML
+    assert "Task runs" in DASHBOARD_HTML
     assert "function requestTraceAvailability(request)" in DASHBOARD_HTML
 
 

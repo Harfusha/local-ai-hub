@@ -147,4 +147,5 @@ def test_workspace_inventory_exposes_verification_limits_and_review_only_action(
     assert 'id="ragWorkspaceStateFilter"' in DASHBOARD_HTML
     assert 'id="ragWorkspaceReviewBtn"' in DASHBOARD_HTML
     assert "Root availability has not been verified" in DASHBOARD_HTML
-    assert "No workspaces are deleted by this review" in DASHBOARD_HTML
+    assert "This review only lists indexes" in DASHBOARD_HTML
+    assert "keep a recoverable copy" in DASHBOARD_HTML
