@@ -46,6 +46,25 @@ from local_ai_hub.process_utils import (
     close_job_object, pid_alive, process_identity, process_parent_pid, process_owner_state, terminate_tree,
 )
 
+def _read_published_owners(state_dir, *, deadline):
+    while True:
+        snapshot = {}
+        try:
+            pid_text = (state_dir / "hub.pid").read_text(encoding="ascii").strip()
+            hub_owner = json.loads((state_dir / "hub.owner.json").read_text(encoding="utf-8"))
+            supervisor_owner = json.loads((state_dir / "supervisor.owner.json").read_text(encoding="utf-8"))
+            snapshot = {"pid_text": pid_text, "hub_owner": hub_owner, "supervisor_owner": supervisor_owner}
+            if pid_text:
+                hub_pid = int(pid_text)
+                if int(hub_owner["pid"]) == hub_pid and process_owner_state(hub_owner, state_dir, "hub") == "owned" and process_owner_state(supervisor_owner, state_dir, "supervisor") == "owned":
+                    return hub_pid, hub_owner, supervisor_owner
+        except (PermissionError, FileNotFoundError) as exc:
+            snapshot = {"read_error": repr(exc)}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"owner publication did not settle within startup deadline: {snapshot}")
+        time.sleep(min(0.01, remaining))
+
 client = mcp_server.CLIENT
 assert client.auto_start is True
 real_popen = real_subprocess.Popen
@@ -139,11 +158,9 @@ try:
     assert launches[0][0] is child
     assert child.poll() is None
     state_dir = Path(client.config["server"]["state_dir"])
-    hub_pid = int((state_dir / "hub.pid").read_text(encoding="ascii").strip())
-    hub_owner = json.loads((state_dir / "hub.owner.json").read_text(encoding="utf-8"))
+    hub_pid, hub_owner, supervisor_owner = _read_published_owners(state_dir, deadline=started_at + 12.0)
     assert int(hub_owner["pid"]) == hub_pid
     assert process_owner_state(hub_owner, state_dir, "hub") == "owned"
-    supervisor_owner = json.loads((state_dir / "supervisor.owner.json").read_text(encoding="utf-8"))
     assert process_owner_state(supervisor_owner, state_dir, "supervisor") == "owned"
     supervisor_pid = int(supervisor_owner["pid"])
     assert process_identity(child.pid) == child._local_ai_process_identity
@@ -336,3 +353,50 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
     assert result["argv"][1:] == ["-m", "local_ai_hub.supervisor", "--config", str(config_path)]
     assert Path(result["package_source"]).resolve() == source_root / "local_ai_hub" / "__init__.py"
     assert Path(result["entrypoint_source"]).resolve() == source_root / "local_ai_hub" / "__main__.py"
+
+
+@pytest.mark.parametrize("fault", ["sharing", "mismatch", "empty_pid", "permanent_sharing", "permanent_mismatch", "corrupt"])
+def test_owner_observation_waits_for_coherent_publication_within_existing_deadline(fault):
+    import ast
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    attempts = [0]
+
+    def sleep(seconds):
+        assert 0 < seconds <= 0.01
+        clock[0] += seconds
+
+    class StateDirectory:
+        def __truediv__(self, name):
+            class PublishedFile:
+                def read_text(self, *, encoding):
+                    if name == "hub.pid":
+                        attempts[0] += 1
+                        return "" if fault == "empty_pid" and attempts[0] == 1 else "11"
+                    if name == "hub.owner.json":
+                        if fault == "permanent_sharing" or (fault == "sharing" and attempts[0] == 1):
+                            raise PermissionError("publication sharing denial")
+                        if fault == "corrupt":
+                            return "not JSON"
+                        pid = 12 if fault == "permanent_mismatch" or (fault == "mismatch" and attempts[0] == 1) else 11
+                        return json.dumps({"pid": pid})
+                    assert name == "supervisor.owner.json"
+                    return json.dumps({"pid": 22})
+            return PublishedFile()
+
+    namespace = {"json": json, "time": SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep), "process_owner_state": lambda *_: "owned"}
+    function = next(node for node in ast.parse(_MCP_CHILD_SCRIPT).body if isinstance(node, ast.FunctionDef) and node.name == "_read_published_owners")
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<owner-publication-observation>", "exec"), namespace)
+    observe = namespace["_read_published_owners"]
+    if fault.startswith("permanent"):
+        with pytest.raises(AssertionError, match="owner publication"):
+            observe(StateDirectory(), deadline=0.03)
+        assert clock[0] == pytest.approx(0.03) and attempts[0] <= 4
+    elif fault == "corrupt":
+        with pytest.raises(json.JSONDecodeError):
+            observe(StateDirectory(), deadline=0.03)
+        assert clock[0] == 0 and attempts[0] == 1
+    else:
+        assert observe(StateDirectory(), deadline=0.03) == (11, {"pid": 11}, {"pid": 22})
+        assert attempts[0] == 2 and clock[0] == pytest.approx(0.01)
