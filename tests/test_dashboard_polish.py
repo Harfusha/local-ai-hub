@@ -23,6 +23,31 @@ def extract(start: str, end: str) -> str:
     return DASHBOARD_HTML[first:DASHBOARD_HTML.index(end, first)]
 
 
+def test_tasks_subtabs_stay_on_tasks_and_exclude_coordination_shortcuts():
+    local_tabs = re.findall(r'data-agentos-tab="([^"]+)"', DASHBOARD_HTML)
+    assert local_tabs == ["tasks", "memory", "incidents", "trajectories"]
+    source = extract("function switchAgentOsSubtab(", "document.querySelectorAll('.subtab-btn[data-agentos-tab]')")
+    run_javascript(source, """
+const nodes={};let trajectoryLoads=0;
+for(const key of ['tasks','memory','incidents','trajectories']){
+  const suffix=key[0].toUpperCase()+key.slice(1);
+  nodes['subtab'+suffix]={classList:{toggle(name,value){this.active=value}}};
+  nodes['agentOs'+suffix+'Sec']={style:{display:'none'}};
+}
+const $=id=>nodes[id];
+function switchTab(){assert.fail('Tasks subtabs must not switch pages')}
+function switchCoordSubtab(){assert.fail('Tasks subtabs must not switch to Coordination')}
+function loadTrajectories(){trajectoryLoads++}
+for(const key of ['tasks','memory','incidents','trajectories']){
+  switchAgentOsSubtab(key);
+  assert.equal(nodes['agentOs'+key[0].toUpperCase()+key.slice(1)+'Sec'].style.display,'block');
+}
+assert.equal(trajectoryLoads,1);
+switchAgentOsSubtab('board');
+assert.equal(nodes.agentOsTrajectoriesSec.style.display,'block');
+""")
+
+
 def test_initial_form_fields_have_accessible_names():
     class Fields(HTMLParser):
         def __init__(self):

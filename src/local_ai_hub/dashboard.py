@@ -548,9 +548,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     </div>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
-      <button class="subtab-btn" id="subtabBoard" data-agentos-tab="board">Project Board</button>
-      <button class="subtab-btn" id="subtabSemaphores" data-agentos-tab="semaphores">Semaphores &amp; Locks</button>
-      <button class="subtab-btn" id="subtabMilestones" data-agentos-tab="milestones">Milestones</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
       <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Incidents &amp; lessons</button>
       <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Run history</button>
@@ -2452,8 +2449,18 @@ function moveTraceTab(tab,key){
   const view=tabs[nextIndex]?.dataset.traceView;if(!view)return;
   setTraceView(view);requestAnimationFrame(()=>document.getElementById('trace-tab-'+view)?.focus());
 }
+function renderTraceLoadState(state,message){
+  const body=$('tracePageBody');if(!body)return;
+  const heading=state==='loading'?'Loading trace':state==='paused'?'Trace loading paused':'Trace unavailable';
+  const detail=(activeTraceData?'Showing the last loaded details. ':'')+message;
+  const markup=`<section class="diag-banner ${state==='error'?'bad':'warn'}" role="status" aria-live="polite" id="traceLoadState"><b>${esc(heading)}</b><p>${esc(detail)}</p></section>`;
+  if(activeTraceData){$('traceLoadState')?.remove();body.insertAdjacentHTML('afterbegin',markup)}
+  else{body.className='trace-page-body';body.innerHTML=markup}
+  const live=$('tracePageLive');if(live){live.textContent=heading;live.className='tiny '+(state==='error'?'bad':'warn')}
+}
 async function openTrace(id){
   const pollTraceId=String(id||''),pollGeneration=++tracePollGeneration;activeTraceId=pollTraceId;traceSeq=0;traceEvents=[];traceEventTotal=0;traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;traceOptionalDetailsOpen=false;
+  renderTraceLoadState('loading','Fetching the selected trace…');
   renderTraceList(lastTraces);switchTab('traceInspector');
   if(traceDetailPoller){traceDetailPoller.stop();traceDetailPoller=null}
   let pollInFlight=false,lastTracePollSignature='',terminalPayloadRequested=false;
@@ -2467,11 +2474,11 @@ async function openTrace(id){
       const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq+'&limit=100&max_bytes=8388608',opts),d=await r.json();
       if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;
       if(d.cursor_reset){traceSeq=0;traceEvents=[];traceEventTotal=0;}
-      if(d.success){
+      if(r.ok&&d.success===true){
         const signature=JSON.stringify([d.state,d.terminal,d.next_seq,d.events_total,d.updated_at,d.error]);
         const changed=signature!==lastTracePollSignature;lastTracePollSignature=signature;
         traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;
-        if(changed)renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal,has_older_events:traceEventTotal>traceEvents.length,events_before_seq:traceEvents[0]?.seq||0,has_newer_events:false});
+        if(changed||$('traceLoadState'))renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal,has_older_events:traceEventTotal>traceEvents.length,events_before_seq:traceEvents[0]?.seq||0,has_newer_events:false});
         if(d.terminal&&!terminalPayloadRequested){
           terminalPayloadRequested=true;const requestedTraceId=pollTraceId,base={...d,events:traceEvents,events_total:traceEventTotal};
           fetchPrimaryTraceContent(requestedTraceId,base).then(full=>{if(activeTraceId!==requestedTraceId||pollGeneration!==tracePollGeneration)return;activeTraceData={...activeTraceData,...full,metrics:activeTraceData?.metrics};renderTraceDetail(activeTraceData);}).catch(error=>{if(activeTraceId===requestedTraceId){activeTraceData={...activeTraceData,full_payload_error:String(error?.message||error)};renderTraceDetail(activeTraceData);}});
@@ -2479,9 +2486,10 @@ async function openTrace(id){
         }
         if(d.terminal&&!d.has_more&&!d.events_has_more&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){traceDetailPoller?.stop();traceDetailPoller=null}
         return {changed};
-      }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return false;
-      }else{openModal(d,'Trace error');traceDetailPoller?.stop();traceDetailPoller=null;return false}
-    }catch(e){if(isCurrent()&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId&&!controller?.signal.aborted){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}return false;
+      }else if(d.retryable===true){
+        renderTraceLoadState(d.error_code==='operational_mode_blocked'?'paused':'error',(d.error||'HTTP '+r.status)+'. Retrying automatically while this page is open.');return false;
+      }else{renderTraceLoadState('error',d.error||'HTTP '+r.status);traceDetailPoller?.stop();traceDetailPoller=null;return false}
+    }catch(e){if(isCurrent()&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId&&!controller?.signal.aborted){renderTraceLoadState('error',String(e?.message||e)+'. Retrying automatically while this page is open.');}return false;
     }finally{pollInFlight=false;if(tracePollAbortController===controller)tracePollAbortController=null}
   };
   traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});
@@ -5214,12 +5222,8 @@ async function loadAgentOsView(){
 }
 
 function switchAgentOsSubtab(tabKey){
-  if(['board','semaphores','milestones'].includes(tabKey)){
-    switchTab('coordination');
-    switchCoordSubtab(tabKey);
-    return;
-  }
   const subtabs=['tasks','memory','incidents','trajectories'];
+  if(!subtabs.includes(tabKey))return;
   subtabs.forEach(t=>{
     const btn=$('subtab'+t.charAt(0).toUpperCase()+t.slice(1));
     const sec=$('agentOs'+t.charAt(0).toUpperCase()+t.slice(1)+'Sec');
