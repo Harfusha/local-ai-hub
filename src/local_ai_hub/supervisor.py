@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -118,13 +119,20 @@ class Supervisor:
             with path.open("ab") as log_file:
                 log_file.write(encoded)
 
-    def _drain_hub_stderr(self, stream: Any) -> None:
+    def _drain_hub_stderr(self, stream: Any, pid: int | None = None) -> None:
         stderr_path = self.state_dir / "logs" / "hub_stderr.log"
+        first_chunk = True
         try:
             while True:
                 chunk = stream.readline(8192)
                 if not chunk:
                     break
+                if first_chunk:
+                    self._append_bounded_log(
+                        stderr_path,
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} hub stderr pid={pid}\n",
+                    )
+                    first_chunk = False
                 self._append_bounded_log(stderr_path, chunk.decode("utf-8", errors="replace"))
         except (OSError, ValueError):
             pass
@@ -443,7 +451,7 @@ class Supervisor:
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
-        command = [py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"]
+        command = [py_exe, "-X", "utf8", "-X", "faulthandler", "-m", "local_ai_hub.http_server"]
         if sys.platform == "win32":
             # Windows children inherit this mode; suppress WER dialogs for background services.
             set_error_mode = ctypes.WinDLL("kernel32", use_last_error=True).SetErrorMode
@@ -472,6 +480,9 @@ class Supervisor:
             return False
 
     def _start_child(self) -> subprocess.Popen[Any]:
+        previous_child = self.child
+        if previous_child is not None and previous_child.poll() is not None:
+            self._log_child_exit(previous_child, reason="already_exited_before_restart")
         self.child_ready = False
         child = self.spawn_hub()
         self.child = child
@@ -482,6 +493,7 @@ class Supervisor:
         if owner is None or not self._persist_hub_owner(owner):
             stopped = terminate_process_handle(child, self.child_pidfd, grace_seconds=2.0)
             if stopped:
+                self._log_child_exit(child, reason="owner_tracking_failed")
                 close_pidfd(self.child_pidfd)
                 self.child_pidfd = None
                 self.child = None
@@ -492,12 +504,30 @@ class Supervisor:
             raise RuntimeError("could not persist hub process owner after spawn")
         stderr_stream = getattr(child, "stderr", None)
         if stderr_stream is not None:
-            threading.Thread(target=self._drain_hub_stderr, args=(stderr_stream,), daemon=True).start()
+            threading.Thread(target=self._drain_hub_stderr, args=(stderr_stream, int(child.pid)), daemon=True).start()
+        self.log(
+            f"hub spawned pid={child.pid} supervisor_pid={os.getpid()} "
+            f"stderr={self.state_dir / 'logs' / 'hub_stderr.log'} faulthandler=enabled"
+        )
         return child
+
+    def _log_child_exit(self, child: subprocess.Popen[Any], *, reason: str) -> None:
+        exit_code = child.poll()
+        native_status = f"0x{exit_code & 0xffffffff:08x}" if isinstance(exit_code, int) else "unknown"
+        self.log(
+            f"hub exited pid={child.pid} exit_code={exit_code} native_status={native_status} reason={reason}"
+        )
+
+    def _handle_signal(self, signum: int, _frame: Any = None) -> None:
+        # Avoid logging/locks in a signal handler: the interrupted code may own them.
+        self._stop_reason = f"signal={int(signum)}"
+        self.stopping = True
 
     def terminate_child(self) -> bool:
         child = self.child
-        if child is not None and child.poll() is None:
+        was_running = child is not None and child.poll() is None
+        if was_running:
+            self.log(f"hub termination requested pid={child.pid}")
             if not terminate_process_handle(child, self.child_pidfd, grace_seconds=5.0):
                 self.log("hub child not signaled; safe retained process handle unavailable")
                 return False
@@ -513,6 +543,7 @@ class Supervisor:
             except (OSError, subprocess.TimeoutExpired):
                 if child.poll() is None:
                     return False
+            self._log_child_exit(child, reason="termination_requested" if was_running else "already_exited")
             close_pidfd(self.child_pidfd)
             self.child_pidfd = None
             self.child = None
@@ -532,9 +563,10 @@ class Supervisor:
         supervisor_owner = process_owner_record(os.getpid(), self.state_dir, "supervisor")
         if supervisor_owner:
             atomic_json(self.owner_path, supervisor_owner)
+        self._stop_reason = "loop_finished"
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                signal.signal(sig, lambda *_: setattr(self, "stopping", True))
+                signal.signal(sig, self._handle_signal)
             except Exception:
                 pass
 
@@ -548,11 +580,12 @@ class Supervisor:
         cooldown = max(5.0, float(self.cfg.get("rapid_crash_cooldown_seconds", 60.0)))
         backoff = initial_backoff
         unhealthy_since = 0.0
-        self.log("supervisor started")
+        self.log(f"supervisor started pid={os.getpid()} parent_pid={os.getppid()} executable={sys.executable}")
         try:
             while not self.stopping:
                 if bool(self.cfg.get("respect_disabled_marker", True)) and self.disabled_path.exists():
                     self.log("disabled marker observed; stopping")
+                    self._stop_reason = "disabled_marker"
                     self.stopping = True
                     break
                 if self.child is None:
@@ -632,12 +665,16 @@ class Supervisor:
                     self.write_status("degraded", "hub failed health check", ollama_online=ollama_online)
                     time.sleep(backoff)
                     backoff = min(max_backoff, backoff * 2)
+        except BaseException:
+            self._stop_reason = "unhandled_exception"
+            self.log(f"supervisor exception pid={os.getpid()}\n{traceback.format_exc()}")
+            raise
         finally:
             self.write_status("stopping", ollama_online=False)
             if not self.terminate_child():
                 self.log("shutdown left hub running; safe termination unavailable")
             self.release_lock()
-            self.log("supervisor stopped")
+            self.log(f"supervisor stopped pid={os.getpid()} reason={self._stop_reason}")
         return 0
 
 

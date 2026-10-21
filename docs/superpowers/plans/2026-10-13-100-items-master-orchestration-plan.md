@@ -1,12 +1,16 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
-## Current status — audit remediation, 2026-10-20
+## Current status — evidence reconciliation, 2026-10-21
 
-- **Owner / work item:** Codex primary, `audit-remediation-20261020`; direct `master` baseline `9dbd92fe0d8e26d291497db979b3ca44196196bf`.
-- **Canonical current ledger:** [2026-10-20 audit remediation](2026-10-20-audit-remediation.md), covering F01–F24 and R01–R16 without duplicate chats or worktrees.
-- **Status:** implementation in progress. Integrity cohort: 94 passed / 1 skipped (`req_3c9ff40876be`). Ownership/protocol cohort: 46 passed (`req_30f623663fbe`). These results prove their specific source snapshots, not the unfinished final candidate.
-- **Next:** finish remaining protocol/transport/dashboard/reliability work, synchronize prompts, then validate the integrated candidate and record final limits.
-- **Evidence boundary:** all sections below are chronological history. Older deferred-test instructions, success reports and candidate IDs are not the current gate or current-source/runtime proof. No deployment or production data conversion has occurred in this remediation.
+- **Integration owner:** existing `audit-remediation-20261020`, chat `01a15f47-a804-7290-8d3b-f55b82fbb4b0`; direct `master`. Archive, UI and documentation owners released their scopes; the primary owns integration. No new task or broad audit.
+- **Candidate:** incident root binding/filtering committed in `ae590a943e176202ac3cb197dbda2936b5e26fdb`; UI committed in `ef842393057039a725244a5921770c92e9a46491`. The handed-off maintenance/diagnostic source and these original plans form the next integration unit. Its final source identity and fresh validation state are recorded in the authoritative checkpoint. The diagnostic regression block passed 46 tests in a native CPU run during gaming; this is native evidence, not a broker receipt. Source-only diagnostics do not establish the cause of earlier process exits.
+- **RAG recovery:** `rag-archive-recovery-20261021/final-verification.json` verifies independent active plus four historical identities (`nlink=1`), exact active offline bytes, preserved damaged image, configuration, fresh HTTP/readiness and eight-tool MCP. Other 5,313 retained paths keep original size/mtime/inode. Original v4 table contents match creation-time typed logical digests; raw bytes differ. Three runtime archives match the verified offline audit-backup point; their creation-time contents remain NOT VERIFIED. The old 6/1 failed joint gate is historical and still needs a new candidate-wide joint pass. Do not repeat recovery or compare a subsequently live-written active DB against its old offline hash.
+- **Tests/UI evidence:** historical full union has 11,748 unique identities, 11,632 passed / 116 skipped, no failures/errors; an independent artifact check confirms disjoint partitions and real receipt bindings for its older fingerprint. It does not validate later code. Backend focused regression: 89 passed. UI fresh postcommit groups total 251 passed on snapshot `982c8cba11335f8ed789a95d6b1ee9f83827914672f69e4518fdf087cdd9315d`; actual 11 desktop plus 11 mobile screens and incident POST/scoped GET are recorded. UI server was isolated and stopped; installed production acceptance remains a separate gate.
+- **Budget/decisions:** user approved 380 external calls / 30,000 compute seconds for this same original task. `approved-audit-budget-30000-380-result.json` verifies unchanged consumption at application: 327 calls / 23,290.590879745247 seconds; subsequent work must remain charged. Exact 13 optional dependency advisory/version exceptions remain accepted; raw scan is not clean and SBOM scope is incomplete. No generic security or previous budget approval is pending.
+- **Installed/evidence boundary:** canonical editable installation 5.0.0 is distinct from isolated wheel smoke. Final source, full suite, package, installed provenance, functional optional backends, HTTP/MCP/browser/process and configuration/data evidence must bind the integrated candidate. Hosted CI, general architectural/model answer quality and unmeasured trace cadence/main-thread metrics are not inferred from local contracts or UI rendering.
+- **Authoritative completion:** actual current task status, exact final revision, budget consumption and fresh acceptance receipts are recorded in `C:/Users/Adam/.codex/visualizations/2026/10/20/01a1584b-7f42-7240-9b36-22be709b1257/audit-remediation-checkpoint.json`. Later evidence supersedes older status snapshots only within its demonstrated scope; no source or historical pass implies current production completion.
+
+- **Gaming execution authorization:** the user subsequently authorized local CPU source work, sequential tests/builds and preparation of already authorized production acceptance while retaining gaming mode. No model inference/startup/pulls, new review dependencies, mode/config bypass, synthetic broker receipts or budget reset. Native command/exit/duration/revision evidence and pending original-task consumption are recorded in the integration evidence directory. Server checkpoint/receipt adoption remains deferred when the gaming gate rejects it.
 
 ## Active goal extension: single local owner, no tenancy — 2026-10-18
 
@@ -1166,7 +1170,9 @@ Commit `5b030df0` resolved the remaining path-policy regression where `_project_
 - Root state databases and running daemons preserved untouched during verification.
 - All code changes, tests, benchmarks, and runtime acceptance criteria are fully met and verified with durable evidence.
 
-### Production Cutover Complete and Goal Closed — 2026-10-18
+### Historical Production Cutover Complete and Goal Closed — 2026-10-18
+
+> Historical owner report for the older candidate only. Retained below, not independently reverified by the 2026-10-21 documentation task. Current F/R and release/data acceptance is defined at the top and in the remediation ledger.
 
 Upon explicit operator authorization, the final production cutover was executed following `docs/MIGRATION_3_TO_4.md` and `state/single-owner-conversion-20261018-1d55c3d703/production-cutover-plan.json`:
 
@@ -1186,7 +1192,7 @@ Upon explicit operator authorization, the final production cutover was executed 
    - Zero-tenancy enforcement: HTTP 400 rejection on `X-LocalAI-Tenant` header (`retired request header: X-LocalAI-Tenant`) and `tenant` payload field (`retired tenancy field: tenant`).
    - Durable proof recorded in `state/single-owner-conversion-20261018-1d55c3d703/production-cutover-proof.json`.
 
-All items in the master orchestration plan, waves 1–6, single-owner no-tenancy spec, and migration guide are complete and verified with durable evidence. Goal is CLOSED.
+Historical closure statement (2026-10-18 candidate only): “All items in the master orchestration plan, waves 1–6, single-owner no-tenancy spec, and migration guide are complete and verified with durable evidence. Goal is CLOSED.” Current release/data acceptance remains OPEN as specified at the top.
 
 
 

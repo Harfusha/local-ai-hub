@@ -19,6 +19,7 @@ import socket
 import sqlite3
 import uuid
 import time
+import traceback
 import threading
 from collections import deque
 from contextlib import contextmanager, nullcontext
@@ -1270,6 +1271,19 @@ def _command_peer_cancellation(
     finally:
         stopped.set()
         watcher.join(timeout=0.25)
+
+
+def _log_http_failure(logger: Any, method: str, path: str, exc: BaseException) -> None:
+    # Stack locations only: messages, source lines and locals can contain secrets.
+    frames = traceback.extract_tb(exc.__traceback__, limit=-32)
+    stack = "\n".join(
+        f"  File {frame.filename!r}, line {frame.lineno}, in {frame.name}"
+        for frame in frames
+    )
+    logger.error(
+        "%s request failed path=%s pid=%s error_type=%s traceback=\n%s",
+        method, urlparse(path).path, os.getpid(), type(exc).__name__, stack or "(unavailable)",
+    )
 
 
 def _is_client_disconnect(exc: BaseException) -> bool:
@@ -5003,7 +5017,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 logger = getattr(APP, "logger", None)
                 if logger is not None:
-                    logger.error("GET request failed error_type=%s", type(exc).__name__)
+                    _log_http_failure(logger, "GET", path, exc)
                 self._send(500, {
                     "success": False,
                     "error": "internal server error",
@@ -8349,12 +8363,13 @@ class Handler(BaseHTTPRequestHandler):
             if _is_client_disconnect(exc):
                 self._finish_debug_trace(499, {"success": False, "terminal": True}, error="client disconnected")
                 self._close_trace_context()
+                return
             elif is_busy_error(exc):
                 self._send_database_locked()
                 return
             logger = getattr(APP, "logger", None)
             if logger is not None:
-                logger.error("POST request failed error_type=%s", type(exc).__name__)
+                _log_http_failure(logger, "POST", path, exc)
             try:
                 self._send(500, {
                     "success": False,
@@ -8464,7 +8479,11 @@ def serve(config_path: str | None = None) -> None:
             requests=int(sec_cfg.get("rate_limit_requests", 600)),
             window_seconds=float(sec_cfg.get("rate_limit_window_seconds", 60.0)),
         )
-        APP.logger.info("hub started version=%s bind=%s port=%s", __version__, cfg.get("bind", "127.0.0.1"), int(cfg.get("port", 11435)))
+        APP.logger.info(
+            "hub started version=%s bind=%s port=%s pid=%s parent_pid=%s",
+            __version__, cfg.get("bind", "127.0.0.1"), int(cfg.get("port", 11435)),
+            os.getpid(), os.getppid(),
+        )
         telemetry_start_attempted = True
         APP.telemetry.session_start(os.getpid(), __version__)
         APP.telemetry.record_system("hub_start", success=True)
@@ -8479,7 +8498,7 @@ def serve(config_path: str | None = None) -> None:
                         app.telemetry.session_stop()
                         app.telemetry.record_system("hub_stop", success=True)
                         app.telemetry.flush(1.0)
-                        app.logger.info("hub stopping version=%s", __version__)
+                        app.logger.info("hub stopping version=%s pid=%s", __version__, os.getpid())
                     except Exception:
                         pass
                 try:

@@ -1546,8 +1546,10 @@ class ProjectPreprocessor:
             result = incremental_vacuum(path) if setup.get("success") else setup
             if not result.get("success"):
                 logger.warning(
-                    "deleted-project database vacuum incomplete (%s)",
+                    "deleted-project database vacuum incomplete path=%s error_type=%s error=%s",
+                    path,
                     result.get("error", "unknown"),
+                    result.get("error_message", result.get("error", "unknown")),
                 )
 
     def cleanup_orphaned_indexes(self, max_roots: int | None = None) -> dict[str, Any]:
@@ -4151,10 +4153,16 @@ class ProjectPreprocessor:
                     (cutoff_30d,),
                 )
                 con.execute("PRAGMA optimize")
-                con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                # A checkpoint cannot run inside the DELETE's write transaction.
+                # Commit pruning first so a busy checkpoint cannot roll it back.
                 con.commit()
+                con.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except sqlite3.DatabaseError as maintenance_exc:
-            logger.warning("Preprocessing database maintenance skipped (%s)", type(maintenance_exc).__name__)
+            logger.warning(
+                "Preprocessing database maintenance skipped path=%s error_type=%s sqlite_error=%s error=%s",
+                self.db_path, type(maintenance_exc).__name__,
+                getattr(maintenance_exc, "sqlite_errorname", None), str(maintenance_exc),
+            )
         for component in (self.code_index, self.deterministic, self.rag):
             try:
                 if component is not None and hasattr(component, "optimize"):

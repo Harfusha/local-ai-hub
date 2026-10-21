@@ -641,7 +641,7 @@ def ensure_incremental_vacuum(path: Path | str, *, timeout_seconds: float = 5.0)
         finally:
             con.close()
     except (OSError, sqlite3.Error) as exc:
-        return {"success": False, "error": type(exc).__name__}
+        return {"success": False, "error": type(exc).__name__, "error_message": str(exc), "path": str(p)}
 
 
 def incremental_vacuum(
