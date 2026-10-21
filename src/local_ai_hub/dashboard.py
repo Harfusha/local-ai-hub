@@ -4454,6 +4454,7 @@ const PHASES = [
   {id:'modules', name:'Module Graph', icon:'📦', desc:'Module topology synthesis'},
   {id:'project', name:'Architecture', icon:'🏗️', desc:'Project-level graph'},
   {id:'hot_queries', name:'Intent Pre-warm', icon:'🔥', desc:'Top query pre-warming'},
+  {id:'diagnostics', name:'Diagnostics', icon:'🩺', desc:'Project diagnostic checks'},
   {id:'complete', name:'Ready', icon:'✅', desc:'Fully indexed & synchronized'}
 ];
 
