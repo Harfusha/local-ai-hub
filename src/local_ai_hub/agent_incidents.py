@@ -1022,7 +1022,18 @@ class IncidentStore:
         resolved: bool | None = None,
         limit: int = 100,
         status: str | None = None,
+        *,
+        root: str | None = None,
     ) -> list[IncidentRecord]:
+        repository_key = None
+        if root is not None:
+            if (
+                not isinstance(root, str) or not root or root != root.strip() or "\x00" in root
+            ):
+                raise ValueError("root must be a canonical non-empty string")
+            repository_key = _incident_scope_key("repository", root)
+            if not repository_key:
+                return []
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         if isinstance(resolved, str):
@@ -1057,6 +1068,9 @@ class IncidentStore:
                 """
                 params: list[Any] = []
                 filters: list[str] = []
+                if repository_key is not None:
+                    filters.append("repository_key = ?")
+                    params.append(repository_key)
                 if resolved is not None:
                     filters.append("resolved = ?")
                     params.append(1 if resolved else 0)

@@ -4074,7 +4074,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/cross_project_graph" and not self._bind_multi_repository_query(query):
             return
-        if path == "/api/agent-state/tasks":
+        if path in {"/api/agent-state/tasks", "/api/agent-state/incidents"}:
             roots = query.get("root", [])
             if roots and roots[0] not in ("", "all", "__all__"):
                 if not self._bind_repository_root_query(query):
@@ -4237,7 +4237,9 @@ class Handler(BaseHTTPRequestHandler):
                 if request_root in ("all", "__all__"):
                     request_root = ""
                 if request_root:
-                    incidents = APP.agent_incidents.find_negative_knowledge("", limit=limit, root=request_root)
+                    incidents = APP.agent_incidents.list_incidents(
+                        resolved=resolved_raw, limit=limit, status=status_raw, root=request_root,
+                    )
                 else:
                     incidents = APP.agent_incidents.list_incidents(resolved=resolved_raw, limit=limit, status=status_raw)
                 self._send(200, {"success": True, "incidents": [i.to_dict() if hasattr(i, "to_dict") else i for i in incidents]}); return
