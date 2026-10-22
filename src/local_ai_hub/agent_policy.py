@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from contextlib import closing
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 import logging
+import json
 import math
 import numbers
 import sqlite3
@@ -12,7 +13,8 @@ import time
 from typing import Any, Mapping
 import uuid
 
-from .agent_tasks import TaskState
+from .agent_tasks import TaskState, _canonical_repository_root
+from .agent_events import AgentEvent
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -690,6 +692,94 @@ class PolicyEngine:
                 "max_external_calls": max_external_calls,
             }.items() if value is not None
         })
+
+    def increase_task_budget(
+        self, task_id: str, *, actor: str, repo_root: str,
+        reason: str, limits: Mapping[str, Any], authorization_actor: str,
+    ) -> dict[str, Any]:
+        """Storage operation; transport must supply its authenticated task actor.
+
+        Recheck persisted ownership and scope under the same write lock as the
+        budget and audit. Never create a task/budget or reset consumption here.
+        """
+        if type(authorization_actor) is not str or authorization_actor != "api_token":
+            raise PermissionError("authenticated installation owner required")
+        for name, value in (("task_id", task_id), ("actor", actor)):
+            if not isinstance(value, str) or not value or value != value.strip() or "\x00" in value:
+                raise ValueError(f"{name} must be a canonical nonempty string")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 4096:
+            raise ValueError("reason must be nonempty and at most 4096 characters")
+        if not isinstance(limits, Mapping) or not limits:
+            raise ValueError("limits must be a nonempty mapping")
+        proposed = dict(limits)
+        allowed = {"max_tokens", "max_compute_seconds", "max_external_calls"}
+        if proposed.keys() - allowed:
+            raise ValueError("unknown budget limit")
+        for name, value in proposed.items():
+            if name == "max_compute_seconds":
+                valid = type(value) in (int, float)
+                if valid:
+                    try:
+                        valid = math.isfinite(value) and value >= 0
+                    except OverflowError:
+                        valid = False
+            else:
+                valid = type(value) is int and 0 <= value <= 2**63 - 1
+            if not valid:
+                raise ValueError(f"invalid {name}")
+        root = _canonical_repository_root(repo_root)
+        store = self.state_store
+        if not store or not store.enabled or not callable(getattr(store, "append_in_transaction", None)):
+            raise BudgetUnavailableError("persistent budget audit unavailable")
+        with self._lock:
+            self._init_table()
+
+            def mutate() -> dict[str, Any]:
+                with closing(connect_sqlite(store.db_path)) as con, con:
+                    con.execute("BEGIN IMMEDIATE")
+                    task = con.execute(
+                        "SELECT owner,status,checkpoint FROM agent_tasks_projection WHERE task_id=?",
+                        (task_id,),
+                    ).fetchone()
+                    if task is None:
+                        raise KeyError(task_id)
+                    owner, status, checkpoint = task
+                    scope = json.loads(checkpoint).get("state_data", {}).get("_agent_task_scope", {})
+                    if (owner != actor or type(scope.get("version")) is not int
+                            or scope["version"] != 2 or scope.get("repo_root") != root):
+                        raise PermissionError("task owner or repository scope mismatch")
+                    if status not in {"planned", "active", "waiting", "blocked", "verifying"}:
+                        raise PermissionError("task is not resumable by this budget action")
+                    row = con.execute(
+                        "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls FROM agent_budgets WHERE task_id=?",
+                        (task_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise BudgetUnavailableError("existing task budget required")
+                    before = Budget(*row)
+                    if tuple(asdict(before).values()) != tuple(row):
+                        raise BudgetUnavailableError("corrupt budget cannot be normalized during an increase")
+                    if any(value <= getattr(before, name) for name, value in proposed.items()):
+                        raise ValueError("every supplied limit must strictly increase")
+                    after = replace(before, **proposed)
+                    event = AgentEvent.create(
+                        stream_id=f"budget:{task_id}", kind="task.budget_increased",
+                        actor=authorization_actor,
+                        payload={"task_id": task_id, "repo_root": root,
+                                 "task_owner": actor,
+                                 "reason": reason, "before": asdict(before), "after": asdict(after)},
+                    )
+                    self._write_budget(con, after)
+                    store.append_in_transaction(con, event)
+                return {"success": True, "budget": asdict(after),
+                        "audit_event_id": event.event_id, "before": asdict(before)}
+
+            try:
+                result = retry_busy(mutate, retries=5, base_delay_seconds=0.01)
+            except sqlite3.Error as exc:
+                raise BudgetUnavailableError("budget update or audit unavailable") from exc
+            self._budgets[task_id] = Budget(**result["budget"])
+            return result
 
     def consume(self, task_id: str, cost: BudgetCost) -> Budget:
         return self._mutate_budget(task_id, cost=cost)
