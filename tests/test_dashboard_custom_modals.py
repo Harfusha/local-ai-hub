@@ -484,6 +484,14 @@ def test_dashboard_table_click_resilience_and_persistence() -> None:
     assert "'agent_stat'" in DASHBOARD_HTML
     assert "'route_stat'" in DASHBOARD_HTML
     assert "'blocked_reason'" in DASHBOARD_HTML
+
+
+def test_agent_os_task_count_is_distinct_from_paginated_rows() -> None:
+    assert 'id="agentOsTasksMore"' in DASHBOARD_HTML
+    assert "total_count" in DASHBOARD_HTML
+    assert "agentOsTaskTotal" in DASHBOARD_HTML
+    assert "agentOsTaskLoadGeneration" in DASHBOARD_HTML
+    assert "shown ·" in DASHBOARD_HTML
     assert "'dead_code'" in DASHBOARD_HTML
     assert "'audit_vulnerability'" in DASHBOARD_HTML
     assert "'arch_edge'" in DASHBOARD_HTML
@@ -998,10 +1006,10 @@ def test_trace_inspector_polling_guards_stale_responses_and_bounds_client_buffer
     for marker in [
         "tracePollGeneration",
         "pollGeneration=++tracePollGeneration",
-        "let pollInFlight=false,lastTracePollSignature='',terminalPayloadRequested=false;",
+        "let pollInFlight=false,lastTracePollSignature='',terminalPayloadRequested=false,timeoutHandle=null,requestTimedOut=false;",
         "pollInFlight||!isCurrent()",
         "pollInFlight=true",
-        "finally{pollInFlight=false",
+        "finally{if(timeoutHandle!==null){clearTimeout(timeoutHandle);timeoutHandle=null}pollInFlight=false",
         "traceAppendEvents(traceEvents,d.events",
         "if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;",
         "traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});",

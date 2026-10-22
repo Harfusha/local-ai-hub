@@ -190,16 +190,53 @@ const apiFetch=async()=>response;
 """)
 
 
+def test_task_counts_distinguish_missing_invalid_and_explicit_zero_totals():
+    source = extract("async function loadAgentOsView({appendTasks=false}={})", "$('agentOsTasksMore')?.addEventListener")
+    source += extract("function renderAgentOsView(){", "function renderAgentOsLoadErrors(){")
+    run_javascript(source, """
+let agentOsTasks=[],agentOsMemories=[],agentOsIncidents=[],agentOsLoadErrors={};
+let agentOsTaskOffset=0,agentOsTaskTotal=null,agentOsActiveTasksTotal=null,agentOsTaskLoadGeneration=0,agentOsTaskPageLoading=false;
+const agentOsTaskPageSize=100;
+const nodes=new Map();
+const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:''});return nodes.get(id)};
+const setAgentOsScopeReady=()=>{},rows=()=>{},renderAgentOsLoadErrors=()=>{};
+let taskPage={tasks:[{task_id:'one',status:'active'}]};
+const fetchDashboardJson=async path=>path.split('?')[0].endsWith('/tasks')?taskPage:{records:[],incidents:[]};
+(async()=>{
+  for(const value of [undefined,null,'0',false,-1,1.5,Infinity]){
+    taskPage={tasks:[{task_id:'one',status:'active'}],total_count:value,active_count:value};
+    await loadAgentOsView();
+    assert.match($('agentOsSummary').textContent,/1 shown · 1 loaded · Task total unavailable/);
+    assert.match($('agentOsState').textContent,/Active count unavailable/);
+    assert.equal($('agentOsTasksMore').hidden,true);
+    assert.equal($('agentOsTasksMore').disabled,true);
+  }
+  taskPage={tasks:[],total_count:0,active_count:0,next_offset:0};
+  await loadAgentOsView();
+  assert.match($('agentOsState').textContent,/0 active · 0 total tasks/);
+  taskPage={tasks:[{task_id:'one',status:'active'}],total_count:201,active_count:7,next_offset:100};
+  await loadAgentOsView();
+  assert.match($('agentOsState').textContent,/7 active · 201 total tasks/);
+  assert.match($('agentOsSummary').textContent,/1 shown · 1 loaded · 201 total tasks/);
+  assert.equal($('agentOsTasksMore').hidden,false);
+  assert.equal($('agentOsTasksMore').disabled,false);
+  assert.equal($('agentOsTasksMore').textContent,'Load next 100 tasks');
+})();
+""")
+
+
 def test_agent_os_partial_failure_remains_visible_after_filtering():
-    source = extract("async function loadAgentOsView()", "function switchAgentOsSubtab(")
+    source = extract("async function loadAgentOsView({appendTasks=false}={})", "$('agentOsTasksMore')?.addEventListener")
     run_javascript(source, """
 let agentOsTasks=[],agentOsMemories=[],agentOsIncidents=[],agentOsLoadErrors={};
 let renders=0;
+let agentOsTaskOffset=0,agentOsTaskTotal=0,agentOsActiveTasksTotal=0,agentOsTaskLoadGeneration=0,agentOsTaskPageLoading=false;
+const agentOsTaskPageSize=100;
 const $=()=>({value:"C:/repo"});
 const setAgentOsScopeReady=()=>{};
 const renderAgentOsView=()=>renders++;
 const fetchDashboardJson=async path=>{
-  if(path.endsWith('/tasks'))throw Error('tasks unavailable');
+  if(path.split('?')[0].endsWith('/tasks'))throw Error('tasks unavailable');
   return path.endsWith('/memory')?{records:[{key:'fact'}]}:{incidents:[]};
 };
 const post=async()=>({incidents:[]});

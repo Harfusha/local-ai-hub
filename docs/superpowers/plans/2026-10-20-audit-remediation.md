@@ -12,7 +12,7 @@
 
 ## Current state — reconciled 2026-10-23
 
-- **Integration owner:** existing `audit-remediation-20261020`, chat `01a15f47-a804-7290-8d3b-f55b82fbb4b0`; direct `master`, sole Git integration writer and CPU runner. The human authorized committing classified completed units. Command/services cleanup has a stable handoff; UI handoff is pending and the API audit owner is still correcting its test scope. Preserve their dirty overlay; do not infer a global freeze. No replacement task or goal.
+- **Integration owner:** existing `audit-remediation-20261020`, chat `01a15f47-a804-7290-8d3b-f55b82fbb4b0`; direct `master`, sole Git integration writer and CPU runner. The human authorized committing classified completed units. Command/services cleanup has a stable handoff; UI source handoff passed final 270-case CPU/browser validation (details below). The API audit owner has declared its final source/test freeze. Preserve all remaining dirty overlay; no replacement task or goal.
 - **Candidate:** committed HEAD `9c2821f5` adds only audited increase-only task-budget storage, its dedicated tests and implementation plan. Its bounded two-file policy regression has 36 PASS, exit=0 and unchanged source identities, recorded in `state/validation/budget-owner-regression-d465cf5fea00.json`. Public HTTP/MCP budget activation is NOT implemented and production budget is unchanged. The full candidate additionally includes the classified-but-uncommitted command, UI and API audit overlay; it has no fresh complete integrated test or production acceptance. Older ae590a94/87967204/0092a7c3 and E3/E5 evidence are historical snapshots, not current acceptance. Snapshot controls, gaming mode, configuration/data and security gates remain preserved.
 - **RAG recovery:** `rag-archive-recovery-20261021/final-verification.json` verifies independent active plus four historical identities (`nlink=1`), exact active offline bytes, preserved damaged image, configuration, fresh HTTP/readiness and eight-tool MCP. Other 5,313 retained paths keep original size/mtime/inode. Original v4 table contents match creation-time typed logical digests; raw bytes differ. Three runtime archives match the verified offline audit-backup point; their creation-time contents remain NOT VERIFIED. The old 6/1 failed joint gate is historical and still needs a new candidate-wide joint pass. Do not repeat recovery or compare a subsequently live-written active DB against its old offline hash.
 - **Tests/UI evidence:** earlier full suites and UI 251/261-pass cohorts are historical. The first primary shard failed 18 incomplete HTTP doubles inheriting installation gaming state. Test-only state binding corrects this without changing production guards. New loading regressions fail against committed 0092a7c3 (9 failed / 2 passed). The combined current source cohort, its exact counts and later full-suite/browser receipts are recorded under the primary integration evidence directory; no earlier result implies current candidate acceptance.
@@ -23,6 +23,20 @@
 - **Gaming execution authorization:** earlier human approval permits bounded local CPU work while preserving gaming. On 2026-10-22 the operator stated the mode was switched, but canonical state still showed gaming revision 97; the operator then chose to switch it personally. The primary never changes this mode without authorization. Native tests keep mode guards and state isolation intact. Server receipts/checkpoints require the actual gate to permit them; native evidence is never represented as a broker receipt.
 
 ### Evidence index and precedence
+
+**Current UI increment (2026-10-23):** `state/validation/integration-cohort-e6e2806eddc6.json`
+records the complete requested fourteen-file dashboard cohort: 270 passed,
+zero skips, exit=0 and unchanged watched source identities. The preinstalled
+headless Chromium test was enabled with T18_ROOT_SOURCE pointing at this
+checkout's src, dashboard SHA256
+`50f7e34cdb3884c74f53b6c83f511a1699ed8d3bec20b31240ce60ee4ba22089`
+and HTTP SHA256
+`80b9f888cc172901b334346420066277d39e8e41c8ecac362f84270a0b03c41d`.
+Chromium was explicitly launched with --disable-gpu; no downloads or production
+mode/restart occurred. This accepts the handed-off UI source/test increment;
+the installed server's current-candidate UI and production acceptance remain
+distinct, unproven gates. The real 11-page desktop/mobile observations are in the
+UI owner's handoff directory, not substitutes for the final installed proof.
 
 External filenames below are relative to `C:/Users/Adam/.codex/visualizations/2026/10/20/01a1584b-7f42-7240-9b36-22be709b1257/`.
 

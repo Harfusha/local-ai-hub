@@ -3,7 +3,6 @@ const fs = require('node:fs/promises');
 const http = require('node:http');
 const { chromium } = require(process.env.T18_PLAYWRIGHT_PACKAGE);
 
-const ACTION_TOKEN = 'mode-control-token-123456';
 const requests = [];
 let html = '';
 let currentMode = 'active';
@@ -23,7 +22,7 @@ function fixtureServer() {
       return;
     }
 
-    const request = { method: req.method, path: url.pathname, token: req.headers['x-localai-token'] || null };
+    const request = { method: req.method, path: url.pathname, token: req.headers['x-localai-token'] || null, client: req.headers['x-localai-client'] || null };
     requests.push(request);
 
     if (req.method === 'GET' && url.pathname === '/api/mode') {
@@ -50,7 +49,8 @@ function fixtureServer() {
       let raw = '';
       for await (const chunk of req) raw += chunk;
       request.body = JSON.parse(raw || '{}');
-      if (request.token !== ACTION_TOKEN) {
+      // Exercise a rejected response independently of the retired token input UI.
+      if (request.body.mode === 'maintenance') {
         respond(res, 401, { success: false, error: 'unauthorized' });
         return;
       }
@@ -80,7 +80,7 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${address.port}`;
   let browser;
   try {
-    browser = await chromium.launch({ headless: true, executablePath: process.env.T18_CHROMIUM_EXECUTABLE });
+    browser = await chromium.launch({ headless: true, args: ['--disable-gpu'], executablePath: process.env.T18_CHROMIUM_EXECUTABLE });
     const context = await browser.newContext();
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
@@ -112,8 +112,6 @@ async function main() {
     const statusPill = await page.locator('#conn').evaluate(el => ({ text: el.textContent.trim(), warning: el.classList.contains('warn-t') }));
     const overviewHealth = await page.locator('#overviewHealthLevel').textContent();
     await page.locator('#controlMenu > summary').click();
-    await page.locator('#apiToken').fill(ACTION_TOKEN);
-    await page.locator('#saveToken').click();
 
     await page.locator('#activityModeGaming').click();
     await page.waitForFunction(() => document.querySelector('#activityModeStatus')?.textContent.includes('accelerator release incomplete'), null, { timeout: 8000 });
@@ -127,8 +125,6 @@ async function main() {
     const partialPost = requests.find(item => item.method === 'POST' && item.path === '/api/admin/mode' && item.body?.mode === 'gaming');
     assert.ok(partialPost, 'gaming click must POST through dashboard apiFetch');
 
-    await page.locator('#apiToken').fill('wrong-action-token');
-    await page.locator('#saveToken').click();
     await page.locator('#activityModeMaintenance').click();
     await page.waitForFunction(() => document.querySelector('#activityModeStatus')?.textContent.includes('Unauthorized (HTTP 401)'), null, { timeout: 8000 });
     const unauthorizedStatus = await page.locator('#activityModeStatus').textContent();
@@ -136,8 +132,6 @@ async function main() {
     const unauthorizedPost = requests.find(item => item.method === 'POST' && item.path === '/api/admin/mode' && item.body?.mode === 'maintenance');
     const buttonsEnabledAfterUnauthorized = await page.locator('[data-activity-mode]').evaluateAll(items => items.every(item => !item.disabled));
 
-    await page.locator('#apiToken').fill(ACTION_TOKEN);
-    await page.locator('#saveToken').click();
     await page.locator('#activityModeActive').click();
     await page.waitForFunction(() => document.querySelector('#activityModeStatus')?.textContent.includes('HTTP 503'), null, { timeout: 8000 });
     const serverErrorStatus = await page.locator('#activityModeStatus').textContent();
@@ -153,6 +147,7 @@ async function main() {
       partialMode: modeAfterPartial,
       partialBadgeText: partialBadgeText?.trim() ?? '',
       partialToken: partialPost?.token ?? null,
+      partialClient: partialPost?.client ?? null,
       partialStatus: partial?.trim() ?? '',
       pressedMode,
       buttonsEnabledAfterPartial,

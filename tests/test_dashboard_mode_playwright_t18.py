@@ -77,11 +77,11 @@ def test_dashboard_mode_dom_auth_and_error_projection(tmp_path: Path) -> None:
     assert receipt["initialMode"] == "active"
     assert receipt["initialModeGetToken"] is None
     assert receipt["overviewHealth"] == "Degraded"
-    expected_pill = {"text": "live", "warning": False} if _ROOT_SOURCE else {"text": "degraded", "warning": True}
-    assert receipt["statusPill"] == expected_pill
+    assert receipt["statusPill"] == {"text": "degraded", "warning": True}
     assert receipt["partialMode"] == "gaming"
     assert receipt["partialBadgeText"] == "Mode: GAMING / PAUSED"
-    assert receipt["partialToken"] == "mode-control-token-123456"
+    assert receipt["partialToken"] is None
+    assert receipt["partialClient"] == "dashboard"
     assert "Mode persisted as GAMING / PAUSED." in receipt["partialStatus"]
     assert "VRAM unload pending" in receipt["partialStatus"]
     assert "accelerator release incomplete" in receipt["partialStatus"]
@@ -91,9 +91,9 @@ def test_dashboard_mode_dom_auth_and_error_projection(tmp_path: Path) -> None:
     assert "VRAM unload complete" in receipt["completedStatus"]
     assert receipt["unauthorizedStatus"] == "Unauthorized (HTTP 401); check the API token."
     assert receipt["modeAfterUnauthorized"] == "gaming"
-    assert receipt["unauthorizedToken"] == "wrong-action-token"
+    assert receipt["unauthorizedToken"] is None
     assert receipt["buttonsEnabledAfterUnauthorized"] is True
     assert receipt["serverErrorStatus"] == "Mode request failed (HTTP 503)."
     assert receipt["modeAfterServerError"] == "gaming"
-    assert receipt["serverErrorToken"] == "mode-control-token-123456"
+    assert receipt["serverErrorToken"] is None
     assert receipt["buttonsEnabledAfterServerError"] is True

@@ -558,12 +558,13 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   <div id="agentOsTasksSec" style="display:block">
     <section class="section">
       <div class="project-toolbar">
-        <input id="agentOsSearch" aria-label="Search tasks" type="search" placeholder="Search tasks by ID, goal, next action..." autocomplete="off">
+        <input id="agentOsSearch" aria-label="Search tasks" type="search" placeholder="Search loaded tasks by ID, goal, next action..." autocomplete="off">
         <select id="agentOsTaskStatus" aria-label="Task status filter"><option value="">All task statuses</option><option value="planned">Planned</option><option value="active">Active</option><option value="verifying">Verifying</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="blocked">Blocked</option></select>
         <button class="btn primary" id="agentOsCreateTaskBtn" style="padding:5px 9px">+ Create Task</button>
         <span class="tiny project-summary" id="agentOsSummary"></span>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Status</th><th>Task ID</th><th>Repository</th><th>Goal</th><th>Scope</th><th>Phase / Next Action</th><th>Criteria</th><th>Updated</th></tr></thead><tbody id="agentOsTasksBody"></tbody></table></div>
+      <div class="project-toolbar" style="justify-content:center"><button class="btn" id="agentOsTasksMore" type="button" hidden>Load next tasks</button></div>
     </section>
   </div>
 
@@ -2470,12 +2471,13 @@ function renderTraceLoadState(state,message){
   else{body.className='trace-page-body';body.innerHTML=markup}
   const live=$('tracePageLive');if(live){live.textContent=heading;live.className='tiny '+(state==='error'?'bad':'warn')}
 }
-async function openTrace(id){
+async function openTrace(id,options={}){
+  const requestTimeoutMs=Math.max(1,Number(options.requestTimeoutMs)||15000);
   const pollTraceId=String(id||''),pollGeneration=++tracePollGeneration;activeTraceId=pollTraceId;traceSeq=0;traceEvents=[];traceEventTotal=0;traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;traceOptionalDetailsOpen=false;
   renderTraceLoadState('loading','Fetching the selected trace…');
   renderTraceList(lastTraces);switchTab('traceInspector');
   if(traceDetailPoller){traceDetailPoller.stop();traceDetailPoller=null}
-  let pollInFlight=false,lastTracePollSignature='',terminalPayloadRequested=false;
+  let pollInFlight=false,lastTracePollSignature='',terminalPayloadRequested=false,timeoutHandle=null,requestTimedOut=false;
   const poll=async isCurrent=>{
     if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||!isCurrent())return false;
     pollInFlight=true;
@@ -2483,7 +2485,9 @@ async function openTrace(id){
     tracePollAbortController=controller;
     try{
       const sinceSeq=traceSeq,opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
-      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq+'&limit=100&max_bytes=8388608',opts),d=await r.json();
+      const request=apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq+'&limit=100&max_bytes=8388608',opts).then(async response=>({response,data:await response.json()}));
+      const timeout=new Promise((_,reject)=>{timeoutHandle=setTimeout(()=>{requestTimedOut=true;controller?.abort();reject(new Error(`Trace request timed out after ${Math.ceil(requestTimeoutMs/1000)} seconds`))},requestTimeoutMs)});
+      const {response:r,data:d}=await Promise.race([request,timeout]);
       if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;
       if(d.cursor_reset){traceSeq=0;traceEvents=[];traceEventTotal=0;}
       if(r.ok&&d.success===true){
@@ -2501,8 +2505,8 @@ async function openTrace(id){
       }else if(d.retryable===true){
         renderTraceLoadState(d.error_code==='operational_mode_blocked'?'paused':'error',(d.error||'HTTP '+r.status)+'. Retrying automatically while this page is open.');return false;
       }else{renderTraceLoadState('error',d.error||'HTTP '+r.status);traceDetailPoller?.stop();traceDetailPoller=null;return false}
-    }catch(e){if(isCurrent()&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId&&!controller?.signal.aborted){renderTraceLoadState('error',String(e?.message||e)+'. Retrying automatically while this page is open.');}return false;
-    }finally{pollInFlight=false;if(tracePollAbortController===controller)tracePollAbortController=null}
+    }catch(e){if(isCurrent()&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId&&(!controller?.signal.aborted||requestTimedOut)){const message=requestTimedOut?`Trace request timed out after ${Math.ceil(requestTimeoutMs/1000)} seconds`:String(e?.message||e);renderTraceLoadState('error',message+'. Retrying automatically while this page is open.');}return false;
+    }finally{if(timeoutHandle!==null){clearTimeout(timeoutHandle);timeoutHandle=null}pollInFlight=false;if(tracePollAbortController===controller)tracePollAbortController=null}
   };
   traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});
   traceDetailPoller.start();
@@ -4728,7 +4732,6 @@ function render(s){
       {k:'repo',label:'Repo',tool:'local_ai_repo',tab:'projects'},
       {k:'tasks',label:'Tasks',tool:'local_ai_task',tab:'performance'},
       {k:'rag',label:'RAG',tool:'local_ai_rag',tab:'performance'},
-      {k:'commands',label:'Commands',tool:'local_ai_command',tab:'commands'},
       {k:'coord',label:'Coord',tool:'local_ai_coord',tab:'work'},
       {k:'artifacts',label:'Artifacts',tool:'local_ai_artifact',tab:'overview'},
       {k:'code_intelligence',label:'Code intel',tool:'AST / Serena / Graph',tab:'projects'},
@@ -5198,23 +5201,35 @@ $('bundleImport')?.addEventListener('click',async()=>{
 
 // ── Agent OS ──────────────────────────────────────────────────────────────────
 let agentOsTasks=[], agentOsMemories=[], agentOsIncidents=[],agentOsLoadErrors={};
+let agentOsTaskOffset=0,agentOsTaskTotal=null,agentOsActiveTasksTotal=null;
+let agentOsTaskLoadGeneration=0,agentOsTaskPageLoading=false;
+const agentOsTaskPageSize=100;
 function setAgentOsScopeReady(ready){
   ['agentOsCreateTaskBtn','agentOsRecordMemBtn','agentOsRecordIncBtn','agentOsCleanup'].forEach(id=>{if($(id))$(id).disabled=!ready});
 }
-async function loadAgentOsView(){
+async function loadAgentOsView({appendTasks=false}={}){
+  if(appendTasks&&agentOsTaskPageLoading)return;
+  const loadGeneration=++agentOsTaskLoadGeneration;
   const repoVal=$('agentOsRepoSelect')?.value?.trim()||'';
   const rootVal=$('agentOsRoot')?.value?.trim()||'';
   const selectedRoot=rootVal||repoVal||'';
   const isAll=!selectedRoot||selectedRoot.toLowerCase()==='all'||selectedRoot==='__all__';
   setAgentOsScopeReady(!isAll&&Boolean(selectedRoot));
+  if(!appendTasks){agentOsTaskOffset=0;agentOsTasks=[];agentOsTaskPageLoading=false;}
+  else agentOsTaskPageLoading=true;
+  if($('agentOsTasksMore'))$('agentOsTasksMore').disabled=true;
+  const requestOffset=agentOsTaskOffset;
 
   const promises=[
-    fetchDashboardJson('/api/agent-state/tasks',{cache:'no-store',unscoped:isAll}),
+    fetchDashboardJson(`/api/agent-state/tasks?limit=${agentOsTaskPageSize}&offset=${requestOffset}&include_stale=true`,{cache:'no-store',unscoped:isAll}),
     fetchDashboardJson('/api/agent-state/memory',{cache:'no-store',unscoped:isAll})
   ];
   promises.push(fetchDashboardJson('/api/agent-state/incidents',{cache:'no-store',unscoped:isAll}));
   const results=await Promise.allSettled(promises);
-  if(($('agentOsRoot')?.value?.trim()||'')!==rootVal)return;
+  if(loadGeneration!==agentOsTaskLoadGeneration||($('agentOsRoot')?.value?.trim()||'')!==rootVal){
+    if(loadGeneration===agentOsTaskLoadGeneration)agentOsTaskPageLoading=false;
+    return;
+  }
 
   agentOsLoadErrors={};
   if(results[0].status==='rejected'){
@@ -5227,11 +5242,20 @@ async function loadAgentOsView(){
     agentOsLoadErrors.incidents=String(results[2].reason?.message||results[2].reason);
   }
 
-  agentOsTasks=results[0].status==='fulfilled'?(results[0].value.tasks||[]):[];
+  if(results[0].status==='fulfilled'){
+    const taskPage=results[0].value;
+    const pageTasks=taskPage.tasks||[];
+    agentOsTasks=appendTasks?[...agentOsTasks,...pageTasks]:pageTasks;
+    agentOsTaskOffset=Number(taskPage.next_offset??(requestOffset+agentOsTaskPageSize));
+    agentOsTaskTotal=Number.isSafeInteger(taskPage.total_count)&&taskPage.total_count>=0?taskPage.total_count:null;
+    agentOsActiveTasksTotal=Number.isSafeInteger(taskPage.active_count)&&taskPage.active_count>=0?taskPage.active_count:null;
+  }else if(!appendTasks){agentOsTaskTotal=null;agentOsActiveTasksTotal=null;}
   agentOsMemories=results[1].status==='fulfilled'?(results[1].value.records||[]):[];
   agentOsIncidents=results[2]?.status==='fulfilled'?(results[2].value.incidents||[]):[];
+  agentOsTaskPageLoading=false;
   renderAgentOsView();
 }
+$('agentOsTasksMore')?.addEventListener('click',()=>loadAgentOsView({appendTasks:true}));
 
 function switchAgentOsSubtab(tabKey){
   const subtabs=['tasks','memory','incidents','trajectories'];
@@ -5283,11 +5307,17 @@ function renderAgentOsView(){
     return hay.includes(incQuery);
   });
 
-  if($('agentOsSummary'))$('agentOsSummary').textContent=`${filteredTasks.length} tasks · ${filteredMem.length} memories · ${filteredInc.length} incidents`;
+  const taskTotalLabel=agentOsTaskTotal===null?'Task total unavailable':`${agentOsTaskTotal} total tasks (all repositories)`;
+  const activeTaskLabel=agentOsActiveTasksTotal===null?'Active count unavailable':`${agentOsActiveTasksTotal} active`;
+  if($('agentOsSummary'))$('agentOsSummary').textContent=`${filteredTasks.length} shown · ${agentOsTasks.length} loaded · ${taskTotalLabel} · ${filteredMem.length} memories · ${filteredInc.length} incidents`;
   if($('agentOsState')){
-    const act=agentOsTasks.filter(t=>String(t.status).toLowerCase()==='active').length;
-    const isAll=!$('agentOsRoot')?.value?.trim()&&!$('agentOsRepoSelect')?.value?.trim();
-    $('agentOsState').textContent=`${act} active · ${agentOsTasks.length} total tasks${isAll?' (all repositories)':''} · ${agentOsMemories.length} memories`;
+    $('agentOsState').textContent=`${activeTaskLabel} · ${taskTotalLabel} · ${agentOsMemories.length} memories`;
+  }
+  const more=$('agentOsTasksMore');
+  if(more){
+    more.hidden=agentOsTaskTotal===null||agentOsTaskOffset>=agentOsTaskTotal;
+    more.disabled=more.hidden||agentOsTaskPageLoading;
+    more.textContent=agentOsTaskTotal===null?'Task pagination unavailable':agentOsTaskPageLoading?'Loading next tasks…':`Load next ${Math.min(agentOsTaskPageSize,Math.max(0,agentOsTaskTotal-agentOsTaskOffset))} tasks`;
   }
 
   rows('agentOsTasksBody',filteredTasks,t=>{

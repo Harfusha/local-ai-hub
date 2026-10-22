@@ -331,7 +331,7 @@ def test_live_pollers_skip_overlapping_requests() -> None:
 
 
 def test_trace_inspector_consumes_pages_with_hard_response_budget() -> None:
-    start = DASHBOARD_HTML.index("async function openTrace(id)")
+    start = DASHBOARD_HTML.index("async function openTrace(id,options={})")
     end = DASHBOARD_HTML.index("function openModal", start)
     source = DASHBOARD_HTML[start:end]
 
