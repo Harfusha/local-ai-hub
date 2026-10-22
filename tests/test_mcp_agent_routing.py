@@ -72,17 +72,18 @@ def test_public_action_parameters_are_explicit_literals() -> None:
 def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, monkeypatch) -> None:
     disabled_config = tmp_path / "disabled.toml"
     disabled_config.write_text(
-        '[features]\nbatch_replacement = false\n\n[server]\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
+        f'[features]\nbatch_replacement = false\n\n[server]\nstate_dir = "{(tmp_path / "disabled-state").as_posix()}"\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
         encoding="utf-8",
     )
     enabled_config = tmp_path / "enabled.toml"
     enabled_config.write_text(
-        '[features]\nbatch_replacement = true\n\n[server]\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
+        f'[features]\nbatch_replacement = true\n\n[server]\nstate_dir = "{(tmp_path / "enabled-state").as_posix()}"\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
         encoding="utf-8",
     )
     try:
         monkeypatch.setenv("LOCAL_AI_CONFIG", str(disabled_config))
         importlib.reload(local_ai_mcp)
+        assert Path(local_ai_mcp.CFG["server"]["state_dir"]) == tmp_path / "disabled-state"
         disabled_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters["properties"]
         assert "batch_replace" not in disabled_schema["action"].get("enum", [])
         assert "edits" not in disabled_schema
@@ -95,6 +96,7 @@ def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, mon
 
         monkeypatch.setenv("LOCAL_AI_CONFIG", str(enabled_config))
         importlib.reload(local_ai_mcp)
+        assert Path(local_ai_mcp.CFG["server"]["state_dir"]) == tmp_path / "enabled-state"
         enabled_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters["properties"]
         coord_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_coord"].parameters["properties"]
         async_task_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]

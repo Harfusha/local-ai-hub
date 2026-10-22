@@ -277,7 +277,7 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert 'Content-Type\':\'application/zip' in DASHBOARD_HTML
     assert 'FormData()' not in DASHBOARD_HTML
     assert 'id="config" class="page"' in DASHBOARD_HTML
-    assert "Recent API requests" in DASHBOARD_HTML
+    assert 'id="page-title-work">Requests</h1>' in DASHBOARD_HTML
     assert "recent_http" in DASHBOARD_HTML
     assert "badge-waiting" in DASHBOARD_HTML
     assert "statusPollInFlight" in DASHBOARD_HTML
@@ -286,7 +286,7 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "scope='+sloScope" in DASHBOARD_HTML
     assert "Since restart" in DASHBOARD_HTML
     assert "probeHealth" in DASHBOARD_HTML
-    assert "Agent debug traces" in DASHBOARD_HTML
+    assert "Request trace inspector" in DASHBOARD_HTML
     assert "/api/debug-traces" in DASHBOARD_HTML
     assert "traceDisplayModel" in DASHBOARD_HTML
     assert "renderHumanModal" in DASHBOARD_HTML
@@ -332,10 +332,16 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
 
 
 def test_live_trace_retryable_detail_errors_do_not_open_terminal_modal():
-    from local_ai_hub.dashboard import DASHBOARD_HTML
+    from test_dashboard_trace_loading import _trace_scenario
 
-    assert "if(d.retryable){" in DASHBOARD_HTML
-    assert "retrying…" in DASHBOARD_HTML
+    _trace_scenario("""
+await openTrace('retryable');await pollers[0].poll(()=>true);
+assert.equal(pollers[0].stopped,false);
+assert.match(body.innerHTML,/Trace loading paused/);
+response=success('retryable');await pollers[0].poll(()=>true);
+assert.match(body.innerHTML,/Loaded retryable/);
+assert.doesNotMatch(body.innerHTML,/Trace loading paused/);
+""")
 
 
 def test_live_trace_rerender_preserves_nested_scroll_positions():

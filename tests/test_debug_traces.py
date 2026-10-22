@@ -453,8 +453,10 @@ def test_dashboard_and_favicon_are_monitor_paths():
 
     assert "/dashboard" in MONITOR_PATHS
     assert "/favicon.ico" in MONITOR_PATHS
-    assert "Podrobný obsah je vypnutý" in DASHBOARD_HTML
-    assert "Podrobná telemetrie ukládá úplný endpoint input/output lokálně" in DASHBOARD_HTML
+    assert 'id="tracePrivacyNotice"' in DASHBOARD_HTML
+    assert "Detailed capture is off by default" in DASHBOARD_HTML
+    assert "Full inputs and outputs are captured only when enabled" in DASHBOARD_HTML
+    assert "with local access only and a separate local retention policy" in DASHBOARD_HTML
     assert "data-trace-reveal" not in DASHBOARD_HTML
     assert "Obsah zkrácen limitem trace úložiště" in DASHBOARD_HTML
 
