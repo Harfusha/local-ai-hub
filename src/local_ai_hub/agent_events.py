@@ -6,6 +6,7 @@ import hashlib
 import copy
 import tempfile
 import json
+import logging
 import math
 import os
 import queue
@@ -28,6 +29,7 @@ from .sqlite_support import (
 )
 
 _MAX_EVENT_GAP_RANGES = 128
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -292,6 +294,8 @@ class AgentStateStore:
             )
         self._lock = threading.RLock()
         self._initialized = False
+        self._schema_preflight_cache: tuple[Any, ...] | None = None
+        self._last_schema_preflight: dict[str, Any] = {}
         self._subscribers: list[queue.Queue[AgentEvent]] = []
         self._subscribers_lock = threading.Lock()
         self._dropped_event_count = 0
@@ -389,7 +393,8 @@ class AgentStateStore:
                             FROM agent_events
                             GROUP BY stream_id
                         """)
-                        con.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
+                        if con.execute("PRAGMA user_version").fetchone()[0] != self._SCHEMA_VERSION:
+                            con.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
                         self._classify_schema(con)
 
                         from .sqlite_support import validate_durable_schema
@@ -411,66 +416,125 @@ class AgentStateStore:
             self._initialized = True
 
     def _preflight_schema_read_only(self) -> None:
-        deadline = time.monotonic() + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
-        with tempfile.TemporaryDirectory(prefix="agent-state-preflight-") as temporary:
-            snapshot_db = Path(temporary) / self.db_path.name
-            # Even mode=ro SQLite connections update live SHM read marks and may
-            # create sidecars. Only open SQLite against our private file snapshot.
+        started = time.monotonic()
+        deadline = started + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
+        metrics: dict[str, Any] = {
+            "status": "error", "phase": "lock", "cache_hit": False,
+            "source_bytes": 0, "copied_bytes": 0,
+            "copy_seconds": 0.0, "validation_seconds": 0.0, "error_type": "",
+        }
+        locked = False
+        try:
+            locked = self._lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
+            if not locked:
+                raise TimeoutError("agent_state schema preflight time limit exceeded")
             sources = [Path(f"{self.db_path}{suffix}") for suffix in ("", "-wal", "-journal")]
 
-            def identity(path: Path) -> tuple[int, ...] | None:
-                try:
-                    metadata = path.stat()
-                except FileNotFoundError:
-                    return None
-                return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-                        metadata.st_mtime_ns, metadata.st_ctime_ns)
-
-            try:
-                before = [identity(path) for path in sources]
-                for path, metadata in zip(sources, before):
-                    if metadata is None:
-                        continue
-                    destination = snapshot_db.parent / path.name
+            def identities() -> tuple[tuple[int, ...] | None, ...]:
+                result = []
+                for path in sources:
                     try:
-                        with path.open("rb") as source, destination.open("xb") as target:
-                            remaining_bytes = metadata[2]
-                            while remaining_bytes:
-                                if time.monotonic() >= deadline:
-                                    raise TimeoutError("agent_state schema preflight time limit exceeded")
-                                chunk = source.read(min(1024 * 1024, remaining_bytes))
-                                if not chunk:
-                                    raise sqlite3.OperationalError("database is locked: schema snapshot changed")
-                                target.write(chunk)
-                                remaining_bytes -= len(chunk)
-                    except FileNotFoundError as exc:
-                        raise sqlite3.OperationalError("database is locked: schema snapshot changed") from exc
-                if [identity(path) for path in sources] != before:
+                        metadata = path.stat()
+                    except FileNotFoundError:
+                        result.append(None)
+                        continue
+                    result.append((metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                   metadata.st_mtime_ns, metadata.st_ctime_ns))
+                return tuple(result)
+
+            metrics["phase"] = "identity"
+            before = identities()
+            metrics["source_bytes"] = sum(item[2] for item in before if item is not None)
+            # A proof belongs to one physical input and validation policy, never a TTL.
+            classifier = self._classify_schema
+            key = (
+                str(self.db_path.resolve()), before, self._SCHEMA_VERSION,
+                self._SCHEMA_OBJECT_SQL_MAX_BYTES,
+                tuple(sorted(self._EXPECTED_OBJECT_SQL_HASHES.items())),
+                getattr(classifier, "__func__", classifier),
+            )
+            if self._schema_preflight_cache == key:
+                if identities() != before:
                     raise sqlite3.OperationalError("database is locked: schema snapshot changed")
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded")
-                uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
-                remaining = max(0.001, deadline - time.monotonic())
-                with closing(sqlite3.connect(uri, uri=True, timeout=min(0.01, remaining))) as con:
-                    busy_ms = max(1, min(10, int(remaining * 1000)))
-                    con.execute(f"PRAGMA busy_timeout={busy_ms}")
-                    con.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)
-                    try:
-                        self._classify_schema(con)
-                    except RuntimeError as exc:
-                        raise DurableSchemaMismatchError(
-                            self.db_path,
-                            [str(exc)],
-                            None,
-                        ) from exc
-            except RuntimeError:
-                raise
-            except sqlite3.DatabaseError as exc:
+                metrics.update(status="ok", phase="reuse", cache_hit=True)
+                return
+            self._schema_preflight_cache = None
+            with tempfile.TemporaryDirectory(prefix="agent-state-preflight-") as temporary:
+                snapshot_db = Path(temporary) / self.db_path.name
+                # Never open live SQLite: even mode=ro can mutate SHM or create sidecars.
+                metrics["phase"] = "copy"
+                copy_started = time.monotonic()
+                try:
+                    for path, metadata in zip(sources, before):
+                        if metadata is None:
+                            continue
+                        destination = snapshot_db.parent / path.name
+                        try:
+                            with path.open("rb") as source, destination.open("xb") as target:
+                                remaining_bytes = metadata[2]
+                                while remaining_bytes:
+                                    if time.monotonic() >= deadline:
+                                        raise TimeoutError("agent_state schema preflight time limit exceeded")
+                                    chunk = source.read(min(1024 * 1024, remaining_bytes))
+                                    if not chunk:
+                                        raise sqlite3.OperationalError("database is locked: schema snapshot changed")
+                                    target.write(chunk)
+                                    metrics["copied_bytes"] += len(chunk)
+                                    remaining_bytes -= len(chunk)
+                        except FileNotFoundError as exc:
+                            raise sqlite3.OperationalError("database is locked: schema snapshot changed") from exc
+                finally:
+                    metrics["copy_seconds"] = time.monotonic() - copy_started
+                if identities() != before:
+                    raise sqlite3.OperationalError("database is locked: schema snapshot changed")
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
-                raise
-            if time.monotonic() >= deadline:
-                raise TimeoutError("agent_state schema preflight time limit exceeded")
+                    raise TimeoutError("agent_state schema preflight time limit exceeded")
+                metrics["phase"] = "validation"
+                validation_started = time.monotonic()
+                try:
+                    uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
+                    remaining = max(0.001, deadline - time.monotonic())
+                    with closing(sqlite3.connect(uri, uri=True, timeout=min(0.01, remaining))) as con:
+                        busy_ms = max(1, min(10, int(remaining * 1000)))
+                        con.execute(f"PRAGMA busy_timeout={busy_ms}")
+                        con.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)
+                        try:
+                            classifier(con)
+                        except RuntimeError as exc:
+                            raise DurableSchemaMismatchError(self.db_path, [str(exc)], None) from exc
+                finally:
+                    metrics["validation_seconds"] = time.monotonic() - validation_started
+                # Live writers may proceed during snapshot validation. Their new
+                # state must get its own proof on the next call.
+                unchanged = identities() == before
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("agent_state schema preflight time limit exceeded")
+            if unchanged:
+                self._schema_preflight_cache = key
+            metrics.update(status="ok", phase="complete")
+        except BaseException as exc:
+            self._schema_preflight_cache = None
+            if isinstance(exc, sqlite3.DatabaseError) and time.monotonic() >= deadline:
+                metrics["error_type"] = "TimeoutError"
+                raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
+            metrics["error_type"] = type(exc).__name__
+            raise
+        finally:
+            metrics["total_seconds"] = time.monotonic() - started
+            self._last_schema_preflight = metrics
+            if locked:
+                self._lock.release()
+            log = logger.info if metrics["status"] == "ok" else logger.warning
+            log(
+                "agent_state schema preflight path=%s status=%s phase=%s cache_hit=%s "
+                "source_bytes=%s copied_bytes=%s copy_seconds=%.6f validation_seconds=%.6f "
+                "total_seconds=%.6f error_type=%s",
+                self.db_path, metrics["status"], metrics["phase"], metrics["cache_hit"],
+                metrics["source_bytes"], metrics["copied_bytes"], metrics["copy_seconds"],
+                metrics["validation_seconds"], metrics["total_seconds"], metrics["error_type"],
+            )
 
     @classmethod
     def _classify_schema(cls, con: sqlite3.Connection) -> tuple[Any, ...]:

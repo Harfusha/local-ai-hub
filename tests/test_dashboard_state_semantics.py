@@ -75,7 +75,7 @@ def test_rag_contents_do_not_prove_index_readiness():
     run_javascript(WORKSPACE_INVENTORY_JS + extract('function ragWorkspaceIdentity(', 'async function loadRagWorkspaces('), """
 const list={},summary={},$=id=>id==='ragWorkspacesList'?list:id==='ragWorkspaceSummary'?summary:null;
 const esc=String,n=String,humanLabel=String;
-const ragWorkspaces=[{root:'C:/repo',chunks:100}];
+const ragWorkspaces=[{root:'C:/repo',chunks:100}],ragWorkspaceLoadError='';
 renderRagWorkspaces();
 assert.match(list.innerHTML,/100 chunks/);
 assert.match(list.innerHTML,/status unreported/);

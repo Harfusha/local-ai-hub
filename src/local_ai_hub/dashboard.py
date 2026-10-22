@@ -1294,14 +1294,26 @@ async function apiFetch(path,opts={}){
   const scoped=scopeAgentOsRequest(path,opts);path=scoped.path;opts=scoped.options;
   opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');opts.headers=h;
   const request=async requestOpts=>{
-    const next={...requestOpts};let controller=null,timer=null;
-    if(!next.signal&&typeof AbortController==='function'){
+    const next={...requestOpts},parentSignal=next.signal;let controller=null,timer=null,timedOut=false,abortParent=null;
+    const cleanup=()=>{if(timer!==null){clearTimeout(timer);timer=null}if(abortParent)parentSignal.removeEventListener('abort',abortParent)};
+    const failure=error=>timedOut?new Error('Request timed out. Refresh this page to retry.'):error;
+    if(typeof AbortController==='function'){
       controller=new AbortController();next.signal=controller.signal;
+      if(parentSignal){abortParent=()=>controller.abort(parentSignal.reason);if(parentSignal.aborted)abortParent();else parentSignal.addEventListener('abort',abortParent,{once:true})}
       const requestedTimeout=Number(next.timeoutMs),timeoutMs=Number.isFinite(requestedTimeout)&&requestedTimeout>0?requestedTimeout:30000;
-      timer=setTimeout(()=>controller.abort(),Math.max(1000,timeoutMs));
+      timer=setTimeout(()=>{timedOut=true;controller.abort();cleanup()},Math.max(1000,timeoutMs));
     }
     delete next.timeoutMs;
-    try{return await nativeFetch(path,next)}finally{if(timer)clearTimeout(timer)}
+    try{
+      const response=await nativeFetch(path,next);let readable=false;
+      for(const method of ['json','text','blob','arrayBuffer','formData']){
+        if(typeof response[method]!=='function')continue;
+        readable=true;const read=response[method].bind(response);
+        response[method]=async(...args)=>{try{return await read(...args)}catch(error){throw failure(error)}finally{cleanup()}};
+      }
+      if(!readable||response.body===null)cleanup();
+      return response;
+    }catch(error){cleanup();throw failure(error)}
   };
   return request(opts);
 }
@@ -5368,10 +5380,11 @@ $('agentOsRecordMemBtn')?.addEventListener('click',openRecordMemoryModal);
 $('agentOsRecordIncBtn')?.addEventListener('click',openRecordIncidentModal);
 
 // ── Models, RAG & Leases ──────────────────────────────────────────────────────
-let ragWorkspaces=[];
+let ragWorkspaces=[],ragWorkspaceLoadError='';
 function ragWorkspaceIdentity(workspace){return String(workspace?.root||workspace?.repository_root||workspace?.workspace||workspace?.id||workspace||'unknown');}
 function renderRagWorkspaces(){
   const list=$('ragWorkspacesList');if(!list)return;
+  if(ragWorkspaceLoadError){if($('ragWorkspaceSummary'))$('ragWorkspaceSummary').textContent='Repository indexes unavailable';list.innerHTML=`<div class="diag-banner bad" role="status">Repository indexes unavailable: ${esc(ragWorkspaceLoadError)}</div>`;return}
   const query=String($('ragWorkspaceSearch')?.value||'').trim().toLowerCase(),filter=$('ragWorkspaceStateFilter')?.value||'';
   const visible=ragWorkspaces.filter(w=>{
     const identity=ragWorkspaceIdentity(w),state=workspaceInventoryState(w);
@@ -5388,9 +5401,10 @@ function renderRagWorkspaces(){
 async function loadRagWorkspaces(){
   try{
     const d=await fetchDashboardJson('/api/rag/workspaces',{cache:'no-store'});
+    ragWorkspaceLoadError='';
     ragWorkspaces=d.workspaces||[];
     renderRagWorkspaces();
-  }catch(e){if($('ragWorkspacesList'))$('ragWorkspacesList').textContent='Failed to load workspaces'}
+  }catch(e){ragWorkspaces=[];ragWorkspaceLoadError=String(e.message||e);renderRagWorkspaces()}
 }
 $('ragWorkspaceSearch')?.addEventListener('input',renderRagWorkspaces);
 $('ragWorkspaceStateFilter')?.addEventListener('change',renderRagWorkspaces);
@@ -5766,36 +5780,38 @@ document.addEventListener('click',e=>{
 // ── Coordination, Project Board & Resource Semaphores ────────────────────────
 let cachedBoardItems = [];
 let cachedSemaphores = {};
+let coordinationLoadErrors={},coordinationLoadGeneration=0;
+function coordinationUnavailable(key){return `<div class="diag-banner bad" role="status">Coordination unavailable: ${esc(coordinationLoadErrors[key])}. Refresh to retry.</div>`}
 
 async function loadCoordinationView(){
-  try{
+    const generation=++coordinationLoadGeneration;
     const [boardRes, semRes, mileRes] = await Promise.allSettled([
-      post('/api/coord/board_item_list', {}),
-      post('/api/coord/semaphore_status', {}),
-      post('/api/coord/milestone_status', {})
+      fetchDashboardJson('/api/coord/board_item_list', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),
+      fetchDashboardJson('/api/coord/semaphore_status', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),
+      fetchDashboardJson('/api/coord/milestone_status', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
     ]);
-
-    if(boardRes.status === 'fulfilled' && boardRes.value?.success){
-      cachedBoardItems = boardRes.value.items || [];
-      renderKanbanBoard();
+    if(generation!==coordinationLoadGeneration)return;
+    coordinationLoadErrors={};
+    for(const [key,result] of [['board',boardRes],['semaphores',semRes],['milestones',mileRes]]){
+      if(result.status==='fulfilled'&&result.value?.success===true)continue;
+      const error=result.status==='rejected'?result.reason:result.value?.error||'Invalid server response';
+      coordinationLoadErrors[key]=String(error?.message||error);
     }
-    if(semRes.status === 'fulfilled' && semRes.value?.success){
-      cachedSemaphores = semRes.value.semaphores || {};
-      renderSemaphoresTable();
-    }
-    if(mileRes.status === 'fulfilled' && mileRes.value?.success){
-      renderMilestonesView(mileRes.value);
-    }
+    cachedBoardItems=coordinationLoadErrors.board?[]:(boardRes.value.items||[]);
+    cachedSemaphores=coordinationLoadErrors.semaphores?{}:(semRes.value.semaphores||{});
+    if(!Array.isArray(cachedBoardItems)||cachedBoardItems.some(item=>!item||typeof item!=='object')){cachedBoardItems=[];coordinationLoadErrors.board='Invalid board data'}
+    if(!cachedSemaphores||typeof cachedSemaphores!=='object'||Array.isArray(cachedSemaphores)||Object.values(cachedSemaphores).some(item=>!item||typeof item!=='object')){cachedSemaphores={};coordinationLoadErrors.semaphores='Invalid semaphore data'}
+    renderKanbanBoard();
+    renderSemaphoresTable();
+    renderMilestonesView(mileRes.status==='fulfilled'?mileRes.value:{});
     updateCoordOverviewCards();
-  }catch(err){
-    console.warn('Coordination load error:', err);
-  }
 }
 
 function renderKanbanBoard(){
   const query = String($('coordBoardSearch')?.value || '').trim().toLowerCase();
   const container = $('kanbanBoardContainer');
   if(!container) return;
+  if(coordinationLoadErrors.board){if($('coordBoardSummaryText'))$('coordBoardSummaryText').textContent='Board unavailable';container.innerHTML=coordinationUnavailable('board');return}
 
   const cols = [
     {key: 'planned', label: 'Planned', icon: '📋'},
@@ -5875,6 +5891,7 @@ function renderKanbanBoard(){
 function renderSemaphoresTable(){
   const body = $('coordSemaphoresBody');
   if(!body) return;
+  if(coordinationLoadErrors.semaphores){if($('coordSemSummary'))$('coordSemSummary').textContent='Semaphores unavailable';body.innerHTML=`<tr><td colspan="6">${coordinationUnavailable('semaphores')}</td></tr>`;return}
   const list = Object.values(cachedSemaphores);
   if($('coordSemSummary')) $('coordSemSummary').textContent = `${list.length} registered semaphores`;
   if(!list.length){
@@ -5900,6 +5917,9 @@ function renderSemaphoresTable(){
 function renderMilestonesView(statusData){
   const grid = $('coordMilestonesGrid');
   if(!grid) return;
+  const errorKey=coordinationLoadErrors.milestones?'milestones':coordinationLoadErrors.board?'board':'';
+  if(errorKey){if($('coordMilestoneSummary'))$('coordMilestoneSummary').textContent='Milestones unavailable';grid.innerHTML=coordinationUnavailable(errorKey);return}
+  if($('coordMilestoneSummary'))$('coordMilestoneSummary').textContent='Milestone progress across board items';
   const milestoneMap = {};
   cachedBoardItems.forEach(item => {
     const m = item.milestone || 'General Backlog';
@@ -5942,19 +5962,19 @@ function renderMilestonesView(statusData){
 function updateCoordOverviewCards(){
   if($('overviewBoardCount')){
     const inProg = cachedBoardItems.filter(i => String(i.status || '').toLowerCase() === 'in_progress').length;
-    $('overviewBoardCount').textContent = `${inProg} / ${cachedBoardItems.length}`;
+    $('overviewBoardCount').textContent = coordinationLoadErrors.board?'—':`${inProg} / ${cachedBoardItems.length}`;
   }
   if($('overviewBoardSub')){
     const blocked = cachedBoardItems.filter(i => String(i.status || '').toLowerCase() === 'blocked').length;
-    $('overviewBoardSub').textContent = `${cachedBoardItems.length} items${blocked ? ` · ${blocked} blocked` : ' · healthy'}`;
+    $('overviewBoardSub').textContent = coordinationLoadErrors.board?'Board unavailable':`${cachedBoardItems.length} items${blocked ? ` · ${blocked} blocked` : ' · healthy'}`;
   }
   if($('overviewSemCount')){
     const sems = Object.values(cachedSemaphores);
     const held = sems.filter(s => (s.active_count || 0) > 0).length;
-    $('overviewSemCount').textContent = `${held} / ${sems.length}`;
+    $('overviewSemCount').textContent = coordinationLoadErrors.semaphores?'—':`${held} / ${sems.length}`;
   }
   if($('overviewSemSub')){
-    $('overviewSemSub').textContent = `${Object.keys(cachedSemaphores).length} semaphores configured`;
+    $('overviewSemSub').textContent = coordinationLoadErrors.semaphores?'Semaphores unavailable':`${Object.keys(cachedSemaphores).length} semaphores configured`;
   }
 }
 

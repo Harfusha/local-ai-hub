@@ -112,3 +112,29 @@ def _test_owned_mutation_fence(request, monkeypatch):
         install_test_work_attempt_fence(self, FakeFencingLeaseStore())
 
     monkeypatch.setattr(CommandBroker, "__init__", init_with_test_fence)
+
+@pytest.fixture(autouse=True)
+def _bind_http_stub_mode_state(monkeypatch, request):
+    """Keep incomplete HTTP test doubles away from the installation's mode file."""
+    module = sys.modules.get("local_ai_hub.http_server")
+    gate = getattr(module, "_http_mode_gate_error", None)
+    if not callable(gate):
+        return
+
+    @wraps(gate)
+    def gate_with_test_state(*args, **kwargs):
+        app = module.APP
+        config = getattr(app, "config", None)
+        jobs_path = getattr(getattr(app, "async_jobs", None), "path", None)
+        if app is not None and jobs_path is None and (not hasattr(app, "config") or isinstance(config, dict)):
+            server = config.get("server", {}) if isinstance(config, dict) else {}
+            if isinstance(server, dict) and "state_dir" not in server:
+                tmp_path = request.getfixturevalue("tmp_path")
+                bound = dict(config) if isinstance(config, dict) else {}
+                bound["server"] = {**server, "state_dir": str(tmp_path / "http-stub-state")}
+                with monkeypatch.context() as binding:
+                    binding.setattr(app, "config", bound, raising=False)
+                    return gate(*args, **kwargs)
+        return gate(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_http_mode_gate_error", gate_with_test_state)

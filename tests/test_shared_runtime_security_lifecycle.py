@@ -552,6 +552,7 @@ def _supervisor_for_lifecycle(tmp_path, monkeypatch, *, headless=""):
         environ=real_os.environ,
         pathsep=real_os.pathsep,
         getpid=real_os.getpid,
+        getppid=real_os.getppid,
         open=real_os.open,
         fstat=real_os.fstat,
         lseek=real_os.lseek,
@@ -775,7 +776,7 @@ def test_supervisor_persists_child_owner_immediately_after_spawn(tmp_path, monke
 
 def test_child_owner_persist_failure_uses_retained_child_handle_only(tmp_path, monkeypatch):
     module, supervisor, _state_dir = _supervisor_for_lifecycle(tmp_path, monkeypatch)
-    child = SimpleNamespace(pid=54321)
+    child = SimpleNamespace(pid=54321, poll=lambda: 0)
     monkeypatch.setattr(supervisor, "spawn_hub", lambda: child)
     monkeypatch.setattr(module, "process_owner_record", lambda *_args: None)
     monkeypatch.setattr(module, "open_pidfd", lambda _pid: 678)
@@ -1886,8 +1887,12 @@ def test_get_internal_error_does_not_disclose_exception(monkeypatch):
     assert responses[0][1]["error_code"] == "internal_error"
     assert "private traceback payload" not in str(responses[0][1])
     assert "private traceback payload" not in str(log_calls)
-    assert log_calls[0][0] == ("GET request failed error_type=%s", "RuntimeError")
-    assert "/api/doctor" not in str(log_calls)
+    arguments = log_calls[0][0]
+    assert arguments[0] == "%s request failed path=%s pid=%s error_type=%s traceback=\n%s"
+    assert arguments[1:3] == ("GET", "/api/doctor")
+    assert isinstance(arguments[3], int)
+    assert arguments[4] == "RuntimeError"
+    assert "test_shared_runtime_security_lifecycle.py" in arguments[5]
 
 
 def test_post_internal_error_does_not_disclose_exception(monkeypatch):
@@ -1904,8 +1909,12 @@ def test_post_internal_error_does_not_disclose_exception(monkeypatch):
     assert responses[0][1]["error_code"] == "internal_error"
     assert "private post payload" not in str(responses[0][1])
     assert "private post payload" not in str(log_calls)
-    assert log_calls[0][0] == ("POST request failed error_type=%s", "RuntimeError")
-    assert "/api/doctor" not in str(log_calls)
+    arguments = log_calls[0][0]
+    assert arguments[0] == "%s request failed path=%s pid=%s error_type=%s traceback=\n%s"
+    assert arguments[1:3] == ("POST", "/api/doctor")
+    assert isinstance(arguments[3], int)
+    assert arguments[4] == "RuntimeError"
+    assert "test_shared_runtime_security_lifecycle.py" in arguments[5]
 
 
 def test_config_route_exposes_file_labels_without_host_paths(monkeypatch, tmp_path):
