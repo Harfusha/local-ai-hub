@@ -151,3 +151,41 @@ def test_other_authorization_kinds_cannot_increase_budget(budget_case, identity)
     with pytest.raises(PermissionError, match="installation owner"):
         increase(budget_case, authorization_actor=identity)
     assert policy.get_budget("existing") == before
+
+
+def budget_broker(case):
+    from local_ai_hub.commands import CommandBroker
+    policy, state, _ = case
+    broker = CommandBroker.__new__(CommandBroker)
+    broker.set_policy_engine(policy)
+    broker.set_task_store(TaskStore(state))
+    return broker
+
+
+def test_broker_uses_persisted_task_owner_for_owner_admin_request(budget_case):
+    policy, _, root = budget_case
+    result = budget_broker(budget_case).increase_task_budget(
+        "existing", root=str(root), reason="finish existing task",
+        limits={"max_compute_seconds": 20}, authorization_actor="api_token",
+        authorization_permissions=frozenset({"admin"}),
+    )
+    assert result["success"] is True
+    assert policy.get_budget("existing").used_compute_seconds == 11
+
+
+@pytest.mark.parametrize("actor,permissions", [
+    ("api_token", frozenset({"read", "write"})),
+    ("supervisor", frozenset({"admin"})),
+    ("action_token", frozenset({"admin"})),
+    ("local", frozenset({"admin"})),
+    ("api_token", ["admin"]),
+])
+def test_broker_rejects_non_owner_admin_authority(budget_case, actor, permissions):
+    policy, _, root = budget_case
+    before = policy.get_budget("existing")
+    with pytest.raises(PermissionError, match="owner admin"):
+        budget_broker(budget_case).increase_task_budget(
+            "existing", root=str(root), reason="finish", limits={"max_compute_seconds": 20},
+            authorization_actor=actor, authorization_permissions=permissions,
+        )
+    assert policy.get_budget("existing") == before

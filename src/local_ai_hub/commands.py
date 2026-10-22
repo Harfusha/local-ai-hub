@@ -3507,6 +3507,34 @@ class CommandBroker:
     def set_task_store(self, task_store: Any) -> None:
         self.task_store = task_store
 
+    def increase_task_budget(
+        self, task_id: str, *, root: str, reason: str, limits: Mapping[str, Any],
+        authorization_actor: str, authorization_permissions: frozenset[str],
+    ) -> dict[str, Any]:
+        """Owner administrative action, separate from exhausted execution admission.
+
+        Authorization values must come from the transport's verified credential
+        context, never request fields or the advisory agent profile header.
+        """
+        if (type(authorization_actor) is not str or authorization_actor != "api_token"
+                or type(authorization_permissions) is not frozenset
+                or "admin" not in authorization_permissions):
+            raise PermissionError("installation owner admin authorization required")
+        if self.task_store is None or self.policy_engine is None:
+            raise RuntimeError("task budget authority unavailable")
+        from .agent_tasks import _canonical_repository_root, _task_matches_scope
+
+        canonical = _canonical_repository_root(root)
+        task = self.task_store.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        if not _task_matches_scope(task, canonical, task_id):
+            raise PermissionError("task repository scope mismatch")
+        return self.policy_engine.increase_task_budget(
+            task_id, actor=task.owner, repo_root=canonical, reason=reason,
+            limits=limits, authorization_actor=authorization_actor,
+        )
+
     def set_fencing_lease_store(self, fencing_lease_store: Any) -> None:
         self.fencing_lease_store = fencing_lease_store
 

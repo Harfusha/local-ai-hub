@@ -170,3 +170,40 @@ test module and this plan only. It does NOT activate an HTTP/MCP/broker action,
 change the live task budget, repair public ownership authorization by itself,
 or establish integrated runtime/release acceptance. Other owners' dirty changes
 are excluded from this increment; their handoffs are requested separately.
+
+## Broker integration in progress
+
+Command/services owner released its source scope. Added a separate
+CommandBroker.increase_task_budget administrative entry point: requires verified
+api_token credential kind plus immutable admin permissions, loads task owner
+from task storage and delegates to the atomic policy operation. Six broker cases
+were added to the dedicated test module. No public endpoint active yet.
+
+`state/validation/integration-cohort-e876e07a2b56.json` records this enlarged
+42-case run reaching 100% item progress but failing to terminate within the
+unchanged 60-second ceiling: exit=124. This is NOT a passing receipt. Diagnose
+the new broker cases and teardown with stack capture instead of raising limits
+or repeating the same whole invocation. Previously committed storage-only
+36-case receipt remains valid only for its own earlier source identities.
+
+API owner granted narrow source handoff for coord action/schema, MCP coord task
+routing and the HTTP agent-state/tasks budget_increase branch. Other audit
+filters remain frozen under that owner; after transport handback they will
+update the new action's inventory disposition. HubClient.coord already forwards
+generic task action kwargs unchanged, so no client source edit is needed.
+
+## Broker diagnostic follow-up
+
+Isolated six new broker cases: 6 PASS, exit=0, stable source identities in
+`state/validation/integration-cohort-36532d55ac6b.json`.
+The full backend+broker+existing policy combination subsequently completed with
+42 PASS in 6.72s, exit=0 and unchanged sources, with timed traceback diagnostics
+enabled: `state/validation/integration-cohort-a2d75a4379cf.json`. The earlier
+timeout is not reproduced and its root cause remains unproven; do not erase it.
+Its before/after difference was only docs/agent-surface-audit.json, not budget
+or broker code. No larger timeout or warning suppression was used.
+
+API owner additionally requested completion be retained in MCP verification
+protected keys; the single literal was added to _VERIFY_PROTECTED_KEYS. Their
+new roundtrip regression must be included in the subsequent public-policy
+validation. This source edit is separate from the tested broker increment.
