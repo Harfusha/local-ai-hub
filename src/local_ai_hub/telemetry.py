@@ -1377,12 +1377,13 @@ class TelemetryStore:
                           COALESCE(SUM(CASE WHEN e.success=0 THEN 1 ELSE 0 END),0)
                    FROM selected AS s
                    LEFT JOIN events AS e ON e.created_at>=s.started_at AND e.created_at<=s.end_time
-                   GROUP BY s.id,s.pid,s.version,s.started_at,s.stopped_at,s.last_heartbeat,
-                            s.exit_clean,s.end_time,s.status
-                   ORDER BY s.started_at DESC""",
+                   GROUP BY s.id""",
                 (self._current_session_id, now, self._current_session_id, cutoff),
             ).fetchall()
 
+        # Session IDs uniquely determine every selected metadata column. Sort
+        # only the bounded result instead of materializing a wide SQL sort.
+        rows.sort(key=lambda row: row[3], reverse=True)
         result = []
         for row in rows:
             (sid, pid, version, started_at, stopped_at, last_heartbeat, exit_clean,
