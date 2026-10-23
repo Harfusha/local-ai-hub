@@ -1,15 +1,64 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
+import sys
 import threading
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import tomllib
 
 import pytest
 
 from tools import wheel_smoke
+
+
+def _install_fake_stdio_client(monkeypatch, payload: dict[str, object]) -> None:
+    class FakeServerParameters:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self, *_streams) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+        async def initialize(self):
+            return SimpleNamespace(serverInfo=SimpleNamespace(name="local-ai", version="test"))
+
+        async def list_tools(self):
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in (
+                "local_ai_artifact", "local_ai_coord", "local_ai_rag", "local_ai_repo",
+                "local_ai_status", "local_ai_task", "local_ai_work",
+            )])
+
+        async def call_tool(self, _name, _arguments):
+            return SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(text=json.dumps(payload))],
+            )
+
+    @asynccontextmanager
+    async def fake_stdio_client(_params):
+        yield object(), object()
+
+    mcp = ModuleType("mcp")
+    mcp.ClientSession = FakeSession
+    mcp.StdioServerParameters = FakeServerParameters
+    client = ModuleType("mcp.client")
+    client.__path__ = []
+    stdio = ModuleType("mcp.client.stdio")
+    stdio.stdio_client = fake_stdio_client
+    monkeypatch.setitem(sys.modules, "mcp", mcp)
+    monkeypatch.setitem(sys.modules, "mcp.client", client)
+    monkeypatch.setitem(sys.modules, "mcp.client.stdio", stdio)
 
 
 @pytest.mark.parametrize(
@@ -120,6 +169,29 @@ def test_stdio_child_disables_autostart_before_mcp_server_main() -> None:
     disable_index = source.index("mcp_server.CLIENT.auto_start = False")
     main_index = source.index("mcp_server.main()")
     assert disable_index < main_index
+
+
+def test_stdio_roundtrip_accepts_compact_status_without_retired_metrics(monkeypatch, tmp_path) -> None:
+    _install_fake_stdio_client(monkeypatch, {"success": True, "ollama_online": False})
+
+    result = asyncio.run(wheel_smoke._stdio_roundtrip(tmp_path / "smoke.toml", cwd=tmp_path, timeout=1))
+
+    assert result == {
+        "server_name": "local-ai",
+        "tool_count": 7,
+        "ollama_online": False,
+    }
+
+
+@pytest.mark.parametrize("metric", ["queued", "cache_hits"])
+def test_stdio_roundtrip_rejects_retired_status_metrics(monkeypatch, tmp_path, metric) -> None:
+    _install_fake_stdio_client(
+        monkeypatch,
+        {"success": True, "ollama_online": False, metric: 0},
+    )
+
+    with pytest.raises(wheel_smoke.SmokeError, match="unnecessary queue or cache metrics"):
+        asyncio.run(wheel_smoke._stdio_roundtrip(tmp_path / "smoke.toml", cwd=tmp_path, timeout=1))
 
 
 def test_http_shutdown_timeout_is_bounded_reported_and_socket_closed() -> None:

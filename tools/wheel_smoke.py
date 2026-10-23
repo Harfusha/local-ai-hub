@@ -238,8 +238,7 @@ async def _stdio_roundtrip(config_path: Path, *, cwd: Path, timeout: float) -> d
     return {
         "server_name": getattr(getattr(initialized, "serverInfo", None), "name", ""),
         "tool_count": len(tools.tools),
-        "queued": payload["queued"],
-        "cache_hits": payload["cache_hits"],
+        "ollama_online": payload["ollama_online"],
     }
 
 
