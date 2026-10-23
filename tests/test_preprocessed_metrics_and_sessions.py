@@ -176,6 +176,36 @@ def test_telemetry_sessions_aggregates_all_session_windows_in_one_query(tmp_path
         telemetry.close()
 
 
+def test_telemetry_sessions_limits_to_newest_100_in_order(tmp_path: Path):
+    telemetry = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.05)
+    try:
+        base = time.time() - 1000.0
+        with closing(sqlite3.connect(telemetry.path)) as con, con:
+            con.executemany(
+                "INSERT INTO process_sessions (pid,version,started_at,last_heartbeat,exit_clean) "
+                "VALUES (?, ?, ?, ?, 0)",
+                [
+                    (pid, "bounded", base + pid, base + pid + 1.0)
+                    for pid in range(102)
+                ],
+            )
+
+        sessions = telemetry.sessions(days=30)
+
+        assert len(sessions) == 100
+        assert [session["pid"] for session in sessions] == list(range(101, 1, -1))
+    finally:
+        telemetry.close()
+
+
+def test_telemetry_sessions_returns_empty_when_no_sessions(tmp_path: Path):
+    telemetry = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.05)
+    try:
+        assert telemetry.sessions(days=30) == []
+    finally:
+        telemetry.close()
+
+
 def test_preprocessed_query_hit_rate_telemetry(tmp_path: Path):
     telemetry = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.05)
     try:

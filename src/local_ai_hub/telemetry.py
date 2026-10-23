@@ -1357,38 +1357,54 @@ class TelemetryStore:
         cutoff = time.time() - max(1, int(days)) * 86400
         now = time.time()
         with closing(self._connect()) as con:
-            rows = con.execute(
-                """WITH selected AS (
-                       SELECT id,pid,version,started_at,stopped_at,last_heartbeat,exit_clean,
-                              CASE WHEN id=? AND stopped_at IS NULL THEN ?
-                                   ELSE COALESCE(stopped_at,last_heartbeat) END AS end_time,
-                              CASE WHEN id=? AND stopped_at IS NULL THEN 'active'
-                                   WHEN exit_clean THEN 'clean_stop' ELSE 'crashed' END AS status
-                       FROM process_sessions WHERE started_at>=?
-                       ORDER BY started_at DESC LIMIT 100
-                   )
-                   SELECT s.id,s.pid,s.version,s.started_at,s.stopped_at,s.last_heartbeat,
-                          s.exit_clean,s.end_time,s.status,
-                          COUNT(e.id),
-                          COALESCE(SUM(e.cache_hit),0),
-                          COALESCE(SUM(CASE WHEN e.event_type='inference' THEN 1 ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN e.event_type='inference' AND e.cache_hit=1 THEN 1 ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN e.event_type='tool_accounting' THEN e.net_cloud_token_delta ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN e.success=0 THEN 1 ELSE 0 END),0)
-                   FROM selected AS s
-                   LEFT JOIN events AS e ON e.created_at>=s.started_at AND e.created_at<=s.end_time
-                   GROUP BY s.id""",
-                (self._current_session_id, now, self._current_session_id, cutoff),
+            session_rows = con.execute(
+                "SELECT id,pid,version,started_at,stopped_at,last_heartbeat,exit_clean "
+                "FROM process_sessions WHERE started_at>=? ORDER BY started_at DESC LIMIT 100",
+                (cutoff,),
             ).fetchall()
+            if not session_rows:
+                return []
 
-        # Session IDs uniquely determine every selected metadata column. Sort
-        # only the bounded result instead of materializing a wide SQL sort.
-        rows.sort(key=lambda row: row[3], reverse=True)
+            sessions = []
+            for row in session_rows:
+                sid, _pid, _version, _started_at, stopped_at, last_heartbeat, exit_clean = row
+                if sid == self._current_session_id and stopped_at is None:
+                    status = "active"
+                    end_time = now
+                elif exit_clean:
+                    status = "clean_stop"
+                    end_time = stopped_at if stopped_at is not None else last_heartbeat
+                else:
+                    status = "crashed"
+                    end_time = stopped_at if stopped_at is not None else last_heartbeat
+                sessions.append((*row, status, end_time))
+
+            aggregates = (
+                "COUNT(*), COALESCE(SUM(cache_hit),0), "
+                "COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),0), "
+                "COALESCE(SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END),0), "
+                "COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN net_cloud_token_delta ELSE 0 END),0), "
+                "COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)"
+            )
+            branches = []
+            parameters = []
+            for position, session in enumerate(sessions):
+                # position is generated locally; all database values remain bound.
+                branches.append(
+                    f"SELECT {position}, {aggregates} FROM events "
+                    "WHERE created_at>=? AND created_at<=?"
+                )
+                parameters.extend((session[3], session[8]))
+            aggregate_sql = " UNION ALL ".join(branches)
+            aggregate_rows = con.execute(aggregate_sql, parameters).fetchall()
+
+        aggregates_by_position = {int(row[0]): row[1:] for row in aggregate_rows}
         result = []
-        for row in rows:
+        for position, session in enumerate(sessions):
             (sid, pid, version, started_at, stopped_at, last_heartbeat, exit_clean,
-             end_time, status, total, total_cache_hits, inf_events, inf_cache_hits,
-             avoided_tokens, failures) = row
+             status, end_time) = session
+            (total, total_cache_hits, inf_events, inf_cache_hits,
+             avoided_tokens, failures) = aggregates_by_position[position]
             duration_seconds = max(0.0, float(end_time - started_at))
             total_events = int(total or 0)
             total_cache_hits = int(total_cache_hits or 0)
@@ -1846,24 +1862,27 @@ class TelemetryStore:
             "SELECT queue_age_ms FROM events INDEXED BY idx_events_created WHERE created_at>=? AND queue_age_ms>0 ORDER BY id DESC LIMIT 1000",
             (cutoff,),
         ).fetchall()
-        outcome = con.execute(
-            """SELECT COALESCE(SUM(CASE WHEN terminal=1 THEN 1 ELSE 0 END),0),
+        metrics = con.execute(
+            """SELECT COUNT(*),
+                      COALESCE(SUM(cache_hit),0),
+                      COALESCE(SUM(CASE WHEN bypass_reason<>'' THEN 1 ELSE 0 END),0),
+                      COALESCE(SUM(CASE WHEN terminal=1 THEN 1 ELSE 0 END),0),
                       COALESCE(SUM(CASE WHEN retryable=1 THEN 1 ELSE 0 END),0),
                       COALESCE(SUM(CASE WHEN terminal>=0 THEN 1 ELSE 0 END),0),
-                      COALESCE(SUM(CASE WHEN retryable>=0 THEN 1 ELSE 0 END),0)
-               FROM events WHERE created_at>=?""",
-            (cutoff,),
-        ).fetchone()
-        receipts = con.execute(
-            """SELECT COALESCE(SUM(receipt_count),0),
+                      COALESCE(SUM(CASE WHEN retryable>=0 THEN 1 ELSE 0 END),0),
+                      COALESCE(SUM(receipt_count),0),
                       COALESCE(SUM(CASE WHEN receipt_count>0 THEN 1 ELSE 0 END),0),
-                      COALESCE(MAX(receipt_count),0)
+                      COALESCE(MAX(receipt_count),0),
+                      COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
                FROM events WHERE created_at>=?""",
             (cutoff,),
         ).fetchone()
-        total = int(con.execute("SELECT COUNT(*) FROM events WHERE created_at>=?", (cutoff,)).fetchone()[0] or 0)
-        cache_hits = int(con.execute("SELECT COALESCE(SUM(cache_hit),0) FROM events WHERE created_at>=?", (cutoff,)).fetchone()[0] or 0)
-        bypass_total = int(con.execute("SELECT COUNT(*) FROM events WHERE created_at>=? AND bypass_reason<>''", (cutoff,)).fetchone()[0] or 0)
+        total = int(metrics[0] or 0)
+        cache_hits = int(metrics[1] or 0)
+        bypass_total = int(metrics[2] or 0)
+        outcome = tuple(int(metrics[index] or 0) for index in range(3, 7))
+        receipts = tuple(int(metrics[index] or 0) for index in range(7, 10))
+        failures = int(metrics[10] or 0)
         truncated = any(len(rows) > limit for rows in (route_rows, cache_rows, bypass_rows))
         queue_ages = [float(row[0] or 0) for row in queue_rows]
         routes = [
@@ -1905,10 +1924,7 @@ class TelemetryStore:
             "receipts": {
                 "events": int(receipts[1]), "total": int(receipts[0]), "max_per_event": int(receipts[2]),
             },
-            "errors": {"failures": int(con.execute(
-                "SELECT COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) FROM events WHERE created_at>=?",
-                (cutoff,),
-            ).fetchone()[0] or 0)},
+            "errors": {"failures": failures},
             "_truncated": truncated,
         }
 
@@ -2124,17 +2140,6 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='http'""",
                 (cutoff,),
             ).fetchone()
-            tool_accounting = con.execute(
-                """SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
-                          COALESCE(SUM(gross_input_tokens_avoided),0), COALESCE(SUM(gross_output_tokens_avoided),0),
-                          COALESCE(SUM(agent_protocol_tokens),0), COALESCE(SUM(tool_request_tokens),0),
-                          COALESCE(SUM(tool_response_tokens),0), COALESCE(SUM(tool_schema_tokens),0),
-                          COALESCE(SUM(local_compute_tokens_avoided),0), COALESCE(SUM(net_cloud_token_delta),0),
-                          COALESCE(SUM(cloud_token_overhead),0), COALESCE(SUM(net_after_schema_token_delta),0),
-                          COALESCE(SUM(schema_adjusted_overhead),0)
-                   FROM events WHERE created_at>=? AND event_type='tool_accounting'""",
-                (cutoff,),
-            ).fetchone()
             # Channel counters are row-level evidence. Aggregate equality can hide
             # legacy rows when another row has overlapping input/output counters.
             unpriced_row = (
@@ -2196,6 +2201,17 @@ class TelemetryStore:
                     (cutoff, boundary_end),
                 ).fetchone()[0])
             else:
+                tool_accounting = con.execute(
+                    """SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
+                              COALESCE(SUM(gross_input_tokens_avoided),0), COALESCE(SUM(gross_output_tokens_avoided),0),
+                              COALESCE(SUM(agent_protocol_tokens),0), COALESCE(SUM(tool_request_tokens),0),
+                              COALESCE(SUM(tool_response_tokens),0), COALESCE(SUM(tool_schema_tokens),0),
+                              COALESCE(SUM(local_compute_tokens_avoided),0), COALESCE(SUM(net_cloud_token_delta),0),
+                              COALESCE(SUM(cloud_token_overhead),0), COALESCE(SUM(net_after_schema_token_delta),0),
+                              COALESCE(SUM(schema_adjusted_overhead),0)
+                       FROM events WHERE created_at>=? AND event_type='tool_accounting'""",
+                    (cutoff,),
+                ).fetchone()
                 pricing_table = (
                     "(SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
                     "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
