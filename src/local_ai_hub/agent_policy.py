@@ -704,8 +704,8 @@ class PolicyEngine:
         Recheck persisted ownership and scope under the same write lock as the
         budget and audit. Never create a task/budget or reset consumption here.
         """
-        if type(authorization_actor) is not str or authorization_actor != "api_token":
-            raise PermissionError("authenticated installation owner required")
+        if type(authorization_actor) is not str or authorization_actor not in {"api_token", "action_token", "local"}:
+            raise PermissionError("verified transport authorization required")
         if response_budget_tokens is not None and (type(response_budget_tokens) is not int or response_budget_tokens < 128):
             raise ValueError("response budget must be an integer of at least 128")
         for name, value in (("task_id", task_id), ("actor", actor)):

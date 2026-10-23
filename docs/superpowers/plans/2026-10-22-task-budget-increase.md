@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use this plan in the existing `audit-remediation-20261020` task; do not create a replacement task or reset counters.
 
-**Goal:** Add a public, owner-authorized action to increase limits on an existing task while preserving usage counters and recording an auditable change.
+**Goal:** Provide a public action for all ordinarily write-authorized callers to increase limits on an existing task while preserving usage counters and recording an auditable change. The operator explicitly removed the special owner/admin-token requirement on 2026-10-23.
 
 **Architecture:** `PolicyEngine` performs an atomic persisted limit-only update and writes an audit row in the same transaction. The coordination action resolves the existing task, verifies its recorded owner and repository scope, then invokes the policy operation; missing task or identity fails closed.
 
@@ -14,7 +14,7 @@
 
 - Update only existing task budgets; only increase limits.
 - Preserve all `used_*` counters exactly.
-- Require task owner, nonempty reason, and an audit row containing before/after limits, preserved usage, actor, and timestamp.
+- Preserve the persisted task owner, require a nonempty reason, and write an audit row containing before/after limits, preserved usage, actual transport actor, and timestamp.
 - Use public Hub action; never modify SQLite directly or bypass the broker.
 - Preserve current dirty files, data, configuration, and release/security gates.
 - No deployment or restart without a fresh candidate-bound reason and authorization.
@@ -22,12 +22,24 @@
 ## Review Focus
 
 - Missing task or owner identity rejects before mutation.
-- Non-owner and mismatched repository scope reject before mutation.
+- Caller-supplied owner/actor overrides and mismatched repository scope reject before mutation. Ordinary loopback/write callers are permitted; no special owner credential is required.
 - Equal/decreased limits reject; omitted limits remain unchanged.
 - Malformed values, NaN, infinity, booleans, or empty reason reject.
 - Audit failure rolls back the budget update; usage counters remain unchanged on success.
 
 ## Current integration checkpoint, 2026-10-23
+
+**Operator policy override, latest:** The human explicitly requested ordinary
+access for all Hub clients instead of a special owner/admin credential. The
+HTTP action now uses existing write authorization, including canonical loopback
+access without a token. Broker/root checks, persisted owner consistency,
+strictly increasing limits, unchanged usage/status/owner and atomic audit remain.
+Earlier owner/admin requirements below describe superseded history. No API
+credential or installation configuration was created or changed. Regression
+cohorts `1c2efaa25533` (80), `248807fb3940` (44), `947db0a3f1e4` (21), and
+`81a3ca31c88b` (64) all passed. Combined attempt `7ca13b68cfac` timed out and
+remains retained; its identical command was not repeated. Current-source package,
+activation and actual same-task increase/resume are separate acceptance gates.
 
 Failed tasks can receive an authorized limit increase without resuming, changing
 the recorded owner, or resetting usage. This avoids the watchdog race caused by
@@ -65,7 +77,7 @@ Production acceptance remains open while that run and installed proof are pendin
 
 **Files:** `src/local_ai_hub/operation_contracts.py`, `src/local_ai_hub/mcp_server.py`, task API dispatch in `src/local_ai_hub/http_server.py` or its registered service, prompt files.
 
-**Interfaces:** Canonical `task_budget_increase` carries `task_id`, explicit absolute root, reason, and proposed limits. The authenticated owner/admin broker resolves the recorded owner on the server; callers cannot substitute an owner. Route only through the registered server service and existing broker.
+**Interfaces:** Canonical `task_budget_increase` carries `task_id`, explicit absolute root, reason, and proposed limits. The ordinary write-authorized broker resolves the recorded owner on the server; callers cannot substitute an owner. Canonical local access without a token is supported. Route only through the registered server service and existing broker.
 
 - [x] Add failing contract and dispatch tests.
 - [x] Wait for the active API-surface audit owner to release overlapping files.

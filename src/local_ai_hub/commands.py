@@ -3236,15 +3236,20 @@ class CommandBroker:
         authorization_actor: str, authorization_permissions: frozenset[str],
         response_budget_tokens: int | None = None,
     ) -> dict[str, Any]:
-        """Owner administrative action, separate from exhausted execution admission.
+        """Ordinary authorized write, separate from exhausted execution admission.
 
         Authorization values must come from the transport's verified credential
         context, never request fields or the advisory agent profile header.
         """
-        if (type(authorization_actor) is not str or authorization_actor != "api_token"
+        if (type(authorization_actor) is not str
                 or type(authorization_permissions) is not frozenset
-                or "admin" not in authorization_permissions):
-            raise PermissionError("installation owner admin authorization required")
+                or not (
+                    authorization_actor == "local" and not authorization_permissions
+                    or authorization_actor == "api_token" and bool(
+                        authorization_permissions & {"write", "admin"})
+                    or authorization_actor == "action_token" and "api:write" in authorization_permissions
+                )):
+            raise PermissionError("task budget write authorization required")
         if self.task_store is None or self.policy_engine is None:
             raise RuntimeError("task budget authority unavailable")
         from .agent_tasks import _canonical_repository_root, _task_matches_scope

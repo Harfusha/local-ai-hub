@@ -86,3 +86,18 @@ Agent Operating System endpoints project durable task, memory, incident, verific
 Retry only an explicitly retryable response, honor `retry_after_seconds`, keep the same request ID for the logical replay, and do not run client-side polling loops. The hub itself coalesces active async jobs and uses per-backend cooldowns for optional code-intelligence runtimes.
 
 The endpoint implementation in `src/local_ai_hub/http_server.py` is the normative contract; the compact MCP interface is the preferred agent integration.
+
+
+
+
+# Existing task budget increases
+
+`POST /api/agent-state/tasks` with `action="budget_increase"` uses ordinary
+write authorization, including canonical loopback access without an API token.
+No special owner/admin credential is required. Supply the existing `task_id`,
+an authorized absolute `root`, a nonempty `reason`, and nested `budget` limits.
+Every supplied maximum must strictly increase; omitted maxima and all consumed
+counters remain unchanged. The broker verifies persisted task scope and records
+the actual transport actor plus before/after values atomically with the update.
+Caller-supplied owner or authorization overrides reject. Increasing a failed
+task's limits preserves its status and owner; resume is a separate action.

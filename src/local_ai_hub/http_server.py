@@ -2206,10 +2206,10 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def _task_budget_increase(self, payload: dict[str, Any]) -> None:
-        if not self._authorized(permission="admin") or self._authorization_actor != "api_token":
-            self._send(403, {"success": False, "error": "installation owner admin required",
+        if not self._authorized(permission="write"):
+            self._send(403, {"success": False, "error": "task budget write authorization required",
                              "terminal": True, "retryable": False}); return
-        # Admin reauthorization clears root context; rebind through the
+        # Reauthorization clears root context; rebind through the
         # same repository/task identity checks as other task mutations.
         if not self._bind_task_payload(payload):
             return
@@ -2223,9 +2223,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"success": False, "error": "canonical task_id required"}); return
         if self._request_task(task_id, payload["root"]) is None:
             return
-        if not self._audit_admin_authorization("task.budget_increase", allowed=True):
-            self._send(503, {"success": False, "error": "authorization audit unavailable",
-                             "mutation_applied": False, "operation_not_started": True}); return
+        # The broker persists the real transport actor and before/after budget
+        # atomically with the update. This ordinary write is not an admin action.
         try:
             result = APP.commands.increase_task_budget(
                 task_id, root=payload["root"], reason=payload.get("reason"),

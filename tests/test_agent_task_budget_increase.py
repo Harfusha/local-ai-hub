@@ -163,11 +163,11 @@ def test_concurrent_engines_cannot_apply_same_increase_twice(budget_case):
         ).fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("identity", ["supervisor", "action_token", "local", "unrecognized", ""])
-def test_other_authorization_kinds_cannot_increase_budget(budget_case, identity):
+@pytest.mark.parametrize("identity", ["unrecognized", "", None, 1])
+def test_unverified_authorization_identity_cannot_increase_budget(budget_case, identity):
     policy, _, _ = budget_case
     before = policy.get_budget("existing")
-    with pytest.raises(PermissionError, match="installation owner"):
+    with pytest.raises(PermissionError, match="authorization"):
         increase(budget_case, authorization_actor=identity)
     assert policy.get_budget("existing") == before
 
@@ -193,16 +193,16 @@ def test_broker_uses_persisted_task_owner_for_owner_admin_request(budget_case):
 
 
 @pytest.mark.parametrize("actor,permissions", [
-    ("api_token", frozenset({"read", "write"})),
+    ("api_token", frozenset({"read"})),
     ("supervisor", frozenset({"admin"})),
-    ("action_token", frozenset({"admin"})),
-    ("local", frozenset({"admin"})),
+    ("action_token", frozenset({"read"})),
+    ("unrecognized", frozenset({"write"})),
     ("api_token", ["admin"]),
 ])
-def test_broker_rejects_non_owner_admin_authority(budget_case, actor, permissions):
+def test_broker_rejects_missing_write_authority(budget_case, actor, permissions):
     policy, _, root = budget_case
     before = policy.get_budget("existing")
-    with pytest.raises(PermissionError, match="owner admin"):
+    with pytest.raises(PermissionError, match="authorization"):
         budget_broker(budget_case).increase_task_budget(
             "existing", root=str(root), reason="finish", limits={"max_compute_seconds": 20},
             authorization_actor=actor, authorization_permissions=permissions,
@@ -278,28 +278,31 @@ def http_budget_handler(budget_case, monkeypatch):
 
 
 def test_http_owner_admin_changes_budget_without_agent_header_authority(http_budget_handler, budget_case):
-    handler, payload, replies, _, audit = http_budget_handler
+    handler, payload, replies, _, _ = http_budget_handler
     handler._task_budget_increase(payload)
     assert replies[-1][0] == 200
     assert replies[-1][1]["budget"]["used_compute_seconds"] == 11
-    assert audit[0][1]["actor"] == "api_token"
+    with closing(sqlite3.connect(budget_case[1].db_path)) as con:
+        assert con.execute('SELECT actor FROM agent_events WHERE event_id=?',
+                           (replies[-1][1]['audit_event_id'],)).fetchone()[0] == 'api_token'
     assert budget_case[0].get_budget("existing").max_compute_seconds == 20
 
 
-@pytest.mark.parametrize("case", ["wrong_token", "no_admin", "supervisor", "local_fallback", "caller_owner", "no_root", "wrong_root"])
+@pytest.mark.parametrize("case", ["wrong_token", "no_write", "supervisor", "remote_without_token", "caller_owner", "no_root", "wrong_root"])
 def test_http_rejects_untrusted_authority_and_scope(http_budget_handler, budget_case, case, tmp_path):
     handler, payload, replies, config, _ = http_budget_handler
     policy, _, _ = budget_case
     before = policy.get_budget("existing")
     if case == "wrong_token":
         handler.headers["X-LocalAI-Token"] = "wrong-token"
-    elif case == "no_admin":
-        config["security"]["api_token_permissions"] = ["read", "write"]
+    elif case == "no_write":
+        config["security"]["api_token_permissions"] = ["read"]
     elif case == "supervisor":
         handler.headers["X-LocalAI-Token"] = config["security"]["supervisor_token"]
-    elif case == "local_fallback":
+    elif case == "remote_without_token":
         config["security"].update(api_token="", supervisor_token="")
         handler.headers.clear()
+        handler.client_address = ("192.0.2.10", 0)
     elif case == "caller_owner":
         payload["owner"] = "owner"
     elif case == "no_root":
@@ -311,6 +314,51 @@ def test_http_rejects_untrusted_authority_and_scope(http_budget_handler, budget_
     handler._task_budget_increase(payload)
     assert replies[-1][0] in (400, 403, 404)
     assert policy.get_budget("existing") == before
+
+
+@pytest.mark.parametrize("case,expected_actor", [("write", "api_token"), ("local", "local")])
+@pytest.mark.parametrize("failed", [False, True])
+def test_budget_increase_uses_ordinary_write_access_and_real_audit_identity(
+        http_budget_handler, budget_case, case, expected_actor, failed):
+    handler, payload, replies, config, _ = http_budget_handler
+    policy, state, _ = budget_case
+    tasks = TaskStore(state)
+    if failed:
+        tasks.fail('existing', actor='watchdog', reason='TASK_BUDGET_EXCEEDED')
+    original_task = tasks.get('existing')
+    config["security"]["api_token_permissions"] = ["write"]
+    if case == "local":
+        config["security"].update(api_token="", supervisor_token="")
+        handler.headers.clear()
+    before = policy.get_budget("existing")
+    handler._task_budget_increase(payload)
+    assert replies[-1][0] == 200, replies
+    result = replies[-1][1]
+    after = policy.get_budget("existing")
+    assert after.max_compute_seconds == 20
+    assert tasks.get('existing').status == original_task.status
+    assert tasks.get('existing').owner == original_task.owner
+    assert (after.used_tokens, after.used_compute_seconds, after.used_external_calls) == (
+        before.used_tokens, before.used_compute_seconds, before.used_external_calls)
+    with closing(sqlite3.connect(state.db_path)) as con:
+        actor, body = con.execute('SELECT actor,payload FROM agent_events WHERE event_id=?',
+                                  (result['audit_event_id'],)).fetchone()
+    assert actor == expected_actor
+    assert json.loads(body)['task_owner'] == original_task.owner
+
+
+@pytest.mark.parametrize("actor,permissions", [
+    ("local", frozenset()), ("api_token", frozenset({"write"})),
+    ("action_token", frozenset({"api:write"})),
+])
+def test_broker_accepts_ordinary_write_clients(budget_case, actor, permissions):
+    _, _, root = budget_case
+    result = budget_broker(budget_case).increase_task_budget(
+        'existing', root=str(root), reason='Operator permits ordinary clients',
+        limits={'max_compute_seconds': 20}, authorization_actor=actor,
+        authorization_permissions=permissions)
+    assert result['success'] is True
+    assert result['budget']['used_compute_seconds'] == 11
 
 
 def test_mcp_budget_roundtrip_retains_audit_and_counters(monkeypatch, tmp_path):
