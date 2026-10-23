@@ -33,10 +33,10 @@ def test_release_metadata_and_tool_contract():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool" for d in node.decorator_list)
     ]
-    assert len(tools) == 8
+    assert len(tools) == 7
     assert set(tools) == {
         "local_ai_status", "local_ai_task", "local_ai_repo",
-        "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact",
+        "local_ai_rag", "local_ai_coord", "local_ai_artifact",
         "local_ai_work",
     }
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))

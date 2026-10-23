@@ -21,7 +21,6 @@ setup = importlib.util.module_from_spec(SETUP_SPEC)
 SETUP_SPEC.loader.exec_module(setup)
 EXPECTED_TOOLS = {
     "local_ai_artifact",
-    "local_ai_command",
     "local_ai_coord",
     "local_ai_rag",
     "local_ai_repo",

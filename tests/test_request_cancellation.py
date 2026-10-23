@@ -7,7 +7,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
-from local_ai_hub.http_server import _command_peer_cancellation
 
 
 def test_mcp_adapter_cancellation_reaches_worker_and_restores_context():
@@ -40,25 +39,6 @@ def test_mcp_adapter_cancellation_reaches_worker_and_restores_context():
 
     asyncio.run(scenario())
     assert ended.is_set()
-
-
-def test_peer_watcher_preserves_bytes_and_signals_only_its_connection():
-    server, client = socket.socketpair()
-    other_server, other_client = socket.socketpair()
-    try:
-        with _command_peer_cancellation(server) as cancelled, _command_peer_cancellation(other_server) as other:
-            client.sendall(b"x")
-            time.sleep(0.1)
-            assert not cancelled.is_set()
-            assert server.recv(1) == b"x"
-            client.close()
-            assert cancelled.wait(1)
-            assert not other.is_set()
-    finally:
-        server.close()
-        client.close()
-        other_server.close()
-        other_client.close()
 
 
 def test_context_cancellation_interrupts_blocked_http_receive(tmp_path):

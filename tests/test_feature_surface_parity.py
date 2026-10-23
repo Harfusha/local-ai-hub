@@ -73,7 +73,6 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
         "local_ai_repo": features.supported_repo_actions(),
         "local_ai_task": features.supported_task_actions(),
         "local_ai_rag": features.supported_rag_actions(),
-        "local_ai_command": features.supported_command_actions(),
         "local_ai_coord": features.supported_coord_actions(),
     }
     for name, expected in expected_actions.items():
@@ -97,7 +96,7 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     )
     assert slice_rule["then"]["required"] == ["artifact_id"]
     assert "id" not in artifact_parameters["properties"]
-    assert "agent_state" in schemas["local_ai_status"]["description"]
+    assert schemas["local_ai_status"]["parameters"]["properties"]["detail"]["enum"] == ["brief"]
     assert "local_ai_work" not in schemas
 
 
@@ -128,11 +127,11 @@ def test_whole_task_tool_obeys_its_feature_gate():
     assert "local_ai_work" in enabled_schemas
 
 
-def test_speculative_lint_is_exposed_only_when_opted_in():
+def test_retired_command_tool_stays_absent_when_speculative_lint_is_opted_in():
     disabled = generate_mcp_tool_schemas(_config(speculative_lint=False))
     enabled = generate_mcp_tool_schemas(_config(speculative_lint=True))
-    assert "speculative_lint" not in _actions(disabled["local_ai_command"])
-    assert "speculative_lint" in _actions(enabled["local_ai_command"])
+    assert "local_ai_command" not in disabled
+    assert "local_ai_command" not in enabled
 
 
 def test_guarded_context_extends_existing_repo_tool_without_duplicate_surface():

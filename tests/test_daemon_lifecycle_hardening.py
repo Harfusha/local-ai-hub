@@ -1016,10 +1016,7 @@ def test_stop_daemon_rejects_a_different_task_owner(
     assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
 
 
-def test_daemon_stop_task_id_flows_through_service_and_http(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from local_ai_hub import http_server
+def test_daemon_stop_task_id_flows_through_internal_service() -> None:
     from local_ai_hub.services import LocalAIServices
 
     calls: list[tuple[str, str]] = []
@@ -1044,41 +1041,6 @@ def test_daemon_stop_task_id_flows_through_service_and_http(
     )
     assert result["success"] is True
     assert calls == [(daemon_id, task_id)]
-
-    handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/command/daemon"
-    handler.headers = {"Content-Type": "application/json"}
-    handler._begin_trace = lambda _path: None
-    handler._require_authorized = lambda: True
-    handler._read_json = lambda: {"action": "stop", "daemon_id": daemon_id, "task_id": task_id}
-    handler._validate_payload = lambda _path, _payload: None
-    handler._agent = lambda: "test-agent"
-    handler._trace_request_id = "daemon-stop-route-test"
-    responses: list[tuple[int, dict[str, Any]]] = []
-    handler._send = lambda status, body: responses.append((status, body))
-    monkeypatch.setattr(
-        http_server,
-        "load_operational_mode",
-        lambda _state_dir: SimpleNamespace(degraded=False, mode="active"),
-        raising=False,
-    )
-    recovery = SimpleNamespace(
-        begin=lambda *_args, **_kwargs: {"claimed": True, "state": "new", "payload_fingerprint": "test"}
-    )
-    monkeypatch.setattr(
-        http_server,
-        "APP",
-        SimpleNamespace(
-            config={"server": {"state_dir": str(tmp_path)}},
-            services=service,
-            recovery=recovery,
-        ),
-    )
-
-    handler.do_POST()
-
-    assert responses == [(200, {"success": True})]
-    assert calls == [(daemon_id, task_id), (daemon_id, task_id)]
 
 
 def test_daemon_status_is_observational_and_redacts_sensitive_command_arguments(
