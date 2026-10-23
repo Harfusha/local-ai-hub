@@ -206,7 +206,8 @@ def test_capture_aborts_same_tab_navigation_before_artifact_commit() -> None:
 
     assert result["success"] is False
     assert result["error_code"] == "target_changed"
-    assert result["status"] == 409
+    assert result["status_code"] == 409
+    assert "status" not in result
 
 
 def test_staged_capture_requires_explicit_commit_and_abandon_is_terminal() -> None:
@@ -589,7 +590,8 @@ def test_capture_failure_codes_are_explicit(error_code: str, status: int) -> Non
 
     assert result["success"] is False
     assert result["error_code"] == error_code
-    assert result["status"] == status
+    assert result["status_code"] == status
+    assert "status" not in result
     assert result["fallback"] is False
 
 

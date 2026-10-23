@@ -6011,7 +6011,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = commit_staged_capture(capability, request, artifacts=APP.artifacts, config=APP.config)
                 else:
                     result = abandon_staged_capture(capability, request)
-                self._send(int(result.get("status", 200 if result.get("success") else 400)), result); return
+                self._send(int(result.get("status_code", 200 if result.get("success") else 400)), result); return
             if 'post_browser_capture_1' in post_route_ids:
                 request = {
                     "origin": self.headers.get("Origin", payload.get("origin", "")),
@@ -6020,11 +6020,11 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 checked = validate_capture_request(str(payload.get("capability", "")), request)
                 if not checked.get("success"):
-                    status = int(checked.get("status", 403))
+                    status = int(checked.get("status_code", 403))
                     self._send(status, checked); return
                 if payload.get("capture_error"):
                     failure = capture_failure(str(payload["capture_error"]))
-                    self._send(int(failure["status"]), failure); return
+                    self._send(int(failure["status_code"]), failure); return
                 self._send(200, capture_to_artifacts(payload, artifacts=APP.artifacts, config=APP.config)); return
             delivery = self._async_delivery(path, payload)
             if delivery is not None:

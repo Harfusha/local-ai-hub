@@ -538,7 +538,7 @@ def _result_error(error_code: str, message: str, *, status: int = 400, **details
         "retryable": False,
         "error": message,
         "error_code": error_code,
-        "status": status,
+        "status_code": status,
         **details,
     }
 
