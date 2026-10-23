@@ -6,7 +6,9 @@ The operator confirmed: "Ja jsem to smazal - chci cisty stav" (I deleted it; I w
 
 Main stopped the newly observed managed Hub, terminated 54 stdio providers bound to this exact installation/configuration, and moved the residual state directory outside the checkout to `C:/Users/Adam/.local-ai-hub-state-before-clean-20261023T141257Z`. The new canonical state initially contains only the service-disabled control marker. No old database is restored. Both configuration hashes below remain unchanged. The protective RAG copy started before operator clarification is separate, unused, and has no verified integrity result.
 
-Clean initialization, fresh validation and runtime acceptance remain required. The interrupted full suite remains incomplete. Historical receipt/task counters cannot be replayed as fresh evidence. The original Codex goal remains active, with the operator's clean-state disposition superseding its historical-data preservation clause. No replacement chat is created.
+Official `tools/hubctl.py start` completed successfully after the clean transition. `hubctl.py status` reports online; `tools/doctor.py --json` completed with exit 0 and no warnings. Fresh database sizes confirm initialization (RAG 81920 bytes; agent state 380928 bytes), without adopting residual databases. Native evidence is stored outside runtime state as `operator-clean-initialization.json` and `operator-clean-doctor.json` in the main chat visualization directory. These health observations do not establish release acceptance.
+
+Fresh full validation and runtime acceptance remain required. The interrupted full suite remains incomplete. Historical receipt/task counters cannot be replayed as fresh evidence. The original Codex goal remains active, with the operator's clean-state disposition superseding its historical-data preservation clause. No replacement chat is created.
 
 ## Observations and containment
 
