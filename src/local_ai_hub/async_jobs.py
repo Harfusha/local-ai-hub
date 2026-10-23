@@ -1448,6 +1448,32 @@ class AsyncJobManager:
                 pass
         return result
 
+    def diagnostic_result(self, *, job_id: str = "", artifact_id: str = "") -> bool | None:
+        """Classify retained output using request metadata, never result_json."""
+        from .agent_surface import DIAGNOSTIC_MCP_ACTIONS
+
+        if not job_id and not artifact_id:
+            return None
+        selector, identifier = ("job_id", job_id) if job_id else ("artifact_id", artifact_id)
+
+        def read() -> Any:
+            with closing(self._connect()) as con:
+                return con.execute(
+                    f"SELECT action,payload_json FROM async_jobs WHERE {selector}=? LIMIT 1",
+                    (identifier,),
+                ).fetchone()
+
+        row = retry_busy(read, retries=3)
+        if row is None:
+            return None
+        if any(row[0] in actions for actions in DIAGNOSTIC_MCP_ACTIONS.values()):
+            return True
+        try:
+            payload = json.loads(row[1])
+        except (ValueError, TypeError):
+            return True  # Unclassifiable retained detail stays operator-only.
+        return isinstance(payload, dict) and payload.get("include_diagnostics") is True
+
     def result(self, job_id: str, **fields: Any) -> dict[str, Any]:
         self._reject_retired_fields(fields)
         self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())

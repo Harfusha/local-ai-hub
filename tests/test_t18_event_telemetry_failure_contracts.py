@@ -160,6 +160,7 @@ def test_telemetry_timeline_get_provider_failure_is_retryable(monkeypatch, tmp_p
             raise TimeoutError("telemetry query deadline")
 
     app, _root = _scoped_app(tmp_path, telemetry=BrokenTelemetry())
+    app.config["debug_traces"] = {"enabled": True}
     handler = _http_get_handler(monkeypatch, app=app, path="/api/telemetry/timeline?limit=20&before_id=10")
 
     handler.do_GET()

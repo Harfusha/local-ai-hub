@@ -54,7 +54,7 @@ T21_HANDOFF_CONTRACT = """Project configuration and PathHint core are integrated
 
 `ProjectContext.prioritize_paths(...)` ranks the complete candidate list in this order: literal `entry_points`, request-scoped `path_hints`, then saved hints matching scope, repository revision, and config digest. It preserves every candidate and returns `PathHintUsage`; `hint_helped` stays unknown until measured. When a hint does not help, consumers use their broader fallback. Telemetry exposes usage flags without candidate paths. Save only verified hints.
 
-The HTTP `/api/search` adapter accepts typed `path_hints`. `HubClient.post` forwards them only to `/api/search` and strips them from `/api/command`. T21's private MCP search dispatch forwards typed hints internally, but the installed public `local_ai_repo` argument and output schema remain owned by T03 and pending its schema release. `/api/context/pack` does not accept or use hints. Do not infer public wire support from internal methods.
+The HTTP `/api/search` adapter accepts typed `path_hints`. `HubClient.post` forwards them only to `/api/search`. T21's private MCP search dispatch forwards typed hints internally, but the installed public `local_ai_repo` argument and output schema remain owned by T03 and pending its schema release. `/api/context/pack` does not accept or use hints. Do not infer public wire support from internal methods.
 
 Hints are repository-relative paths beneath the trusted project root; reject absolute, traversal, glob, missing, and symlink or junction escape paths. Request hints may omit evidence metadata. Learned hints require evidence ID, provenance, matching repository revision, and config digest. Revalidate saved paths when reading them, and never write raw paths or hint contents to telemetry."""
 
@@ -155,7 +155,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
@@ -243,15 +243,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
 
     # Read-only audit contract
-    if fs.commands:
-        audit_fallback = (
-            "- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; "
-            "run one bounded fallback, state side effects/owner, and never repeat identical commands."
-        )
-    else:
-        audit_fallback = (
-            "- Validate changes with bounded native test/lint commands; never repeat identical failing commands."
-        )
+    audit_fallback = "- Run bounded validation with the host-native command tool; never repeat identical failing commands."
 
     # Keep exact lookups cheap and reuse current evidence. Preprocess only to
     # repair a missing or stale index; it is not a mandatory task ritual.
@@ -269,24 +261,15 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
         step_num += 1
 
-    if fs.commands:
-        repo_gate_lines.append(
-            f"{step_num}. `local_ai_command` alone is never sufficient for implementation or review: "
-            "use it after fresh repository evidence exists. "
-            'For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. '
-            "After edits, run the applicable indexed impact/review/security/evidence check before final validation."
-        )
-        step_num += 1
-    elif fs.repo:
+    if fs.repo:
         repo_gate_lines.append(
             f'{step_num}. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. '
             "After edits, run the applicable indexed impact/review/security/evidence check before final validation."
         )
         step_num += 1
 
-    command_result_hint = ", command results" if fs.commands else ""
     repo_gate_lines.append(
-        f"{step_num}. Use the cheapest sufficient action and reuse evidence IDs, artifact slices{command_result_hint}."
+        f"{step_num}. Use the cheapest sufficient action and reuse evidence IDs and artifact slices."
     )
     repo_gate_section = "\n".join(repo_gate_lines)
 
@@ -316,9 +299,6 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     if fs.tasks and fs.has_any_model():
         routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests. Specialized operations use the shared evidence-grounded prompt contract; weak output remains advisory with a warning.{_model_capability_guidance(cfg)}')
         r_idx += 1
-    if fs.commands:
-        routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
-        r_idx += 1
     if fs.artifacts:
         routing_lines.append(f'{r_idx}. `local_ai_artifact` — exact evidence/artifact slices only.')
         r_idx += 1
@@ -339,8 +319,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     contract_notes: list[str] = []
     if fs.status:
         contract_notes.append(
-            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, `traces`, or `guide`; '
-            '`traces` accepts bounded `min_duration_ms` and `trace_action` filters. '
+            '`local_ai_status.detail` supports only `brief` and returns compact Hub/model readiness. '
         )
     if fs.repo:
         contract_notes.append(
@@ -396,11 +375,7 @@ Skip profiles when deterministic or indexed Hub evidence already answers the que
     agent_os_section = ""
     if fs.agent_os:
         verification_receipt_item = (
-            '- **Run validation commands with automatic receipt capture:**\n'
-            '  `local_ai_command(action="run", command="pytest -q", task_id="task-1", criterion="All tests pass")`'
-            if fs.commands else
-            '- **Record verification receipt directly after native test run:**\n'
-            '  `local_ai_repo(action="verify_receipt", receipt={"task_id": "task-1", "criterion": "All tests pass", "passed": True})`'
+            '- Run bounded tests with the agent host native command tool; do not invent verification receipts.'
         )
         agent_os_section = f"""
 ## Agent Operating System & Durable Execution
@@ -492,7 +467,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 {audit_fallback}
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
 - Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
@@ -523,7 +498,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 - `in_progress=true`: do not duplicate the work.
 - `retryable`/429/503: back off and do independent work.
 - `degraded`/`stale`: verify only the affected slice.
-- Native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
@@ -552,8 +527,6 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.repo:
         semantic_note = f", {fs.semantic_hint()}" if fs.has_semantic() else ""
         tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}, context/solve" + (", preprocess" if fs.preprocessing else "") + ", impact, `review_diff`, `security_audit`, patch validation and repository checks.")
-    if fs.commands:
-        tool_bullets.append("- `local_ai_command`: cached/single-flight safe command broker for tests, lint, typecheck, builds and read-only checks; never the only Hub action for a repository task.")
     if fs.work_orchestrator:
         tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
     if fs.tasks and fs.has_any_model():
@@ -612,10 +585,7 @@ The active tool surface reflects your configuration:
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
         step_i += 1
-    if fs.commands:
-        wf_steps.append(f"{step_i}. Validate with `local_ai_command`; review with `review_diff` or `security_audit` when relevant.")
-    else:
-        wf_steps.append(f"{step_i}. Validate natively; review with `review_diff` or `security_audit` when relevant.")
+    wf_steps.append(f"{step_i}. Validate with the host-native command tool; review with `review_diff` or `security_audit` when relevant.")
 
     wf_lines = "\n".join(wf_steps)
     task_notes = ""
@@ -623,7 +593,7 @@ The active tool surface reflects your configuration:
         task_notes = f"""
 ## Local semantic work
 
-{semantic_handoff} Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
+{semantic_handoff} Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo` and `local_ai_artifact` for exact facts, symbols and diffs; use the host-native command tool for bounded tests.
 
 ## Local second opinion
 
@@ -726,7 +696,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
 
     repo_task_first = ""
     if fs.repo:
-        cmd_gate = ' `local_ai_command` alone is never sufficient for implementation or review; use it after fresh repository evidence exists.' if fs.commands else ""
+        cmd_gate = " Use bounded host-native validation commands after fresh repository evidence exists."
         agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
         task_review_hint = ' Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing.' if (fs.tasks and fs.has_any_model()) else ""
         repo_task_first = (
@@ -739,13 +709,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             f" and before native edits.{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
         )
 
-    cmd_route_hint = ""
-    if fs.commands:
-        receipt_hint = " Pass `task_id` and `criterion` to auto-mint verification receipts." if fs.agent_os else ""
-        cmd_route_hint = (
-            "\nRoute test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively."
-            f"{receipt_hint} If it returns `in_progress=true`, do not launch a duplicate command."
-        )
+    cmd_route_hint = "\nRun bounded validation commands with the agent host native command tool.\n"
 
     coord_memo_hint = ""
     if fs.coord:
@@ -758,10 +722,9 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         )
 
     prioritization_bullets = []
-    if fs.commands:
-        prioritization_bullets.append(
-            "> - **Tests, builds, lint, execution**: Call `local_ai_command(action=\"run\", command=\"...\", cwd=\"...\")`. Pass `task_id` and `criterion` to auto-mint receipts. DO NOT run tests or builds directly via shell or native `run_command`!"
-        )
+    prioritization_bullets.append(
+        "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
+    )
     if fs.repo:
         prioritization_bullets.append(
             "> - **Repository & Code Search**: Call `local_ai_repo(action=\"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", root=\"...\")`. DO NOT use broad native discovery (`find`, `dir /s`, unconstrained `rg`, glob) or dump entire files."
@@ -778,7 +741,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
     prioritization_bullets.append(
-        "> - **Native fallback rule**: Native shell commands, `run_command`, and direct file viewing are permitted ONLY when Local AI Hub is unavailable or returns an explicit `terminal=true` failure."
+        "> - **Native fallback rule**: `terminal=true` alone is insufficient. A Hub-unknown command may use native fallback only when the broker returns `native_fallback_allowed=true`; the native tool must authorize the fallback under its own controls, and the command must stay bounded to the same root and scope. `native_fallback_allowed=false`, a dangerous command, a known mutation-policy denial, required approval/override, cancellation, or `outcome_unknown` is a hard stop. The flag permits fallback, not Hub execution. If native authorization cannot be established, stop and report the blocker."
     )
     prioritization_directive = (
         "> [!IMPORTANT]\n"
@@ -791,6 +754,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     return (
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
         f"{prioritization_directive}\n\n"
+        "Detailed diagnostics require the dashboard agent-response-detail toggle; requests cannot enable it. The policy applies to nested, asynchronous, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.\n\n"
+        "Keep the existing Agent OS task and usage counters. With explicit operator authorization, `task_budget_increase` raises limits only, through the authenticated owner/admin broker with an explicit absolute root and audit reason. Failed-task increases preserve status and owner; resume is separate. Never edit task storage directly. `curate_dataset` also requires an explicit absolute root.\n\n"
         f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
@@ -809,7 +774,6 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " split validation into a separately owned, explicitly side-effecting task.\n"
         "- Before native discovery or validation, retain preceding Hub result with action, absolute root, status,"
         " cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.\n"
-        + ("- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.\n" if fs.commands else "")
         + "- If an explicitly authorized independent subagent is used, Codex controls its permissions and write scope; the main agent remains integrator. Do not delegate audit-only work.\n"
         "- Do not run parallel duplicate commands or scopes. Tool labels are not evidence;"
         " preserve exact action, arguments, result, and ownership in the audit record.\n"
@@ -881,8 +845,8 @@ Load and follow this skill before any coding or repository task. Apply its disco
 8. **`local_ai_artifact(action="slice")`**:
    - Fetches exact slice of a file (e.g. lines 120-160) without reading entire file.
 
-9. **`local_ai_command`**:
-   - Bounded command runner with automatic ANSI stripping and failure compression.
+9. **Host native command tool**:
+   - Run bounded validation commands in the target repository.
 
 10. **`rg` (`ripgrep`)**:
     - Fast regex code search: always bound matches with `-m <N>` or `--max-columns <N>` to avoid context floods.
@@ -904,7 +868,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 2. Bounded Command & Test Outputs
 - **NEVER** run verbose build/test commands raw into context.
-- Route tests/builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or to trim stdin pipelines.
+- Run tests/builds with the agent host native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or to trim stdin pipelines.
 - Filter large JSON outputs with `jq` to extract only relevant fields before returning to LLM.
 - Use minimal test flags: `pytest -q --tb=short`, `dotnet test --verbosity quiet`.
 - Use compact git commands: `git status -s`, `git diff --stat`, `git log -n 5 --oneline`.
@@ -928,7 +892,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
 - Keep command output at summary/status level; fetch exact logs only when needed.
@@ -956,13 +920,13 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Fast code search: Use `local_ai_repo(action=\"code_index\"|\"search\")` or Serena LSP first; use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for fallback discovery before opening files.\n"
         "- AST & structural code search: Use `local_ai_repo(action=\"code_index\")`, Serena LSP (`find_symbol`, `find_referencing_symbols`), or `ast-grep` (`sg`) before opening files.\n"
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
-        "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
+        "- Bounded command outputs: Run tests and builds with the agent host native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
         + "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
         + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
         + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
         + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
-        + "- Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
+        + "- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.\n"
         + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
@@ -1015,9 +979,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     if operation_enabled(fs, "local_ai_status"):
         status_actions = fs.supported_status_actions()
-        status_description = "Health, queue, and token-saving status."
-        if fs.agent_os:
-            status_description += " `agent_state` summarizes durable Agent OS task state."
+        status_description = "Compact Hub and local-model readiness: availability, active model, and VRAM pressure."
         status_description += _actions_note(status_actions)
         schemas["local_ai_status"] = {
             "name": "local_ai_status",
@@ -1054,13 +1016,6 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "parameters": operation_parameters_schema("local_ai_rag", fs),
         }
 
-    if operation_enabled(fs, "local_ai_command"):
-        command_actions = fs.supported_command_actions()
-        schemas["local_ai_command"] = {
-            "name": "local_ai_command",
-            "description": "Safe CLI broker for validation and enabled repair, affected-test, format/lint-fix, mock, and replay workflows." + _actions_note(command_actions),
-            "parameters": operation_parameters_schema("local_ai_command", fs),
-        }
 
     if operation_enabled(fs, "local_ai_coord"):
         coord_actions = fs.supported_coord_actions()
@@ -1108,7 +1063,7 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
     return """# Local AI Hub MCP Instructions for Antigravity & Gemini
 
 Prioritize `local-ai` tools over native commands and raw file reading:
-- **Run commands, tests, lint, builds**: Call `local_ai_command(action="run", command="...", cwd="...")`. Pass `task_id` and `criterion` to auto-mint verification receipts. Never run tests or builds directly via shell or native `run_command`!
+- **Run commands, tests, lint, builds**: Use the agent host native command tool for bounded checks in the target repository.
 - **Search code & repository facts**: Call `local_ai_repo(action="search"|"code_index"|"context"|"solve", root="...")`. Avoid unconstrained directory dumping.
 - **Semantic code review & second opinions**: Call `local_ai_task(action="review"|"second_opinion"|"compress")`.
 - **Agent OS Lifecycle & durable memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion")`.
@@ -1116,8 +1071,8 @@ Prioritize `local-ai` tools over native commands and raw file reading:
 
 When calling via `call_mcp_tool` (if tools are lazily loaded):
 - `ServerName`: "local-ai"
-- `ToolName`: exact tool name (e.g. "local_ai_command")
-- `Arguments`: parameter dictionary (e.g. `{"action": "run", "command": "pytest", "cwd": "."}`)
+- `ToolName`: exact tool name (e.g. "local_ai_repo")
+- `Arguments`: parameter dictionary (e.g. `{"action": "search", "query": "symbol", "root": "/absolute/project"}`)
 """
 
 def write_all_generated(

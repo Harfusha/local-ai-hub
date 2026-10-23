@@ -357,27 +357,45 @@ def test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service(
 
 
 @pytest.mark.parametrize("interruption", ["cancel", "deadline"])
-def test_inprocess_command_lifetime_interrupts_its_dispatched_handler(inprocess_client, interruption):
+def test_inprocess_request_lifetime_interrupts_its_dispatched_handler(
+    inprocess_client, interruption, monkeypatch
+):
+    from local_ai_hub import http_server
+
     client, _transport, app, state_dir = inprocess_client
     started = threading.Event()
     finished = threading.Event()
     cancel = threading.Event()
     result = {}
+    lifetime = {}
+    dispatches = []
+    read_json = http_server.Handler._read_json
 
-    def command(payload, *, request_cancel_event=None):
+    def capture_lifetime(handler, *args, **kwargs):
+        payload = read_json(handler, *args, **kwargs)
+        if handler.path == "/api/work-orders":
+            lifetime["cancel_event"] = handler._request_cancel_event
+        return payload
+
+    monkeypatch.setattr(http_server.Handler, "_read_json", capture_lifetime)
+
+    def cancel_work(work_id):
+        request_cancel_event = lifetime["cancel_event"]
         assert isinstance(request_cancel_event, threading.Event)
+        dispatches.append(work_id)
         started.set()
-        assert request_cancel_event.wait(2), "dispatched command did not receive its lifetime cancellation"
+        assert request_cancel_event.wait(2), "dispatched handler did not receive lifetime cancellation"
         finished.set()
         return {"success": False, "cancelled": True, "terminal": True, "retryable": False}
 
-    app.services.command = command
+    app.work_orchestrator.cancel = cancel_work
 
     def request():
         result["value"] = client.request(
-            "/api/command", {"action": "run", "command": "python -m unittest", "root": str(state_dir.parent)},
+            "/api/work-orders",
+            {"action": "cancel", "work_id": "lifetime-probe", "root": str(state_dir.parent)},
             timeout=0.3 if interruption == "deadline" else 2,
-            operational_action="command", cancel_event=cancel,
+            operational_action="work_orders", cancel_event=cancel,
         )
 
     caller = threading.Thread(target=request, daemon=True)
@@ -389,6 +407,7 @@ def test_inprocess_command_lifetime_interrupts_its_dispatched_handler(inprocess_
         caller.join(1)
         assert not caller.is_alive()
         assert finished.wait(1)
+        assert dispatches == ["lifetime-probe"]
         assert result["value"]["success"] is False
         if interruption == "cancel":
             assert result["value"]["cancelled"] is True

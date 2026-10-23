@@ -184,9 +184,9 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
         "local_ai_repo": features.supported_repo_actions(),
         "local_ai_task": features.supported_task_actions(),
         "local_ai_rag": features.supported_rag_actions(),
-        "local_ai_command": features.supported_command_actions(),
         "local_ai_coord": features.supported_coord_actions(),
     }
+    assert "local_ai_command" not in expected_schemas
     for tool, actions in expected_actions.items():
         if tool not in expected_schemas:
             assert not actions, f"disabled tool {tool} unexpectedly has actions"

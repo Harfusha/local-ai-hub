@@ -29,7 +29,6 @@ def test_existing_tools_expose_response_budget_options() -> None:
         mcp_server.local_ai_task,
         mcp_server.local_ai_repo,
         mcp_server.local_ai_rag,
-        mcp_server.local_ai_command,
         mcp_server.local_ai_coord,
         mcp_server.local_ai_artifact,
         mcp_server.local_ai_work,
@@ -38,46 +37,8 @@ def test_existing_tools_expose_response_budget_options() -> None:
         assert {"max_response_tokens", "response_profile", "reuse_key"} <= names
 
 
-def test_command_rollback_scope_reaches_api_payload(monkeypatch, tmp_path) -> None:
-    captured_posts: list[tuple[str, dict[str, object], float]] = []
-
-    def fake_post(path: str, payload: dict[str, object], timeout: float):
-        captured_posts.append((path, payload, timeout))
-        return {"success": True}
-
-    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
-    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
-    monkeypatch.setattr(mcp_server, "_timeout", lambda _kind: 60)
-    monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
-    monkeypatch.setattr(mcp_server, "_compact", lambda value, _tool: value)
-
-    result = mcp_server.local_ai_command(
-        action="run",
-        command="pytest -q",
-        cwd=str(tmp_path),
-        rollback_on_failure=True,
-        paths=["owned.py", "new-output.txt"],
-    )
-
-    assert result == {"success": True}
-    command_posts = [(payload, timeout) for path, payload, timeout in captured_posts if path == "/api/command"]
-    assert len(command_posts) == 1
-    assert command_posts[0][0]["paths"] == ["owned.py", "new-output.txt"]
 
 
-def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) -> None:
-    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
-    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *a, **k: pytest.fail("invalid rollback dispatched"))
-
-    result = mcp_server.local_ai_command(
-        action="discover",
-        rollback_on_failure=True,
-        paths=["owned.py"],
-    )
-
-    assert result["rollback_unsupported_action"] is True
-    assert result["terminal"] is True
-    assert result["retryable"] is False
 
 
 def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
@@ -358,33 +319,3 @@ def test_mcp_compact_rejects_subminimum_budget_without_exceeding_request() -> No
     assert result["success"] is False
     assert result["response_budget"]["requested_tokens"] == 64
     assert json_tokens(result) <= 64
-
-
-def test_command_response_budget_keeps_execution_disposition_within_limit(monkeypatch) -> None:
-    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
-    monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
-    payload = {
-        "success": False,
-        "terminal": True,
-        "retryable": False,
-        "error": "diagnostic detail " * 300,
-        "stdout": "large output " * 300,
-        "stderr": "large error output " * 300,
-        "execution_id": "execution-123",
-    }
-    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
-        _options(max_response_tokens=128, reuse_key="command-budget", tool="local_ai_command")
-    )
-    try:
-        result = mcp_server._compact(payload, "command")
-    finally:
-        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
-
-    # The instrumented tool removes private accounting before returning to MCP.
-    result, measured = mcp_server.pop_accounting(result)
-    assert measured["raw_response_tokens_est"] > measured["projected_response_tokens_est"]
-    assert json_tokens(result) <= 128
-    assert result["success"] is False
-    assert result["terminal"] is True
-    assert result["retryable"] is False
-    assert result["response_budget"]["truncated"] is True

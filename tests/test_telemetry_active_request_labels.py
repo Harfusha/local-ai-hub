@@ -53,7 +53,7 @@ def test_http_error_operations_preserve_registered_endpoints_and_distinct_finger
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         search_fp = store.record_error("http", "/api/search?token=private#fragment", ValueError("private"))
-        command_fp = store.record_error("http", "/api/command", ValueError("private"))
+        command_fp = store.record_error("http", "/api/agent-state/tasks", ValueError("private"))
         store.record_error("http", "/home/adam/private/project.db", ValueError("private"))
         store.record_error("http", "/api/projects/private-name", ValueError("private"))
         assert store.flush(5)
@@ -63,8 +63,8 @@ def test_http_error_operations_preserve_registered_endpoints_and_distinct_finger
             actions = connection.execute("SELECT action FROM events WHERE event_type='error' ORDER BY rowid").fetchall()
         finally:
             connection.close()
-        assert operations == [("/api/search",), ("/api/command",), ("<path>",), ("<path>",)]
+        assert operations == [("/api/search",), ("/api/agent-state/tasks",), ("<path>",), ("<path>",)]
         assert search_fp != command_fp
-        assert actions[:2] == [("/api/search",), ("/api/command",)]
+        assert actions[:2] == [("/api/search",), ("/api/agent-state/tasks",)]
     finally:
         store.close()

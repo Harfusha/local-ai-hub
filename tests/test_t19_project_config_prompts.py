@@ -30,7 +30,7 @@ def test_install_and_update_prompts_share_current_project_config_policy() -> Non
         prompt = path.read_text(encoding="utf-8")
         for tool_name in (
             "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
-            "local_ai_command", "local_ai_coord", "local_ai_work", "local_ai_artifact",
+            "local_ai_coord", "local_ai_work", "local_ai_artifact",
         ):
             assert f"`{tool_name}`" in prompt, f"{path.name} missing tool: {tool_name}"
         assert "installed generated schema" in prompt

@@ -6,7 +6,7 @@ from local_ai_hub.telemetry import TelemetryStore
 def test_request_start_live_projection_preserves_registered_endpoint_labels(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
-        for index, path in enumerate(("/api/search", "/api/command"), start=1):
+        for index, path in enumerate(("/api/search", "/api/agent-state/tasks"), start=1):
             store.record_live(
                 kind="request",
                 event_type="request_start",
@@ -17,7 +17,7 @@ def test_request_start_live_projection_preserves_registered_endpoint_labels(tmp_
         active = store.realtime_summary()["active_requests"]
         assert {request["action"] for request in active} == {
             "/api/search",
-            "/api/command",
+            "/api/agent-state/tasks",
         }
         assert all("private" not in request["action"] for request in active)
         assert all("fragment" not in request["action"] for request in active)
@@ -28,7 +28,7 @@ def test_request_start_live_projection_preserves_registered_endpoint_labels(tmp_
 def test_persisted_http_views_preserve_registered_routes_and_hide_unknown_paths(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
-        for index, path in enumerate(("/api/search", "/api/command"), start=1):
+        for index, path in enumerate(("/api/search", "/api/agent-state/tasks"), start=1):
             store.record_http(
                 request_id=f"http-{index}",
                 action=f"{path}?query=private#fragment",
@@ -43,7 +43,7 @@ def test_persisted_http_views_preserve_registered_routes_and_hide_unknown_paths(
         timeline = store.get_timeline()
         for rows in (recent, timeline):
             actions = {row["action"] for row in rows}
-            assert {"/api/search", "/api/command"} <= actions
+            assert {"/api/search", "/api/agent-state/tasks"} <= actions
             assert "<path>" in actions
             assert "/api/projects/private" not in actions
             assert all("query=private" not in action for action in actions)
@@ -56,7 +56,7 @@ def test_error_report_preserves_registered_and_trace_template_routes_only(tmp_pa
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         store.record_error("http", "/api/search?query=private#fragment", ValueError("failure"))
-        store.record_error("http", "/api/command?query=private#fragment", ValueError("failure"))
+        store.record_error("http", "/api/agent-state/tasks?query=private#fragment", ValueError("failure"))
         store.record_error(
             "http", "/api/debug-traces/trace-secret?query=private#fragment", ValueError("failure")
         )
@@ -66,7 +66,7 @@ def test_error_report_preserves_registered_and_trace_template_routes_only(tmp_pa
 
         report = store.report(recent_errors=20)
         operations = {error["operation"] for error in report["error_fingerprints"]}
-        assert {"/api/search", "/api/command", "/api/debug-traces/{trace_id}"} <= operations
+        assert {"/api/search", "/api/agent-state/tasks", "/api/debug-traces/{trace_id}"} <= operations
         assert "<path>" in operations
         assert "/api/projects/private" not in operations
         assert "trace-secret" not in str(report["error_fingerprints"])

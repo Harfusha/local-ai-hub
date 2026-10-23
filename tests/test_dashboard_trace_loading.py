@@ -15,7 +15,7 @@ def _trace_scenario(scenario: str) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required to exercise trace detail loading")
-    start = DASHBOARD_HTML.index("async function openTrace(id)")
+    start = DASHBOARD_HTML.index("async function openTrace(id,options={})")
     helper = DASHBOARD_HTML.find("function renderTraceLoadState(")
     source = DASHBOARD_HTML[helper:start] if helper >= 0 else ""
     source += DASHBOARD_HTML[start:DASHBOARD_HTML.index("function openModal(", start)]
@@ -35,7 +35,7 @@ let response={ok:false,status:503,payload:{success:false,retryable:true,
   mode:'gaming',error_code:'operational_mode_blocked',error:'hub paused: gaming mode active'}};
 let pendingFetch=null;
 const requests=[],pollers=[];
-async function apiFetch(url){requests.push(url);if(pendingFetch)return pendingFetch;
+async function apiFetch(url,options={}){requests.push({url,signal:options.signal});if(pendingFetch)return pendingFetch;
   if(response.error)throw response.error;
   return {ok:response.ok,status:response.status,json:async()=>{
     if(response.jsonError)throw response.jsonError;return response.payload}}}
@@ -65,6 +65,19 @@ await openTrace('selected');
 assert.match(body.innerHTML,/Loading trace/);
 assert.doesNotMatch(body.innerHTML,/Previous trace|Choose a trace/);
 assert.match(body.innerHTML,/role="status"/);
+""")
+
+
+def test_never_settling_trace_request_leaves_loading_state_and_aborts_fetch():
+    _trace_scenario("""
+pendingFetch=new Promise(()=>{});
+await openTrace('stalled',{requestTimeoutMs:5});
+await pollers[0].poll(()=>true);
+assert.match(body.innerHTML,/Trace unavailable/);
+assert.match(body.innerHTML,/Trace request timed out/i);
+assert.doesNotMatch(body.innerHTML,/Loading trace|Fetching the selected trace/);
+assert.equal(pollers[0].stopped,false);
+assert.equal(requests[0].signal.aborted,true);
 """)
 
 

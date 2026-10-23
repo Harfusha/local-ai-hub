@@ -271,7 +271,8 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     assert not (payload.get("success") is True and payload.get("status_code") == 413)
     assert "failure_kind" not in payload
     assert payload["response_budget"].get("rejected") is not True
-    assert payload["returned_count"] == payload["returned_limit"] == len(payload["symbols"])
+    assert payload["returned_count"] == len(payload["symbols"])
+    assert "returned_limit" not in payload  # The wire omits identical count aliases.
     assert payload["total_matches"] == 100
     prefix_terms = sorted({term for symbol in payload["symbols"] for term in symbol["matched_terms"]})
     assert payload["coverage"]["matched_terms"] == prefix_terms
@@ -288,7 +289,7 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     assert payload["truncation"]["returned_count"] == len(payload["symbols"])
     assert payload["truncation"]["observed_match_count"] == 100
     assert payload["truncation"]["candidate_cap"] == 256
-    assert payload["observed_match_count"] == 100
+    assert "observed_match_count" not in payload  # Equal total_matches is not duplicated.
     assert payload["has_more"] is True
     assert payload["next_offset"] == 40 + len(payload["symbols"])
     assert wire_tokens <= requested
@@ -538,7 +539,8 @@ def test_registered_search_wire_keeps_prefix_and_final_wire_accounting(
     assert payload["results"] == page[:len(payload["results"])]
     assert payload["success"] is True
     assert not (payload.get("success") is True and payload.get("status_code") == 413)
-    assert payload["returned_count"] == payload["returned_limit"] == len(payload["results"])
+    assert payload["returned_count"] == len(payload["results"])
+    assert "returned_limit" not in payload  # The wire omits identical count aliases.
     assert payload["total_matches"] == 100
     assert payload["has_more"] is True
     assert payload["next_offset"] == 40 + len(payload["results"])

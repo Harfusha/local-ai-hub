@@ -392,8 +392,6 @@ def test_sdk_wrappers_match_live_http_handler_contracts(
         "extract_api_spec",
         "slice_dependency_graph",
         "find_hotspots",
-        "mock_server_start",
-        "test_flaky_detect",
     ):
         monkeypatch.setattr(app.services, service_name, capture(service_name))
 
@@ -452,30 +450,6 @@ def test_sdk_wrappers_match_live_http_handler_contracts(
             "find_hotspots",
             (root,),
             {"days": 14, "limit": 5},
-        ),
-        (
-            "mock_server",
-            {"action": "start", "root": root, "spec_path": None, "port": 51440},
-            "/api/command/mock_server",
-            {"action": "start", "root": root, "spec_path": None, "port": 51440},
-            "mock_server_start",
-            (root,),
-            {"spec_path": None, "port": 51440},
-        ),
-        (
-            "flaky_detect",
-            {"cwd": root, "command": "pytest -q", "runs": 4, "timeout": 20},
-            "/api/command/flaky_detect",
-            {
-                "cwd": root,
-                "root": root,
-                "command": "pytest -q",
-                "runs": 4,
-                "timeout": 20,
-            },
-            "test_flaky_detect",
-            (root, "pytest -q"),
-            {"runs": 4, "timeout_per_run": 20},
         ),
     ]
     calls = _observe(client)

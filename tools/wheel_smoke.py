@@ -231,10 +231,10 @@ async def _stdio_roundtrip(config_path: Path, *, cwd: Path, timeout: float) -> d
                 continue
     if not isinstance(payload, dict) or payload.get("success") is not True:
         raise SmokeError("local_ai_status did not return canonical success JSON")
-    if not isinstance(payload.get("queued"), int) or isinstance(payload.get("queued"), bool) or payload["queued"] < 0:
-        raise SmokeError("local_ai_status omitted its bounded queued count")
-    if not isinstance(payload.get("cache_hits"), int) or isinstance(payload.get("cache_hits"), bool) or payload["cache_hits"] < 0:
-        raise SmokeError("local_ai_status omitted its bounded cache hit count")
+    if "ollama_online" not in payload:
+        raise SmokeError("local_ai_status omitted local-model availability")
+    if "queued" in payload or "cache_hits" in payload:
+        raise SmokeError("local_ai_status returned unnecessary queue or cache metrics")
     return {
         "server_name": getattr(getattr(initialized, "serverInfo", None), "name", ""),
         "tool_count": len(tools.tools),

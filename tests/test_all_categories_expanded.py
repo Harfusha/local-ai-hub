@@ -242,47 +242,6 @@ def test_curate_training_dataset(tmp_path: Path):
     assert "curate test" in line["prompt"]
 
 
-def test_mock_openapi_server(tmp_path: Path):
-    spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps({
-        "openapi": "3.0.0",
-        "paths": {
-            "/api/users": {
-                "get": {
-                    "responses": {
-                        "200": {
-                            "content": {
-                                "application/json": {
-                                    "example": [{"id": 1, "name": "Alice"}]
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }), encoding="utf-8")
-
-    broker = CommandBroker({"commands": {}})
-    port = 11488
-    start_res = broker.mock_server_start(str(tmp_path), spec_path=str(spec), port=port)
-    assert start_res["success"] is True
-
-    try:
-        status_res = broker.mock_server_status(port)
-        assert status_res["running"] is True
-        assert status_res["port"] == port
-
-        # Query mock server
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/users")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            assert data.get("mock") is True
-            assert data.get("status") == 200
-            assert data.get("path") == "/api/users"
-    finally:
-        stop_res = broker.mock_server_stop(port)
-        assert stop_res["success"] is True
 
 
 class _MockRagServices:

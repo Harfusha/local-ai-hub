@@ -88,34 +88,15 @@ def test_client_trace_status_rejects_invalid_filters_before_transport(monkeypatc
     assert result["terminal"] and not result["retryable"]
 
 
-def test_local_ai_status_traces_queries_filtered_debug_traces(isolated_mcp_server, monkeypatch) -> None:
-    server = isolated_mcp_server
-    calls: list[str] = []
+def test_retired_status_trace_mode_and_fields_do_not_fetch(monkeypatch):
+    import pytest
+    from local_ai_hub import mcp_server
 
-    def get(path: str, **kwargs):
-        calls.append(path)
-        return {
-            "success": True,
-            "items": [{"trace_id": "slow-search", "action": "search", "duration_ms": 1500}],
-            "total": 1,
-            "limit": 20,
-            "offset": 0,
-        }
-
-    monkeypatch.setattr(server.CLIENT._client, "get", get)
-    contents, structured = asyncio.run(server.mcp.call_tool(
-        "local_ai_status",
-        {
-            "detail": "traces",
-            "min_duration_ms": 1000,
-            "trace_action": "search",
-            "extra_fields": ["duration_ms"],
-            "response_profile": "compact",
-            "max_response_tokens": 1200,
-        },
-    ))
-
-    payload = json.loads(contents[0].text)
-    assert calls == ["/api/debug-traces?min_duration_ms=1000&action=search&limit=20"]
-    assert payload["items"][0]["trace_id"] == "slow-search"
-    assert structured["items"][0]["duration_ms"] == 1500
+    calls = []
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda *args, **kwargs: calls.append(args))
+    result = mcp_server.local_ai_status(detail="traces")
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    with pytest.raises(TypeError):
+        mcp_server.local_ai_status(detail="brief", min_duration_ms=1000)
+    assert calls == []

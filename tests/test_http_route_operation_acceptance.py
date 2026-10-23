@@ -156,12 +156,12 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
         to_dict=lambda: {"task_id": "task-77", "status": "active", "summary": "T08 task"}
     )
 
-    def list_tasks(*, status=None, limit=100, include_stale=False, query=""):
-        calls.append((getattr(status, "value", status), limit, include_stale, query))
+    def list_tasks(*, status=None, limit=100, offset=0, include_stale=False, query=""):
+        calls.append((getattr(status, "value", status), limit, offset, include_stale, query))
         return [task]
 
     monkeypatch.setattr(app.agent_tasks, "list_tasks", list_tasks)
-    url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true&root={quote(str(tmp_path))}"
+    url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
     )
@@ -171,9 +171,11 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "GET"
-    assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true&root={quote(str(tmp_path))}"
+    assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true&root={quote(str(tmp_path))}"
     assert status == 200
-    assert calls == [("active", 7, True, "")]
+    assert calls == [("active", 8, 3, True, "")]
+    assert result["offset"] == 3 and result["limit"] == 7
+    assert result["next_offset"] == 4 and result["has_more"] is False
     assert result["success"] is True
     assert result["tasks"] == [{"task_id": "task-77", "status": "active", "summary": "T08 task"}]
 
@@ -341,6 +343,7 @@ def test_http_get_capabilities_returns_surface_and_features(running_http_hub):
 
 def test_http_get_audit_tail_forwards_limit(running_http_hub, monkeypatch):
     base_url, app = running_http_hub
+    monkeypatch.setattr(app.debug_traces, "enabled", True)
     calls = []
 
     def tail(limit):
@@ -404,7 +407,7 @@ def test_http_get_affected_tests_forwards_root_and_repeated_paths(
     monkeypatch.setattr(app, "deterministic", SimpleNamespace())
     monkeypatch.setattr(app.services, "affected_tests", affected_tests)
     url = (
-        f"{base_url}/api/affected_tests?root={quote(str(tmp_path))}"
+        f"{base_url}/api/repo/affected_tests?root={quote(str(tmp_path))}"
         "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
     )
     request = urllib_request.Request(
@@ -417,7 +420,7 @@ def test_http_get_affected_tests_forwards_root_and_repeated_paths(
 
     assert request.get_method() == "GET"
     assert url == (
-        f"{base_url}/api/affected_tests?root={quote(str(tmp_path))}"
+        f"{base_url}/api/repo/affected_tests?root={quote(str(tmp_path))}"
         "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
     )
     assert status == 200

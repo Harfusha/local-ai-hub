@@ -18,6 +18,19 @@ if str(SRC) not in sys.path:
 import pytest
 
 
+@pytest.fixture
+def mcp_diagnostics_enabled(tmp_path, monkeypatch):
+    """Opt into persisted detail only for tests of diagnostic dispatch."""
+    from local_ai_hub import mcp_server
+
+    path = tmp_path / "diagnostic-config.toml"
+    path.write_text("[debug_traces]\nenabled=true\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "CFG", {
+        **mcp_server.CFG, "_config_path": str(path),
+        "_defaults_path": None, "_runtime_override_path": None,
+    })
+
+
 @pytest.fixture(autouse=True)
 def _close_test_owned_background_services():
     """Do not carry test-created observers, pools or Hub loops into later tests."""

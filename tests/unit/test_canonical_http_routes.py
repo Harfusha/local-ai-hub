@@ -7,7 +7,7 @@ from local_ai_hub.http_route_registry import POST_ROUTE_REGISTRY, select_http_ro
 
 
 _CANONICAL_ROUTES_WITH_ALIASES = (
-    ("post_command_speculative_lint_1", "/api/command/speculative-lint", ("/api/speculative-lint",)),
+    ("post_leases_claim_1", "/api/leases/claim_batch", ("/api/leases/claim",)),
     ("post_repo_state_1", "/api/repo/state", ("/api/repo_state",)),
     ("post_hotspots_1", "/api/repo/hotspots", ("/api/hotspots",)),
     ("post_generate_tests_for_diff_1", "/api/repo/generate_tests_for_diff", ("/api/generate_tests_for_diff",)),
@@ -36,9 +36,6 @@ _CANONICAL_ROUTES_WITH_ALIASES = (
     ("post_coord_worktree_release_1", "/api/coord/worktree_release", ("/api/worktree_release",)),
     ("post_coord_worktrees_1", "/api/coord/worktrees", ("/api/worktrees",)),
     ("post_coord_worktree_prune_1", "/api/coord/worktree_prune", ("/api/worktree_prune",)),
-    ("post_command_daemon_1", "/api/command/daemon", ("/api/daemon",)),
-    ("post_command_lint_fix_1", "/api/command/lint_fix", ("/api/lint_fix",)),
-    ("post_command_http_probe_1", "/api/command/http_probe", ("/api/http_probe",)),
     ("post_callers_1", "/api/repo/callers", ("/api/callers",)),
     ("post_callees_1", "/api/code/callees", ("/api/repo/callees", "/api/callees")),
     ("post_implementations_1", "/api/code/implementations", ("/api/repo/implementations", "/api/implementations")),
@@ -65,10 +62,6 @@ _CANONICAL_ROUTES_WITH_ALIASES = (
     ("post_context_pack_1", "/api/context/pack", ()),
     ("post_ingest_document_1", "/api/rag/ingest_document", ("/api/ingest_document",)),
     ("post_ingest_diagram_1", "/api/rag/ingest_diagram", ("/api/ingest_diagram",)),
-    ("post_command_mock_server_1", "/api/command/mock_server", ("/api/mock_server",)),
-    ("post_command_diff_hunk_stage_1", "/api/command/diff_hunk_stage", ("/api/diff_hunk_stage",)),
-    ("post_command_flaky_detect_1", "/api/command/flaky_detect", ("/api/flaky_detect",)),
-    ("post_command_webhook_replay_1", "/api/command/webhook_replay", ("/api/webhook_replay",)),
 )
 
 
@@ -110,7 +103,6 @@ def test_remaining_multi_path_rules_are_distinct_operations() -> None:
 
     assert multi_path_rules == {
         "post_browser_capture_abandon_1",
-        "post_leases_claim_1",
         "post_task_vision_1",
         "post_chat_1",
     }
@@ -118,7 +110,6 @@ def test_remaining_multi_path_rules_are_distinct_operations() -> None:
         "/api/browser/capture/stage",
         "/api/browser/capture/commit",
         "/api/browser/capture/abandon",
-        "/api/leases/claim",
         "/api/leases/claim_batch",
         "/api/task/vision",
         "/api/vision",

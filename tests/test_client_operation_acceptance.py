@@ -271,32 +271,18 @@ def test_client_package_audit_returns_target_error(tmp_path, monkeypatch, fake_h
     ]
 
 
-def test_client_mock_server_targets_command_mock_server(tmp_path, monkeypatch, fake_http_transport):
+@pytest.mark.parametrize("method", ["mock_server", "flaky_detect"])
+def test_retired_command_sdk_helpers_do_not_send_requests(
+    tmp_path, monkeypatch, fake_http_transport, method
+):
     client = HubClient(
         config_path=str(tmp_path / "missing-hub.toml"),
         auto_start=False,
     )
     monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
-    reply = {"success": True, "server": {"port": 11441}}
-    fake_http_transport["state"]["response"] = reply
-
-    result = client.mock_server(
-        action="start", root="C:/repo", spec_path="openapi.yaml", port=11441
-    )
-
-    assert result == reply
-    assert fake_http_transport["captured"] == [
-        {
-            "method": "POST",
-            "path": "/api/command/mock_server",
-            "payload": {
-                "action": "start",
-                "root": "C:/repo",
-                "spec_path": "openapi.yaml",
-                "port": 11441,
-            },
-        }
-    ]
+    with pytest.raises(AttributeError):
+        getattr(client, method)
+    assert fake_http_transport["captured"] == []
 
 
 def test_client_ingest_diagram_targets_rag_artifact_operation(

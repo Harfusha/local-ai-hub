@@ -12,9 +12,10 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "http_post_route_inventory_t18.j
 _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
-_RETIRED_ROUTE_IDS = {"post_control_1"}
+_RETIRED_ROUTE_IDS = {"post_control_1", "post_command_1", "post_command_preflight_1", "post_command_speculative_lint_1", "post_command_daemon_1", "post_command_lint_fix_1", "post_command_http_probe_1", "post_command_mock_server_1", "post_command_diff_hunk_stage_1", "post_command_flaky_detect_1", "post_command_webhook_replay_1"}
 # Frozen, reviewed public-contract deltas from the immutable historical preimage.
-_CURRENT_ROUTE_PATHS = {'post_command_speculative_lint_1': ['/api/command/speculative-lint'],
+_CURRENT_ROUTE_PATHS = {
+ 'post_leases_claim_1': ['/api/leases/claim_batch'],
  'post_repo_state_1': ['/api/repo/state'],
  'post_hotspots_1': ['/api/repo/hotspots'],
  'post_generate_tests_for_diff_1': ['/api/repo/generate_tests_for_diff'],
@@ -43,9 +44,6 @@ _CURRENT_ROUTE_PATHS = {'post_command_speculative_lint_1': ['/api/command/specul
  'post_coord_worktree_release_1': ['/api/coord/worktree_release'],
  'post_coord_worktrees_1': ['/api/coord/worktrees'],
  'post_coord_worktree_prune_1': ['/api/coord/worktree_prune'],
- 'post_command_daemon_1': ['/api/command/daemon'],
- 'post_command_lint_fix_1': ['/api/command/lint_fix'],
- 'post_command_http_probe_1': ['/api/command/http_probe'],
  'post_callers_1': ['/api/repo/callers'],
  'post_repo_secret_scan_1': ['/api/repo/secret_scan'],
  'post_repo_schema_inspect_1': ['/api/repo/schema_inspect'],
@@ -68,10 +66,7 @@ _CURRENT_ROUTE_PATHS = {'post_command_speculative_lint_1': ['/api/command/specul
  'post_context_budget_1': ['/api/repo/context_budget'],
  'post_ingest_document_1': ['/api/rag/ingest_document'],
  'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
- 'post_command_mock_server_1': ['/api/command/mock_server'],
- 'post_command_diff_hunk_stage_1': ['/api/command/diff_hunk_stage'],
- 'post_command_flaky_detect_1': ['/api/command/flaky_detect'],
- 'post_command_webhook_replay_1': ['/api/command/webhook_replay']}
+}
 _CURRENT_ADDED_ROUTES = {'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
  'post_callees_1': {'paths': ['/api/code/callees'], 'before': 'post_repo_secret_scan_1'},
  'post_implementations_1': {'paths': ['/api/code/implementations'], 'before': 'post_repo_secret_scan_1'},

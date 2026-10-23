@@ -19,7 +19,10 @@ def test_live_status_named_boundary_is_exact_path_only() -> None:
 def test_live_status_handler_preserves_query_defaults_and_200_snapshot(monkeypatch) -> None:
     snapshots = []
     result = {"success": True, "status": "degraded", "dependencies": {"db": "timeout"}}
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(realtime_status=lambda **kwargs: snapshots.append(kwargs) or result))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"debug_traces": {"enabled": True}},
+        realtime_status=lambda **kwargs: snapshots.append(kwargs) or result,
+    ))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.server = object()
     responses = []

@@ -164,7 +164,7 @@ def test_client_mutating_endpoints_not_replay_safe():
     assert captured[-1]["replay_safe"] is False
 
     # Leases
-    client.post("/api/leases/claim", {"root": ".", "paths": ["a.py"]})
+    client.post("/api/leases/claim_batch", {"root": ".", "paths": ["a.py"]})
     assert captured[-1]["replay_safe"] is False
 
     # Mutating agent-state

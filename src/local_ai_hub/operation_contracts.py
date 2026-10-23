@@ -104,7 +104,7 @@ def _action_contracts(
     return result
 
 
-_STATUS_ACTIONS = ("brief", "cache", "telemetry", "full", "agent_state", "traces", "guide")
+_STATUS_ACTIONS = ("brief",)
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -118,7 +118,7 @@ _REPO_ACTIONS = (
     "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate", "diagnose",
     "briefing", "batch_replace", "semantic", "intelligence", "pipeline", "preprocess",
     "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel",
-    "preprocess_unregister", "context_compile", "verify_receipt", "verify_completion", "call_graph_diff",
+    "preprocess_unregister", "call_graph_diff",
     "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_project_impact",
 )
 _TASK_ACTIONS = (
@@ -128,17 +128,10 @@ _TASK_ACTIONS = (
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
-_COMMAND_ACTIONS = (
-    "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format",
-    "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore",
-    "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server",
-    "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight",
-    "speculative_lint",
-)
 _COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
-    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",
+    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
     "memory_promote", "memory_delete", "context_compile",
     "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
@@ -154,7 +147,7 @@ _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list", "source")
 _ADOPTION_TOOL_NAMES = (
     "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
-    "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
+    "local_ai_coord", "local_ai_artifact", "local_ai_work",
 )
 
 _RESPONSE_BUDGET_PROPERTIES = {
@@ -230,9 +223,6 @@ _REPO_CONDITIONS = {
     "preprocess_resume": ("preprocessing",),
     "preprocess_cancel": ("preprocessing",),
     "preprocess_unregister": ("preprocessing",),
-    "context_compile": ("agent_os",),
-    "verify_receipt": ("agent_os",),
-    "verify_completion": ("agent_os",),
     "call_graph_diff": ("agent_os",),
     "semantic_diff": ("agent_os",),
     "cross_project_graph": ("agent_os",),
@@ -240,10 +230,7 @@ _REPO_CONDITIONS = {
     "cross_project_impact": ("agent_os",),
 }
 _ACTION_SCOPED_FIELDS = {
-    "local_ai_status": {
-        "guide_tool": frozenset({"guide"}),
-        "guide_action": frozenset({"guide"}),
-    },
+    "local_ai_status": {},
     "local_ai_task": {
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),
@@ -259,7 +246,7 @@ _ACTION_SCOPED_FIELDS = {
         },
         "days": frozenset({"hotspots"}),
         **{
-            name: frozenset({"context_compile", "context"})
+            name: frozenset({"context"})
             for name in (
                 "include_diagnostics", "clone_id", "worktree_id", "branch",
                 "repository_id", "session_id", "repository_revision",
@@ -274,7 +261,6 @@ _ACTION_SCOPED_FIELDS = {
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
-        "receipt": frozenset({"verify_receipt"}),
         "old_symbol": frozenset({"ast_refactor"}),
         "new_symbol": frozenset({"ast_refactor"}),
         "old_code": frozenset({"semantic_diff"}),
@@ -285,6 +271,7 @@ _ACTION_SCOPED_FIELDS = {
     },
     "local_ai_coord": {
         "sync_action": frozenset({"task_sync"}),
+        "budget": frozenset({"task_budget_increase"}),
         "stream_id": frozenset({"task_sync"}),
         "events": frozenset({"task_sync"}),
         "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list"}),
@@ -320,18 +307,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     "local_ai_status": _tool_contract(
         "local_ai_status", "status", "detail", _STATUS_ACTIONS, timeout="quick: 180 seconds by default; configured MCP timeout applies",
         projection="status", read_only=_STATUS_ACTIONS, selector_required=False,
-        action_requirements={"agent_state": ("agent_os",)},
         properties={
             "detail": {"type": "string", "default": "brief"},
-            "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
-            "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
-            "target_tool": {"type": "string", "enum": list(_ADOPTION_TOOL_NAMES)},
-            "target_action": {"type": "string", "minLength": 1, "maxLength": 80,
-                               "pattern": "^[a-z][a-z0-9_]{0,79}$"},
-            "min_duration_ms": {"type": "integer", "minimum": 0, "maximum": 86400000, "default": 0},
-            "trace_action": {"type": "string", "maxLength": 64, "default": ""},
-            "guide_tool": {"type": "string", "maxLength": 64, "default": ""},
-            "guide_action": {"type": "string", "maxLength": 80, "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -339,14 +316,11 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_repo", "repo", "action", _REPO_ACTIONS, timeout="action-specific: search max 120s, other quick 180s, context 600s, model 1800s, long 2400s",
         projection="repository result", action_requirements=_REPO_CONDITIONS,
         required={
-            "verify_receipt": ("receipt",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
             "generate_types": ("path",),
             "declaration": ("query",),
             "ast_refactor": ("old_symbol", "new_symbol"),
-            "context_compile": ("task_id",),
-            "verify_completion": ("task_id",),
             "context": ("query",),
             "solve": ("task",),
             "delegate": ("task",),
@@ -371,8 +345,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "generate_types": ("path",),
             "declaration": ("query",),
             "ast_refactor": ("old_symbol", "new_symbol"),
-            "context_compile": ("task_id",),
-            "verify_completion": ("task_id",),
             "synthesize_commit": ("task_id",),
             "context": ("query",),
             "solve": ("task",),
@@ -406,12 +378,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "complexity": ("root", "path", "max_tokens", "include_tests"),
             "declaration": ("root", "query", "path"),
             "ast_refactor": ("root", "path", "old_symbol", "new_symbol", "staged"),
-            "context_compile": (
-                "root", "task_id", "max_tokens", "include_diagnostics", "clone_id",
-                "worktree_id", "branch", "repository_id", "session_id",
-                "repository_revision", "changed_paths",
-            ),
-            "verify_completion": ("root", "task_id"),
             "context": ("root", "query", "workspace", "mode", "max_tokens", "token_budget", "task_id", "session_id", "phase", "focus", "preload_profile", "repository_revision", "changed_paths", "base", "staged", "guarded", "since_hash", "approval", "override_reason", "clone_id", "worktree_id", "branch", "repository_id", "include_diagnostics", "path_hints", "directory_hints", "exclude_paths", "force_include_paths"),
             "solve": ("root", "task", "workspace", "mode", "max_tokens", "base", "staged"),
             "delegate": ("root", "task", "workspace", "profile", "max_tokens"),
@@ -531,33 +497,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "diff": {"type": "string", "default": ""},
             "workspace": {"type": "string", "default": ""},
             "evidence": {"type": "array", "items": {"type": "object"}},
-            "receipt": {
-                "type": "object",
-                "properties": {
-                    "receipt_id": {"type": "string", "minLength": 1},
-                    "task_id": {"type": "string", "minLength": 1},
-                    "criterion": {"type": "string", "minLength": 1},
-                    "passed": {"type": "boolean"},
-                    "change_intent_id": {"type": "string"},
-                    "evidence_id": {"type": "string"},
-                    "command_id": {"type": "string"},
-                    "repository_revision": {"type": "string"},
-                    "observed_at": {"type": "number"},
-                    "expires_at": {"type": ["number", "null"]},
-                    "details": {"type": "object"},
-                },
-                "required": ["task_id", "criterion", "passed"],
-                "allOf": [{
-                    "if": {
-                        "properties": {"passed": {"enum": [True]}},
-                        "required": ["passed"],
-                    },
-                    "then": {
-                        "required": ["evidence_id"],
-                        "properties": {"evidence_id": {"minLength": 1}},
-                    },
-                }],
-            },
             "session_id": {"type": "string", "default": ""},
             "clone_id": {"type": "string", "default": ""},
             "worktree_id": {"type": "string", "default": ""},
@@ -673,47 +612,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
-    "local_ai_command": _tool_contract(
-        "local_ai_command", "commands", "action", _COMMAND_ACTIONS, timeout="action-specific command budget; client cap applies",
-        projection="command result", default_effect="command_or_workspace_effect",
-        read_only=("classify", "discover", "stats", "daemon_status", "http_probe", "mock_server_status", "preflight"),
-        action_effects={name: "command_or_workspace_effect" for name in _COMMAND_ACTIONS},
-        action_requirements={"speculative_lint": ("speculative_lint",)},
-        properties={
-            "action": {"type": "string"},
-            "command": {"type": "string", "default": ""},
-            "cwd": {"type": "string", "default": "."},
-            "root": {"type": "string"},
-            "stdin": {"type": "string", "default": ""},
-            "runs": {"type": "integer", "description": "Number of executions to run for flaky detection", "minimum": 1, "default": 5},
-            "env": {
-                "type": "object",
-                "description": "Environment variable overrides",
-                "additionalProperties": {"type": "string"},
-                "default": {},
-            },
-            "task_id": {"type": "string", "default": ""},
-            "criterion": {"type": "string", "default": ""},
-            "timeout": {"type": "integer", "default": 0},
-            "stream": {"type": "boolean", "default": False},
-            "stream_id": {"type": "string", "default": ""},
-            "execution_id": {"type": "string", "default": ""},
-            "paths": {"type": "array", "items": {"type": "string"}},
-            "patch": {"type": "string", "default": ""},
-            "auto_rollback": {"type": "boolean", "default": True},
-            "job_id": {"type": "string", "default": ""},
-            "lint_action": {"type": "string", "default": "submit"},
-            "force": {"type": "boolean", "default": False},
-            "auto_fix": {"type": "boolean", "default": False},
-            "max_attempts": {"type": "integer", "default": 3},
-            "snapshot": {"type": "boolean", "default": False},
-            "rollback_on_failure": {"type": "boolean", "default": False},
-            "extra_fields": {"type": "array", "items": {"type": "string"}},
-        },
-        allowed={"format": ("paths",)},
-        required={"format": ("paths",)},
-        non_empty={"format": ("paths",)},
-    ),
     "local_ai_coord": _tool_contract(
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
@@ -724,6 +622,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[len(_COORD_BASE_ACTIONS):]},
         allowed={
             "ask": ("root", "session_id", "question_id", "question", "task_id"),
+            "task_budget_increase": ("root", "task_id", "reason", "budget"),
             "answer": ("root", "question_id", "answer", "task_id"),
             "task_cleanup_worktree": ("root", "task_id"),
             "task_zombie_reap": ("root", "task_id"),
@@ -743,7 +642,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "worktree_lease": ("root", "branch"),
             "worktree_release": ("root", "worktree_path", "worktree_id", "delete_branch", "branch"),
             "simulate_merge": ("root", "source_branch", "target_branch"),
-            "curate_dataset": ("output_path", "min_receipts", "format"),
+            "curate_dataset": ("root", "output_path", "min_receipts", "format"),
             "negative_knowledge_record": ("root", "record"),
             "negative_knowledge_find": ("root", "query", "limit"),
             "incident_decision": ("root", "fingerprint", "state_revision"),
@@ -771,6 +670,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         },
         required={
             "ask": ("root", "session_id"),
+            "curate_dataset": ("root",),
+            "task_budget_increase": ("root", "task_id", "reason", "budget"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
             "task_zombie_reap": ("task_id",),
@@ -801,6 +702,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         },
         non_empty={
             "ask": ("root", "session_id"),
+            "curate_dataset": ("root",),
+            "task_budget_increase": ("root", "task_id", "reason"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
             "task_zombie_reap": ("task_id",),
@@ -844,6 +747,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "target_date", "description", "purpose", "owner",
             )},
             "format": {"type": ["string", "null"], "default": None},
+            "budget": {"type": "object", "additionalProperties": False, "minProperties": 1,
+                       "properties": {"max_tokens": {"type": "integer", "minimum": 0},
+                                      "max_compute_seconds": {"type": "number", "minimum": 0},
+                                      "max_external_calls": {"type": "integer", "minimum": 0}}},
             "goal": {"type": "string", "default": ""},
             "target_paths": {"type": ["array", "null"], "items": {"type": "string"}},
             "test_command": {"type": "string", "default": ""},
@@ -1027,9 +934,8 @@ def operation_contract(tool: str) -> dict[str, Any] | None:
 def operation_guide_cards(features: Any = None) -> dict[str, Any]:
     """Small, feature-aware examples derived from the same public action contracts."""
     examples = {
-        "local_ai_status": {"detail": "guide"},
+        "local_ai_status": {"detail": "brief"},
         "local_ai_repo": {"action": "context", "root": "ABS_ROOT", "query": "Bounded repository question", "mode": "adaptive"},
-        "local_ai_command": {"action": "classify", "command": "python -m pytest tests/unit/ -q"},
         "local_ai_task": {"action": "delegate", "task": "Summarize supplied evidence", "context": "EVIDENCE"},
         "local_ai_rag": {"action": "search", "root": "ABS_ROOT", "query": "Meaning to retrieve"},
         "local_ai_coord": {"action": "memory_find", "root": "ABS_ROOT", "query": "Known finding"},
@@ -1037,9 +943,8 @@ def operation_guide_cards(features: Any = None) -> dict[str, Any]:
         "local_ai_work": {"action": "status", "work_id": "WORK_ID"},
     }
     tips = {
-        "local_ai_status": "One bounded check; guide is local and does not query runtime health.",
+        "local_ai_status": "One bounded readiness check before local-model work.",
         "local_ai_repo": "Context first; reuse evidence; fetch exact slices only when needed.",
-        "local_ai_command": "Reuse cached receipts; full output is artifact-backed when available.",
         "local_ai_task": "Supply bounded evidence; deterministic tools establish exact facts.",
         "local_ai_rag": "Use after indexed retrieval is insufficient; scope the repository.",
         "local_ai_coord": "Reuse existing tasks and findings; preserve ownership and scope.",
@@ -1080,6 +985,8 @@ def operation_actions(tool: str, features: Any = None) -> tuple[str, ...]:
     contract = operation_contract(tool)
     if contract is None:
         return ()
+    if tool == "local_ai_status":
+        return ("brief",)
     return tuple(
         action
         for action in contract["action_order"]
@@ -1177,8 +1084,7 @@ def operation_argument_hint(tool: str, action: str) -> dict[str, Any]:
         return {}
     schema = operation_input_schema(tool, action)
     return {"allowed_arguments": sorted(schema.get("properties", {})),
-            "required_arguments": schema.get("required", []),
-            "help_call": {"detail": "guide", "guide_tool": tool, "guide_action": action}}
+            "required_arguments": schema.get("required", [])}
 
 
 def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, Any]:
@@ -1302,139 +1208,30 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
 
 
 def _status_output_variants(action: str) -> list[dict[str, Any]]:
-    """Describe stable fields emitted by the MCP status projections."""
+    """Describe the compact readiness response and its error envelope."""
     failure = {
         "type": "object",
         "required": ["success", "error"],
         "properties": {"success": {"const": False}, "error": {"type": "string"}},
         "additionalProperties": True,
     }
-    if action == "guide":
-        return [{
-            "type": "object", "required": ["success", "guide_cards", "guide_scope"],
-            "properties": {
-                "success": {"const": True}, "guide_scope": {"type": "string"},
-                "guide_cards": {"type": "array", "maxItems": 8, "items": {
-                    "type": "object", "required": ["tool", "selector", "required", "example", "tip"],
-                    "properties": {
-                        "tool": {"type": "string"}, "selector": {"type": "string"},
-                        "required": {"type": "array", "items": {"type": "string"}},
-                        "example": {"type": "object"}, "tip": {"type": "string"},
-                    }, "additionalProperties": True,
-                }},
-                "schema_token_reduction_verified": {"const": False},
-            }, "additionalProperties": True,
-        }, {
-            "type": "object",
-            "required": ["success", "tool", "action", "input_schema", "example", "examples_execute"],
-            "properties": {
-                "success": {"const": True},
-                "tool": {"type": "string", "enum": sorted(OPERATION_CONTRACTS)},
-                "action": {"type": "string", "minLength": 1},
-                "input_schema": {"type": "object"},
-                "example": {"type": "object"},
-                "examples_execute": {"const": False},
-            }, "additionalProperties": True,
-        }, failure]
-    if action == "brief":
-        return [{
-            "type": "object",
-            "required": ["success", "version", "ollama_online", "active_model", "queued", "inflight"],
-            "properties": {
-                "success": {"type": "boolean"},
-                "version": {"type": ["string", "null"]},
-                "ollama_online": {"type": ["boolean", "null"]},
-                "active_model": {"type": ["string", "null"]},
-                "queued": {"type": ["integer", "null"]},
-                "inflight": {"type": ["integer", "null"]},
-                "net_cloud_token_delta_est": {"type": "number"},
-                "cache_hits": {"type": "integer"},
-                "coalesced_waiters": {"type": "integer"},
-                "vram_pressure": {"type": "string"},
-                "context_budget_factor": {"type": "number"},
-            },
-            "additionalProperties": True,
-        }, failure]
-    if action == "cache":
-        object_or_null = {"type": ["object", "null"]}
-        return [{
-            "type": "object",
-            "required": ["success", "generation_cache", "semantic_cache", "repo_cache", "repo_snapshots",
-                         "commands", "lossless_router", "pipeline", "preprocessing", "tool_agent",
-                         "circuit_breakers", "fallback_count", "embeddings", "reranker", "token_saving", "context_ledger"],
-            "properties": {
-                "success": {"type": "boolean"},
-                "generation_cache": object_or_null, "semantic_cache": object_or_null,
-                "repo_cache": object_or_null, "repo_snapshots": object_or_null,
-                "commands": object_or_null, "lossless_router": object_or_null,
-                "pipeline": object_or_null, "preprocessing": object_or_null,
-                "tool_agent": object_or_null, "circuit_breakers": object_or_null,
-                "fallback_count": {"type": ["integer", "null"]},
-                "embeddings": object_or_null, "reranker": object_or_null,
-                "token_saving": object_or_null, "context_ledger": {"type": "object"},
-            },
-            "additionalProperties": True,
-        }, failure]
-    if action == "telemetry":
-        summary_fields = {
-            name: {"type": "number"}
-            for name in ("events", "cache_hits", "coalesced", "input_tokens", "output_tokens",
-                         "avoided_cloud_tokens", "avg_duration_ms", "failure_rate", "avg_queue_wait_ms",
-                         "fallback_count", "degraded_count", "retry_count", "cache_hit_rate",
-                         "net_cloud_token_delta_est")
-        }
-        return [{
-            "type": "object",
-            "required": ["success", "window", "summary", "queue", "hotspots", "by_operation",
-                         "error_fingerprints", "detail", "decision_grade"],
-            "properties": {
-                "success": {"type": "boolean"}, "window": {"type": "object"},
-                "summary": {"type": "object", "properties": summary_fields, "additionalProperties": True},
-                "queue": {"type": "object"}, "hotspots": {"type": "array", "items": {"type": "object"}},
-                "by_operation": {"type": "array", "items": {"type": "object"}},
-                "error_fingerprints": {"type": "array", "items": {"type": "object"}},
-                "detail": {"type": "object"}, "decision_grade": {"type": "object"},
-            },
-            "additionalProperties": True,
-        }, failure]
-    if action == "full":
-        return [{
-            "type": "object",
-            "required": ["success", "hub_online", "version"],
-            "properties": {
-                "success": {"type": "boolean"},
-                "hub_online": {"type": "boolean"},
-                "version": {"type": "string"},
-                **{name: {} for name in (
-                    "uptime_seconds", "features", "runtime_stats", "capabilities", "ollama_online",
-                    "models", "hardware", "accelerators", "code_intelligence", "runtime_profile",
-                    "scheduler", "headless", "background_gpu", "ollama_profile", "model_execution",
-                    "vram_balancer", "benchmark", "debug_traces", "observability", "preprocessing",
-                    "agent_state", "http_concurrency",
-                )},
-            },
-            # Diagnostic keys are versioned independently by the status API. Keep
-            # the stable identity contract above, but preserve forward-compatible
-            # diagnostics without rejecting null or newly shaped values.
-            "additionalProperties": True,
-        }, failure]
-    if action == "agent_state":
-        return [{
-            "type": "object",
-            "required": ["success", "enabled", "active_tasks", "tasks_count", "incidents_count",
-                         "candidates_count", "status"],
-            "properties": {
-                "success": {"type": "boolean"},
-                "enabled": {"type": "boolean"},
-                "active_tasks": {"type": "array", "items": {"type": "string"}},
-                "tasks_count": {"type": "integer"},
-                "incidents_count": {"type": "integer"},
-                "candidates_count": {"type": "integer"},
-                "status": {"type": "string"},
-            },
-            "additionalProperties": True,
-        }, failure]
-    return []
+    if action != "brief":
+        return []
+    return [{
+        "type": "object",
+        "required": ["success", "version", "ollama_online", "active_model", "degraded"],
+        "properties": {
+            "success": {"type": "boolean"},
+            "version": {"type": ["string", "null"]},
+            "ollama_online": {"type": ["boolean", "null"]},
+            "active_model": {"type": ["string", "null"]},
+            "degraded": {"type": "boolean"},
+            "vram_pressure": {"type": "string"},
+            "context_budget_factor": {"type": "number"},
+            "dependency_status": {"type": "object"},
+        },
+        "additionalProperties": True,
+    }, failure]
 
 
 def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
@@ -2145,21 +1942,6 @@ def validate_operation_arguments(
                 return f"target_action is not supported for target_tool='{target_tool}'"
         elif target_tool or target_action:
             return "target_tool requires adoption_signal='bypassed'"
-    if tool == "local_ai_repo" and action == "verify_receipt":
-        receipt = arguments.get("receipt")
-        if not isinstance(receipt, dict):
-            return "receipt must be an object for action='verify_receipt'"
-        receipt_schema = contract.get("properties", {}).get("receipt", {})
-        error = _validate_nested_schema(receipt, receipt_schema, "receipt", action)
-        if error:
-            return error
-        for field in ("task_id", "criterion"):
-            if not receipt[field].strip():
-                return f"receipt.{field} is required for action='verify_receipt'"
-        if receipt["passed"]:
-            evidence_id = receipt.get("evidence_id")
-            if not isinstance(evidence_id, str) or not evidence_id.strip():
-                return "receipt.evidence_id is required for passed verification receipts"
     if tool == "local_ai_coord" and action == "ask":
         question_id = arguments.get("question_id", "")
         question = arguments.get("question", "")

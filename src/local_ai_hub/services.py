@@ -4159,10 +4159,6 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.lint_fix(root, command=command, paths=paths,  timeout=timeout)
 
-    def http_probe(self, url: str, expected_status: int = 200, json_path: str | None = None, timeout: float = 5.0, headers: dict[str, str] | None = None) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.http_probe(url, expected_status=expected_status, json_path=json_path, timeout=timeout, headers=headers)
 
     def security_audit(self, root: str, limit: int = 200) -> dict[str, Any]:
         return self.deterministic_operation("security-audit", root, {"limit": int(limit)}, lambda: self.deterministic.security_audit(root, int(limit)))
@@ -4316,57 +4312,16 @@ class LocalAIServices:
     def cross_repo_contract(self, backend_root: str, frontend_root: str) -> dict[str, Any]:
         return self.deterministic_operation("cross-repo-contract", backend_root, {"frontend_root": frontend_root}, lambda: self.deterministic.cross_repo_contract(backend_root, frontend_root))
 
-    def mock_server_start(self, root: str = ".", spec_path: str | None = None, port: int = 0) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.mock_server_start(root, spec_path=spec_path, port=port)
-
-    def mock_server_stop(self, port: int = 11440) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.mock_server_stop(port)
-
-    def mock_server_status(self, port: int = 11440) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.mock_server_status(port)
 
 
-    def diff_hunk_stage(self, root: str, patch: str) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.diff_hunk_stage(root, patch)
 
-    def test_flaky_detect(self, root: str, command: str, runs: int = 5, timeout: int = 30, timeout_per_run: int | None = None) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        effective_timeout = timeout_per_run if timeout_per_run is not None else timeout
-        return self.commands.test_flaky_detect(root, command, runs=runs, timeout_per_run=effective_timeout)
 
-    def webhook_replay(self, url: str, payload: dict[str, Any] | str, secret: str = "", signature_header: str = "X-Hub-Signature-256", timeout: float = 10.0) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.webhook_replay(url, payload, secret=secret, signature_header=signature_header, timeout=timeout)
 
-    def stash_save(self, root: str, message: str = "local_ai_hub_stash") -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.stash_save(root, message=message)
 
-    def stash_restore(self, root: str) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.stash_restore(root)
 
-    def record_mock(self, url: str, cassette_name: str) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.record_mock(url, cassette_name)
 
-    def replay_mock(self, cassette_name: str) -> dict[str, Any]:
-        if not self.commands:
-            return {"success": False, "error": "command broker unavailable"}
-        return self.commands.replay_mock(cassette_name)
+
+
 
     def simulate_merge(self, root: str, source_branch: str, target_branch: str = "HEAD") -> dict[str, Any]:
         from .process_utils import simulate_git_merge
@@ -7565,23 +7520,6 @@ class LocalAIServices:
                 str(args.get("daemon_id", args.get("task_id", args.get("command", "")))),
                 task_id=str(args.get("task_id", "")),
             )
-        if action == "http_probe":
-            exp_status = int(args.get("expected_status", 200)) if str(args.get("expected_status", "")).isdigit() else (int(args.get("task_id", 200)) if str(args.get("task_id", "")).isdigit() else 200)
-            return self.http_probe(str(args.get("url", args.get("command", ""))), expected_status=exp_status, json_path=args.get("json_path", args.get("criterion")), timeout=float(args.get("timeout", 5.0) or 5.0), headers=args.get("headers"))
-        if action == "stash_save":
-            return self.stash_save(str(args.get("cwd", args.get("root", "."))), message=str(args.get("criterion", args.get("command", "local_ai_hub_stash")) or "local_ai_hub_stash"))
-        if action == "stash_restore":
-            return self.stash_restore(str(args.get("cwd", args.get("root", "."))))
-        if action == "record_mock":
-            return self.record_mock(str(args.get("command", "")), str(args.get("task_id", args.get("criterion", "default_cassette"))))
-        if action == "replay_mock":
-            return self.replay_mock(str(args.get("command", args.get("task_id", "default_cassette"))))
-        if action == "diff_hunk_stage":
-            return self.diff_hunk_stage(str(args.get("cwd", args.get("root", "."))), str(args.get("patch", args.get("command", ""))))
-        if action in {"flaky_detect", "test_flaky_detect"}:
-            return self.test_flaky_detect(str(args.get("cwd", args.get("root", "."))), str(args.get("command", "")), runs=int(args.get("runs", 5)), timeout=int(args.get("timeout", 30)))
-        if action == "webhook_replay":
-            return self.webhook_replay(str(args.get("url", args.get("command", ""))), args.get("payload", {}), secret=str(args.get("secret", "")), signature_header=str(args.get("signature_header", "X-Hub-Signature-256")), timeout=float(args.get("timeout", 10.0)))
         return {"success": False, "error": f"unknown command action: {action}"}
 
     def _synthesize_repair_patch(self, command: str, cwd: str, failure_result: dict[str, Any]) -> dict[str, str] | None:

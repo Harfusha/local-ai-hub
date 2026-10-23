@@ -512,6 +512,7 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     from types import SimpleNamespace
 
     class DebugTraces:
+        enabled = True
         TERMINAL_STATES = set()
 
         def detail(
@@ -630,6 +631,7 @@ def test_trace_detail_http_rebuilds_page_after_reconciliation(tmp_path, monkeypa
             return result
 
     traces = DebugTraces()
+    traces.enabled = True
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         debug_traces=traces,
         async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
@@ -872,6 +874,7 @@ def test_captured_semantic_payload_preserves_legacy_tenant_text(tmp_path):
 
 def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
     class DebugTraces:
+        enabled = True
         TERMINAL_STATES = set()
         captured = None
 

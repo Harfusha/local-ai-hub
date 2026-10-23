@@ -5,13 +5,18 @@ import threading
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub import http_server, mcp_server
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.token_accounting import json_tokens
 
 
-def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("detailed_diagnostics", [False, True], ids=["detail-off", "detail-on"])
+def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
+    tmp_path: Path, monkeypatch, detailed_diagnostics,
+):
     # MCP module keeps process-global config; isolate its mode gate from the
     # operator's installed Hub mode so this HTTP contract test is deterministic.
     monkeypatch.setattr(
@@ -22,10 +27,17 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(tmp_path
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = false\n",
+        "\n[agent_state]\nenabled = false\n"
+        f'\n[debug_traces]\nenabled = {str(detailed_diagnostics).lower()}\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
+    monkeypatch.setattr(mcp_server, "CFG", {
+        **mcp_server.CFG,
+        "_defaults_path": None,
+        "_config_path": str(config_path),
+        "_runtime_override_path": None,
+    })
     previous_app = http_server.APP
     monkeypatch.setattr(http_server, "APP", app)
     calls = []
@@ -112,7 +124,10 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(tmp_path
     assert result["provenance"]["status"] == "success"
     assert result["contract"]["goal"] == "inspect route"
     assert result["response_budget"]["requested_tokens"] == 512
-    assert result["response_budget"]["original_tokens"] > 512
+    if detailed_diagnostics:
+        assert result["response_budget"]["original_tokens"] > 512
+    else:
+        assert "original_tokens" not in result["response_budget"]
     assert result["response_budget"]["returned_tokens"] == json_tokens(result) <= 512
     assert "private source detail" not in repr(result)
 

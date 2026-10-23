@@ -951,7 +951,7 @@ def test_trace_detail_is_paginated_and_response_bytes_are_capped(tmp_path):
 
 def test_debug_trace_list_retryable_store_failure_returns_503(monkeypatch):
     failure = {"success": False, "error": "trace store unavailable", "retryable": True}
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(debug_traces=SimpleNamespace(list=lambda **kwargs: failure)))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(debug_traces=SimpleNamespace(enabled=True, list=lambda **kwargs: failure)))
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/debug-traces"
@@ -1618,7 +1618,7 @@ def test_status_uses_canonical_detail_schema_in_live_and_generated_tools():
     from local_ai_hub.generator import generate_mcp_tool_schemas
     import mcp.types as mcp_types
 
-    details = {"brief", "cache", "telemetry", "full", "agent_state", "traces", "guide"}
+    details = {"brief"}
     schemas = generate_mcp_tool_schemas({})["local_ai_status"]["parameters"]["properties"]
     list_handler = mcp_server.mcp._mcp_server.request_handlers[mcp_types.ListToolsRequest]
     response = asyncio.run(list_handler(mcp_types.ListToolsRequest(method="tools/list")))
@@ -1663,17 +1663,19 @@ def test_status_detail_values_route_to_expected_live_status_scope(monkeypatch):
     monkeypatch.setattr(mcp_server, "CLIENT", Client())
     monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(status=True, tasks=False, has_any_model=lambda: False))
     expected_calls = {
-        "brief": ["/api/live/status?light=1&scope=process"],
-        "cache": ["/api/live/status?light=1&scope=process"],
-        "telemetry": ["/api/telemetry/report?days=30&scope=process"],
-        "full": ["/api/status?scope=process", "/api/capabilities"],
-        "agent_state": [("status", {"detail": "agent_state"})],
+        "brief": ["/api/live/status?light=1"],
     }
     for action, expected in expected_calls.items():
         calls.clear()
         result = mcp_server.local_ai_status(detail=action)
         assert result["success"] is True
         assert calls == expected
+    for detail in ("cache", "telemetry", "full", "agent_state", "traces", "guide"):
+        calls.clear()
+        result = mcp_server.local_ai_status(detail=detail)
+        assert result["success"] is False
+        assert "detail supports only brief" in result["error"]
+        assert calls == []
 
 
 def test_pubsub_poll_http_payload_requires_bounded_sequence_cursor():

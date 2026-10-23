@@ -40,7 +40,7 @@ def test_current_root_mode_read_auth_post_and_json_envelope(tmp_path: Path, monk
             return None
 
     class ModeJobs:
-        path = tmp_path / "jobs.sqlite3"
+        path = tmp_path / "profile" / "jobs.sqlite3"
 
         @contextmanager
         def operational_mode_change_guard(self):
@@ -209,6 +209,7 @@ def test_current_root_mode_read_auth_post_and_json_envelope(tmp_path: Path, monk
         assert gaming_payload["conversation_release"]["state"] == "drained"
         assert gaming_payload["inference_admission_release"]["state"] == "drained"
         assert gaming_payload["runtime_unload"] == {
+        "state": "failed",
             "success": False,
             "backend_available": True,
             "unloaded": ["model-a"],

@@ -13,7 +13,8 @@ import time
 from typing import Any, Mapping
 import uuid
 
-from .agent_tasks import TaskState, _canonical_repository_root
+from .agent_tasks import TaskState, TaskStore, CheckpointResponseBudgetError, _canonical_repository_root
+from .task_memory_wire import mcp_wire_tokens
 from .agent_events import AgentEvent
 from .sqlite_support import connect_sqlite, retry_busy
 
@@ -696,6 +697,7 @@ class PolicyEngine:
     def increase_task_budget(
         self, task_id: str, *, actor: str, repo_root: str,
         reason: str, limits: Mapping[str, Any], authorization_actor: str,
+        response_budget_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Storage operation; transport must supply its authenticated task actor.
 
@@ -704,6 +706,8 @@ class PolicyEngine:
         """
         if type(authorization_actor) is not str or authorization_actor != "api_token":
             raise PermissionError("authenticated installation owner required")
+        if response_budget_tokens is not None and (type(response_budget_tokens) is not int or response_budget_tokens < 128):
+            raise ValueError("response budget must be an integer of at least 128")
         for name, value in (("task_id", task_id), ("actor", actor)):
             if not isinstance(value, str) or not value or value != value.strip() or "\x00" in value:
                 raise ValueError(f"{name} must be a canonical nonempty string")
@@ -748,7 +752,7 @@ class PolicyEngine:
                     if (owner != actor or type(scope.get("version")) is not int
                             or scope["version"] != 2 or scope.get("repo_root") != root):
                         raise PermissionError("task owner or repository scope mismatch")
-                    if status not in {"planned", "active", "waiting", "blocked", "verifying"}:
+                    if status not in {"planned", "active", "waiting", "blocked", "verifying", "failed"}:
                         raise PermissionError("task is not resumable by this budget action")
                     row = con.execute(
                         "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls FROM agent_budgets WHERE task_id=?",
@@ -769,10 +773,17 @@ class PolicyEngine:
                                  "task_owner": actor,
                                  "reason": reason, "before": asdict(before), "after": asdict(after)},
                     )
+                    result = {"success": True, "task_id": task_id, "budget": asdict(after),
+                              "audit_event_id": event.event_id, "before": asdict(before)}
+                    if response_budget_tokens is not None:
+                        preview = TaskStore._include_current_request_id(result)
+                        # Reserve bounded final response/accounting envelope overhead.
+                        required = mcp_wire_tokens(preview, text_payload=preview) + 512
+                        if required > response_budget_tokens:
+                            raise CheckpointResponseBudgetError(response_budget_tokens, required)
                     self._write_budget(con, after)
                     store.append_in_transaction(con, event)
-                return {"success": True, "budget": asdict(after),
-                        "audit_event_id": event.event_id, "before": asdict(before)}
+                return result
 
             try:
                 result = retry_busy(mutate, retries=5, base_delay_seconds=0.01)

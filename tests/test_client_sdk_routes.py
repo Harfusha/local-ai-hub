@@ -22,7 +22,7 @@ def http_post_paths(monkeypatch):
 
 
 @pytest.fixture
-def live_client(tmp_path, monkeypatch):
+def live_client(tmp_path, monkeypatch, request):
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.client import HubClient
@@ -30,6 +30,7 @@ def live_client(tmp_path, monkeypatch):
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     config = tmp_path / "config.toml"
     state_dir = tmp_path / "state"
+    detailed_diagnostics = getattr(request, "param", False) is True
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
@@ -37,7 +38,8 @@ def live_client(tmp_path, monkeypatch):
         '[security]\n'
         'api_token = "sdk-isolated-http-token-long"\n'
         'api_token_permissions = ["read", "write", "admin"]\n'
-        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
+        f'[debug_traces]\nenabled = {str(detailed_diagnostics).lower()}\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -530,7 +532,13 @@ def test_context_pack_returns_indexed_evidence_from_real_fast_context(live_clien
     assert any(str(item.get("path", "")).endswith(source.name) for item in result["evidence"])
 
 
-def test_adaptive_context_pack_returns_grounded_indexed_evidence_offline(live_client, tmp_path, http_post_paths):
+@pytest.mark.parametrize(
+    "live_client,detailed_diagnostics", [(False, False), (True, True)],
+    indirect=["live_client"], ids=["detail-off", "detail-on"],
+)
+def test_adaptive_context_pack_returns_grounded_indexed_evidence_offline(
+    live_client, tmp_path, http_post_paths, detailed_diagnostics,
+):
     app, client = live_client
     app.services.config.setdefault("features", {})["rag"] = False
     app.services.external_tools = None
@@ -552,10 +560,13 @@ def test_adaptive_context_pack_returns_grounded_indexed_evidence_offline(live_cl
     assert http_post_paths == ["/api/context/pack"]
     assert result["success"] is True
     assert result["delivery_mode"] == "adaptive"
-    assert result["retrieval"]["quality_first"] is True
-    assert "deterministic" in result["retrieval"]["used_backends"]
-    assert "lexical" in result["retrieval"]["used_backends"]
-    assert result["retrieval"]["quality"]["evidence_count"] >= 1
+    if detailed_diagnostics:
+        assert result["retrieval"]["quality_first"] is True
+        assert "deterministic" in result["retrieval"]["used_backends"]
+        assert "lexical" in result["retrieval"]["used_backends"]
+        assert result["retrieval"]["quality"]["evidence_count"] >= 1
+    else:
+        assert "retrieval" not in result
     assert "adaptive_context_sentinel" in result["context"]
     assert "grounded adaptive value" in result["context"]
     assert any(str(item.get("path", "")).endswith(source.name) for item in result["evidence"])

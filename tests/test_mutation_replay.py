@@ -632,7 +632,6 @@ def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch)
         ("/api/rag/ingest_document", {"document_id": "doc-1"}),
         ("/api/work-orders", {"action": "submit", "work_id": "work-1"}),
         ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1"}),
-        ("/api/command", {"command": "pytest"}),
     ],
 )
 def test_failed_partial_publish_is_replayed_without_reexecution(tmp_path, path: str, payload: dict[str, Any]) -> None:
@@ -814,11 +813,15 @@ def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeyp
         raise RuntimeError("transport failed after request write")
 
     monkeypatch.setattr(client, "_pooled_open", connection_lost)
-    result = client.post("/api/command", {"command": "deploy"}, request_id="t07-command-1")
+    result = client.post(
+        "/api/work-orders",
+        {"action": "submit", "task": "bounded publish", "root": str(tmp_path.resolve())},
+        request_id="t07-work-1",
+    )
 
     assert result["success"] is False
     assert result["outcome_unknown"] is True
-    assert result["request_id"] == "t07-command-1"
+    assert result["request_id"] == "t07-work-1"
 
 
 def test_client_replay_safe_coalescing_timeout_returns_owner_request_id(tmp_path, monkeypatch) -> None:
@@ -1343,7 +1346,6 @@ def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatc
         ("/api/rag/ingest_diagram", {"workspace": "default", "image_path": "diagram.png"}, "rag-diagram"),
         ("/api/work-orders", {"action": "submit", "work_id": "work-1"}, "work-submit"),
         ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1", "checkpoint": {"phase": "testing", "next_action": "verify"}}, "task-checkpoint"),
-        ("/api/command", {"command": "pytest"}, "command"),
     ],
 )
 def test_http_partial_publish_failure_replays_without_dispatching_twice(
@@ -1397,7 +1399,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
             get=lambda task_id: task if task_id == "task-1" else None,
             checkpoint=failed_checkpoint,
         ),
-        services=SimpleNamespace(command=lambda *_args, **_kwargs: failed_publish("command")),
+        services=SimpleNamespace(),
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-1"))
@@ -1618,6 +1620,7 @@ def test_http_request_journal_replays_action_mutations_once(
     app = SimpleNamespace(
         config={
             "agent_state": {"retention_days": 30},
+            "debug_traces": {"enabled": True},
             "security": {
                 "allowed_roots": [task_root],
             },
@@ -1688,29 +1691,16 @@ def test_journal_outcome_unknown_overrides_terminal() -> None:
     assert http_server._journal_outcome_success(409, {"terminal": True, "outcome_unknown": True}) is False
 
 
-def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path, monkeypatch) -> None:
-    from http.client import HTTPConnection
+def test_retired_command_path_never_dispatches_or_creates_journal_entry(tmp_path, monkeypatch) -> None:
     import logging
 
     journal = RecoveryJournal(tmp_path / "recovery")
     payload = {"command": "publish", "root": str(tmp_path)}
-    uncertain = {
-        "success": False,
-        "outcome_unknown": True,
-        "fail_closed": True,
-        "retryable": False,
-        "terminal": True,
-        "cache_hit": False,
-        "coalesced": False,
-        "cache_invalidation_failed": True,
-        "cache_invalidation_errors": ["cache delete reported failure"],
-    }
     dispatches: list[dict[str, Any]] = []
 
-    def command(value: dict[str, Any], *, request_cancel_event=None) -> dict[str, Any]:
-        assert isinstance(request_cancel_event, threading.Event)
+    def command(value: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         dispatches.append(dict(value))
-        return dict(uncertain)
+        pytest.fail("retired command route dispatched a service")
 
     telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
     monkeypatch.setattr(
@@ -1720,11 +1710,11 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
             config={"observability": {}, "security": {}},
             recovery=journal,
             telemetry=telemetry,
-            logger=logging.getLogger("test.typed-unknown-command"),
+            logger=logging.getLogger("test.retired-command-route"),
             services=SimpleNamespace(command=command),
         ),
     )
-    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: pytest.fail("retired route reached authorization"))
 
     server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1757,18 +1747,15 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
     stored = journal.lookup(
         "t07-typed-unknown", action="/api/command",payload_fingerprint=fingerprint,
     )
-    assert first["success"] is False
-    assert first["outcome_unknown"] is True
-    assert first["request_id"] == "t07-typed-unknown"
-    assert "verification_receipt" not in first
-    assert retry == first
-    assert changed.get("status_code") == 409
-    assert dispatches == [payload]
-    assert first.get("status_code") == 409 and stored["state"] == "failed", (
-        f"typed unknown was returned as HTTP {first.get('status_code', 200)} "
-        f"and journaled as {stored['state']} (status {stored['status_code']})"
-    )
-    assert stored["response"]["outcome_unknown"] is True
+    for response in (first, retry, changed):
+        assert response["success"] is False
+        assert response.get("status_code") == 404
+        assert response.get("outcome_unknown") is not True
+        assert "verification_receipt" not in response
+    assert dispatches == []
+    assert stored is None
+    assert not server_thread.is_alive()
+
 
 def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, monkeypatch) -> None:
     import logging

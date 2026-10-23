@@ -238,7 +238,7 @@ assert pathlib.Path(sdk.config["_config_path"]) == configuration
 assert pathlib.Path(sdk.config["_defaults_path"]) == package / "defaults.toml"
 assert pathlib.Path(sdk.config["server"]["state_dir"]) == scratch / "state"
 schemas = schema_wire_payload(generator.generate_mcp_tool_schemas(sdk.config))
-expected = {"local_ai_status", "local_ai_repo", "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_rag"}
+expected = {"local_ai_status", "local_ai_repo", "local_ai_coord", "local_ai_artifact", "local_ai_rag"}
 assert set(schemas) == expected, sorted(schemas)
 for name, schema in schemas.items():
     assert schema["name"] == name and schema["parameters"]["type"] == "object"

@@ -262,6 +262,7 @@ def test_safe_agent_api_reads_block_only_in_maintenance_before_database_call(
     handler, app, responses = _handler(
         monkeypatch, tmp_path, method="POST", path=path, payload=payload, manager=JobControls()
     )
+    app.config["debug_traces"] = {"enabled": True}
     if path == "/api/repo/profile":
         app.config["security"].update(
             allowed_roots=[str(tmp_path)],

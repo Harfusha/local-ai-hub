@@ -39,4 +39,4 @@ def test_stdio_initialize_tools_list_and_call_use_root_http_proxy(monkeypatch) -
     assert "local_ai_status" in tool_names
     assert calls_after_list == []
     assert called.content
-    assert http_calls == [("/api/live/status?light=1&scope=process", {})]
+    assert http_calls == [("/api/live/status?light=1", {})]

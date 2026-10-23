@@ -419,7 +419,6 @@ def test_context_budget_inputs_keep_integer_annotations() -> None:
         (mcp_server.local_ai_task, "max_response_tokens"),
         (mcp_server.local_ai_repo, "max_response_tokens"),
         (mcp_server.local_ai_rag, "max_response_tokens"),
-        (mcp_server.local_ai_command, "max_response_tokens"),
         (mcp_server.local_ai_coord, "max_response_tokens"),
         (mcp_server.local_ai_artifact, "max_response_tokens"),
         (mcp_server.local_ai_work, "max_response_tokens"),

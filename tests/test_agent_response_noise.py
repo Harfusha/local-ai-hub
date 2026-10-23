@@ -46,37 +46,9 @@ def test_accounting_send_resets_original_context_when_module_context_changes(mon
     assert replacement.get() == ("", True)
 
 
-@pytest.mark.parametrize("profile", ["minimal", "compact"])
-def test_command_failure_preserves_decision_fields_without_log_ballast(monkeypatch, tmp_path, profile):
-    import asyncio
-    import json
-
-    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
-    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kw: None)
-    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
-    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: {
-        "success": False, "exit_code": 1, "request_id": "req-test-failure",
-        "outcome_unknown": False, "timed_out": False,
-        "error": "one assertion failed", "summary": "1 failed, 4 passed",
-        "stdout": "private output " * 4000,
-        "diagnostics": [{"message": "private diagnostic " * 1000}],
-        "phase_timings_ms": {"startup": 12},
-    })
-    contents, _ = asyncio.run(mcp_server.mcp.call_tool("local_ai_command", {
-        "action": "run", "command": "python -m pytest -q", "cwd": str(tmp_path),
-        "response_profile": profile, "max_response_tokens": 1000,
-    }))
-    result = json.loads(contents[0].text)
-    assert result["success"] is False
-    assert result["exit_code"] == 1
-    assert result["error"] == "one assertion failed"
-    assert result["request_id"] == "req-test-failure"
-    assert result["outcome_unknown"] is False
-    assert not set(result) & {"stdout", "diagnostics", "phase_timings_ms"}
-
-
 @pytest.mark.parametrize("profile", ["", "minimal", "compact", "delta"])
 def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypatch, profile):
+    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
     recorded = []
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *a, **k: None)
@@ -93,10 +65,10 @@ def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypat
     }
 
     @mcp_server._instrumented_tool()
-    def local_ai_command(action="run", response_profile="", extra_fields=None):
+    def local_ai_task(action="review", response_profile="", extra_fields=None):
         return dict(payload)
 
-    result = local_ai_command(response_profile=profile)
+    result = local_ai_task(response_profile=profile)
     assert all(result[key] == payload[key] for key in (
         "success", "error", "terminal", "retryable", "outcome_unknown", "request_id",
         "task_id", "evidence_ids", "context_id", "summary", "exit_code",
@@ -108,21 +80,25 @@ def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypat
     assert payload["stdout"] == "private output"
 
 
-def test_mcp_boundary_debug_is_explicit_and_extra_fields_are_selective(monkeypatch):
+def test_mcp_boundary_detail_requires_dashboard_toggle(monkeypatch):
+    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *a, **k: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kw: None)
 
     @mcp_server._instrumented_tool()
-    def local_ai_command(action="run", response_profile="", extra_fields=None):
+    def local_ai_task(action="review", response_profile="", extra_fields=None):
         return {"success": True, "stdout": "log", "telemetry": {"cpu": 1},
                 "response_budget": {"requested_tokens": 3200, "returned_tokens": 0}}
 
-    explicit = local_ai_command(extra_fields=["stdout"])
-    assert explicit["stdout"] == "log"
+    explicit = local_ai_task(extra_fields=["stdout"])
+    assert "stdout" not in explicit
     assert "telemetry" not in explicit
     assert explicit["response_budget"]["returned_tokens"] == json_tokens(explicit)
-    debug = local_ai_command(response_profile="debug")
+    debug = local_ai_task(response_profile="debug")
+    assert "telemetry" not in debug
+    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": True}})
+    debug = local_ai_task(response_profile="debug")
     assert debug["telemetry"] == {"cpu": 1}
 
 

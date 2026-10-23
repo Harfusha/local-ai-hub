@@ -165,7 +165,7 @@ def test_agent_state_response_never_returns_raw_prompt_or_absolute_path(running_
     assert response["success"] is True
 
 
-def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
+def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics_enabled):
     import local_ai_hub.mcp_server as mcp_mod
 
     calls = []
@@ -184,7 +184,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
 
         def get(self, path, **kwargs):
             calls.append(("GET", path))
-            return {"success": True, "path": path}
+            return {"success": True, "hub_online": True, "path": path}
 
         def coord(self, action, **kwargs):
             calls.append(("COORD", action, kwargs))
@@ -197,10 +197,11 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_mod, "CLIENT", DummyClient())
 
-    # local_ai_status agent_state
-    st_res = mcp_mod.local_ai_status(detail="agent_state")
+    # Compact readiness uses the lightweight transport.
+    st_res = mcp_mod.local_ai_status(detail="brief")
     assert st_res["success"] is True, st_res.get("error")
-    assert ("STATUS", "agent_state") in calls
+    assert ("GET", "/api/live/status?light=1") in calls
+    assert not any(call[0] == "STATUS" for call in calls)
 
     # local_ai_coord actions
     c_res1 = mcp_mod.local_ai_coord(action="task_create", task_id="t1", contract={"goal": "g"})
@@ -309,8 +310,8 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         "repository_revision": "revision-1",
     }
 
-    # local_ai_repo actions
-    r_res1 = mcp_mod.local_ai_repo(
+    # Task context and verification belong to the coordinator.
+    r_res1 = mcp_mod.local_ai_coord(
         action="context_compile",
         task_id="t2",
         root=str(tmp_path),
@@ -320,7 +321,6 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         repository_id="repository-2",
         session_id="session-2",
         repository_revision="revision-2",
-        changed_paths=["src/main.py"],
         include_diagnostics=True,
     )
     assert r_res1["success"] is True, r_res1
@@ -340,9 +340,8 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
         "session_id": "session-2",
         "repository_revision": "revision-2",
     }
-    assert repo_context_payload["changed_paths"] == ["src/main.py"]
 
-    r_res2 = mcp_mod.local_ai_repo(
+    r_res2 = mcp_mod.local_ai_coord(
         action="verify_receipt",
         root=str(tmp_path),
         receipt={"task_id": "t1", "criterion": "c1", "passed": False},
@@ -350,7 +349,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
     assert r_res2["success"] is True, r_res2.get("error")
     assert any(c[0] == "POST" and c[1] == "/api/agent-state/verification" for c in calls)
 
-    r_res3 = mcp_mod.local_ai_repo(action="verify_completion", root=str(tmp_path), task_id="t1")
+    r_res3 = mcp_mod.local_ai_coord(action="verify_completion", root=str(tmp_path), task_id="t1")
     assert r_res3["success"] is True
 
     # local_ai_task actions
@@ -952,6 +951,7 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
+        "\n[debug_traces]\nenabled = true\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )

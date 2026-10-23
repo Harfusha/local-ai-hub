@@ -202,7 +202,7 @@ def test_root_inventory_resolves_imported_actions_and_redacted_pack_route():
     assert not any(item.startswith("missing MCP action handler local_ai_status:") for item in drift)
     assert not any(item.startswith("orphan client target POST /api/context/pack ") for item in drift)
     status_details = set(ROOT_INVENTORY["mcp_actions"]["local_ai_status"])
-    assert {"brief", "full", "cache", "telemetry"} <= status_details
+    assert status_details == {"brief"}
     assert {"status", "health", "check", "info"}.isdisjoint(status_details)
     assert ROOT_INVENTORY.get("mcp_action_aliases", {}) == {}
     assert any(
@@ -807,7 +807,7 @@ def test_behavioral_links_only_reference_inventoried_operations():
         ("/api/audit/tail", "test_http_get_audit_tail_forwards_limit"),
         ("/api/audit_dependencies", "test_http_get_audit_dependencies_forwards_root"),
         (
-            "/api/affected_tests",
+            "/api/repo/affected_tests",
             "test_http_get_affected_tests_forwards_root_and_repeated_paths",
         ),
     ):
@@ -824,18 +824,13 @@ def test_behavioral_links_only_reference_inventoried_operations():
         "test_local_ai_coord_task_list_forwards_status_and_stale_filter"
     )
     assert task_list_selector in links["MCP action local_ai_coord::task_list"]
-    selector = (
-        "tests/test_mcp_command_operation_acceptance.py::"
-        "test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity"
+    # The retired command tool must not become a live operation or schema gap.
+    assert not any("local_ai_command::" in key for key in finding_keys)
+    assert not any("local_ai_command::" in key for key in links)
+    assert not any(
+        "test_mcp_command_operation_acceptance.py::" in selector
+        for selectors in links.values() for selector in selectors
     )
-    gap_key = "MCP action schema gap local_ai_command::speculative_lint"
-    assert selector in links[gap_key]
-    gap = next(
-        row for row in MODULE.coverage_rows(MODULE._findings(inventory))
-        if (row["surface"], row["name"]) == ("MCP action schema gap local_ai_command", "speculative_lint")
-    )
-    assert gap["evidence_status"] == "confirmed"
-    assert "generated action enum" in gap["contract"]["schema_gap"]
 
 
 

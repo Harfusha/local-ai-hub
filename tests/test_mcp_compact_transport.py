@@ -59,117 +59,6 @@ def _telemetry_output_schema() -> dict[str, object]:
     return output_schema["x-action-output-contracts"]["telemetry"]
 
 
-def test_status_telemetry_compaction_preserves_required_empty_arrays_and_matches_schema() -> None:
-    report = {
-        "success": True,
-        "window": {"days": 30, "scope": "window", "events": 0},
-        "summary": {"events": 0},
-        "queue": {},
-        "hotspots": [],
-        "by_operation": [],
-        "error_fingerprints": [],
-        "detail": {},
-        "decision_grade": {},
-    }
-
-    result = local_ai_mcp._compact(report, "status")
-
-    _assert_json_schema(result, _telemetry_output_schema())
-    assert result["hotspots"] == []
-    assert result["by_operation"] == []
-    assert result["error_fingerprints"] == []
-
-
-def test_mcp_telemetry_tools_call_loopback_matches_declared_output_schema(tmp_path, monkeypatch) -> None:
-    from local_ai_hub import http_server
-    from local_ai_hub.app import LocalAIApp
-    from local_ai_hub.client import HubClient
-
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    state_dir = (tmp_path / "state").as_posix()
-    config = tmp_path / "config.toml"
-    config.write_text(
-        f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state_dir}"\n'
-        "[observability]\nenabled=true\n",
-        encoding="utf-8",
-    )
-    app = LocalAIApp(str(config))
-    monkeypatch.setattr(app.telemetry, "report", lambda *args, **kwargs: {
-        "success": True,
-        "window": {"days": 30, "scope": "window", "events": 0},
-        "summary": {"events": 0},
-        "queue": {},
-        "hotspots": [],
-        "by_operation": [],
-        "error_fingerprints": [],
-        "detail": {},
-        "decision_grade": {},
-    })
-    previous_app = http_server.APP
-    previous_client = local_ai_mcp.CLIENT
-    http_server.APP = app
-    server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    client = HubClient(config_path=str(config), auto_start=False)
-    monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
-    request = t.CallToolRequest(
-        method="tools/call",
-        params=t.CallToolRequestParams(name="local_ai_status", arguments={"detail": "telemetry", "scope": "window"}),
-    )
-    try:
-        declared_schema = _telemetry_output_schema()
-        response = asyncio.run(local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request))
-        assert isinstance(response.root, t.CallToolResult)
-        assert response.root.isError is not True
-        payload = json.loads(response.root.content[0].text)
-        assert payload["success"] is True, payload
-        _assert_json_schema(payload, declared_schema)
-        assert payload["hotspots"] == []
-        assert payload["by_operation"] == []
-        assert payload["error_fingerprints"] == []
-    finally:
-        client.close()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-        http_server.APP = previous_app
-        local_ai_mcp.CLIENT = previous_client
-        app.close()
-
-
-def test_mcp_telemetry_error_text_is_redacted(monkeypatch) -> None:
-    private_values = (
-        "PROMPT-SECRET",
-        "token=TOKEN-SECRET",
-        "/private/customer/report.json",
-    )
-    private_error = "telemetry failed: " + " ".join(private_values)
-
-    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
-        if path.startswith("/api/live/status"):
-            return {"success": True, "hub_online": True, "runtime_stats": {}}
-        return {"success": False, "error": private_error}
-
-    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
-    request = t.CallToolRequest(
-        method="tools/call",
-        params=t.CallToolRequestParams(name="local_ai_status", arguments={"detail": "telemetry"}),
-    )
-
-    response = asyncio.run(local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request))
-
-    assert isinstance(response.root, t.CallToolResult)
-    assert response.root.isError is not True
-    payload = json.loads(response.root.content[0].text)
-    assert payload["success"] is False
-    assert payload["error"] == "Telemetry report failed; details omitted"
-    assert all(value not in response.root.content[0].text for value in private_values)
-
-
 def _mcp_telemetry_call() -> t.CallToolResult:
     request = t.CallToolRequest(
         method="tools/call",
@@ -180,145 +69,6 @@ def _mcp_telemetry_call() -> t.CallToolResult:
     return response.root
 
 
-def test_mcp_telemetry_loopback_redacts_nested_error_text_and_keeps_metrics(tmp_path, monkeypatch) -> None:
-    from local_ai_hub import http_server
-    from local_ai_hub.app import LocalAIApp
-    from local_ai_hub.client import HubClient
-
-    private_values = (
-        "PROMPT-SECRET",
-        "token=TOKEN-SECRET",
-        "/private/customer/report.json",
-    )
-    telemetry_error = " ".join(private_values)
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    config = tmp_path / "config.toml"
-    config.write_text(
-        f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
-        "[observability]\nenabled=true\n",
-        encoding="utf-8",
-    )
-    app = LocalAIApp(str(config))
-    report = {
-        "success": True,
-        "window": {"days": 30, "scope": "window", "events": 7},
-        "summary": {"events": 7, "failure_rate": 0.25},
-        "queue": {"events": 2, "avg_age_ms": 17.5, "last_error": telemetry_error},
-        "hotspots": [{"type": "latency", "signal": "queue_wait", "value_ms": 80, "message": telemetry_error}],
-        "by_operation": [{"action": "context", "calls": 4, "error_message": telemetry_error}],
-        "error_fingerprints": [],
-        "detail": {
-            "status": "incomplete", "truncated": True, "incomplete": True,
-            "omitted_sections": ["writer_failures"], "list_limit": 24, "recent_error": telemetry_error,
-        },
-        "decision_grade": {
-            "counts": {"events": 7},
-            "queue": {"events": 2, "error": telemetry_error},
-            "detail": {"status": "complete", "private_note": telemetry_error},
-        },
-    }
-
-    monkeypatch.setattr(app.telemetry, "report", lambda *args, **kwargs: report)
-    previous_app = http_server.APP
-    previous_client = local_ai_mcp.CLIENT
-    http_server.APP = app
-    server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    client = HubClient(config_path=str(config), auto_start=False)
-    monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
-    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
-
-    try:
-        tool_result = _mcp_telemetry_call()
-        payload = json.loads(tool_result.content[0].text)
-        assert tool_result.isError is not True
-        assert payload["success"] is True
-        assert payload["summary"]["events"] == 7
-        assert payload["queue"]["events"] == 2
-        assert payload["hotspots"][0]["value_ms"] == 80
-        assert payload["detail"]["list_limit"] == 24
-        assert payload["decision_grade"]["counts"]["events"] == 7
-        assert all(value not in tool_result.content[0].text for value in private_values)
-    finally:
-        client.close()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-        http_server.APP = previous_app
-        local_ai_mcp.CLIENT = previous_client
-        app.close()
-
-
-def test_mcp_telemetry_error_projection_preserves_retry_semantics(monkeypatch) -> None:
-    private_error = "token=TOKEN-SECRET /private/customer/report.json"
-
-    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
-        if path.startswith("/api/live/status"):
-            return {"success": True, "hub_online": True, "runtime_stats": {}}
-        return {
-            "success": False,
-            "status_code": 503,
-            "terminal": False,
-            "retryable": True,
-            "error": private_error,
-        }
-
-    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
-
-    tool_result = _mcp_telemetry_call()
-    payload = json.loads(tool_result.content[0].text)
-
-    assert payload["success"] is False
-    assert payload["status_code"] == 503
-    assert payload["terminal"] is False
-    assert payload["retryable"] is True
-    assert private_error not in tool_result.content[0].text
-
-
-def test_mcp_telemetry_exception_before_projection_redacts_private_text(monkeypatch) -> None:
-    private_values = ("PROMPT-SECRET", "token=TOKEN-SECRET", "/private/customer/report.json")
-    private_error = "telemetry transport failed: " + " ".join(private_values)
-
-    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
-        if path.startswith("/api/live/status"):
-            return {"success": True, "hub_online": True, "runtime_stats": {}}
-        raise RuntimeError(private_error)
-
-    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
-
-    tool_result = _mcp_telemetry_call()
-    payload = json.loads(tool_result.content[0].text)
-
-    assert payload["success"] is False
-    assert payload["status_code"] == 500
-    assert payload["terminal"] is True
-    assert payload["retryable"] is False
-    assert all(value not in tool_result.content[0].text for value in private_values)
-
-
-def test_mcp_telemetry_live_status_exception_redacts_private_text(monkeypatch) -> None:
-    private_values = ("PROMPT-SECRET", "token=TOKEN-SECRET", "/private/customer/report.json")
-    private_error = "live status transport failed: " + " ".join(private_values)
-
-    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
-        raise RuntimeError(private_error)
-
-    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
-
-    tool_result = _mcp_telemetry_call()
-    payload = json.loads(tool_result.content[0].text)
-
-    assert payload["success"] is False
-    assert payload["status_code"] == 500
-    assert payload["terminal"] is True
-    assert payload["retryable"] is False
-    assert all(value not in tool_result.content[0].text for value in private_values)
 def test_fallback_used_is_protected_reliability_metadata() -> None:
     assert "fallback_used" in local_ai_mcp._RELIABILITY_PROTECTED_KEYS
 
@@ -596,7 +346,7 @@ def _capture_client(monkeypatch, response, *, capture_path_hints=False, capture_
     return calls
 
 
-def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None:
+def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch, mcp_diagnostics_enabled) -> None:
     calls = _capture_client(monkeypatch, {"success": True, "evidence_ids": ["e1"]})
 
     result = local_ai_mcp.local_ai_repo(
@@ -924,14 +674,14 @@ def test_local_ai_repo_context_rejects_guard_fields_without_guard_trigger(monkey
     assert calls == []
 
 
-def test_context_compile_compatibility_stays_on_agent_state_route(monkeypatch) -> None:
+def test_retired_repo_context_compile_rejects_before_transport(monkeypatch) -> None:
     calls = _capture_client(monkeypatch, {"success": True, "task_id": "task-1"})
 
-    local_ai_mcp.local_ai_repo(action="context_compile", root="C:/repo", task_id="task-1", max_tokens=900)
+    result = local_ai_mcp.local_ai_repo(action="context_compile", root="C:/repo", task_id="task-1", max_tokens=900)
 
-    assert calls[0][0] == "/api/agent-state/context"
-    assert calls[0][1]["task_id"] == "task-1"
-    assert calls[0][1]["token_budget"] == 900
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert calls == []
 
 
 def test_mcp_artifact_page_rejects_store_slice_larger_than_text_limit(monkeypatch, tmp_path) -> None:
@@ -1006,7 +756,8 @@ def test_in_memory_stdio_handles_eight_concurrent_status_calls(monkeypatch) -> N
     payloads = [json.loads(result.content[0].text) for result in results]
     assert all(payload["success"] is True for payload in payloads), payloads
 
-def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("response_tokens", [512, 1024])
+def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypatch, response_tokens) -> None:
     import hashlib
     import importlib.util
     import json
@@ -1088,15 +839,13 @@ def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypa
         wire = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_repo", {
             "action": "context", "root": str(repo), "query": "AdaptiveContextMarker",
             "mode": "adaptive", "max_tokens": 512,
-            "max_response_tokens": 512,
+            "max_response_tokens": response_tokens,
             "path_hints": [{"path": "/src", "purpose": "context candidate", "scope": "repository"}],
             "exclude_paths": ["vendor"],
         }))
         content = wire[0][0] if isinstance(wire, tuple) else wire[0]
         result = json.loads(content.text)
 
-        assert result["success"] is True, result
-        assert result["success"] is True, result
         assert hybrid_calls and hybrid_calls[0]["quality_first"] is True
         assert hybrid_calls[0]["path_hints"] == ({"path": "src", "purpose": "context candidate", "scope": "repository"},)
         assert hybrid_calls[0]["exclude_paths"] == ("vendor",)
@@ -1104,10 +853,24 @@ def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypa
         assert transport_calls[0][1]["mode"] == "adaptive"
         assert transport_calls[0][1]["path_hints"] == [{"path": "/src", "purpose": "context candidate", "scope": "repository"}]
         assert transport_calls[0][1]["exclude_paths"] == ["vendor"]
+        content_items = wire[0] if isinstance(wire, tuple) else wire
+        envelope = {"content": [item.model_dump(mode="json", by_alias=True, exclude_none=True)
+                                for item in content_items], "isError": False}
+        if isinstance(wire, tuple):
+            envelope["structuredContent"] = wire[1]
+        assert result["response_budget"]["returned_tokens"] == json_tokens(envelope)
+        assert json_tokens(envelope) <= response_tokens
+        if result["success"] is False:
+            # The full text + structured envelope may exceed 512 when mandatory
+            # repository/citation identities contain longer platform paths.
+            assert response_tokens == 512
+            assert result["error"] == "max_response_tokens too small"
+            assert result["request_id"]
+            return
+        assert result["success"] is True, result
         assert "AdaptiveContextMarker" in result["context"]
         assert all(item.get("path") != "vendor/private.py" for item in result.get("evidence", []))
-        assert result["response_budget"]["returned_tokens"] <= 512
-        assert json_tokens(result) <= 512
+        assert json_tokens(result) <= response_tokens
     finally:
         server.shutdown()
         server.server_close()

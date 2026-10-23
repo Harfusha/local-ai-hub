@@ -540,7 +540,6 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     from local_ai_hub import mcp_server
     from local_ai_hub.task_memory_wire import (
         normalize_task_memory_response,
-        task_memory_original_tokens,
         task_memory_projection,
         task_memory_wire_tokens,
     )
@@ -639,7 +638,8 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     assert accepted_structured["context_id"] == "context-wire"
     assert accepted_structured["request_id"] == "request-wire"
     assert accepted["task"]["checkpoint"]["state_data"]["memory_context"] == memory_bundle
-    assert accepted["response_budget"]["original_tokens"] == task_memory_original_tokens(success)
+    assert "original_tokens" not in accepted["response_budget"]
+    assert accepted["task"]["checkpoint"]["state_data"]["memory_audit"] == task["checkpoint"]["state_data"]["memory_audit"]
     assert accepted["response_budget"]["returned_tokens"] <= adequate_budget
 
 

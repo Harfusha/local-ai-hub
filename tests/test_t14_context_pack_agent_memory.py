@@ -25,7 +25,8 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{state_dir.as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        "\n[debug_traces]\nenabled = true\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))

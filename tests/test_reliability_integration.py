@@ -719,7 +719,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
     expected = (
         "Trigger map:",
         "repository facts/files/symbols: `local_ai_repo`",
-        "tests/lint/typecheck/build: `local_ai_command`",
+        "native command tool",
         "exact source/evidence text: `local_ai_artifact`",
         "shared findings or overlapping edits: `local_ai_coord`",
         "semantic retrieval after indexed paths are insufficient: `local_ai_rag`",
@@ -745,7 +745,7 @@ def test_mcp_tools_have_use_when_and_skip_when_cues(monkeypatch):
     registered_tools = getattr(tool_manager, "_tools", {})
     for tool in (
         "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
-        "local_ai_command", "local_ai_coord", "local_ai_artifact",
+        "local_ai_coord", "local_ai_artifact", "local_ai_work",
     ):
         if tool in mcp_server.FEATURES.disabled_tools:
             assert tool not in registered_tools, f"{tool}: disabled tool remains registered"
@@ -753,8 +753,12 @@ def test_mcp_tools_have_use_when_and_skip_when_cues(monkeypatch):
         registered = registered_tools.get(tool)
         assert registered is not None, f"{tool}: missing from registered MCP tools"
         description = registered.description or ""
-        assert "Use when:" in description, f"{tool}: missing 'Use when:' in MCP description"
-        assert "Skip when:" in description, f"{tool}: missing 'Skip when:' in MCP description"
+        if tool == "local_ai_status":
+            assert "Use once when Hub or local inference availability affects the next action" in description
+            assert "skip routine checks" in description
+        else:
+            assert "Use when:" in description, f"{tool}: missing 'Use when:' in MCP description"
+            assert "Skip when:" in description, f"{tool}: missing 'Skip when:' in MCP description"
 
     for lean_schemas in (True, False):
         monkeypatch.setattr(mcp_server, "LEAN_SCHEMAS", lean_schemas)
@@ -794,10 +798,10 @@ def test_hub_policy_excludes_removed_external_agent_route():
     assert "allow_write=false" not in policy
 
 
-def test_mcp_surface_preserves_eight_tools_with_agent_state_actions():
+def test_mcp_surface_preserves_seven_tools_with_agent_state_actions():
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     tool_defs = [line for line in source.splitlines() if line.startswith("def local_ai_")]
-    assert len(tool_defs) == 8
+    assert len(tool_defs) == 7
     assert "task_create" in source
     assert "context_compile" in source
     assert "candidate_create" in source

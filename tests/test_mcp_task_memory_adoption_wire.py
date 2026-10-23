@@ -94,7 +94,8 @@ def _memory(repository_id: str, *, root: str):
     }
 
 
-def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_store=False):
+def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_store=False,
+                detailed_diagnostics=False):
     repo = tmp_path / "repository"
     repo.mkdir()
     from local_ai_hub.project_config import resolve_project_context
@@ -249,7 +250,8 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         + json.dumps((tmp_path / "state").as_posix())
         + '\n[hardware]\nprofile="cpu"\nauto_tune=false\n'
           '[ollama]\nenabled=false\n[llama_cpp]\nmode="off"\n'
-          '[mcp.response_budget.tool_tokens]\nlocal_ai_coord=3200\n', encoding="utf-8")
+        + f'[debug_traces]\nenabled={str(detailed_diagnostics).lower()}\n'
+        + '[mcp.response_budget.tool_tokens]\nlocal_ai_coord=3200\n', encoding="utf-8")
     bootstrap = (
         "import sys; sys.path.insert(0,sys.argv[1]); "
         "import local_ai_hub.mcp_server as server; server.CLIENT.auto_start=False; "
@@ -365,19 +367,25 @@ def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_
     assert calls[-1]["body"]["response_budget_tokens"] == 128
 
 
-def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(tmp_path, monkeypatch):
+@pytest.mark.parametrize("detailed_diagnostics", [False, True], ids=["detail-off", "detail-on"])
+def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(
+        tmp_path, monkeypatch, detailed_diagnostics):
     audit = {"used_ids": ["mem_store_wire"]}
     _, calls, results, tasks = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
         {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}},
          "response_profile": "compact", "max_response_tokens": 3200},
-    ], monkeypatch, real_store=True, return_store=True)
+    ], monkeypatch, real_store=True, return_store=True,
+        detailed_diagnostics=detailed_diagnostics)
     payload = results[1].structuredContent
     assert payload["success"] is True, _request_diagnostics(
         calls, 1, {"action": "task_checkpoint"})
     assert payload["request_id"] == calls[-1]["request_id"]
     assert payload["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
-    assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
+    if detailed_diagnostics:
+        assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
+    else:
+        assert "original_tokens" not in payload["response_budget"]
     assert tasks.get(TASK_ID).checkpoint.state_data["memory_audit"] == audit
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 2
     assert calls[-1]["body"]["response_budget_tokens"] == 3200
@@ -462,19 +470,24 @@ def test_stdio_default_budget_delivers_memory_without_extra_fields(tmp_path, mon
 
 
 @pytest.mark.parametrize("profile", ["compact", "minimal", "delta", "debug"])
-def test_task_memory_original_metadata_is_canonical_across_wrappers(tmp_path, monkeypatch, profile):
+@pytest.mark.parametrize("detailed_diagnostics", [False, True], ids=["detail-off", "detail-on"])
+def test_task_memory_original_metadata_is_canonical_across_wrappers(
+        tmp_path, monkeypatch, profile, detailed_diagnostics):
     expected, _, results = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "canonical task memory"},
          "response_profile": profile, "reuse_key": f"canonical-memory:{profile}",
          "max_response_tokens": 3200},
         {"action": "task_get", "response_profile": profile,
          "reuse_key": f"canonical-memory:{profile}", "max_response_tokens": 3200},
-    ], monkeypatch)
+    ], monkeypatch, detailed_diagnostics=detailed_diagnostics)
     for result in results:
         payload = result.structuredContent
         assert payload["success"] is True, payload
         assert payload["task"]["checkpoint"]["state_data"]["memory_context"] == expected
-        assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
+        if detailed_diagnostics:
+            assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
+        else:
+            assert "original_tokens" not in payload["response_budget"]
         assert payload["response_budget"]["returned_tokens"] == json_tokens(
             result.model_dump(mode="json", by_alias=True, exclude_none=True))
     if profile == "delta":

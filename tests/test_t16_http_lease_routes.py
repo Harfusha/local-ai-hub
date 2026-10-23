@@ -45,7 +45,7 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
             "security": {},
             "observability": {
                 "exclude_http_paths": [
-                    "/api/leases", "/api/leases/claim", "/api/leases/claim_batch",
+                    "/api/leases", "/api/leases/claim_batch", "/api/leases/claim_batch",
                     "/api/leases/renew", "/api/leases/release",
                 ]
             },
@@ -77,20 +77,20 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
             return json.loads(response.read().decode("utf-8"))
 
     try:
-        claim_a = request("POST", "/api/leases/claim", payload={
+        claim_a = request("POST", "/api/leases/claim_batch", payload={
             "root": str(worktree_a), "paths": ["src/shared.py"],
         })
         claim_b = request("POST", "/api/leases/claim_batch", owner="task-b", payload={
             "root": str(worktree_b), "paths": ["src/shared.py"],
         })
-        claim_c = request("POST", "/api/leases/claim", owner="task-c", payload={
+        claim_c = request("POST", "/api/leases/claim_batch", owner="task-c", payload={
             "root": str(unrelated), "paths": ["src/shared.py"],
         })
         assert claim_a["success"] is True
         assert claim_b["success"] is False
         assert claim_b["conflicts"]
         assert claim_c["success"] is True
-        assert request("POST", "/api/leases/claim",  payload={
+        assert request("POST", "/api/leases/claim_batch",  payload={
             "root": str(malformed), "paths": ["src/shared.py"],
         })["success"] is False
 

@@ -16,6 +16,7 @@ def test_status_route_preserves_dependency_diagnostics(monkeypatch):
     }
     app = SimpleNamespace(
         config={},
+        debug_traces=SimpleNamespace(enabled=True),
         status=lambda **_kwargs: {
             "success": False,
             "hub_online": True,

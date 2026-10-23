@@ -53,7 +53,7 @@ Fallback behavior remains useful and explicit:
 
 Memory promotion requires explicit approval. Relevant repository revision changes mark affected memory `stale`; stale/conflicting records remain available as diagnostics, not authoritative context, until revalidated. Evidence IDs and repository revision must be preserved through local-model composition and post-processing.
 
-Operational endpoints cover doctor, DB optimization, cache purge, log tail and service control. Bundles export as ZIP and import only as raw `application/zip` or `application/octet-stream`. Commands must pass `/api/command` policy classification.
+Operational endpoints cover doctor, DB optimization, cache purge, log tail and service control. Bundles export as ZIP and import only as raw `application/zip` or `application/octet-stream`. Validation commands use the agent host's bounded native command tool and its authorization controls; no public command execution endpoint is exposed.
 
 JSON requests require a JSON content type and bounded `Content-Length`; malformed JSON returns 400 and oversized bodies 413. Authenticated deployments use `X-LocalAI-Token`. Errors are JSON objects with `success:false` where applicable.
 
@@ -81,7 +81,7 @@ Agent Operating System endpoints project durable task, memory, incident, verific
 * `POST /api/agent-state/context` supports action `compile` (assembles bounded context window with active task, checkpoint, relevant memories, negative knowledge, and leases).
 * `POST /api/agent-state/learning` supports actions: `create_candidate`, `promote`, `observe` (SLO feedback), and `list`.
 * `POST /api/agent-state/cleanup` runs bounded retention cleanup of stale events and snapshots.
-* `GET /api/status?detail=agent_state` provides a lightweight overview of active tasks, memory counts, incidents, and health status.
+* Agent OS tasks and memory use `/api/agent-state/tasks` and `/api/agent-state/memory` with an explicit authorized repository root. Compact MCP readiness uses `local_ai_status(detail="brief")`.
 
 Retry only an explicitly retryable response, honor `retry_after_seconds`, keep the same request ID for the logical replay, and do not run client-side polling loops. The hub itself coalesces active async jobs and uses per-backend cooldowns for optional code-intelligence runtimes.
 

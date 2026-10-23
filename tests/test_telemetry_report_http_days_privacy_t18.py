@@ -16,6 +16,7 @@ def test_telemetry_report_invalid_days_does_not_echo_private_input(tmp_path):
     config_path.write_text(
         "\n".join([
             "[server]", 'bind = "127.0.0.1"', "port = 11498", f'state_dir = "{state_dir.as_posix()}"',
+            "[debug_traces]", "enabled = true",
         ]),
         encoding="utf-8",
     )

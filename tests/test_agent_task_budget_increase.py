@@ -9,7 +9,7 @@ import pytest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_policy import BudgetCost, PolicyEngine
-from local_ai_hub.agent_tasks import GoalContract, TaskStore, TaskStatus
+from local_ai_hub.agent_tasks import CheckpointResponseBudgetError, GoalContract, TaskStore, TaskStatus
 
 
 @pytest.fixture
@@ -54,6 +54,25 @@ def test_increase_preserves_usage_and_omitted_limits_and_records_audit(budget_ca
     assert payload["reason"] == "Finish existing validation"
     assert payload["before"]["used_compute_seconds"] == before.used_compute_seconds
     assert payload["after"] == result["budget"]
+
+
+def test_watchdog_failed_task_can_raise_limits_without_resuming_or_resetting(budget_case):
+    policy, state, _ = budget_case
+    tasks = TaskStore(state)
+    failed = tasks.fail("existing", actor="watchdog", reason="TASK_BUDGET_EXCEEDED")
+    assert failed.status == TaskStatus.FAILED
+    before = policy.get_budget("existing")
+    with pytest.raises(PermissionError):
+        increase(budget_case)
+    result = increase(budget_case, actor="watchdog")
+    assert tasks.get("existing") == failed
+    assert policy.get_budget("existing").used_tokens == before.used_tokens
+    assert policy.get_budget("existing").used_compute_seconds == before.used_compute_seconds
+    assert policy.get_budget("existing").used_external_calls == before.used_external_calls
+    assert result["budget"]["max_compute_seconds"] == 20
+    event = state.events("budget:existing")
+    assert event[-1].payload["task_owner"] == "watchdog"
+    assert event[-1].event_id == result["audit_event_id"]
 
 
 @pytest.mark.parametrize("limits", [
@@ -189,3 +208,130 @@ def test_broker_rejects_non_owner_admin_authority(budget_case, actor, permission
             authorization_actor=actor, authorization_permissions=permissions,
         )
     assert policy.get_budget("existing") == before
+
+
+def test_response_budget_rejection_precedes_mutation_and_audit(budget_case):
+    policy, state, _ = budget_case
+    before = policy.get_budget("existing")
+    with pytest.raises(CheckpointResponseBudgetError):
+        increase(budget_case, response_budget_tokens=128)
+    assert policy.get_budget("existing") == before
+    with closing(sqlite3.connect(state.db_path)) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM agent_events WHERE kind='task.budget_increased'"
+        ).fetchone()[0] == 0
+
+
+def test_public_contract_has_explicit_scope_without_caller_identity():
+    from local_ai_hub.operation_contracts import validate_operation_arguments
+    args = {"root": "C:/existing", "task_id": "existing", "reason": "finish",
+            "budget": {"max_compute_seconds": 20}}
+    assert validate_operation_arguments("local_ai_coord", "task_budget_increase", args) is None
+    assert validate_operation_arguments("local_ai_coord", "task_budget_increase",
+                                        {**args, "owner": "pretend-owner"})
+    assert validate_operation_arguments("local_ai_coord", "task_get",
+                                        {"task_id": "existing", "budget": args["budget"]})
+
+
+def test_sdk_budget_action_preserves_canonical_payload(monkeypatch):
+    from local_ai_hub.client import HubClient
+    client = HubClient.__new__(HubClient)
+    calls = []
+    monkeypatch.setattr(client, "post", lambda path, payload: calls.append((path, payload)) or {"success": True})
+    result = client.coord("task_budget_increase", root="C:/existing", task_id="existing",
+                          reason="finish", budget={"max_compute_seconds": 20})
+    assert result["success"] is True
+    assert calls == [("/api/agent-state/tasks", {
+        "action": "budget_increase", "root": "C:/existing", "task_id": "existing",
+        "reason": "finish", "budget": {"max_compute_seconds": 20},
+    })]
+
+
+@pytest.fixture
+def http_budget_handler(budget_case, monkeypatch):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+    _, state, root = budget_case
+    config = {"security": {"api_token": "owner-token-at-least-sixteen",
+                           "supervisor_token": "supervisor-token-at-least-sixteen",
+                           "api_token_permissions": ["admin"], "allowed_roots": [str(root)]}}
+    audit = []
+    app = SimpleNamespace(config=config, agent_tasks=TaskStore(state),
+                          commands=budget_broker(budget_case),
+                          telemetry=SimpleNamespace(record_system=lambda *a, **kw: audit.append((a, kw))))
+    monkeypatch.setattr(http_server, "APP", app)
+    # Coordination ID normally comes from the server project resolver. All token,
+    # canonical root/allowlist, task-scope and persisted budget checks remain real.
+    monkeypatch.setattr(http_server, "_trusted_project_context",
+                        lambda _: SimpleNamespace(coordination_id="repository"))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.command = "POST"
+    handler.client_address = ("127.0.0.1", 0)
+    handler.headers = {"X-LocalAI-Token": config["security"]["api_token"],
+                       "X-LocalAI-Agent": "forged-unrelated-agent"}
+    replies = []
+    handler._send = lambda status, payload: replies.append((status, payload))
+    payload = {"action": "budget_increase", "root": str(root), "task_id": "existing",
+               "reason": "Finish owner-approved work", "budget": {"max_compute_seconds": 20}}
+    return handler, payload, replies, config, audit
+
+
+def test_http_owner_admin_changes_budget_without_agent_header_authority(http_budget_handler, budget_case):
+    handler, payload, replies, _, audit = http_budget_handler
+    handler._task_budget_increase(payload)
+    assert replies[-1][0] == 200
+    assert replies[-1][1]["budget"]["used_compute_seconds"] == 11
+    assert audit[0][1]["actor"] == "api_token"
+    assert budget_case[0].get_budget("existing").max_compute_seconds == 20
+
+
+@pytest.mark.parametrize("case", ["wrong_token", "no_admin", "supervisor", "local_fallback", "caller_owner", "no_root", "wrong_root"])
+def test_http_rejects_untrusted_authority_and_scope(http_budget_handler, budget_case, case, tmp_path):
+    handler, payload, replies, config, _ = http_budget_handler
+    policy, _, _ = budget_case
+    before = policy.get_budget("existing")
+    if case == "wrong_token":
+        handler.headers["X-LocalAI-Token"] = "wrong-token"
+    elif case == "no_admin":
+        config["security"]["api_token_permissions"] = ["read", "write"]
+    elif case == "supervisor":
+        handler.headers["X-LocalAI-Token"] = config["security"]["supervisor_token"]
+    elif case == "local_fallback":
+        config["security"].update(api_token="", supervisor_token="")
+        handler.headers.clear()
+    elif case == "caller_owner":
+        payload["owner"] = "owner"
+    elif case == "no_root":
+        payload.pop("root")
+    else:
+        other = tmp_path / "unauthorized"
+        other.mkdir()
+        payload["root"] = str(other)
+    handler._task_budget_increase(payload)
+    assert replies[-1][0] in (400, 403, 404)
+    assert policy.get_budget("existing") == before
+
+
+def test_mcp_budget_roundtrip_retains_audit_and_counters(monkeypatch, tmp_path):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
+    calls = []
+    expected = {"success": True, "task_id": "existing", "audit_event_id": "evt-real",
+                "before": {"max_compute_seconds": 10, "used_compute_seconds": 11},
+                "budget": {"max_compute_seconds": 20, "used_compute_seconds": 11}}
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda path, payload, **kw: calls.append((path, payload)) or expected)
+    result = mcp_server.local_ai_coord(action="task_budget_increase", root=str(tmp_path),
+                                      task_id="existing", reason="finish",
+                                      budget={"max_compute_seconds": 20}, max_response_tokens=3200)
+    assert result["success"] is True
+    for key in ("before", "budget", "audit_event_id"):
+        assert result[key] == expected[key]
+    assert calls[0][0] == "/api/agent-state/tasks"
+    assert calls[0][1]["action"] == "budget_increase"
+    assert calls[0][1]["budget"] == {"max_compute_seconds": 20}
+    assert "owner" not in calls[0][1] and "authorization_actor" not in calls[0][1]

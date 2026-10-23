@@ -10,7 +10,7 @@ from local_ai_hub.operation_contracts import (
 
 
 def test_action_schema_publishes_only_canonical_names():
-    for tool in ("local_ai_repo", "local_ai_task", "local_ai_command", "local_ai_coord"):
+    for tool in ("local_ai_repo", "local_ai_task", "local_ai_coord"):
         schema = operation_tool_input_schema(tool, mcp_server.FEATURES)
         assert schema["properties"]["action"]["enum"] == list(operation_actions(tool, mcp_server.FEATURES))
     removed_repo_actions = {"sec", "idx", "ctx", "review"}
@@ -24,7 +24,6 @@ def test_short_and_normalized_action_aliases_are_rejected():
     aliases = {
         "local_ai_repo": ("sec", "idx", "review", "ctx"),
         "local_ai_task": ("gen", "rev", "del"),
-        "local_ai_command": ("patch", "fix", "repair", "fmt"),
         "local_ai_coord": (
             "ctx", "compile_ctx", "neg_rec", "neg_find", "mem_put", "mem_rec",
             "mem_get", "mem_find", "mem_search", "task_new", "task_chk", "task_done",

@@ -29,7 +29,7 @@ def test_status_description_names_the_canonical_detail_selector(monkeypatch, lea
     monkeypatch.setattr(mcp_server, "LEAN_SCHEMAS", lean)
     description = mcp_server._desc_status()
 
-    assert "detail: brief, cache, telemetry, full" in description
+    assert "detail supports only brief" in description
     assert "Actions:" not in description
     _assert_advertised_actions_match_schema({
         "name": "local_ai_status",

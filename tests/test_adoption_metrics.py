@@ -146,23 +146,16 @@ def test_dashboard_does_not_poll_removed_adoption_panel():
     assert "'/api/adoption'" not in html
 
 
-def test_mcp_explicit_bypass_report_uses_target_without_inference(tmp_path, monkeypatch):
+def test_removed_adoption_status_arguments_reject_before_fetch(monkeypatch):
+    import inspect
+    import pytest
     from local_ai_hub import mcp_server
 
-    store = AdoptionMetricsStore(tmp_path)
-    monkeypatch.setattr(mcp_server, "ADOPTION_METRICS", store)
-    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda *_args, **_kwargs: {"success": True})
-    monkeypatch.setattr(mcp_server.FEATURES, "status", True)
-
-    mcp_server.local_ai_status(adoption_signal="bypassed", target_tool="local_ai_repo", target_action="search")
-    mcp_server.local_ai_status()
-    invalid = mcp_server.local_ai_status(adoption_signal="bypassed", target_tool="C:/unsafe", target_action="search")
-    unavailable_action = mcp_server.local_ai_status(adoption_signal="bypassed", target_tool="local_ai_repo", target_action="not_real")
-    report = store.report(days=1)
-    assert "adoption_signal" in inspect.signature(mcp_server.local_ai_status).parameters
-    assert "target_tool" in inspect.signature(mcp_server.local_ai_status).parameters
-    assert invalid["success"] is False
-    assert unavailable_action["success"] is False
-    assert report["totals"]["bypassed"] == 1
-    assert sum(report["totals"].values()) == 4
-    assert {"tool": "local_ai_repo", "action": "search", "outcome": "bypassed", "count": 1} in report["action_adoption"]
+    calls = []
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda *args, **kwargs: calls.append(args))
+    signature = inspect.signature(mcp_server.local_ai_status)
+    for name, value in (("adoption_signal", "bypassed"), ("target_tool", "local_ai_repo"), ("target_action", "search")):
+        assert name not in signature.parameters
+        with pytest.raises(TypeError):
+            mcp_server.local_ai_status(**{name: value})
+    assert calls == []

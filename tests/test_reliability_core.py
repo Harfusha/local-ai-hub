@@ -463,7 +463,7 @@ enabled=true
         assert status == 200 and isinstance(live_status.get("observability"), dict), (status, live_status)
         assert "active_requests" in live_status["observability"], live_status
         assert "recent_http" in live_status["observability"], live_status
-        status, _, _ = _request(base+"/api/command", method="POST", body=json.dumps({"action":"classify","command":"pytest -q"}).encode(), headers={**auth,"Content-Type":"application/json"})
+        status, _, _ = _request(base+"/api/search", method="POST", body=json.dumps({"root":str(repo),"query":"test"}).encode(), headers={**auth,"Content-Type":"application/json"})
         assert status == 200
         status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
         traces = json.loads(body)
@@ -477,9 +477,9 @@ enabled=true
         status,_,body=_request(base+"/api/config/update",method="POST",body=cfg_body,headers={**auth,"Content-Type":"application/json"})
         assert status==200 and json.loads(body)["restart_required"] is True
         assert (tmp_path / "config.runtime.toml").is_file()
-        status,_,body=_request(base+"/api/command",method="POST",body=b"{",headers={**auth,"Content-Type":"application/json"})
+        status,_,body=_request(base+"/api/search",method="POST",body=b"{",headers={**auth,"Content-Type":"application/json"})
         assert status==400 and b"invalid JSON" in body
-        status,_,_= _request(base+"/api/command",method="POST",body=b"x"*2048,headers={**auth,"Content-Type":"application/json"})
+        status,_,_= _request(base+"/api/search",method="POST",body=b"x"*2048,headers={**auth,"Content-Type":"application/json"})
         assert status==413
         import hashlib
         from local_ai_hub.process_utils import canonical_workspace_id
@@ -510,13 +510,13 @@ enabled=true
             ("/api/test_matrix", {"root":str(repo)}),
             ("/api/security_audit", {"root":str(repo),"limit":10}),
             ("/api/resolve_imports", {"root":str(repo),"symbols":["SampleService"],"language":"auto"}),
-            ("/api/command", {"action":"classify","command":"pytest -q"}),
             ("/api/preprocess", {"action":"status","root":str(repo)}),
         ]
         for path,payload in calls:
             st,response_headers,response=jpost(path,payload)
             assert st == 200, (path, st, response_headers, response[:500])
             assert response, (path, st, response_headers)
+        assert jpost("/api/command", {"action":"classify","command":"pytest -q"})[0] == 404
         foreign_root = tmp_path / "foreign"
         foreign_root.mkdir()
         st, _, response = jpost("/api/security_audit", {"root": str(foreign_root)})

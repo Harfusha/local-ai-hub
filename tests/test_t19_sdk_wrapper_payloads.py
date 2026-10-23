@@ -86,34 +86,10 @@ import pytest
             id="dependency-slice",
         ),
         pytest.param(
-            "flaky_detect",
-            {"cwd": "/repo", "command": "pytest -q", "runs": 4, "timeout": 20},
-            (
-                "/api/command/flaky_detect",
-                {
-                    "cwd": "/repo",
-                    "root": "/repo",
-                    "command": "pytest -q",
-                    "runs": 4,
-                    "timeout": 20,
-                },
-            ),
-            id="flaky-detect-repeats-cwd-as-root",
-        ),
-        pytest.param(
             "hotspots",
             {"root": "/repo", "days": 14, "limit": 5},
             ("/api/repo/hotspots", {"root": "/repo", "days": 14, "limit": 5}),
             id="hotspots",
-        ),
-        pytest.param(
-            "mock_server",
-            {"action": "start", "root": "/repo", "spec_path": None, "port": 51440},
-            (
-                "/api/command/mock_server",
-                {"action": "start", "root": "/repo", "spec_path": None, "port": 51440},
-            ),
-            id="mock-server-includes-null-spec",
         ),
     ],
 )
@@ -163,11 +139,13 @@ def test_mutating_post_reports_unknown_outcome_after_transport_exception(
 
     monkeypatch.setattr(client, "_pooled_open", connection_lost)
     result = client.post(
-        "/api/command", {"command": "deploy"}, request_id="t19-command-1"
+        "/api/agent-state/tasks",
+        {"action": "create", "root": str(tmp_path), "contract": {"goal": "bounded task"}},
+        request_id="t19-task-1",
     )
 
     assert result["success"] is False
     assert result["outcome_unknown"] is True
-    assert result["request_id"] == "t19-command-1"
+    assert result["request_id"] == "t19-task-1"
     assert attempts == ["sent"]
     client.close()

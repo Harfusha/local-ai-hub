@@ -325,6 +325,7 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
         '\n[preprocessing]\nenabled = false\n'
         '\n[code_intelligence]\nenabled = false\n'
         '\n[agent_state]\nenabled = false\n'
+        '\n[debug_traces]\nenabled = true\n'
         '\n[search]\ncontext_backend_timeout_seconds = 0.1\n',
         encoding="utf-8",
     )

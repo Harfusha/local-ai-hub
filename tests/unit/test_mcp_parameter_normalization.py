@@ -50,25 +50,6 @@ def test_response_budget_contract_accepts_none_and_rejects_invalid_explicit_valu
         ) is not None
 
 
-def test_command_root_does_not_replace_cwd(monkeypatch, tmp_path):
-    _use_active_operational_mode(monkeypatch)
-    captured = {}
-
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            if url == "/api/command":
-                captured.update(url=url, payload=payload)
-            return {"success": True}
-
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-
-    result = _call_tool("local_ai_command", {
-        "action": "run", "root": str(tmp_path), "command": "echo 1",
-    })
-
-    assert captured.get("url") == "/api/command", repr(result)
-    assert captured["payload"]["cwd"] == mcp_server._workspace
-    assert captured["payload"]["root"] == str(tmp_path)
 
 
 def test_repo_accepts_canonical_root_and_query_keywords(monkeypatch, tmp_path):
@@ -130,29 +111,8 @@ def test_repo_forwards_canonical_changed_paths_and_phase(monkeypatch, tmp_path):
     assert captured["payload"]["phase"] == "review"
 
 
-def test_command_accepts_canonical_timeout_keyword(monkeypatch, tmp_path):
-    captured = {}
-
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            captured.update(url=url, payload=payload)
-            return {"success": True}
-
-    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
-    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
-    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
-    monkeypatch.setattr(mcp_server, "_timeout", lambda _name: 300)
-
-    mcp_server.local_ai_command("run", command="pytest -q", cwd=str(tmp_path), timeout=27)
-
-    assert captured["url"] == "/api/command"
-    assert captured["payload"]["cwd"] == str(tmp_path)
-    assert captured["payload"]["timeout"] == 27
 
 
-def test_command_rejects_legacy_positional_parameters():
-    with pytest.raises(TypeError):
-        mcp_server.local_ai_command("run", "pytest -q", ".", 27)
 
 
 @pytest.mark.parametrize("alias,value", [
@@ -202,22 +162,3 @@ def test_repo_schema_excludes_aliases_and_allows_relation_pagination():
         assert validate_operation_arguments(
             "local_ai_repo", action, {"limit": True, "offset": 0},
         ) is not None
-
-
-@pytest.mark.parametrize("alias,value", [
-    ("changed_paths", ["selected.py"]), ("files", ["selected.py"]), ("input", "legacy stdin"),
-])
-def test_command_contract_rejects_retired_aliases(alias, value):
-    assert validate_operation_arguments("local_ai_command", "format", {alias: value}) is not None
-
-
-def test_command_format_requires_nonempty_canonical_paths():
-    assert validate_operation_arguments(
-        "local_ai_command", "format", {"command": "legacy.py"},
-    ) is not None
-    assert validate_operation_arguments(
-        "local_ai_command", "format", {"paths": []},
-    ) is not None
-    assert validate_operation_arguments(
-        "local_ai_command", "format", {"paths": ["selected.py"]},
-    ) is None

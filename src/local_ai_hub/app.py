@@ -796,7 +796,7 @@ class LocalAIApp:
             ],
             "compact_tools": [
                 "local_ai_status", "local_ai_task", "local_ai_repo",
-                "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact",
+                "local_ai_rag", "local_ai_coord", "local_ai_artifact",
             ],
             "code_intelligence": self.external_tools.status(),
             "hardware": dict(self.config.get("_hardware", {})),

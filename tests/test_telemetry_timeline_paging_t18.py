@@ -57,7 +57,7 @@ def test_http_timeline_get_and_post_page_before_cursor(tmp_path, monkeypatch, re
         http_server,
         "APP",
         SimpleNamespace(
-            config={},
+            config={"debug_traces": {"enabled": True}},
             logger=logging.getLogger(__name__),
             telemetry=store,
             recovery=SimpleNamespace(

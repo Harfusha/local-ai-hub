@@ -37,11 +37,11 @@ def test_legacy_v1_not_found_is_compatibility_noise():
     assert outcome == (True, "compatibility_404", False)
 
 
-def test_command_failure_is_operational_but_has_specific_category():
+def test_task_failure_is_an_operational_http_error():
     outcome = _telemetry_http_outcome(
         200,
-        {"success": False, "error": "command timed out after 120s", "timed_out": True},
-        "/api/command",
+        {"success": False, "error": "task timed out after 120s", "timed_out": True},
+        "/api/agent-state/tasks",
     )
 
-    assert outcome == (False, "command_timeout", True)
+    assert outcome == (False, "http_error", True)

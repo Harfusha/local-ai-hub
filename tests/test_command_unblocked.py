@@ -307,7 +307,9 @@ def test_mutating_policy_block_is_not_suppressed(tmp_path):
     second = broker.run("git add changed.py", str(tmp_path), task_id="task-owned")
 
     assert first["policy_blocked"] is True
+    assert first["native_fallback_allowed"] is False
     assert second["policy_blocked"] is True
+    assert second["native_fallback_allowed"] is False
     assert second.get("suppression_cache_hit") is not True
     assert broker.stats()["blocked"] == 2
 
@@ -348,7 +350,9 @@ def test_unknown_command_policy_block_is_not_suppressed(tmp_path):
     second = broker.run("unknown-tool", str(tmp_path))
 
     assert first["policy_blocked"] is True
+    assert first["native_fallback_allowed"] is True
     assert second["policy_blocked"] is True
+    assert second["native_fallback_allowed"] is True
     assert second.get("suppression_cache_hit") is not True
     assert broker.stats()["blocked"] == 2
 

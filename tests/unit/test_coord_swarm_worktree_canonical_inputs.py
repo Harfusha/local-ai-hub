@@ -67,7 +67,19 @@ def test_swarm_actions_forward_canonical_values_and_empty_payload(monkeypatch, t
     assert fake.calls[4][2]["reason"] == ""
 
 
-def test_worktree_merge_and_dataset_actions_keep_canonical_types_and_defaults(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("action, arguments", [
+    ("curate_dataset", {"output_path": "dataset.jsonl"}),
+    ("task_budget_increase", {"task_id": "existing", "reason": "owner approved", "budget": {"max_compute_seconds": 20}}),
+])
+def test_explicit_root_is_required_before_transport(monkeypatch, mcp_diagnostics_enabled, action, arguments) -> None:
+    fake = _client(monkeypatch)
+    result = mcp_server.local_ai_coord(action=action, **arguments)
+    assert result["success"] is False
+    assert "root" in result["error"]
+    assert fake.calls == []
+
+
+def test_worktree_merge_and_dataset_actions_keep_canonical_types_and_defaults(monkeypatch, tmp_path, mcp_diagnostics_enabled) -> None:
     fake = _client(monkeypatch)
 
     mcp_server.local_ai_coord(action="worktree_lease", root=str(tmp_path), branch="")
@@ -81,7 +93,7 @@ def test_worktree_merge_and_dataset_actions_keep_canonical_types_and_defaults(mo
     mcp_server.local_ai_coord(
         action="simulate_merge", root=str(tmp_path), source_branch="feature", target_branch="main",
     )
-    mcp_server.local_ai_coord(action="curate_dataset")
+    mcp_server.local_ai_coord(action="curate_dataset", root=str(tmp_path))
 
     lease = fake.calls[0][2]
     assert lease == {"action": "worktree_lease", "root": str(tmp_path), "branch": None}
@@ -97,12 +109,13 @@ def test_worktree_merge_and_dataset_actions_keep_canonical_types_and_defaults(mo
     }
     dataset = fake.calls[4][2]
     assert dataset["action"] == "curate_dataset"
+    assert dataset["root"] == str(tmp_path)
     assert dataset["output_path"] == "training_dataset.jsonl"
     assert dataset["min_receipts"] == 1
     assert dataset["format"] == "jsonl"
 
 
-def test_retired_aliases_and_boolean_receipt_threshold_are_rejected(monkeypatch, tmp_path) -> None:
+def test_retired_aliases_and_boolean_receipt_threshold_are_rejected(monkeypatch, tmp_path, mcp_diagnostics_enabled) -> None:
     fake = _client(monkeypatch)
     rejected = mcp_server.local_ai_coord(
         action="swarm_dispatch", goal="canonical", task="retired alias", root=str(tmp_path),
@@ -110,8 +123,9 @@ def test_retired_aliases_and_boolean_receipt_threshold_are_rejected(monkeypatch,
     assert rejected["success"] is False
     assert not fake.calls
 
-    rejected = mcp_server.local_ai_coord(action="curate_dataset", min_receipts=False)
+    rejected = mcp_server.local_ai_coord(action="curate_dataset", root=str(tmp_path), min_receipts=False)
     assert rejected["success"] is False
+    assert "min_receipts" in rejected["error"]
     assert not fake.calls
 
     rejected = mcp_server.local_ai_coord(action="curate_training_dataset")
@@ -133,10 +147,12 @@ def test_retired_aliases_and_boolean_receipt_threshold_are_rejected(monkeypatch,
         ("curate_dataset", {}, {"query": "old output path"}),
     ],
 )
-def test_canonical_actions_reject_nonempty_retired_fields(monkeypatch, action, canonical, retired) -> None:
+def test_canonical_actions_reject_nonempty_retired_fields(monkeypatch, tmp_path, mcp_diagnostics_enabled, action, canonical, retired) -> None:
     fake = _client(monkeypatch)
-    result = mcp_server.local_ai_coord(action=action, **canonical, **retired)
+    result = mcp_server.local_ai_coord(action=action, root=str(tmp_path), **canonical, **retired)
     assert result["success"] is False
+    assert result["status_code"] == 400
+    assert "canonical fields" in result["error"]
     assert not fake.calls
 
 

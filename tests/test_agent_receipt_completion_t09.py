@@ -200,6 +200,25 @@ def test_keyword_query_matches_across_indexed_task_fields(stores):
     assert [match.task_id for match in matches] == [target.task_id]
 
 
+def test_task_listing_supports_offset_pages(stores):
+    tasks, _verifier, _artifacts = stores
+    created = []
+    for index in range(3):
+        task_id = f"task-page-{index}"
+        created.append(tasks.create(
+            GoalContract(goal=f"Page task {index}", acceptance_criteria=["tests"]),
+            ScopeContext(repository_id="repo-pages", task_id=task_id),
+            task_id=task_id,
+            actor="task-owner-pages",
+        ).task_id)
+
+    first_page = tasks.list_tasks(limit=2, offset=0)
+    second_page = tasks.list_tasks(limit=2, offset=2)
+
+    assert len(first_page) == 2
+    assert [task.task_id for task in second_page] == [next(task_id for task_id in created if task_id not in {item.task_id for item in first_page})]
+
+
 def test_keyword_search_respects_requested_result_bound(stores):
     tasks, _verifier, _artifacts = stores
     task_ids = ("task-bounded-search-a", "task-bounded-search-b")

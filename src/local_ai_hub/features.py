@@ -176,10 +176,6 @@ class FeatureSet:
         return list(operation_actions("local_ai_rag", self)) if operation_enabled(self, "local_ai_rag") else []
 
 
-    def supported_command_actions(self) -> list[str]:
-        """Return list of valid local_ai_command actions supported by active broker."""
-        return list(operation_actions("local_ai_command", self)) if operation_enabled(self, "local_ai_command") else []
-
     def supported_status_actions(self) -> list[str]:
         """Return status detail values from the shared operation registry."""
         return list(operation_actions("local_ai_status", self)) if operation_enabled(self, "local_ai_status") else []
@@ -214,11 +210,9 @@ class FeatureSet:
         """Ordered trigger-map bullet lines for GLOBAL_POLICY and skills."""
         lines: list[str] = []
         if self.status:
-            lines.append("- bounded health/cache/telemetry inspection (never poll): `local_ai_status`")
+            lines.append("- compact Hub and local-model readiness check (never poll): `local_ai_status`")
         if self.repo:
             lines.append("- repository facts/files/symbols: `local_ai_repo`")
-        if self.commands:
-            lines.append("- tests/lint/typecheck/build: `local_ai_command`")
         if self.artifacts:
             lines.append("- exact source/evidence text: `local_ai_artifact`")
         if self.coord:
@@ -243,9 +237,6 @@ class FeatureSet:
             lines.append(
                 "- symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available"
             )
-        if self.status and self.agent_os:
-            lines.append("- Agent OS task and incident state: `local_ai_status(detail=\"agent_state\")`")
-
         task_actions = set(self.supported_task_actions())
         if "vision" in task_actions:
             lines.append(f"- image understanding/frontend review via `{self.vision_model}`: `local_ai_task(action=\"vision\")`")
@@ -265,12 +256,6 @@ class FeatureSet:
         rag_actions = set(self.supported_rag_actions())
         if rag_actions & {"docset_index", "docset_search", "ingest_document", "ingest_diagram"}:
             lines.append("- curated knowledge sets and document/diagram ingestion: `local_ai_rag` docset and ingest actions")
-
-        command_actions = set(self.supported_command_actions())
-        if command_actions & {"repair_loop", "auto_fix", "run_affected", "format", "lint_fix"}:
-            lines.append("- requested automated repair, affected-test selection, formatting, or lint fixes: `local_ai_command` specialized actions")
-        if command_actions & {"mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "record_mock", "replay_mock", "flaky_detect", "webhook_replay"}:
-            lines.append("- local mock, replay, and flaky-test workflows: `local_ai_command` specialized actions")
 
         coord_actions = set(self.supported_coord_actions())
         if coord_actions & {"swarm_dispatch", "blackboard_update", "worktree_lease"}:
@@ -300,13 +285,12 @@ class FeatureSet:
             lease_hint = " claim `local_ai_coord` leases for overlapping paths," if self.coord else ""
             contract_hint = " initialize an Agent OS contract," if self.agent_os else ""
             lines.append(f'- Recipe — Change: gather indexed evidence,{contract_hint} use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')
-        if self.commands:
-            receipt_note = " (pass `task_id` for receipt minting)" if self.agent_os else ""
-            lines.append(f"- Recipe — Validate: route repeatable commands through `local_ai_command`{receipt_note}, reuse cached results, use `review_diff` or `security_audit` when relevant.")
+        if self.repo:
+            lines.append("- Recipe — Validate: run bounded repeatable commands with the host-native command tool; use `review_diff` or `security_audit` when relevant.")
         if self.tasks and self.has_any_model():
             lines.append('- Recipe — Semantic work: actively use `local_ai_task` for code review (`action="review"`), second opinion on non-trivial logic (`action="second_opinion"`), exploration (`action="explore"`), and compressing noisy test outputs (`action="compress"`).')
         if self.agent_os:
-            receipt_part = "route tests via `local_ai_command(task_id=..., criterion=...)` to auto-mint receipts; " if self.commands else ""
+            receipt_part = "attach explicit verification receipts; "
             lines.append(f"- Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action=\"task_create\")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; {receipt_part}and verify completion (`verify_completion`) before closure.")
         elif self.repo:
             lines.append("- Recipe — Validate: run validation commands natively, review changes with `review_diff` or `security_audit`.")
@@ -320,8 +304,6 @@ class FeatureSet:
         parts: list[str] = []
         if self.repo:
             parts.append("`local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`)")
-        if self.commands:
-            parts.append("`local_ai_command` for bounded repeatable commands")
         if self.tasks and self.has_any_model():
             parts.append("`local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression")
         if self.work_orchestrator:

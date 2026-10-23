@@ -13,7 +13,7 @@ import mcp.client.stdio as stdio
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOLS = {
     "local_ai_status", "local_ai_repo", "local_ai_rag",
-    "local_ai_command", "local_ai_artifact", "local_ai_coord",
+    "local_ai_artifact", "local_ai_coord",
 }
 
 

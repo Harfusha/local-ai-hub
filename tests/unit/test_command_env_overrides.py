@@ -30,28 +30,8 @@ def test_command_run_with_custom_env(tmp_path, monkeypatch):
     assert os.environ.get("TEST_HUB_ENV_VAR") == "parent_value"
 
 
-def test_mcp_local_ai_command_forwards_env(monkeypatch):
-    captured = {}
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            captured.update(payload)
-            return {"success": True, "stdout": "ok"}
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-    from local_ai_hub.mcp_server import local_ai_command
-    local_ai_command(action="run", command="echo 1", env={"CUSTOM_VAR": "custom_val"})
-    assert captured.get("env") == {"CUSTOM_VAR": "custom_val"}
 
 
-def test_public_mcp_schema_exposes_environment_overrides():
-    from local_ai_hub.mcp_server import mcp
-
-    tools = asyncio.run(mcp.list_tools())
-    command = next(tool for tool in tools if tool.name == "local_ai_command")
-    env_schema = command.inputSchema["properties"]["env"]
-
-    assert env_schema["type"] == "object"
-    assert env_schema["additionalProperties"]["type"] == "string"
-    assert "env" not in command.inputSchema.get("required", [])
 
 
 def test_command_modules_come_from_assigned_checkout():

@@ -2119,15 +2119,6 @@ class HubClient:
     def package_audit(self, root: str = ".", lockfile_path: str | None = None) -> dict[str, Any]:
         return self.post("/api/repo/package_audit", {"root": root, "lockfile_path": lockfile_path})
 
-    def diff_hunk_stage(self, cwd: str = ".", patch: str = "") -> dict[str, Any]:
-        return self.post("/api/command/diff_hunk_stage", {"cwd": cwd, "root": cwd, "patch": patch})
-
-    def flaky_detect(self, cwd: str = ".", command: str = "", runs: int = 5, timeout: int = 30) -> dict[str, Any]:
-        return self.post("/api/command/flaky_detect", {"cwd": cwd, "root": cwd, "command": command, "runs": runs, "timeout": timeout})
-
-    def webhook_replay(self, url: str = "", payload: dict[str, Any] | str = "", secret: str = "", signature_header: str = "X-Hub-Signature-256") -> dict[str, Any]:
-        return self.post("/api/command/webhook_replay", {"url": url, "payload": payload, "secret": secret, "signature_header": signature_header})
-
     def eval_drift(self, suite_name: str = "default") -> dict[str, Any]:
         return self.post("/api/task/eval_drift", {"suite_name": suite_name})
 
@@ -2167,10 +2158,6 @@ class HubClient:
 
     def cross_repo_contract(self, backend_root: str = ".", frontend_root: str = ".") -> dict[str, Any]:
         return self.post("/api/repo/cross_repo_contract", {"backend_root": backend_root, "frontend_root": frontend_root})
-
-    def mock_server(self, action: str = "status", root: str = ".", spec_path: str | None = None, port: int | None = None) -> dict[str, Any]:
-        selected_port = (0 if action.strip().lower() == "start" else 11440) if port is None else port
-        return self.post("/api/command/mock_server", {"action": action, "root": root, "spec_path": spec_path, "port": selected_port})
 
     def ingest_diagram(self, workspace: str = "default", image_path: str = "", caption: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.post("/api/rag/ingest_diagram", {"workspace": workspace, "image_path": image_path, "caption": caption, "metadata": metadata})

@@ -727,6 +727,22 @@ class ArtifactStore:
     def _binary_failure(message: str) -> dict[str, Any]:
         return {"success": False, "error": message[:160]}
 
+    def kind(self, artifact_id: str) -> str | None:
+        """Read origin metadata without loading any text or binary payload."""
+        if not isinstance(artifact_id, str) or not artifact_id or "\x00" in artifact_id:
+            return None
+        cutoff = time.time() - self.ttl_seconds
+
+        def read() -> Any:
+            with closing(self._connect()) as con:
+                return con.execute(
+                    f"SELECT kind FROM {self._table} WHERE artifact_id=? AND created_at>=?",
+                    (artifact_id, cutoff),
+                ).fetchone()
+
+        row = retry_busy(read, retries=3)
+        return str(row[0]) if row is not None else None
+
     def get_binary(self, artifact_id: str) -> dict[str, Any]:
         """Return one complete, integrity-checked binary artifact or a safe failure."""
         if not isinstance(artifact_id, str) or not artifact_id or "\x00" in artifact_id:

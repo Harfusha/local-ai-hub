@@ -337,6 +337,11 @@ def test_status_route_surfaces_structured_probe_failure(monkeypatch):
         raise RuntimeError("private /home/user/config token=secret")
 
     app = make_app(scheduler=Probe(status=broken_probe))
+    app.config["debug_traces"] = {"enabled": True}
+    app.debug_traces.enabled = True
+    failures = []
+    app.logger = object()
+    monkeypatch.setattr(http_server, "_log_http_failure", lambda _logger, _method, _path, error: failures.append(repr(error)))
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
     handler = http_server.Handler.__new__(http_server.Handler)
@@ -352,7 +357,7 @@ def test_status_route_surfaces_structured_probe_failure(monkeypatch):
     handler.do_GET()
 
     status, payload = handler.responses[0]
-    assert status == 200
+    assert status == 200, (payload, failures)
     assert payload["success"] is False
     assert payload["dependency_status"]["scheduler"]["reason"] == "probe_error"
     assert payload["dependency_status"]["scheduler"]["error_type"] == "RuntimeError"

@@ -10,7 +10,7 @@ from local_ai_hub.rag import RAGStore
 from local_ai_hub.task_context import build_context_request
 
 
-@pytest.mark.parametrize("detail", ["brief", "cache"])
+@pytest.mark.parametrize("detail", ["brief"])
 def test_status_reports_explain_dependency_degradation(monkeypatch, detail):
     from local_ai_hub import mcp_server as module
     failed = {"degraded": True, "deadline_ms": 250, "status": "timeout"}

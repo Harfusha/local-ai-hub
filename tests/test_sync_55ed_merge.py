@@ -85,17 +85,17 @@ def test_registry_preserves_nullable_and_phase_bounds():
     assert validate_operation_arguments("local_ai_repo", "context", {"max_tokens": 100001})
 
 
-def test_full_and_agent_status_skip_light_request(monkeypatch):
+@pytest.mark.parametrize("detail", ["full", "agent_state", "cache", "telemetry", "traces", "guide"])
+def test_retired_status_details_reject_before_transport(monkeypatch, detail):
     calls = []
     monkeypatch.setattr(server, "CLIENT", SimpleNamespace(
         get=lambda path: calls.append(path) or {"success": True, "hub_online": True, "runtime_stats": {}},
         status=lambda **kwargs: calls.append(kwargs["detail"]) or {"success": True, "active_tasks": []},
     ))
-    server.local_ai_status(detail="full")
-    assert calls == ["/api/status?scope=process", "/api/capabilities"]
-    calls.clear()
-    server.local_ai_status(detail="agent_state")
-    assert calls == ["agent_state"]
+    result = server.local_ai_status(detail=detail)
+    assert result["success"] is False
+    assert "detail supports only brief" in result["error"]
+    assert calls == []
 
 
 @pytest.mark.parametrize("actions, ceiling", [(["profile"] * 8, 4), (["preprocess", "profile", "preprocess"], 1)])

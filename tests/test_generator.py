@@ -31,7 +31,8 @@ class TestSkillGeneration:
     def test_default_skill_contains_all_core_components(self):
         skill = generate_skill_markdown({})
         assert "local_ai_repo" in skill
-        assert "local_ai_command" in skill
+        assert "local_ai_command" not in skill
+        assert "native command tool" in skill
         assert "local_ai_task" in skill
         assert "local_ai_rag" in skill
         assert "local_ai_coord" in skill
@@ -51,7 +52,7 @@ class TestSkillGeneration:
         skill = generate_skill_markdown(cfg)
         assert "local_ai_command" not in skill
         assert "route repeatable commands through `local_ai_command`" not in skill
-        assert "Validate natively" in skill or "run validation commands natively" in skill or "bounded native test/lint" in skill
+        assert "native command tool" in skill
 
     def test_skill_without_tasks_or_models(self):
         cfg = {"features": {"tasks": False}}
@@ -180,7 +181,8 @@ class TestGlobalPolicyGeneration:
         assert "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->" in policy
         assert "<!-- END LOCAL AI HUB TOOL POLICY -->" in policy
         assert "local_ai_repo" in policy
-        assert "local_ai_command" in policy
+        assert "local_ai_command" not in policy
+        assert "native command tool" in policy
         assert "local_ai_task" in policy
         assert "local_ai_rag" in policy
 
@@ -255,7 +257,7 @@ class TestMcpSchemasGeneration:
         schemas = generate_mcp_tool_schemas({})
         assert set(schemas.keys()) == {
             "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
-            "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
+            "local_ai_coord", "local_ai_artifact", "local_ai_work",
         }
 
     def test_schemas_omit_disabled_tools(self):
@@ -269,7 +271,8 @@ class TestMcpSchemasGeneration:
         repo_actions_full = schemas_full["local_ai_repo"]["parameters"]["properties"]["action"]["enum"]
         assert "semantic" in repo_actions_full
         assert "preprocess" in repo_actions_full
-        assert "verify_receipt" in repo_actions_full
+        assert "verify_receipt" not in repo_actions_full
+        assert "verify_receipt" in schemas_full["local_ai_coord"]["parameters"]["properties"]["action"]["enum"]
 
         schemas_trimmed = generate_mcp_tool_schemas({
             "code_intelligence": {"enabled": False},
@@ -279,6 +282,7 @@ class TestMcpSchemasGeneration:
         assert "semantic" not in repo_actions_trimmed
         assert "preprocess" not in repo_actions_trimmed
         assert "verify_receipt" not in repo_actions_trimmed
+        assert "verify_receipt" not in schemas_trimmed["local_ai_coord"]["parameters"]["properties"]["action"]["enum"]
         assert "solve" in repo_actions_trimmed
 
     def test_repo_schema_exposes_batch_replace_edits_and_dry_run(self):
@@ -355,7 +359,8 @@ class TestMcpServerDynamicRegistration:
         # Verify disabled_tools logic
         fs_no_rag = FeatureSet({"features": {"rag": False, "commands": False}})
         assert "local_ai_rag" in fs_no_rag.disabled_tools
-        assert "local_ai_command" in fs_no_rag.disabled_tools
+        assert "local_ai_command" not in fs_no_rag.disabled_tools
+        assert "local_ai_command" not in fs_no_rag.enabled_tools
         assert "local_ai_repo" in fs_no_rag.enabled_tools
 
 

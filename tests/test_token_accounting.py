@@ -181,14 +181,15 @@ def test_telemetry_reports_cache_domains_separately(tmp_path: Path):
         store.record(event_type="inference", action="delegate:review", cache_hit=False, coalesced=False, success=True)
         store.record_http(action="/api/repo/code-index", cache_hit=True, cache_layer="workspace", success=True)
         store.record_http(action="/api/repo/search", cache_hit=False, cache_layer="workspace-miss", success=True)
-        store.record_http(action="/api/command", cache_hit=True, cache_layer="", success=True)
+        store.record_http(action="/api/agent-state/tasks", cache_hit=True, cache_layer="", success=True)
         assert store.flush()
 
         domains = store.summary(scope="process")["cache_domains"]
 
         assert domains["generation"] == {"events": 2, "hits": 1, "coalesced": 0, "hit_rate": 0.5}
         assert domains["repository"] == {"events": 2, "hits": 1, "coalesced": 0, "hit_rate": 0.5}
-        assert domains["command"] == {"events": 1, "hits": 1, "coalesced": 0, "hit_rate": 1.0}
+        assert domains["other"] == {"events": 1, "hits": 1, "coalesced": 0, "hit_rate": 1.0}
+        assert "command" not in domains
     finally:
         store.close()
 

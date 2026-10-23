@@ -17,6 +17,11 @@ from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def isolated_profile_catalog(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+    monkeypatch.setattr(local_ai_mcp, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
+    config = {key: value for key, value in local_ai_mcp.CFG.items() if key not in {"_defaults_path", "_config_path", "_runtime_override_path"}}
+    config["debug_traces"] = {"enabled": True}
+    monkeypatch.setattr(local_ai_mcp, "CFG", config)
     # Routing tests must not inherit a developer's disabled installed profiles or backend.
     monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
@@ -38,7 +43,7 @@ def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
     assert not any("vision" in line.lower() for line in features.specialized_trigger_lines())
 
 
-@pytest.mark.parametrize("tool_name", ["local_ai_command", "local_ai_coord"])
+@pytest.mark.parametrize("tool_name", ["local_ai_repo", "local_ai_coord"])
 def test_live_mcp_schemas_are_valid_without_empty_combinators(tool_name: str) -> None:
     from jsonschema import Draft202012Validator
 
@@ -51,12 +56,9 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
-        "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
     }
     expected["local_ai_task"].add("browser")
-    if not local_ai_mcp.FEATURES.speculative_lint:
-        expected["local_ai_command"].discard("speculative_lint")
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
         expected["local_ai_task"].discard("vision")
     for name, values in expected.items():
@@ -120,7 +122,7 @@ def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, mon
 def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
     descriptions = "\n".join(
         inspect.getdoc(getattr(local_ai_mcp, name)) or ""
-        for name in ["local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact"]
+        for name in ["local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_coord", "local_ai_artifact"]
     )
     assert "main agent" in descriptions
     assert "AGY" not in descriptions
@@ -219,7 +221,6 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     descriptions = {
         "task": local_ai_mcp._desc_task(),
         "repo": local_ai_mcp._desc_repo(),
-        "command": local_ai_mcp._desc_command(),
         "coord": local_ai_mcp._desc_coord(),
         "work": local_ai_mcp._desc_work(),
         "artifact": local_ai_mcp._desc_artifact(),
@@ -227,7 +228,6 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
 
     assert "repository navigation, symbols, and impact" in descriptions["repo"]
     assert "exact source or log slice" in descriptions["artifact"]
-    assert "test, lint, typecheck, or build" in descriptions["command"]
     assert "ownership, checkpoints, and verification receipts" in descriptions["coord"]
     assert "semantic generation" in descriptions["task"]
     assert "independent second opinions" in descriptions["task"]
@@ -235,8 +235,6 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "exact facts, symbols, diff and tests" in descriptions["repo"]
     assert "closed, low-risk work" in descriptions["work"]
     assert "terminal=true and retryable=false" in descriptions["repo"]
-    assert "terminal=true and retryable=false" in descriptions["command"]
-    assert "Mutations never cache or single-flight" in descriptions["command"]
 
 
 def test_repo_surface_does_not_advertise_or_route_codegraph() -> None:
@@ -426,14 +424,12 @@ def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, 
     assert store.report(days=1)["totals"]["recommended"] == 0
 
 
-def test_artifact_and_command_success_do_not_expose_semantic_handoff(monkeypatch) -> None:
+def test_artifact_success_does_not_expose_semantic_handoff(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
 
     artifact = local_ai_mcp.local_ai_artifact("artifact-1")
-    command = local_ai_mcp.local_ai_command(action="run", command="true")
 
     assert "routing" not in artifact
-    assert "routing" not in command
 
 
 def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -> None:
@@ -959,7 +955,8 @@ def test_async_job_submit_rejects_conversation_before_http(monkeypatch):
     assert calls == []
 
 
-def test_agent_output_recursively_removes_internal_diagnostics_by_default() -> None:
+def test_agent_output_recursively_removes_internal_diagnostics_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"debug_traces": {"enabled": False}})
     value = {
         "success": True,
         "payload": {
@@ -979,7 +976,8 @@ def test_agent_output_recursively_removes_internal_diagnostics_by_default() -> N
     }
 
 
-def test_agent_output_keeps_only_explicitly_requested_nested_diagnostics() -> None:
+def test_agent_output_cannot_enable_diagnostics_via_extra_fields(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"debug_traces": {"enabled": False}})
     value = {"payload": {"telemetry": {"requests": 2}, "debug": "private"}}
 
     result = local_ai_mcp._agent_output(
@@ -988,7 +986,7 @@ def test_agent_output_keeps_only_explicitly_requested_nested_diagnostics() -> No
         {"extra_fields": ["telemetry"]},
     )
 
-    assert result == {"payload": {"telemetry": {"requests": 2}}}
+    assert result == {"payload": {}}
 
 
 def test_operational_mode_keeps_bounded_repo_search_available() -> None:

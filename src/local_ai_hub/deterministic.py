@@ -6332,7 +6332,7 @@ def test_{sym}_regression_edge_cases():
                 "rule_id": "rule_typescript_strict",
                 "title": "TypeScript typecheck before committing",
                 "context": "Type safety",
-                "guidance": "Run `tsc --noEmit` via local_ai_command before creating diffs or handoffs.",
+                "guidance": "Run `tsc --noEmit` with the agent host's native command tool before creating diffs or handoffs.",
                 "confidence": 0.85,
             })
 
@@ -6341,7 +6341,7 @@ def test_{sym}_regression_edge_cases():
                 "rule_id": "rule_python_ruff",
                 "title": "Run ruff format and lint",
                 "context": "Python styling",
-                "guidance": "Format with `local_ai_command(action='format')` before submitting PRs.",
+                "guidance": "Run ruff format and lint with the agent host's native command tool before submitting PRs.",
                 "confidence": 0.88,
             })
 

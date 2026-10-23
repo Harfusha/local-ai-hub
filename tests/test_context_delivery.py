@@ -532,7 +532,8 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        "\n[debug_traces]\nenabled = true\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
@@ -821,8 +822,9 @@ def test_shipped_mcp_entrypoint_defaults_context_to_adaptive_and_telemetry_to_pr
 def test_shipped_mcp_status_uses_lightweight_live_endpoint_by_default():
     source = (ROOT / "src/local_ai_hub/mcp_server.py").read_text(encoding="utf-8")
 
-    assert 'CLIENT.get(f"/api/live/status?light=1&scope={scope}")' in source
-    assert '"token_saving": status.get("observability")' in source
+    assert 'CLIENT.get("/api/live/status?light=1")' in source
+    assert 'CLIENT.get(f"/api/live/status?light=1&scope={scope}")' not in source
+    assert '"token_saving": status.get("observability")' not in source
 
 
 def test_context_http_endpoint_defaults_to_adaptive():

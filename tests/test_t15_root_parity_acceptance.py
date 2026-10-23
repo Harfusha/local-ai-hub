@@ -286,30 +286,3 @@ def test_large_stdout_returns_bounded_inline_text_and_bounded_artifact(
     assert len(result["stdout"]) <= 512
     assert 0 < len(stdout) <= 4096
     assert stdout.count("Q") <= 4096
-
-
-def test_mock_replay_reads_bounded_fixture_without_network(
-    tmp_path: Path,
-) -> None:
-    broker = _broker(tmp_path / "state")
-    paths = broker._cassette_paths("t15-replay-parity", None, create=True)
-    assert isinstance(paths, tuple)
-    _cassette_dir, cassette_file = paths
-    cassette_file.write_text(
-        json.dumps(
-            {
-                "url": "https://example.invalid/api",
-                "status_code": 200,
-                "headers": {"content-type": "application/json"},
-                "body": '{"fixture":true}',
-                "body_length": 16,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = broker.replay_mock("t15-replay-parity")
-
-    assert result["success"] is True
-    assert result["status_code"] == 200
-    assert result["body"] == '{"fixture":true}'

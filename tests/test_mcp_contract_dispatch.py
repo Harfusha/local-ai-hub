@@ -173,7 +173,7 @@ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
         assert wire_tools[name].inputSchema == expected_input, name
         assert registered[name].output_schema == expected_output, name
         assert wire_tools[name].outputSchema == expected_output, name
-def test_mcp_command_run_is_gated_as_heavy_and_repo_map_read_stays_lightweight(monkeypatch) -> None:
+def test_mcp_solve_is_gated_as_heavy_and_repo_map_read_stays_lightweight(monkeypatch) -> None:
     from local_ai_hub import mcp_server
 
     gate_calls = []
@@ -207,17 +207,17 @@ def test_mcp_command_run_is_gated_as_heavy_and_repo_map_read_stays_lightweight(m
     # This test covers action gating and dispatch; isolate background accounting.
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "_send", lambda *_args, **_kwargs: None)
 
-    command_result = mcp_server.local_ai_command(
-        action="run", command="python -m pytest -q", cwd="."
+    command_result = mcp_server.local_ai_repo(
+        action="solve", task="bounded task", root="C:/repo"
     )
 
-    assert gate_calls == [("run", True)]
+    assert gate_calls == [("solve", True)]
     assert command_result["error_code"] == "operational_mode_blocked"
     assert client_calls == []
 
     read_result = mcp_server.local_ai_repo(action="map", root="C:/repo")
 
-    assert gate_calls == [("run", True), ("map", False)]
+    assert gate_calls == [("solve", True), ("map", False)]
     assert read_result.get("error_code") != "operational_mode_blocked"
     assert client_calls == ["/api/repo/map"]
 
@@ -359,8 +359,6 @@ def test_mcp_transport_metadata_keeps_deterministic_reads_light() -> None:
     assert _classify_mcp_operation("local_ai_artifact", {"action": "slice"}) == ("slice", False)
     assert _classify_mcp_operation("local_ai_status", {"detail": "brief"}) == ("brief", False)
     assert _classify_mcp_operation("local_ai_status", {}) == ("brief", False)
-    assert _classify_mcp_operation("local_ai_status", {"detail": "agent_state"}) == ("agent_state", True)
-    assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
     assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", False)
 
 def test_mcp_client_forwards_config_and_keeps_autostart_lazy(monkeypatch) -> None:

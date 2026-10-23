@@ -20,7 +20,6 @@ ROOT = Path(__file__).resolve().parents[1]
             False,
             {
                 "local_ai_artifact",
-                "local_ai_command",
                 "local_ai_coord",
                 "local_ai_rag",
                 "local_ai_repo",
@@ -32,7 +31,6 @@ ROOT = Path(__file__).resolve().parents[1]
             True,
             {
                 "local_ai_artifact",
-                "local_ai_command",
                 "local_ai_coord",
                 "local_ai_rag",
                 "local_ai_repo",

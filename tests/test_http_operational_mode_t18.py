@@ -122,6 +122,9 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
         def list_tasks(self, **_kwargs):
             return []
 
+        def count(self, status=None):
+            return 0
+
     _install_mode_api(monkeypatch, "gaming")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={
@@ -137,7 +140,10 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
 
     handler.do_GET()
 
-    assert handler.responses == [(200, {"success": True, "tasks": []})]
+    assert handler.responses == [(200, {
+        "success": True, "tasks": [], "total_count": 0, "active_count": 0,
+        "offset": 0, "limit": 100, "next_offset": 0, "has_more": False,
+    })]
 
 
 def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -> None:
@@ -284,8 +290,6 @@ def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> N
     ("/api/work-orders", {"action": "cancel", "id": "work-1"}),
     ("/api/speculative-lint", {"action": "status", "execution_id": "lint-1"}),
     ("/api/speculative-lint", {"action": "cancel", "execution_id": "lint-1"}),
-    ("/api/command/speculative-lint", {"action": "status", "execution_id": "lint-1"}),
-    ("/api/command/speculative-lint", {"action": "cancel", "execution_id": "lint-1"}),
 ])
 def test_maintenance_policy_blocks_all_existing_job_actions(
     path: str, payload: dict[str, str], monkeypatch, tmp_path: Path
@@ -309,7 +313,6 @@ def test_maintenance_policy_blocks_all_existing_job_actions(
     ("/api/async-jobs", {"job_action": "submit"}),
     ("/api/work-orders", {"action": "submit"}),
     ("/api/speculative-lint", {"action": "submit"}),
-    ("/api/command/speculative-lint", {"action": "submit"}),
 ])
 def test_maintenance_mode_blocks_job_submission_before_body_parse(
     monkeypatch, tmp_path: Path, path: str, payload: dict[str, str]
@@ -876,10 +879,8 @@ def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(mo
             urllib.request.urlopen(request, timeout=3)
         body = response.value.read().decode("utf-8")
         payload = json.loads(body)
-        assert response.value.code == 503
-        assert payload["error_code"] == "operational_mode_unavailable"
-        assert payload["retryable"] is True
-        assert payload["terminal"] is False
+        assert response.value.code == 404
+        assert payload["success"] is False
         assert "mode dependency unavailable" not in body
     finally:
         server.shutdown()

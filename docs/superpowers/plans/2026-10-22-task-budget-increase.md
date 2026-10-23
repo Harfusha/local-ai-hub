@@ -27,6 +27,27 @@
 - Malformed values, NaN, infinity, booleans, or empty reason reject.
 - Audit failure rolls back the budget update; usage counters remain unchanged on success.
 
+## Current integration checkpoint, 2026-10-23
+
+Failed tasks can receive an authorized limit increase without resuming, changing
+the recorded owner, or resetting usage. This avoids the watchdog race caused by
+resuming an already exhausted task before raising its limits. The isolated
+budget/receipt/policy cohort `cf3b6d779f8c` passed 76 tests; explicit root and
+curation forwarding cohort `dc2e9907bed7` passed 20. Root, reason, authentication,
+strict increase-only values, response preflight and atomic audit remain enforced.
+
+The actual live attempt `req_fcd6f83c549a` requested 48,000 compute seconds and
+750 external calls, but the running server returned terminal nonretryable 400
+`unknown task action`. No limit was changed. Fresh task read `req_75466efe1c16`
+still reports failed/watchdog. Last authoritative compute usage is 33,240.9 of
+33,000 seconds; external-call usage is not freshly verified. Activate the exact
+validated source before the next public increase, then resume the same task.
+Do not write task storage directly or manufacture broker receipts.
+
+Whole-candidate run `complete-shards-f5cf96429de9` watches 1,279 release inputs,
+candidate `fdef5df7e481a80fba08959c481b4b4d0604983aba03d2394b3dbea1ac812bfb`.
+Production acceptance remains open while that run and installed proof are pending.
+
 ---
 
 ### Task 1: Persisted budget update and authorization
@@ -35,21 +56,21 @@
 
 **Interfaces:** Add an increase-only `PolicyEngine` operation with explicit `actor`, `reason`, and proposed limits. `CommandBroker` checks the existing task's recorded owner and root before calling it.
 
-- [ ] Add failing tests for preserved counters, strict increase-only validation, owner mismatch, and atomic audit persistence.
-- [ ] Run focused tests and confirm expected failures.
-- [ ] Implement transactional audit plus task-owner enforcement.
-- [ ] Run focused tests and confirm pass.
+- [x] Add failing tests for preserved counters, strict increase-only validation, owner mismatch, and atomic audit persistence.
+- [x] Run focused tests and confirm expected failures.
+- [x] Implement transactional audit plus task-owner enforcement.
+- [x] Run focused tests and confirm pass.
 
 ### Task 2: Public coordination action
 
 **Files:** `src/local_ai_hub/operation_contracts.py`, `src/local_ai_hub/mcp_server.py`, task API dispatch in `src/local_ai_hub/http_server.py` or its registered service, prompt files.
 
-**Interfaces:** Add canonical `task_budget_increase` carrying `task_id`, explicit owner, reason, and proposed limits; route only through the registered server service and existing broker.
+**Interfaces:** Canonical `task_budget_increase` carries `task_id`, explicit absolute root, reason, and proposed limits. The authenticated owner/admin broker resolves the recorded owner on the server; callers cannot substitute an owner. Route only through the registered server service and existing broker.
 
-- [ ] Add failing contract and dispatch tests.
-- [ ] Wait for the active API-surface audit owner to release overlapping files.
-- [ ] Add action schema, strict argument validation, server dispatch, and prompt guidance.
-- [ ] Verify missing owner/task, malformed limits, and successful limit increase behavior.
+- [x] Add failing contract and dispatch tests.
+- [x] Wait for the active API-surface audit owner to release overlapping files.
+- [x] Add action schema, strict argument validation, server dispatch, and prompt guidance.
+- [x] Verify missing owner/task, malformed limits, and successful limit increase behavior.
 
 ### Task 3: Candidate validation and acceptance
 
@@ -207,3 +228,40 @@ API owner additionally requested completion be retained in MCP verification
 protected keys; the single literal was added to _VERIFY_PROTECTED_KEYS. Their
 new roundtrip regression must be included in the subsequent public-policy
 validation. This source edit is separate from the tested broker increment.
+
+## Public transport source draft
+
+Added canonical task_budget_increase coord action, strict nested budget schema,
+budget field scoped only to that action, MCP forwarding and HTTP tasks
+budget_increase branch. HTTP reauthorizes admin/api_token then rebinds root,
+loads the existing authorized task and invokes APP.commands (the broker).
+Caller owner/actor/extra fields reject. Existing gaming/security controls remain.
+Policy mutation now checks the requested response envelope before budget/audit
+writes, retaining explicit bounded-accounting headroom rather than enlarging
+the caller budget. No production request used this new action yet.
+
+`state/validation/integration-cohort-199cbba9279d.json` records 34 dedicated cases
+passing in 7.82s, exit=0, unchanged source identities. New cases cover response
+budget rejection before mutation/audit, public field scoping and canonical SDK
+forwarding. Actual HTTP owner-token/permission/root branches and MCP full-result
+retention still need behavioral proof. Do not activate or claim transport ready
+from schema/syntax or storage-only tests. Prompt sync and new action manifest
+disposition remain pending under the API owner's handback coordination.
+
+## Transport unit handback
+
+Actual Handler._task_budget_increase is now an internal extracted handler called
+by the unchanged /api/agent-state/tasks budget_increase dispatcher branch. Unit
+tests exercise its real _authorized and root allowlist/task-scope checks against
+temporary durable stores: valid owner admin, wrong token, missing admin,
+supervisor, unauthenticated loopback fallback, caller owner, missing root and
+unauthorized root. Only the project's coordination-ID resolver is isolated.
+No socket server or production state was used. MCP roundtrip tests verify the
+canonical forwarded payload and retention of budget, before and audit_event_id.
+
+`state/validation/integration-cohort-f1e4bfe85e10.json`: 43 passed in 19.36s,
+exit_code=0, watched source/test identities unchanged. This is transport unit
+evidence, NOT fresh installed/runtime proof or actual production budget increase.
+The HTTP/MCP/operation registry narrow scope is handed back to the audit owner
+for explicit new-action disposition and prompt synchronization before the
+combined validation/final source freeze. Existing gaming guards remain unchanged.

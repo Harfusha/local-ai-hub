@@ -158,7 +158,6 @@ def test_all_mcp_tools_expose_extra_fields():
     for tool_fn in (
         mcp_server.local_ai_repo,
         mcp_server.local_ai_rag,
-        mcp_server.local_ai_command,
         mcp_server.local_ai_coord,
         mcp_server.local_ai_artifact,
         mcp_server.local_ai_status,

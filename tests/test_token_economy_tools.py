@@ -144,7 +144,7 @@ def test_response_budget_and_fallback_contracts_match_all_agent_instructions():
         "Reject `max_response_tokens` below 128; never raise the request silently.",
     )
     fallback_contract = (
-        "Native fallback requires an explicit `terminal=true` and `retryable=false` result.",
+        "For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.",
         "On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.",
     )
 

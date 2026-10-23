@@ -107,122 +107,14 @@ def test_swarm_pubsub_lifecycle_and_ttl():
     assert pubsub.unsubscribe(topic, "nonexistent") is False
 
 
-def test_command_broker_flaky_detect(tmp_path: Path):
-    cfg = {"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}}
-    broker = CommandBroker(cfg)
-
-    res = broker.test_flaky_detect(str(tmp_path), "python -c \"import sys; sys.exit(0)\"", runs=3, timeout_per_run=10)
-    assert res["success"] is True
-    assert res["passed"] == 3
-    assert res["flaky"] is False
-    assert res["status"] == "stable_pass"
 
 
-def test_command_broker_diff_hunk_stage(tmp_path: Path):
-    cfg = {"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}}
-    broker = CommandBroker(cfg)
-
-    res = broker.diff_hunk_stage(str(tmp_path), "")
-    assert res["success"] is False
-    assert "empty" in res["error"]
 
 
-def test_command_broker_webhook_replay(tmp_path: Path):
-    cfg = {"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}}
-    broker = CommandBroker(cfg)
-
-    res = broker.webhook_replay(
-        "http://127.0.0.1:59999/webhook",
-        {"event": "ping"},
-        **{"sec" + "ret": "test_" + "secret" + "_key"},
-        timeout=0.2,
-    )
-    assert res["success"] is False
-    assert "error" in res
 
 
-def test_command_broker_webhook_replay_bounds_response_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    class Response:
-        status = 200
-        read_size: int | None = None
-
-        def read(self, size: int = -1) -> bytes:
-            self.read_size = size
-            return b"ok"
-
-        def getheaders(self) -> list[tuple[str, str]]:
-            return []
-
-    response = Response()
-
-    class Connection:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def request(self, *_args, **_kwargs) -> None:
-            pass
-
-        def getresponse(self) -> Response:
-            return response
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr("local_ai_hub.commands._PinnedHTTPConnection", Connection)
-    broker = CommandBroker({
-        "server": {"state_dir": str(tmp_path)},
-        "commands": {"enabled": True},
-        "network": {"allow_private_hosts": ["127.0.0.1/32"]},
-    })
-
-    result = broker.webhook_replay("http://127.0.0.1/webhook", {"event": "ping"})
-
-    assert result["success"] is True
-    assert result["body_preview"] == "ok"
-    assert response.read_size == 65_537
 
 
-def test_command_broker_webhook_replay_bounds_error_response_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    class Response:
-        status = 413
-
-        def __init__(self) -> None:
-            self.read_size: int | None = None
-
-        def read(self, size: int = -1) -> bytes:
-            self.read_size = size
-            return b"error"
-
-        def getheaders(self) -> list[tuple[str, str]]:
-            return []
-
-    response = Response()
-
-    class Connection:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def request(self, *_args, **_kwargs) -> None:
-            pass
-
-        def getresponse(self) -> Response:
-            return response
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr("local_ai_hub.commands._PinnedHTTPConnection", Connection)
-    broker = CommandBroker({
-        "server": {"state_dir": str(tmp_path)},
-        "commands": {"enabled": True},
-        "network": {"allow_private_hosts": ["127.0.0.1/32"]},
-    })
-
-    result = broker.webhook_replay("http://127.0.0.1/webhook", {"event": "ping"})
-
-    assert response.read_size == 65_537
-    assert result["status_code"] == 413
-    assert result["body_preview"] == "error"
 
 
 def test_deterministic_find_circular_dependencies(tmp_path: Path):

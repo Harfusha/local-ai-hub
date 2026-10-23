@@ -1496,6 +1496,20 @@ def test_scoped_reaper_does_not_report_store_failure_as_empty_success(scoped_rea
 def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monkeypatch):
     root = tmp_path / "allowed"
     root.mkdir()
+    list_calls = []
+    count_calls = []
+
+    def list_tasks(*, status, limit, offset, include_stale, query):
+        list_calls.append({
+            "status": status, "limit": limit, "offset": offset,
+            "include_stale": include_stale, "query": query,
+        })
+        return []
+
+    def count_tasks(status=None):
+        count_calls.append(status)
+        return 0
+
     app = SimpleNamespace(
         config={"security": {
             "api_token": "a-long-test-token-value",
@@ -1503,11 +1517,13 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
         }},
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
-            list_tasks=lambda **_kwargs: [],
+            list_tasks=list_tasks,
+            count=count_tasks,
         ),
     )
     canonical_root = str(root.resolve())
-    path = f"/api/agent-state/tasks?root={canonical_root}"
+    path = (f"/api/agent-state/tasks?root={canonical_root}"
+            "&offset=3&limit=7&include_stale=true&query=security")
 
     responses = _dispatch_get(
         monkeypatch,
@@ -1519,6 +1535,17 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
 
     assert responses[0][0] == 200
     assert responses[0][1]["tasks"] == []
+    assert list_calls == [{
+        "status": None, "limit": 8, "offset": 3,
+        "include_stale": True, "query": "security",
+    }]
+    assert count_calls == [None, http_server.TaskStatus.ACTIVE]
+    assert responses[0][1]["total_count"] == 0
+    assert responses[0][1]["active_count"] == 0
+    assert responses[0][1]["offset"] == 3
+    assert responses[0][1]["limit"] == 7
+    assert responses[0][1]["next_offset"] == 3
+    assert responses[0][1]["has_more"] is False
 
 
 def test_root_memory_preserves_global_scope_with_authenticated_owner_token(tmp_path, monkeypatch):
@@ -1586,6 +1613,7 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
         return {"success": True}
 
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={"security": {
             "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
@@ -1639,6 +1667,7 @@ def test_scoped_task_operations_reject_invalid_root_or_retired_header_before_sto
     root.mkdir()
     calls = []
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={"security": {
             "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
@@ -1766,6 +1795,7 @@ def test_unscoped_agent_state_post_routes_deny_before_store_access(monkeypatch, 
     calls = []
     spy = _store_spy(calls)
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={},
         agent_state=spy,
         agent_blackboard=spy,
@@ -1822,7 +1852,7 @@ def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, p
     "/api/git/status",
     "/api/repo/dead_code",
     "/api/code/find_symbol",
-    "/api/worktrees",
+    "/api/coord/worktrees",
     "/api/preprocess/status",
 ])
 def test_unscoped_repository_get_routes_deny_before_service_access(monkeypatch, path):
@@ -1853,7 +1883,7 @@ def test_repository_get_rejects_retired_tenant_query_field(monkeypatch, tmp_path
         deterministic=SimpleNamespace(),
         recovery=None,
     )
-    path = f"/api/dead_code?root={tmp_path}&tenant="
+    path = f"/api/repo/dead_code?root={tmp_path}&tenant="
     responses = _dispatch_get(monkeypatch, path, app)
 
     assert responses[0][0] == 400
@@ -1863,6 +1893,7 @@ def test_repository_get_rejects_retired_tenant_query_field(monkeypatch, tmp_path
 
 def test_logs_tail_does_not_disclose_state_path(monkeypatch, tmp_path):
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={"server": {"state_dir": str(tmp_path)}},
         recovery=None,
     )
@@ -1876,6 +1907,7 @@ def test_logs_tail_does_not_disclose_state_path(monkeypatch, tmp_path):
 def test_get_internal_error_does_not_disclose_exception(monkeypatch):
     log_calls = []
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={"security": {}},
         services=SimpleNamespace(run_doctor=lambda: (_ for _ in ()).throw(RuntimeError("private traceback payload"))),
         logger=SimpleNamespace(error=lambda *args, **kwargs: log_calls.append((args, kwargs))),
@@ -1898,6 +1930,7 @@ def test_get_internal_error_does_not_disclose_exception(monkeypatch):
 def test_post_internal_error_does_not_disclose_exception(monkeypatch):
     log_calls = []
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={"security": {}},
         services=SimpleNamespace(run_doctor=lambda: (_ for _ in ()).throw(RuntimeError("private post payload"))),
         logger=SimpleNamespace(error=lambda *args, **kwargs: log_calls.append((args, kwargs))),
@@ -2107,6 +2140,7 @@ def test_authenticated_learning_route_dispatches_candidate_mutation(monkeypatch)
         create_candidate=lambda candidate: saved.append(candidate) or candidate,
     )
     app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
         config={
             "security": {
                 "api_token": token,

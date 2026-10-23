@@ -7,7 +7,8 @@ from tools.setup import codex_mcp_merge, generate_autosetup_policy, merge_autose
 def test_generated_policy_contains_codex_prioritization_directive() -> None:
     policy = generate_global_policy({})
     assert "MANDATORY LOCAL AI HUB PRIORITIZATION IN CODEX" in policy
-    assert "local_ai_command(action=\"run\"" in policy
+    assert "native command tool" in policy
+    assert "local_ai_command(action=\"run\"" not in policy
     assert "local_ai_repo" in policy
     assert "local_ai_coord" in policy
     assert "Semantic delegation is on-demand" in policy

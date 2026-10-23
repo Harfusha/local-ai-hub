@@ -135,38 +135,6 @@ def test_daemon_status_closes_log_after_natural_exit():
     log_fh.close.assert_called_once_with()
 
 
-def test_command_broker_http_probe(tmp_path: Path):
-    class _ProbeHandler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"status": "ok", "app": "test_service"}')
-
-        def log_message(self, format, *args):
-            pass
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), _ProbeHandler)
-    port = server.server_port
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
-
-    broker = CommandBroker({
-        "server": {"state_dir": str(tmp_path / "state")},
-        "commands": {"enabled": True},
-        "network": {"allow_private_hosts": ["127.0.0.1"]},
-    })
-    probe_res = broker.http_probe(
-        f"http://127.0.0.1:{port}/",
-        expected_status=200,
-        json_path="status",
-        timeout=3.0,
-    )
-    assert probe_res["success"] is True
-    assert probe_res["status_code"] == 200
-    assert probe_res["json_matched"] is True
-    server.server_close()
-    server_thread.join(timeout=1.0)
 
 
 def test_process_utils_git_worktree_lifecycle(tmp_path: Path):

@@ -1365,72 +1365,8 @@ def test_affected_test_selection_exception_still_uses_full_suite(tmp_path, monke
     assert result["affected_tests_run"] == ["tests/test_app.py"]
 
 
-def test_mock_server_port_collision_does_not_leak_socket_or_thread(tmp_path) -> None:
-    broker = _broker(tmp_path)
-    spec_path = tmp_path / "openapi.json"
-    spec_path.write_text('{"paths": {"/health": {"get": {"summary": "health"}}}}', encoding="utf-8")
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
-        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        occupied.bind(("127.0.0.1", 0))
-        occupied.listen(1)
-        port = occupied.getsockname()[1]
-
-        try:
-            result = broker.mock_server_start(str(tmp_path), str(spec_path), port)
-
-            assert result["success"] is False
-            assert result["port"] == port
-            assert port not in broker._mock_servers
-            assert not any(thread.name == f"mock-srv-{port}" for thread in threading.enumerate())
-        finally:
-            server = broker._mock_servers.get(port)
-            if server and server.get("alive"):
-                broker.mock_server_stop(port)
-                server["thread"].join(timeout=1)
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", port))
-        probe.listen(1)
 
 
-def test_flaky_detection_preserves_each_attempt_and_identifies_instability(tmp_path, monkeypatch) -> None:
-    broker = _broker(tmp_path)
-    outcomes = [
-        {
-            "success": attempt != 11,
-            "exit_code": 1 if attempt == 11 else 0,
-            "stdout": f"attempt {attempt}",
-            "stderr": "intermittent failure" if attempt == 11 else "",
-            "duration_ms": 10 + attempt,
-        }
-        for attempt in range(1, 21)
-    ]
-    calls: list[tuple[str, str, int]] = []
-
-    def execute(command, cwd, timeout, *_args, **_kwargs):
-        calls.append((command, cwd, timeout))
-        return outcomes[len(calls) - 1]
-
-    monkeypatch.setattr(broker, "_execute", execute)
-
-    result = broker.test_flaky_detect(str(tmp_path), "python -m pytest -q", runs=99, timeout_per_run=7)
-
-    assert calls == [("python -m pytest -q", str(tmp_path.resolve()), 7)] * 20
-    assert result["success"] is True
-    assert result["total_runs"] == 20
-    assert result["passed"] == 19
-    assert result["failed"] == 1
-    assert result["flaky"] is True
-    assert result["status"] == "flaky"
-    assert [attempt["run"] for attempt in result["runs"]] == list(range(1, 21))
-    assert [attempt["success"] for attempt in result["runs"]].count(False) == 1
-    assert [attempt["exit_code"] for attempt in result["runs"]][10] == 1
-    assert [attempt["duration_ms"] for attempt in result["runs"]] == list(range(11, 31))
-    assert [attempt["stdout_preview"] for attempt in result["runs"]] == [
-        f"attempt {attempt}" for attempt in range(1, 21)
-    ]
-    assert result["runs"][10]["stderr_preview"] == "intermittent failure"
 
 
 def test_patch_rollback_preserves_dirty_and_unrelated_files(tmp_path, monkeypatch) -> None:
@@ -2584,18 +2520,3 @@ def test_python_preflight_still_reports_syntax_errors(tmp_path: Path) -> None:
     assert result["errors"][0]["level"] == "syntax_error"
     assert result["errors"][0]["line"] == 1
     assert list(tmp_path.rglob("__pycache__")) == []
-
-
-def test_mock_server_port_collision_does_not_claim_running(tmp_path: Path) -> None:
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}})
-    with socket.socket() as occupied:
-        occupied.bind(("127.0.0.1", 0))
-        occupied.listen()
-        port = occupied.getsockname()[1]
-
-        started = broker.mock_server_start(root=str(tmp_path), port=port)
-        status = broker.mock_server_status(port)
-
-    assert started["success"] is False
-    assert started["port"] == port
-    assert status["running"] is False

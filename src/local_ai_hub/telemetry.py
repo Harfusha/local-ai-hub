@@ -48,12 +48,10 @@ _SAFE_HTTP_ROUTE_LABELS = frozenset(
 )
 _SAFE_TOOL_ACTIONS = frozenset({
     "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
-    "local_ai_command", "local_ai_coord", "local_ai_work", "local_ai_artifact",
+    "local_ai_coord", "local_ai_work", "local_ai_artifact",
     # repo actions
     "context", "outline", "symbols", "references", "skeletonize", "ast_grep",
     "code_index", "review_diff", "security_audit", "solve", "preprocess",
-    # command actions
-    "run", "test", "lint", "typecheck", "build", "flaky_detect", "repair", "format",
     # task actions
     "delegate", "explore", "reason", "review", "second_opinion", "compress",
     "vision", "transcribe", "batch", "submit", "status", "wait", "result", "cancel",

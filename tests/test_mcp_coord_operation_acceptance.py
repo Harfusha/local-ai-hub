@@ -861,14 +861,14 @@ def test_local_ai_coord_worktree_release_forwards_path_and_branch_policy(monkeyp
     }]
 
 
-def test_local_ai_coord_curate_dataset_forwards_output_policy(monkeypatch):
+def test_local_ai_coord_curate_dataset_forwards_output_policy(monkeypatch, tmp_path, mcp_diagnostics_enabled):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='curate_dataset', output_path="dataset.jsonl", min_receipts=3, format="jsonl")
+    result = mcp_server.local_ai_coord(action='curate_dataset', root=str(tmp_path), output_path="dataset.jsonl", min_receipts=3, format="jsonl")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/tasks",
-        {"action": "curate_dataset", "output_path": "dataset.jsonl",
+        {"action": "curate_dataset", "root": str(tmp_path), "output_path": "dataset.jsonl",
          "min_receipts": 3, "format": "jsonl"},
         {"timeout": mcp_server._timeout("quick")},
     )]
@@ -905,7 +905,7 @@ def test_local_ai_coord_blackboard_update_posts_content_and_version(monkeypatch,
     )]
 
 
-def test_local_ai_coord_context_compile_posts_scope_and_budget(monkeypatch, tmp_path):
+def test_local_ai_coord_context_compile_posts_scope_and_budget(monkeypatch, tmp_path, mcp_diagnostics_enabled):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
@@ -1234,16 +1234,16 @@ def test_local_ai_coord_claim_forwards_owned_paths(monkeypatch, tmp_path):
     )]
 
 
-def test_local_ai_coord_curate_dataset_forwards_policy(monkeypatch):
+def test_local_ai_coord_curate_dataset_forwards_policy(monkeypatch, tmp_path, mcp_diagnostics_enabled):
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(
-        action="curate_dataset", output_path="accepted.jsonl", min_receipts=4,
+        action="curate_dataset", root=str(tmp_path), output_path="accepted.jsonl", min_receipts=4,
         format="jsonl",
     )
     assert result["success"] is True
     assert backend.calls == [(
         "/api/agent-state/tasks",
-        {"action": "curate_dataset", "output_path": "accepted.jsonl",
+        {"action": "curate_dataset", "root": str(tmp_path), "output_path": "accepted.jsonl",
          "min_receipts": 4, "format": "jsonl"},
         {"timeout": mcp_server._timeout("quick")},
     )]

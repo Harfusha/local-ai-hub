@@ -14,7 +14,6 @@ import math
 import os
 import queue
 import re
-import select
 import socket
 import sqlite3
 import uuid
@@ -81,6 +80,9 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeou
     return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import _normalize_trace_content
+from .agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_status_response, project_aggregate_response
+from .agent_surface import diagnostic_http_operation, diagnostics_disabled_response
+from .response_budget import _reconcile_existing_budget
 from .trace_context import reset_context, reset_observer, set_context
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .http_post_repository_analysis import handle_post_repository_analysis
@@ -486,7 +488,6 @@ HTTP_MODE_ACTION_POST_PATHS = frozenset({
     "/api/async-jobs",
     "/api/work-orders",
     "/api/speculative-lint",
-    "/api/command/speculative-lint",
 })
 
 
@@ -588,7 +589,7 @@ HTTP_MODE_SAFE_METHOD_REJECTIONS = frozenset({
 
 
 def _http_mode_action(path: str, payload: Mapping[str, Any] | None = None) -> str:
-    if path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+    if path == "/api/speculative-lint":
         action = str((payload or {}).get("action", "submit")).strip().lower().replace("-", "_")
         return "speculative_lint" if action == "submit" else f"speculative_lint_{action}"
     if path in {"/api/async-jobs", "/api/work-orders"}:
@@ -618,7 +619,7 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
         return "existing_job"
     if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
         return "existing_job"
-    if path in {"/api/speculative-lint", "/api/command/speculative-lint"} and action in {"status", "cancel"}:
+    if path == "/api/speculative-lint" and action in {"status", "cancel"}:
         return "existing_job"
     if path == "/api/agent-state/events/delta" and action == "export":
         return "gaming_read"
@@ -1197,10 +1198,6 @@ def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[boo
         return True, "terminal_client_result", False
     if success:
         return True, "", False
-    if path == "/api/command":
-        if payload.get("timed_out"):
-            return False, "command_timeout", True
-        return False, "command_failure", True
     return False, "http_error", True
 
 
@@ -1236,41 +1233,6 @@ def _response_phase_latency(data: Any) -> dict[str, float]:
         if (measured := value(name)) is not None
     })
     return result
-
-
-@contextmanager
-def _command_peer_cancellation(
-    connection: socket.socket | None, request_cancel_event: threading.Event | None = None,
-):
-    """Observe EOF without consuming bytes or changing the request socket."""
-    cancelled = request_cancel_event if request_cancel_event is not None else threading.Event()
-    if not isinstance(connection, socket.socket):
-        # Embedded requests have their own lifetime event, not a TCP peer.
-        yield cancelled
-        return
-    stopped = threading.Event()
-
-    def watch() -> None:
-        while not stopped.wait(0.05):
-            try:
-                readable, _, _ = select.select([connection], [], [], 0)
-                if readable and connection.recv(1, socket.MSG_PEEK) == b"":
-                    cancelled.set()
-                    return
-            except OSError as exc:
-                if _is_client_disconnect(exc):
-                    cancelled.set()
-                return
-            except ValueError:
-                return
-
-    watcher = threading.Thread(target=watch, name="command-peer-cancellation", daemon=True)
-    watcher.start()
-    try:
-        yield cancelled
-    finally:
-        stopped.set()
-        watcher.join(timeout=0.25)
 
 
 def _log_http_failure(logger: Any, method: str, path: str, exc: BaseException) -> None:
@@ -1335,7 +1297,7 @@ _CANONICAL_AGENT_ACTION = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 _AGENT_TASK_ACTIONS = frozenset({
     "create", "list", "get", "transition", "complete", "fail",
     "checkpoint", "rollback", "resume", "heartbeat", "ask", "answer",
-    "cleanup_worktree", "reap_expired", "curate_dataset",
+    "cleanup_worktree", "reap_expired", "curate_dataset", "budget_increase",
 })
 _AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export"})
 _AGENT_BLACKBOARD_RETIRED_FIELDS = frozenset({"key", "value", "approver", "sections", "record"})
@@ -2243,6 +2205,47 @@ class Handler(BaseHTTPRequestHandler):
         except (AttributeError, OSError, TypeError, ValueError):
             return False
 
+    def _task_budget_increase(self, payload: dict[str, Any]) -> None:
+        if not self._authorized(permission="admin") or self._authorization_actor != "api_token":
+            self._send(403, {"success": False, "error": "installation owner admin required",
+                             "terminal": True, "retryable": False}); return
+        # Admin reauthorization clears root context; rebind through the
+        # same repository/task identity checks as other task mutations.
+        if not self._bind_task_payload(payload):
+            return
+        permitted = {"action", "root", "repo_root", "context", "task_id",
+                     "reason", "budget", "response_budget_tokens"}
+        if set(payload) - permitted:
+            self._send(400, {"success": False, "error": "unexpected budget action fields",
+                             "terminal": True, "retryable": False}); return
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id or task_id != task_id.strip():
+            self._send(400, {"success": False, "error": "canonical task_id required"}); return
+        if self._request_task(task_id, payload["root"]) is None:
+            return
+        if not self._audit_admin_authorization("task.budget_increase", allowed=True):
+            self._send(503, {"success": False, "error": "authorization audit unavailable",
+                             "mutation_applied": False, "operation_not_started": True}); return
+        try:
+            result = APP.commands.increase_task_budget(
+                task_id, root=payload["root"], reason=payload.get("reason"),
+                limits=payload.get("budget"),
+                authorization_actor=self._authorization_actor,
+                authorization_permissions=self._authorization_permissions,
+                response_budget_tokens=payload.get("response_budget_tokens"),
+            )
+        except CheckpointResponseBudgetError as exc:
+            self._send(413, {"success": False, "error": str(exc), "terminal": True,
+                             "retryable": False, "mutation_applied": False,
+                             "operation_not_started": True,
+                             "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                 "required_tokens": exc.required_tokens}}); return
+        except PermissionError as exc:
+            self._send(403, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        except (TypeError, ValueError, KeyError) as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        self._send(200, result); return
+
     def _request_task(self, task_id: str, root: str) -> Any | None:
         task = APP.agent_tasks.get(task_id) if APP is not None and getattr(APP, "agent_tasks", None) else None
         if task is None or not self._task_matches_request(task, root):
@@ -3031,8 +3034,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestBodyError("texts must be a list of at most 256 entries")
             for value in values:
                 text(value, "embedding text", 200000)
-        elif path == "/api/command":
-            text(payload.get("command", ""), "command", 8000)
         elif path == "/api/telemetry/tool-accounting":
             events = payload.get("events", [])
             if not isinstance(events, list) or len(events) > 64:
@@ -3076,7 +3077,7 @@ class Handler(BaseHTTPRequestHandler):
                 bounded_number(payload.get("timeout_seconds", 90), "timeout_seconds", 0, 90)
             if action in {"submit", "get"} or "max_output_tokens" in payload:
                 bounded_integer(payload.get("max_output_tokens", 0), "max_output_tokens", 0, 4096)
-        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/command/preflight", "/api/repo/deterministic", "/api/search"}:
+        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
         elif path == "/api/memory/put":
@@ -3111,21 +3112,6 @@ class Handler(BaseHTTPRequestHandler):
             edits = payload.get("edits") or payload.get("replacements")
             if not isinstance(edits, list) or not edits:
                 raise RequestBodyError("edits must be a non-empty list of replacement operations")
-        elif path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
-            action = text(payload.get("action", "submit"), "action", 32).strip().lower().replace("-", "_")
-            if action not in {"submit", "status", "cancel"}:
-                raise RequestBodyError("unsupported speculative lint action")
-            if action == "submit":
-                required_text("root", maximum=4096)
-                paths = payload.get("paths")
-                if not isinstance(paths, list) or not paths or len(paths) > 256:
-                    raise RequestBodyError("paths must be a non-empty list of at most 256 entries")
-                for item in paths:
-                    text(item, "changed path", 4096)
-                if "command" in payload:
-                    text(payload["command"], "command", 4000)
-            else:
-                required_text("job_id", maximum=128)
         elif path == "/api/code-intelligence/query":
             action = text(payload.get("action", "search"), "action", 80).strip().lower().replace("-", "_")
             if action not in {"dead_code", "dead", "stats", "repository_stats"}:
@@ -3178,6 +3164,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_get_live_status(self, query: Mapping[str, list[str]]) -> None:
         light = str((query.get("light") or ["0"])[0]).lower() in {"1", "true", "yes"}
+        if not detailed_diagnostics_enabled(getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None)):
+            light = True
         scope = str((query.get("scope") or ["process"])[0])
         status = APP.realtime_status(light=light, scope=scope)
         if isinstance(self.server, LocalAIHTTPServer):
@@ -3218,6 +3206,14 @@ class Handler(BaseHTTPRequestHandler):
         if action == "wait":
             self._send(200, APP.async_jobs.wait(str(payload.get("job_id", "")), float(payload.get("timeout_seconds", 90)))); return
         if action == "result":
+            diagnostic_result = getattr(APP.async_jobs, "diagnostic_result", None)
+            if (
+                not detailed_diagnostics_enabled(getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None))
+                and callable(diagnostic_result)
+                and diagnostic_result(job_id=str(payload.get("job_id", ""))) is True
+            ):
+                self._send(409, diagnostics_disabled_response())
+                return
             self._send(200, APP.async_jobs.result(str(payload.get("job_id", "")))); return
         if action == "cancel":
             self._send(200, APP.async_jobs.cancel(str(payload.get("job_id", "")))); return
@@ -3414,8 +3410,22 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(execution_started, (int, float))
             else None
         )
-        body = _json_bytes(data)
         response_path = urlparse(str(getattr(self, "path", ""))).path
+        # Keep the canonical result for the journal, local trace and aggregate
+        # telemetry. Only the wire projection drops internal observations.
+        detail_enabled = detailed_diagnostics_enabled(
+            getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None),
+        )
+        aggregate_report = response_path in {"/api/metrics", "/api/telemetry/report"}
+        wire_data = (
+            project_status_response(data, enabled=detail_enabled)
+            if response_path in {"/api/status", "/api/live/status"}
+            else project_aggregate_response(data, enabled=detail_enabled) if aggregate_report
+            else project_agent_response(data, enabled=detail_enabled)
+        )
+        if isinstance(wire_data, dict) and "returned_tokens" in (wire_data.get("response_budget") or {}):
+            wire_data = _reconcile_existing_budget(wire_data) or wire_data
+        body = _json_bytes(wire_data)
         if (
             response_path in {"/api/search", "/api/repo/code-index"}
             and int(status) < 400
@@ -3446,10 +3456,7 @@ class Handler(BaseHTTPRequestHandler):
                 excluded = set(APP.config.get("observability", {}).get("exclude_http_paths", []))
                 if path not in MONITOR_PATHS and not path.startswith("/api/debug-traces/") and path not in excluded:
                     elapsed_ms = max(0.0, (time.perf_counter() - float(getattr(self, "_request_started", time.perf_counter()))) * 1000)
-                    policy_blocked = bool(path == "/api/command" and isinstance(data, dict) and data.get("policy_blocked"))
                     telemetry_data = dict(data) if isinstance(data, dict) else data
-                    if policy_blocked and isinstance(telemetry_data, dict):
-                        telemetry_data["policy_blocked"] = True
                     reliability_success, outcome_error_type, record_operational_error = _telemetry_http_outcome(status, telemetry_data, path)
                     err = str(data.get("error", "")) if isinstance(data, dict) else ""
                     evidence = data.get("evidence", []) if isinstance(data, dict) else []
@@ -3563,7 +3570,8 @@ class Handler(BaseHTTPRequestHandler):
                         logger = getattr(APP, "logger", None)
                         if logger is not None:
                             logger.warning("event stream unsubscribe failed error_type=%s", type(exc).__name__)
-                payload = dict(_payload)
+                payload = project_agent_response(dict(_payload), enabled=detailed_diagnostics_enabled(
+                    getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None)))
                 self.send_response(_status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
@@ -3685,13 +3693,15 @@ class Handler(BaseHTTPRequestHandler):
 
             def write_sse(event_name: str, payload: Mapping[str, Any], seq: int | None = None) -> bool:
                 nonlocal stream_success, stream_error, last_delivered_seq
+                wire_payload = project_agent_response(dict(payload), enabled=detailed_diagnostics_enabled(
+                    getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None)))
                 if seq is not None:
                     event_id = f"id: {seq}\n" if event_name == "replay_page" else f"id: {format_seq(seq)}\n"
                 else:
                     event_id = ""
                 msg = (
                     f"{event_id}event: {event_name}\n"
-                    f"data: {json_dumps(payload, separators=(',', ':'))}\n\n"
+                    f"data: {json_dumps(wire_payload, separators=(',', ':'))}\n\n"
                 ).encode("utf-8")
                 try:
                     self.wfile.write(msg)
@@ -4043,6 +4053,29 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         trace_store = getattr(APP, "debug_traces", None) if APP is not None else None
         trace_id = str(getattr(self, "_debug_trace_id", "") or "")
+        detail_enabled = detailed_diagnostics_enabled(getattr(APP, "config", {}), store=trace_store)
+        if not detail_enabled and diagnostic_http_operation("GET", path):
+            self._send(409, diagnostics_disabled_response())
+            return
+        if not detail_enabled and path in {"/api/status", "/api/live/status"}:
+            full_requested = (query.get("detail") or [""])[0] == "full"
+            full_live_requested = path == "/api/live/status" and "light" in query and (
+                str(query["light"][0]).lower() not in {"1", "true", "yes"}
+            )
+            if full_requested or full_live_requested:
+                self._send(409, diagnostics_disabled_response())
+                return
+        if not detail_enabled:
+            if path == "/api/debug-traces":
+                self._send(200, {"success": True, "enabled": False, "items": [], "total": 0})
+                return
+            if path.startswith("/api/debug-traces/") or path in {"/api/telemetry/timeline", "/api/logs/tail"}:
+                self._send(409, {
+                    "success": False, "error_code": "detailed_diagnostics_disabled",
+                    "error": "Enable detailed diagnostics in the dashboard to read diagnostic detail.",
+                    "terminal": True, "retryable": False,
+                })
+                return
         if trace_store is not None and trace_id and query:
             try:
                 trace_store.update(trace_id, request={"query": query})
@@ -4074,11 +4107,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
         root_scoped_repo_get_paths = {
             "/api/git/status", "/api/git/diff", "/api/git/history_search", "/api/git/synthesize_commit",
-            "/api/repo_state", "/api/hotspots", "/api/topology", "/api/dead_code",
-            "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
+            "/api/hotspots", "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
             "/api/resolve_imports", "/api/security_audit", "/api/search",
-            "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/worktrees",
-            "/api/project/config", "/api/repo/config",
+            "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/project/config",
         }
         if (
             path.startswith("/api/repo/")
@@ -4201,7 +4232,7 @@ class Handler(BaseHTTPRequestHandler):
                         "candidates_count": 0,
                     }); return
                 scope = str((query.get("scope") or ["process"])[0])
-                if detail in {"summary", "light"}:
+                if not detail_enabled or detail in {"summary", "light"}:
                     status = APP.realtime_status(light=True, scope=scope)
                     status["detail_level"] = "summary"
                 else:
@@ -4228,16 +4259,41 @@ class Handler(BaseHTTPRequestHandler):
                         status_filter = TaskStatus(str(query.get("status")[0]).strip().lower())
                     except ValueError:
                         pass
-                limit = int((query.get("limit") or [100])[0])
+                try:
+                    limit = int((query.get("limit") or [100])[0])
+                    offset = int((query.get("offset") or [0])[0])
+                    if not 1 <= limit <= 1000:
+                        raise ValueError("limit must be between 1 and 1000")
+                    if not 0 <= offset <= (1 << 31) - 1:
+                        raise ValueError("offset must be between 0 and 2147483647")
+                except (TypeError, ValueError) as exc:
+                    self._send(400, {
+                        "success": False,
+                        "error": str(exc) or "limit and offset must be integers",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
                 task_query = (query.get("query") or [""])[0]
                 tasks = APP.agent_tasks.list_tasks(
                     status=status_filter,
-                    limit=limit,
+                    limit=limit + 1,
+                    offset=offset,
                     include_stale=include_stale,
                     query=task_query,
                 )
-                response = {"success": True, "tasks": [t.to_dict() for t in tasks if not request_root or self._task_matches_request(t, request_root)]}
+                has_more = len(tasks) > limit
+                page_tasks = tasks[:limit]
+                response = {
+                    "success": True,
+                    "tasks": [t.to_dict() for t in page_tasks if not request_root or self._task_matches_request(t, request_root)],
+                    "total_count": APP.agent_tasks.count(),
+                    "active_count": APP.agent_tasks.count(TaskStatus.ACTIVE),
+                    "offset": offset,
+                    "limit": limit,
+                    "next_offset": offset + min(len(tasks), limit),
+                    "has_more": has_more,
+                }
                 if getattr(tasks, "query_truncated", False):
                     response["query_truncated"] = True
                 self._send(200, response); return
@@ -4676,7 +4732,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/dead_code", "/api/dead_code"}:
+            if path in {"/api/repo/dead_code"}:
                 root = (query.get("root") or ["."])[0]
                 if APP.deterministic is not None:
                     self._send(200, APP.services.dead_code(root))
@@ -4722,7 +4778,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/affected_tests", "/api/affected_tests"}:
+            if path in {"/api/repo/affected_tests"}:
                 root = (query.get("root") or ["."])[0]
                 paths = query.get("path") or query.get("paths") or None
                 if APP.deterministic is not None:
@@ -4730,7 +4786,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/topology", "/api/topology"}:
+            if path in {"/api/repo/topology"}:
                 root = (query.get("root") or ["."])[0]
                 if APP.deterministic is not None:
                     self._send(200, APP.services.repo_topology(root))
@@ -4805,7 +4861,7 @@ class Handler(BaseHTTPRequestHandler):
                 root = (query.get("root") or [None])[0]
                 self._send(200, APP.preprocessor.status(root))
                 return
-            if path in {"/api/project/config", "/api/repo/config"}:
+            if path in {"/api/project/config"}:
                 canonical = (query.get("root") or [None])[0]
                 if not canonical:
                     self._send(400, {"success": False, "error": "root is required for project configuration", "terminal": True, "retryable": False})
@@ -4892,7 +4948,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/coord/worktrees", "/api/worktrees"}:
+            if path in {"/api/coord/worktrees"}:
                 root = (query.get("root") or ["."])[0]
                 self._send(200, APP.services.list_worktrees(root))
                 return
@@ -4904,7 +4960,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/state", "/api/repo_state"}:
+            if path in {"/api/repo/state"}:
                 root = (query.get("root") or ["."])[0]
                 tracker = getattr(APP, "repo_state", None) or (getattr(APP.services, "repo_state", None) if getattr(APP, "services", None) else None)
                 if tracker is not None:
@@ -5151,6 +5207,16 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(artifact_id, str) or not artifact_id:
             self._send(400, {"success": False, "error": "artifact_id must be a non-empty string", "terminal": True, "retryable": False})
             return
+        if not detailed_diagnostics_enabled(getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None)):
+            kind_reader = getattr(APP.artifacts, "kind", None)
+            kind = kind_reader(artifact_id) if callable(kind_reader) else None
+            diagnostic_result = getattr(getattr(APP, "async_jobs", None), "diagnostic_result", None)
+            retained_async_detail = kind == "async-job" and (
+                not callable(diagnostic_result) or diagnostic_result(artifact_id=artifact_id) is not False
+            )
+            if kind == "diagnostic-async-job" or retained_async_detail:
+                self._send(409, diagnostics_disabled_response())
+                return
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             self._send(400, {"success": False, "error": "offset must be a non-negative integer", "terminal": True, "retryable": False})
             return
@@ -5698,6 +5764,12 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        if (
+            not detailed_diagnostics_enabled(getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None))
+            and diagnostic_http_operation("POST", path, payload)
+        ):
+            self._send(409, diagnostics_disabled_response())
+            return
         if path == "/api/work-orders" and isinstance(payload, Mapping) and "request_id" in payload:
             supplied_request_id = payload.get("request_id")
             journal_request_id = str(getattr(self, "_trace_request_id", ""))
@@ -5767,21 +5839,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         root_scoped_repo_paths = {
             "/api/git/status", "/api/git/diff", "/api/git/history_search",
-            "/api/repo/state", "/api/repo_state", "/api/repo/hotspots",
+            "/api/repo/state", "/api/repo/hotspots",
             "/api/hotspots", "/api/repo/generate_tests_for_diff",
             "/api/generate_tests_for_diff", "/api/repo/affected_tests",
-            "/api/affected_tests", "/api/repo/topology", "/api/topology",
-            "/api/git/synthesize_commit", "/api/test_matrix",
+            "/api/repo/topology", "/api/git/synthesize_commit", "/api/test_matrix",
             "/api/security_audit", "/api/code-intelligence/query",
             "/api/code-intelligence/reset", "/api/repo/dead_code",
-            "/api/dead_code", "/api/symbol_callgraph",
+            "/api/symbol_callgraph",
             "/api/repo/call_graph_diff", "/api/bundle/export",
             "/api/reachability_dead_code", "/api/mutation_test",
             "/api/type_stubs", "/api/split_changes", "/api/synthesize_rules",
             "/api/code_invariants", "/api/generate_dataset", "/api/callers",
             "/api/secret_scan", "/api/schema_inspect", "/api/explain_query",
             "/api/env_compat", "/api/worktree_lease", "/api/worktree_release",
-            "/api/worktrees", "/api/worktree_prune", "/api/lint_fix",
+            "/api/worktree_prune", "/api/lint_fix",
             "/api/rag/index", "/api/rag/search", "/api/rag/docset/index",
             "/api/rag/ingest_document", "/api/rag/ingest_diagram",
         }
@@ -5966,14 +6037,6 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/conversations/continue":
                 result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload)
                 self._send(200, result); return
-            if 'post_command_speculative_lint_1' in post_route_ids:
-                action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
-                if action == "submit":
-                    self._send(200, APP.speculative_lint.submit(str(payload.get("root", ".")), payload.get("paths") or [], str(payload.get("command", "")))); return
-                if action == "status":
-                    self._send(200, APP.speculative_lint.status(str(payload.get("job_id", "")))); return
-                if action == "cancel":
-                    self._send(200, APP.speculative_lint.cancel(str(payload.get("job_id", "")))); return
             if 'post_agent_state_tasks_1' in post_route_ids:
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -5987,6 +6050,9 @@ class Handler(BaseHTTPRequestHandler):
                         "terminal": True,
                         "retryable": False,
                     }); return
+                if action == "budget_increase":
+                    self._task_budget_increase(payload)
+                    return
                 scoped_task_actions = {
                     "curate_dataset",
                     "ask", "answer",
@@ -7619,14 +7685,6 @@ class Handler(BaseHTTPRequestHandler):
                 )); return
             if 'post_repo_briefing_1' in post_route_ids:
                 self._send(200, APP.services.repo_briefing(str(payload.get("root", ".")))); return
-            if 'post_command_preflight_1' in post_route_ids:
-                raw_paths = payload.get("paths") or payload.get("files")
-                paths_list = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else ([str(raw_paths)] if raw_paths else None)
-                self._send(200, APP.services.commands.preflight(
-                    str(payload.get("cwd", payload.get("root", "."))),
-                    paths=paths_list,
-                    timeout=int(payload.get("timeout", 10) or 10),
-                )); return
             if 'post_repo_deterministic_1' in post_route_ids:
                 self._send(200, APP.services.deterministic_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 24)))); return
             if 'post_repo_impact_1' in post_route_ids:
@@ -7974,16 +8032,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.memory.search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 12)))); return
             if path == "/api/memory/delete":
                 self._send(200, APP.memory.delete(str(payload.get("root", ".")), str(payload.get("key", "")))); return
-            if path == "/api/command":
-                if payload.get("action", "run") == "run":
-                    with _command_peer_cancellation(
-                        getattr(self, "connection", None), getattr(self, "_request_cancel_event", None),
-                    ) as request_cancel_event:
-                        result = APP.services.command(payload, request_cancel_event=request_cancel_event)
-                else:
-                    result = APP.services.command(payload)
-                status = 409 if isinstance(result, dict) and result.get("outcome_unknown") is True else 200
-                self._send(status, result); return
             if path == "/api/embed":
                 texts = payload.get("texts", payload.get("input", []))
                 if isinstance(texts, str):
@@ -8109,20 +8157,6 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_coord_worktree_prune_1' in post_route_ids:
                 self._send(200, APP.services.prune_worktrees(str(payload.get("root", ".")))); return
 
-            if 'post_command_daemon_1' in post_route_ids:
-                act = str(payload.get("action", "status")).lower()
-                if act == "spawn":
-                    self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"), task_id=str(payload.get("task_id", "")))); return
-                elif act == "stop":
-                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")), task_id=str(payload.get("task_id", "")))); return
-                else:
-                    self._send(200, APP.services.daemon_status(
-                        payload.get("daemon_id"), task_id=str(payload.get("task_id", ""))
-                    )); return
-            if path == "/api/command/lint_fix":
-                self._send(200, APP.services.lint_fix(str(payload.get("root", ".")), command=payload.get("command"), paths=payload.get("paths"), timeout=payload.get("timeout"))); return
-            if 'post_command_http_probe_1' in post_route_ids:
-                self._send(200, APP.services.http_probe(str(payload.get("url", "")), expected_status=int(payload.get("expected_status", 200)), json_path=payload.get("json_path"), timeout=float(payload.get("timeout", 5.0)), headers=payload.get("headers"))); return
             if 'post_callers_1' in post_route_ids:
                 limit = payload.get("limit", 50); offset = payload.get("offset", 0)
                 bounds_error = pagination_bounds_error(limit, offset)
@@ -8313,23 +8347,6 @@ class Handler(BaseHTTPRequestHandler):
                 if "path" in payload:
                     self._send(400, {"success": False, "error": "ingest_diagram accepts image_path; path is not an alias", "terminal": True, "retryable": False}); return
                 self._send(200, APP.rag.ingest_diagram(root=payload["root"], workspace=payload.get("workspace", ""), image_path=str(payload.get("image_path", "")), caption=str(payload.get("caption", "")), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None)); return
-            if 'post_command_mock_server_1' in post_route_ids:
-                act = str(payload.get("action", "status")).strip().lower()
-                port = payload.get("port", 0 if act == "start" else 11440)
-                if act == "start":
-                    self._send(200, APP.services.mock_server_start(str(payload.get("root", ".")), spec_path=payload.get("spec_path"), port=port)); return
-                elif act == "stop":
-                    self._send(200, APP.services.mock_server_stop(port=port)); return
-                else:
-                    self._send(200, APP.services.mock_server_status(port=port)); return
-
-            if 'post_command_diff_hunk_stage_1' in post_route_ids:
-                self._send(200, APP.services.diff_hunk_stage(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("patch", "")))); return
-            if path == "/api/command/flaky_detect":
-                self._send(200, APP.services.test_flaky_detect(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("command", "")), runs=int(payload.get("runs", 5)), timeout_per_run=int(payload.get("timeout", 30)))); return
-            if path == "/api/command/webhook_replay":
-                self._send(200, APP.services.webhook_replay(str(payload.get("url", "")), payload.get("payload", {}), secret=str(payload.get("secret", "")), signature_header=str(payload.get("signature_header", "X-Hub-Signature-256")), timeout=float(payload.get("timeout", 10.0)))); return
-
             # Optional Ollama/OpenAI protocol proxy. Local AI applies
             # the same shared exact cache + single-flight before the Ollama queue.
             if 'post_chat_1' in post_route_ids:

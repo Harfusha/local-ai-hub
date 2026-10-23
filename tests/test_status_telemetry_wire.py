@@ -74,7 +74,7 @@ def _wire_measure(result: object) -> tuple[int, dict, dict | None]:
 
 
 @pytest.mark.parametrize("profile", ["", "compact", "minimal"])
-def test_status_telemetry_wire_satisfies_output_contract_and_budget(
+def test_readiness_wire_omits_backend_telemetry_and_respects_budget(
     monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
     monkeypatch.setattr(
@@ -83,12 +83,14 @@ def test_status_telemetry_wire_satisfies_output_contract_and_budget(
         lambda _state_dir: OperationalModeSnapshot("active", 0, None),
     )
     monkeypatch.setattr(mcp_server.FEATURES, "status", True)
-    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda _path, timeout=None: _telemetry_report())
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda _path, timeout=None: {
+        "hub_online": True, "version": "test", "ollama_online": True, "scheduler": {},
+        "report": _telemetry_report()})
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
     monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **_kwargs: None)
 
     arguments = {
-        "detail": "telemetry",
+        "detail": "brief",
         "max_response_tokens": 1800,
         "reuse_key": f"status-telemetry-wire:detail:{profile or 'default'}",
     }
@@ -103,11 +105,30 @@ def test_status_telemetry_wire_satisfies_output_contract_and_budget(
 
     for payload in (decoded_text, structured):
         assert payload["success"] is True
-        assert REQUIRED_TELEMETRY_FIELDS <= payload.keys()
-        assert validate_operation_output("local_ai_status", "telemetry", payload) is None
-        assert isinstance(payload["summary"]["events"], int)
-        assert isinstance(payload["summary"]["avg_duration_ms"], float)
-        assert isinstance(payload["summary"]["net_cloud_token_delta_est"], float)
+        assert {"success", "version", "ollama_online", "active_model", "degraded"} <= payload.keys()
+        assert validate_operation_output("local_ai_status", "brief", payload) is None
+        assert not {"report", "summary", "hotspots", "error_fingerprints"}.intersection(payload)
+
+
+def test_http_aggregate_wire_preserves_metric_types_without_private_detail(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, debug_traces=SimpleNamespace(enabled=False)))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path, handler.headers, handler.wfile = "/api/telemetry/report", {}, io.BytesIO()
+    handler._telemetry_finished = handler._debug_trace_finished = True
+    handler.send_response = handler.send_header = lambda *args: None
+    handler.end_headers = handler._common_headers = lambda: None
+    handler._finish_debug_trace = lambda *args: None
+    handler._send(200, {"success": True, "report": _telemetry_report()})
+    report = json.loads(handler.wfile.getvalue())["report"]
+    assert isinstance(report["summary"]["events"], int)
+    assert isinstance(report["summary"]["avg_duration_ms"], float)
+    assert isinstance(report["summary"]["net_cloud_token_delta_est"], float)
+    assert report["summary"]["cache_hits"] == 30
+    assert "hotspots" not in report
+    assert "error_fingerprints" not in report
 
 
 @pytest.mark.parametrize("profile", ["", "compact", "minimal"])

@@ -69,8 +69,6 @@ def test_registered_repo_dispatch_rejects_retired_aliases_before_client(
     ("complexity", {"root": "."}, [], ["query", "task"]),
     ("declaration", {"root": ".", "query": "Widget"}, ["query"], ["task"]),
     ("ast_refactor", {"root": ".", "old_symbol": "Old", "new_symbol": "New"}, ["old_symbol", "new_symbol"], ["query", "task", "diff"]),
-    ("context_compile", {"root": ".", "task_id": "task-1"}, ["task_id"], ["query", "task"]),
-    ("verify_completion", {"root": ".", "task_id": "task-1"}, ["task_id"], ["query", "task"]),
 ])
 def test_repo_operation_schemas_match_canonical_inputs(action, canonical, required, forbidden):
     schema = operation_input_schema("local_ai_repo", action)
@@ -96,8 +94,6 @@ def test_repo_operation_schemas_match_canonical_inputs(action, canonical, requir
     ("complexity", {"path": "src/a.py"}, "/api/repo/complexity", "path", "src/a.py"),
     ("declaration", {"query": "Widget", "path": "src/a.py"}, "/api/code/declaration", "symbol", "Widget"),
     ("ast_refactor", {"path": "src/a.py", "old_symbol": "Old", "new_symbol": "New"}, "/api/code/ast_rename", "old_symbol", "Old"),
-    ("context_compile", {"task_id": "task-1"}, "/api/agent-state/context", "task_id", "task-1"),
-    ("verify_completion", {"task_id": "task-1"}, "/api/agent-state/verification", "task_id", "task-1"),
 ])
 def test_repo_canonical_operation_dispatch_payloads(
     action, arguments, url, payload_key, expected, monkeypatch, tmp_path,
