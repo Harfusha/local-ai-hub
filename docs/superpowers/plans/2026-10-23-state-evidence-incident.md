@@ -2,15 +2,11 @@
 
 ## Current disposition
 
-Production acceptance is false. The managed HTTP Hub and supervisor are stopped;
-port 11435 has no listener. No restart, restore, new Hub task, budget reset or
-synthetic receipt has been performed. The original Codex goal remains active.
-The original Hub task cannot currently be checkpointed through its missing
-datastore. Do not recreate it as a replacement task.
+The operator confirmed: "Ja jsem to smazal - chci cisty stav" (I deleted it; I want a clean state). The deletion was intentional. Recovery of previous runtime history, archives and usage counters is no longer an acceptance requirement; no preservation claim is made. Configuration and source remain preserved.
 
-This incident takes priority over the remaining release work. The cause is not
-established. Missing paths do not, by themselves, identify a deleting process or
-prove whether a separate relocation/recovery copy exists.
+Main stopped the newly observed managed Hub, terminated 54 stdio providers bound to this exact installation/configuration, and moved the residual state directory outside the checkout to `C:/Users/Adam/.local-ai-hub-state-before-clean-20261023T141257Z`. The new canonical state initially contains only the service-disabled control marker. No old database is restored. Both configuration hashes below remain unchanged. The protective RAG copy started before operator clarification is separate, unused, and has no verified integrity result.
+
+Clean initialization, fresh validation and runtime acceptance remain required. The interrupted full suite remains incomplete. Historical receipt/task counters cannot be replayed as fresh evidence. The original Codex goal remains active, with the operator's clean-state disposition superseding its historical-data preservation clause. No replacement chat is created.
 
 ## Observations and containment
 

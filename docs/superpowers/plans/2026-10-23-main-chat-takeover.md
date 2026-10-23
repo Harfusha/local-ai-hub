@@ -4,7 +4,7 @@
 
 **Goal:** Preserve all transferred work in master, absorb the stopped workers, and complete every original audit/release/runtime/UI/data requirement with authentic evidence.
 
-**Current incident overrides the execution order:** [Missing runtime state and validation evidence](2026-10-23-state-evidence-incident.md). The full-suite epoch was stopped after its earlier XML/manifests disappeared; runtime files and the named recovery backup are unavailable at their original paths. The managed Hub is stopped. Do not restart, restore stale data, recreate the Hub task or treat the historical artifact references below as currently available. Establish recovery provenance and quiet writers before resuming validation or activation. The complete original goal remains open.
+**Operator clean-state disposition:** The human confirmed intentional deletion and requested a clean state. See [state disposition](2026-10-23-state-evidence-incident.md). Preserve source/configuration, initialize fresh runtime databases, and regenerate genuine validation/package/runtime/UI evidence outside disposable runtime state. Do not restore old history or fabricate prior task counters/receipts. Historical artifact references below are observations, not currently available acceptance evidence. The original Codex goal remains open; its historical-data preservation requirement is superseded by this explicit instruction.
 
 **Architecture:** One primary owns the installed single-owner Hub and canonical task/root. Reuse candidate-bound evidence, fix defects at their responsible boundary, preserve data and strict contracts, and validate bounded independent deltas before final integrated acceptance.
 
@@ -31,7 +31,7 @@ The main chat is the sole Git writer, CPU runner and runtime mutator. GPT-6 Luna
 
 The existing main Codex goal remains active. The exposed goal tools cannot edit its objective: create_goal rejected replacement because the goal is unfinished; update_goal supports status only. This document records the human's expanded objective without resetting accounting or falsely completing the old objective. Update the displayed goal through a supported objective-edit mechanism when available.
 
-Keep Hub task `audit-remediation-20261020`; no new task or counter reset. The previous integration chat `01a15f47-a804-7290-8d3b-f55b82fbb4b0` confirmed STOP, transferred ownership, paused its own unfinished Codex goal and reached idle. Its handoff is retained in the main chat and this plan.
+Before the operator reset, Hub task `audit-remediation-20261020` was retained without counter reset. After the intentional datastore deletion, any initialization must be explicitly fresh; never reconstruct its former counters or receipts. The previous integration chat `01a15f47-a804-7290-8d3b-f55b82fbb4b0` confirmed STOP, transferred ownership, paused its own unfinished Codex goal and reached idle. Its handoff is retained in the main chat and this plan.
 
 ## Preserved baseline at takeover
 
