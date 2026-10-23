@@ -4703,11 +4703,10 @@ function traceContextLabel(trace){
 }
 
 function requestTraceAvailability(request){
+  if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
   const trace=requestTrace(request);
   if(trace)return {label:'Trace available',className:'ok',trace};
-  if(request.trace_id)return {label:'Trace expired',className:'warn-t',trace:null};
-  if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
-  return {label:'No trace retained',className:'muted',trace:null};
+  return {label:'Trace status unverified',className:'muted',trace:null};
 }
 function requestOutcome(request={}){
   const code=Number(request.status_code)||0,failed=request.success===false||code>=400;

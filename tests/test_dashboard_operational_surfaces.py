@@ -42,6 +42,46 @@ def test_operations_views_name_distinct_records_and_trace_availability() -> None
     assert "function requestTraceAvailability(request)" in DASHBOARD_HTML
 
 
+def test_request_trace_availability_does_not_infer_expiry_from_partial_local_cache() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for the bounded dashboard behavior test"
+    start = DASHBOARD_HTML.index("function requestTrace(request){")
+    end = DASHBOARD_HTML.index("function requestOutcome(request={})", start)
+    trace_functions = DASHBOARD_HTML[start:end]
+    requests = [
+        {"request_id": "request-missing-local-trace", "trace_id": "trace-known-but-not-loaded"},
+        {"request_id": "request-no-trace-metadata"},
+        {"request_id": "request-explicitly-untraced", "trace_id": "trace-absent", "trace_available": False},
+        {"request_id": "request-local-trace", "trace_id": "trace-loaded"},
+    ]
+    traces = [{"request_id": "request-local-trace", "trace_id": "trace-loaded"}]
+    script = f"""
+const vm=require('node:vm');
+const sources={json.dumps(trace_functions)};
+const requests={json.dumps(requests)};
+const sandbox=vm.createContext({{lastTraces:{json.dumps(traces)}}});
+vm.runInContext(sources,sandbox,{{timeout:1000}});
+const results=requests.map(request=>{{
+  const value=sandbox.requestTraceAvailability(request);
+  return {{label:value.label,className:value.className,traceId:value.trace?.trace_id||null}};
+}});
+console.log(JSON.stringify(results));
+"""
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=5)
+    results = json.loads(completed.stdout)
+
+    assert results == [
+        {"label": "Trace status unverified", "className": "muted", "traceId": None},
+        {"label": "Trace status unverified", "className": "muted", "traceId": None},
+        {"label": "No trace recorded", "className": "muted", "traceId": None},
+        {"label": "Trace available", "className": "ok", "traceId": "trace-loaded"},
+    ]
+
+
 def test_dashboard_distinguishes_unknown_ollama_probe_from_offline() -> None:
     start = DASHBOARD_HTML.index("function dashboardHealth(")
     end = DASHBOARD_HTML.index("function dashboardFreshness(", start)
