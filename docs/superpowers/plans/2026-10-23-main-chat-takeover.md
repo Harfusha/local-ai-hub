@@ -42,7 +42,7 @@ Keep Hub task `audit-remediation-20261020`; no new task or counter reset. The pr
 - [x] Obtain STOP acknowledgment, final checkpoint, idle status and released Git/CPU/runtime ownership from the old integrator.
 - [x] Verify master, clean starting state and no other registered worktree; retain all historical refs.
 - [x] Preserve the complete takeover plan and links from both original plans in the takeover planning commit. Include all current non-ignored repository changes, regardless of functional readiness. Runtime data, credentials, caches and backups remain outside the source commit.
-- [ ] Archive old integrator only after this planning commit is in master and the main chat owns the remaining work. API/command/UI/RAG/planning/crash chats already archived remain archived.
+- [x] Old integrator archived after takeover planning commit `4dc0c31f` was verified in clean master and the main chat assumed all remaining work. API/command/UI/RAG/planning/crash chats already archived remain archived. Archival records a transfer, not completion of the unfinished release.
 - [ ] Adopt a scoped writer lease/checkpoint under the same task using supported coordination. Never release a foreign lease blindly or derive an owner from credentials.
 
 ### B. Diagnose current runtime; restore the original task safely
