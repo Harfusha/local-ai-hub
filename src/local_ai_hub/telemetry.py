@@ -1358,68 +1358,67 @@ class TelemetryStore:
         now = time.time()
         with closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT id, pid, version, started_at, stopped_at, last_heartbeat, exit_clean FROM process_sessions WHERE started_at>=? ORDER BY started_at DESC LIMIT 100",
-                (cutoff,),
+                """WITH selected AS (
+                       SELECT id,pid,version,started_at,stopped_at,last_heartbeat,exit_clean,
+                              CASE WHEN id=? AND stopped_at IS NULL THEN ?
+                                   ELSE COALESCE(stopped_at,last_heartbeat) END AS end_time,
+                              CASE WHEN id=? AND stopped_at IS NULL THEN 'active'
+                                   WHEN exit_clean THEN 'clean_stop' ELSE 'crashed' END AS status
+                       FROM process_sessions WHERE started_at>=?
+                       ORDER BY started_at DESC LIMIT 100
+                   )
+                   SELECT s.id,s.pid,s.version,s.started_at,s.stopped_at,s.last_heartbeat,
+                          s.exit_clean,s.end_time,s.status,
+                          COUNT(e.id),
+                          COALESCE(SUM(e.cache_hit),0),
+                          COALESCE(SUM(CASE WHEN e.event_type='inference' THEN 1 ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN e.event_type='inference' AND e.cache_hit=1 THEN 1 ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN e.event_type='tool_accounting' THEN e.net_cloud_token_delta ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN e.success=0 THEN 1 ELSE 0 END),0)
+                   FROM selected AS s
+                   LEFT JOIN events AS e ON e.created_at>=s.started_at AND e.created_at<=s.end_time
+                   GROUP BY s.id,s.pid,s.version,s.started_at,s.stopped_at,s.last_heartbeat,
+                            s.exit_clean,s.end_time,s.status
+                   ORDER BY s.started_at DESC""",
+                (self._current_session_id, now, self._current_session_id, cutoff),
             ).fetchall()
 
-            result = []
-            for r in rows:
-                sid, pid, version, started_at, stopped_at, last_heartbeat, exit_clean = r
-                is_current = (sid == self._current_session_id)
-                if is_current and stopped_at is None:
-                    status = "active"
-                    end_time = now
-                elif exit_clean:
-                    status = "clean_stop"
-                    end_time = stopped_at if stopped_at is not None else last_heartbeat
-                else:
-                    status = "crashed"
-                    end_time = stopped_at if stopped_at is not None else last_heartbeat
+        result = []
+        for row in rows:
+            (sid, pid, version, started_at, stopped_at, last_heartbeat, exit_clean,
+             end_time, status, total, total_cache_hits, inf_events, inf_cache_hits,
+             avoided_tokens, failures) = row
+            duration_seconds = max(0.0, float(end_time - started_at))
+            total_events = int(total or 0)
+            total_cache_hits = int(total_cache_hits or 0)
+            inf_events = int(inf_events or 0)
+            inf_cache_hits = int(inf_cache_hits or 0)
+            avoided_tokens = int(avoided_tokens or 0)
+            failures = int(failures or 0)
+            if inf_events > 0:
+                hit_rate = round(inf_cache_hits / inf_events, 4)
+            elif total_events > 0:
+                hit_rate = round(total_cache_hits / total_events, 4)
+            else:
+                hit_rate = 0.0
 
-                duration_seconds = max(0.0, float(end_time - started_at))
-
-                ev_stats = con.execute(
-                    """SELECT COUNT(*),
-                              COALESCE(SUM(cache_hit), 0),
-                              COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END), 0),
-                              COALESCE(SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END), 0),
-                              COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN net_cloud_token_delta ELSE 0 END), 0),
-                              COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END), 0)
-                       FROM events WHERE created_at>=? AND created_at<=?""",
-                    (started_at, end_time),
-                ).fetchone()
-
-                total_events = int(ev_stats[0] or 0)
-                total_cache_hits = int(ev_stats[1] or 0)
-                inf_events = int(ev_stats[2] or 0)
-                inf_cache_hits = int(ev_stats[3] or 0)
-                avoided_tokens = int(ev_stats[4] or 0)
-                failures = int(ev_stats[5] or 0)
-
-                if inf_events > 0:
-                    hit_rate = round(inf_cache_hits / inf_events, 4)
-                elif total_events > 0:
-                    hit_rate = round(total_cache_hits / total_events, 4)
-                else:
-                    hit_rate = 0.0
-
-                result.append({
-                    "session_id": sid,
-                    "pid": pid,
-                    "version": version,
-                    "started_at": started_at,
-                    "stopped_at": stopped_at,
-                    "last_heartbeat": last_heartbeat,
-                    "duration_seconds": round(duration_seconds, 1),
-                    "exit_clean": int(exit_clean),
-                    "status": status,
-                    "events": total_events,
-                    "cache_hits": inf_cache_hits if inf_events > 0 else total_cache_hits,
-                    "cache_hit_rate": hit_rate,
-                    "tokens_saved": avoided_tokens,
-                    "failures": failures,
-                })
-            return result
+            result.append({
+                "session_id": sid,
+                "pid": pid,
+                "version": version,
+                "started_at": started_at,
+                "stopped_at": stopped_at,
+                "last_heartbeat": last_heartbeat,
+                "duration_seconds": round(duration_seconds, 1),
+                "exit_clean": int(exit_clean),
+                "status": status,
+                "events": total_events,
+                "cache_hits": inf_cache_hits if inf_events > 0 else total_cache_hits,
+                "cache_hit_rate": hit_rate,
+                "tokens_saved": avoided_tokens,
+                "failures": failures,
+            })
+        return result
 
     def record_snapshot(self, name: str, metrics: dict[str, Any]) -> None:
         retired = _retired_tenant_field(metrics)
@@ -1843,7 +1842,7 @@ class TelemetryStore:
             (cutoff, limit + 1),
         ).fetchall()
         queue_rows = con.execute(
-            "SELECT queue_age_ms FROM events WHERE created_at>=? AND queue_age_ms>0 ORDER BY id DESC LIMIT 1000",
+            "SELECT queue_age_ms FROM events INDEXED BY idx_events_created WHERE created_at>=? AND queue_age_ms>0 ORDER BY id DESC LIMIT 1000",
             (cutoff,),
         ).fetchall()
         outcome = con.execute(

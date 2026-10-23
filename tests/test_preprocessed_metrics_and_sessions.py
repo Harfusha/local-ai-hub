@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+import sqlite3
 import time
 from pathlib import Path
 
@@ -88,6 +90,88 @@ def test_telemetry_process_sessions_crashed_detection(tmp_path: Path):
         assert by_pid[2001]["status"] == "crashed"
         assert by_pid[2001]["exit_clean"] == 0
 
+    finally:
+        telemetry.close()
+
+
+def test_telemetry_sessions_aggregates_all_session_windows_in_one_query(tmp_path: Path, monkeypatch):
+    telemetry = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.05)
+    try:
+        first_id = telemetry.session_start(pid=3001, version="batch")
+        second_id = telemetry.session_start(pid=3002, version="batch")
+        empty_id = telemetry.session_start(pid=3003, version="batch")
+        base = time.time() - 60.0
+
+        telemetry.record(action="batch-inference", event_type="inference", cache_hit=True, success=True)
+        telemetry.record(action="batch-http", event_type="http", cache_hit=True, success=False)
+        telemetry.record(action="batch-accounting", event_type="tool_accounting", success=True)
+        assert telemetry.flush(1.0)
+
+        with closing(sqlite3.connect(telemetry.path)) as con, con:
+            con.execute(
+                "UPDATE process_sessions SET started_at=?,stopped_at=NULL,last_heartbeat=?,exit_clean=0 WHERE id=?",
+                (base, base + 30.0, first_id),
+            )
+            con.execute(
+                "UPDATE process_sessions SET started_at=?,stopped_at=NULL,last_heartbeat=?,exit_clean=0 WHERE id=?",
+                (base + 10.0, base + 40.0, second_id),
+            )
+            con.execute(
+                "UPDATE process_sessions SET started_at=?,stopped_at=?,last_heartbeat=?,exit_clean=1 WHERE id=?",
+                (base + 80.0, base + 70.0, base + 70.0, empty_id),
+            )
+            con.execute(
+                "UPDATE events SET created_at=? WHERE action='batch-inference'",
+                (base,),
+            )
+            con.execute(
+                "UPDATE events SET created_at=? WHERE action='batch-http'",
+                (base + 15.0,),
+            )
+            con.execute(
+                "UPDATE events SET created_at=?,net_cloud_token_delta=-7 WHERE action='batch-accounting'",
+                (base + 30.0,),
+            )
+
+        telemetry._current_session_id = second_id
+        statements = []
+        original_connect = telemetry._connect
+
+        class CountingConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def execute(self, sql, parameters=()):
+                statements.append(sql)
+                return self._connection.execute(sql, parameters)
+
+            def close(self):
+                self._connection.close()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(telemetry, "_connect", lambda: CountingConnection(original_connect()))
+            sessions = telemetry.sessions(days=30)
+
+        assert len([sql for sql in statements if "events" in sql.lower()]) == 1
+        by_id = {session["session_id"]: session for session in sessions}
+        assert by_id[first_id]["status"] == "crashed"
+        assert by_id[first_id]["events"] == 3
+        assert by_id[first_id]["cache_hits"] == 1
+        assert by_id[first_id]["cache_hit_rate"] == 1.0
+        assert by_id[first_id]["tokens_saved"] == -7
+        assert by_id[first_id]["failures"] == 1
+
+        assert by_id[second_id]["status"] == "active"
+        assert by_id[second_id]["events"] == 2
+        assert by_id[second_id]["cache_hits"] == 1
+        assert by_id[second_id]["cache_hit_rate"] == 0.5
+        assert by_id[second_id]["tokens_saved"] == -7
+        assert by_id[second_id]["failures"] == 1
+
+        assert by_id[empty_id]["status"] == "clean_stop"
+        assert by_id[empty_id]["duration_seconds"] == 0.0
+        assert by_id[empty_id]["events"] == 0
+        assert by_id[empty_id]["cache_hit_rate"] == 0.0
     finally:
         telemetry.close()
 

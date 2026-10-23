@@ -53,6 +53,13 @@ Keep Hub task `audit-remediation-20261020`; no new task or counter reset. The pr
 
 ## Evidence index and limits
 
+### Current telemetry source checkpoint (not activated)
+
+- Two disjoint Luna changes are present: sessions() uses one bounded CTE aggregation; the queue-age query retains exact newest-ID semantics while using existing idx_events_created. Main corrected an unclosed SQLite connection in the new regression fixture; strict warnings remained enabled. Red run `integration-cohort-43573e89670f.json` is preserved (6 PASS/1 FAIL). Corrected runs `d437c11ced31` (7 PASS) and `8056860b78cc` (31 PASS) exited 0 with stable sources.
+- `measure_telemetry_summary_python_after.json` is a separate post-change diagnostic; original observation remains untouched. Current source SHA `17d46ec02e03811fcd4b153e85c4ed23fad196f83894c8ac9c45cd00ecd4df47`: SQL call count fell to 27/31, but process/window total latency increased to 485.200/417.388ms. The sessions aggregate took 465.105/116.730ms; EXPLAIN uses the existing event time index but materializes GROUP BY/ORDER BY temporary B-trees. Fewer queries do not establish a performance fix. Keep this source checkpoint unactivated while correcting the regression.
+- Luna accidentally created duplicate planned task `task_9af1f6e89ce3` (`req_057516b2484a`, checkpoint `req_15390b5c1cfc`), contrary to the explicit no-new-task instruction. Main independently read it (`req_a3c066ea4a55`) and closed it through task_fail (`req_c64f1636c8e2`), status failed; no leases existed. Original audit-remediation-20261020 and its counters were preserved.
+- Tool routing exception retained: Luna solve `req_2c5cf5449c5a` and main review_diff `req_1f1da42a00e9` returned semantic envelopes; the latter reported job_id=9 and generic review cautions. Backend/model/device execution was not exposed, so no claim of absent inference or a verified independent review is made. Do not repeat semantic Hub calls while the explicit no-inference constraint applies; deterministic source/test evidence controls acceptance.
+
 ### Main-owned live UI and telemetry observations
 
 - `state/validation/main-live-ui-1e54a5e2/observations.json` now records actual browser captures of all 11 panels at desktop 1440x1000 and mobile 390x844, with individual AX states, screenshots, geometry and times. Document scroll width did not exceed viewport width in these captures. Two initial loading states were retained and then re-captured only after the loading elements disappeared. The temporary viewport was reset.
