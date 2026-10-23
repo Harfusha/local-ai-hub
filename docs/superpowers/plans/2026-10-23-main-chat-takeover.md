@@ -4,6 +4,8 @@
 
 **Goal:** Preserve all transferred work in master, absorb the stopped workers, and complete every original audit/release/runtime/UI/data requirement with authentic evidence.
 
+**Current incident overrides the execution order:** [Missing runtime state and validation evidence](2026-10-23-state-evidence-incident.md). The full-suite epoch was stopped after its earlier XML/manifests disappeared; runtime files and the named recovery backup are unavailable at their original paths. The managed Hub is stopped. Do not restart, restore stale data, recreate the Hub task or treat the historical artifact references below as currently available. Establish recovery provenance and quiet writers before resuming validation or activation. The complete original goal remains open.
+
 **Architecture:** One primary owns the installed single-owner Hub and canonical task/root. Reuse candidate-bound evidence, fix defects at their responsible boundary, preserve data and strict contracts, and validate bounded independent deltas before final integrated acceptance.
 
 **Tech stack:** Python 3.11+, SQLite, standard-library HTTP, MCP, dashboard JavaScript, pytest, GitHub Actions and Git.
