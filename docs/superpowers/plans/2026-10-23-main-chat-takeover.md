@@ -156,11 +156,12 @@ Retain all recommendation boundaries; no silent scope reduction:
 - [ ] R15 trace visibility plus actual bytes/cadence/main-thread metrics; historical 81 requests/0 detail requests prove only their observation window.
 - [ ] R16 workspace review/root validity/cleanup classification. Historical 163-workspace review deletes nothing; no cleanup without provenance and applicable authorization.
 
-### D. Preserve current and historical data/config
+### D. Clean-state initialization and ongoing data/config preservation
 
-- [ ] Establish fresh active DB plus four archive identity/row/hash baseline before any maintenance; exclude sidecars from the archive-content comparison, while preserving the complete consistent SQLite backup set as needed.
-- [ ] Reconcile independent file identities, no junction/symlink/hardlink surprises, current records including new writes, both F02 rows and config/mode hashes. Creation-time historical contents remain NOT VERIFIED where no authentic creation proof exists.
-- [ ] Compare after any authorized operation and verify HTTP/readiness functionality. Retain original damaged image and recovery records. No overwrite from a stale backup, no record-loss masking, no deletion of foreign dirty files, quarantine or configuration.
+- [x] Operator explicitly disposed of previous runtime history and backups: "Ja jsem to smazal - chci cisty stav". Historical active/four-archive preservation gates are superseded by that clean-state instruction, with no claim that old records were preserved or recovered.
+- [x] Residual databases were moved outside the checkout, no old database restored, both configuration hashes preserved, and official fresh startup completed. Doctor exited 0 without warnings. See the linked state-disposition document and actual external evidence.
+- [ ] Establish the fresh instance's database/schema identity and authentic new-record baseline; preserve records created after initialization through subsequent validation/activation. Keep SQLite sidecars with their database; never interpret absent historical records as recovered history.
+- [ ] Verify final configuration hashes and actual HTTP/readiness after the owned acceptance batch. Any newly required mode/config changes need explicit scope and evidence; no stale backup overwrite.
 
 ### E. Complete integrated UI and runtime acceptance
 
@@ -182,3 +183,7 @@ Retain all recommendation boundaries; no silent scope reduction:
 ## Operating rules for subsequent work
 
 No duplicate chats/tasks, reset/stash/clean, fabricated XML/receipts/PASS, constant tenant identities, compatibility shims for retired contracts, weakened auth/path/root/capability gates, unrequested mode changes or blind restart. Preserve supported source/runtime distinction. Use existing evidence first, bounded exact slices, one writer and disjoint GPT-6 Luna implementation scopes. Update this checklist as authoritative evidence changes; do not report old candidate counts as current after a source change.
+
+## Fresh validation after the operator reset
+
+The previous full-suite epoch was deliberately stopped after evidence deletion and remains incomplete. The replacement native runner is outside disposable runtime state: `C:/Users/Adam/.codex/visualizations/2026/10/21/01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff/run_clean_fullsuite.py`. It executes 32 serial partitions with the unchanged 240-second bound, hashes every tracked/nonignored source input before/after each shard, retains genuine pytest XML/logs/exact-node manifests, checks collection union/disjointness/completed setup-call-teardown reports, and fails on missing coverage, timeout, source drift or test errors. Its own output is explicitly native evidence, never a broker receipt. The pointer `clean-fullsuite-pointer.json` records the actual output directory and driver PID when started. No source writes or duplicate validation while that driver is live.
