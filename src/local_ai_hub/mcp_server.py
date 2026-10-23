@@ -69,7 +69,6 @@ from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.operation_contracts import (
     operation_contract,
     operation_actions,
-    operation_guide_cards,
     operation_enabled,
     operation_tool_output_schema,
     operation_tool_input_schema,

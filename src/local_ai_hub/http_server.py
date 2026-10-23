@@ -21,7 +21,7 @@ import time
 import traceback
 import threading
 from collections import deque
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
