@@ -539,12 +539,12 @@ max_rows_per_table = 1000000
 [features]
 # Master feature switches. Disabling a feature removes it from MCP registration,
 # dynamic agent skills, instructions, and generated schemas.
-status = true # health, queue, cache, telemetry inspection (local_ai_status)
+status = true # compact Hub and local-model readiness (local_ai_status)
 repo = true # primary repository worker (local_ai_repo)
 tasks = true # local model inference worker (local_ai_task)
 vision = true # image understanding/frontend review and qwen3-vl model
 rag = true # semantic retrieval fallback (local_ai_rag)
-commands = true # safe command execution broker (local_ai_command)
+commands = true # internal command broker for project workflows
 coord = true # coordination leases, memos, task contracts (local_ai_coord)
 artifacts = true # compact responses & evidence slicing (local_ai_artifact)
 code_intelligence = true # Serena / Serena backends
@@ -598,7 +598,7 @@ default_tokens = 3200
 max_tokens = 16000
 reuse_cache_size = 256
 ledger_size = 512
-tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 3200, local_ai_rag = 3000, local_ai_command = 2000, local_ai_coord = 2500, local_ai_artifact = 4000, local_ai_work = 4000 }
+tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 3200, local_ai_rag = 3000, local_ai_coord = 2500, local_ai_artifact = 4000, local_ai_work = 4000 }
 # MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
 # foreground tool should need an unbounded multi-hour socket wait.
 quick_timeout_seconds = 180
