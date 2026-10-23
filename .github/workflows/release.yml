@@ -43,6 +43,7 @@ jobs:
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/local-ai-hub-wheel-smoke"
+          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install --require-hashes --upgrade -r "$GITHUB_WORKSPACE/tools/release-pip-requirements.txt"
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install -c "$GITHUB_WORKSPACE/tools/release-runtime-constraints.txt" --report "$RUNNER_TEMP/wheel-resolution.json" "$GITHUB_WORKSPACE"/dist/local_ai_hub-*.whl
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip check
           EXPECTED_VERSION="${GITHUB_REF_NAME#v}"

@@ -1,10 +1,11 @@
 # Release baseline captured from the installed Windows Python 3.13 runtime, 2026-10-20.
+# Security refresh 2026-10-23: certifi 2026.10.19 removes the affected emSign roots.
 # Constraints do not install platform-specific packages on other platforms.
 # release_inventory rejects any resolved dependency absent from this baseline.
 annotated-types==0.8.0
 anyio==4.14.2
 attrs==26.1.0
-certifi==2026.7.22
+certifi==2026.10.19
 cffi==2.1.1
 click==8.4.2
 colorama==0.4.6
