@@ -741,7 +741,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
     prioritization_bullets.append(
-        "> - **Native fallback rule**: `terminal=true` alone is insufficient. A Hub-unknown command may use native fallback only when the broker returns `native_fallback_allowed=true`; the native tool must authorize the fallback under its own controls, and the command must stay bounded to the same root and scope. `native_fallback_allowed=false`, a dangerous command, a known mutation-policy denial, required approval/override, cancellation, or `outcome_unknown` is a hard stop. The flag permits fallback, not Hub execution. If native authorization cannot be established, stop and report the blocker."
+        "> - **Native fallback**: `terminal=true` alone is insufficient; outages require `retryable=false` too. A Hub-unknown command needs broker `native_fallback_allowed=true`; the native tool must authorize the fallback, bounded to the same root/scope. Hard stops: `native_fallback_allowed=false`, a dangerous command, mutation denial, required approval/override, cancellation, `outcome_unknown`. This permits fallback only, never Hub execution. Missing native authorization: stop and report blocker."
     )
     prioritization_directive = (
         "> [!IMPORTANT]\n"
