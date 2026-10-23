@@ -1,5 +1,24 @@
 # Local AI Hub: main-chat takeover and complete remaining work
 
+> **For agentic workers:** Use superpowers:executing-plans for primary integration and bounded GPT-6 Luna subagents for disjoint implementation. Follow the checkboxes below; main chat owns Git, validation and runtime operations.
+
+**Goal:** Preserve all transferred work in master, absorb the stopped workers, and complete every original audit/release/runtime/UI/data requirement with authentic evidence.
+
+**Architecture:** One primary owns the installed single-owner Hub and canonical task/root. Reuse candidate-bound evidence, fix defects at their responsible boundary, preserve data and strict contracts, and validate bounded independent deltas before final integrated acceptance.
+
+**Tech stack:** Python 3.11+, SQLite, standard-library HTTP, MCP, dashboard JavaScript, pytest, GitHub Actions and Git.
+
+## Concrete working surfaces
+
+- Ownership/evidence: this plan, the two linked original plans and the original external audit-remediation-checkpoint.json. Record each new command artifact and candidate before changing a checkbox.
+- Readiness/lifecycle: `tools/hubctl.py`, `tools/doctor.py`, `tools/service.py`, `src/local_ai_hub/http_server.py`; begin with bounded `python tools/hubctl.py status --json` and the existing activation logs. Change only the diagnosed component, with its existing focused test.
+- Task restoration: existing broker `local_ai_coord` task_get/task_budget_increase/task_resume/task_checkpoint actions and `tests/test_agent_task_budget_increase.py`, `tests/test_agent_policy.py`, `tests/test_http_user_acl.py`; no direct task-storage edits.
+- Browser transport: `src/local_ai_hub/browser_bridge.py`, `src/local_ai_hub/http_server.py`, `tests/test_browser_bridge.py`, `tests/unit/test_browser_failure_envelope.py`, `tests/unit/test_browser_headless_capture.py`. Reuse the existing 8f source regression; run the explicit installed-Chrome gate only under the owned acceptance batch.
+- UI: `src/local_ai_hub/dashboard.py`, the handed-off UI tests and `state/validation/live-ui-8f570873`; capture actual desktop/mobile and diagram/trace evidence under a new candidate-bound evidence folder. Never label a fixture/synthetic screenshot as live acceptance.
+- Packaging/release: `tools/release_check.py`, `tools/selftest.py`, `tests/test_t19_packaged_sdk_smoke.py` and existing native validation runners. Required final commands are `python tools/release_check.py --allow-installed`, `python -m compileall -q src tools tests`, bounded owned full/affected pytest, and `python tools/selftest.py`; run only missing/currently invalidated checks and retain exact exit/source identity.
+- Instructions: `src/local_ai_hub/generator.py`, `AGENTS.md`, `docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`, `docs/HTTP_API.md`; keep policy changes synchronized and validate generator/contracts together.
+- Every diagnosed code fix follows a small sequence: exact evidence; meaningful failing regression; minimal source fix; one owned affected validation; review; commit source/docs on master. Do not invent a repair file or test before the actual failing component is known.
+
 ## Authority, goal and ownership
 
 The human requested on 2026-10-23: stop the worker chats, preserve and commit all current repository changes regardless of functionality, integrate their work into master, prepare a complete remaining plan, transfer all work to the main chat, then archive the transferred chats. Use GPT-6 Luna subagents.
