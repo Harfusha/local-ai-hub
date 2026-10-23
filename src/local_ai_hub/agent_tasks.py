@@ -1935,6 +1935,8 @@ class TaskStore:
         limit: int = 100,
         include_stale: bool = False,
         query: str | None = None,
+        *,
+        offset: int = 0,
     ) -> TaskList:
         if not self._db_path_available():
             return TaskList()
@@ -1943,6 +1945,7 @@ class TaskStore:
         normalized_query = self._normalize_search_text(query or "")
         query_terms = [term for term in normalized_query.split() if term]
         page_size = max(1, int(limit))
+        page_offset = max(0, int(offset))
 
         def matches_query(row: tuple[Any, ...]) -> bool:
             contract_data = json.loads(row[4] or "{}")
@@ -1985,10 +1988,10 @@ class TaskStore:
                            heartbeat_expires_at, created_at, updated_at
                     FROM agent_tasks_projection
                     {where_sql}
-                    ORDER BY updated_at DESC
+                    ORDER BY updated_at DESC, task_id DESC
                 """
                 if not query_terms:
-                    cur = con.execute(sql + " LIMIT ?", (*params, page_size))
+                    cur = con.execute(sql + " LIMIT ? OFFSET ?", (*params, page_size, page_offset))
                     return cur.fetchall(), False
 
                 scan_count = con.execute(
@@ -2007,6 +2010,7 @@ class TaskStore:
                     TaskStatus.FAILED.value,
                     TaskStatus.ABANDONED.value,
                 }
+                skipped = 0
                 for row in candidates[:MAX_TASK_QUERY_SCAN_ROWS]:
                     heartbeat_expires_at = float(row[8] or 0.0)
                     if (
@@ -2017,6 +2021,9 @@ class TaskStore:
                     ):
                         continue
                     if matches_query(row):
+                        if skipped < page_offset:
+                            skipped += 1
+                            continue
                         matched.append(row)
                         if len(matched) >= page_size:
                             return matched, False
