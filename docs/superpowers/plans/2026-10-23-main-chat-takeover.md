@@ -40,7 +40,16 @@ Keep Hub task `audit-remediation-20261020`; no new task or counter reset. The pr
 - Current branch inventory: 392 local branches; the only non-archive branch is master. 124 historical archive branches are not ancestors of master. Some have already been adopted by squash/selective integration. They are preserved, not silently deleted or declared merged. They are not outstanding active worker branches. Reconcile genuinely missing changes before any future historical adoption; do not use an ours merge to conceal missing source or resurrect retired tenant/command contracts.
 - Main's bounded process inventory found no live Python runner for the former integration cohort, budget adoption, release/package or activation scripts after the handoff. The live service is intentionally left running.
 - The old integration chat reported service PID 39868, start 1792759215.1430092, canonical root/.venv http_server, RSS 188276736. This is a handoff observation, not a fresh health claim. Its latest hubctl JSON was online/version 5.0.0 but success=false/degraded=true. Diagnose the exact component before declaring readiness or restarting.
-- Hub task last verified failed/watchdog: max 100000 tokens / 33000 seconds / 450 external calls; used 0 / 33240.86682920671 / 449. No live increase or resume has yet occurred.
+- At handoff Hub task was failed/watchdog: max 100000 tokens / 33000 seconds / 450 external calls; used 0 / 33240.86682920671 / 449. Main subsequently restored this same task through the supported broker as recorded below; the historical handoff is retained.
+
+## Main-owned task restoration: completed
+
+- `task_budget_increase` request `req_e21de487b627` succeeded, audit event `evt_f3534b8eae91499b82d49882d6bf066e`: compute maximum 33000 to 48000 seconds, external maximum 450 to 750; token maximum remains 100000. Used tokens/seconds/calls remained exactly 0 / 33240.86682920671 / 449.
+- Post-increase `task_get` `req_0df7206fadb9` confirmed failed status and watchdog owner unchanged before resume.
+- Separate `task_resume` request `req_30427f86f878` succeeded; same task active, canonical broker owner codex. No new task, synthetic receipt, direct task-DB mutation or reset.
+- Independent read-only budget row after resume confirmed the same maxima and unchanged counters. Actual broker responses are retained as `state/validation/main-takeover-budget-increase.json` and `main-takeover-task-resume.json`; these are observations, not fabricated verification receipts.
+- Checkpoint request `req_2f97213be078` succeeded with phase main-chat-takeover-runtime-acceptance, main owner, real evidence IDs and the remaining telemetry/UI/data/release blockers.
+- Current bounded readiness observation `req_df70c1e655f6`: hub_online=true but success=false/degraded=true, telemetry.summary probe_timeout at 250ms. No healthy/complete claim. Read-only sqlite_master metadata retrieval on the 37851136-byte telemetry DB took 2.4996s; this is a discriminating latency observation, not yet proof of the specific query/lock cause. GPT-6 Luna is investigating source with no speculative edits, timeout inflation or TTL change.
 
 ## Evidence index and limits
 
@@ -68,8 +77,8 @@ Keep Hub task `audit-remediation-20261020`; no new task or counter reset. The pr
 
 - [ ] Read current status/readiness/component failures, installed editable/module/process provenance, startup logs and resource usage without inference or restart. Bind to HEAD/source hashes and the actual live PID/start identity. Explain success=false/degraded=true before claiming healthy.
 - [ ] If a repair is needed, assign one narrow source slice to a GPT-6 Luna subagent, retain a regression and integrate on master. Main alone runs the combined owned validation.
-- [ ] Once readiness permits, invoke the supported authenticated broker task_budget_increase exactly once for the original task, with explicit root and human audit reason, maxima 48000 seconds/750 calls or justified higher increase-only values. Do not mutate task DB directly.
-- [ ] Verify accepted maxima, unchanged used counters, owner/status and authentic audit event. Increase while failed must preserve failed state; then task_resume is a separate supported action. Verify its state and checkpoint the transferred owner.
+- [x] Invoke supported broker task_budget_increase exactly once on the activated policy for the original task, with explicit root and human audit reason: accepted maxima 48000 seconds/750 calls; no direct task-DB mutation.
+- [x] Verify accepted maxima, unchanged counters, preserved failed/watchdog state before the separate successful task_resume, authentic audit event and the subsequent active task/checkpoint under main ownership. See exact requests above. Runtime readiness remains separately open.
 - [ ] If a request outcome is unknown/in_progress, inspect the original execution/receipt; never repeat a possible mutation. Preserve any new denial and diagnose it rather than bypassing the gate.
 
 ### C. Reconcile every original audit item
