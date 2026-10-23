@@ -1,5 +1,7 @@
 # Audit Remediation Implementation Plan
 
+> **2026-10-23 ownership and remaining-work update:** main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff` has taken over all Git/CPU/runtime work. The former integrator was stopped and handed off at master `1e54a5e2`. Follow [the complete takeover plan](2026-10-23-main-chat-takeover.md) for the effective goal, current evidence, every F01–F24/R01–R16 gate and remaining acceptance. Earlier owner assignments and candidate summaries below are historical; retain them as evidence, not current production acceptance.
+
 > **For agentic workers:** Use superpowers:executing-plans in this checkout. The primary agent implements, reviews and integrates; no routine delegation.
 
 **Goal:** Repair confirmed F01–F24 defects and implement or explicitly resolve all R01–R16 recommendations from the 2026-10-20 application audit.

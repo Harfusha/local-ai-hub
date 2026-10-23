@@ -1,5 +1,9 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
+## Main-chat takeover — 2026-10-23
+
+The human stopped the previous workers and transferred all remaining work to main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff`, sole Git/CPU/runtime owner, with bounded GPT-6 Luna subagents. Current source was preserved directly in clean master `1e54a5e2` before the takeover planning commit. Follow [the complete remaining-work plan](2026-10-23-main-chat-takeover.md), including every original F01–F24/R01–R16 and a final item-by-item reconciliation of this 100-item plan. The previous integrator is stopped/idle with its unfinished goal paused and its work transferred. Earlier owner/candidate statements below are historical, not fresh acceptance. Current runtime was last reported online but degraded; production completion remains unproved.
+
 ## Current status — evidence reconciliation, 2026-10-22
 
 - **Integration owner:** existing `audit-remediation-20261020`, chat `01a15f47-a804-7290-8d3b-f55b82fbb4b0`; direct `master`. Archive, UI and documentation owners released their scopes; the primary owns integration. No new task or broad audit.
