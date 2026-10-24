@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 import json
-from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -95,6 +94,91 @@ def test_dashboard_discloses_metadata_only_raster_indexing():
     from local_ai_hub.dashboard import DASHBOARD_HTML
     assert 'id="diagramIndexingNotice"' in DASHBOARD_HTML
     assert "Raster diagrams are indexed as metadata only" in DASHBOARD_HTML
+
+
+def test_diagram_metadata_notice_opens_opt_in_vision_dialog_without_side_effects():
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    assert 'id="diagramVisionReviewOpen"' in DASHBOARD_HTML
+    assert 'id="visionReviewTitle"' in DASHBOARD_HTML
+    assert 'id="diagramVisionReviewNotice"' in DASHBOARD_HTML
+    assert re.search(
+        r"if\(\$\('diagramVisionReviewOpen'\)\)[^\n]*openDiagramVisionReview",
+        DASHBOARD_HTML,
+    )
+    assert "function openDiagramVisionReview()" in DASHBOARD_HTML
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable; browser behavior still requires candidate verification")
+
+    start = DASHBOARD_HTML.index("function setFrontendVisionCaptureState")
+    end = DASHBOARD_HTML.index("function captureFrontendVisionTab", start)
+    modal_logic = DASHBOARD_HTML[start:end]
+    binding = re.search(
+        r"if\(\$\('diagramVisionReviewOpen'\)\)[^\n]*",
+        DASHBOARD_HTML,
+    )[0]
+    harness = r"""
+let sideEffects=0;
+const makeElement=()=>({value:'',textContent:'',innerHTML:'',className:'',style:{},dataset:{},
+  attrs:{},setAttribute(k,v){this.attrs[k]=v},getAttribute(k){return this.attrs[k]||null},
+  classList:{values:new Set(),add(v){this.values.add(v)},remove(v){this.values.delete(v)},contains(v){return this.values.has(v)}}});
+const ids=['visionReviewModal','visionPrompt','visionFindingId','visionScreenshot','visionReviewResult',
+  'visionReviewStatus','visionCaptureError','visionCaptureState','visionReviewTitle',
+  'diagramVisionReviewNotice','visionReviewClose','diagramVisionReviewOpen'];
+const els=Object.fromEntries(ids.map(id=>[id,makeElement()]));
+const $=id=>els[id]||null;
+const window={frontendVisionCapture:{old:true},addEventListener(){sideEffects++},
+  postMessage(){sideEffects++},dispatchEvent(){sideEffects++}};
+const apiFetch=()=>{sideEffects++;throw new Error('unexpected fetch')};
+const post=()=>{sideEffects++;throw new Error('unexpected POST')};
+const captureFrontendVisionTab=()=>{sideEffects++;throw new Error('unexpected capture')};
+"""
+    script = harness + modal_logic + binding + r"""
+els.diagramVisionReviewOpen.onclick();
+const opened={
+  isOpen:els.visionReviewModal.classList.contains('open'),
+  title:els.visionReviewTitle.textContent,
+  ariaLabel:els.visionReviewModal.getAttribute('aria-label'),
+  prompt:els.visionPrompt.value,
+  notice:els.diagramVisionReviewNotice.textContent,
+  sideEffects,
+  capture:window.frontendVisionCapture
+};
+closeFrontendVisionReviewModal();
+openFrontendVisionReviewModal();
+const normal={
+  isOpen:els.visionReviewModal.classList.contains('open'),
+  title:els.visionReviewTitle.textContent,
+  ariaLabel:els.visionReviewModal.getAttribute('aria-label'),
+  prompt:els.visionPrompt.value,
+  notice:els.diagramVisionReviewNotice.textContent,
+  sideEffects
+};
+process.stdout.write(JSON.stringify({opened,normal}));
+"""
+    result = subprocess.run([node, "-e", script], text=True, capture_output=True, timeout=10, check=True)
+    observed = json.loads(result.stdout)
+    opened = observed["opened"]
+    assert opened["isOpen"] is True
+    assert "diagram" in opened["title"].lower()
+    assert "diagram" in opened["ariaLabel"].lower()
+    assert "diagram" in opened["prompt"].lower()
+    assert re.search(r"installed model", opened["notice"], re.I)
+    assert re.search(r"download", opened["notice"], re.I)
+    assert re.search(r"index", opened["notice"], re.I)
+    assert opened["sideEffects"] == 0
+    assert opened["capture"] == {}
+
+    normal = observed["normal"]
+    assert normal == {
+        "isOpen": True,
+        "title": "Frontend vision review",
+        "ariaLabel": "Frontend vision review",
+        "prompt": "",
+        "notice": "",
+        "sideEffects": 0,
+    }
 
 
 def test_resident_inventory_refresh_uses_its_own_last_render_snapshot():
