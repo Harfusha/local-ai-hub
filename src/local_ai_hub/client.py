@@ -2159,8 +2159,35 @@ class HubClient:
     def cross_repo_contract(self, backend_root: str = ".", frontend_root: str = ".") -> dict[str, Any]:
         return self.post("/api/repo/cross_repo_contract", {"backend_root": backend_root, "frontend_root": frontend_root})
 
-    def ingest_diagram(self, workspace: str = "default", image_path: str = "", caption: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.post("/api/rag/ingest_diagram", {"workspace": workspace, "image_path": image_path, "caption": caption, "metadata": metadata})
+    def ingest_diagram(
+        self,
+        workspace: str = "default",
+        image_path: str = "",
+        caption: str = "",
+        metadata: dict[str, Any] | None = None,
+        *,
+        root: str,
+    ) -> dict[str, Any]:
+        return self.post(
+            "/api/rag/ingest_diagram",
+            {"root": root, "workspace": workspace, "image_path": image_path, "caption": caption, "metadata": metadata},
+        )
 
-    def curate_training_dataset(self, output_path: str = "training_dataset.jsonl", min_receipts: int = 1, format: str = "jsonl") -> dict[str, Any]:
-        return self.post("/api/agent-state/tasks", {"action": "curate_dataset", "output_path": output_path, "min_receipts": min_receipts, "format": format})
+    def curate_training_dataset(
+        self,
+        output_path: str = "training_dataset.jsonl",
+        min_receipts: int = 1,
+        format: str = "jsonl",
+        *,
+        root: str,
+    ) -> dict[str, Any]:
+        return self.post(
+            "/api/agent-state/tasks",
+            {
+                "action": "curate_dataset",
+                "root": root,
+                "output_path": output_path,
+                "min_receipts": min_receipts,
+                "format": format,
+            },
+        )

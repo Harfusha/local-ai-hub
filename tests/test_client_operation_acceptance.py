@@ -250,6 +250,95 @@ def test_client_complexity_targets_repo_complexity(tmp_path, monkeypatch, fake_h
     ]
 
 
+def test_client_ingest_diagram_forwards_explicit_root_and_canonical_fields(
+    tmp_path, monkeypatch, fake_http_transport
+):
+    client = HubClient(
+        config_path=str(tmp_path / "missing-hub.toml"),
+        auto_start=False,
+    )
+    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
+    reply = {"success": True, "diagram_id": "diagram-17"}
+    fake_http_transport["state"]["response"] = reply
+    root = str(tmp_path)
+    metadata = {"source": "design-review", "revision": 3}
+
+    result = client.ingest_diagram("diagrams", "images/overview.svg", "Overview", metadata, root=root)
+
+    assert result == reply
+    assert fake_http_transport["captured"] == [
+        {
+            "method": "POST",
+            "path": "/api/rag/ingest_diagram",
+            "payload": {
+                "root": root,
+                "workspace": "diagrams",
+                "image_path": "images/overview.svg",
+                "caption": "Overview",
+                "metadata": metadata,
+            },
+        }
+    ]
+
+
+def test_client_ingest_diagram_requires_root_before_sending(tmp_path, monkeypatch, fake_http_transport):
+    client = HubClient(
+        config_path=str(tmp_path / "missing-hub.toml"),
+        auto_start=False,
+    )
+    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
+
+    with pytest.raises(TypeError, match="root"):
+        client.ingest_diagram(workspace="diagrams", image_path="images/overview.svg")
+
+    assert fake_http_transport["captured"] == []
+
+
+def test_client_curate_training_dataset_forwards_explicit_root_and_canonical_fields(
+    tmp_path, monkeypatch, fake_http_transport
+):
+    client = HubClient(
+        config_path=str(tmp_path / "missing-hub.toml"),
+        auto_start=False,
+    )
+    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
+    reply = {"success": True, "output_path": "dataset.jsonl"}
+    fake_http_transport["state"]["response"] = reply
+    root = str(tmp_path)
+
+    result = client.curate_training_dataset("dataset.jsonl", 4, "jsonl", root=root)
+
+    assert result == reply
+    assert fake_http_transport["captured"] == [
+        {
+            "method": "POST",
+            "path": "/api/agent-state/tasks",
+            "payload": {
+                "action": "curate_dataset",
+                "root": root,
+                "output_path": "dataset.jsonl",
+                "min_receipts": 4,
+                "format": "jsonl",
+            },
+        }
+    ]
+
+
+def test_client_curate_training_dataset_requires_root_before_sending(
+    tmp_path, monkeypatch, fake_http_transport
+):
+    client = HubClient(
+        config_path=str(tmp_path / "missing-hub.toml"),
+        auto_start=False,
+    )
+    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
+
+    with pytest.raises(TypeError, match="root"):
+        client.curate_training_dataset("dataset.jsonl", 4, "jsonl")
+
+    assert fake_http_transport["captured"] == []
+
+
 def test_client_package_audit_returns_target_error(tmp_path, monkeypatch, fake_http_transport):
     client = HubClient(
         config_path=str(tmp_path / "missing-hub.toml"),
@@ -295,8 +384,10 @@ def test_client_ingest_diagram_targets_rag_artifact_operation(
     monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
     reply = {"success": True, "document_id": "diagram-17"}
     fake_http_transport["state"]["response"] = reply
+    root = str(tmp_path)
 
     result = client.ingest_diagram(
+        root=root,
         workspace="design-system",
         image_path="diagrams/system.svg",
         caption="Service topology",
@@ -309,6 +400,7 @@ def test_client_ingest_diagram_targets_rag_artifact_operation(
             "method": "POST",
             "path": "/api/rag/ingest_diagram",
             "payload": {
+                "root": root,
                 "workspace": "design-system",
                 "image_path": "diagrams/system.svg",
                 "caption": "Service topology",
