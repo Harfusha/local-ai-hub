@@ -87,6 +87,7 @@ _CONTEXT_PROTECTED_KEYS = (
 _RESPONSE_PROTECTED_KEYS = (
     *LIFECYCLE_PROTECTED_KEYS,
     "success", "status", "error", "status_code", "terminal", "retryable", "evidence_id", "evidence_ids",
+    "semantic_quality", "review_consistency", "advisory_only", "quality_warning", "bypass_reason",
 )
 _IDENTIFIER_KEYS = {
     "operation_id", "job_id", "output_artifact_id",

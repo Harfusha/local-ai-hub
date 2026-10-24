@@ -2081,11 +2081,12 @@ class LocalAIServices:
         result = self.delegate(payload)
         if not isinstance(result, dict) or result.get("success") is not True:
             return result
-        from .semantic_quality import assess_review_consistency
+        from .semantic_quality import assess_review_consistency, constrain_semantic_quality
         result = dict(result)
         quality = assess_review_consistency(result, args.get("changed_paths", ()))
         result["advisory_only"] = True
         result["review_consistency"] = quality
+        result["semantic_quality"] = constrain_semantic_quality(quality, result)
         if not quality["usable"]:
             warning = f"advisory review requires verification: {quality['reason']}"
             result["quality_warning"] = "; ".join(filter(None, (result.get("quality_warning"), warning)))

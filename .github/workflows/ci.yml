@@ -133,6 +133,9 @@ jobs:
           tests/unit/test_capability_grant_validity.py
           tests/unit/test_capability_grant_canonical_inputs.py
           tests/test_audit_critical_coverage_contract.py
+          tests/test_audit_review_delivery_quality.py
+          tests/test_audit_retrieval_gold_contract.py
+          tests/test_audit_quality_eval_contract.py
       - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
       - name: Reject per-module branch coverage regression
         run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json

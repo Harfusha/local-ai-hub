@@ -77,7 +77,7 @@ from local_ai_hub.operation_contracts import (
     validate_operation_output,
 )
 from local_ai_hub.state_paths import configured_state_dir
-from local_ai_hub.semantic_quality import assess_semantic_result
+from local_ai_hub.semantic_quality import assess_semantic_result, constrain_semantic_quality
 from local_ai_hub.evidence_contract import evidence_meta
 from local_ai_hub.telemetry import _safe_error_metadata
 from local_ai_hub.operational_mode import (
@@ -750,6 +750,7 @@ _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
     "mutation_applied", "operation_not_started",
+    "semantic_quality", "review_consistency", "advisory_only", "quality_warning", "bypass_reason",
 )
 _VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts", "completion")
 _TOPOLOGY_PROTECTED_KEYS = (
@@ -1856,8 +1857,13 @@ def _quality_check_semantic_result(
     if not evidence_paths:
         evidence_paths = list(dict.fromkeys(_SEMANTIC_PATH_RE.findall(context)))[:64]
     if not evidence_paths:
-        return result
-    quality = assess_semantic_result(task, evidence_paths, result)
+        if "semantic_quality" not in result and "review_consistency" not in result:
+            return result
+        quality = constrain_semantic_quality(
+            {"usable": False, "reason": "source_evidence_unavailable"}, result,
+        )
+    else:
+        quality = constrain_semantic_quality(assess_semantic_result(task, evidence_paths, result), result)
     result["advisory_only"] = True
     result["semantic_quality"] = quality
     if not quality.get("usable", False):

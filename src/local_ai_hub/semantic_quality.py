@@ -16,6 +16,25 @@ MAX_OUTPUT_CHARS = 12_000
 MAX_REPORTED_PATHS = 8
 
 
+def constrain_semantic_quality(quality: Mapping[str, Any], output: Mapping[str, Any]) -> dict[str, Any]:
+    """Combine advisory gates monotonically; later shape checks cannot clear a rejection."""
+    result = dict(quality)
+    for field in ("semantic_quality", "review_consistency"):
+        if field not in output:
+            continue
+        prior = output[field]
+        if not isinstance(prior, Mapping) or type(prior.get("usable")) is not bool:
+            return {"usable": False, "reason": "malformed_" + field,
+                    "bypass_reason": "malformed_" + field,
+                    "advisory_only": True, "semantic_truth_verified": False}
+        if prior["usable"] is False:
+            result = dict(prior)
+            break
+    result["advisory_only"] = True
+    result["semantic_truth_verified"] = False
+    return result
+
+
 def assess_review_consistency(output: Any, evidence_paths: Iterable[str] = ()) -> dict[str, Any]:
     """Check declared review structure, never the truth of a model assertion."""
     result: dict[str, Any] = {
