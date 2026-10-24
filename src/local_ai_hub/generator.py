@@ -28,6 +28,7 @@ SINGLE_OWNER_CONTRACT = (
     "HTTP root binding preserves owner-global memory and explicit session IDs; task creation derives context.repository_id from resolved project coordination ID (supplied IDs must match exactly). "
     "Task ownership checks repository identity; rate limiting uses one bounded installation window. "
     "Memory context and diagnostics select repository memories by resolved coordination ID, never physical root fallback. "
+    "Repository memories describe their actual authorized source project. References to another project must be explicitly marked as external context with source root and date; never adopt external-project assertions as facts about the current repository. "
     "MemoryStore APIs and HTTP memory dispatch have no tenant argument; mutations retain scope/provenance checks without cwd or session/global fallbacks. "
     "Task-memory adoption uses snapshot schema_version=2 with explicit context (root, coordination_id, task_id, session_id, clone_id, worktree_id, branch); wire projection preserves this context. "
     "Agent questions use canonical repository root and session_id with optional task association; answer_question rejects task mismatch; question storage/API have no tenant column or selector. "

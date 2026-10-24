@@ -5324,17 +5324,7 @@ function renderAgentOsView(){
     return clickableRow(t,`<td><span class="badge-status ${cls}">${esc(st.toUpperCase())}</span></td><td><strong>${esc(t.task_id)}</strong></td><td title="${esc(t.repo_root||'')}"><span class="chip" style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(repoLabel)}</span></td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${goal}">${goal}</td><td><span class="chip">${esc(t.contract?.scope||'task')}</span></td><td class="tiny">${chk}</td><td class="tiny">${esc(crit)}</td><td class="tiny">${dt}</td>`,'task',t.task_id);
   },8,'No Agent OS tasks found.');
 
-  rows('agentOsMemoryBody',filteredMem,m=>{
-    const sc=esc(m.scope||'task');
-    const kd=esc(m.kind||'fact');
-    const k=esc(m.key||'—');
-    let v=typeof m.value==='object'?JSON.stringify(m.value):String(m.value||'');
-    if(v.length>55)v=v.slice(0,52)+'...';
-    const conf=m.confidence!==undefined?Math.round(m.confidence*100)+'%':'—';
-    const src=esc(m.source||'—');
-    const dt=m.created_at?new Date(m.created_at*1000).toLocaleTimeString():'—';
-    return clickableRow(m,`<td><span class="chip">${sc}</span></td><td><span class="chip">${kd}</span></td><td><strong>${k}</strong></td><td class="tiny mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(v)}</td><td class="tiny">${conf}</td><td class="tiny">${src}</td><td class="tiny">${dt}</td>`,'memory',(m.scope||'task')+':'+m.key);
-  },7,agentOsMemories.length?'No memories match the current filters.':'No memories recorded.');
+  rows('agentOsMemoryBody',filteredMem,m=>clickableRow(m,formatAgentOsMemoryCells(m),'memory',(m.scope||'task')+':'+m.key),7,agentOsMemories.length?'No memories match the current filters.':'No memories recorded.');
 
   rows('agentOsIncBody',filteredInc,i=>{
     const id=esc(i.incident_id||'—');
@@ -5350,6 +5340,27 @@ function renderAgentOsView(){
   },8);
   renderAgentOsLoadErrors();
 }
+
+// BEGIN memory provenance display
+function formatAgentOsMemoryCells(m){
+  const sc=esc(m?.scope||'task');
+  const kd=esc(m?.kind||'fact');
+  const k=esc(m?.key||'—');
+  let rawValue='';
+  try{rawValue=typeof m?.value==='object'?JSON.stringify(m.value):String(m?.value||'')}catch(_){rawValue='[unavailable]'}
+  if(rawValue.length>55)rawValue=rawValue.slice(0,52)+'...';
+  const v=esc(rawValue);
+  const conf=m?.confidence!==undefined?Math.round(m.confidence*100)+'%':'—';
+  const source=typeof m?.source==='string'&&m.source.trim()?m.source.trim():'Unknown source';
+  const provenance=m?.provenance&&typeof m.provenance==='object'&&!Array.isArray(m.provenance)?m.provenance:{};
+  const root=typeof provenance.root==='string'&&provenance.root.trim()?provenance.root.trim():'Unknown root';
+  const repository=typeof provenance.repository_id==='string'&&provenance.repository_id.trim()?provenance.repository_id.trim():'Unknown repository';
+  const stamp=typeof m?.created_at==='number'&&Number.isFinite(m.created_at)&&m.created_at>0?new Date(m.created_at*1000):null;
+  const dt=stamp&&Number.isFinite(stamp.getTime())?stamp.toLocaleString(undefined,{year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',timeZoneName:'short'}):'Unknown date/time';
+  const sourceDetails=`<div>Source: ${esc(source)}</div><div>Root: ${esc(root)}</div><div>Repository: ${esc(repository)}</div>`;
+  return `<td><span class="chip">${sc}</span></td><td><span class="chip">${kd}</span></td><td><strong>${k}</strong></td><td class="tiny mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${v}</td><td class="tiny">${conf}</td><td class="tiny">${sourceDetails}</td><td class="tiny">${esc(dt)}</td>`;
+}
+// END memory provenance display
 
 function renderAgentOsLoadErrors(){
   const failed=Object.keys(agentOsLoadErrors);
