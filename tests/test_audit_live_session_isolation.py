@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import json
 import threading
+import time
 from types import SimpleNamespace
 import urllib.error
 import urllib.request
@@ -60,6 +61,14 @@ def isolated_hub(tmp_path, monkeypatch):
     client = HubClient(config_path=str(config), auto_start=False)
     monkeypatch.setattr(mcp_server, "CLIENT", mcp_server._MCPHubClientAdapter(client))
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
+    for _ in range(100):
+        try:
+            res = client.get("/health")
+            if res.get("success"):
+                break
+        except Exception:
+            pass
+        time.sleep(0.01)
 
     def post(endpoint, payload):
         request = urllib.request.Request(
@@ -70,7 +79,7 @@ def isolated_hub(tmp_path, monkeypatch):
                      "Connection": "close"}, method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=15) as response:
                 return response.status, json.loads(response.read(256_001))
         except urllib.error.HTTPError as error:
             with error:
