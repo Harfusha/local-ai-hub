@@ -158,12 +158,16 @@ def test_concurrent_cold_requests_share_one_service_start_and_readiness(tmp_path
             return False
         return service_started.is_set()
 
+    orig_subprocess_run = client_module.subprocess.run
+
     def service_run(command, **kwargs):
-        with service_lock:
-            service_calls.append((command, kwargs))
-            service_owner.append(threading.get_ident())
-        service_started.set()
-        return type("Completed", (), {"returncode": 0})()
+        if any("service.py" in str(arg) for arg in command):
+            with service_lock:
+                service_calls.append((command, kwargs))
+                service_owner.append(threading.get_ident())
+            service_started.set()
+            return type("Completed", (), {"returncode": 0, "stdout": ""})()
+        return orig_subprocess_run(command, **kwargs)
 
     monkeypatch.setattr(HubClient, "_online", online)
     monkeypatch.setattr(client_module.subprocess, "run", service_run)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -868,6 +869,12 @@ def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(mo
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    for _ in range(50):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/health", timeout=0.5):
+                break
+        except Exception:
+            time.sleep(0.01)
     try:
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/command",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -26,6 +27,14 @@ def live_api(tmp_path, monkeypatch):
     client = HubClient(config_path=str(config), auto_start=False)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    for _ in range(100):
+        try:
+            res = client.get("/health")
+            if res.get("success"):
+                break
+        except Exception:
+            pass
+        time.sleep(0.01)
     try:
         yield app, client
     finally:

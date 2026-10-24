@@ -421,6 +421,8 @@ def is_treesitter_available(lang: str) -> bool:
         return False
     if not _INIT_ATTEMPTED:
         _init_treesitter()
+    if _use_isolated_worker() and _worker_disabled_result() is not None:
+        return False
     lazy_language = "cpp" if norm in ("c++", "c") else norm
     if lazy_language in _LAZY_LANGUAGE_PACKS:
         _load_lazy_language_pack(lazy_language)

@@ -62,11 +62,11 @@ def _refresh_windows_sample() -> None:
             capture_output=True, text=True, timeout=4.0, check=False,
             encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
-        if completed.returncode == 0 and completed.stdout.strip():
+        if completed.returncode == 0 and getattr(completed, "stdout", None) and completed.stdout.strip():
             parsed = json.loads(completed.stdout)
             if isinstance(parsed, dict):
                 sample = parsed
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+    except Exception as exc:
         _LOGGER.debug("Windows hardware sample unavailable (%s)", type(exc).__name__)
     finally:
         with _WINDOWS_LOCK:
@@ -174,7 +174,7 @@ def _rocm_live() -> dict[str, Any] | None:
             stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=2.0, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
-        if completed.returncode == 0 and completed.stdout.strip():
+        if completed.returncode == 0 and getattr(completed, "stdout", None) and completed.stdout.strip():
             data = json.loads(completed.stdout)
             if isinstance(data, dict):
                 first_card = next(iter(data.values())) if data else {}
