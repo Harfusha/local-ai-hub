@@ -22,7 +22,7 @@ LIFECYCLE_PROTECTED_KEYS = (
     "job_id", "task_id", "work_id", "request_id", "execution_id", "in_progress",
     "request_not_sent", "outcome_unknown", "mutation_applied", "operation_not_started",
     "complete", "partial", "cancel_requested",
-    "expires_at", "artifact_id", "output_artifact_id",
+    "expires_at", "artifact_id", "output_artifact_id", "task_context_artifact_id",
 )
 
 _POINTER_KEYS = (
@@ -79,7 +79,7 @@ def _is_current_evidence_id(value: Any, evidence_store: Any) -> bool:
         return False
 
 _CONTEXT_PROTECTED_KEYS = (
-    "success", "complete", "partial", "task_context", "context_id", "etag",
+    "success", "complete", "partial", "task_context", "context_id", "etag", "task_context_artifact_id",
     "evidence_ids", "repo_revision", "stale", "warnings", "omitted_sections",
     "next_action", "evidence_id", "error", "status_code", "terminal", "retryable",
     "context_truncated", "context_chars", "context_pack", "adaptive_context_pack",
@@ -90,7 +90,7 @@ _RESPONSE_PROTECTED_KEYS = (
 )
 _IDENTIFIER_KEYS = {
     "operation_id", "job_id", "output_artifact_id",
-    "artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id",
+    "artifact_id", "task_context_artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id",
     "request_id", "execution_id",
     "delta_from", "since_hash", "reuse_key",
 }

@@ -2262,6 +2262,9 @@ class Handler(BaseHTTPRequestHandler):
     def _bind_context_payload(self, payload: dict[str, Any]) -> bool:
         if not self._reject_identity_fields(payload):
             return False
+        if "_scoped_task_only" in payload and type(payload["_scoped_task_only"]) is not bool:
+            self._send(400, {"success": False, "error": "_scoped_task_only must be boolean", "terminal": True, "retryable": False})
+            return False
         task_id = payload.get("task_id")
         if not isinstance(task_id, str) or not task_id or task_id != task_id.strip():
             self._send(400, {"success": False, "error": "task_id is required for context compilation", "terminal": True, "retryable": False})
@@ -7164,6 +7167,11 @@ class Handler(BaseHTTPRequestHandler):
                             "estimated_tokens": task_context["estimated_tokens"],
                             "warnings": task_context["warnings"],
                         }
+                        from .context_delivery import attach_compiled_context_artifact
+                        response = attach_compiled_context_artifact(
+                            response, APP.artifacts, root=req.root,
+                            coordination_id=req.coordination_id, session_id=req.session_id,
+                        )
                         self._send(200, response); return
                     task_context = compose_task_context(
                         task_id=req.task_id,
@@ -7182,7 +7190,7 @@ class Handler(BaseHTTPRequestHandler):
                             "context_id": task_context["context_id"],
                             "estimated_tokens": 10,
                         }); return
-                    self._send(200, {
+                    response = {
                         "success": bool(task_context["success"]),
                         "complete": bool(task_context["complete"]),
                         "partial": bool(task_context["partial"]),
@@ -7199,7 +7207,13 @@ class Handler(BaseHTTPRequestHandler):
                         "next_action": task_context["next_action"],
                         "estimated_tokens": task_context["estimated_tokens"],
                         "warnings": task_context["warnings"],
-                    }); return
+                    }
+                    from .context_delivery import attach_compiled_context_artifact
+                    response = attach_compiled_context_artifact(
+                        response, APP.artifacts, root=req.root,
+                        coordination_id=req.coordination_id, session_id=req.session_id,
+                    )
+                    self._send(200, response); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
             if 'post_agent_state_learning_1' in post_route_ids:
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
@@ -7970,6 +7984,7 @@ class Handler(BaseHTTPRequestHandler):
                                         result["task_context_artifact_id"] = context_artifact_id
                                     except Exception:
                                         unified["artifact_unavailable"] = True
+                                    unified.pop("_omitted_task_goal", None)
                                     result["task_context"] = unified
                                     result["task_context_id"] = unified["context_id"]
                                     if auto_injected_task:

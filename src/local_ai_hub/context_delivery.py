@@ -16,6 +16,11 @@ def persist_compiled_context(artifacts: Any, context: dict[str, Any], *, root: s
         "repo_revision", "evidence_ids", "provenance", "source_layers", "truncated",
     ) if key in context}
     record.update({"schema_version": 1, "root": root, "coordination_id": coordination_id, "session_id": session_id})
+    omitted_goal = context.get("_omitted_task_goal", "")
+    if omitted_goal:
+        if not isinstance(omitted_goal, str):
+            raise ValueError("omitted task goal must be text")
+        record["omitted_task_goal"] = omitted_goal
     artifact_id = artifacts.put(dumps(record, ensure_ascii=False), kind="task-context")
     if not isinstance(artifact_id, str) or not artifact_id or artifact_id != artifact_id.strip():
         raise ValueError("compiled context artifact persistence unavailable")
@@ -33,6 +38,41 @@ def _prefix(text: str, tokens: int) -> str:
     return text[:low]
 
 
+def attach_compiled_context_artifact(
+    value: dict[str, Any], artifacts: Any, *, root: str,
+    coordination_id: str, session_id: str,
+) -> dict[str, Any]:
+    """Attach recoverable storage before any HTTP or MCP response projection."""
+    context = value.get("task_context")
+    if (not isinstance(context, dict) or context.get("success") is not True
+            or context.get("complete") is not True or not isinstance(context.get("text"), str)):
+        return value
+    result = dict(value)
+    context = dict(context)
+    try:
+        artifact_id = persist_compiled_context(
+            artifacts, context, root=root, coordination_id=coordination_id, session_id=session_id,
+        )
+    except Exception:
+        context.pop("artifact_id", None)
+        result.pop("task_context_artifact_id", None)
+        context["artifact_unavailable"] = True
+    else:
+        context["artifact_id"] = artifact_id
+        result["task_context_artifact_id"] = artifact_id
+    context.pop("_omitted_task_goal", None)
+    if "task_goal" in context.get("omitted_sections", []):
+        context.update({"success": False, "complete": False, "partial": True})
+        available = isinstance(result.get("task_context_artifact_id"), str)
+        result.update({
+            "success": False, "complete": False, "partial": True,
+            "error": "compiled task goal requires artifact retrieval" if available else "compiled task goal artifact is unavailable",
+            "next_action": "read_task_context_artifact" if available else "request_smaller_context",
+        })
+    result["task_context"] = context
+    return result
+
+
 def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, Any]:
     context = value.get("task_context")
     if not isinstance(context, dict):
@@ -40,7 +80,7 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
     result = dict(value)
     # The compiled text already contains the selected state/repository context.
     # Preserve decision/identity metadata without duplicating both full source trees.
-    context = {key: item for key, item in context.items() if key not in {"agent_state", "repository"}}
+    context = {key: item for key, item in context.items() if key not in {"agent_state", "repository", "_omitted_task_goal"}}
     decision_fields = (
         "success", "complete", "partial", "degraded", "degraded_reason",
         "status_code", "terminal", "retryable", "error", "warning",
@@ -80,6 +120,12 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
     artifact_id = pointers[0] if pointers else None
     if artifact_id is not None:
         result["task_context_artifact_id"] = artifact_id
+    if "task_goal" in context.get("omitted_sections", []):
+        context.update({"success": False, "complete": False, "partial": True})
+        result.update({"success": False, "complete": False, "partial": True,
+                       "terminal": True, "retryable": False,
+                       "error": "compiled task goal requires artifact retrieval" if artifact_id else "compiled task goal artifact is unavailable",
+                       "next_action": "read_task_context_artifact" if artifact_id else "request_smaller_context"})
     if context["success"] is not True or context["complete"] is not True:
         result.update({"success": False, "complete": False, "partial": True})
         if not result.get("error"):

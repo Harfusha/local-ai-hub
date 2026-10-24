@@ -5588,7 +5588,7 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque. Context compilation persists real exact-identity recovery artifacts before delivery. Omitted mandatory goals are recoverable in omitted_task_goal; inline delivery remains incomplete. Invalid scoped-task flags reject before compilation; insufficient MCP caps explicitly reject.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_context_1",
@@ -5616,6 +5616,7 @@
           "warnings"
         ],
         "response_producers": [
+          "attach_compiled_context_artifact",
           "local:response"
         ],
         "action_literals": [

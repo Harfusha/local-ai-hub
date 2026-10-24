@@ -194,6 +194,7 @@ class CompiledContext:
     delta_from: str = ""
     unchanged: bool = False
     request_identity_digest: str = ""
+    omitted_task_goal: str = ""
 
     def text(self) -> str:
         return "\n\n".join(el.content for el in self.elements)
@@ -203,6 +204,8 @@ class CompiledContext:
         h.update(self.phase.encode("utf-8"))
         h.update(self.repo_revision.encode("utf-8"))
         h.update(self.request_identity_digest.encode("ascii", errors="ignore"))
+        if self.omitted_task_goal:
+            h.update(self.omitted_task_goal.encode("utf-8"))
         for el in self.elements:
             element_data = el.to_dict(compact=False)
             # Freshness is a ranking hint, not context identity. In particular,
@@ -1224,6 +1227,7 @@ class ContextCompiler:
         selected: list[tuple[int, ContextElement]] = []
         spent_tokens = 0
         truncated = False
+        omitted_task_goal = ""
 
         # Pin mandatory task goal contract first if budget allows
         if pinned_goal is not None:
@@ -1232,6 +1236,7 @@ class ContextCompiler:
                 spent_tokens += pinned_goal.estimated_tokens
             else:
                 truncated = True
+                omitted_task_goal = pinned_goal.content
 
         # Value-density knapsack token budgeting for remaining candidates
         # Score = (priority * confidence) / max(1, tokens)
@@ -1270,6 +1275,7 @@ class ContextCompiler:
             stale=not self.state_store.enabled,
             warnings=tuple(warnings[:32]),
             request_identity_digest=request_identity_digest,
+            omitted_task_goal=omitted_task_goal,
         )
         current_etag = compiled.etag()
         if request.since_hash:

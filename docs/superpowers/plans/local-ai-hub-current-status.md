@@ -27,6 +27,8 @@ Status: IN PROGRESS. Complete release acceptance is unproved; the existing Codex
 - Exact thirteen operator-accepted optional advisory exceptions remain separately recorded; unaccepted findings must not be ignored. Historical advisory timestamps, incomplete native SBOM scope and raw_scan_clean=false must remain visible.
 - Native command/evidence artifacts are not broker verification receipts. The intentionally removed old task cannot be reconstructed with fabricated counters or receipts.
 
+- F10/F13/F21/F22 current source/test evidence: 74 unique PASS, zero FAIL/ERROR/SKIP, stable source/configuration. Real HTTP/MCP rejects malformed identities and boolean flags before compilation. Large mandatory goals retain exact artifact/root/task/session identity and paged recovery at 3200/1024 tokens; 128 explicitly rejects without increasing the cap. Storage failures remove stale pointers; omitted goals affect ETags. Dependency boundary tests include actual Windows junctions, nested npm versions, unsupported/malformed inputs and isolated advisory-cache invalidation. Both prompts and AGENTS describe recovery. Broader completion and installed runtime remain unproved.
+
 ## Next actions, in order
 
 1. Reconcile remaining F02/F10/F13/F21-F24 / R01–R16 and all original 100 items against exact current source and authentic evidence. F01/F03-F09/F11/F12/F14-F20 are closed at their source/test boundary; full release acceptance is separate.

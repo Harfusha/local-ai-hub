@@ -3011,6 +3011,13 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             budget_meta["returned_tokens"] = json_tokens(final)
             if json_tokens(final) > requested:
                 return _context_input_error("response budget metadata exceeds max_response_tokens")
+        pointer = safe_value.get("task_context_artifact_id")
+        if isinstance(pointer, str) and final.get("task_context_artifact_id") != pointer:
+            return {
+                "success": False, "error": "max_response_tokens too small",
+                "next_action": "request_larger_response_budget",
+                "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True},
+            }
         return final
     return _normalize_deterministic(final)
 
@@ -4703,7 +4710,7 @@ def local_ai_coord(
             memory_kwargs["ttl_seconds"] = ttl_seconds
         return _compact(CLIENT.coord(**memory_kwargs), "task_memory")
     if action == "context_compile":
-        return _compact(CLIENT.post("/api/agent-state/context", {
+        return _context_pack_projection(CLIENT.post("/api/agent-state/context", {
             "action": "compile", "task_id": task_id,
             "token_budget": max_tokens or 4000, "root": root,
             "changed_paths": paths or [],
@@ -4719,7 +4726,7 @@ def local_ai_coord(
             "phase": phase,
             "focus": list(focus or []),
             "preload_profile": preload_profile,
-        }, timeout=_timeout("context")), "context")
+        }, timeout=_timeout("context")))
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "receipt", "receipt": receipt, "root": root,
@@ -5154,6 +5161,23 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             "execution_id" in value or value.get("exit_code") not in (None, 0)
         )
         if not command_failure:
+            if value.get("next_action") == "request_larger_response_budget":
+                rejection = dict(value)
+                rejection["response_budget"] = {
+                    "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
+                }
+                content = [mcp_types.TextContent(type="text", text="Increase max_response_tokens.")]
+                wire = {
+                    "content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+                    "structuredContent": rejection, "isError": False,
+                }
+                for _ in range(16):
+                    returned = json_tokens(wire)
+                    rejection["response_budget"]["returned_tokens"] = returned
+                    if json_tokens(wire) == returned:
+                        break
+                if json_tokens(wire) <= requested:
+                    return content, rejection
             # Preserve the existing context/evidence projection for other tools;
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
@@ -5167,7 +5191,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                 key: value[key]
                                 for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
                                             "mutation_applied", "operation_not_started",
-                                            "total_matches", "has_more", "offset", "limit")
+                                            "total_matches", "has_more", "offset", "limit",
+                                            "task_context_artifact_id", "next_action")
                                 if key in value and key not in dropped
                             },
                         }

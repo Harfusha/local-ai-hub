@@ -343,7 +343,7 @@ def compose_task_context(
         bool(compiled.stale or repo.get("stale", False)),
         "success" if complete else ("stale" if compiled.stale or repo.get("stale", False) else "incomplete"),
     )
-    return {
+    result = {
         "success": complete,
         "complete": complete,
         "partial": not complete,
@@ -366,6 +366,11 @@ def compose_task_context(
         "omitted_sections": ["repository"] if repository_required and not repo_ok else [],
         "next_action": "refresh_repository_context" if repository_required and not repo_ok else "use_compiled_context",
     }
+    omitted_goal = getattr(compiled, "omitted_task_goal", "")
+    if omitted_goal:
+        result["_omitted_task_goal"] = omitted_goal
+        result["omitted_sections"].append("task_goal")
+    return result
 
 
 def is_task_context_complete(context: Mapping[str, Any] | None) -> bool:

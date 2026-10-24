@@ -32,6 +32,8 @@ def isolated_hub(tmp_path, monkeypatch):
             f'[server]\nbind = "127.0.0.1"\nport = {port}\n'
             f'state_dir = "{(tmp_path / "state").as_posix()}"\n'
             '[agent_state]\nenabled = true\n'
+            '[prewarm]\nenabled = false\n'
+            '[headless]\nmanage_ollama = false\n'
             '[security]\napi_token = "isolated-session-acceptance-token"\n'
             'api_token_permissions = ["read", "write"]\n'
             f'allowed_roots = ["{tmp_path.as_posix()}"]\n', encoding="utf-8",
@@ -96,6 +98,8 @@ def isolated_hub(tmp_path, monkeypatch):
         server.server_close()
         serving.join(timeout=3)
         assert not serving.is_alive()
+        app.close()
+        assert not app.close_report["failed"] and not app.close_report["pending"], app.close_report
 
 
 def _assert_unbound(result, own_root, foreign_root):
