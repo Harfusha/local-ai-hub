@@ -8110,9 +8110,25 @@ class CommandBroker:
         if task_id and self.policy_engine:
             budget = self.policy_engine.get_budget(task_id)
             if budget.is_exhausted():
+                exhausted = ", ".join(
+                    f"{channel}={used}/{maximum}"
+                    for channel, used, maximum in (
+                        ("tokens", budget.used_tokens, budget.max_tokens),
+                        ("compute_seconds", budget.used_compute_seconds, budget.max_compute_seconds),
+                        ("external_calls", budget.used_external_calls, budget.max_external_calls),
+                    )
+                    if used >= maximum
+                )
                 return {
                     "success": False,
-                    "error": f"task budget exhausted ({task_id}): max_tokens={budget.max_tokens}, max_compute_seconds={budget.max_compute_seconds}",
+                    "error": (
+                        f"task budget exhausted ({exhausted}): task_id={task_id}, "
+                        f"used_tokens={budget.used_tokens}, max_tokens={budget.max_tokens}, "
+                        f"used_compute_seconds={budget.used_compute_seconds}, "
+                        f"max_compute_seconds={budget.max_compute_seconds}, "
+                        f"used_external_calls={budget.used_external_calls}, "
+                        f"max_external_calls={budget.max_external_calls}"
+                    ),
                     "terminal": True,
                     "retryable": False,
                     "budget_exhausted": True,

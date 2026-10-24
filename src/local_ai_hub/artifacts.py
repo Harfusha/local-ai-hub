@@ -231,7 +231,7 @@ class ArtifactStore:
         self._last_purge = 0.0
         self._purge_interval = 1800.0
         if not self.path.exists():
-            state_dir.mkdir(parents=True, exist_ok=True)
+            self.state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._initialized = False
         self._table = _ARTIFACT_TABLE
