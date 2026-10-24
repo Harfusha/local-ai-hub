@@ -19,7 +19,7 @@ def dashboard_server(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text('[server]\nstate_dir=' + json.dumps(str(tmp_path / "state")) +
         '\n[security]\napi_token="audit-dashboard-test-token"\napi_token_permissions=["read","write"]\nallowed_roots=[' + json.dumps(str(tmp_path)) +
-        ']\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
+        ']\n[hardware]\nprofile="cpu"\n[prewarm]\nenabled=false\n[headless]\nmanage_ollama=false\n', encoding="utf-8")
     app = LocalAIApp(str(config))
     monkeypatch.setattr(module, "APP", app)
     server = module.LocalAIHTTPServer(("127.0.0.1", 0), module.Handler)

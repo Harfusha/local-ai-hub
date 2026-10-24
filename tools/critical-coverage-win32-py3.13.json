@@ -47,7 +47,60 @@
     "src/local_ai_hub/semantic_quality.py": {
       "covered_branches": 32,
       "num_branches": 86
+    },
+    "src/local_ai_hub/agent_identity.py": {
+      "covered_branches": 53,
+      "num_branches": 90
+    },
+    "src/local_ai_hub/agent_memory.py": {
+      "covered_branches": 279,
+      "num_branches": 526
+    },
+    "src/local_ai_hub/commands.py": {
+      "covered_branches": 454,
+      "num_branches": 2752
+    },
+    "src/local_ai_hub/http_server.py": {
+      "covered_branches": 424,
+      "num_branches": 2780
     }
   },
-  "source_report_sha256": "1ad1464a914f8a1fc1e39f2cb1509a3f5af48102197ab194368ba09339f22e59"
+  "source_report_sha256": "1ad1464a914f8a1fc1e39f2cb1509a3f5af48102197ab194368ba09339f22e59",
+  "functions": {
+    "src/local_ai_hub/http_server.py::Handler._require_authorized": {
+      "covered_branches": 11,
+      "num_branches": 16
+    },
+    "src/local_ai_hub/http_server.py::Handler._authorized": {
+      "covered_branches": 27,
+      "num_branches": 36
+    },
+    "src/local_ai_hub/commands.py::CommandBroker.run": {
+      "covered_branches": 86,
+      "num_branches": 236
+    },
+    "src/local_ai_hub/agent_memory.py::MemoryStore.record": {
+      "covered_branches": 5,
+      "num_branches": 6
+    }
+  },
+  "extension_provenance": [
+    {
+      "repository_revision": "ba5fc18b984a902f5782d336f703ea714a59d3a3e2e7800ad791443d78ccdb5b",
+      "cohort": "native union: 31 files / 467 unique PASS; revision is SHA256 of all 15 critical module hashes",
+      "source_report_sha256": "99785f5f26eef6d94d4ea4ea379faba38c5a588823984630de757fd34c791b03",
+      "added_modules": [
+        "src/local_ai_hub/agent_identity.py",
+        "src/local_ai_hub/agent_memory.py",
+        "src/local_ai_hub/commands.py",
+        "src/local_ai_hub/http_server.py"
+      ],
+      "added_functions": [
+        "src/local_ai_hub/http_server.py::Handler._require_authorized",
+        "src/local_ai_hub/http_server.py::Handler._authorized",
+        "src/local_ai_hub/commands.py::CommandBroker.run",
+        "src/local_ai_hub/agent_memory.py::MemoryStore.record"
+      ]
+    }
+  ]
 }

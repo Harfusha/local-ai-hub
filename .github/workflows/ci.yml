@@ -120,6 +120,19 @@ jobs:
           tests/unit/test_wheel_smoke_contract.py
           tests/test_async_job_reliability_contract.py
           tests/test_agent_policy.py
+          tests/test_agent_identity.py
+          tests/test_agent_memory.py
+          tests/test_project_command_broker.py
+          tests/test_http_admin_action_auth_t18.py
+          tests/test_audit_context_transport_contract.py
+          tests/test_audit_context_artifact_failure.py
+          tests/test_audit_async_finalization_contract.py
+          tests/test_audit_budget_process_isolation.py
+          tests/test_audit_budget_diagnostics.py
+          tests/test_agent_task_budget_increase.py
+          tests/unit/test_capability_grant_validity.py
+          tests/unit/test_capability_grant_canonical_inputs.py
+          tests/test_audit_critical_coverage_contract.py
       - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
       - name: Reject per-module branch coverage regression
         run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json
