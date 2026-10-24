@@ -66,7 +66,6 @@ def _client_config(tmp_path: Path) -> Path:
     config.write_text(
         "[server]\nport=11435\nstate_dir='" + state.as_posix() + "'\n"
         "[client]\nstartup_wait_seconds=1.0\nstartup_poll_seconds=0.01\n"
-        "start_lock_stale_seconds=0.01\n"
         "[headless]\nrespect_disabled_marker=true\n",
         encoding="utf-8",
     )

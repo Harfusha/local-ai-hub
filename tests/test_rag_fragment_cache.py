@@ -6,6 +6,7 @@ import threading
 import sqlite3
 import json
 import struct
+import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -108,49 +109,74 @@ def test_index_coalesces_identical_concurrent_requests(tmp_path, monkeypatch, de
     original_index = store.index
     main_thread = threading.current_thread()
 
-    def scheduled_index(*args, **kwargs):
-        if defer_worker_until_embedding and threading.current_thread() is not main_thread:
-            # Deterministically model a worker unable to run pre-embedding
-            # setup until the owner is ready, without sleeps or CPU load.
-            assert leader_at_embedding.wait(2)
-        return original_index(*args, **kwargs)
-
-    monkeypatch.setattr(store, "index", scheduled_index)
-
-    def follow():
-        try:
-            second.update(store.index(str(root)))
-        except BaseException as exc:
-            errors.append(exc)
-
-    second_thread = threading.Thread(target=follow)
-
-    def embed_with_waiting_follower(texts, **kwargs):
-        # Leader setup runs synchronously: policy/discovery/SQLite readiness is
-        # not a two-second background-thread startup requirement of coalescing.
-        leader_at_embedding.set()
-        with store._index_flights_lock:
-            assert len(store._index_flights) == 1
-            flight = next(iter(store._index_flights.values()))
-        original_wait = flight["event"].wait
-
-        def observe_wait(timeout=None):
-            follower_waiting.set()
-            return original_wait(timeout)
-
-        # Observe the real completion event; do not replace singleflight or its
-        # result. Thread.start alone does not prove the follower joined it.
-        monkeypatch.setattr(flight["event"], "wait", observe_wait)
-        second_thread.start()
-        assert follower_waiting.wait(2), {"result": second, "errors": errors}
-        return original_embed(texts, **kwargs)
-
-    monkeypatch.setattr(services, "embed", embed_with_waiting_follower)
+    anchor = None
     try:
+        memory_uri = f"file:rag-coalesce-{uuid.uuid4().hex}?mode=memory&cache=shared"
+
+        def connect_shared_memory():
+            con = sqlite3.connect(
+                memory_uri, uri=True, timeout=5.0, isolation_level="DEFERRED"
+            )
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("PRAGMA busy_timeout=5000")
+            try:
+                con.execute("PRAGMA synchronous=NORMAL")
+                con.execute("PRAGMA temp_store=MEMORY")
+                con.execute("PRAGMA cache_size=-16000")
+                con.execute("PRAGMA mmap_size=134217728")
+            except sqlite3.OperationalError:
+                pass
+            return con
+
+        anchor = connect_shared_memory()
+        with closing(sqlite3.connect(str(store.db_path), timeout=5.0)) as initialized_disk_db:
+            initialized_disk_db.backup(anchor)
+        monkeypatch.setattr(store, "_connect", connect_shared_memory)
+
+        def scheduled_index(*args, **kwargs):
+            if defer_worker_until_embedding and threading.current_thread() is not main_thread:
+                # Deterministically model a worker unable to run pre-embedding
+                # setup until the owner is ready, without sleeps or CPU load.
+                assert leader_at_embedding.wait(2)
+            return original_index(*args, **kwargs)
+
+        monkeypatch.setattr(store, "index", scheduled_index)
+
+        def follow():
+            try:
+                second.update(store.index(str(root)))
+            except BaseException as exc:
+                errors.append(exc)
+
+        second_thread = threading.Thread(target=follow)
+
+        def embed_with_waiting_follower(texts, **kwargs):
+            # Leader setup runs synchronously: policy/discovery/SQLite readiness is
+            # not a two-second background-thread startup requirement of coalescing.
+            leader_at_embedding.set()
+            with store._index_flights_lock:
+                assert len(store._index_flights) == 1
+                flight = next(iter(store._index_flights.values()))
+            original_wait = flight["event"].wait
+
+            def observe_wait(timeout=None):
+                follower_waiting.set()
+                return original_wait(timeout)
+
+            # Observe the real completion event; do not replace singleflight or its
+            # result. Thread.start alone does not prove the follower joined it.
+            monkeypatch.setattr(flight["event"], "wait", observe_wait)
+            second_thread.start()
+            assert follower_waiting.wait(2), {"result": second, "errors": errors}
+            return original_embed(texts, **kwargs)
+
+        monkeypatch.setattr(services, "embed", embed_with_waiting_follower)
         first = store.index(str(root))
     finally:
         if second_thread.ident is not None:
             second_thread.join(2)
+        if anchor is not None:
+            anchor.close()
 
     assert not second_thread.is_alive(), {"result": second, "errors": errors}
     assert not errors
@@ -159,6 +185,26 @@ def test_index_coalesces_identical_concurrent_requests(tmp_path, monkeypatch, de
     assert second["coalesced"] is True
     assert {key: value for key, value in second.items() if key != "coalesced"} == first
     assert len(services.calls) == 1
+
+
+def test_index_persists_chunks_to_physical_database(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = "def durable():\n    return 42\n"
+    (root / "durable.py").write_text(source, encoding="utf-8")
+    services = _Services()
+    store = _store(tmp_path, services)
+
+    result = store.index(str(root))
+
+    assert result["success"] is True
+    assert Path(store.db_path).exists()
+    with closing(sqlite3.connect(str(store.db_path), timeout=5.0)) as disk_db:
+        rows = disk_db.execute(
+            "SELECT path, text FROM chunks WHERE workspace=? ORDER BY chunk_no",
+            (result["workspace"],),
+        ).fetchall()
+    assert rows == [("durable.py", source)]
 
 
 def test_index_paths_step_cancellation_after_embedding_preserves_old_snapshot(tmp_path):
