@@ -11,23 +11,20 @@ import audit_quality_eval as evaluator
 
 
 def _captured_baseline():
-    contracts = [
-        (case, query, path, {path: [symbol]}, intent)
-        for case, query, path, symbol, intent in evaluator.GOLD
-    ] + [
-        (case, query, path, {path: list(evaluator.ARCHITECTURE_TARGETS[case][0])},
-         evaluator.ARCHITECTURE_TARGETS[case][1])
-        for case, query, path in evaluator.ARCHITECTURE_QUERIES
-    ]
-    texts = {path: f"# captured source for {path}\n" for _, _, path, _, _ in contracts}
+    contracts = evaluator.goldset_contract()
+    texts = {contract["expected_path"]: f"# captured source for {contract['expected_path']}\n"
+             for contract in contracts}
     hashes = {path: evaluator.hashlib.sha256(text.encode("utf-8")).hexdigest()
               for path, text in texts.items()}
-    rows = [{"case": case, "query": query, "expected_path": path,
-             "symbols": [{"path": path, "line": 1, "name": name, "kind": "function"}
-                         for name in expected[path]]}
-            for case, query, path, expected, _ in contracts]
+    rows = [{**contract,
+             "symbols": [{"path": contract["expected_path"], "line": 1,
+                          "name": name, "kind": "function"}
+                         for name in contract["expected_symbols"][contract["expected_path"]]]}
+            for contract in contracts]
     gold_count = len(evaluator.GOLD)
-    return ({"source_hashes": dict(hashes), "retrieval": rows[:gold_count],
+    return ({"goldset_version": evaluator.GOLDSET_VERSION,
+             "goldset_contract": copy.deepcopy(contracts),
+             "source_hashes": dict(hashes), "retrieval": rows[:gold_count],
              "architecture_diagnostics": rows[gold_count:]}, texts, hashes, rows)
 
 
@@ -46,7 +43,7 @@ def test_derivative_regrades_all_ten_captured_symbol_cases_without_mutating_base
     assert len(derived["retrieval"]) == 10
     assert derived["architecture_diagnostics"] == []
     assert [row["case"] for row in derived["retrieval"]] == [row["case"] for row in captured]
-    assert derived["derivative_regrade"]["original_baseline_metric_scope"] == "path_only"
+    assert derived["derivative_regrade"]["goldset_version"] == evaluator.GOLDSET_VERSION
     assert derived["derivative_regrade"]["original_baseline_modified"] is False
     assert baseline == original
 
@@ -89,3 +86,23 @@ def test_derivative_requires_all_architecture_captures_and_preserves_query_targe
         assert ({path: list(symbols)}, intent) in graded_contracts
     assert evaluator.ARCHITECTURE_TARGETS["async-architecture"][0] == ("AsyncJobManager",)
     assert len(evaluator.ARCHITECTURE_TARGETS["mcp-architecture"][0]) == 7
+
+
+def test_v2_contract_binds_current_explicit_test_target_and_mcp_recall_k():
+    contract = evaluator.goldset_contract()
+    by_case = {row["case"]: row for row in contract}
+    current = by_case["explicit-test-intent"]
+    assert current["query"] == "test_retired_public_guide_rejects_before_health_queries"
+    assert current["expected_symbols"][current["expected_path"]] == [
+        "test_retired_public_guide_rejects_before_health_queries"
+    ]
+    assert by_case["mcp-architecture"]["k"] == 7
+    assert evaluator.LEGACY_GOLD[0][1] == (
+        "test_public_guide_uses_explicit_help_fields_without_health_queries"
+    )
+
+    baseline, texts, hashes, _ = _captured_baseline()
+    baseline["goldset_contract"][0]["k"] += 1
+    result = evaluator.regrade_captured_baseline_symbols(baseline, texts, hashes)
+    assert result["success"] is False
+    assert result["reason"] == "goldset_contract_mismatch"

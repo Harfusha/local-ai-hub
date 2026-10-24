@@ -20,7 +20,7 @@ from typing import Any, Iterator
 
 from . import __version__
 
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v16-multiline-arrow-scope"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v18-lexical-scope-doc-tool-postings"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
@@ -998,6 +998,8 @@ def _code_index_candidate_score(
     path: Any,
     terms: list[str],
     exact_identifier: str | None,
+    *, docstring: Any = "", kind: Any = "", architecture: bool = False,
+    public_entrypoints: bool = False,
 ) -> float:
     name_l = str(name or "").lower()
     if exact_identifier is not None and name_l == exact_identifier.lower():
@@ -1005,6 +1007,7 @@ def _code_index_candidate_score(
     name_path_l = str(name_path or "").lower()
     container_l = str(container or "").lower()
     path_l = str(path or "").lower()
+    doc_l = str(docstring or "").lower()
     score = 0.0
     for term in terms:
         if name_l == term:
@@ -1017,6 +1020,13 @@ def _code_index_candidate_score(
             score += 2.0
         elif exact_identifier is None and term in path_l:
             score += 1.0
+        if exact_identifier is None and term in doc_l:
+            score += 2.0
+    if score > 0 and architecture and kind == "class":
+        score += 8.0
+    if (score > 0 and public_entrypoints and kind == "function"
+            and not container_l and not name_l.startswith("_")):
+        score += 16.0
     return score
 
 
@@ -1366,7 +1376,13 @@ class CodeIndex:
             return syms, refs, edges
 
         stack: list[str] = []
+        scope_kinds: list[str] = []
         overloads: dict[str, int] = {}
+
+        def is_tool_decorator(node: ast.AST) -> bool:
+            target = node.func if isinstance(node, ast.Call) else node
+            name = target.id if isinstance(target, ast.Name) else target.attr if isinstance(target, ast.Attribute) else ""
+            return name == "tool" or name.endswith("_tool")
 
         class V(ast.NodeVisitor):
             def visit_ClassDef(s, n):
@@ -1391,7 +1407,9 @@ class CodeIndex:
                     edges.append({"src": name_path, "dst": b, "kind": "inherits", "line": n.lineno})
 
                 stack.append(n.name)
+                scope_kinds.append("class")
                 s.generic_visit(n)
+                scope_kinds.pop()
                 stack.pop()
 
             def visit_FunctionDef(s, n):
@@ -1414,7 +1432,7 @@ class CodeIndex:
                 fn_kw = "async def" if isinstance(n, ast.AsyncFunctionDef) else "def"
                 sig = f"{fn_kw} {n.name}({args_str})" + (f" -> {ret}" if ret else "")
 
-                is_method = bool(stack)
+                is_method = bool(scope_kinds) and scope_kinds[-1] == "class"
                 kind = "method" if is_method else "function"
                 if any(isinstance(d, ast.Name) and d.id == "property" for d in n.decorator_list):
                     kind = "property"
@@ -1429,10 +1447,13 @@ class CodeIndex:
                     "signature": sig,
                     "access": "public" if not n.name.startswith("_") else "private",
                     "docstring": doc_summary[:200],
+                    "tool_entrypoint": any(is_tool_decorator(d) for d in n.decorator_list),
                 })
 
                 stack.append(n.name)
+                scope_kinds.append("function")
                 s.generic_visit(n)
+                scope_kinds.pop()
                 stack.pop()
 
             def visit_AsyncFunctionDef(s, n):
@@ -1823,14 +1844,31 @@ class CodeIndex:
         """Rebuild searchable trigrams from the symbol rows in the current transaction."""
         for path in dict.fromkeys(paths):
             con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
+            tool_symbols: set[tuple[str, int]] = set()
+            cached = con.execute(
+                "SELECT p.payload_json FROM files f JOIN parse_blobs p "
+                "ON p.content_hash=f.content_hash AND p.language=f.language AND p.analyzer_version=f.analyzer_version "
+                "WHERE f.root=? AND f.path=? AND f.analyzer_version=?",
+                (root, path, _PARSER_ANALYZER_VERSION),
+            ).fetchone()
+            if cached:
+                try:
+                    payload = json.loads(cached[0])
+                    tool_symbols = {(item["name"], item["line"]) for item in payload.get("symbols", [])
+                                    if item.get("tool_entrypoint") is True}
+                except (ValueError, TypeError, AttributeError, KeyError):
+                    # Missing or malformed optional parse evidence cannot assert registration.
+                    tool_symbols = set()
             additions: list[tuple[str, str, int, str, str]] = []
             rows = con.execute(
-                "SELECT rowid,name,name_path,container,path FROM symbols WHERE root=? AND path=?",
+                "SELECT rowid,name,name_path,container,path,docstring,line FROM symbols WHERE root=? AND path=?",
                 (root, path),
             )
             for row in rows:
                 symbol_rowid = int(row[0])
-                for field, raw in zip(("name", "name_path", "container", "path"), row[1:]):
+                if (str(row[1]), row[6]) in tool_symbols:
+                    additions.append((root, path, symbol_rowid, "tool_entrypoint", "too"))
+                for field, raw in zip(("name", "name_path", "container", "path", "docstring"), row[1:6]):
                     value = str(raw or "").lower()
                     if len(value) < 3:
                         continue
@@ -1861,6 +1899,23 @@ class CodeIndex:
                              if source_key is not None else parse_treesitter_with_status(text, lang))
             ts_res = parser_report.get("result")
             if ts_res is not None and (ts_res[0] or ts_res[2]):
+                if lang == "python":
+                    # Native parsers can classify every nested callable in a class
+                    # as a method and omit docstrings. Python's own AST supplies
+                    # lexical kind and documentation for the same exact definition.
+                    python_symbols, _, _ = self._parse_python(text)
+                    metadata = {(item["name"], item["line"]): item for item in python_symbols}
+                    corrected = []
+                    for symbol in ts_res[0]:
+                        symbol = dict(symbol)
+                        authoritative = metadata.get((symbol.get("name"), symbol.get("line")))
+                        if authoritative is not None:
+                            symbol["kind"] = authoritative["kind"]
+                            symbol["docstring"] = authoritative["docstring"]
+                            if authoritative.get("tool_entrypoint") is True:
+                                symbol["tool_entrypoint"] = True
+                        corrected.append(symbol)
+                    ts_res = (corrected, ts_res[1], ts_res[2])
                 diagnostic = {
                     "status": str(parser_report.get("status") or "unknown"),
                     "parser": str(parser_report.get("parser") or "tree_sitter"),
@@ -2440,11 +2495,12 @@ class CodeIndex:
                 for batch in sqlite_batches(unique_paths):
                     placeholders = ",".join("?" for _ in batch)
                     rows.extend(con.execute(
-                        f"SELECT path,content_hash,mtime_ns,size_bytes FROM files WHERE root=? AND path IN ({placeholders})",
+                        f"SELECT path,content_hash,mtime_ns,size_bytes,analyzer_version FROM files WHERE root=? AND path IN ({placeholders})",
                         (resolved_root, *batch),
                     ).fetchall())
             file_hashes = {str(row["path"]): str(row["content_hash"] or "") for row in rows}
             file_stats = {str(row["path"]): (row["mtime_ns"], row["size_bytes"]) for row in rows}
+            file_analyzers = {str(row["path"]): str(row["analyzer_version"] or "") for row in rows}
         except sqlite3.DatabaseError:
             return {"status": "verification_failed", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": unique_paths[:64], "complete": False}
 
@@ -2456,6 +2512,9 @@ class CodeIndex:
             indexed_hash = file_hashes.get(rel_path)
             if not indexed_hash:
                 unknown.append(rel_path)
+                continue
+            if file_analyzers.get(rel_path) != _PARSER_ANALYZER_VERSION:
+                stale.append(rel_path)
                 continue
             target = Path(resolved_root, rel_path).resolve(strict=False)
             try:
@@ -2713,22 +2772,39 @@ class CodeIndex:
                     # failed lookup must retain the complete scan contract.
                     candidate_filters_sql = base_filters_sql
                     candidate_args = list(base_args)
-            def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
+            architecture = bool(re.search(r"\b(?:architecture|lifecycle|ownership|orchestration|entrypoints?)\b", query, re.I))
+            public_entrypoints = bool(re.search(r"\bpublic\b", query, re.I) and re.search(r"\b(?:tools?|api|exports?|entrypoints?)\b", query, re.I))
+            prefer_tests = bool(re.search(r"\b(?:tests?|pytest)\b|\btest_", query, re.I))
+
+            def source_priority(path: Any) -> int:
+                parts = str(path or "").replace("\\", "/").casefold().split("/")
+                name = parts[-1]
+                is_test = "tests" in parts or "test" in parts or name.startswith("test_") or name.endswith("_test.py")
+                return int(is_test != prefer_tests)
+
+            def score_match(name: Any, name_path: Any, container: Any, path: Any, docstring: Any, kind: Any) -> float:
                 return _code_index_candidate_score(
                     name, name_path, container, path, terms, exact_identifier,
+                    docstring=docstring, kind=kind, architecture=architecture,
+                    public_entrypoints=public_entrypoints,
                 )
 
-            con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+            con.create_function("hub_code_index_score", 6, score_match, deterministic=True)
+            con.create_function("hub_code_index_source_priority", 1, source_priority, deterministic=True)
             if exact_match_exists and exact_identifier is not None:
                 # Boost indexed exact hits without filtering fuzzy candidates,
                 # which still count toward totals and later offset pages.
                 score_sql = (
                     "CASE WHEN lower(name)=? THEN 1000.0 "
-                    "ELSE hub_code_index_score(name,name_path,container,path) END"
+                    "ELSE hub_code_index_score(name,name_path,container,path,docstring,kind) END"
                 )
                 candidate_args = [exact_identifier.lower(), *base_args]
             else:
-                score_sql = "hub_code_index_score(name,name_path,container,path)"
+                score_sql = "hub_code_index_score(name,name_path,container,path,docstring,kind)"
+            if public_entrypoints:
+                score_sql = "(" + score_sql + "+ CASE WHEN EXISTS(SELECT 1 FROM symbol_trigrams AS registration " \
+                    "WHERE registration.symbol_rowid=symbols.rowid AND registration.root=symbols.root " \
+                    "AND registration.field='tool_entrypoint' AND registration.gram='too') THEN 40.0 ELSE 0.0 END)"
             sql = (
                 "WITH scored AS MATERIALIZED ("
                 "SELECT rowid AS _rowid," + score_sql + " AS _score "
@@ -2738,7 +2814,8 @@ class CodeIndex:
                 "), stats AS (SELECT COUNT(*) AS _total_matches FROM matches), "
                 "page AS (SELECT matches._rowid,matches._score,1 AS _present "
                 "FROM matches JOIN symbols AS ranked ON ranked.rowid=matches._rowid "
-                "ORDER BY matches._score DESC,ranked.path ASC,ranked.line ASC,ranked.name_path ASC "
+                "ORDER BY (matches._score >= 1000) DESC,hub_code_index_source_priority(ranked.path) ASC,"
+                "matches._score DESC,ranked.path ASC,ranked.line ASC,ranked.name_path ASC "
                 "LIMIT ? OFFSET ?) "
                 "SELECT symbols.path,symbols.name,symbols.kind,symbols.line,symbols.end_line,"
                 "symbols.container,symbols.name_path,symbols.signature,symbols.access,symbols.docstring,"
@@ -2756,7 +2833,7 @@ class CodeIndex:
             name = str(row["name"])
             name_l = name.lower()
             name_path = str(row["name_path"] or "")
-            haystack = " ".join((name_l, name_path.lower(), str(row["container"] or "").lower(), str(row["path"]).lower()))
+            haystack = " ".join((name_l, name_path.lower(), str(row["container"] or "").lower(), str(row["path"]).lower(), str(row["docstring"] or "").lower()))
             score = float(row["_score"])
             matched_terms: list[str] = []
             for term in terms:

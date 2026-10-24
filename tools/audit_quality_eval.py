@@ -11,6 +11,7 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.evaluation_quality import paired_retrieval_delta, retrieval_metrics, review_metrics
 from local_ai_hub.repo_tools import RepositoryTools
 
+GOLDSET_VERSION = 2
 GOLD = (
     ("mcp-entrypoint", "local_ai_status", "src/local_ai_hub/mcp_server.py", "local_ai_status", "production"),
     ("http-deadline", "RequestHeadReader", "src/local_ai_hub/http_transport.py", "RequestHeadReader", "production"),
@@ -18,10 +19,20 @@ GOLD = (
     ("async-owner", "AsyncJobManager", "src/local_ai_hub/async_jobs.py", "AsyncJobManager", "production"),
     ("context-artifact", "persist_compiled_context", "src/local_ai_hub/context_delivery.py", "persist_compiled_context", "production"),
     ("review-entrypoint", "LocalAIServices", "src/local_ai_hub/services.py", "LocalAIServices", "production"),
+    ("explicit-test-intent", "test_retired_public_guide_rejects_before_health_queries",
+     "tests/test_audit_action_guide_remediation.py",
+     "test_retired_public_guide_rejects_before_health_queries", "test"),
+)
+LEGACY_GOLD = (
     ("explicit-test-intent", "test_public_guide_uses_explicit_help_fields_without_health_queries",
      "tests/test_audit_action_guide_remediation.py",
      "test_public_guide_uses_explicit_help_fields_without_health_queries", "test"),
 )
+LEGACY_ARCHITECTURE_TARGETS = {
+    "http-architecture": ("RequestHeadReader", "production"),
+    "async-architecture": ("_cancellation_callback", "production"),
+    "mcp-architecture": ("_compact_mcp_call_tool", "production"),
+}
 
 ARCHITECTURE_QUERIES = (
     ("http-architecture", "HTTP server request header deadline", "src/local_ai_hub/http_transport.py"),
@@ -35,6 +46,23 @@ ARCHITECTURE_TARGETS = {
                           "local_ai_rag", "local_ai_coord", "local_ai_work",
                           "local_ai_artifact"), "production"),
 }
+GOLD_K = {case: 5 for case, *_ in GOLD}
+ARCHITECTURE_K = {"http-architecture": 5, "async-architecture": 5, "mcp-architecture": 7}
+
+
+def goldset_contract():
+    contracts = [
+        {"case": case, "query": query, "expected_path": path,
+         "expected_symbols": {path: [symbol]}, "intent": intent, "k": GOLD_K[case]}
+        for case, query, path, symbol, intent in GOLD
+    ]
+    contracts.extend(
+        {"case": case, "query": query, "expected_path": path,
+         "expected_symbols": {path: list(ARCHITECTURE_TARGETS[case][0])},
+         "intent": ARCHITECTURE_TARGETS[case][1], "k": ARCHITECTURE_K[case]}
+        for case, query, path in ARCHITECTURE_QUERIES
+    )
+    return contracts
 
 
 def run(root, baseline=None, baseline_source_root=None):
@@ -69,27 +97,43 @@ def run(root, baseline=None, baseline_source_root=None):
             if built.get("success") is not True:
                 raise RuntimeError("bounded goldset index build failed")
             for case, query, relevant, expected_symbol, intent in GOLD:
-                report = index.query(str(root), query, limit=5, verify_freshness=True)
+                k = GOLD_K[case]
+                report = index.query(str(root), query, limit=k, verify_freshness=True)
                 expected_symbols = {relevant: [expected_symbol]}
                 metrics = retrieval_metrics(
-                    report, {relevant}, sources, k=5,
+                    report, {relevant}, sources, k=k,
                     expected_symbols=expected_symbols, intent=intent,
                 )
+                metrics["k"] = k
                 results.append({"case": case, "query": query, "expected_path": relevant,
                                 "expected_symbols": expected_symbols, "intent": intent,
-                                "target_status": "unverified_stale_target" if case == "explicit-test-intent" else "declared_exact_target",
+                                "k": k,
+                                "target_status": "declared_exact_target",
                                 "metrics": metrics, "symbols": report.get("symbols", [])})
             for case, query, relevant in ARCHITECTURE_QUERIES:
-                report = index.query(str(root), query, limit=5, verify_freshness=True)
+                k = ARCHITECTURE_K[case]
+                report = index.query(str(root), query, limit=k, verify_freshness=True)
                 expected_names, intent = ARCHITECTURE_TARGETS[case]
                 expected_symbols = {relevant: list(expected_names)}
+                metrics = retrieval_metrics(
+                    report, {relevant}, sources, k=k,
+                    expected_symbols=expected_symbols, intent=intent,
+                )
+                metrics["k"] = k
                 architecture.append({"case": case, "query": query, "expected_path": relevant,
-                    "expected_symbols": expected_symbols, "intent": intent,
+                    "expected_symbols": expected_symbols, "intent": intent, "k": k,
+                    "metrics": metrics,
+                    "symbols": report.get("symbols", [])})
+            legacy = []
+            for case, query, relevant, symbol, intent in LEGACY_GOLD:
+                report = index.query(str(root), query, limit=5, verify_freshness=True)
+                legacy.append({"case": case, "query": query, "expected_path": relevant,
+                    "expected_symbols": {relevant: [symbol]}, "intent": intent, "k": 5,
+                    "status": "legacy_only_never_paired",
                     "metrics": retrieval_metrics(
                         report, {relevant}, sources, k=5,
-                        expected_symbols=expected_symbols, intent=intent,
-                    ),
-                    "symbols": report.get("symbols", [])})
+                        expected_symbols={relevant: [symbol]}, intent=intent,
+                    ), "symbols": report.get("symbols", [])})
         finally:
             index.close()
     reference = {"citation": {"path": GOLD[0][2], "line": 1}, "severity": "P2"}
@@ -122,6 +166,16 @@ def run(root, baseline=None, baseline_source_root=None):
         and item["metrics"].get("source_evidence_sufficient") is True
         for item in architecture
     )
+    ranker_path = root / "src/local_ai_hub/code_index.py"
+    current = ranker_path
+    while current != root:
+        if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+            raise ValueError("ranker source cannot traverse links")
+        current = current.parent
+    with ranker_path.open("rb") as stream:
+        ranker_bytes = stream.read(4 * 1024 * 1024 + 1)
+    if len(ranker_bytes) > 4 * 1024 * 1024:
+        raise ValueError("ranker source exceeds bound")
     result = {
         "success": valid and architecture_measured and all(
             item["measurement"]["success"] == item["expected_accepted"] for item in faithfulness
@@ -129,17 +183,21 @@ def run(root, baseline=None, baseline_source_root=None):
         "scope": "bounded_named_current_source_goldset_not_full_repository_or_model_quality",
         "source_hashes": hashes, "retrieval": results, "review_contract_cases": faithfulness,
         "architecture_diagnostics": architecture,
+        "goldset_version": GOLDSET_VERSION, "goldset_contract": goldset_contract(),
+        "legacy_gold_diagnostics": legacy,
         "architecture_metric_scope": "symbol_ast_exact_targets_existing_queries_unchanged",
         "answer_sufficiency_scope": "expected_symbol_locations_only_not_generated_answers",
-        "model_quality_verified": False, "ranking_changed": False,
+        "model_quality_verified": False,
+        "ranker_source_sha256": hashlib.sha256(ranker_bytes).hexdigest(),
+        "ranking_changed": None,
     }
     if baseline is not None:
+        if isinstance(baseline.get("ranker_source_sha256"), str):
+            result["ranking_changed"] = baseline["ranker_source_sha256"] != result["ranker_source_sha256"]
         original_sources, original_hashes = _read_baseline_sources(
             baseline, baseline_source_root
         ) if baseline_source_root is not None else (sources, hashes)
-        derivative = regrade_captured_baseline_symbols(
-            baseline, original_sources, original_hashes
-        )
+        derivative = regrade_captured_baseline_symbols(baseline, original_sources, original_hashes)
         result["baseline_symbol_regrade"] = {
             key: value for key, value in derivative.items() if key != "baseline"
         }
@@ -154,22 +212,27 @@ def run(root, baseline=None, baseline_source_root=None):
                 "success": False,
                 "reason": derivative.get("reason", "baseline_symbols_unavailable"),
             }
+            if "goldset_version" not in baseline:
+                legacy = regrade_legacy_path_only_baseline(
+                    baseline, original_sources, original_hashes
+                )
+                result["legacy_baseline_path_only_diagnostic"] = {
+                    key: value for key, value in legacy.items() if key != "rows"
+                }
+                result["legacy_baseline_path_only_diagnostic"]["rows"] = legacy.get("rows", [])
         result["success"] = result["success"] and result["baseline_comparison"]["success"]
     return result
 
 
 def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_hashes):
-    """Regrade genuine captured baseline symbol rows only when their source snapshot matches."""
+    """Regrade v2 captures only when source hashes and the full case contract match."""
     if not isinstance(baseline, dict) or not isinstance(baseline.get("source_hashes"), dict):
         return {"success": False, "status": "unavailable", "reason": "baseline_source_hashes_missing"}
-    expected_contracts = [
-        (case, query, path, {path: [symbol]}, intent)
-        for case, query, path, symbol, intent in GOLD
-    ] + [
-        (case, query, path, {path: list(ARCHITECTURE_TARGETS[case][0])},
-         ARCHITECTURE_TARGETS[case][1])
-        for case, query, path in ARCHITECTURE_QUERIES
-    ]
+    if baseline.get("goldset_version") != GOLDSET_VERSION:
+        return {"success": False, "status": "unavailable", "reason": "goldset_version_mismatch"}
+    expected_contracts = goldset_contract()
+    if baseline.get("goldset_contract") != expected_contracts:
+        return {"success": False, "status": "unavailable", "reason": "goldset_contract_mismatch"}
     if not isinstance(source_text_by_path, dict) or not isinstance(current_hashes, dict):
         return {"success": False, "status": "unavailable", "reason": "source_snapshot_invalid"}
     if set(source_text_by_path) != set(current_hashes) or set(current_hashes) != set(baseline["source_hashes"]):
@@ -194,14 +257,23 @@ def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_has
     captured_rows = rows + architecture_rows
     by_case = {row.get("case"): row for row in captured_rows if isinstance(row, dict)}
     if (len(by_case) != len(captured_rows)
-            or set(by_case) != {item[0] for item in expected_contracts}):
+            or set(by_case) != {item["case"] for item in expected_contracts}):
         return {"success": False, "status": "unavailable", "reason": "baseline_retrieval_cases_invalid"}
 
     regraded_rows = []
-    for case, query, relevant, expected_symbols, intent in expected_contracts:
+    for contract in expected_contracts:
+        case = contract["case"]
+        query = contract["query"]
+        relevant = contract["expected_path"]
+        expected_symbols = contract["expected_symbols"]
+        intent = contract["intent"]
+        k = contract["k"]
         original = by_case.get(case)
         if (not isinstance(original, dict) or original.get("query") != query
-                or original.get("expected_path") != relevant or not isinstance(original.get("symbols"), list)):
+                or original.get("expected_path") != relevant
+                or original.get("expected_symbols") != expected_symbols
+                or original.get("intent") != intent or original.get("k") != k
+                or not isinstance(original.get("symbols"), list)):
             return {
                 "success": False,
                 "status": "unavailable",
@@ -212,17 +284,19 @@ def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_has
             {"success": True, "symbols": original["symbols"]},
             {relevant},
             source_text_by_path,
-            k=5,
+            k=k,
             expected_symbols=expected_symbols,
             intent=intent,
         )
+        measured["k"] = k
         regraded_rows.append({
             "case": case,
             "query": query,
             "expected_path": relevant,
             "expected_symbols": expected_symbols,
             "intent": intent,
-            "target_status": "unverified_stale_target" if case == "explicit-test-intent" else "declared_exact_target",
+            "k": k,
+            "target_status": "declared_exact_target",
             "metrics": measured,
             "symbols": original["symbols"],
         })
@@ -233,10 +307,10 @@ def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_has
         "architecture_diagnostics": [],
         "source_hashes": dict(current_hashes),
         "derivative_regrade": {
-            "scope": "regraded_captured_baseline_symbols_against_verified_current_source",
+            "scope": "regraded_captured_v2_baseline_symbols_against_verified_original_source",
             "original_baseline_modified": False,
             "source_hashes_verified": True,
-            "original_baseline_metric_scope": "path_only",
+            "goldset_version": GOLDSET_VERSION,
             "regraded_case_count": len(regraded_rows),
         },
     }
@@ -282,6 +356,64 @@ def _read_baseline_sources(baseline, source_root):
             return {}, {}
         hashes[relative] = expected_hash
     return texts, hashes
+
+
+def regrade_legacy_path_only_baseline(baseline, source_text_by_path, current_hashes):
+    """Retain v1 symbol regrading as historical diagnostics, never as a v2 pair."""
+    if (not isinstance(baseline, dict) or "goldset_version" in baseline
+            or not isinstance(baseline.get("source_hashes"), dict)):
+        return {"status": "unavailable", "reason": "not_legacy_path_only_baseline",
+                "paired_comparable": False, "rows": []}
+    if (set(source_text_by_path) != set(baseline["source_hashes"])
+            or set(current_hashes) != set(baseline["source_hashes"])):
+        return {"status": "unavailable", "reason": "source_snapshot_keys_mismatch",
+                "paired_comparable": False, "rows": []}
+    for path, text in source_text_by_path.items():
+        if (not isinstance(text, str)
+                or hashlib.sha256(text.encode("utf-8")).hexdigest() != current_hashes[path]
+                or current_hashes[path] != baseline["source_hashes"].get(path)):
+            return {"status": "unavailable", "reason": "baseline_source_hash_mismatch",
+                    "paired_comparable": False, "rows": []}
+    contracts = [
+        {"case": case, "query": query, "expected_path": path,
+         "expected_symbols": {path: [symbol]}, "intent": intent, "k": 5}
+        for case, query, path, symbol, intent in GOLD if case != "explicit-test-intent"
+    ] + [
+        {"case": case, "query": query, "expected_path": path,
+         "expected_symbols": {path: [symbol]}, "intent": intent, "k": 5}
+        for case, query, path, symbol, intent in LEGACY_GOLD
+    ] + [
+        {"case": case, "query": query, "expected_path": path,
+         "expected_symbols": {path: [LEGACY_ARCHITECTURE_TARGETS[case][0]]},
+         "intent": LEGACY_ARCHITECTURE_TARGETS[case][1], "k": 5}
+        for case, query, path in ARCHITECTURE_QUERIES
+    ]
+    captured = baseline.get("retrieval")
+    architecture = baseline.get("architecture_diagnostics")
+    if not isinstance(captured, list) or not isinstance(architecture, list):
+        return {"status": "unavailable", "reason": "legacy_symbol_capture_missing",
+                "paired_comparable": False, "rows": []}
+    by_case = {row.get("case"): row for row in captured + architecture if isinstance(row, dict)}
+    if len(by_case) != len(captured) + len(architecture) or set(by_case) != {c["case"] for c in contracts}:
+        return {"status": "unavailable", "reason": "legacy_case_set_mismatch",
+                "paired_comparable": False, "rows": []}
+    rows = []
+    for contract in contracts:
+        source = by_case[contract["case"]]
+        if (source.get("query") != contract["query"]
+                or source.get("expected_path") != contract["expected_path"]
+                or not isinstance(source.get("symbols"), list)):
+            return {"status": "unavailable", "reason": "legacy_capture_contract_mismatch",
+                    "paired_comparable": False, "rows": []}
+        metrics = retrieval_metrics(
+            {"success": True, "symbols": source["symbols"]},
+            {contract["expected_path"]}, source_text_by_path, k=contract["k"],
+            expected_symbols=contract["expected_symbols"], intent=contract["intent"],
+        )
+        metrics["k"] = contract["k"]
+        rows.append({**contract, "metrics": metrics, "symbols": source["symbols"]})
+    return {"status": "regraded_limited_legacy_path_only", "paired_comparable": False,
+            "original_baseline_modified": False, "row_count": len(rows), "rows": rows}
 
 
 def main():
