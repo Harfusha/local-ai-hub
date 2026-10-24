@@ -126,6 +126,7 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
                        "terminal": True, "retryable": False,
                        "error": "compiled task goal requires artifact retrieval" if artifact_id else "compiled task goal artifact is unavailable",
                        "next_action": "read_task_context_artifact" if artifact_id else "request_smaller_context"})
+        context["next_action"] = result["next_action"]
     if context["success"] is not True or context["complete"] is not True:
         result.update({"success": False, "complete": False, "partial": True})
         if not result.get("error"):
@@ -144,4 +145,5 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
         else:
             result["error"] = "compiled context exceeds inline budget; its artifact is unavailable"
             result["next_action"] = "request_smaller_context"
+        context["next_action"] = result["next_action"]
     return result

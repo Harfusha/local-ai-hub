@@ -10,7 +10,6 @@ import types
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from io import BytesIO
-import pytest
 
 from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient
@@ -36,31 +35,51 @@ def test_auto_start_timeout_terminates_and_reaps_only_its_child(tmp_path, monkey
     class Child:
         pid = 43210
         returncode = None
+        wait_calls = 0
 
         def poll(self):
             return self.returncode
 
         def wait(self, timeout=None):
+            self.wait_calls += 1
             self.returncode = -15
             return self.returncode
 
     child = Child()
+    real_subprocess = client_module.subprocess
+
+    class ClientSubprocessProxy:
+        """Isolate only this client's Popen lookup from concurrent test subprocesses."""
+        def __getattr__(self, name):
+            return getattr(real_subprocess, name)
+
+        def Popen(self, *args, **kwargs):
+            launched.append((args, kwargs))
+            return child
+
+    def popen_managed(*args, **kwargs):
+        launched.append((args, kwargs))
+        return child
+
     monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
-    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: launched.append(child) or child)
-    monkeypatch.setattr(client_module, "popen_managed", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "subprocess", ClientSubprocessProxy())
+    monkeypatch.setattr(client_module, "popen_managed", popen_managed)
     monkeypatch.setattr(client_module, "retain_process_job_in_child", lambda process: process is child)
     monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
     monkeypatch.setattr(
         client_module,
         "terminate_tree",
-        lambda pid, **_kwargs: terminated.append(pid) or True,
+        lambda pid, **kwargs: terminated.append((pid, kwargs.get("process_handle"))) or True,
         raising=False,
     )
 
     assert client.ensure_server(timeout=0.05) is False
-    assert launched == [child]
-    assert terminated == [child.pid]
+    assert len(launched) == 1
+    argv = launched[0][0][0]
+    assert argv[-3:] == ["local_ai_hub.supervisor", "--config", client.config["_config_path"]]
+    assert terminated == [(child.pid, child)]
+    assert child.wait_calls == 1
     assert child.returncode is not None
 
 

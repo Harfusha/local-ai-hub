@@ -8,16 +8,13 @@ import pytest
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.client import HubClient
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
-from local_ai_hub.agent_memory import MemoryRecord, MemoryStatus
+from local_ai_hub.agent_memory import MemoryRecord
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 
 
 @pytest.fixture
 def running_app_client(tmp_path: Path):
     # Setup app with agent_state enabled and start it
-    from local_ai_hub.agent_events import AgentStateStore
-    from local_ai_hub.agent_tasks import TaskStore
-
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(f"""
 [server]
@@ -375,9 +372,16 @@ def test_http_agent_state_routes(running_app_client):
         http_server.APP = previous_app
 
 
-def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypatch, tmp_path):
+@pytest.mark.parametrize("repetitions", [1, 1200], ids=["inline", "artifact-required"])
+def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypatch, tmp_path, repetitions):
+    import json
     import local_ai_hub.mcp_server as mcp_mod
+    from local_ai_hub.artifacts import ArtifactStore
+    from local_ai_hub.context_delivery import attach_compiled_context_artifact
+
     captured = {}
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    full_text = "authoritative task facts\n" * repetitions
 
     class ContextClient:
         def post(self, path, payload, **kwargs):
@@ -390,7 +394,7 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
                 "task_id": payload["task_id"],
                 "context_id": "taskctx-1",
                 "etag": "etag-1",
-                "text": "authoritative task facts\n" * 1200,
+                "text": full_text,
                 "estimated_tokens": 3600,
                 "token_budget": payload["token_budget"],
                 "truncated": False,
@@ -403,7 +407,7 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
                 "omitted_sections": [],
                 "next_action": "use_compiled_context",
             }
-            return {
+            response = {
                 "success": True,
                 "complete": True,
                 "partial": False,
@@ -415,6 +419,10 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
                 "repo_revision": "rev-1",
                 "warnings": [],
             }
+            return attach_compiled_context_artifact(
+                response, artifacts, root=payload["root"],
+                coordination_id="project-1", session_id="session-1",
+            )
 
     monkeypatch.setattr(mcp_mod, "CLIENT", ContextClient())
     result = mcp_mod.local_ai_coord(
@@ -425,13 +433,43 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
         response_profile="compact",
     )
 
-    assert result["success"] is True
-    assert result["complete"] is True
+    inline = repetitions == 1
+    assert result["success"] is inline
+    assert result["complete"] is inline
+    assert result["partial"] is (not inline)
     assert result["context_id"] == "taskctx-1"
     assert result["etag"] == "etag-1"
     assert result["evidence_ids"] == ["E1", "E2"]
     assert result["task_context"]["context_id"] == "taskctx-1"
-    assert result["task_context"]["next_action"] == "use_compiled_context"
+    context = result["task_context"]
+    assert context["success"] is inline
+    assert context["complete"] is inline
+    assert context["next_action"] == (
+        "use_compiled_context" if inline else "read_task_context_artifact"
+    )
+    if inline:
+        assert context["text"] == full_text
+    else:
+        assert context["truncated"] is True
+        assert len(context["text"]) < len(full_text)
+        assert result["next_action"] == "read_task_context_artifact"
+    artifact_id = result["task_context_artifact_id"]
+    assert context["artifact_id"] == artifact_id
+    stored = artifacts.get(artifact_id, max_chars=50_000)
+    assert stored["success"] is True
+    record = json.loads(stored["text"])
+    assert record["text"].encode("utf-8") == full_text.encode("utf-8")
+    assert record["success"] is True
+    assert record["complete"] is True
+    assert record["partial"] is False
+    assert record["truncated"] is False
+    assert record["root"] == str(tmp_path)
+    assert record["coordination_id"] == "project-1"
+    assert record["task_id"] == "task-1"
+    assert record["session_id"] == "session-1"
+    assert record["context_id"] == "taskctx-1"
+    assert record["etag"] == "etag-1"
+    assert record["evidence_ids"] == ["E1", "E2"]
     assert captured["include_diagnostics"] is False
 
 
