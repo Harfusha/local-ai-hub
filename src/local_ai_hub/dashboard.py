@@ -3091,21 +3091,13 @@ function openRecordMemoryModal(){
           <div class="form-group">
             <label for="newMemScope">Scope</label>
             <select id="newMemScope">
-              <option value="task">Task</option>
-              <option value="session">Session</option>
-              <option value="repository" selected>Repository</option>
-              <option value="user">User</option>
-              <option value="system">System</option>
+              __MEMORY_CREATE_SCOPE_OPTIONS__
             </select>
           </div>
           <div class="form-group">
             <label for="newMemKind">Kind</label>
             <select id="newMemKind">
-              <option value="fact" selected>Fact</option>
-              <option value="decision">Decision</option>
-              <option value="preference">Preference</option>
-              <option value="pattern">Pattern</option>
-              <option value="negative_knowledge">Negative Knowledge</option>
+              __MEMORY_CREATE_KIND_OPTIONS__
             </select>
           </div>
         </div>
@@ -5342,7 +5334,7 @@ function renderAgentOsView(){
     const src=esc(m.source||'—');
     const dt=m.created_at?new Date(m.created_at*1000).toLocaleTimeString():'—';
     return clickableRow(m,`<td><span class="chip">${sc}</span></td><td><span class="chip">${kd}</span></td><td><strong>${k}</strong></td><td class="tiny mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(v)}</td><td class="tiny">${conf}</td><td class="tiny">${src}</td><td class="tiny">${dt}</td>`,'memory',(m.scope||'task')+':'+m.key);
-  },7);
+  },7,agentOsMemories.length?'No memories match the current filters.':'No memories recorded.');
 
   rows('agentOsIncBody',filteredInc,i=>{
     const id=esc(i.incident_id||'—');
@@ -6322,4 +6314,6 @@ from local_ai_hub.dashboard_contracts import RESIDENT_INVENTORY_JS, WORKSPACE_IN
 
 DASHBOARD_HTML = (DASHBOARD_HTML.replace("__MEMORY_SCOPE_OPTIONS__", memory_scope_options())
                   .replace("__MEMORY_KIND_OPTIONS__", memory_kind_options())
+                  .replace("__MEMORY_CREATE_SCOPE_OPTIONS__", memory_scope_options(include_all=False, selected="repository"))
+                  .replace("__MEMORY_CREATE_KIND_OPTIONS__", memory_kind_options(include_all=False, selected="fact"))
                   .replace("<script>", "<script>\n" + RESIDENT_INVENTORY_JS + WORKSPACE_INVENTORY_JS, 1))

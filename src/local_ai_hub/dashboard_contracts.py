@@ -34,16 +34,16 @@ def dashboard_settings_patch(requested: Any) -> dict[str, Any]:
     return patch
 
 
-def memory_scope_options() -> str:
-    return '<option value="">All scopes</option>' + "".join(
-        f'<option value="{escape(scope.value, quote=True)}">{escape(scope.value.title())}</option>'
+def memory_scope_options(*, include_all: bool = True, selected: str = "") -> str:
+    return ('<option value="">All scopes</option>' if include_all else '') + "".join(
+        f'<option value="{escape(scope.value, quote=True)}"{" selected" if scope.value == selected else ""}>{escape(scope.value.title())}</option>'
         for scope in AgentScope
     )
 
 
-def memory_kind_options() -> str:
-    return '<option value="">All kinds</option>' + "".join(
-        f'<option value="{escape(kind.value, quote=True)}">{escape(kind.value.replace("_", " ").title())}</option>'
+def memory_kind_options(*, include_all: bool = True, selected: str = "") -> str:
+    return ('<option value="">All kinds</option>' if include_all else '') + "".join(
+        f'<option value="{escape(kind.value, quote=True)}"{" selected" if kind.value == selected else ""}>{escape(kind.value.replace("_", " ").title())}</option>'
         for kind in MemoryKind
     )
 

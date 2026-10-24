@@ -70,6 +70,11 @@ def test_dashboard_memory_options_match_the_canonical_enums():
     parser.feed(DASHBOARD_HTML)
     assert parser.values["agentOsMemScope"] == {"", *(scope.value for scope in AgentScope)}
     assert parser.values["agentOsMemKind"] == {"", *(kind.value for kind in MemoryKind)}
+    modal = re.search(r"function openRecordMemoryModal\(\)\{.*?innerHTML=`(.*?)`;", DASHBOARD_HTML, re.S)
+    assert modal, "record-memory modal template must remain inspectable"
+    parser.feed(modal.group(1))
+    assert parser.values["newMemScope"] == {scope.value for scope in AgentScope}
+    assert parser.values["newMemKind"] == {kind.value for kind in MemoryKind}
 
 
 def test_dashboard_distinguishes_missing_empty_loaded_and_stale_inventory():
