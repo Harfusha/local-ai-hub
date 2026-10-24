@@ -583,7 +583,7 @@ def test_corrupt_record_and_deadline_fail_open_with_warning(tmp_path: Path, monk
 
     tasks.set_memory_adoption(memory_store=CorruptMemoryStore(), context_compiler=SlowCompiler())
     ticks = iter((10.0, 12.0))
-    monkeypatch.setattr(agent_tasks_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(agent_tasks_module.time, "monotonic", lambda: next(ticks, 100.0))
     overdue = tasks._task_memory_context(
         "deadline-task", GoalContract(goal="deadline lookup"), task_context(tmp_path, memory=memory),
         root_override=str(tmp_path),
