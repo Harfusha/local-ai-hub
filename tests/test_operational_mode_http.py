@@ -171,6 +171,19 @@ def test_admin_mode_control_remains_available_in_maintenance(monkeypatch, tmp_pa
 
 
 def test_gaming_cleanup_runs_outside_mode_guard_and_keeps_release_reserved(monkeypatch, tmp_path):
+    # Measure the cleanup/lock handshake independently of physical flush latency.
+    # The synchronous endpoint test below retains the real on-disk fsync gate.
+    saved_os = operational_mode.os
+
+    class NoPhysicalFsyncProxy:
+        def __getattr__(self, name):
+            return getattr(saved_os, name)
+
+        def fsync(self, _file_descriptor):
+            return None
+
+    monkeypatch.setattr(operational_mode, "os", NoPhysicalFsyncProxy())
+
     class LockingManager(_ModeManager):
         def __init__(self, state_dir):
             super().__init__(state_dir)
@@ -226,6 +239,82 @@ def test_gaming_cleanup_runs_outside_mode_guard_and_keeps_release_reserved(monke
 
     assert not transition.is_alive()
     assert responses[-1][0] == 200
+    assert manager.resource_release_active() is False
+    assert operational_mode.load_operational_mode(tmp_path).mode == "gaming"
+
+
+def test_gaming_endpoint_flushes_snapshot_before_cleanup_and_releases_reservation(monkeypatch, tmp_path):
+    events = []
+    observed = {}
+    saved_os = operational_mode.os
+
+    class ObservingOsProxy:
+        def __getattr__(self, name):
+            return getattr(saved_os, name)
+
+        def fsync(self, file_descriptor):
+            events.append("fsync-enter")
+            result = saved_os.fsync(file_descriptor)
+            events.append("real-fsync-returned")
+            return result
+
+    monkeypatch.setattr(operational_mode, "os", ObservingOsProxy())
+    monkeypatch.setattr(
+        http_server,
+        "_operational_mode_api",
+        lambda: SimpleNamespace(_empty_torch_cuda_cache=lambda _timeout: {"success": True}),
+    )
+
+    class LockingManager(_ModeManager):
+        def __init__(self, state_dir):
+            super().__init__(state_dir)
+            self.mode_lock = threading.Lock()
+
+        @contextmanager
+        def operational_mode_change_guard(self):
+            with self.mode_lock:
+                self.mode_change_guard_active = True
+                try:
+                    yield
+                finally:
+                    self.mode_change_guard_active = False
+
+    manager = LockingManager(tmp_path)
+
+    class ObservingRuntime(_OllamaRuntime):
+        def unload_configured_models(self, *, timeout_seconds, should_stop=None, deadline=None):
+            observed.update(
+                fsync_completed_before_cleanup=events[-1:] == ["real-fsync-returned"],
+                cleanup_outside_mode_guard=manager.mode_change_guard_active is False,
+                release_reserved_during_cleanup=manager.resource_release_active() is True,
+                gaming_snapshot_persisted_before_cleanup=(
+                    operational_mode.load_operational_mode(tmp_path).mode == "gaming"
+                ),
+            )
+            events.append("cleanup")
+            return super().unload_configured_models(
+                timeout_seconds=timeout_seconds, should_stop=should_stop, deadline=deadline
+            )
+
+    runtime = ObservingRuntime(["fast:latest"])
+    handler, _app, responses = _handler(
+        monkeypatch, tmp_path, method="POST", path="/api/admin/mode",
+        payload={"mode": "gaming"}, manager=manager, runtime=runtime,
+    )
+
+    http_server.Handler.do_POST(handler)
+
+    assert events == ["fsync-enter", "real-fsync-returned", "cleanup"]
+    assert observed == {
+        "fsync_completed_before_cleanup": True,
+        "cleanup_outside_mode_guard": True,
+        "release_reserved_during_cleanup": True,
+        "gaming_snapshot_persisted_before_cleanup": True,
+    }
+    assert manager.release_guard_states == [True]
+    assert responses[-1][0] == 200
+    assert responses[-1][1]["mode"] == "gaming"
+    assert operational_mode.load_operational_mode(tmp_path).mode == "gaming"
     assert manager.resource_release_active() is False
 
 

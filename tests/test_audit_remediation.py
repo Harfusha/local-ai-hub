@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import tomllib
@@ -92,7 +93,7 @@ class _Scheduler:
 def manager_for(tmp_path, executor):
     return AsyncJobManager({"server": {"state_dir": str(tmp_path / "state")}}, _Scheduler(), _Artifacts(), executor)
 
-def test_old_async_attempt_cannot_overwrite_new_result(tmp_path):
+def test_old_async_attempt_cannot_overwrite_new_result(tmp_path, monkeypatch):
     started = threading.Event()
     release_old = threading.Event()
     new_finished = threading.Event()
@@ -110,7 +111,25 @@ def test_old_async_attempt_cannot_overwrite_new_result(tmp_path):
         new_finished.set()
         return {"success": True, "value": "new"}
     manager = manager_for(tmp_path, execute)
+    anchor = None
     try:
+        memory_uri = f"file:async-race-{uuid.uuid4().hex}?mode=memory&cache=shared"
+
+        def connect_shared_memory():
+            con = sqlite3.connect(
+                memory_uri, uri=True, timeout=0.75, isolation_level="DEFERRED"
+            )
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("PRAGMA busy_timeout=750")
+            con.execute("PRAGMA synchronous=NORMAL")
+            return con
+
+        anchor = connect_shared_memory()
+        with closing(sqlite3.connect(str(manager.path), timeout=0.75)) as initialized_disk_db:
+            initialized_disk_db.backup(anchor)
+        monkeypatch.setattr(manager, "_connect", connect_shared_memory)
+
         submission = manager.submit("reason", {"task": "audit", "request_id": "audit-isolated-stale"})
         assert submission["success"] is True, submission
         job_id = submission["job_id"]
@@ -133,7 +152,58 @@ def test_old_async_attempt_cannot_overwrite_new_result(tmp_path):
         assert after.get("result", {}).get("value") == "new", {"before": before, "after": after}
     finally:
         release_old.set()
-        manager.close()
+        with manager._lock:
+            owned_threads = list(manager._dispatchers | manager._workers | set(manager._resource_release_workers.values()))
+        try:
+            manager.close()
+        finally:
+            try:
+                for worker in owned_threads:
+                    worker.join(timeout=5)
+                    assert not worker.is_alive(), "bounded stale-attempt worker cleanup failed"
+            finally:
+                if anchor is not None:
+                    anchor.close()
+
+
+def test_default_manager_persists_running_claim_and_terminal_result_on_disk(tmp_path, monkeypatch):
+    observed_running_rows = []
+    manager = None
+    try:
+        def execute(_action, _payload):
+            with closing(sqlite3.connect(str(manager.path), timeout=0.75)) as observer:
+                row = observer.execute(
+                    "SELECT state,attempts,lease_until FROM async_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()
+            assert row is not None, "executor must observe its committed job claim"
+            assert row[0] == "running", row
+            assert row[1] == 1, row
+            assert row[2] > time.time(), row
+            observed_running_rows.append(tuple(row))
+            return {"success": True, "value": "durable-result"}
+
+        manager = manager_for(tmp_path, execute)
+        monkeypatch.setattr(manager, "_dispatch", lambda *_args, **_kwargs: None)
+        submission = manager.submit("reason", {"task": "durable claim acceptance"})
+        assert submission["success"] is True, submission
+        job_id = submission["job_id"]
+
+        manager._execute(job_id)
+
+        assert len(observed_running_rows) == 1
+        with closing(sqlite3.connect(str(manager.path), timeout=0.75)) as independent_reader:
+            row = independent_reader.execute(
+                "SELECT state,attempts,result_json FROM async_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "done", row
+        assert row[1] == 1, row
+        assert json.loads(row[2])["value"] == "durable-result", row
+    finally:
+        if manager is not None:
+            manager.close()
 
 def test_async_success_requires_boolean_true(tmp_path):
     manager = manager_for(tmp_path, lambda action, payload: {"success": "false", "text": "invalid envelope"})
@@ -189,8 +259,6 @@ def test_old_async_attempt_does_not_clean_new_attempt_processes(tmp_path):
         manager.tick()
         assert new_started.wait(3)
         release_old.set()
-        with manager._lock:
-            workers = list(manager._workers)
         deadline = time.monotonic() + 3
         while not old_process.stopped and time.monotonic() < deadline:
             time.sleep(0.005)

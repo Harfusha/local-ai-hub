@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import signal
-import socket
 import statistics
 import subprocess
 import sys
@@ -222,7 +221,16 @@ def test_overlapping_repeatable_calls_execute_once_and_return_same_result(tmp_pa
 
 
 def test_inflight_waiter_is_not_reported_as_cache_hit(tmp_path, monkeypatch) -> None:
+    from local_ai_hub.cache import MemoryLRUCache, TieredCache
+
     broker = _broker(tmp_path)
+    # Keep the production TieredCache and L1/L2 operations real while removing
+    # SQLite publication latency from this in-flight flag contract.
+    broker.success_cache = TieredCache(
+        MemoryLRUCache(max_entries=256, ttl_seconds=43200),
+        l1_entries=256,
+        l1_ttl_seconds=43200,
+    )
     command = "python -m pytest -q"
     monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
     execution_started = threading.Event()
@@ -275,6 +283,40 @@ def test_inflight_waiter_is_not_reported_as_cache_hit(tmp_path, monkeypatch) -> 
     assert results["waiter"]["cache_hit"] is False
     assert results["waiter"]["coalesced"] is True
     assert results["waiter"]["stdout"] == results["producer"]["stdout"] == "in-flight-result\n"
+
+
+def test_success_cache_persists_across_independent_brokers(tmp_path, monkeypatch) -> None:
+    repo_state = _RevisionState()
+    first_broker = _broker(tmp_path, repo_state)
+    second_broker = _broker(tmp_path, repo_state)
+    command = "python -m pytest -q"
+    executions: list[str] = []
+
+    for broker in (first_broker, second_broker):
+        monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
+
+    def execute(_command, _cwd, _timeout, cancel_event=None, log_callback=None):
+        executions.append("executed")
+        return _execution_result("disk-persisted-result\n")
+
+    monkeypatch.setattr(first_broker, "_execute", execute)
+    monkeypatch.setattr(
+        second_broker, "_execute",
+        lambda *_args, **_kwargs: pytest.fail("second broker should use persisted success cache"),
+    )
+
+    first = first_broker.run(command, str(tmp_path))
+    second = second_broker.run(command, str(tmp_path))
+
+    assert first["success"] is True
+    assert first["cache_hit"] is False
+    assert second["success"] is True
+    assert second["cache_hit"] is True
+    assert second["coalesced"] is False
+    assert (first["exit_code"], first["stdout"], first["stderr"]) == (
+        second["exit_code"], second["stdout"], second["stderr"]
+    ) == (0, "disk-persisted-result\n", "")
+    assert executions == ["executed"]
 
 
 def test_repository_revision_change_during_flight_uses_distinct_execution(tmp_path, monkeypatch) -> None:
