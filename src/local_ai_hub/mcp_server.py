@@ -955,12 +955,13 @@ def _code_index_page_with_prefix(
         raw_coverage = raw.get("coverage") if isinstance(raw.get("coverage"), dict) else {}
         declared_count = raw_coverage.get("query_term_count")
         query_term_count = len(terms) if terms else declared_count if type(declared_count) is int and declared_count >= 0 else 0
+        coverage_available = 0 < query_term_count and len(matched_terms) <= query_term_count
         candidate["coverage"] = {
             "query_term_count": query_term_count,
             "matched_term_count": len(matched_terms),
             "matched_terms": matched_terms,
-            "query_term_coverage": min(1.0, round(len(matched_terms) / query_term_count, 3)) if query_term_count else 0.0,
-            "coverage_available": query_term_count > 0,
+            "query_term_coverage": round(len(matched_terms) / query_term_count, 3) if coverage_available else 0.0,
+            "coverage_available": coverage_available,
             "candidate_match_count": total,
             "returned_symbol_count": count,
             "complete": False,
