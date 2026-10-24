@@ -66,7 +66,7 @@ def _refresh_windows_sample() -> None:
             parsed = json.loads(completed.stdout)
             if isinstance(parsed, dict):
                 sample = parsed
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         _LOGGER.debug("Windows hardware sample unavailable (%s)", type(exc).__name__)
     finally:
         with _WINDOWS_LOCK:

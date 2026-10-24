@@ -5360,6 +5360,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         post_route_ids = select_http_routes("POST", path)
         if not post_route_ids:
+            try:
+                limit = max(1024, int(APP.config.get("server", {}).get("max_request_body_bytes", 16 * 1024 * 1024))) if APP is not None else (16 * 1024 * 1024)
+                self._read_body(limit=limit)
+            except Exception:
+                pass
             self._send(404, {
                 "success": False,
                 "error": "route not found",
