@@ -1217,6 +1217,19 @@ class AsyncJobManager:
                 (job_id,),
             ).fetchone()
             now = time.time()
+            if (owner is not None and owner[0] == "running"
+                    and int(owner[1]) == int(row["attempts"]) + 1
+                    and float(owner[3]) <= now):
+                # TTL expiry is terminal for this owned attempt. Rejecting its
+                # result alone would leave a completed worker reported running.
+                cleanup_unknown = (
+                    not cleanup_confirmed or result.get("cleanup_unconfirmed")
+                    or result.get("outcome_unknown")
+                )
+                return self._expire_owned_attempt(
+                    con, job_id=job_id, attempt=int(row["attempts"]) + 1,
+                    now=now, cleanup_unknown=bool(cleanup_unknown),
+                )
             if (owner is None or owner[0] != "running"
                     or int(owner[1]) != int(row["attempts"]) + 1
                     or float(owner[2]) <= now or float(owner[3]) <= now):
@@ -1272,7 +1285,12 @@ class AsyncJobManager:
                     artifact_id = str(stored_id or "").strip()
                 except Exception:
                     pass
-                if time.time() >= min(float(owner[2]), float(owner[3])):
+                now = time.time()
+                if now >= float(owner[3]):
+                    return self._expire_owned_attempt(
+                        con, job_id=job_id, attempt=int(row["attempts"]) + 1, now=now,
+                    )
+                if now >= float(owner[2]):
                     return {"success": False, "job_id": job_id, "error": "async job attempt expired during finalization", "error_code": "stale_attempt", "terminal": True, "retryable": False}
                 if not self._result_artifact_available(artifact_id):
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": "async job result artifact unavailable", "terminal": True, "retryable": False}
@@ -1350,6 +1368,32 @@ class AsyncJobManager:
         self._event(job_id).set()
         if deferred_for_resource_release:
             self._defer_until_resource_release_finishes(job_id)
+        return final
+
+    def _expire_owned_attempt(
+        self, con: sqlite3.Connection, *, job_id: str, attempt: int,
+        now: float, cleanup_unknown: bool = False,
+    ) -> dict[str, Any]:
+        """Persist TTL expiry only while the caller holds this attempt's writer fence."""
+        state = "outcome_unknown" if cleanup_unknown else "expired"
+        final = {
+            "success": False, "state": state,
+            "error": "async process cleanup unconfirmed" if cleanup_unknown else "async job expired before finalization",
+            "error_code": "stale_attempt", "terminal": True, "retryable": False,
+        }
+        if cleanup_unknown:
+            final["outcome_unknown"] = True
+        changed = con.execute(
+            "UPDATE async_jobs SET state=?,result_json=?,artifact_id='',error=?,lease_until=0,dispatch_not_before=0,updated_at=? "
+            "WHERE job_id=? AND state='running' AND attempts=? AND expires_at<=?",
+            (state, json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"],
+             now, job_id, attempt, now),
+        ).rowcount
+        if changed != 1:
+            return {"success": False, "job_id": job_id, "error": "async job attempt ownership lost",
+                    "error_code": "stale_attempt", "terminal": True, "retryable": False}
+        con.commit()
+        self._event(job_id).set()
         return final
 
     def _invoke_executor_if_allowed(
