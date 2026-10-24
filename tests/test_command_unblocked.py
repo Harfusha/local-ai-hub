@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from local_ai_hub.commands import CommandBroker
-from local_ai_hub.process_utils import hidden_run_kwargs
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
 
@@ -53,6 +52,7 @@ def _register_task_worktree(broker, tmp_path):
     broker.set_task_store(_TaskStore(tmp_path))
     install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
     broker._transaction_docker_ready = lambda: (True, "")
+    broker._validate_registered_git_worktree = lambda _registered, _worktree: None
     broker._run_private_transaction = (
         lambda cmd, cwd, cancel_event=None, **kwargs: broker._execute(
             cmd, cwd, 30, cancel_event
@@ -147,22 +147,28 @@ def test_concurrent_mutating_commands_keep_separate_active_entries(tmp_path, mon
         )
         for _ in range(2)
     ]
-    for worker in workers:
-        worker.start()
-    assert started[0].wait(2)
-    assert started[1].wait(2)
-    assert broker.stats()["active_count"] == 2
+    try:
+        for worker in workers:
+            worker.start()
+        assert started[0].wait(2)
+        assert started[1].wait(2)
+        assert broker.stats()["active_count"] == 2
 
-    release[0].set()
-    deadline = time.monotonic() + 2
-    while broker.stats()["active_count"] != 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert broker.stats()["active_count"] == 1
+        release[0].set()
+        deadline = time.monotonic() + 2
+        while broker.stats()["active_count"] != 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert broker.stats()["active_count"] == 1
 
-    release[1].set()
-    for worker in workers:
-        worker.join(5)
-    assert all(not worker.is_alive() for worker in workers)
+        release[1].set()
+        for worker in workers:
+            worker.join(5)
+        assert all(not worker.is_alive() for worker in workers)
+    finally:
+        for r in release:
+            r.set()
+        for worker in workers:
+            worker.join(5)
 
 
 def test_concurrent_mutating_commands_require_exact_execution_id_for_cancel(tmp_path, monkeypatch):
