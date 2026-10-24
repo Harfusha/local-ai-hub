@@ -5,7 +5,7 @@ Status: IN PROGRESS. Complete release acceptance is unproved; the existing Codex
 
 ## Current source and installation
 
-- Branch: `master`; source candidate `b143d0014a842cba8c70dfe8ddc3f911247dea77`, evidence-documentation checkpoint `312123c0`. Later documentation commits do not change these package payloads.
+- Branch: `master`; installed runtime payload from `b143d0014a842cba8c70dfe8ddc3f911247dea77`. Later documentation and separate-process budget regression changes are explicit checkout deltas. The old wheel runtime payload is unchanged; its matching old sdist does not contain the new test and is not a source release of the whole current checkout.
 - Canonical checkout: `C:/Users/Adam/.local-ai-hub`. Main owns Git, commands and runtime. Archived former workers remain archived; bounded Luna subagents implement disjoint work only.
 - The operator intentionally deleted old runtime state and recovery data. Do not restore history, old task counters or databases. Preserve configuration and new post-reset records.
 - Current wheel SHA: `1f5859278e59346b30bcb1edc279e03c435686ccb4a83e4e3a838dc7d9e30d88`; sdist SHA: `83d3b0593f9eb4ffdba1b357344bc9c067bab10df39731c30b6ea60b5ea8b98f`.
@@ -16,6 +16,7 @@ Status: IN PROGRESS. Complete release acceptance is unproved; the existing Codex
 
 - Complete-suite baseline: 11,849 unique nodes, 11,734 PASS / 115 SKIP / 0 FAIL / 0 ERROR, candidate `b7b00601e04968b69b1806e6f2ff36a784e018618354d78d25e4e8983dab7210`. Later source deltas are separate; no claim that this was a full run of b143d001 bytes.
 - Later genuine regressions include 15 SDK explicit-root tests and 37 diagram/dashboard tests. Current release check, compileall and selftest passed with stable sources and unchanged configuration.
+- F03/F04 now have actual separate-process durable verification: 25-PASS combined budget cohort, including two concurrent child processes and exhausted-row read/write fault cases; zero failures/errors/skips, no timeout/config drift. Policy source is unchanged. This closes those source/test findings, not full release acceptance.
 - Actual diagram dialog opened/closed on desktop 1440x1000 and mobile 390x844. Installed-model/no-download notice precedes Run. No upload, capture or inference was submitted. One bounded nontruncated opening interval contained only a GET. Ordinary-dialog reset is covered by executed Node regression, not additional live browser proof.
 - Earlier eleven-panel/detail traffic measurements remain bound to their earlier dashboard source; no controlled before/after performance or current model-quality result is claimed.
 - Thirteen new control-database online backups were made before activation. All file identities/configuration hashes and integrity checks matched. Initial retention comparison FAILED and remains retained. Later semantic comparison found no missing canonical keys: source index 12,029 to 12,037; RAG chunks 34,486 to 34,570; five task documents preserved. Both FTS families matched canonical keys and producer-format text hashes exactly; trigram differences matched one changed task document. There were 9 changed source texts and 115 changed chunk texts during live activity. This establishes current semantic consistency, not historical SQL cause, immutable content preservation or a complete data-preservation PASS.
