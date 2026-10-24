@@ -8,6 +8,7 @@ import contextvars
 import queue
 import math
 import os
+import sys
 import threading
 import tempfile
 import time
@@ -675,8 +676,11 @@ class TaskStore:
     def _run_memory_lookup_jobs(jobs: queue.Queue[Any], slots: threading.BoundedSemaphore) -> None:
         # A stuck backend occupies this single daemon worker/slot, never a
         # growing executor queue or a non-daemon interpreter shutdown hook.
-        while True:
-            job = jobs.get()
+        while not sys.is_finalizing():
+            try:
+                job = jobs.get(timeout=0.25)
+            except queue.Empty:
+                continue
             if job is None:
                 jobs.task_done()
                 return

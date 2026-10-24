@@ -45,6 +45,8 @@ def test_canonical_refactor_arguments_reach_http(tmp_path, monkeypatch, argument
 def test_explicit_empty_refactor_name_is_not_replaced_by_legacy_alias(tmp_path, monkeypatch):
     _use_active_mode(monkeypatch)
     monkeypatch.setattr(mcp_server.FEATURES, 'repo', True)
+    monkeypatch.setattr(mcp_server, '_record_tool_accounting', lambda **_: None)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda _event: None)
     calls = []
     monkeypatch.setattr(mcp_server, 'CLIENT', SimpleNamespace(post=lambda *a, **kw: calls.append(a)))
     result = mcp_server.local_ai_repo(
