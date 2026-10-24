@@ -1,5 +1,7 @@
 # Audit Remediation Implementation Plan
 
+> **Current acceptance:** [short main-owned status](local-ai-hub-current-status.md). Historical candidate and owner statements below are retained evidence, not the current release verdict.
+
 > **2026-10-23 ownership and remaining-work update:** main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff` has taken over all Git/CPU/runtime work. The former integrator was stopped and handed off at master `1e54a5e2`. Follow [the complete takeover plan](2026-10-23-main-chat-takeover.md) for the effective goal, current evidence, every F01–F24/R01–R16 gate and remaining acceptance. Earlier owner assignments and candidate summaries below are historical; retain them as evidence, not current production acceptance.
 
 > **2026-10-24 clean-state clarification:** the operator confirmed intentionally deleting the old state/recovery copy to obtain a clean state. Do not restore the former databases, history or counters. Preservation now concerns configuration and records created after that reset; earlier E6 preservation failures remain historical evidence. Current package/runtime observations and their limits are in the takeover plan. Neither those observations nor the mutable preprocessing-cache disposition closes the full F/R or 100-item scope.
