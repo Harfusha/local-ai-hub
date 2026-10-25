@@ -51,3 +51,40 @@ def test_unknown_fallback_zero_is_not_measured_capacity():
     assert result["state"] == "degraded"
     assert result["resource_sample"]["available"] is False
     assert all(value is None for value in result["resource_sample"]["measured_basis"].values())
+
+def test_vram_balancer_preserves_sample_timestamp_and_age_when_provided():
+    import time
+    from local_ai_hub.vram_balancer import VRAMBalancer
+
+    balancer = VRAMBalancer({"models": {}})
+    now = time.time() - 0.5
+    status = balancer._status_from_telemetry({
+        "available": True,
+        "vendor": "nvidia",
+        "gpu_name": "RTX",
+        "vram_total_mb": 16000.0,
+        "vram_used_mb": 4000.0,
+        "vram_available_mb": 12000.0,
+        "vram_used_pct": 25.0,
+        "timestamp": now,
+    })
+    assert status["sample_timestamp"] == now
+    assert isinstance(status["sample_age_seconds"], float)
+    assert status["sample_age_seconds"] >= 0.0
+
+    # Fallback or missing timestamp leaves them as None
+    fallback = balancer._sampling_timeout_fallback_locked()
+    assert fallback["sample_timestamp"] is None
+    assert fallback["sample_age_seconds"] is None
+
+    status_no_ts = balancer._status_from_telemetry({
+        "available": True,
+        "vendor": "nvidia",
+        "gpu_name": "RTX",
+        "vram_total_mb": 16000.0,
+        "vram_used_mb": 4000.0,
+        "vram_available_mb": 12000.0,
+        "vram_used_pct": 25.0,
+    })
+    assert status_no_ts["sample_timestamp"] is None
+    assert status_no_ts["sample_age_seconds"] is None

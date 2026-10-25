@@ -30,7 +30,7 @@ jobs:
           $discovery | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $directory 'compiler.json')
           Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}/Windows Kits/10/Include" | Select-Object Name | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $directory 'sdk.json')
       - name: Install isolated experiment Python dependencies
-        run: python -m pip install -e ".[dev]" "Cython>=3,<4"
+        run: python -m pip install -e ".[dev]" "Cython>=3,<4" "setuptools>=75"
       - name: Build and measure in three fresh processes
         shell: pwsh
         run: |
@@ -41,7 +41,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Native build/parity failed; actual record retained: $output" }
             $result = Get-Content -LiteralPath $output -Raw | ConvertFrom-Json
             if ($result.success -ne $true) { throw 'Experiment record failed' }
-            $summary = @{process=$_; parity=$result.parity; provenance=$result.provenance; samples=$result.current_production_adapter_samples.Count; whole_workflow_measured=$result.whole_workflow_measured; production_enabled=$result.production_enabled} | ConvertTo-Json -Depth 8 -Compress
+            $summary = @{process=$_; parity=$result.parity; provenance=$result.provenance; samples=$result.current_production_adapter_samples.Count; whole_workflow_measured=$result.whole_workflow_measured; kernel_gate_met=$result.kernel_gate_met; workflow_gate_met=$result.workflow_gate_met; overall_adoption_recommended=$result.overall_adoption_recommended; production_enabled=$result.production_enabled} | ConvertTo-Json -Depth 8 -Compress
             Write-Output "::notice title=Native experiment evidence::$summary"
           }
           git diff --exit-code

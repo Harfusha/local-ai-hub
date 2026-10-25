@@ -68,3 +68,17 @@ def test_experiment_adapter_matches_production_with_mathematical_fixture():
     module = SimpleNamespace(simhash_votes=experiment._python_votes)
     result = experiment._check_parity(module)
     assert result == {"uint64_cases": 11, "production_text_cases": 11}
+
+def test_indexing_workflow_measures_parity_and_schema():
+    module = SimpleNamespace(simhash_votes=experiment._python_votes)
+    results = experiment._measure_indexing_workflow(module, chunk_counts=(20,))
+    assert len(results) == 2  # cold and warm
+    for item in results:
+        assert item["chunk_count"] == 20
+        assert item["regime"] in ("cold", "warm")
+        assert "simhash_speedup" in item
+        assert "workflow_wall_reduction_pct" in item
+        assert "workflow_cpu_reduction_pct" in item
+        assert "simhash_share_of_workflow_pct" in item
+        assert "kernel_gate_met" in item
+        assert "workflow_gate_met" in item

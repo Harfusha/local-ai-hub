@@ -159,6 +159,8 @@ class VRAMBalancer:
         result["telemetry_stale"] = True
         result["telemetry_wait_timed_out"] = True
         result["telemetry_error"] = "sample_wait_timeout"
+        result["sample_timestamp"] = None
+        result["sample_age_seconds"] = None
         if self._pinned_model and self._pin_expires > now:
             result["pinned_model"] = {
                 "model": self._pinned_model,
@@ -185,6 +187,8 @@ class VRAMBalancer:
                 result = self._sampling_timeout_fallback_locked()
                 result["telemetry_wait_timed_out"] = False
                 result["telemetry_error"] = reason
+                result["sample_timestamp"] = None
+                result["sample_age_seconds"] = None
                 self._last_status = result
                 self._last_check_time = now
                 self._status_generation += 1
@@ -366,8 +370,22 @@ class VRAMBalancer:
             target_model = str(models_cfg.get("fast_code", "qwen2.5-coder:1.5b"))
             draft_model = str(models_cfg.get("draft_code", "qwen2.5-coder:3b"))
 
+            sample_ts = gpu.get("timestamp")
+            if (
+                isinstance(sample_ts, (int, float))
+                and not isinstance(sample_ts, bool)
+                and math.isfinite(sample_ts)
+            ):
+                sample_timestamp = float(sample_ts)
+                sample_age_seconds = max(0.0, round(time.time() - sample_timestamp, 4))
+            else:
+                sample_timestamp = None
+                sample_age_seconds = None
+
             res = {
                 "available": available,
+                "sample_timestamp": sample_timestamp,
+                "sample_age_seconds": sample_age_seconds,
                 "gpu_name": gpu.get("gpu_name", "GPU"),
                 "vendor": gpu.get("vendor", "unknown"),
                 "vram_total_mb": total_mb,

@@ -13,6 +13,7 @@ import time
 from array import array
 from pathlib import Path
 from contextlib import nullcontext
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,7 +102,121 @@ def _check_parity(module) -> dict[str, int]:
     return {"uint64_cases": len(vectors), "production_text_cases": len(texts)}
 
 
-def run(iterations: int = 20, hash_count: int = 20000, *, work_dir: Path | None = None) -> dict[str, object]:
+def _generate_synthetic_chunks(count: int) -> list[str]:
+    rnd = random.Random(20261025)
+    templates = [
+        "def process_record_{i}(data: dict[str, int]) -> bool:\n    # validate data payload\n    value = data.get('key_{k}', {val})\n    return value > 0 and len(data) < {limit}\n",
+        "class ModelConfig_{i}:\n    # Configuration block {i} for indexing candidate\n    dimension: int = {dim}\n    context_window: int = {ctx}\n    batch_size: int = {batch}\n",
+        "async def handle_request_{i}(session_id: str, payload: bytes) -> dict[str, str]:\n    # ensure security and bounds\n    token = hashlib.sha256(payload).hexdigest()\n    return {{'status': 'ok', 'token': token, 'session': session_id}}\n",
+        "# Implementation detail for chunk {i}\n# This block verifies hash alignment across systems.\nCONST_{i} = 0x{hex_val}\n",
+    ]
+    chunks = []
+    base_pool = []
+    for i in range(count):
+        if base_pool and rnd.random() < 0.05:
+            base = rnd.choice(base_pool)
+            chunks.append(base + f"\n    # near-duplicate revision {i}\n")
+        else:
+            tmpl = templates[i % len(templates)]
+            chunk = tmpl.format(
+                i=i, k=i % 16, val=i * 7, limit=100 + (i % 50),
+                dim=256 + (i % 8) * 64, ctx=4096 * (1 + (i % 4)), batch=16 * (1 + (i % 8)),
+                hex_val=f"{i * 31337:08x}",
+            )
+            chunk = chunk * (1 + (i % 3))
+            chunks.append(chunk)
+            if len(base_pool) < 200:
+                base_pool.append(chunk)
+    return chunks
+
+
+def _measure_indexing_workflow(module, chunk_counts: tuple[int, ...]) -> list[dict[str, Any]]:
+    from local_ai_hub.rag import _simhash, _simhash_shingle_hash, _fragment_hash
+
+    results = []
+    for count in chunk_counts:
+        chunks = _generate_synthetic_chunks(count)
+        for regime in ("cold", "warm"):
+            if regime == "cold":
+                _simhash_shingle_hash.cache_clear()
+
+            seen_py: list[int] = []
+            records_py: list[tuple[str, int]] = []
+            near_dup_py = 0
+            sh_wall_py = 0.0
+            sh_cpu_py = 0.0
+            wf_wall_start, wf_cpu_start = time.perf_counter(), time.process_time()
+            for chunk in chunks:
+                t0, c0 = time.perf_counter(), time.process_time()
+                fp = _simhash(chunk)
+                sh_wall_py += (time.perf_counter() - t0)
+                sh_cpu_py += (time.process_time() - c0)
+                if fp != 0 and any((fp ^ s_fp).bit_count() <= 4 for s_fp in seen_py):
+                    near_dup_py += 1
+                    continue
+                if fp != 0:
+                    seen_py.append(fp)
+                records_py.append((_fragment_hash(chunk), len(chunk)))
+            wf_wall_py = (time.perf_counter() - wf_wall_start) * 1000.0
+            wf_cpu_py = (time.process_time() - wf_cpu_start) * 1000.0
+            sh_wall_py *= 1000.0
+            sh_cpu_py *= 1000.0
+
+            if regime == "cold":
+                _simhash_shingle_hash.cache_clear()
+
+            seen_native: list[int] = []
+            records_native: list[tuple[str, int]] = []
+            near_dup_native = 0
+            sh_wall_native = 0.0
+            sh_cpu_native = 0.0
+            wf_wall_start, wf_cpu_start = time.perf_counter(), time.process_time()
+            for chunk in chunks:
+                t0, c0 = time.perf_counter(), time.process_time()
+                fp = _native_simhash(chunk, module)
+                sh_wall_native += (time.perf_counter() - t0)
+                sh_cpu_native += (time.process_time() - c0)
+                if fp != 0 and any((fp ^ s_fp).bit_count() <= 4 for s_fp in seen_native):
+                    near_dup_native += 1
+                    continue
+                if fp != 0:
+                    seen_native.append(fp)
+                records_native.append((_fragment_hash(chunk), len(chunk)))
+            wf_wall_native = (time.perf_counter() - wf_wall_start) * 1000.0
+            wf_cpu_native = (time.process_time() - wf_cpu_start) * 1000.0
+            sh_wall_native *= 1000.0
+            sh_cpu_native *= 1000.0
+
+            if seen_py != seen_native:
+                raise RuntimeError(f"SimHash fingerprints mismatch at chunk count {count} ({regime})")
+            if near_dup_py != near_dup_native or records_py != records_native:
+                raise RuntimeError(f"Deduplicated records mismatch at chunk count {count} ({regime})")
+
+            sh_speedup = round(sh_wall_py / max(sh_wall_native, 0.001), 3)
+            wall_reduction = round((wf_wall_py - wf_wall_native) / max(wf_wall_py, 0.001) * 100.0, 2)
+            cpu_reduction = round((wf_cpu_py - wf_cpu_native) / max(wf_cpu_py, 0.001) * 100.0, 2)
+            sh_fraction = round(sh_wall_py / max(wf_wall_py, 0.001) * 100.0, 2)
+
+            results.append({
+                "chunk_count": count,
+                "regime": regime,
+                "chunks_processed": len(chunks),
+                "near_duplicates_skipped": near_dup_py,
+                "records_indexed": len(records_py),
+                "python_simhash_wall_ms": round(sh_wall_py, 2),
+                "native_simhash_wall_ms": round(sh_wall_native, 2),
+                "simhash_speedup": sh_speedup,
+                "python_workflow_wall_ms": round(wf_wall_py, 2),
+                "native_workflow_wall_ms": round(wf_wall_native, 2),
+                "workflow_wall_reduction_pct": wall_reduction,
+                "workflow_cpu_reduction_pct": cpu_reduction,
+                "simhash_share_of_workflow_pct": sh_fraction,
+                "kernel_gate_met": sh_speedup >= 3.0,
+                "workflow_gate_met": wall_reduction >= 15.0 or cpu_reduction >= 20.0,
+            })
+    return results
+
+def run(iterations: int = 20, hash_count: int = 20000, *, chunk_counts: tuple[int, ...] = (1000, 10000), work_dir: Path | None = None) -> dict[str, object]:
     if type(iterations) is not int or not 1 <= iterations <= 200:
         raise ValueError("iterations must be between 1 and 200")
     if type(hash_count) is not int or not 64 <= hash_count <= 200000:
@@ -156,6 +271,15 @@ def run(iterations: int = 20, hash_count: int = 20000, *, work_dir: Path | None 
             if pair["production"]["value"] != pair["native_adapter"]["value"]:
                 raise RuntimeError("Cython measured production parity failed")
             samples.append(pair)
+        indexing_workflow = _measure_indexing_workflow(module, chunk_counts)
+        kernel_gate_met = all(s["kernel_gate_met"] for s in indexing_workflow) if indexing_workflow else False
+        workflow_gate_met = any(s["workflow_gate_met"] for s in indexing_workflow) if indexing_workflow else False
+        overall_adoption_recommended = bool(kernel_gate_met and workflow_gate_met)
+        recommendation_reason = (
+            "Both kernel and whole-workflow threshold met"
+            if overall_adoption_recommended
+            else "Kernel speedup or whole-workflow gain below threshold; retain Python reference"
+        )
         binary = Path(module.__file__).resolve(strict=True)
         provenance = {"binary_path": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                       "cython_source_sha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
@@ -176,7 +300,12 @@ def run(iterations: int = 20, hash_count: int = 20000, *, work_dir: Path | None 
         "current_production_adapter_samples": samples,
         "cache_regime": "shingle_hash_cache_cleared_before_each_arm",
         "os_cache_cleared": False,
-        "whole_workflow_measured": False,
+        "whole_workflow_measured": True,
+        "indexing_workflow": indexing_workflow,
+        "kernel_gate_met": kernel_gate_met,
+        "workflow_gate_met": workflow_gate_met,
+        "overall_adoption_recommended": overall_adoption_recommended,
+        "recommendation_reason": recommendation_reason,
         "provenance": provenance,
         "production_enabled": False,
     }
@@ -186,13 +315,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build and benchmark the optional Cython SimHash kernel")
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--hash-count", type=int, default=20000)
+    parser.add_argument("--chunk-counts", nargs="*", type=int, default=[1000, 10000], help="synthetic chunk counts to measure in the indexing workflow")
     parser.add_argument("--work-dir", type=Path, help="owned external directory; retain native binary evidence")
     parser.add_argument("--output", type=Path, help="persist actual success or failure outside the checkout")
     args = parser.parse_args(argv)
     if args.output is not None and args.output.resolve().is_relative_to(ROOT.resolve()):
         parser.error("experiment output must be outside the checkout")
     try:
-        result = run(args.iterations, args.hash_count, work_dir=args.work_dir)
+        result = run(args.iterations, args.hash_count, chunk_counts=tuple(args.chunk_counts or ()), work_dir=args.work_dir)
     except Exception as exc:
         result = {"success": False, "status": "failed", "error_type": type(exc).__name__,
                   "error": str(exc)[:2000], "production_enabled": False,

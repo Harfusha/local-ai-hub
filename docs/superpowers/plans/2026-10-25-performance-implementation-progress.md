@@ -76,3 +76,23 @@ Finish T0a sample timing/diagnostics, current-source owned matrix and measuremen
 contracts; execute Windows native experiment, then whole indexing A/B before any
 native adoption. T0c adapters and T1–T12 remain open. Do not claim current release,
 deployment, model quality, full suite or all-24 completion from this block.
+
+## Takeover, CI diagnosis, T0a producer sample timing and T7a whole-workflow measurement (2026-10-25T19:43:00Z)
+
+- Sole writer takeover on clean master `83ee70736289a4e097218f1d0abfc7c319155b9f`; task `post-gemini-audit-20261025` preserved; lease `lease_de297b580b43432a83dd`.
+- Actual CI verification for `83ee7073`:
+  - Run `40225706656` (`Native SimHash experiment`): failed at step 6 with `ModuleNotFoundError: No module named 'setuptools'` on Python 3.13 Windows host because `setuptools` is not bundled in standard library.
+  - Run `40225706694` (`CI`): all Windows runs (`3.11`, `3.12`, `3.13`, `3.14`), `critical-coverage` and Ubuntu 3.11-3.13 completed success.
+- CI fix: `.github/workflows/native-experiment.yml` now explicitly installs `setuptools>=75` alongside `Cython>=3,<4` in the isolated environment; action summary updated to emit gate metrics and adoption recommendation.
+- T0a producer sample timing:
+  - `src/local_ai_hub/vram_balancer.py` preserves authentic `sample_timestamp` from live GPU telemetry `gpu.get("timestamp")` and derives `sample_age_seconds` without secondary reads.
+  - Unavailable/fallback telemetry leaves both `sample_timestamp` and `sample_age_seconds` strictly `None` (null).
+  - Added regression test `test_vram_balancer_preserves_sample_timestamp_and_age_when_provided` in `tests/test_queue_benchmark_resource_modes.py`.
+- T7a whole indexing workflow measurement:
+  - `tools/cython_experiment.py` implements `_measure_indexing_workflow` and `_generate_synthetic_chunks` measuring 1,000 and 10,000 changed chunks in cold and warm regimes against production `rag.py`.
+  - Measures SimHash wall/CPU, deduplication filtering, fragment hashing, workflow speedup percentage, and verifies bitwise parity of fingerprints and deduplication outcomes.
+  - Sets `whole_workflow_measured: True`, records `kernel_gate_met` (>= 3.0x), `workflow_gate_met` (>= 15% wall or 20% CPU), and truthful `overall_adoption_recommended`.
+  - Added regression test `test_indexing_workflow_measures_parity_and_schema` in `tests/test_cython_experiment_build_isolation.py`.
+- Validation:
+  - Pyflakes passed with 0 errors.
+  - Targeted cohort (73 tests): `test_queue_benchmark_api_contract.py`, `test_queue_benchmark_resource_modes.py`, `test_native_candidate_benchmark_contract.py`, `test_cython_experiment_build_isolation.py`, `test_resource_backpressure.py`, `test_async_jobs.py`, `test_rag_dedup.py` passed with exit 0.
