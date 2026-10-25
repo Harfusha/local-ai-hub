@@ -62,11 +62,11 @@ jobs:
           PY
       - name: Run primary full suite
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
-        run: python -m coverage run -m pytest -ra
+        run: python -m coverage run -m pytest -ra -p tools.ci_diagnostics
       - name: Run platform and interpreter compatibility cohort
         if: ${{ env.RUN_FULL_SUITE != 'true' }}
         run: >-
-          python -m coverage run -m pytest -q -ra
+          python -m coverage run -m pytest -q -ra -p tools.ci_diagnostics
           tests/test_process_utils.py
           tests/test_process_utils_timeout_cleanup.py
           tests/test_process_group_identity_guard.py
@@ -96,6 +96,7 @@ jobs:
           tests/unit/test_rollback_exchange_identity.py
           tests/unit/test_quality_floor_threshold_validation.py
           tests/unit/test_selftest_canonical_temp_root.py
+          tests/unit/test_ci_failure_diagnostics.py
           tests/test_command_rollback.py::test_rollback_snapshot_and_restore_accept_nested_paths
           tests/test_command_rollback.py::test_command_rollback_preserves_filesystem_security_metadata
       - name: Export measured branch coverage
@@ -108,7 +109,8 @@ jobs:
           name: coverage-${{ env.RUN_FULL_SUITE == 'true' && 'full' || 'compatibility' }}-${{ matrix.os }}-py${{ matrix.python-version }}
           path: ${{ runner.temp }}/coverage.json
           if-no-files-found: warn
-      - run: python tools/selftest.py
+      - name: Run selftest with bounded CI failure annotations
+        run: python -m tools.ci_diagnostics --selftest
       - name: Reject test/runtime side effects
         run: python tools/release_check.py --post-test
       - run: python tools/hubctl.py generate
