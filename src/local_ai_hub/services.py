@@ -846,29 +846,24 @@ class LocalAIServices:
         if getattr(store, "enabled", True) is False:
             return True, False
         try:
-            from .agent_identity import AgentScope
-            from .agent_memory import MemoryKind, MemoryRecord
-
             token = hashlib.sha256(
                 f"{request.root}:{request.task_id}:{request.phase}:{revision}:{reason_text}:{approval}".encode("utf-8", "replace")
             ).hexdigest()[:16]
-            record = MemoryRecord.create(
-                kind=MemoryKind.DECISION,
-                scope=AgentScope.REPOSITORY,
-                key=f"consistency_decision:{token}",
-                value={"approved": self._guard_truthy(approval), "reason": _redact_guard_reason(reason_text)},
-                source="consistency_guard",
+            recorder = getattr(self.consistency_guard, "record_decision", None)
+            if not callable(recorder):
+                return True, False
+            saved = recorder(
+                request, decision="override", reason=_redact_guard_reason(reason_text),
+                approved=self._guard_truthy(approval),
                 repository_revision=revision,
-                path_refs=tuple(request.changed_paths),
-                related_task=request.task_id or None,
-                provenance={"root": request.root, "phase": request.phase, "guard": "agent_consistency"},
+                path_refs=tuple(request.changed_paths), stable_key=f"consistency_decision:{token}",
             )
-            try:
-                saved = store.record(record, actor="consistency_guard", idempotency_key=f"consistency-decision:{token}")
-            except TypeError:
-                saved = store.record(record)
             return True, saved is not None and saved is not False
-        except Exception:
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Consistency decision persistence unavailable (%s)", type(exc).__name__)
+            return True, False
+        except Exception as exc:
+            logger.error("Unexpected consistency decision failure (%s)", type(exc).__name__)
             return True, False
 
     def _guard_existing_approval(self, request: ConsistencyRequest) -> bool:
@@ -877,21 +872,44 @@ class LocalAIServices:
         if not callable(finder) or not request.task_id:
             return False
         try:
-            records = finder(root=request.root, limit=12, semantic=False)
-        except TypeError:
-            try:
-                records = finder(limit=12)
-            except Exception:
+            from .agent_identity import AgentScope
+            from .agent_memory import MemoryStatus
+            from .project_config import resolve_project_context
+
+            project = resolve_project_context(request.root, configured_state_dir(self.config, create=False))
+            repository_id = project.coordination_id
+            if (
+                not isinstance(repository_id, str) or not repository_id
+                or repository_id != repository_id.strip() or "\x00" in repository_id
+            ):
                 return False
-        except Exception:
+            records = finder(
+                root=request.root, repository_id=repository_id,
+                scope=AgentScope.REPOSITORY, scope_id=repository_id,
+                status=MemoryStatus.CONFIRMED,
+                limit=12, semantic=False,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Consistency approval lookup unavailable (%s)", type(exc).__name__)
+            return False
+        except Exception as exc:
+            logger.error("Unexpected consistency approval lookup failure (%s)", type(exc).__name__)
             return False
         for record in records or ():
             kind = getattr(getattr(record, "kind", None), "value", getattr(record, "kind", ""))
+            scope = getattr(getattr(record, "scope", None), "value", getattr(record, "scope", ""))
+            status = getattr(getattr(record, "status", None), "value", getattr(record, "status", ""))
             value = getattr(record, "value", {})
             provenance = getattr(record, "provenance", {}) or {}
-            if kind != "decision" or provenance.get("related_task") != request.task_id:
+            if (
+                kind != "decision" or scope != "repository" or status != "confirmed"
+                or getattr(record, "scope_id", None) != repository_id
+                or not isinstance(provenance, dict)
+                or provenance.get("repository_id") != repository_id
+                or provenance.get("related_task") != request.task_id
+            ):
                 continue
-            if isinstance(value, dict) and self._guard_truthy(value.get("approved") or value.get("approval")):
+            if isinstance(value, dict) and value.get("approved") is True:
                 return True
         return False
 

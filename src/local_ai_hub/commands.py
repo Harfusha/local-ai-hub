@@ -3964,7 +3964,17 @@ class CommandBroker:
             self._persist_command_execution_record(command_id, record)
             result["verification_receipt"] = receipt_data
             result["verification_evidence_id"] = str(evidence_id)
-        except Exception:
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            logging.getLogger(__name__).warning(
+                "Command verification evidence unavailable (%s)", type(exc).__name__,
+            )
+            result["verification_receipt_warning"] = (
+                "command succeeded but durable verification evidence was unavailable"
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Unexpected command verification evidence failure (%s)", type(exc).__name__,
+            )
             result["verification_receipt_warning"] = (
                 "command succeeded but durable verification evidence was unavailable"
             )
