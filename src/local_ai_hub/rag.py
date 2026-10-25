@@ -2719,35 +2719,45 @@ class RAGStore:
         excluded_paths: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
-        if not terms:
+        if not terms or limit <= 0:
             return []
         space_filter = " AND embedding_space=?" if embedding_space is not None else ""
         space_params = (embedding_space,) if embedding_space is not None else ()
+        best: list[tuple[float, int, dict[str, Any]]] = []
+        seq = 0
         with closing(self._connect()) as con:
             path_filter = self._search_path_exclusion(con, excluded_paths, "path")
             if scope_path:
                 norm_scope = scope_path.replace("\\", "/").rstrip("/")
-                rows = con.execute(
+                cursor = con.execute(
                     "SELECT path, chunk_no, text, content_hash FROM chunks WHERE workspace=? AND (path=? OR path LIKE ? || '/%')" + space_filter + path_filter,
                     (workspace, norm_scope, norm_scope, *space_params),
-                ).fetchall()
+                )
             else:
-                rows = con.execute(
+                cursor = con.execute(
                     "SELECT path, chunk_no, text, content_hash FROM chunks WHERE workspace=?" + space_filter + path_filter,
                     (workspace, *space_params),
-                ).fetchall()
-        scored: list[dict[str, Any]] = []
-        for r in rows:
-            low = str(r[2]).lower()
-            matches = sum(1 for t in terms if t in low)
-            if matches:
-                score = matches / len(terms)
-                scored.append({
-                    "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
-                    "fts_score": float(score),
-                })
-        scored.sort(key=lambda x: x["fts_score"], reverse=True)
-        return scored[:limit]
+                )
+            for r in cursor:
+                low = str(r[2]).lower()
+                matches = sum(1 for t in terms if t in low)
+                if matches:
+                    score = float(matches / len(terms))
+                    entry = (
+                        score,
+                        -seq,
+                        {
+                            "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
+                            "fts_score": score,
+                        },
+                    )
+                    if len(best) < limit:
+                        heapq.heappush(best, entry)
+                    elif (entry[0], entry[1]) > (best[0][0], best[0][1]):
+                        heapq.heapreplace(best, entry)
+                seq += 1
+        best.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [x[2] for x in best]
 
     def _centroid_index_for_search(
         self, workspace: str, embedding_space: str, query_vector: Any,

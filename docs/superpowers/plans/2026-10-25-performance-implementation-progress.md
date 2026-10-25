@@ -259,4 +259,23 @@ deployment, model quality, full suite or all-24 completion from this block.
   - All 3 tests in `tests/test_native_search_ranking_parity.py` passed in 0.92s.
   - Pyflakes: 0 errors across modified sources and tests.
 
+## T9 / F09 Token-Overlap Fallback Streaming & Bounded Heap (2026-10-25T21:15:00Z)
+
+- Finding F09 resolved:
+  - In `src/local_ai_hub/rag.py:_search_token_overlap`, the lexical token-overlap fallback previously executed `con.execute("SELECT path, chunk_no, text, content_hash FROM chunks WHERE workspace=? ...").fetchall()` loading every chunk and its full text in the entire workspace into a Python list of tuples in RAM, followed by full sorting of the entire dataset. In large projects (e.g. 50,000 chunks), this caused multi-megabyte heap allocation spikes and high GC pressure.
+- Solution implemented:
+  - Replaced unconstrained `fetchall()` with cursor streaming.
+  - Implemented bounded min-heap of size `limit` (maintaining at most `limit` items in memory at any point).
+  - Preserved exact stable tie-ordering using an increasing sequence counter `(score, -seq, item)` so that earlier database records are consistently preferred on identical scores, exactly matching the stable timsort baseline.
+- Verification & Test Coverage:
+  - Validated 100% exact numerical and tie-order parity against reference unconstrained baseline across 1,000 synthetic items.
+  - Created `tests/test_rag_vector_snapshot_parity.py`:
+    - `test_token_overlap_streaming_heap_exact_ranking_and_ties`: verified exact score ranking, stable tie ordering, and top-k bounding.
+    - `test_token_overlap_zero_or_negative_limit`: verified graceful empty returns for non-positive limits or queries.
+    - `test_token_overlap_scoped_path_filtering`: verified path confinement and scoped filtering.
+  - Ran validation across primary RAG test cohort:
+    - 75 tests passed across `tests/test_rag_vector_snapshot_parity.py`, `tests/test_rag_hybrid.py`, `tests/test_rag_dedup.py`, `tests/test_rag_fragment_cache.py`, and `tests/test_rag_read_bounds.py`.
+  - Pyflakes: 0 errors across modified sources and tests.
+
+
 
