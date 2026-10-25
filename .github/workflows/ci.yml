@@ -94,6 +94,7 @@ jobs:
           tests/unit/test_source_slice_mcp_contract.py
           tests/unit/test_supervisor_child_interpreter.py
           tests/unit/test_rollback_exchange_identity.py
+          tests/unit/test_rollback_quarantine_identity.py
           tests/unit/test_quality_floor_threshold_validation.py
           tests/unit/test_selftest_canonical_temp_root.py
           tests/unit/test_selftest_conditional_annotations.py
@@ -175,6 +176,7 @@ jobs:
           tests/test_audit_retrieval_gold_contract.py
           tests/test_audit_quality_eval_contract.py
           tests/unit/test_rollback_exchange_identity.py
+          tests/unit/test_rollback_quarantine_identity.py
           tests/unit/test_quality_floor_threshold_validation.py
       - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
       - name: Reject per-module branch coverage regression

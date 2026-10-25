@@ -1963,10 +1963,8 @@ def _restore_rollback_scope(
                         quarantine_name = f".local-ai-rollback-postimage-{uuid.uuid4().hex}"
                         _rename_noreplace_at(parent_handle, leaf, quarantine_name)
                         quarantined = _rollback_postimage_at(parent_handle, quarantine_name)
-                        if (
-                            expected_postimage.safe
-                            and quarantined.safe
-                            and expected_postimage.fingerprint == quarantined.fingerprint
+                        if _same_rollback_postimage_after_owned_rename(
+                            quarantined, expected_postimage
                         ):
                             os.unlink(quarantine_name, dir_fd=parent_handle)
                             try:
