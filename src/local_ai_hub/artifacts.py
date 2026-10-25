@@ -281,11 +281,21 @@ class ArtifactStore:
         nul_mask: bytes | None,
         sections_truncated: bool,
     ) -> None:
-        section_json = json.dumps(
-            {"artifact_id": artifact_id, "names": section_names, "truncated": sections_truncated},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        bounded_names = list(section_names)
+        while True:
+            section_json = json.dumps(
+                {"artifact_id": artifact_id, "names": bounded_names, "truncated": sections_truncated},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if len(section_json.encode("utf-8")) <= MAX_ARTIFACT_SECTION_METADATA_BYTES:
+                break
+            if not bounded_names:
+                raise ArtifactTransportError(
+                    "artifact_paging_metadata_invalid", "artifact section metadata exceeds its limit",
+                )
+            bounded_names.pop()
+            sections_truncated = True
         section_checksum = hashlib.sha256(section_json.encode("utf-8")).hexdigest()
         con.execute(
             f"""INSERT INTO {_ARTIFACT_PAGING_TABLE}

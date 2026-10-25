@@ -8,7 +8,7 @@ from contextlib import closing
 
 import pytest
 
-from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
+from local_ai_hub.artifacts import ArtifactStore, MAX_ARTIFACT_SECTION_METADATA_BYTES, UnsupportedArtifactSchema
 
 
 def test_fresh_schema_uses_sidecar_and_preserves_nul_slices(tmp_path) -> None:
@@ -40,7 +40,7 @@ def test_fresh_schema_uses_sidecar_and_preserves_nul_slices(tmp_path) -> None:
 
 
 def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path) -> None:
-    store = ArtifactStore(tmp_path)
+    ArtifactStore(tmp_path)
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
@@ -55,7 +55,7 @@ def test_existing_schema_with_missing_paging_row_fails_without_mutation(tmp_path
     assert db_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("corruption", ["missing", "malformed", "inconsistent"])
+@pytest.mark.parametrize("corruption", ["missing", "malformed", "inconsistent", "oversized"])
 def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corruption) -> None:
     store = ArtifactStore(tmp_path)
     artifact_id = store.put("# Heading\n\nbody", kind="text")
@@ -68,6 +68,8 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
         else:
             if corruption == "malformed":
                 section_json = "{invalid"
+            elif corruption == "oversized":
+                section_json = " " * (MAX_ARTIFACT_SECTION_METADATA_BYTES + 1)
             else:
                 metadata = json.loads(connection.execute(
                     "SELECT section_json FROM artifact_paging_metadata WHERE artifact_id=?",
@@ -87,8 +89,37 @@ def test_reads_reject_missing_or_inconsistent_paging_metadata(tmp_path, corrupti
     )
 
     for result in (read_result, slices_result):
-        assert result["success"] is False
-        assert result["error_code"] == "artifact_paging_metadata_invalid"
+        if corruption == "oversized":
+            assert result["success"] is True
+            assert result["sections"] == ["heading"]
+        else:
+            assert result["success"] is False
+            assert result["error_code"] == "artifact_paging_metadata_invalid"
+
+
+def test_write_bounds_escaped_section_metadata_without_losing_content(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    payload = {f"{index:02d}" + "\x01" * 500: index for index in range(50)}
+    text = json.dumps(payload, ensure_ascii=False)
+    artifact_id = store.put(text, kind="text")
+    with closing(sqlite3.connect(tmp_path / "artifacts.sqlite3")) as connection:
+        section_json, checksum = connection.execute(
+            "SELECT section_json, section_checksum FROM artifact_paging_metadata WHERE artifact_id=?",
+            (artifact_id,),
+        ).fetchone()
+        stored_text = connection.execute(
+            "SELECT text FROM artifacts WHERE artifact_id=?", (artifact_id,),
+        ).fetchone()[0]
+    encoded = section_json.encode("utf-8")
+    assert len(encoded) <= MAX_ARTIFACT_SECTION_METADATA_BYTES
+    assert checksum == hashlib.sha256(encoded).hexdigest()
+    metadata = json.loads(section_json)
+    assert metadata["truncated"] is True
+    assert 0 < len(metadata["names"]) < len(payload)
+    assert metadata["names"] == [f"json:{key}" for key in payload][:len(metadata["names"])]
+    assert stored_text == text
+    assert store.get(artifact_id, max_chars=64)["success"] is True
+    assert store.get_slices(artifact_id, slices=[{"offset": 0, "max_chars": 64}])["success"] is True
 
 
 def test_previous_paging_schema_is_rejected_without_mutation(tmp_path) -> None:

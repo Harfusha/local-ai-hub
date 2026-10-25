@@ -3,6 +3,14 @@
 Updated: 2026-10-25. Sole owner: main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff`, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
 Status: IN PROGRESS. Post-Gemini independent review is active; the earlier COMPLETE assertion is not accepted as release proof. See [review and deployment plan](2026-10-25-post-gemini-review.md). The evidence below records Gemini's claims pending independent reconciliation; current browser/runtime identity and final matching validation remain open. Operator explicitly kept internal items #7/#43–45 retired on 2026-10-25.
 
+## Combined integration continuation — 2026-10-25
+
+- Browser broker, portability/probe repairs and scoped atomic-exchange correction are integrated through `09b8616b` in master/origin. Broker handover chat was archived after ownership release. No current-candidate production activation is claimed.
+- Exact hosted run `40213169515`: critical coverage passed; Windows compatibility 3.11–3.14 passed, then selftest failed; POSIX compatibility and the explicit process-cleanup probe failed. Whole CI/package/release acceptance remains open. Browser log collection stopped on the operator's physical Esc; renewed access was requested, with no retry of the denied anonymous log endpoint.
+- Before the artifact writer follow-up, the expanded critical cohort passed **590 tests** against the unchanged branch baseline; isolated Python 3.11 exchange cases passed **13 tests**. A fresh isolated cross-volume 3.11 selftest also passed; this does not explain or override hosted failures.
+- Archive reconciliation confirmed retained receipt deep-copy behavior (**55 tests**) and the replacement single-owner artifact HTTP contract (**40 tests**). Artifact writer follow-up passed **131 artifact/integration tests**, plus **12 sidecar tests on Python 3.11**; lint passed after removing one unused test binding. The writer bounds escaped index metadata without trimming original content, and preserves the existing bounded read-recovery behavior. Counts overlap and are not additive.
+- Original 100-item scope, F01–F24/R01–R16, current matching full tests/packages, installed HTTP/MCP/resources/browser acceptance and post-reset data/config preservation remain required. Do not treat these source units, historical package results or native checks as complete release evidence. See the current entries in [the remediation ledger](2026-10-20-audit-remediation.md).
+
 ## Current independently verified repairs
 
 - Master commits `a9490cd6`, `6b6125a5`, `1ea45f80`, `ccc616eb`: POST body deadline, restored validation bounds, interruptible waits, isolated parser availability, consistency scope and diagnostics.
