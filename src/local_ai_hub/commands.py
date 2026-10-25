@@ -1811,6 +1811,28 @@ def _rename_noreplace_at(parent_handle: int, source: str, destination: str) -> N
         raise OSError(error_code, os.strerror(error_code), f"{source} -> {destination}")
 
 
+def _same_rollback_postimage_after_owned_rename(
+    observed: RollbackPostimage,
+    expected: RollbackPostimage,
+) -> bool:
+    """Account for rename's ctime update without relaxing other postimage fields."""
+    if not observed.safe or not expected.safe:
+        return False
+    actual = observed.fingerprint
+    original = expected.fingerprint
+    if actual is None or original is None:
+        return False
+    # POSIX exchange updates both inodes' ctime. Full ctime equality remains
+    # mandatory before the exchange and while each postimage is being read.
+    # After our rename retain inode, size, mtime, mode, content and metadata
+    # equality, and reject a ctime that moved backwards.
+    return (
+        actual[:4] == original[:4]
+        and actual[5:] == original[5:]
+        and actual[4] >= original[4]
+    )
+
+
 def _restore_existing_rollback_leaf(
     parent_handle: int,
     temporary_name: str,
@@ -1832,18 +1854,15 @@ def _restore_existing_rollback_leaf(
 
     _rename_exchange_at(parent_handle, temporary_name, leaf)
     displaced_postimage = _rollback_postimage_at(parent_handle, temporary_name)
-    if (
-        displaced_postimage.safe
-        and displaced_postimage.fingerprint == expected_postimage.fingerprint
-    ):
+    if _same_rollback_postimage_after_owned_rename(displaced_postimage, expected_postimage):
         os.unlink(temporary_name, dir_fd=parent_handle)
         return
 
     replacement_at_leaf = _rollback_postimage_at(parent_handle, leaf)
-    if replacement_at_leaf.safe and replacement_at_leaf.fingerprint == staged_postimage.fingerprint:
+    if _same_rollback_postimage_after_owned_rename(replacement_at_leaf, staged_postimage):
         _rename_exchange_at(parent_handle, temporary_name, leaf)
         returned_stage = _rollback_postimage_at(parent_handle, temporary_name)
-        if returned_stage.safe and returned_stage.fingerprint == staged_postimage.fingerprint:
+        if _same_rollback_postimage_after_owned_rename(returned_stage, staged_postimage):
             raise _RollbackPostimageChanged(
                 "rollback postimage changed during atomic exchange"
             )

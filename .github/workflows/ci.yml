@@ -87,6 +87,15 @@ jobs:
           tests/unit/test_treesitter_native_parser.py
           tests/unit/test_treesitter_isolated_worker.py
           tests/unit/test_owned_biome_daemon.py
+          tests/test_agent_context_identity.py
+          tests/test_context_identity.py
+          tests/unit/test_agent_identity_edge_cases.py
+          tests/unit/test_single_owner_state_converter.py
+          tests/unit/test_source_slice_mcp_contract.py
+          tests/unit/test_supervisor_child_interpreter.py
+          tests/unit/test_rollback_exchange_identity.py
+          tests/test_command_rollback.py::test_rollback_snapshot_and_restore_accept_nested_paths
+          tests/test_command_rollback.py::test_command_rollback_preserves_filesystem_security_metadata
       - name: Export measured branch coverage
         if: always()
         run: python -m coverage json -o "${{ runner.temp }}/coverage.json"
@@ -160,6 +169,7 @@ jobs:
           tests/test_audit_review_delivery_quality.py
           tests/test_audit_retrieval_gold_contract.py
           tests/test_audit_quality_eval_contract.py
+          tests/unit/test_rollback_exchange_identity.py
       - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
       - name: Reject per-module branch coverage regression
         run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json
