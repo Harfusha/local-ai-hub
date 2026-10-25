@@ -22,6 +22,8 @@ Preparation for 5.1.0; package version remains 5.0.0 pending release acceptance.
 - Preserve canonical repository scope and identity in consistency decisions; distinguish verification persistence failures without logging command payloads.
 - Reject unknown POST routes without waiting for an untrusted advertised request body.
 - Measure NVIDIA free VRAM explicitly and await a bounded fresh telemetry sample before post-unload admission; reject unavailable or malformed capacity evidence.
+- Disable isolated parsers in forced fallback benchmarks and refuse unconfirmed worker cleanup.
+- Redact complete Authorization credentials idempotently in canonical decision memory, and log persistence error classes without sensitive payloads.
 - Register the managed Python package so global CLI commands work outside the checkout.
 - Resolve Windows batch executables during setup and preserve user logon startup when Task Scheduler denies registration.
 - Initialize tokenizers only when counting tokens, keeping CLI help and unrelated tools offline.

@@ -84,6 +84,20 @@ The analysis is a source of hypotheses, not proof: `except Exception` excludes K
 
 R05/R09/R10/R11/R14 and current browser/data/package acceptance remain open until their original requirements have matching evidence. Medium/low-priority 5.2+ decomposition and speculative backlog items remain separately identified; do not redesign monoliths merely from file length.
 
+### Frozen b6f6671f epoch and consolidated repairs
+
+current-fullsuite-20261025T103731Z completed all32 attempts at240seconds/shard and exited1. Candidate e9cbc4e1bd69912ed09c0e538feafd28f0e220b117ff2498d66b0511663b9333: 12242 unique nodes,11959PASS/9FAIL/62SKIP/1ERROR/211INCOMPLETE, coverage_complete=false. All source snapshots remained stable. Shard13 timed out; its four owned process identities were checked absent after termination. Missing JUnit/incomplete manifest for that shard remains a real failure, not skipped coverage. Logs/XML/manifests and coverage-v3.json are preserved unchanged.
+
+After confirming the native handle terminal and driver absent, the freeze was released. The repair bundle uses the real configured consistency guard in fixtures, actual isolated roots for idempotency, complete supervisor constructor state, and the current Event wait boundary for the synthetic-clock lifecycle test. Existing privacy, ownership, graceful termination, no-hard-kill and stop-code assertions remain.
+
+Forced fallback benchmarks now latch the existing parser breaker and require confirmed worker cleanup before measurement; clearing parent caches alone did not disable isolated workers. New regressions observed authentic RED before the tool fix. Canonical decision redaction now consumes a complete Authorization header, retains safe Bearer/Basic scheme labels and is idempotent; this also fixes raw multi-token credential retention in the old generic redactor. Actual store errors now log expected/unexpected exception classes without their message or payload, retaining fail-closed return and one write attempt.
+
+Evidence: owned-check-benchmark-fallback-isolation-red-20261025T114737Z; owned-check-post-full-fixtures-and-benchmark-20261025T114755Z (95PASS/1FAIL exposing double redaction); owned-check-canonical-redaction-and-diagnostics-red-20261025T115100Z; owned-check-post-full-repair-combined-20261025T115121Z (168PASS,0SKIP/FAIL/ERROR, stable source/config). The old timed-out lifecycle test is included and passes at the original semantics. Local lifecycle review req_214f8cb0af0a suggested resetting an unconfirmed-cleanup breaker; primary rejected that unsupported recommendation. It is not semantic acceptance.
+
+Default review prompt/JSON-validator alignment remains the next source unit. Focused, static and critical coverage gates precede the next complete source freeze; current targeted success does not replace a final matching full epoch or deployment proof.
+
+Final follow-up: a folded Digest Authorization regression first failed in owned-check-folded-authorization-red-20261025T115649Z. Header continuations are now redacted too. owned-check-post-full-repair-final-regressions-20261025T115712Z passes169 tests with0SKIP/FAIL/ERROR, stable source/config. Static hygiene removed only pre-existing unused imports/assignment bindings, preserving the handler construction call and all assertions; the final regression cohort includes those changes.
+
 ### CI workflow defect and interrupted validation epoch
 
 GitHub run 39350824277 rejected the workflow before creating jobs: the `runner` context is unavailable in job-level `env`. Current source retained both invalid COVERAGE_FILE expressions. Authentic actionlint 1.7.12 reproduced both errors, then passed after moving these paths to the supported `github.workspace` context. Step-level runner.temp expressions remain valid. This repairs workflow syntax; actual hosted Windows 3.11/3.14 execution remains OPEN.

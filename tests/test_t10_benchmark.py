@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import json
 import shutil
 import subprocess
 import threading
@@ -223,6 +222,8 @@ def test_fallback_benchmark_mode_disables_tree_sitter(monkeypatch: pytest.Monkey
     monkeypatch.setattr(parser_module, "_PARSERS", {"python": object()})
     monkeypatch.setattr(parser_module, "_LANGUAGES", {"python": object()})
     monkeypatch.setattr(parser_module, "_INIT_ATTEMPTED", True)
+    monkeypatch.setattr(parser_module, "_WORKER_DISABLED_CAUSE", None)
+    monkeypatch.setattr(parser_module, "_reset_worker_pool", lambda: True)
     monkeypatch.setattr(benchmark, "package_version", lambda _: "1.18.0")
 
     metadata = benchmark._configure_parser_backend("fallback")
@@ -235,6 +236,41 @@ def test_fallback_benchmark_mode_disables_tree_sitter(monkeypatch: pytest.Monkey
         "tree_sitter_python_available": False,
         "tree_sitter_language_pack_version": "1.18.0",
     }
+
+
+def test_fallback_benchmark_never_dispatches_an_isolated_worker(monkeypatch):
+    benchmark = _load_benchmark_module()
+    parser = benchmark.treesitter_parser
+    monkeypatch.setattr(parser, "_PARSERS", {})
+    monkeypatch.setattr(parser, "_LANGUAGES", {})
+    monkeypatch.setattr(parser, "_INIT_ATTEMPTED", True)
+    monkeypatch.setattr(parser, "_WORKER_DISABLED_CAUSE", None)
+    monkeypatch.setattr(parser, "_reset_worker_pool", lambda: True)
+    monkeypatch.setattr(parser, "_use_isolated_worker", lambda: True)
+    dispatched = []
+
+    def forbidden_pool():
+        dispatched.append(True)
+        raise RuntimeError("isolated worker must not run in forced fallback")
+
+    monkeypatch.setattr(parser, "_get_worker_pool", forbidden_pool)
+    benchmark._configure_parser_backend("fallback")
+    result = parser.parse_treesitter_with_status("def sample():\n    return 1\n", "python")
+    assert dispatched == []
+    assert result["result"] is None
+    assert result["status"] == "unavailable"
+
+
+def test_fallback_benchmark_refuses_unconfirmed_worker_cleanup(monkeypatch):
+    benchmark = _load_benchmark_module()
+    parser = benchmark.treesitter_parser
+    monkeypatch.setattr(parser, "_PARSERS", {})
+    monkeypatch.setattr(parser, "_LANGUAGES", {})
+    monkeypatch.setattr(parser, "_INIT_ATTEMPTED", True)
+    monkeypatch.setattr(parser, "_WORKER_DISABLED_CAUSE", None)
+    monkeypatch.setattr(parser, "_reset_worker_pool", lambda: False)
+    with pytest.raises(RuntimeError, match="cleanup"):
+        benchmark._configure_parser_backend("fallback")
 
 
 def test_benchmark_summaries_report_p99_and_quantile_uncertainty() -> None:

@@ -10,6 +10,7 @@ Status: IN PROGRESS. Post-Gemini independent review is active; the earlier COMPL
 - Managed/global CLI works outside the checkout. HKCU Run fallback exists; actual reboot/logon behavior remains unobserved.
 - Matching full suite, packages, activation and current browser acceptance remain OPEN. Native validation records are not broker receipts.
 - Additional repairs: GitHub workflow context verified RED/GREEN with actionlint; parser/index regression cohort 176 PASS. Fresh post-unload telemetry and explicit NVIDIA memory.free verified with 54 PASS plus an actual RTX4060 telemetry/admission probe. Current installed server has not yet been activated with these changes. Real generated-answer/semantic-fidelity gates remain OPEN.
+- Frozen b6f6671f full epoch finished32 attempts with11959PASS/9FAIL/62SKIP/1ERROR/211INCOMPLETE; shard13 timed out at the original240second bound. No release acceptance. Consolidated fixture, fallback-benchmark, Authorization redaction and metadata-only persistence-diagnostic repairs now pass169 targeted regressions with no skips/errors. A new matching full epoch remains required after review-contract and critical gates.
 
 ## Historical Gemini deliverables pending current release acceptance
 

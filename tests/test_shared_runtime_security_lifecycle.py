@@ -874,7 +874,7 @@ def test_task_access_sandbox_fails_closed_without_allowed_roots(tmp_path, monkey
             "api_token": "a-long-test-token-value",
         }
     }))
-    handler = _handler({})
+    _handler({})
 
     task = SimpleNamespace(
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-a"),
@@ -2377,7 +2377,11 @@ def test_supervisor_restart_gracefully_reaps_owned_hub_before_respawn(tmp_path, 
     monkeypatch.setattr(supervisor, "hub_ready", lambda: False)
     monkeypatch.setattr(supervisor, "write_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module.time, "time", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + max(seconds, 0.3)))
+    def advance_wait(seconds):
+        clock[0] += max(seconds, 0.3)
+        return supervisor.stopping
+
+    monkeypatch.setattr(supervisor, "_wait_interruptibly", advance_wait)
     spawns = []
     killed = []
 

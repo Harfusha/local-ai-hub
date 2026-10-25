@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from local_ai_hub.services import LocalAIServices, generation_cache_key
-from local_ai_hub.agent_consistency import ConsistencyRequest, GuardWarning
+from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest, GuardWarning
 from local_ai_hub.json_utils import dumps as json_dumps
 from pathlib import Path
 
@@ -49,8 +49,9 @@ class _RepoTools:
         }
 
 
-class _Guard:
+class _Guard(AgentConsistencyGuard):
     def __init__(self, warnings=()):
+        super().__init__({"server": {"state_dir": str(_TEST_STATE_DIR)}})
         self.warnings = tuple(warnings)
         self.calls = []
         self.memory_store = None
@@ -228,7 +229,7 @@ def test_decision_reason_redacts_authorization_bearer_credential_as_one_token():
     assert "Bearer [REDACTED]" in reason
 
 
-def test_decision_idempotency_is_root_scoped():
+def test_decision_idempotency_is_root_scoped(tmp_path):
     guard = _Guard()
 
     class Memory:
@@ -242,8 +243,12 @@ def test_decision_idempotency_is_root_scoped():
     memory = Memory()
     guard.memory_store = memory
     services = _guarded_services(guard)
-    services._guard_decision(_request(root="C:/repo-one"), "revision-1", approval=True)
-    services._guard_decision(_request(root="C:/repo-two"), "revision-1", approval=True)
+    first_root = tmp_path / "repo-one"
+    second_root = tmp_path / "repo-two"
+    first_root.mkdir()
+    second_root.mkdir()
+    assert services._guard_decision(_request(root=str(first_root)), "revision-1", approval=True) == (True, True)
+    assert services._guard_decision(_request(root=str(second_root)), "revision-1", approval=True) == (True, True)
 
     assert memory.calls[0][0].key != memory.calls[1][0].key
     assert memory.calls[0][1]["idempotency_key"] != memory.calls[1][1]["idempotency_key"]
@@ -321,7 +326,7 @@ def test_boundary_warning_waits_then_approval_resumes_task():
 
         def get(self, task_id):
             from types import SimpleNamespace
-            from local_ai_hub.agent_tasks import TaskStatus, TaskCheckpoint
+            from local_ai_hub.agent_tasks import TaskCheckpoint
             return SimpleNamespace(task_id=task_id, status=self.status, checkpoint=TaskCheckpoint())
 
         def transition(self, task_id, target, **kwargs):

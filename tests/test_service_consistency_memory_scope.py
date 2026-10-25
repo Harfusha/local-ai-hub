@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+import json
+import logging
 
 import pytest
 
@@ -8,6 +10,51 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryStatus, MemoryStore
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
+
+
+@pytest.mark.parametrize("authorization", [
+    "Authorization: Bearer private-credential",
+    "Authorization: Basic private-credential",
+    'Authorization: Digest username="private-credential", response="private-response"',
+    pytest.param('Authorization: Digest username="private-credential"\r\n response="private-response"', id="folded-digest"),
+])
+def test_canonical_decision_redacts_complete_authorization(tmp_path, monkeypatch, authorization):
+    records = []
+    store = SimpleNamespace(record=lambda record, **_kwargs: records.append(record) or record)
+    service, request = _services(tmp_path, monkeypatch, store)
+    saved = service.consistency_guard.record_decision(
+        request, decision="override", reason=authorization, approved=True,
+        repository_revision="revision-current",
+    )
+    assert saved is not None
+    reason = records[0].value["reason"]
+    assert "private-credential" not in json.dumps(records[0].value)
+    assert "private-response" not in reason
+    if "Bearer" in authorization:
+        assert "Bearer [REDACTED]" in reason
+    from local_ai_hub.agent_consistency import _redact_memory_text
+    assert _redact_memory_text(reason) == reason
+
+
+@pytest.mark.parametrize("error,level", [
+    (OSError, logging.WARNING), (TypeError, logging.WARNING),
+    (ZeroDivisionError, logging.ERROR),
+])
+def test_canonical_persistence_failure_logs_type_without_payload(
+    tmp_path, monkeypatch, caplog, error, level,
+):
+    writes = []
+
+    def fail_record(record, **kwargs):
+        writes.append((record, kwargs))
+        raise error("private-store-credential")
+
+    service, request = _services(tmp_path, monkeypatch, SimpleNamespace(record=fail_record))
+    with caplog.at_level(logging.WARNING):
+        assert service._guard_decision(request, "revision-current", approval=True) == (True, False)
+    assert len(writes) == 1
+    assert any(record.levelno == level and error.__name__ in record.getMessage() for record in caplog.records)
+    assert "private-store-credential" not in caplog.text
 
 
 def _services(tmp_path, monkeypatch, store, namespace="repository-current"):

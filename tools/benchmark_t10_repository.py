@@ -64,6 +64,11 @@ def _configure_parser_backend(parser_backend: str) -> dict[str, Any]:
     if parser_backend not in {"auto", "fallback"}:
         raise ValueError(f"unsupported parser backend: {parser_backend}")
     if parser_backend == "fallback":
+        # Clearing parent caches does not disable isolated parser workers.
+        # This standalone mode stays disabled for the process lifetime and must
+        # not benchmark while worker cleanup remains unconfirmed.
+        if not treesitter_parser._disable_worker_pool("benchmark_fallback_requested"):
+            raise RuntimeError("fallback parser worker cleanup unconfirmed")
         with treesitter_parser._PARSER_LOCK:
             treesitter_parser._PARSERS.clear()
             treesitter_parser._LANGUAGES.clear()

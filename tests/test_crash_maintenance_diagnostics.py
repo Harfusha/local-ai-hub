@@ -161,6 +161,7 @@ def test_native_stderr_trace_is_bound_to_child_pid(tmp_path):
 def test_supervisor_signal_records_why_it_is_stopping():
     instance = object.__new__(supervisor.Supervisor)
     instance.stopping = False
+    instance._signal_wake_writer = None
     messages = []
     instance.log = messages.append
     instance._handle_signal(signal.SIGTERM, None)
@@ -185,6 +186,10 @@ def supervisor_loop(tmp_path, monkeypatch, *, healthy=False):
     instance.child = SimpleNamespace(pid=123) if healthy else None
     instance.child_ready = healthy
     instance.stopping = False
+    instance._stop_event = threading.Event()
+    instance._signal_wake_reader = None
+    instance._signal_wake_writer = None
+    instance._signal_wake_thread = None
     messages = []
     instance.log = messages.append
     monkeypatch.setattr(supervisor, "process_owner_record", lambda *args: None)

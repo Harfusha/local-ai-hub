@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import re
+import sqlite3
 import threading
 import time
 import unicodedata
@@ -47,7 +48,11 @@ _IDENTIFIER = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 _PUBLIC_SYMBOL = re.compile(r"^\+\s*(?:export\s+)?(?:async\s+)?(?:def|class|function|const|let|type|interface)\s+([A-Za-z_]\w*)")
 _HTTP_ENDPOINT = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+([/A-Za-z0-9_{}:$.-]+)")
 _FIELD = re.compile(r"\b([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w<>\[\]| ]*)(?=[,;}\n]|$)")
-_MEMORY_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|password|secret|authorization|credential)\s*([=:])\s*[^\s,;]+")
+_MEMORY_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|password|secret|credential)\s*([=:])\s*[^\s,;]+")
+_MEMORY_AUTH_RE = re.compile(
+    r"(?i)\b(authorization)\s*([=:])\s*(?:(bearer|basic)\s+)?[^\r\n]*"
+    r"(?:\r?\n[ \t]+[^\r\n]*)*"
+)
 _MEMORY_PROMPT_RE = re.compile(r"(?is)\bprompt\s*([=:])\s*.*$")
 
 
@@ -296,6 +301,14 @@ def _normalise_authority_label(value: Any) -> str:
 def _redact_memory_text(value: Any, limit: int = 240) -> str:
     text = _text(value, limit)
     text = _MEMORY_PROMPT_RE.sub(r"prompt\1[redacted]", text)
+    # Authorization credentials can span several tokens (for example Digest).
+    # Redact the header and continuations, retaining only a known scheme.
+    # Running before generic secrets keeps already-redacted Bearer values stable.
+    text = _MEMORY_AUTH_RE.sub(
+        lambda match: f"{match[1]}{match[2]} "
+        + (f"{match[3].title()} " if match[3] else "") + "[REDACTED]",
+        text,
+    )
     text = _MEMORY_SECRET_RE.sub(r"\1\2[redacted]", text)
     return text[: max(0, int(limit))]
 
@@ -910,7 +923,15 @@ class AgentConsistencyGuard:
             )
             idempotency_key = f"{record_key}:{revision_token}"
             return store.record(record, actor=actor, idempotency_key=idempotency_key)
-        except Exception:
+        except (OSError, ValueError, TypeError, RuntimeError, sqlite3.DatabaseError) as exc:
+            logging.getLogger(__name__).warning(
+                "Consistency memory persistence unavailable (%s)", type(exc).__name__,
+            )
+            return None
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Unexpected consistency memory persistence failure (%s)", type(exc).__name__,
+            )
             return None
 
     def record_finding(
