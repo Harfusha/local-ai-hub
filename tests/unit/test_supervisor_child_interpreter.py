@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from local_ai_hub import supervisor
+
+
+def _isolate_windows_interpreter(monkeypatch, executable: Path) -> None:
+    monkeypatch.setattr(supervisor, "sys", SimpleNamespace(**{
+        **vars(supervisor.sys), "platform": "win32", "executable": str(executable),
+    }))
+    monkeypatch.setattr(supervisor, "ctypes", SimpleNamespace(**vars(supervisor.ctypes)))
+    monkeypatch.setattr(supervisor, "subprocess", SimpleNamespace(**vars(supervisor.subprocess)))
 
 
 def test_windows_supervisor_uses_console_python_for_hub_child(tmp_path: Path, monkeypatch) -> None:
     pythonw = tmp_path / "pythonw.exe"
     console_python = tmp_path / "python.exe"
     console_python.touch()
-    monkeypatch.setattr(supervisor.sys, "platform", "win32")
-    monkeypatch.setattr(supervisor.sys, "executable", str(pythonw))
+    _isolate_windows_interpreter(monkeypatch, pythonw)
+    kernel32 = SimpleNamespace(SetErrorMode=Mock(return_value=0))
+    monkeypatch.setattr(supervisor.ctypes, "WinDLL", lambda *args, **kwargs: kernel32, raising=False)
     popen = Mock(return_value=object())
     monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
     instance = supervisor.Supervisor.__new__(supervisor.Supervisor)
@@ -22,6 +32,7 @@ def test_windows_supervisor_uses_console_python_for_hub_child(tmp_path: Path, mo
 
     assert popen.call_args.args[0][0] == str(console_python)
     assert popen.call_args.kwargs["stderr"] == supervisor.subprocess.PIPE
+    assert [call.args[0] for call in kernel32.SetErrorMode.call_args_list] == [0x0001 | 0x0002, 0]
 
 
 def test_windows_supervisor_suppresses_child_crash_dialog_and_restores_mode(
@@ -30,8 +41,7 @@ def test_windows_supervisor_suppresses_child_crash_dialog_and_restores_mode(
     pythonw = tmp_path / "pythonw.exe"
     console_python = tmp_path / "python.exe"
     console_python.touch()
-    monkeypatch.setattr(supervisor.sys, "platform", "win32")
-    monkeypatch.setattr(supervisor.sys, "executable", str(pythonw))
+    _isolate_windows_interpreter(monkeypatch, pythonw)
     mode_calls: list[int] = []
 
     class Kernel32:

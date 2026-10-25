@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import os
 from pathlib import Path
 import pytest
 
@@ -14,12 +14,22 @@ from local_ai_hub.agent_identity import (
 )
 
 
-def test_repository_identity_local_path_canonicalization() -> None:
-    # Case and slash differences on identical paths should produce identical family_id
-    ident_fwd = RepositoryIdentity.derive(root="C:/Users/Example/Project")
-    ident_back = RepositoryIdentity.derive(root="c:\\users\\example\\project")
+def test_repository_identity_local_path_canonicalization(tmp_path: Path) -> None:
+    if os.name == "nt":
+        # Windows treats case and slash differences as the same local path.
+        ident_fwd = RepositoryIdentity.derive(root="C:/Users/Example/Project")
+        ident_back = RepositoryIdentity.derive(root="c:\\users\\example\\project")
+    else:
+        # POSIX uses host path rules; compare canonical local paths and dot spelling.
+        canonical_root = str(tmp_path.resolve())
+        ident_fwd = RepositoryIdentity.derive(root=os.path.join(canonical_root, "."))
+        ident_back = RepositoryIdentity.derive(root=canonical_root)
     assert ident_fwd.family_id == ident_back.family_id
     assert ident_fwd.repo_id == ident_back.repo_id
+
+    different = RepositoryIdentity.derive(root=str((tmp_path / "different").resolve()))
+    assert different.family_id != ident_back.family_id
+    assert different.repo_id != ident_back.repo_id
 
 
 def test_repository_identity_remote_url_normalization() -> None:

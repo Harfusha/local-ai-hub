@@ -627,7 +627,7 @@ def test_integrated_memory_archive_requires_manifest_and_preserves_full_snapshot
               "warnings": [{"code": "warning", "detail": "retain"}], "estimated_tokens": 31}
     checkpoint = {"phase": "active", "next_action": "continue", "affected_paths": [],
                   "evidence_ids": [], "blockers": [],
-                  "state_data": {"_agent_task_scope": {"version": 2, "repo_root": r"C:\repo"},
+                  "state_data": {"_agent_task_scope": {"version": 2, "repo_root": str(tmp_path.resolve())},
                                  "memory_context": memory}}
     raw = json.dumps(checkpoint, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     connection = sqlite3.connect(":memory:")
@@ -655,10 +655,10 @@ def test_integrated_memory_archive_requires_manifest_and_preserves_full_snapshot
     connection.close()
 
 
-def test_empty_v2_warning_context_is_allowed_only_without_items() -> None:
+def test_empty_v2_warning_context_is_allowed_only_without_items(tmp_path: Path) -> None:
     envelope = {"phase": "active", "next_action": "continue", "affected_paths": [],
                 "evidence_ids": [], "blockers": [], "state_data": {
-                    "_agent_task_scope": {"version": 2, "repo_root": r"C:\repo"},
+                    "_agent_task_scope": {"version": 2, "repo_root": str(tmp_path.resolve())},
                     "memory_context": {"schema_version": 2, "context": {}, "instruction": "unavailable",
                                        "items": [], "warnings": [{"code": "memory_context_unavailable"}],
                                        "estimated_tokens": 0}}}

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,21 +122,36 @@ def test_source_rejects_path_identity_change_during_read(tmp_path, monkeypatch):
     source = tmp_path / "sample.py"
     source.write_text("unchanged\n", encoding="utf-8", newline="\n")
     real_stat = Path.stat
-    source_stat_calls = 0
+    real_fdopen = source_slice.os.fdopen
+    read_complete = False
+
+    @contextmanager
+    def tracked_fdopen(*args, **kwargs):
+        with real_fdopen(*args, **kwargs) as handle:
+            class TrackedReader:
+                def fileno(self):
+                    return handle.fileno()
+
+                def read(self, *read_args):
+                    nonlocal read_complete
+                    data = handle.read(*read_args)
+                    read_complete = True
+                    return data
+
+            yield TrackedReader()
 
     def changed_path_stat(path, *, follow_symlinks=True):
-        nonlocal source_stat_calls
         observed = real_stat(path, follow_symlinks=follow_symlinks)
-        if path == source:
-            source_stat_calls += 1
-            if source_stat_calls == 3:
-                values = {name: getattr(observed, name) for name in dir(observed) if name.startswith("st_")}
-                values["st_mtime_ns"] += 1
-                return SimpleNamespace(**values)
+        if path == source and read_complete:
+            values = {name: getattr(observed, name) for name in dir(observed) if name.startswith("st_")}
+            values["st_mtime_ns"] += 1
+            return SimpleNamespace(**values)
         return observed
 
+    monkeypatch.setattr(source_slice, "os", SimpleNamespace(**{**vars(source_slice.os), "fdopen": tracked_fdopen}))
     monkeypatch.setattr(Path, "stat", changed_path_stat)
     result = read_source_slice(str(tmp_path), "sample.py")
+    assert read_complete
     assert result["success"] is False
     assert "changed while reading" in result["error"]
 

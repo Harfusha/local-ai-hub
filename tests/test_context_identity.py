@@ -114,14 +114,15 @@ def test_context_root_normalizes_path_and_keeps_empty_root_empty():
     assert context_identity.normalize_context_root("") == ""
 
 
-def test_context_ledger_uses_shared_path_hint_digest_and_root_normalization():
+def test_context_ledger_uses_shared_path_hint_digest_and_root_normalization(tmp_path):
     ledger = ContextLedger()
+    canonical_root = str(tmp_path.resolve())
     first = ledger.compile(
         task_id="task-1",
         revision="rev-1",
         evidence_ids=(),
         context="same context",
-        root="C:\\Repo\\.",
+        root=os.path.join(canonical_root, "."),
         path_hints=({"path": "src/a.py", "scope": "file"},),
         settings_digest="  rev:abc-123  ",
     )
@@ -130,7 +131,7 @@ def test_context_ledger_uses_shared_path_hint_digest_and_root_normalization():
         revision="rev-1",
         evidence_ids=(),
         context="same context",
-        root="c:/repo",
+        root=canonical_root,
         path_hints=({"scope": "file", "path": "src/a.py"},),
         settings_digest="rev:abc-123",
     )
