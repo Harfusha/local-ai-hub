@@ -96,3 +96,23 @@ deployment, model quality, full suite or all-24 completion from this block.
 - Validation:
   - Pyflakes passed with 0 errors.
   - Targeted cohort (73 tests): `test_queue_benchmark_api_contract.py`, `test_queue_benchmark_resource_modes.py`, `test_native_candidate_benchmark_contract.py`, `test_cython_experiment_build_isolation.py`, `test_resource_backpressure.py`, `test_async_jobs.py`, `test_rag_dedup.py` passed with exit 0.
+
+## Observed authentic Windows CI native compilation & whole-workflow evidence (2026-10-25T19:48:20Z)
+
+- Dedicated Windows CI workflow `Native SimHash experiment` executed on commit `0d0c1deb37a6aa8c108b223331c899f74bc78031` (run `40227483292`, all 15 steps exit 0, conclusion: success).
+- Complete MSVC build host confirmed: MSVC 14.51.36231 (`cl.exe`, `link.exe`), Windows 10 SDK Include/Lib, Python 3.13.16 x64 (`MSC v.1944 64 bit`).
+- Build strictly isolated outside checkout in `D:\a\_temp\native-cython\build-{1,2,3}`; `git diff --exit-code` and untracked file check confirmed 0 build artifacts escaped into repository.
+- Authentic evidence preserved in `C:\Users\Adam\.codex\visualizations\2026\10\21\01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff\owned-check-perf-t7a-ci-native-experiment-20261025T194820Z\` (artifact `12611479756`):
+  - Parity: 100% bitwise parity across all three fresh processes (11 uint64 vectors, 11 production text cases, 3 invalid buffer rejections).
+  - Pure kernel speedup: 277.6x (p1), 267.8x (p2), 282.4x (p3); Python votes: ~51ms, Cython votes: ~0.18ms. `kernel_gate_met: True` (threshold >= 3.0x exceeded).
+  - 1,000 changed chunks:
+    - Cold: Python total 1506.8ms (SimHash 1494.0ms) -> Native total 98.3ms (SimHash 89.8ms); Wall reduction: 93.48%, CPU reduction: 93.68%.
+    - Warm: Python total 1513.4ms (SimHash 1501.3ms) -> Native total 89.6ms (SimHash 81.2ms); Wall reduction: 94.08%, CPU reduction: 94.85%.
+    - SimHash share of workflow: 99.2%.
+  - 10,000 changed chunks:
+    - Cold: Python total 15561.5ms (SimHash 15039.7ms) -> Native total 1226.8ms (SimHash 860.7ms); Wall reduction: 92.12%, CPU reduction: 92.01%.
+    - Warm: Python total 15587.5ms (SimHash 15064.7ms) -> Native total 1205.7ms (SimHash 837.7ms); Wall reduction: 92.26%, CPU reduction: 92.36%.
+    - SimHash share of workflow: 96.65%.
+  - Gate verdicts: `kernel_gate_met: True`, `workflow_gate_met: True` (threshold >= 15% wall or 20% CPU achieved with >92% reduction).
+  - Recommendation: `overall_adoption_recommended: True` based on proven whole-workflow gain.
+  - Production status: `production_enabled: False` maintained. Integration into production RAG remains subject to packaging/wheel gate per plan.
