@@ -4,10 +4,7 @@ import pytest
 
 from local_ai_hub.agent_routing import (
     RouteRequest,
-    RoutingDecision,
     RoutingEngine,
-    TestSelection,
-    ToolObservation,
 )
 from local_ai_hub.agent_verification import ChangeIntent
 

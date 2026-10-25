@@ -1,4 +1,3 @@
-import pytest
 from local_ai_hub.agent_routing import RouteRequest, RoutingDecision, TestSelection, ToolObservation
 
 
@@ -10,7 +9,7 @@ def test_route_request_and_decision_hardening():
     assert req_inf.cost_limit == 0.0
 
     dec = RoutingDecision(kind="cache", target="t1", reason="r1", confidence=True)
-    assert dec.confidence == 1.0
+    assert dec.confidence == 0.0
 
     dec_inf = RoutingDecision(kind="cache", target="t1", reason="r1", confidence=float("inf"))
     assert dec_inf.confidence == 0.0

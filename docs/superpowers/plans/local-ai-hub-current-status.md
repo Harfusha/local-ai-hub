@@ -11,6 +11,12 @@ Status: IN PROGRESS. Post-Gemini independent review is active; the earlier COMPL
 - Archive reconciliation confirmed retained receipt deep-copy behavior (**55 tests**) and the replacement single-owner artifact HTTP contract (**40 tests**). Artifact writer follow-up passed **131 artifact/integration tests**, plus **12 sidecar tests on Python 3.11**; lint passed after removing one unused test binding. The writer bounds escaped index metadata without trimming original content, and preserves the existing bounded read-recovery behavior. Counts overlap and are not additive.
 - Original 100-item scope, F01–F24/R01–R16, current matching full tests/packages, installed HTTP/MCP/resources/browser acceptance and post-reset data/config preservation remain required. Do not treat these source units, historical package results or native checks as complete release evidence. See the current entries in [the remediation ledger](2026-10-20-audit-remediation.md).
 
+### Continuing archive review
+
+- Invalid explicit routing confidence no longer becomes full confidence. New regression:3 FAIL/4 PASS before repair; routing cohorts12 PASS on3.13 and12 PASS on3.11 after repair, with the declared omitted default and valid numeric values preserved. Final lint passed separately after unused test imports were removed.
+- Existing archive hardening checks passed45 learning/wheel contract cases and10 numeric/routing cases. Explicit dependency consistency/import checks were restored to the package/release workflows without changing release conditions. Both workflows passed actionlint; an older isolated wheel environment passed the command probe, which does not establish current package acceptance.
+- API/command workers and the former integrator were archived after completed source handovers and ancestry checks. The former integrator's paused goal was not falsely marked complete. Remaining full acceptance belongs to this main goal; no worker is resumed merely to repeat an audit.
+
 ## Current independently verified repairs
 
 - Master commits `a9490cd6`, `6b6125a5`, `1ea45f80`, `ccc616eb`: POST body deadline, restored validation bounds, interruptible waits, isolated parser availability, consistency scope and diagnostics.

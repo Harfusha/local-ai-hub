@@ -68,7 +68,7 @@ class RoutingDecision:
         t = str(self.target or "").replace("\x00", "").strip()
         r = str(self.reason or "").replace("\x00", "").strip()
         if isinstance(self.confidence, bool) or self.confidence is None:
-            conf = 1.0
+            conf = 0.0
         else:
             try:
                 conf = float(self.confidence)

@@ -215,6 +215,8 @@ jobs:
       - run: python -c "import setuptools.build_meta as b; print(b.build_sdist('dist'))"
       - run: python -m venv "$RUNNER_TEMP/local-ai-hub-wheel-smoke"
       - run: '"$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install dist/local_ai_hub-*.whl'
+      - run: '"$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip check'
+      - run: '"$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -I -c "import mcp, watchdog"'
       - name: Smoke installed wheel version
         run: |
           EXPECTED_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
