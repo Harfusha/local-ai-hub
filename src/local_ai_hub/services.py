@@ -2815,8 +2815,14 @@ class LocalAIServices:
         keys = [self._embedding_key(text, backend=backend, model=model, query=query) for text in texts]
         vectors: list[list[float] | None] = [None] * len(texts)
         missing: dict[str, list[int]] = {}
+
+        if hasattr(cache, "get_many") and callable(cache.get_many):
+            cached_map = cache.get_many(keys)
+        else:
+            cached_map = {key: cache.get(key) for key in dict.fromkeys(keys)}
+
         for index, key in enumerate(keys):
-            cached = cache.get(key)
+            cached = cached_map.get(key)
             if isinstance(cached, list):
                 vectors[index] = [float(value) for value in cached]
             else:
@@ -2830,11 +2836,17 @@ class LocalAIServices:
             raw_vectors = result.get("embeddings", [])
             if len(raw_vectors) != len(missing_indices):
                 return {"success": False, "error": f"embedding count mismatch: {len(raw_vectors)} != {len(missing_indices)}"}
+            to_cache: dict[str, list[float]] = {}
             for vector, key, indices in zip(raw_vectors, missing, missing.values()):
                 normalized = self._json_embedding(vector)
-                cache.set(key, normalized)
+                to_cache[key] = normalized
                 for index in indices:
                     vectors[index] = normalized
+            if hasattr(cache, "set_many") and callable(cache.set_many):
+                cache.set_many(to_cache)
+            else:
+                for key, val in to_cache.items():
+                    cache.set(key, val)
             result = dict(result)
             result["embeddings"] = vectors
             return result

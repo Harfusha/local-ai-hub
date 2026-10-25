@@ -199,3 +199,22 @@ deployment, model quality, full suite or all-24 completion from this block.
     - NumPy batched cosine similarity achieves exact numerical parity with reference Python implementation.
   - All 39 tests in memory cohort (`test_agent_memory_http_identity.py`, `test_agent_memory_root_snapshot.py`, `test_agent_memory_candidate_scope_recall.py`) passed in 24.56s.
   - Pyflakes: 0 errors.
+
+## T5 / F06 Service Embedding Cache Batching (2026-10-25T20:48:00Z)
+
+- Finding F06 resolved: Previously, `LocalAIServices.embed` iterated over input texts calling `cache.get(key)` and `cache.set(key)` individually for each item. For 64 items, this resulted in 64 individual SQLite connection opens, individual SELECT queries, and (on misses) 64 individual transactions and commits.
+- Solution implemented:
+  - In `src/local_ai_hub/services.py`, updated `LocalAIServices.embed` to use `cache.get_many(keys)` to look up all keys across L1 RAM and persistent L2 SQLite in a single bounded batch operation.
+  - On cache misses, populated missing vectors in memory and stored newly computed embeddings with `cache.set_many(to_cache)` in a single atomic SQLite transaction with `executemany`.
+  - Maintained exact fallback for caches lacking batch methods.
+  - Preserved deduplication: when `texts` contains identical entries, only unique missing keys are encoded uncached, and vectors are correctly mapped to all corresponding input indices.
+- Verification & Test Coverage:
+  - Created `tests/test_service_embedding_cache_batching.py` verifying:
+    - 64 items execute with exactly 1 `get_many` call and 1 `set_many` call (0 individual connections/commits).
+    - Warm L1 cache satisfies all 64 items with 0 L2 disk writes.
+    - Mixed hits and misses retain exact input vector ordering.
+    - Duplicate inputs in a batch map to identical vectors without redundant encoding.
+    - Query vs document separation and model namespaces do not collide.
+    - Corrupted non-JSON entries in L2 self-heal gracefully as misses.
+  - All 22 tests across `tests/test_embedding_cache.py` and `tests/test_service_embedding_cache_batching.py` passed in 0.95s.
+  - Pyflakes: 0 errors.
