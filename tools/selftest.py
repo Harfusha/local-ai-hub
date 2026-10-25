@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import socket
@@ -83,16 +84,19 @@ def _undefined_globals() -> list[str]:
     for base in (ROOT / "src", ROOT / "mcp", ROOT / "tools"):
         for path in sorted(base.rglob("*.py")):
             try:
-                table = symtable.symtable(path.read_text("utf-8"), str(path), "exec")
+                source_text = path.read_text("utf-8")
+                table = symtable.symtable(source_text, str(path), "exec")
             except (SyntaxError, UnicodeDecodeError) as exc:
                 failures.append(f"{path.relative_to(ROOT)}: parse error: {exc}")
                 continue
+            explicit_identifiers: set[str] | None = None
             module_defined = {
                 symbol.get_name()
                 for symbol in table.get_symbols()
                 if symbol.is_assigned() or symbol.is_imported() or symbol.is_parameter()
             }
             def walk(scope: symtable.SymbolTable) -> None:
+                nonlocal explicit_identifiers
                 for symbol in scope.get_symbols():
                     name = symbol.get_name()
                     if (
@@ -101,6 +105,15 @@ def _undefined_globals() -> list[str]:
                         and name not in module_defined
                         and name not in builtin_names
                     ):
+                        if name == "__conditional_annotations__":
+                            if explicit_identifiers is None:
+                                explicit_identifiers = {
+                                    node.id
+                                    for node in ast.walk(ast.parse(source_text))
+                                    if isinstance(node, ast.Name)
+                                }
+                            if name not in explicit_identifiers:
+                                continue
                         failures.append(f"{path.relative_to(ROOT)}: undefined global {name}")
                 for child in scope.get_children():
                     walk(child)

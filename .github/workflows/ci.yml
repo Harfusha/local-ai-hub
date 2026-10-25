@@ -96,6 +96,7 @@ jobs:
           tests/unit/test_rollback_exchange_identity.py
           tests/unit/test_quality_floor_threshold_validation.py
           tests/unit/test_selftest_canonical_temp_root.py
+          tests/unit/test_selftest_conditional_annotations.py
           tests/unit/test_ci_failure_diagnostics.py
           tests/test_command_rollback.py::test_rollback_snapshot_and_restore_accept_nested_paths
           tests/test_command_rollback.py::test_command_rollback_preserves_filesystem_security_metadata
