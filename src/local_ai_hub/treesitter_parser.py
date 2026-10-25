@@ -419,6 +419,25 @@ def is_treesitter_available(lang: str) -> bool:
     norm = lang.replace("\x00", "").strip().lower()
     if not norm:
         return False
+    if _use_isolated_worker() and not _IN_WORKER:
+        # The parent deliberately has no native parser table on Windows 3.13+.
+        # Ask the guarded worker instead of reporting every grammar unavailable.
+        if _worker_disabled_result() is not None:
+            return False
+        if not _WORKER_DISPATCH_LOCK.acquire(timeout=12.0):
+            logger.warning("Tree-sitter availability probe could not acquire worker dispatch")
+            return False
+        try:
+            if _worker_disabled_result() is not None:
+                return False
+            available = _get_worker_pool().submit(_worker_available, norm).result(timeout=10.0)
+            return type(available) is bool and available
+        except (BrokenProcessPool, TimeoutError, OSError, RuntimeError) as exc:
+            logger.warning("Tree-sitter availability probe failed: %s", type(exc).__name__)
+            _disable_worker_pool(f"worker_availability:{type(exc).__name__}")
+            return False
+        finally:
+            _WORKER_DISPATCH_LOCK.release()
     if not _INIT_ATTEMPTED:
         _init_treesitter()
     if _use_isolated_worker() and _worker_disabled_result() is not None:
@@ -572,6 +591,15 @@ def _parse_treesitter_internal(text: str, language: str, *, source_key: str | No
             "syntax_error_count_truncated": error_count_truncated,
             **incremental,
         }
+
+
+def _worker_available(language: str) -> bool:
+    """Probe installed native grammars exclusively inside the isolated worker."""
+    global _IN_WORKER, _INIT_ATTEMPTED
+    if not _IN_WORKER:
+        _IN_WORKER = True
+        _INIT_ATTEMPTED = False
+    return is_treesitter_available(language)
 
 
 def _worker_parse(text: str, language: str, source_key: str | None = None) -> dict[str, Any]:
