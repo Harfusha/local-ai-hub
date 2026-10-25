@@ -277,5 +277,24 @@ deployment, model quality, full suite or all-24 completion from this block.
     - 75 tests passed across `tests/test_rag_vector_snapshot_parity.py`, `tests/test_rag_hybrid.py`, `tests/test_rag_dedup.py`, `tests/test_rag_fragment_cache.py`, and `tests/test_rag_read_bounds.py`.
   - Pyflakes: 0 errors across modified sources and tests.
 
+## T10 / F12 Context Backend Deadline & Cancellation Propagation (2026-10-25T21:25:00Z)
+
+- Finding F12 resolved:
+  - In `src/local_ai_hub/services.py`, when context generation timed out waiting for `rag_future`, it called `rag_future.cancel()`. On running thread pool futures, `Future.cancel()` does not terminate the running thread. The RAG search API lacked a cancellation token or deadline parameter, so running threads continued to scan SQLite, decode vector BLOBs, compute similarities, and run heavy neural rerankers long after the caller timed out.
+- Solution implemented:
+  - Extended `RAGStore.search` and `RAGStore._search_uncached` with optional `deadline: float | None = None` and `cancel_event: threading.Event | None = None`.
+  - Propagated `cancel_event` checks inside the chunk batch scanning loop and prior to running the model reranker, immediately aborting execution on deadline expiry or cancellation.
+  - In `LocalAIServices._context_candidates`, paired `rag_future` submission with `rag_cancel_event = threading.Event()`, signaling cancellation immediately if `rag_pending` occurs during `wait(timeout=...)`.
+  - Preserved backward-compatible call signatures for external and legacy monkeypatched test harnesses.
+- Verification & Test Coverage:
+  - Created `tests/test_context_backend_deadline_work.py`:
+    - `test_rag_search_aborts_immediately_on_cancel_event`: verified immediate loop abort and clean fallback when cancelled.
+    - `test_rag_search_skips_rerank_when_deadline_exceeded`: verified skipping model reranking when deadline has elapsed.
+    - `test_rag_search_normal_without_deadline`: verified full search functionality under normal conditions.
+  - Ran validation across RAG cohort:
+    - 68 tests passed across `tests/test_context_backend_deadline_work.py`, `tests/test_rag_vector_snapshot_parity.py`, `tests/test_rag_hybrid.py`, `tests/test_rag_dedup.py`, and `tests/test_rag_fragment_cache.py` in 13.59s.
+  - Pyflakes: 0 errors across modified sources and tests.
+
+
 
 

@@ -2594,7 +2594,7 @@ class RAGStore:
             result["deterministic_postprocess"] = {"deduplicated": removed}
         return result
 
-    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
         clean_query = normalize_query(query)
         revision = self.revision(workspace=workspace)
         cache_identity_known = self._embedding_space_cache_identity_known()
@@ -2616,9 +2616,15 @@ class RAGStore:
         observed_identity: dict[str, Any] = {}
 
         def compute_search() -> dict[str, Any]:
-            raw_result = self._search_uncached(
-                clean_query, workspace, top_k, use_reranker, priority, scope_path
-            )
+            if deadline is not None or cancel_event is not None:
+                raw_result = self._search_uncached(
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    deadline=deadline, cancel_event=cancel_event,
+                )
+            else:
+                raw_result = self._search_uncached(
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                )
             observed_identity["space"] = self._embedding_space_id()
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
             return raw_result
@@ -2641,7 +2647,13 @@ class RAGStore:
             if isinstance(raw, dict) and raw.get("retrieval_mode") == "lexical_fallback":
                 self.search_flight.cache.delete(key)
         else:
-            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
+            if deadline is not None or cancel_event is not None:
+                raw = self._search_uncached(
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    deadline=deadline, cancel_event=cancel_event,
+                )
+            else:
+                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
             hit, coalesced = False, False
         with closing(self._connect()) as con:
             latest_generation = self._workspace_index_generation(con, workspace)
@@ -2905,7 +2917,7 @@ class RAGStore:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
 
@@ -3062,6 +3074,9 @@ class RAGStore:
             last_path: str | None = None
             last_chunk_no: int | None = None
             while True:
+                if (deadline is not None and time.perf_counter() >= deadline) or (cancel_event is not None and cancel_event.is_set()):
+                    fallbacks.append("deadline_exceeded")
+                    break
                 predicates = ["workspace=?", "embedding_space=?", "embedding_space<>''"]
                 params: list[Any] = [workspace, embedding_space]
                 if centroid_active:
@@ -3177,6 +3192,13 @@ class RAGStore:
             fallbacks.append("embedding_space_rebuild_pending")
 
         if rows_seen == 0:
+            if "deadline_exceeded" in fallbacks:
+                return {
+                    "success": True, "workspace": workspace, "results": [],
+                    "degraded": True, "fallback": "deadline_exceeded",
+                    "fallbacks": fallbacks,
+                    "reason": "search deadline was exceeded",
+                }
             if uncertain_paths:
                 return {
                     "success": True, "workspace": workspace, "results": [],
@@ -3258,7 +3280,9 @@ class RAGStore:
         reranker_failed = False
         heuristic_fallback = False
         if use_reranker and candidates:
-            if self.config.get("features", {}).get("reranker", True) and hasattr(self, "reranker") and self.reranker:
+            if (deadline is not None and time.perf_counter() >= deadline) or (cancel_event is not None and cancel_event.is_set()):
+                fallbacks.append("reranker_deadline_skipped")
+            elif self.config.get("features", {}).get("reranker", True) and hasattr(self, "reranker") and self.reranker:
                 reranker_device = str(
                     getattr(self.reranker, "active_device", None)
                     or getattr(self.reranker, "device", None)

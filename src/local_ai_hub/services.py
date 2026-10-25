@@ -5759,6 +5759,7 @@ class LocalAIServices:
             requested_backends.append("serena")
         if rag_ready and request_optional:
             requested_backends.append("rag")
+        rag_cancel_event = None
         if rag_ready and request_optional and remaining_budget > 0.0:
             rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
             reranker_obj = getattr(self, "reranker", None) or getattr(getattr(self, "rag", None), "reranker", None)
@@ -5767,9 +5768,12 @@ class LocalAIServices:
                 bool(self.config.get("rag", {}).get("use_reranker", True))
                 and not (reranker_obj and active_device == "cpu")
             )
+            rag_cancel_event = threading.Event()
             rag_future = rag_pool.submit(
                 self.rag.search, query, workspace=target_workspace,
                 top_k=10, use_reranker=rag_use_reranker,
+                deadline=backend_deadline,
+                cancel_event=rag_cancel_event,
             )
         elif rag_ready and request_optional:
             backend_states["rag"] = "skipped"
@@ -6277,6 +6281,8 @@ class LocalAIServices:
             )
             rag_done, rag_pending = wait((rag_future,), timeout=rag_timeout)
             if rag_pending:
+                if rag_cancel_event is not None:
+                    rag_cancel_event.set()
                 rag_future.cancel()
                 rr = None
                 backend_states["rag"] = "degraded"
