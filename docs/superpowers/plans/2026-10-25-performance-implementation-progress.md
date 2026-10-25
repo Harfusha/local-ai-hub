@@ -116,3 +116,22 @@ deployment, model quality, full suite or all-24 completion from this block.
   - Gate verdicts: `kernel_gate_met: True`, `workflow_gate_met: True` (threshold >= 15% wall or 20% CPU achieved with >92% reduction).
   - Recommendation: `overall_adoption_recommended: True` based on proven whole-workflow gain.
   - Production status: `production_enabled: False` maintained. Integration into production RAG remains subject to packaging/wheel gate per plan.
+
+## T1 / F01 Watcher Config Generation Cache & Git Process Elimination (2026-10-25T20:02:00Z)
+
+- Finding F01 addressed: Previously, on every unknown/unmatched file event, ProjectPreprocessor._watch_relevant called _project_config_context, which invoked resolve_project_context and spawned git rev-parse --git-common-dir on every single rejected event. In a tree with 1,000 unknown extension events, this spawned 1,000 Git subprocesses taking 15–30 ms per event (~15–30 seconds of CPU waste).
+- Solution implemented:
+  - Added _project_config_watch_signature and _get_cached_project_extensions in src/local_ai_hub/preprocess.py to cache effective project extensions (merging text extensions from config, language overrides, and subtracting binary extensions) keyed by file stat signature of .local-ai.toml, .local-ai.worktree.toml, and .git.
+  - Added _PROJECT_CONTEXT_CACHE and invalidate_project_context_cache in src/local_ai_hub/project_config.py with signature checks on configuration files and .git marker to eliminate repeated Git subprocesses and TOML re-parsing when configuration files are untouched.
+  - Cache is automatically invalidated upon detection of .local-ai.toml or .local-ai.worktree.toml events.
+- Verification & Benchmarks:
+  - 1,000 rejected events executed in 35 ms (< 0.04 ms per event) with 0 extra Git processes spawned.
+  - Added authentic test suite tests/test_watcher_config_generation_cache.py covering:
+    - 1,000 unrecognized events without spawning Git processes
+    - Dynamic cache invalidation and custom extension adoption on configuration edit
+    - Binary extensions rejection
+    - Non-existent / deleted paths handled without disk reads
+    - Out-of-tree path rejection
+    - Cache reuse and invalidation in resolve_project_context
+  - All 24 tests in cohort (test_preprocess_path_settings_snapshot.py, test_t21_project_config_preprocess.py, test_watcher_config_generation_cache.py) passed in 3.36s.
+  - Pyflakes 0 errors.

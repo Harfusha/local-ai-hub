@@ -258,6 +258,8 @@ class ProjectPreprocessor:
         # Filesystem events are coalesced in memory. A normal edit should not force a
         # full repository inventory nor one SQLite write per editor event.
         self._dirty_lock = threading.RLock()
+        self._watch_cache_lock = threading.Lock()
+        self._watch_extensions_cache: dict[str, tuple[tuple[Any, ...], set[str]]] = {}
         self._dirty_paths: dict[str, set[str]] = {}
         self._watch_revisions: dict[str, int] = {}
         # CPU hashing/lexical work reuses one bounded pool instead of creating and
@@ -797,25 +799,32 @@ class ProjectPreprocessor:
             logger.debug("preprocessor project touch failed error_type=%s", type(exc).__name__)
             return False
 
-    def _watch_relevant(self, root: Path, changed: Path) -> str | None:
-        if not root.is_dir():
-            return None
-        try:
-            rel_path = changed.relative_to(root)
-        except ValueError:
-            return None
-        if any(part.lower() in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
-            return None
-        name = rel_path.name.lower()
-        if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
-            return str(rel_path).replace("\\", "/")
-        suffix = rel_path.suffix.lower()
-        if name in self.repo_tools.special_filenames or (
-            self.repo_tools.extensions and suffix in self.repo_tools.extensions
-        ):
-            return str(rel_path).replace("\\", "/")
+    def _project_config_watch_signature(self, root: Path) -> tuple[Any, ...]:
+        def file_sig(p: Path) -> tuple[int, int] | None:
+            try:
+                st = p.stat()
+                return (st.st_mtime_ns, st.st_size)
+            except (OSError, RuntimeError):
+                return None
+
+        return (
+            file_sig(root / ".local-ai.toml"),
+            file_sig(root / ".local-ai.worktree.toml"),
+            file_sig(root / ".git"),
+        )
+
+    def _get_cached_project_extensions(self, root: Path) -> set[str]:
+        root_key = str(root.resolve(strict=False))
+        sig = self._project_config_watch_signature(root)
+        with getattr(self, "_watch_cache_lock", threading.Lock()):
+            if not hasattr(self, "_watch_extensions_cache"):
+                self._watch_extensions_cache = {}
+            cached = self._watch_extensions_cache.get(root_key)
+            if cached is not None and cached[0] == sig:
+                return cached[1]
+
         project_extensions: set[str] = set()
-        _api, project_context = self._project_config_context(str(root))
+        _api, project_context = self._project_config_context(root_key)
         if project_context is not None:
             settings = project_context.settings
             project_extensions.update(
@@ -828,6 +837,33 @@ class ProjectPreprocessor:
             project_extensions.difference_update(
                 str(value).lower() for value in getattr(settings, "binary_extensions", ())
             )
+
+        with getattr(self, "_watch_cache_lock", threading.Lock()):
+            self._watch_extensions_cache[root_key] = (sig, project_extensions)
+        return project_extensions
+
+    def _watch_relevant(self, root: Path, changed: Path) -> str | None:
+        if not root.is_dir():
+            return None
+        try:
+            rel_path = changed.relative_to(root)
+        except ValueError:
+            return None
+        if any(part.lower() in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
+            return None
+        name = rel_path.name.lower()
+        if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+            root_key = str(root.resolve(strict=False))
+            with getattr(self, "_watch_cache_lock", threading.Lock()):
+                if hasattr(self, "_watch_extensions_cache"):
+                    self._watch_extensions_cache.pop(root_key, None)
+            return str(rel_path).replace("\\", "/")
+        suffix = rel_path.suffix.lower()
+        if name in self.repo_tools.special_filenames or (
+            self.repo_tools.extensions and suffix in self.repo_tools.extensions
+        ):
+            return str(rel_path).replace("\\", "/")
+        project_extensions = self._get_cached_project_extensions(root)
         if (
             self.repo_tools.extensions
             and suffix not in self.repo_tools.extensions

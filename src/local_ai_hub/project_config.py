@@ -11,6 +11,7 @@ import stat
 import re
 import sqlite3
 import subprocess
+import threading
 import tomllib
 from contextlib import closing
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -869,6 +870,24 @@ def _resolve_project_config(
     )
 
 
+_PROJECT_CONTEXT_CACHE_LOCK = threading.Lock()
+_PROJECT_CONTEXT_CACHE: dict[tuple[str, str], tuple[tuple[Any, ...], ProjectContext]] = {}
+
+
+def invalidate_project_context_cache(root: str | os.PathLike[str] | None = None) -> None:
+    with _PROJECT_CONTEXT_CACHE_LOCK:
+        if root is None:
+            _PROJECT_CONTEXT_CACHE.clear()
+        else:
+            try:
+                resolved_root = str(Path(root).expanduser().resolve(strict=False))
+                for key in list(_PROJECT_CONTEXT_CACHE.keys()):
+                    if key[0] == resolved_root:
+                        _PROJECT_CONTEXT_CACHE.pop(key, None)
+            except Exception:
+                _PROJECT_CONTEXT_CACHE.clear()
+
+
 def resolve_project_context(
     root: str | os.PathLike[str], state_dir: str | os.PathLike[str]
 ) -> ProjectContext:
@@ -878,6 +897,31 @@ def resolve_project_context(
             raise ProjectConfigError("invalid_root")
     except (OSError, RuntimeError, ValueError):
         raise ProjectConfigError("invalid_root") from None
+
+    state_path = Path(state_dir).expanduser().resolve(strict=False)
+    cache_key = (str(project_root), str(state_path))
+
+    def _file_sig(p: Path | None) -> tuple[int, int] | None:
+        if p is None:
+            return None
+        try:
+            st = p.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except (OSError, RuntimeError):
+            return None
+
+    git_marker = project_root / ".git"
+    config_sig = (
+        _file_sig(project_root / _PROJECT_CONFIG),
+        _file_sig(project_root / ".local-ai.worktree.toml"),
+        _file_sig(git_marker),
+    )
+
+    with _PROJECT_CONTEXT_CACHE_LOCK:
+        cached = _PROJECT_CONTEXT_CACHE.get(cache_key)
+        if cached is not None and cached[0] == config_sig:
+            return cached[1]
+
     common_dir = _git_common_dir(project_root)
     resolution = _resolve_project_config(project_root, common_dir)
     hint_store = ProjectPathHintStore(
@@ -886,7 +930,12 @@ def resolve_project_context(
         shared_namespace=resolution.settings.shared_namespace,
         git_common_dir=common_dir,
     )
-    return ProjectContext(project_root, resolution, hint_store)
+    context = ProjectContext(project_root, resolution, hint_store)
+
+    with _PROJECT_CONTEXT_CACHE_LOCK:
+        _PROJECT_CONTEXT_CACHE[cache_key] = (config_sig, context)
+
+    return context
 
 
 def validate_path_hint(
