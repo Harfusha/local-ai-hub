@@ -165,6 +165,13 @@ def _simhash_shingle_hash(shingle: str) -> int:
 
 def _simhash(text: str) -> int:
     """Compute 64-bit SimHash of text based on character 4-grams."""
+    try:
+        from .native_kernels import is_native_enabled, simhash_text
+        if is_native_enabled():
+            return simhash_text(text)
+    except Exception:
+        pass
+
     clean = re.sub(r"\s+", " ", text.lower().strip())
     if len(clean) < 4:
         shingles = [clean] if clean else []

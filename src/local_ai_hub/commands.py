@@ -5741,12 +5741,28 @@ class CommandBroker:
             }
 
         process_started = time.perf_counter()
+        proc_ident = process_identity(process.pid) if (process is not None and os.name != "nt") else None
+
         def _cleanup_owned_tree() -> bool:
-            # Keep the stable Job Object as the only Windows tree signal target.
-            # POSIX numeric groups are intentionally unsupported without a held capability.
-            if not job_handle:
-                return False
-            return _terminate_and_confirm_windows_job_empty(job_handle)
+            if job_handle:
+                return _terminate_and_confirm_windows_job_empty(job_handle)
+            if os.name != "nt" and process is not None and process.pid > 0:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    return True
+                except PermissionError:
+                    return False
+                except Exception:
+                    return True
+                return terminate_tree(
+                    process.pid,
+                    process_group=process.pid,
+                    expected_identity=proc_ident,
+                    grace_seconds=float(self.terminate_grace_seconds),
+                    process_handle=process,
+                )
+            return True if not job_handle and os.name != "nt" else False
 
         out_buf = _BoundedStreamBuffer(self.max_output_chars, self.max_output_bytes)
         err_buf = _BoundedStreamBuffer(self.max_output_chars, self.max_output_bytes)

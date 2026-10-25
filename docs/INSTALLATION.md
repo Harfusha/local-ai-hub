@@ -82,6 +82,7 @@ On Windows, the preferred persistent service identity is Task Scheduler task `Lo
 | `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
 | `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
 | `performance` | `orjson`, `msgspec`, `Cython` |
+| `native` | `Cython` (SimHash native acceleration) |
 | `profiling` | `py-spy`, `scalene` |
 | `dev` | `pytest`, `pyflakes`, `coverage[toml]` |
 

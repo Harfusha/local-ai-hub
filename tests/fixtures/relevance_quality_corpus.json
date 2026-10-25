@@ -1,0 +1,1336 @@
+{
+  "schema_version": "relevance_corpus.v1",
+  "total_queries": 117,
+  "description": "Relevance quality evaluation corpus across 8 required categories (CZ and EN)",
+  "queries": [
+    {
+      "id": "sym_001",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "simhash_votes",
+      "expected_paths": [
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "expected_symbols": [
+        "simhash_votes"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_002",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "_simhash",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [
+        "_simhash"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_003",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "CommandBroker",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "expected_symbols": [
+        "CommandBroker"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_004",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "LocalAIServices",
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [
+        "LocalAIServices"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_005",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "VRAMBalancer",
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py"
+      ],
+      "expected_symbols": [
+        "VRAMBalancer"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_006",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "ProjectPreprocessor",
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "expected_symbols": [
+        "ProjectPreprocessor"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_007",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "resolve_project_context",
+      "expected_paths": [
+        "src/local_ai_hub/project_config.py"
+      ],
+      "expected_symbols": [
+        "resolve_project_context"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_008",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "json_tokens",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "expected_symbols": [
+        "json_tokens"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_009",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "MemoryStore",
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "expected_symbols": [
+        "MemoryStore"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_010",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "CodeIndex",
+      "expected_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [
+        "CodeIndex"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_011",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "RepositoryTools",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "expected_symbols": [
+        "RepositoryTools"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_012",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "terminate_tree",
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [
+        "terminate_tree"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_013",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "popen_managed",
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [
+        "popen_managed"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_014",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "RAGStore",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [
+        "RAGStore"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sym_015",
+      "category": "exact_symbol",
+      "language": "neutral",
+      "query": "validate_network_security",
+      "expected_paths": [
+        "src/local_ai_hub/http_server.py"
+      ],
+      "expected_symbols": [
+        "validate_network_security"
+      ],
+      "negative": false
+    },
+    {
+      "id": "sub_001",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_get_cached_project_extensions",
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_002",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_bounded_task_summary",
+      "expected_paths": [
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_003",
+      "category": "substring",
+      "language": "neutral",
+      "query": "OPT_NON_STR_KEYS",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_004",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_shingle_hash",
+      "expected_paths": [
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_005",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_resolve_under_base",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_006",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_search_token_overlap",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_007",
+      "category": "substring",
+      "language": "neutral",
+      "query": "create_job_object_kill_on_close",
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_008",
+      "category": "substring",
+      "language": "neutral",
+      "query": "sqlite_batches",
+      "expected_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_009",
+      "category": "substring",
+      "language": "neutral",
+      "query": "sample_age_seconds",
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_010",
+      "category": "substring",
+      "language": "neutral",
+      "query": "rag_cancel_event",
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_011",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_INTERACTIVE_PATTERNS",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_012",
+      "category": "substring",
+      "language": "neutral",
+      "query": "invalidate_snapshot",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_013",
+      "category": "substring",
+      "language": "neutral",
+      "query": "base_id_sql",
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_014",
+      "category": "substring",
+      "language": "neutral",
+      "query": "_has_nonfinite_float",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "sub_015",
+      "category": "substring",
+      "language": "neutral",
+      "query": "terminate_grace_seconds",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_001",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "jak se počítá simhash otisk textu pro deduplikaci chunků",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_002",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "řešení timeoutu a ukončení procesního stromu na windows",
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_003",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "dávkové načítání vnořených embeddingů z cache",
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_004",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "izolace kandidátních oken paměti podle scope repozitáře",
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_005",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "parsování a odhad tokenů z JSON výstupu orjson",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_006",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "kešování konfigurace watcher souborů a přípon projektu",
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_007",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "správa a balancování VRAM paměti grafické karty",
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_008",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "inkrementální indexace a aktualizace souborů v databázi",
+      "expected_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_009",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "řešení zástupných cest a canonicalizace cest na windows",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_010",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "omezení minimální odpovědi MCP nástrojů podle tokenového budgetu",
+      "expected_paths": [
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_011",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "spouštění a správa procesů přes supervisor daemon",
+      "expected_paths": [
+        "src/local_ai_hub/supervisor.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_012",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "síťová bezpečnost a validace povolených bind adres serveru",
+      "expected_paths": [
+        "src/local_ai_hub/http_server.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_013",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "zpracování a streamování výstupu z příkazů command brokeru",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_014",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "nativní cython implementace hlasování shingle hashů",
+      "expected_paths": [
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pcz_015",
+      "category": "described_problem_cz",
+      "language": "cz",
+      "query": "propagace deadlinu a cancel eventu do rag vyhledávání",
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_001",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "compute 64-bit simhash fingerprint for near duplicate deduplication",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_002",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "terminate Windows process tree using job objects without recycling pid",
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_003",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "batch embedding cache lookup and write back with sqlite transaction",
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_004",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "prevent agent memory candidate starvation across foreign repository scopes",
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_005",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "fast json byte serialization and token count with nonfinite float fallback",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_006",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "cache project watcher extension configurations to avoid git subprocesses",
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_007",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "vram balancer telemetry tracking and GPU memory allocation policy",
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_008",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "incremental code index file update scoped by batch file paths",
+      "expected_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_009",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "search path resolution cache eliminating redundant Windows realpath syscalls",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_010",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "response budget compaction preserving minimal usable coordination envelopes",
+      "expected_paths": [
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_011",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "supervisor daemon process lifecycle and background health monitoring",
+      "expected_paths": [
+        "src/local_ai_hub/supervisor.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_012",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "http server network security binding validation and origin checks",
+      "expected_paths": [
+        "src/local_ai_hub/http_server.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_013",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "command execution broker with interactive prompt detection and log callbacks",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_014",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "native cython acceleration kernel for 64-bit uint64 simhash buffer voting",
+      "expected_paths": [
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "pen_015",
+      "category": "described_problem_en",
+      "language": "en",
+      "query": "cancellation event and deadline propagation inside rag vector search",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_001",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "rag simhash delegation to native_kernels",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py",
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_002",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "services context candidate cancellation in rag",
+      "expected_paths": [
+        "src/local_ai_hub/services.py",
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_003",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "project_config cache invalidation in preprocess watcher",
+      "expected_paths": [
+        "src/local_ai_hub/project_config.py",
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_004",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "token_accounting orjson fastpath in response_budget",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py",
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_005",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "repo_tools path resolution cache in ripgrep search",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py",
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_006",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "commands process execution using process_utils terminate_tree",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py",
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_007",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "mcp_server coordination envelope protection from response_budget",
+      "expected_paths": [
+        "src/local_ai_hub/mcp_server.py",
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_008",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "services embedding batching through cache get_many set_many",
+      "expected_paths": [
+        "src/local_ai_hub/services.py",
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_009",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "vram_balancer resource admission in async_jobs scheduler",
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py",
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_010",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "http_server health endpoints and supervisor process management",
+      "expected_paths": [
+        "src/local_ai_hub/http_server.py",
+        "src/local_ai_hub/supervisor.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_011",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "preprocess step_hash linking scoped batch paths in code_index",
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py",
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "rel_012",
+      "category": "cross_file_relation",
+      "language": "en",
+      "query": "agent_memory base_id_sql scoped filtering in sqlite vector search",
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py",
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "neg_001",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "quantum_cryptography_entanglement_key_exchange",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_002",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "blockchain_solidity_smart_contract_erc20_mint",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_003",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "kubernetes_helm_chart_ingress_controller_yaml",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_004",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "unreal_engine_nanite_mesh_shader_pipeline",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_005",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "neexistujici_funkce_pro_vesmirny_teleskop_hubble",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_006",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "totally_fictional_unmatched_subsystem_xyz999",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_007",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "nonexistent_cuda_tensor_core_fp4_kernel",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_008",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "fiktivni_databazovy_ovladac_pro_nosql_cassandra",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_009",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "react_native_swift_bridging_header_compilation",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_010",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "apache_spark_rdd_mapreduce_cluster_shuffle",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_011",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "neplatny_identifikator_pametoveho_radice_abc",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_012",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "unimplemented_cobol_copybook_fixed_format_parser",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_013",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "opengl_vertex_buffer_tessellation_geometry_stage",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_014",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "neexistujici_algoritmus_strojoveho_uceni_zeta",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "neg_015",
+      "category": "negative_no_match",
+      "language": "neutral",
+      "query": "synthetic_hallucinated_variable_without_grounding_0xdeadbeef",
+      "expected_paths": [],
+      "expected_symbols": [],
+      "negative": true
+    },
+    {
+      "id": "scp_001",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "simhash in rag",
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_002",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "commands in commands.py",
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_003",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "services in services.py",
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_004",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "vram in vram_balancer.py",
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_005",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "preprocess in preprocess.py",
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_006",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "project_config in project_config.py",
+      "expected_paths": [
+        "src/local_ai_hub/project_config.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_007",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "token_accounting in token_accounting.py",
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_008",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "response_budget in response_budget.py",
+      "expected_paths": [
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_009",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "agent_memory in agent_memory.py",
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_010",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "code_index in code_index.py",
+      "expected_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_011",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "repo_tools in repo_tools.py",
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_012",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "native_kernels in native_kernels.py",
+      "expected_paths": [
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_013",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "process_utils in process_utils.py",
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_014",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "supervisor in supervisor.py",
+      "expected_paths": [
+        "src/local_ai_hub/supervisor.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "scp_015",
+      "category": "scope_confinement",
+      "language": "en",
+      "query": "http_server in http_server.py",
+      "expected_paths": [
+        "src/local_ai_hub/http_server.py"
+      ],
+      "scope_root": "src/local_ai_hub",
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_001",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "simhash",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/rag.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_002",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "vram",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/vram_balancer.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_003",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "tokens",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/token_accounting.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_004",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "budget",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/response_budget.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_005",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "memory",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/agent_memory.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_006",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "preprocess",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_007",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "config",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/project_config.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_008",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "broker",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_009",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "native",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/native_kernels.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_010",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "process",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/process_utils.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_011",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "services",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/services.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_012",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "index",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_013",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "tools",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_014",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "supervisor",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/supervisor.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    },
+    {
+      "id": "bgt_015",
+      "category": "minimal_budget",
+      "language": "en",
+      "query": "server",
+      "max_tokens": 128,
+      "expected_paths": [
+        "src/local_ai_hub/http_server.py"
+      ],
+      "expected_symbols": [],
+      "negative": false
+    }
+  ]
+}

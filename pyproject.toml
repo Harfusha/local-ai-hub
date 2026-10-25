@@ -28,6 +28,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+native = ["Cython>=3,<4"]
 ast-index = ["tree-sitter-language-pack==1.18.0"]
 local-nlp = ["sentence-transformers>=5.4,<6"]
 intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026.1,<2027"]
