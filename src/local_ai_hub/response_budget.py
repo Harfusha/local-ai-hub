@@ -328,7 +328,7 @@ def _fit_to_tokens(
         "evidence_ids", "evidence_id", "artifact_ids", "summary", "token_efficiency",
     )
     for key in optional:
-        if key in protected:
+        if key in protected or key not in value:
             continue
         if json_tokens(value) <= max_tokens:
             break
@@ -353,9 +353,15 @@ def _fit_to_tokens(
                 current = _bounded_string(current, max(1, len(current) // 2))
                 value[key] = current
     if json_tokens(value) > max_tokens:
-        while isinstance(value.get("tasks"), list) and len(value["tasks"]) > 1 and json_tokens(value) > max_tokens:
-            value["tasks"].pop()
-            value["tasks_omitted"] = value.get("tasks_omitted", 0) + 1
+        while isinstance(value.get("tasks"), list) and len(value["tasks"]) > 1:
+            cur = json_tokens(value)
+            if cur <= max_tokens:
+                break
+            excess = cur - max_tokens
+            avg_task_tokens = max(1, cur // len(value["tasks"]))
+            pop_count = min(len(value["tasks"]) - 1, max(1, excess // avg_task_tokens))
+            del value["tasks"][-pop_count:]
+            value["tasks_omitted"] = value.get("tasks_omitted", 0) + pop_count
         if isinstance(value.get("tasks"), list) and len(value["tasks"]) == 1 and json_tokens(value) > max_tokens:
             t = value["tasks"][0]
             if isinstance(t, dict):
@@ -364,9 +370,15 @@ def _fit_to_tokens(
                         break
                     t.pop(k, None)
 
-        while isinstance(value.get("records"), list) and len(value["records"]) > 1 and json_tokens(value) > max_tokens:
-            value["records"].pop()
-            value["records_omitted"] = value.get("records_omitted", 0) + 1
+        while isinstance(value.get("records"), list) and len(value["records"]) > 1:
+            cur = json_tokens(value)
+            if cur <= max_tokens:
+                break
+            excess = cur - max_tokens
+            avg_rec_tokens = max(1, cur // len(value["records"]))
+            pop_count = min(len(value["records"]) - 1, max(1, excess // avg_rec_tokens))
+            del value["records"][-pop_count:]
+            value["records_omitted"] = value.get("records_omitted", 0) + pop_count
         if isinstance(value.get("records"), list) and len(value["records"]) == 1 and json_tokens(value) > max_tokens:
             r = value["records"][0]
             if isinstance(r, dict):
@@ -375,9 +387,15 @@ def _fit_to_tokens(
                         break
                     r.pop(k, None)
 
-        while isinstance(value.get("items"), list) and len(value["items"]) > 1 and json_tokens(value) > max_tokens:
-            value["items"].pop()
-            value["items_omitted"] = value.get("items_omitted", 0) + 1
+        while isinstance(value.get("items"), list) and len(value["items"]) > 1:
+            cur = json_tokens(value)
+            if cur <= max_tokens:
+                break
+            excess = cur - max_tokens
+            avg_item_tokens = max(1, cur // len(value["items"]))
+            pop_count = min(len(value["items"]) - 1, max(1, excess // avg_item_tokens))
+            del value["items"][-pop_count:]
+            value["items_omitted"] = value.get("items_omitted", 0) + pop_count
 
     if json_tokens(value) > max_tokens:
         collection_keep = ()
@@ -450,26 +468,7 @@ def _with_budget_meta(
         # Accounting is useful but must not crowd out protected error/evidence or
         # context identity fields when an unusually small ceiling is requested.
     _fit_to_tokens(value, requested, protected_keys=effective_protected)
-    stable = False
-    for _ in range(16):
-        returned = json_tokens(value)
-        value["response_budget"]["returned_tokens"] = returned
-        accounting = value.get("token_efficiency")
-        if isinstance(accounting, dict) and has_valid_baseline:
-            accounting["token_savings_delta_est"] = accounting["baseline_tokens_est"] - returned
-            accounting["avoided_payload_tokens_est"] = max(0, accounting["token_savings_delta_est"])
-        finalized = json_tokens(value)
-        if finalized == returned:
-            stable = True
-            break
-        if finalized > requested:
-            _fit_to_tokens(value, requested, protected_keys=effective_protected)
-    if not stable and json_tokens(value) > requested:
-        _fit_to_tokens(value, requested, protected_keys=effective_protected)
-
-    # The final fit can remove or truncate fields. Reconcile all derived
-    # counters against that exact payload before returning it.
-    for _ in range(16):
+    for _ in range(8):
         returned = json_tokens(value)
         value["response_budget"]["returned_tokens"] = returned
         accounting = value.get("token_efficiency")
@@ -795,7 +794,7 @@ def _budget_rejection(
         for metadata in metadata_variants:
             candidate = dict(critical)
             candidate["response_budget"] = dict(metadata)
-            for _ in range(16):
+            for _ in range(4):
                 returned = json_tokens(candidate)
                 candidate["response_budget"]["returned_tokens"] = returned
                 if json_tokens(candidate) == returned:
@@ -858,7 +857,7 @@ def _reconcile_existing_budget(value: Any) -> dict[str, Any] | None:
     result = dict(value)
     result_metadata = dict(metadata)
     result["response_budget"] = result_metadata
-    for _ in range(16):
+    for _ in range(4):
         returned = json_tokens(result)
         result_metadata["returned_tokens"] = returned
         if json_tokens(result) == returned:

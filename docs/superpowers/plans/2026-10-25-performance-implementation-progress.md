@@ -152,3 +152,33 @@ deployment, model quality, full suite or all-24 completion from this block.
   - Added test_memory_find_records_preserved_across_budget_matrix covering memory records across all budget tiers.
   - Full response budget test cohort (35 tests across test_response_budget.py, test_mcp_response_budget.py, test_response_budget_failure_identity.py, test_response_budget_readable_rejection.py) passed in 3.37s.
   - Pyflakes 0 errors.
+
+## T3 / F02 JSON & Budget CPU Overhead Reduction with Exact Parity (2026-10-25T20:38:00Z)
+
+- Finding F02 resolved: In `src/local_ai_hub/token_accounting.py`, `json_tokens` was previously serializing via `json.JSONEncoder.iterencode` in a pure Python loop over string chunks and UTF-8 encodes. On large tool outputs (250 items, ~50–100 KiB), this consumed 1.2–10 ms of pure CPU per invocation. Additionally, `_fit_to_tokens` and `_with_budget_meta` in `src/local_ai_hub/response_budget.py` called `json_tokens` in redundant tight loops (e.g., popping collection items 1-by-1 with full recalculations, repeating 16-iteration stabilization loops twice). In `src/local_ai_hub/json_utils.py`, `dumps` and `dumps_bytes` lacked exception handling for integers > 64-bit or surrogates when using `orjson`.
+- Solution implemented:
+  - In `src/local_ai_hub/token_accounting.py`:
+    - Integrated `orjson` fast-path for compact UTF-8 byte serialization with `OPT_NON_STR_KEYS` and `default=str`.
+    - Added `_has_nonfinite_float` check to detect NaN and +/-Infinity (which `orjson` serializes as `null` instead of canonical RFC-incompatible `NaN`/`Infinity`). When non-finite floats are present, `_streaming_json_tokens` is used to ensure 100% exact canonical byte parity.
+    - Added exception fallback handling (`TypeError`, `OverflowError`, `ValueError`, `UnicodeEncodeError`, `orjson.JSONEncodeError`) falling back to `_streaming_json_tokens` for integers > 64-bit range, lone surrogates, and cyclic/unsupported structures.
+  - In `src/local_ai_hub/response_budget.py`:
+    - Updated `_fit_to_tokens` to only measure when a key was actually popped (`key in value`).
+    - Implemented projected bulk popping of `tasks`, `records`, and `items` based on average item token weight, eliminating up to 50 redundant serializations during collection compaction.
+    - Streamlined `_with_budget_meta` and `_reconcile_existing_budget` to converge in bounded iterations (maximum 8 and 4) without redundant duplicate reconciliation passes.
+    - Optimized candidate search in `_budget_rejection`.
+  - In `src/local_ai_hub/json_utils.py`:
+    - Added `try ... except (TypeError, OverflowError, _orjson.JSONEncodeError): pass` around `_orjson.dumps` in `dumps` and `dumps_bytes` so that integers exceeding 64-bit range or lone surrogates seamlessly fall back to stdlib `json.dumps`.
+- Verification & Test Coverage:
+  - Created `tests/test_token_estimator_backend_parity.py` covering:
+    - Basic primitives (`None`, booleans, integers, floats, empty containers)
+    - Unicode & special characters (Czech, Chinese, Japanese, Greek, emojis, whitespace escapes)
+    - Boundary integers (exact 64-bit bounds and integers > 64-bit)
+    - Float edge cases (`-0.0`, scientific notation exponents, NaN, +/-Infinity)
+    - Non-string keys (integer, boolean, float keys)
+    - Custom objects with `default=str` (`Path`, custom classes)
+    - Recovery for lone surrogates and invalid tuple keys
+    - Deeply nested structures (20 levels) and cyclic data structures
+    - Realistic Agent OS payloads (~5 KiB tasks list, ~15 KiB memory records)
+    - Throughput benchmark on 50 KiB payload: **13.5x speedup** (0.71 ms vs 9.54 ms baseline, threshold >= 20% exceeded).
+  - All 44 tests across the 4 modules (`test_json_utils.py`, `test_response_budget.py`, `test_mcp_response_budget.py`, `test_token_estimator_backend_parity.py`) passed in 1.58s.
+  - Pyflakes: 0 errors.

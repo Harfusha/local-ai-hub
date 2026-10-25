@@ -173,11 +173,14 @@ def dumps(value: Any, **kwargs: Any) -> str:
             if kwargs.get("sort_keys"):
                 options |= _orjson.OPT_SORT_KEYS
             default = kwargs.get("default")
-            if default is None:
-                encoded = _orjson.dumps(value, option=options)
-            else:
-                encoded = _orjson.dumps(value, option=options, default=default)
-            return encoded.decode("utf-8")
+            try:
+                if default is None:
+                    encoded = _orjson.dumps(value, option=options)
+                else:
+                    encoded = _orjson.dumps(value, option=options, default=default)
+                return encoded.decode("utf-8")
+            except (TypeError, OverflowError, _orjson.JSONEncodeError):
+                pass
         if _msgspec is not None and not kwargs.get("sort_keys") and kwargs.get("default") is None:
             return _msgspec.json.encode(value).decode("utf-8")
     return json.dumps(value, **kwargs)
@@ -213,9 +216,12 @@ def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
             if kwargs.get("sort_keys"):
                 options |= _orjson.OPT_SORT_KEYS
             default = kwargs.get("default")
-            if default is None:
-                return _orjson.dumps(value, option=options)
-            return _orjson.dumps(value, option=options, default=default)
+            try:
+                if default is None:
+                    return _orjson.dumps(value, option=options)
+                return _orjson.dumps(value, option=options, default=default)
+            except (TypeError, OverflowError, _orjson.JSONEncodeError):
+                pass
         if _msgspec is not None and not kwargs.get("sort_keys") and kwargs.get("default") is None:
             return _msgspec.json.encode(value)
     return json.dumps(value, **kwargs).encode("utf-8", errors="replace")
