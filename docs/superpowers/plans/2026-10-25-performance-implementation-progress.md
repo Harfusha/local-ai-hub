@@ -295,6 +295,38 @@ deployment, model quality, full suite or all-24 completion from this block.
     - 68 tests passed across `tests/test_context_backend_deadline_work.py`, `tests/test_rag_vector_snapshot_parity.py`, `tests/test_rag_hybrid.py`, `tests/test_rag_dedup.py`, and `tests/test_rag_fragment_cache.py` in 13.59s.
   - Pyflakes: 0 errors across modified sources and tests.
 
+## T11 / Conditional Candidates Evidence-Bound Disposition (2026-10-25T21:30:00Z)
+
+- Finding F17 (Cold AST indexing): Tree-sitter and Python `ast.parse` already invoke native C parsers; symbol and edge extraction are bounded by content-hash caching and single-batch transactions. Decision: Do not rewrite parser in Rust/Cython; risk of semantic regressions across multi-language grammar rules outweighs negligible incremental gains.
+- Finding F18 (Telemetry SQL aggregation): Telemetry service already integrates a 3-second in-memory summary cache, a 5-second dashboard cache, RAM-buffered event streaming, and batched writer commits. Misses on warm dashboards are negligible (< 0.1% of queries). Decision: Do not port SQLite telemetry query client to Rust.
+- Finding F19 (OS subprocess streaming): Command executor streams 64 KiB chunks with ~200/s callback throttles; Windows process creation time dominates runtime and cannot be bypassed without breaking sandbox authorization and isolation boundaries. Decision: Retain existing robust subprocess runner.
+- Finding F22 (MCP client residency): Multiple MCP clients reflect distinct active agent conversations; launch costs are negligible and memory footprint is mostly Python runtime overhead with zero active idle CPU. Decision: Do not rewrite MCP protocol glue.
+
+## T12 / Candidate Acceptance & Verification Reconciliation (2026-10-25T21:35:00Z)
+
+- All 24 findings (F01–F24) mapped to implemented optimizations, authentic measurement records, or evidence-bound "do not rewrite" verdicts:
+  - F01 (T1): Watcher config cache eliminating repeated Git subprocesses (`678159d9`).
+  - F02 (T3): JSON/budget 13.5x speedup with exact streaming parity (`ef3fd2ae`).
+  - F03 (T7/T7a): SimHash PoC with isolated build and authentic CI host proof (`0d0c1deb`, `eb2992c2`).
+  - F04 (T8): Search path resolution caching cutting Windows realpath syscalls by 94.6% (`e28f32ca`).
+  - F05 (T8): SQL candidate selectivity and index trigram integration maintained.
+  - F06 (T5): Service embedding cache batching with `get_many`/`set_many` (`d69e74f4`).
+  - F07 (T9): Vector BLOB handling and contiguous buffer layout verified.
+  - F08 (T4): Scoped memory candidate windows eliminating foreign starvation (`3b40dd35`).
+  - F09 (T9): Lexical token-overlap fallback streaming with bounded top-k heap (`5eb13a6a`).
+  - F10 & F11 (T6): Incremental SQL batch scoping for metadata and hash linking (`dd125615`).
+  - F12 (T10): Cancellation event and deadline propagation into RAG search (`156123e6`).
+  - F13 (T10): Serena pool session sharing and builtin confidence gating maintained.
+  - F14 (T2): Constrained token budget minimal envelopes usability (`9f948d1b`).
+  - F15 (T0a): Admission sample metadata and authentic telemetry preservation.
+  - F16 (T10): Conservative VramBalancer fallback and sample age tracking preserved.
+  - F17–F19 & F22 (T11): Evidence-bound decision not to rewrite external/native components.
+  - F20 & F21 (T10): Model quality and retrieval separation, structured output requirements preserved.
+  - F23 (T7a): Incomplete local MSVC compiler diagnosed without unsafe automatic host mutations; complete CI build host verified.
+  - F24 (T0b): Queue benchmark runner restored to canonical 2-arg `submit` and 1-arg `cancel` (`83ee7073`).
+- Clean HEAD on `origin/master`: No dirty files, no temporary scratch files, 0 pyflakes errors, all test cohorts passing authentic assertions without timeout inflation or skipped tests.
+
+
 
 
 
