@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import numbers
 import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
@@ -249,12 +250,13 @@ def quality_floor_failures(
     for key, threshold in floor.items():
         raw_val = metrics.get(key)
         val = _safe_float(raw_val)
-        if val is None:
+        threshold_value = _safe_float(threshold) if isinstance(threshold, numbers.Real) else None
+        if val is None or threshold_value is None:
             failures.append(key)
         elif key.endswith("_rate") and key in {"hallucinated_path_rate", "false_positive_rate"}:
-            if val > threshold:
+            if val > threshold_value:
                 failures.append(key)
-        elif val < threshold:
+        elif val < threshold_value:
             failures.append(key)
     return failures
 
