@@ -2096,6 +2096,7 @@ class LocalAIServices:
         payload["context"] = code
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
+        payload.setdefault("format", "json")
         result = self.delegate(payload)
         if not isinstance(result, dict) or result.get("success") is not True:
             return result
@@ -6571,6 +6572,10 @@ class LocalAIServices:
                 det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
 
         if args.get("mode") == "ast" or str(args.get("instructions", "")).strip().lower() == "ast":
+            count_fields = ("additions", "deletions", "hunks")
+            if not all(type(det_diff.get(field)) is int and det_diff[field] >= 0 for field in count_fields):
+                return {"success": False, "mode": "ast", "changed_files": diff.get("changed_files", []),
+                        "error": "Deterministic diff metadata unavailable", "diff_facts": det_diff}
             return {
                 "success": True,
                 "mode": "ast",
@@ -6578,7 +6583,7 @@ class LocalAIServices:
                 "diff_facts": det_diff,
                 "breaking_changes": det_diff.get("breaking_changes", []),
                 "regressions": regressions,
-                "summary": f"AST Diff Summary: {len(diff.get('changed_files', []))} files, {det_diff.get('added_lines_count', 0)} additions, {det_diff.get('deleted_lines_count', 0)} deletions across {det_diff.get('hunks_count', 0)} hunks. {len(det_diff.get('breaking_changes', []))} potential breaking changes.",
+                "summary": f"AST Diff Summary: {len(diff.get('changed_files', []))} files, {det_diff['additions']} additions, {det_diff['deletions']} deletions across {det_diff['hunks']} hunks. {len(det_diff.get('breaking_changes', []))} potential breaking changes.",
             }
 
         # Keep non-diff prompt material bounded too; metadata descriptions and custom

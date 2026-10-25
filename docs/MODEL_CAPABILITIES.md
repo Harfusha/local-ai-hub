@@ -49,7 +49,7 @@ builder in `src/local_ai_hub/prompt_contracts.py`. The builder supplies:
 - the operation-specific goal;
 - task, acceptance criteria, evidence IDs, changed paths and revision;
 - static facts before free-form context;
-- required `SUMMARY`, `EVIDENCE`, `ANALYSIS`, `LIMITATIONS` and `NEXT` sections;
+- required `SUMMARY`, `EVIDENCE`, `ANALYSIS`, `LIMITATIONS` and `NEXT` sections except for `review`, which defaults to a JSON `verdict` and cited `findings` matching the consistency validator; explicit task response formats take precedence;
 - an explicit no-invention rule for paths, symbols, line numbers, APIs and tests.
 
 The `integrated` hardware profile receives the same contract with a bounded

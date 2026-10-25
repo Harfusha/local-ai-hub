@@ -53,7 +53,7 @@ _OPERATION_GUIDANCE = {
     "delegate": "Answer the bounded task using the supplied evidence.",
     "explore": "Identify the smallest set of relevant facts, paths and symbols; do not invent missing context.",
     "reason": "Compare concrete hypotheses, select the strongest one, and explain what evidence supports or weakens it.",
-    "review": "Find concrete correctness, regression, security or test risks in the supplied material.",
+    "review": "Find concrete correctness, regression, security or test risks in the supplied material. Default to a JSON verdict and cited findings; explicit task response formats take precedence.",
     "review_diff": (
         "Review only the changed hunk. Check regression risk, changed contracts, error handling, security/concurrency "
         "and missing tests. Report `None found` when the supplied diff contains no actionable defect."
@@ -158,6 +158,21 @@ def build_prompt(
         f"Out of scope for this model: {', '.join(capability.cannot)}.",
         2100,
     )
+    required_response = (
+        'Return only a JSON object with "verdict" ("pass" or "fail") and "findings" (a list). '
+        'Use "pass" only when findings is empty; otherwise use "fail". Each finding must explain '
+        'a concrete defect and include "citation": {"path": "supplied allowed path", "line": 1} '
+        'with an actual positive line number from the supplied evidence. Do not invent citations. '
+        'If evidence is insufficient, state that limitation in a separate "limitations" field. '
+        'A pass verdict is advisory, never proof of semantic correctness. '
+        'An explicit response format in TASK takes precedence.\n'
+        if operation_name == "review" else
+        "1. SUMMARY: one concrete conclusion for this task / Konkrétní závěr.\n"
+        "2. EVIDENCE: cite supplied evidence IDs and paths.\n"
+        "3. ANALYSIS: explain the project-specific reasoning, not generic best practices.\n"
+        "4. LIMITATIONS: state unknowns instead of guessing.\n"
+        "5. NEXT: one concrete next step, or `None found`.\n"
+    )
     user = (
         f"{operation_name.upper()}\n"
         "OPERATION CONTRACT:\n" + guidance + "\n\n"
@@ -168,12 +183,7 @@ def build_prompt(
         f"REPOSITORY REVISION: {repository_revision or 'not supplied'}\n\n"
         "STATIC FACTS:\n" + _clip(static_facts, 1800) + "\n\n"
         "CONTEXT:\n" + _clip(context, 12500) + "\n\n"
-        "REQUIRED RESPONSE:\n"
-        "1. SUMMARY: one concrete conclusion for this task / Konkrétní závěr.\n"
-        "2. EVIDENCE: cite supplied evidence IDs and paths.\n"
-        "3. ANALYSIS: explain the project-specific reasoning, not generic best practices.\n"
-        "4. LIMITATIONS: state unknowns instead of guessing.\n"
-        "5. NEXT: one concrete next step, or `None found`.\n"
+        "REQUIRED RESPONSE:\n" + required_response +
         "Nevymýšlej soubory, API, symboly, řádky ani výsledky testů. Každý řádek musí odkazovat na dodaný důkaz; "
         "holé 'line N' nepoužívej. Obecné rady bez vazby na dodaný context označ jako nedostatečné."
     )

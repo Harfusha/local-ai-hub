@@ -60,3 +60,14 @@ def test_specialized_diff_review_has_static_contract():
     assert "E-DIFF" in package.user
     assert "None found" in package.user
 
+
+def test_default_review_prompt_matches_consistency_validator_contract():
+    package = build_prompt(operation="review", model="qwen2.5-coder:7b", task="Review supplied code.", changed_paths=["src/example.py"])
+    response = package.user.split("REQUIRED RESPONSE:\n", 1)[1]
+    assert "JSON" in response
+    assert '"verdict"' in response
+    assert '"findings"' in response
+    assert '"citation"' in response
+    assert "SUMMARY:" not in response
+    assert len(package.system) < 2200
+

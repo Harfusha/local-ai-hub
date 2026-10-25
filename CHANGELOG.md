@@ -17,6 +17,8 @@
 
 Preparation for 5.1.0; package version remains 5.0.0 pending release acceptance.
 
+- Align default advisory review generation with its JSON consistency contract and report actual deterministic diff counts; unavailable AST metadata fails explicitly.
+
 - Wake client cancellation and supervisor shutdown during retry, recovery and cooldown waits; preserve bounded cross-process operational-mode lock retries.
 - Probe native parser availability inside isolated workers on Windows.
 - Preserve canonical repository scope and identity in consistency decisions; distinguish verification persistence failures without logging command payloads.
