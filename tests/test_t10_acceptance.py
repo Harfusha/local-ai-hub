@@ -234,13 +234,15 @@ def test_code_index_reports_syntax_failure_and_parser_fallback_outcomes(
         pytest.skip("Tree-sitter parser unavailable for Python")
     parse_with_status = treesitter_parser.parse_treesitter_with_status
 
-    def parser_with_java_unavailable(source: str, language: str) -> dict[str, object]:
+    def parser_with_java_unavailable(
+        source: str, language: str, *, source_key: str | None = None,
+    ) -> dict[str, object]:
         if language == "java":
             return {
                 "result": None, "status": "unavailable", "parser": "tree_sitter",
                 "fallback_reason": "parser_unavailable", "syntax_error_count": 0,
             }
-        return parse_with_status(source, language)
+        return parse_with_status(source, language, source_key=source_key)
 
     monkeypatch.setattr(treesitter_parser, "parse_treesitter_with_status", parser_with_java_unavailable)
     index, root = _new_index(tmp_path)

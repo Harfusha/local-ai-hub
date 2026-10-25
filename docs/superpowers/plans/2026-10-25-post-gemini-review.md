@@ -84,6 +84,14 @@ The analysis is a source of hypotheses, not proof: `except Exception` excludes K
 
 R05/R09/R10/R11/R14 and current browser/data/package acceptance remain open until their original requirements have matching evidence. Medium/low-priority 5.2+ decomposition and speculative backlog items remain separately identified; do not redesign monoliths merely from file length.
 
+### CI workflow defect and interrupted validation epoch
+
+GitHub run 39350824277 rejected the workflow before creating jobs: the `runner` context is unavailable in job-level `env`. Current source retained both invalid COVERAGE_FILE expressions. Authentic actionlint 1.7.12 reproduced both errors, then passed after moving these paths to the supported `github.workspace` context. Step-level runner.temp expressions remain valid. This repairs workflow syntax; actual hosted Windows 3.11/3.14 execution remains OPEN.
+
+The first fresh epoch, `current-fullsuite-20261025T101840Z` (362482e3, candidate cf0a594bb314da141afe384e5ea53528e67276a79b5bbde1e81f236253be8db7), completed shard 0 with 378 PASS / 1 FAIL / 1 SKIP. The owner then cancelled the driver before the next shard for the confirmed workflow defect; `owner-cancellation.json` records zero survivors. The raw run remains unchanged and is not a full-suite PASS.
+
+Its real failure exposed a test double in test_t10_acceptance.py that omitted the parser's keyword-only source_key parameter. The double now accepts and forwards that identity; syntax-error/fallback assertions remain unchanged. The combined actual-parser/index regression cohort passes; exact counts and logs are retained in parser-index-syntax-contract-green.xml and owned-check-parser-index-syntax-contract-green-20261025T102211Z.
+
 ### Current targeted evidence (not final release acceptance)
 
 Commits a9490cd6, 6b6125a5, 1ea45f80 and ccc616eb contain the independently tested fixes. Operational-mode retries remain bounded cross-process lock contention, not replaceable by an unnotified Event.
