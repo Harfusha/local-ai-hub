@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import math
 
 
 _SUBMIT_ERRORS = {
@@ -12,6 +13,48 @@ _SUBMIT_ERRORS = {
     "async job queue limit reached": "queue_limit",
 }
 _CANCEL_STATES = {"queued", "running", "cancelled", "done", "failed", "expired", "outcome_unknown"}
+
+
+class NominalFixtureScheduler:
+    """Explicit harness-only double; delegate scheduling, replace only sampling."""
+
+    def __init__(self, scheduler):
+        self.scheduler = scheduler
+
+    def __getattr__(self, name):
+        return getattr(self.scheduler, name)
+
+    def resource_status(self):
+        return {"pressure_level": "nominal", "throttle_background": False,
+                "context_budget_factor": 1.0}
+
+
+def resource_decision_sample(response: Any) -> dict[str, Any] | None:
+    """Project only typed, bounded admission metadata, never task payloads."""
+    admission = response.get("admission") if isinstance(response, dict) else None
+    sample = admission.get("resource_sample") if isinstance(admission, dict) else None
+    if not isinstance(sample, dict):
+        return None
+    result = {}
+    available = sample.get("available")
+    result["available"] = available if type(available) is bool else None
+    for key in ("provider", "pressure_level", "telemetry_error", "measurement_basis"):
+        value = sample.get(key)
+        result[key] = value[:256] if isinstance(value, str) else None
+    for key in ("observed_at", "sample_timestamp", "sample_age_seconds", "context_budget_factor"):
+        value = sample.get(key)
+        result[key] = value if type(value) in (int, float) and math.isfinite(value) else None
+    value = sample.get("throttle_background")
+    result["throttle_background"] = value if type(value) is bool else None
+    basis = sample.get("measured_basis")
+    result["measured_basis"] = {
+        key: value if type(value) in (int, float) and math.isfinite(value) else None
+        for key in ("vram_total_mb", "vram_used_mb", "vram_available_mb", "vram_used_pct",
+                    "unified_memory_mb", "unified_memory_used_mb", "unified_memory_available_mb",
+                    "policy_pressure_pct", "policy_headroom_mb")
+        for value in [(basis.get(key) if isinstance(basis, dict) else None)]
+    }
+    return result
 
 
 def admission_failure_code(response: Any) -> str | None:

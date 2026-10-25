@@ -37,9 +37,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 if __package__:
-    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code, resource_decision_sample
 else:  # Direct script execution puts tools/, not the repository root, on sys.path.
-    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code, resource_decision_sample
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2810,6 +2810,7 @@ def _queue_admission_failure_diagnostic(
     return {
         "sample_id": sample_id,
         "source_revision": source_revision,
+        "resource_sample": resource_decision_sample(submitted),
         "job_id": text_field(submitted, "job_id"),
         "submit": {
             "success": bool_field(submitted, "success"),
@@ -4394,7 +4395,7 @@ def run_benchmark(
                 definition="Unpaired direct LocalAIApp RAGStore._chunks calls on one synthetic source file because corpus lacks enough distinct cases; no sample identities asserted.",
             )
 
-        def queue_admission_attempt(sample_id: str) -> tuple[float, str | None, str | None, dict[str, Any] | None, str | None]:
+        def queue_admission_attempt(sample_id: str, barrier: threading.Barrier) -> tuple[float, str | None, str | None, dict[str, Any] | None, str | None]:
             queued_at = time.perf_counter()
             error_type: str | None = None
             error_reason: str | None = None
@@ -4402,6 +4403,8 @@ def run_benchmark(
             submitted: Any = None
             cancelled: Any = None
             try:
+                barrier.wait(timeout=10.0)
+                queued_at = time.perf_counter()
                 task_id = f"benchmark-{uuid.uuid4().hex}"
                 submitted = app.async_jobs.submit(
                     "reason", {"task_id": task_id, "task": "T02 queue admission probe"},
@@ -4462,9 +4465,10 @@ def run_benchmark(
         queue_warm_samples: list[float] = []
         queue_sample_ids_by_regime: dict[str, list[str]] = {"cold": [], "warm": []}
         queue_workload_fingerprint = _stable_fingerprint({
+            "resource_mode": "live",
             "measurement": "async_jobs_submit_cancel_admission_only",
             "concurrency_levels": sorted(concurrency),
-            "sample_identity_unit": "concurrency_repetition_slot",
+            "sample_identity_unit": "clustered_concurrency_burst_with_dependent_slots",
             "definition": "Each async job uses delayed dispatch and immediate cancellation; queue returns to empty per sample. Worker service is excluded.",
         })
         queue_error_types: set[str] = set()
@@ -4489,7 +4493,8 @@ def run_benchmark(
                     for slot_index in range(level)
                 ]
                 with ThreadPoolExecutor(max_workers=level) as pool:
-                    outcomes = list(pool.map(queue_admission_attempt, sample_ids))
+                    barrier = threading.Barrier(level)
+                    outcomes = list(pool.map(lambda sample_id: queue_admission_attempt(sample_id, barrier), sample_ids))
                 batch_seconds = time.perf_counter() - batch_started
                 level_batch_seconds += batch_seconds
                 total_batch_seconds += batch_seconds

@@ -1,5 +1,20 @@
 # Testing and release gate
 
+Performance experiments are separate from release acceptance. The queue runner accepts
+`--resource-mode live` (default) or explicit `nominal-fixture`, stores same-decision
+resource metadata, synchronized burst observations and drained-state evidence. Slots
+within a burst are dependent; a short smoke does not meet the 1,000-independent-pair
+tail gate. Rejection latency is separate from successful enqueue/cancel latency.
+
+`python tools/cython_experiment.py --work-dir ABS_EXTERNAL_BUILD_DIR --output ABS_EXTERNAL_RESULT_JSON`
+requires the optional `performance` dependencies and a complete existing compiler/SDK.
+It rejects checkout build/output paths, preserves failures with exit 1, validates native
+parity and compares an allocation-inclusive adapter against current production SimHash.
+Votes-only reference speedup is explicitly separate. The dedicated Windows CI workflow
+retains compiler, SDK, binary provenance and three fresh-process sample records. This
+does not enable a production kernel, satisfy whole-indexing adoption, or prove local
+host speedup. See `docs/superpowers/plans/2026-10-25-performance-implementation-progress.md`.
+
 Release gate order matches CI: start from a clean checkout, run `python tools/release_check.py`, install the development extra with `python -m pip install -e ".[dev]"`, then run `python -m compileall -q src tools tests`, `pyflakes src tools`, `pytest -q`, `python tools/selftest.py`, and `python tools/check_dashboard.py`. Next run `python tools/release_check.py --post-test`; reject tracked mutations, remove expected ignored test/install caches with `git clean -fdX`, and run `python tools/release_check.py` again before packaging. Build the wheel and source distribution, then install the wheel into a fresh environment and smoke-test its version. The release check rejects local config, runtime databases, generated/cache payloads and internal workspaces. Pytest is configured to fail on resource leaks, unraisable exceptions and unhandled thread exceptions. Dashboard JavaScript is extracted and checked with Node when Node is available.
 
 For a live developer installation that intentionally contains managed runtime state, use `python tools/release_check.py --allow-installed`. This allows only the documented installation/runtime directories and generated payloads; the clean-checkout and CI commands above remain strict.

@@ -354,11 +354,46 @@ class AsyncJobManager:
             factor = max(0.0, min(1.0, float(resource.get("context_budget_factor", 1.0))))
         except (TypeError, ValueError, OverflowError):
             factor = 1.0
+        def measured_number(key: str) -> float | None:
+            if key not in {"sample_timestamp", "sample_age_seconds"} and resource.get("available") is not True:
+                return None
+            value = resource.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                try:
+                    return float(value) if math.isfinite(value) else None
+                except OverflowError:
+                    return None
+            return None
+
+        # Capture the exact provider response used above, never a second sample.
+        sample = {
+            "provider": (getattr(provider, "__qualname__", type(provider).__name__)[:256]
+                         if callable(provider) else None),
+            "observed_at": time.time(),
+            "available": resource.get("available") if type(resource.get("available")) is bool else None,
+            "telemetry_error": resource.get("telemetry_error") if isinstance(resource.get("telemetry_error"), str) and resource.get("telemetry_error") in {
+                "sample_failed", "sample_wait_timeout", "sample_pending", "sample_start_failed",
+                "sample_invalid", "sample_unavailable",
+            } else None,
+            "measurement_basis": resource.get("policy_measurement_basis") if isinstance(resource.get("policy_measurement_basis"), str) and resource.get("policy_measurement_basis") in {
+                "dedicated_observed", "shared_unified_observed", "unmeasured",
+            } else None,
+            "sample_timestamp": measured_number("sample_timestamp"),
+            "sample_age_seconds": measured_number("sample_age_seconds"),
+            "pressure_level": pressure if pressure in {"nominal", "moderate", "high", "critical", "unknown"} else "other",
+            "throttle_background": bool(resource.get("throttle_background", False)),
+            "context_budget_factor": factor,
+            "measured_basis": {key: measured_number(key) for key in (
+                "vram_total_mb", "vram_used_mb", "vram_available_mb", "vram_used_pct",
+                "unified_memory_mb", "unified_memory_used_mb", "unified_memory_available_mb",
+                "policy_pressure_pct", "policy_headroom_mb",
+            )},
+        }
         if pressure == "critical" or (pressure == "high" and bool(resource.get("throttle_background", False))):
-            return {**self._admission("rejected", "resource_pressure", retryable=True), "pressure_level": pressure, "context_budget_factor": factor}
+            return {**self._admission("rejected", "resource_pressure", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if pressure in {"moderate", "high"} or factor < 1.0:
-            return {**self._admission("degraded", "resource_pressure", retryable=False), "pressure_level": pressure, "context_budget_factor": factor}
-        return self._admission("accepted", "capacity_available", retryable=False)
+            return {**self._admission("degraded", "resource_pressure", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
+        return {**self._admission("accepted", "capacity_available", retryable=False), "resource_sample": sample}
 
     @staticmethod
     def _operational_mode_api() -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:

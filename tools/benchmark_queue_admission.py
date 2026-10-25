@@ -16,36 +16,76 @@ import os
 from pathlib import Path
 import platform
 import tempfile
+import threading
 import time
 import uuid
 from typing import Any
 
 if __package__:
     from tools.benchmark_surfaces import (
-        _BenchmarkCheckpoint,
         _implementation_fingerprint,
         _revision,
         _resolve_outside_repo,
         _total_memory_bytes,
         summarize_samples,
     )
-    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code, resource_decision_sample, NominalFixtureScheduler
 else:  # Direct script execution puts tools/, not the repository root, on sys.path.
     from benchmark_surfaces import (
-        _BenchmarkCheckpoint,
         _implementation_fingerprint,
         _revision,
         _resolve_outside_repo,
         _total_memory_bytes,
         summarize_samples,
     )
-    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code, resource_decision_sample, NominalFixtureScheduler
 
 
 _MAX_REPETITIONS = 1_000
 _MAX_CONCURRENCY = 256
 _DISPATCH_DELAY_SECONDS = 30.0
 _QUEUE_TARGET_P95_MS = 150.0
+
+
+class _BenchmarkCheckpoint:
+    """Atomic queue-only progress, bound to the exact runner and runtime bytes."""
+
+    def __init__(self, path, *, run_fingerprint, scratch_path, resume):
+        self.path = path
+        if resume:
+            self.data = json.loads(path.read_text(encoding="utf-8"))
+            if (self.data.get("schema_version") != 1
+                    or self.data.get("run_fingerprint") != run_fingerprint
+                    or Path(self.data.get("scratch_path", "")).resolve() != scratch_path.resolve()):
+                raise ValueError("queue checkpoint fingerprint or scratch identity mismatch")
+        else:
+            if path.exists():
+                raise ValueError("queue checkpoint exists; use compatible resume or a new path")
+            self.data = {"schema_version": 1, "run_fingerprint": run_fingerprint,
+                         "scratch_path": str(scratch_path), "progress": {}, "completed": {}}
+
+    def completed_stage(self, name):
+        return self.data["completed"].get(name)
+
+    def stage_progress(self, name):
+        return self.data["progress"].setdefault(name, {})
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".tmp")
+        try:
+            temporary.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def save_progress(self, name, progress):
+        self.data["progress"][name] = progress
+        self._save()
+
+    def complete_stage(self, name, result):
+        self.data["completed"][name] = result
+        self._save()
 _CHECKPOINT_BATCH_SIZE = 25
 
 
@@ -120,6 +160,7 @@ def run_queue_benchmark(
     checkpoint_batch_size: int = _CHECKPOINT_BATCH_SIZE,
     resume: bool = False,
     baseline_record: dict[str, Any] | None = None,
+    resource_mode: str = "live",
 ) -> dict[str, Any]:
     """Run the isolated queue stage and durably save samples every batch."""
     if not run_id or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in run_id):
@@ -132,6 +173,8 @@ def run_queue_benchmark(
         raise ValueError("concurrency levels must be unique")
     if checkpoint_batch_size < 1:
         raise ValueError("checkpoint_batch_size must be positive")
+    if resource_mode not in {"live", "nominal-fixture"}:
+        raise ValueError("resource_mode must be live or nominal-fixture")
 
     state_root = _resolve_outside_repo(Path(state_dir), "state_dir")
     scratch_root = _resolve_outside_repo(Path(scratch_dir), "scratch_dir")
@@ -140,6 +183,9 @@ def run_queue_benchmark(
     scratch_root.mkdir(parents=True, exist_ok=True)
 
     config = {
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "resource_mode": resource_mode,
+        "fixture_identity": "nominal-resource-v1" if resource_mode == "nominal-fixture" else None,
         "light_repetitions": light_repetitions,
         "concurrency": list(concurrency),
         "dispatch_delay_seconds": _DISPATCH_DELAY_SECONDS,
@@ -194,26 +240,50 @@ def run_queue_benchmark(
         from local_ai_hub.app import LocalAIApp
 
         app = LocalAIApp(str(config_path))
+        if resource_mode == "nominal-fixture":
+            app.async_jobs.scheduler = NominalFixtureScheduler(app.async_jobs.scheduler)
 
-        def attempt(level: int, repetition: int, slot: int) -> tuple[float, str | None, str | None]:
+        active_lock = threading.Lock()
+        active = 0
+        peak_active = 0
+
+        def attempt(level: int, repetition: int, slot: int, barrier: threading.Barrier):
+            nonlocal active, peak_active
             started = time.perf_counter()
             error_type: str | None = None
             error_code: str | None = None
             job_id: str | None = None
             cancelled = False
+            sample = {"burst_id": f"{run_id}:{level}:{repetition}", "slot": slot,
+                      "resource_mode": resource_mode, "resource_sample": None,
+                      "enqueue_ms": None, "rejection_ms": None, "cancel_ms": None}
             try:
+                barrier.wait(timeout=10.0)
+                started = time.perf_counter()
+                sample["started_at"] = time.time()
+                with active_lock:
+                    active += 1
+                    peak_active = max(peak_active, active)
+                sample["entered"] = True
                 task_id = str(uuid.uuid5(
                     uuid.NAMESPACE_URL, f"t02-queue:{run_id}:{level}:{repetition}:{slot}",
                 ))
                 submitted = app.async_jobs.submit(
-                    "benchmark", "reason", {"task_id": task_id, "task": "T02 queue admission probe"},
+                    "reason", {"task_id": task_id, "task": "T02 queue admission probe"},
                     dispatch_delay_seconds=_DISPATCH_DELAY_SECONDS,
                 )
+                submit_ms = (time.perf_counter() - started) * 1000.0
+                sample["resource_sample"] = resource_decision_sample(submitted)
+                sample["admission_state"] = submitted.get("admission_state")
                 if submitted.get("success") is not True or not submitted.get("job_id"):
+                    sample["rejection_ms"] = submit_ms
                     error_code = admission_failure_code(submitted)
                     raise RuntimeError("Hub async job admission failed")
+                sample["enqueue_ms"] = submit_ms
                 job_id = str(submitted["job_id"])
-                cancelled_result = app.async_jobs.cancel("benchmark", job_id)
+                cancel_started = time.perf_counter()
+                cancelled_result = app.async_jobs.cancel(job_id)
+                sample["cancel_ms"] = (time.perf_counter() - cancel_started) * 1000.0
                 cancelled = cancelled_result.get("success") is True and cancelled_result.get("state") == "cancelled"
                 if not cancelled:
                     error_code = cancellation_failure_code(cancelled_result)
@@ -223,11 +293,16 @@ def run_queue_benchmark(
             finally:
                 if job_id is not None and not cancelled:
                     try:
-                        cleanup = app.async_jobs.cancel("benchmark", job_id)
+                        cleanup = app.async_jobs.cancel(job_id)
                         cancelled = cleanup.get("success") is True and cleanup.get("state") == "cancelled"
                     except Exception:
                         pass
-            return (time.perf_counter() - started) * 1000.0, error_type, error_code
+                sample["cancelled"] = cancelled
+                sample["finished_at"] = time.time()
+                if sample.pop("entered", False):
+                    with active_lock:
+                        active -= 1
+            return (time.perf_counter() - started) * 1000.0, error_type, error_code, sample
 
         progress = checkpoint.stage_progress("queue_admission")
         levels = progress.setdefault("by_concurrency", {})
@@ -250,6 +325,8 @@ def run_queue_benchmark(
                 "error_types": [],
                 "error_codes": [],
                 "batch_seconds": 0.0,
+                "decision_samples": [],
+                "bursts": [],
             })
             level_samples = [float(value) for value in item["samples_ms"]]
             level_cold = [float(value) for value in item["cold_samples_ms"]]
@@ -264,13 +341,26 @@ def run_queue_benchmark(
                 count = min(checkpoint_batch_size, light_repetitions - next_repetition)
                 for repetition in range(next_repetition, next_repetition + count):
                     batch_started = time.perf_counter()
+                    barrier = threading.Barrier(level)
+                    peak_active = 0
                     with ThreadPoolExecutor(max_workers=level) as pool:
                         outcomes = list(pool.map(
-                            lambda slot: attempt(level, repetition, slot), range(level),
+                            lambda slot: attempt(level, repetition, slot, barrier), range(level),
                         ))
+                    stats = app.async_jobs.stats()
+                    counts = stats.get("counts")
+                    complete_counts = isinstance(counts, dict) and stats.get("counts_truncated") is False
+                    queued = counts.get("queued", 0) if complete_counts else None
+                    running = counts.get("running", 0) if complete_counts else None
+                    item["bursts"].append({"repetition": repetition, "offered_concurrency": level,
+                                           "observed_active_concurrency": peak_active,
+                                           "queued_after": queued,
+                                           "running_after": running,
+                                           "drained": queued == 0 and running == 0})
                     level_seconds += time.perf_counter() - batch_started
                     target = level_cold if repetition == 0 else level_warm
-                    for elapsed_ms, error_type, error_code in outcomes:
+                    for elapsed_ms, error_type, error_code, sample in outcomes:
+                        item["decision_samples"].append(sample)
                         level_samples.append(elapsed_ms)
                         target.append(elapsed_ms)
                         if error_type:
@@ -300,6 +390,16 @@ def run_queue_benchmark(
             error_codes.update(level_error_codes)
             batch_seconds_total += level_seconds
             by_concurrency[str(level)] = {
+                "decision_samples": item["decision_samples"],
+                "bursts": item["bursts"],
+                "attempted": len(item["decision_samples"]),
+                "admitted": sum(sample["enqueue_ms"] is not None for sample in item["decision_samples"]),
+                "rejected": sum(sample["rejection_ms"] is not None for sample in item["decision_samples"]),
+                "degraded": sum(sample.get("admission_state") == "degraded" for sample in item["decision_samples"]),
+                "accepted_enqueue": summarize_samples([sample["enqueue_ms"] for sample in item["decision_samples"] if sample["enqueue_ms"] is not None]),
+                "rejection_latency": summarize_samples([sample["rejection_ms"] for sample in item["decision_samples"] if sample["rejection_ms"] is not None]),
+                "independent_bursts": len(item["bursts"]),
+                "tail_acceptance_sample_count_met": len(item["bursts"]) >= 1000,
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
                 "error_codes": sorted(level_error_codes),
@@ -313,8 +413,9 @@ def run_queue_benchmark(
                 },
             }
 
+        all_bursts_drained = all(burst["drained"] for item in by_concurrency.values() for burst in item["bursts"])
         stage = {
-            "status": "passed" if error_count == 0 else "failed",
+            "status": "passed" if error_count == 0 and all_bursts_drained else "failed",
             **summarize_samples(all_samples),
             "samples_ms": all_samples,
             "samples_by_regime": {"cold": cold_samples, "warm": warm_samples},
@@ -346,6 +447,8 @@ def run_queue_benchmark(
             "total_memory_bytes": _total_memory_bytes(),
         }
         metadata = {
+            "resource_mode": resource_mode,
+            "live_capacity_proof": False,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "benchmark_scope": "t02_async_queue_only",
             "revision": _revision(),
@@ -360,6 +463,7 @@ def run_queue_benchmark(
         }
         p95_values = [value["p95_ms"] for value in by_concurrency.values()]
         acceptance = {
+            "all_bursts_drained": all_bursts_drained,
             "sample_count_matches_config": len(all_samples) == light_repetitions * sum(concurrency),
             "all_cancellations_succeeded": error_count == 0,
             "every_concurrency_p95_within_target": all(
@@ -372,7 +476,7 @@ def run_queue_benchmark(
             "stages": {"hub_queue_admission": stage},
             "acceptance": acceptance,
             "failed_acceptance": [name for name, passed in acceptance.items() if not passed],
-            "failed_stages": ["hub_queue_admission"] if error_count else [],
+            "failed_stages": ["hub_queue_admission"] if not all(acceptance.values()) else [],
         }
         if baseline_record is not None:
             record["queue_comparison"] = _compare_queue_records(baseline_record, record)
@@ -403,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 4, 16, 32])
     parser.add_argument("--checkpoint-batch-size", type=int, default=_CHECKPOINT_BATCH_SIZE)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resource-mode", choices=("live", "nominal-fixture"), default="live")
     parser.add_argument("--compare-with", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -417,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_batch_size=args.checkpoint_batch_size,
             resume=args.resume,
             baseline_record=baseline,
+            resource_mode=args.resource_mode,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))

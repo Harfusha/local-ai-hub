@@ -1,8 +1,8 @@
 from libc.stdint cimport uint64_t
 
 
-cpdef uint64_t simhash_votes(const uint64_t[:] hashes):
-    cdef long votes[64]
+cpdef uint64_t simhash_votes(const uint64_t[::1] hashes):
+    cdef Py_ssize_t votes[64]
     cdef Py_ssize_t index
     cdef int bit
     cdef uint64_t value
