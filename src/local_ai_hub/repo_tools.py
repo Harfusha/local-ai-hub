@@ -306,6 +306,29 @@ class RepositoryTools:
         self.snapshot_hits = 0
         self.snapshot_misses = 0
         self.snapshot_verified_rehashes = 0
+        self._resolved_paths_lock = threading.Lock()
+        self._resolved_paths: OrderedDict[tuple[str, str], tuple[Path, Path] | None] = OrderedDict()
+        self._resolved_paths_max = 8192
+
+    def _resolve_under_base(self, base: Path, raw: str | Path) -> tuple[Path, Path] | None:
+        raw_str = str(raw)
+        key = (str(base), raw_str)
+        with self._resolved_paths_lock:
+            if key in self._resolved_paths:
+                self._resolved_paths.move_to_end(key)
+                return self._resolved_paths[key]
+        try:
+            p = Path(raw_str)
+            resolved = (base / p).resolve(strict=False) if not p.is_absolute() else p.resolve(strict=False)
+            relative = resolved.relative_to(base)
+            res: tuple[Path, Path] | None = (resolved, relative)
+        except (OSError, RuntimeError, ValueError):
+            res = None
+        with self._resolved_paths_lock:
+            if len(self._resolved_paths) >= self._resolved_paths_max:
+                self._resolved_paths.popitem(last=False)
+            self._resolved_paths[key] = res
+        return res
 
     @staticmethod
     def _root(root: str) -> Path:
@@ -813,6 +836,8 @@ class RepositoryTools:
             if item is not None:
                 self._snapshot_bytes -= item[6]
             self._hash_only_cache.pop(key, None)
+        with self._resolved_paths_lock:
+            self._resolved_paths.clear()
 
     @staticmethod
     def _git_empty_snapshot(root: str, error: str) -> GitSnapshot:
@@ -1226,10 +1251,11 @@ class RepositoryTools:
             current_chars = 0
             fixed_chars = sum(len(term) + 4 for term in terms[:12]) + 256
             for path in candidate_paths:
-                try:
-                    relative = path.resolve(strict=False).relative_to(base).as_posix()
-                except (OSError, RuntimeError, ValueError):
+                resolved_info = self._resolve_under_base(base, path)
+                if resolved_info is None:
                     continue
+                _resolved, relative_p = resolved_info
+                relative = relative_p.as_posix()
                 added_chars = len(relative) + 4
                 if added_chars + fixed_chars > 20_000:
                     return None, True
@@ -1290,12 +1316,11 @@ class RepositoryTools:
                 line_no = int(data.get("line_number", 0) or 0) if isinstance(data, dict) else 0
                 if not path_text or line_no <= 0:
                     continue
-                try:
-                    raw_path = Path(str(path_text))
-                    path = (base / raw_path).resolve(strict=False) if not raw_path.is_absolute() else raw_path.resolve(strict=False)
-                    rel = str(path.relative_to(base)).replace("\\", "/")
-                except Exception:
+                resolved_info = self._resolve_under_base(base, str(path_text))
+                if resolved_info is None:
                     continue
+                _path, relative_p = resolved_info
+                rel = str(relative_p).replace("\\", "/")
                 match_key = (rel, line_no)
                 if match_key in seen:
                     continue
@@ -1381,8 +1406,8 @@ class RepositoryTools:
             rel = parts[0].replace("\\", "/")
             try:
                 line_no = int(parts[1])
-                target = (base / rel).resolve(strict=False)
-                target.relative_to(base)
+                if self._resolve_under_base(base, rel) is None:
+                    continue
             except Exception:
                 continue
             match_key = (rel, line_no)
@@ -2109,11 +2134,10 @@ class RepositoryTools:
                 per_path_lines.setdefault(rel, []).append(line_no)
             read_jobs: list[tuple[Any, Path]] = []
             for rel, line_numbers in per_path_lines.items():
-                path = (base / rel).resolve(strict=False)
-                try:
-                    relative = path.relative_to(base)
-                except ValueError:
+                resolved_info = self._resolve_under_base(base, rel)
+                if resolved_info is None:
                     continue
+                path, relative = resolved_info
                 if project_settings is None and self._is_ignored_relative_path(relative):
                     continue
                 if project_settings is not None and not self._project_file_allowed(base, path, project_settings):

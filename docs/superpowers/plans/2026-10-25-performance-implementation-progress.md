@@ -238,3 +238,25 @@ deployment, model quality, full suite or all-24 completion from this block.
     - 29 tests passed across `tests/test_code_index_incremental_metadata_scope.py`, `tests/test_code_index_ignored_paths.py`, `tests/test_preprocess_hash_batch_sql_scope.py`, and `tests/test_preprocessing_overhaul.py` in 6.87s.
   - Pyflakes: 0 errors across modified sources and new tests.
 
+## T8 / F04 Search Path Resolution Caching & Windows Realpath Elimination (2026-10-25T21:05:00Z)
+
+- Finding F04 resolved:
+  - In `src/local_ai_hub/repo_tools.py`, search profiling on broad and exact queries previously recorded 772 `nt._getfinalpathname` calls. Every matching line emitted from `ripgrep` or `git-grep` called `(base / path).resolve(strict=False)` individually, and then `search()` called `.resolve(strict=False)` a second time for every unique candidate file path. On Windows, each `resolve(strict=False)` executes 2 syscalls (`GetFinalPathNameByHandle`), adding 40–60ms of filesystem latency per search request.
+- Solution implemented:
+  - Added bounded thread-safe path resolution cache `_resolved_paths: OrderedDict[tuple[str, str], tuple[Path, Path] | None]` (max 8,192 entries) and helper `_resolve_under_base(base, raw)`.
+  - Reused verified resolved paths across `_ripgrep_candidates`, candidate path bounding, `_git_grep_candidates`, and candidate file snapshot staging in `search()`.
+  - Maintained strict fail-closed path confinement: invalid paths, non-UTF8 surrogate paths, or attempts to escape repository root via `..` or symlinks are cached as `None` and safely rejected.
+  - Snapshot invalidation (`invalidate_snapshot`) automatically flushes `_resolved_paths`.
+- Verification & Test Coverage:
+  - Profiled `search(root, 'local_ai', limit=8)` on Windows:
+    - Initial cold search: calls to `nt._getfinalpathname` dropped from 780 to 256; total function calls dropped from 105,722 to 60,349 (43% reduction in function calls, wall time down from 255ms to 196ms).
+    - Warm search: calls to `nt._getfinalpathname` dropped from 780 to 42 (94.6% reduction in Windows filesystem resolution syscalls, resolve time down from 44ms to 2.7ms).
+  - Created `tests/test_native_search_ranking_parity.py`:
+    - `test_search_path_resolution_caching_eliminates_repeated_resolves`: verifies cache population, exact ranking parity, and absence of path anomalies.
+    - `test_path_escape_attempt_is_rejected_and_cached_as_none`: verifies fail-closed security for `../../` escape attempts.
+    - `test_invalidate_snapshot_clears_resolved_path_cache`: verifies cache flush on file changes.
+  - All 54 tests across repo_tools and search test cohorts passed in 14.50s.
+  - All 3 tests in `tests/test_native_search_ranking_parity.py` passed in 0.92s.
+  - Pyflakes: 0 errors across modified sources and tests.
+
+
