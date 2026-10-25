@@ -90,7 +90,13 @@ GitHub run 39350824277 rejected the workflow before creating jobs: the `runner` 
 
 The first fresh epoch, `current-fullsuite-20261025T101840Z` (362482e3, candidate cf0a594bb314da141afe384e5ea53528e67276a79b5bbde1e81f236253be8db7), completed shard 0 with 378 PASS / 1 FAIL / 1 SKIP. The owner then cancelled the driver before the next shard for the confirmed workflow defect; `owner-cancellation.json` records zero survivors. The raw run remains unchanged and is not a full-suite PASS.
 
-Its real failure exposed a test double in test_t10_acceptance.py that omitted the parser's keyword-only source_key parameter. The double now accepts and forwards that identity; syntax-error/fallback assertions remain unchanged. The combined actual-parser/index regression cohort passes; exact counts and logs are retained in parser-index-syntax-contract-green.xml and owned-check-parser-index-syntax-contract-green-20261025T102211Z.
+Its real failure exposed a test double in test_t10_acceptance.py that omitted the parser's keyword-only source_key parameter. The double now accepts and forwards that identity; syntax-error/fallback assertions remain unchanged. The combined actual-parser/index regression cohort passes 176 tests, no skips/failures/errors; exact logs are retained in parser-index-syntax-contract-green.xml and owned-check-parser-index-syntax-contract-green-20261025T102211Z.
+
+### Real model evidence remains bounded and incomplete
+
+Installed inventory confirmed qwen2.5-coder:7b and qwen3.5:9b without downloads. The local 7B review of the CI/fixture fix produced no actionable findings but unstructured output; the Hub correctly marked it usable=false, semantic_truth_verified=false (req_6a6c960ab6d3). It is advisory, not semantic acceptance.
+
+The three-case source-grounded architecture-answer rubric was persisted before inference. A 7B reasoning override was rejected below the configured quality floor (req_1cb16c0ea6ea). The corrected 9B request was rejected at model preparation with post_unload_vram_unavailable (req_879c7b318897). No generated architecture answers exist for these requests; R09/R10 remain OPEN. Preserve resource admission and quality limits; do not lower them, repeat identical calls, pull models or claim a fixture result closes this gate. Request/response artifacts are external under architecture-gold-c5577c4d-*.
 
 ### Current targeted evidence (not final release acceptance)
 
