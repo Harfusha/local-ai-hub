@@ -64,7 +64,7 @@ def test_http_and_mcp_reject_invalid_identity_without_context_compilation(isolat
 
     async def mcp_rejections():
         async with create_connected_server_and_client_session(
-            mcp_server.mcp, read_timeout_seconds=timedelta(seconds=30),
+            mcp_server.mcp, read_timeout_seconds=timedelta(seconds=8),
         ) as session:
             for invalid in (123, " padded", "bad\0id", "x" * 201):
                 result = await session.call_tool("local_ai_coord", {
@@ -90,7 +90,7 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
 
     async def request_and_recover():
         async with create_connected_server_and_client_session(
-            mcp_server.mcp, read_timeout_seconds=timedelta(seconds=30),
+            mcp_server.mcp, read_timeout_seconds=timedelta(seconds=8),
         ) as session:
             for profile in ("compact", "minimal"):
                 for budget in (3200, 1024, 128):

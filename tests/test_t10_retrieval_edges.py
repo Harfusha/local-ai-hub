@@ -13,7 +13,7 @@ from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.retrieval import fuse_ranked_paths
 from local_ai_hub import treesitter_parser
-from local_ai_hub.treesitter_parser import is_treesitter_available, parse_treesitter, parse_treesitter_with_status
+from local_ai_hub.treesitter_parser import is_treesitter_available, parse_treesitter
 
 
 def test_fused_path_ranking_is_stable_across_backend_completion_order() -> None:
@@ -165,10 +165,7 @@ def test_treesitter_extracts_direct_call_edges(language: str, source: str, calle
     if not is_treesitter_available(language):
         pytest.skip(f"Tree-sitter parser unavailable for {language}")
 
-    report = parse_treesitter_with_status(source, language)
-    if report.get("fallback_reason") in ("worker_disabled", "worker_dispatch_busy", "parser_unavailable") or report.get("status") == "unavailable":
-        pytest.skip(f"Tree-sitter parser unavailable for {language}: {report.get('fallback_reason')}")
-    parsed = report["result"]
+    parsed = parse_treesitter(source, language)
 
     assert parsed is not None
     _symbols, _refs, edges = parsed
@@ -200,10 +197,7 @@ def test_treesitter_keeps_single_character_calls_in_function_scope(
     if not is_treesitter_available(language):
         pytest.skip(f"Tree-sitter parser unavailable for {language}")
 
-    report = parse_treesitter_with_status(source, language)
-    if report.get("fallback_reason") in ("worker_disabled", "worker_dispatch_busy", "parser_unavailable") or report.get("status") == "unavailable":
-        pytest.skip(f"Tree-sitter parser unavailable for {language}: {report.get('fallback_reason')}")
-    parsed = report["result"]
+    parsed = parse_treesitter(source, language)
 
     assert parsed is not None
     _symbols, _refs, edges = parsed

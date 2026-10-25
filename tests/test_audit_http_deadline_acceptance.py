@@ -25,6 +25,33 @@ def _stop_server(server, thread):
     assert not thread.is_alive(), "local HTTP test server did not stop"
 
 
+def test_unknown_post_rejects_without_waiting_for_an_unaccepted_body(monkeypatch):
+    import local_ai_hub.http_server as server_module
+
+    monkeypatch.setattr(server_module, "APP", None)
+
+    class Handler(server_module.Handler):
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = _serve(server)
+    try:
+        with socket.create_connection(server.server_address, timeout=3) as client:
+            client.settimeout(1)
+            # A rejected route has no reason to wait for this advertised body.
+            # Withholding it must not retain a handler for the body-read deadline.
+            client.sendall(
+                b"POST /api/unknown-post-contract HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 1024\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            response = client.recv(4096)
+            assert response.startswith(b"HTTP/1.1 404 "), response
+    finally:
+        _stop_server(server, thread)
+
+
 def test_real_handler_times_out_trickled_head_then_accepts_token_authenticated_request(monkeypatch):
     import local_ai_hub.http_server as server_module
 

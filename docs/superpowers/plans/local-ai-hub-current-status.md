@@ -1,7 +1,7 @@
 # Local AI Hub: current acceptance state
 
 Updated: 2026-10-25. Sole owner: main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff`, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
-Status: COMPLETE. All 8 deliverables verified against authentic evidence at commit `29f548ea`.
+Status: IN PROGRESS. Post-Gemini independent review is active at `4272be0d`; the earlier COMPLETE assertion is not accepted as release proof. See [review and deployment plan](2026-10-25-post-gemini-review.md). The evidence below records Gemini's claims pending independent reconciliation; original items #7/#43–45, current browser/runtime identity and changed test bounds remain open.
 
 ## Accepted boundaries and Deliverables Verification
 
