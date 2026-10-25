@@ -113,6 +113,23 @@ def test_model_conclusion_is_candidate_not_repository_memory(store: MemoryStore)
     assert record.status is MemoryStatus.CANDIDATE
 
 
+def test_default_repository_lookup_excludes_global_and_foreign_records(store: MemoryStore):
+    expected = confirmed_repository_record(store)
+    for scope, provenance, key in (
+        (AgentScope.GLOBAL, {}, "global-default-filter"),
+        (AgentScope.REPOSITORY, {"root": "C:/foreign", "repository_id": "repository-b"}, "foreign-default-filter"),
+    ):
+        store.record(MemoryRecord.create(
+            kind=MemoryKind.CONVENTION, scope=scope, key=key, value="unrelated",
+            source="user", status=MemoryStatus.CONFIRMED, provenance=provenance,
+        ), actor="user")
+    identity = {"root": "C:/repository", "repository_id": "repository-a", "semantic": False}
+    implicit = store.find(**identity)
+    explicit = store.find(scope=AgentScope.REPOSITORY, **identity)
+    assert [record.record_id for record in implicit] == [expected.record_id]
+    assert [record.record_id for record in explicit] == [expected.record_id]
+
+
 def test_scoped_lookup_excludes_unscoped_task_and_session_records(store: MemoryStore):
     task_root = "C:/repo"
     legacy_task = MemoryRecord.create(
@@ -192,7 +209,7 @@ def test_memory_find_enforces_root_repository_task_and_session_identity(store: M
         value="repo-b",
         provenance={"root": "C:/repo-b", "repository_id": "repo-b"},
     ))
-    repo_missing_id = _seed_memory_projection(store, MemoryRecord.create(
+    _seed_memory_projection(store, MemoryRecord.create(
         kind=MemoryKind.FINDING,
         scope=AgentScope.REPOSITORY,
         key="shared-repo",
