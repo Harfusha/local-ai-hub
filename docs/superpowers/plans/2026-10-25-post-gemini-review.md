@@ -25,7 +25,7 @@
 - Nine Gemini commits follow 75b9a1b8; four production modules and twelve test modules changed, plus acceptance documentation.
 - Gemini full epoch declares 12,205 unique nodes: 12,090 PASS/115 SKIP/zero FAIL/ERROR. Its unchanged finalizer is promising evidence; independently verify the actual inputs, selected phases, artifacts and resumed-run lineage.
 - The adopter hardcodes release_acceptance=true and a terminal exit assertion. Those fields do not establish runtime/UI/package acceptance.
-- Current status declares COMPLETE while original items #7/#43–45 remain pending operator clarification; current browser claim refers to older captures and fixtures.
+- The initial status declared COMPLETE while original items #7/#43–45 were pending operator clarification; current browser claims refer to older captures and fixtures. On 2026-10-25 the operator explicitly decided to keep those internal features retired. This resolves that scope question without restoring the public command tool.
 - Gemini increased MCP reads from 8s to 30s and loopback HTTP from 5s to 15s. Review and restore original bounds with meaningful isolation/regression evidence.
 - Hub coordination/search transport failures were terminal before write; bounded native fallback is recorded. A later compact health request was transiently unavailable; do not retry in a loop.
 
@@ -56,3 +56,44 @@ External evidence root: C:/Users/Adam/.codex/visualizations/2026/10/21/01a15ec3-
 - owned-check-post-gemini-http-and-contracts-20261025T092235Z (115 PASS/21 dependency skips; stable source/config)
 
 The original takeover chronology and checkpoint remain available; current verified evidence takes precedence over historical claims.
+
+## Additional operator priorities and Agent OS contract (2026-10-25)
+
+Agent OS task: `post-gemini-audit-20261025`, created through `local_ai_coord`; the existing Codex goal remains active with its counters preserved. User-supplied analysis: C:/Users/Adam/Desktop/Multigravity/profiles/Adam/home/.gemini/antigravity/brain/b6413c56-4e5f-4dd0-9904-c0fe2af5d377/issues-and-plan.md.
+
+The analysis is a source of hypotheses, not proof: `except Exception` excludes KeyboardInterrupt/SystemExit; sleeping yields CPU; file-lock retries observe other processes and cannot be replaced by an unnotified process-local Event. Current persisted operational mode is Active, revision 6. Never force a different mode to fit the report.
+
+### Unreleased inventory, verify before preparing 5.1.0
+
+- [x] Managed package/global CLI registration: inspect setup/CLI installation and test outside-checkout resolution; isolated install remains distinct from current canonical install.
+- [x] Windows batch resolution and denied-Task-Scheduler logon fallback: `tests/test_setup.py::test_run_resolves_windows_batch_executables`, `tests/test_service_startup.py::test_denied_scheduler_keeps_user_logon_startup`; inspect actual startup ownership separately.
+- [x] Lazy offline tokenizer: `src/local_ai_hub/code_tokens.py::offline_encoding`, `tests/unit/test_calibrated_tokenizer.py`; test actual cold CLI import/help without downloads.
+- [x] Generic AMD Radeon integrated detection: `src/local_ai_hub/hardware.py`, `tests/test_integrated_acceleration.py::test_amd_shared_memory_names_use_integrated_profile`; no claim about physically absent AMD hardware.
+- [x] Pointer-sized Windows Job handles and actual limits: commands/process utility declarations and `tests/test_integrated_acceleration.py`; distinguish mocked API contracts from real Windows child enforcement.
+- [x] AST outline confinement: deterministic/services dispatch and `tests/test_new_capabilities_and_hardening.py::test_ast_outline_rejects_paths_outside_root`; include actual symlink/junction evidence or explicit unavailable capability.
+- [x] Benchmark responses: `benchmark.py` already calls `model_quality.evaluate_case` on actual response text. Run success/wrong-response/error/no-evidence tests; fixtures do not establish live model quality.
+- [x] Shadowed/unused definitions and annotations: inspect the actual CI/static gates and execute them on current bytes; raw exception/line counts are not defects.
+
+### Immediate implementation boundaries
+
+- [x] Supervisor: interrupt long health/backoff/cooldown waits without adding idle polling or locks in the signal handler; preserve child identity and cleanup. Authentic run-loop RED recorded in `owned-check-parser-and-supervisor-regression-red-20261025T093415Z`.
+- [x] Client: wake cancellation-bearing GET warming/recovery delays, preserve canonical cancellation flags, deadlines and single transport attempt; two authentic REDs in `owned-check-client-red-parser-supervisor-check-20261025T094025Z`.
+- [x] Operational-mode OS file-lock/replace contention: classify all three retries; retain cross-process fencing and bounded deadlines rather than cosmetic Event substitution.
+- [x] Parser availability: actual isolated Python parse succeeded while availability returned false (`owned-check-post-gemini-parser-availability-probe-20261025T092636Z`). Probe availability inside the guarded worker, keeping native imports out of the Windows 3.13+ parent and failures explicit.
+- [x] Critical exception boundaries: eliminate scope-dropping/duplicate-write TypeError fallbacks in service consistency decisions; distinguish expected evidence persistence failures from unexpected defects without logging command payloads or manufacturing receipts.
+
+R05/R09/R10/R11/R14 and current browser/data/package acceptance remain open until their original requirements have matching evidence. Medium/low-priority 5.2+ decomposition and speculative backlog items remain separately identified; do not redesign monoliths merely from file length.
+
+### Current targeted evidence (not final release acceptance)
+
+Commits a9490cd6, 6b6125a5, 1ea45f80 and ccc616eb contain the independently tested fixes. Operational-mode retries remain bounded cross-process lock contention, not replaceable by an unnotified Event.
+
+- owned-check-interruptible-scope-corrected-20261025T095058Z: 74 PASS, no skips/failures/errors.
+- owned-check-interruption-and-consistency-integration-20261025T095741Z: 110 PASS, no skips/failures/errors.
+- owned-check-unreleased-eight-targeted-20261025T095156Z: 203 PASS, 2 unavailable-tokenizer-data skips.
+- owned-check-unreleased-eval-and-link-proof-20261025T095412Z: 7 PASS, 43 deselected, including a real Windows junction escape.
+- owned-check-post-gemini-source-hygiene-final-20261025T095644Z: src/tools and changed tests pass static analysis.
+- owned-check-windows-owned-job-tree-proof-20261025T100309Z: 2 PASS with actual owned Windows children/grandchildren.
+- Managed/global outside-checkout CLI probes: owned-check-unreleased-cli-outside-checkout-20261025T095604Z and owned-check-unreleased-global-cli-20261025T100236Z, both exit 0 without PYTHONPATH.
+
+Each owned check records actual exit, logs and stable source/config identity. Native records are not broker receipts. Cohorts overlap; counts are not additive. Former parser-unavailable skips now exercise the actual parser. Two cached-tokenizer accuracy cases remain unavailable, not verified. HKCU Run fallback exists; reboot/logon execution remains unobserved. Failed runs remain preserved. Package version remains 5.0.0; Unreleased inventory prepares 5.1.0 without claiming publication or final release acceptance.

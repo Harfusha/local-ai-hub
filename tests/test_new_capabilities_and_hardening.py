@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ast
-import json
 import py_compile
 import sqlite3
 import subprocess
@@ -18,7 +16,7 @@ from local_ai_hub.agent_memory import MemoryStore
 from local_ai_hub.commands import CommandBroker, _is_interactive_prompt, _BoundedStreamBuffer
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.doctor_support import install_git_precommit_hook, uninstall_git_precommit_hook
-from local_ai_hub.process_utils import hidden_run_kwargs, list_git_worktrees, prune_git_worktrees, simulate_git_merge
+from local_ai_hub.process_utils import list_git_worktrees, prune_git_worktrees, simulate_git_merge
 from local_ai_hub.rag import _python_ast_chunks
 from local_ai_hub.services import LocalAIServices, vram_priority
 
@@ -485,6 +483,38 @@ def test_ast_outline_rejects_paths_outside_root(tmp_path):
     result = engine.ast_outline(str(root), "../outside.py")
     assert result["success"] is False
     assert 'outside' in result["error"]
+
+
+def test_ast_outline_rejects_resolved_directory_link_escape(tmp_path):
+    import os
+
+    root = tmp_path / "project"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    private_source = outside / "private.py"
+    private_source.write_text("private_marker = 123\n", encoding="utf-8")
+    link = root / "linked"
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(link))
+    else:
+        link.symlink_to(outside, target_is_directory=True)
+    try:
+        engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+        result = engine.ast_outline(str(root), "linked/private.py")
+        assert result["success"] is False
+        assert "outside" in result["error"]
+        assert "private_marker" not in str(result)
+        assert private_source.read_text(encoding="utf-8") == "private_marker = 123\n"
+    finally:
+        # Both endpoints are owned test paths; remove only the link, not its target.
+        assert link.parent.resolve() == root.resolve()
+        assert link.resolve() == outside.resolve()
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
 
 
 def test_batch_replace_preflight_does_not_write_bytecode(tmp_path, monkeypatch):

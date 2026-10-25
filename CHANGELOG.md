@@ -15,6 +15,12 @@
 
 ## Unreleased
 
+Preparation for 5.1.0; package version remains 5.0.0 pending release acceptance.
+
+- Wake client cancellation and supervisor shutdown during retry, recovery and cooldown waits; preserve bounded cross-process operational-mode lock retries.
+- Probe native parser availability inside isolated workers on Windows.
+- Preserve canonical repository scope and identity in consistency decisions; distinguish verification persistence failures without logging command payloads.
+- Reject unknown POST routes without waiting for an untrusted advertised request body.
 - Register the managed Python package so global CLI commands work outside the checkout.
 - Resolve Windows batch executables during setup and preserve user logon startup when Task Scheduler denies registration.
 - Initialize tokenizers only when counting tokens, keeping CLI help and unrelated tools offline.

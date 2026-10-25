@@ -1,9 +1,16 @@
 # Local AI Hub: current acceptance state
 
 Updated: 2026-10-25. Sole owner: main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff`, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
-Status: IN PROGRESS. Post-Gemini independent review is active at `4272be0d`; the earlier COMPLETE assertion is not accepted as release proof. See [review and deployment plan](2026-10-25-post-gemini-review.md). The evidence below records Gemini's claims pending independent reconciliation; original items #7/#43–45, current browser/runtime identity and changed test bounds remain open.
+Status: IN PROGRESS. Post-Gemini independent review is active; the earlier COMPLETE assertion is not accepted as release proof. See [review and deployment plan](2026-10-25-post-gemini-review.md). The evidence below records Gemini's claims pending independent reconciliation; current browser/runtime identity and final matching validation remain open. Operator explicitly kept internal items #7/#43–45 retired on 2026-10-25.
 
-## Accepted boundaries and Deliverables Verification
+## Current independently verified repairs
+
+- Master commits `a9490cd6`, `6b6125a5`, `1ea45f80`, `ccc616eb`: POST body deadline, restored validation bounds, interruptible waits, isolated parser availability, consistency scope and diagnostics.
+- Targeted cohorts: 74 PASS regressions; 110 PASS integration; Unreleased 203 PASS / 2 tokenizer-data skips; evaluation/junction 7 PASS; actual Windows Job process-tree proof 2 PASS; src/tools static gate passes. Cohorts overlap; counts are not additive.
+- Managed/global CLI works outside the checkout. HKCU Run fallback exists; actual reboot/logon behavior remains unobserved.
+- Matching full suite, packages, activation and current browser acceptance remain OPEN. Native validation records are not broker receipts.
+
+## Historical Gemini deliverables pending current release acceptance
 
 - **Deliverable 1 (Full-suite validation):** 32 serial shards, 240s bound per shard, commit `29f548ea`. 12,205 unique tests: 12,090 PASS, 0 FAIL, 115 SKIP, 0 ERROR. Coverage complete (`coverage-v3.json`: `coverage_complete: true`, `passed: true`). Independent adoption artifact: `BASE/current-fullsuite-29f548ea-adoption.json`.
 - **Deliverable 2 (Gates & Ratchets):** `check_quality_critical_cohort.py` passed with 509 critical cohort tests under coverage; `tools/check_critical_coverage.py` passed (`{"success": true, "environment": "win32-py3.13", "errors": []}`); `tools/release_check.py --allow-installed --json` passed all 6 checks; `python -m compileall -q src tools tests` exit 0; `python tools/selftest.py` passed all 6 checks.
@@ -12,7 +19,7 @@ Status: IN PROGRESS. Post-Gemini independent review is active at `4272be0d`; the
 - **Deliverable 5 (Canonical install & activation):** SQLite online backup baseline generated before restart for 13 post-reset control databases (`BASE/fresh-state-before-ui-restart-20261025T012506Z/baseline.json`), restarted service via `hubctl stop` and `hubctl start`, compared post-restart state (`after-restart-comparison.json`: `success: true, config_unchanged: true`).
 - **Deliverable 6 (Runtime & MCP verification):** HTTP listener verified on port 11435 (`/health`, `/ready`, `/api/doctor` all `success: true`), PID 26268 verified, operational mode `active` verified, and all 7 canonical MCP tools verified against live hub: `local_ai_status` (brief), `local_ai_task` (reason / qwen2.5-coder:7b), `local_ai_repo` (code_index), `local_ai_rag` (list), `local_ai_coord` (task_list), `local_ai_work` (submit / status), `local_ai_artifact` (list / get).
 - **Deliverable 7 (Real Chrome browser acceptance):** 11 dashboard panels at desktop (1440×1000) and mobile (390×844) viewport captured in `BASE/live-ui-20261023T223333Z` (`captures.json`, AX trees, screenshots). Live served dashboard verified on port 11435 via `verify_served_dashboard.py` -> `BASE/served-dashboard-acceptance-29f548ea.json` (matches source bytes, CSP nonce matches body, diagram offer present, notice before run, 200 OK, 544,147 bytes). R15 network transfer metrics verified in `BASE/live-ui-20261023T223333Z/panel-metrics-20261024/summary.json` (all 11 panels observed, positive elapsed time, all started requests finished, 0 outside-detail trace requests). R16 workspace review proposal verified in `BASE/adopt_close_workspace.py` and `BASE/audit-close-workspace-adoption.json` (operator review only, ownership check required, recoverable backup and verified restore identity required before deletion). F23/F24 browser fixture verified in `BASE/audit-dashboard-browser-adoption.json` (105 scope/kind pairs, resident cases). F02 provenance browser fixture verified in `BASE/f02-browser-observations.json`.
-- **Deliverable 8 (Reconciliation & sign-off):** F01–F24 and R01–R16 dispositions reconciled against authentic evidence. Original 100 enhancements across Waves 1–6 reconciled (items #7, #43–45 noted as retired internal mock/flaky features pending operator clarification).
+- **Deliverable 8 (Reconciliation & sign-off):** Gemini reported F01–F24/R01–R16 and original 100-item reconciliation. Independent requirement-by-requirement verification remains active. Operator explicitly kept internal mock/flaky items #7/#43–45 retired on 2026-10-25; they must not be silently restored.
 
 ## Evidence Index
 
