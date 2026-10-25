@@ -120,16 +120,20 @@ def test_get_non_object_json_stays_a_complete_client_error(tmp_path, monkeypatch
 
 
 def test_startup_probe_distinguishes_liveness_from_readiness(tmp_path, monkeypatch):
+    import io
     from urllib.error import HTTPError
 
     client = _client(tmp_path)
     requested_urls = []
+    body = io.BytesIO(b"not ready")
+    failure = HTTPError(f"{client.base_url}/ready", 503, "not ready", {}, body)
 
     def not_ready(request, timeout):
         requested_urls.append(request.full_url)
-        raise HTTPError(request.full_url, 503, "not ready", {}, None)
+        raise failure
 
     monkeypatch.setattr(client_module, "urlopen", not_ready)
 
     assert client._online(timeout=1) is False
     assert requested_urls == [f"{client.base_url}/ready"]
+    assert body.closed

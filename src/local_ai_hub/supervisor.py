@@ -354,12 +354,13 @@ class Supervisor:
         except HTTPError as exc:
             # Admission-control 503 means the process is alive and intentionally
             # shedding load. Recycling it here would amplify overload into restart churn.
-            healthy = exc.code == 503 and self._listener_is_owned(
-                find_listening_pid(int(server.get("port", 11435)))
-            )
-            if not healthy:
-                self.last_health_error = "listener_identity_unverified" if exc.code == 503 else f"http_status_{exc.code}"
-            return healthy
+            with exc:
+                healthy = exc.code == 503 and self._listener_is_owned(
+                    find_listening_pid(int(server.get("port", 11435)))
+                )
+                if not healthy:
+                    self.last_health_error = "listener_identity_unverified" if exc.code == 503 else f"http_status_{exc.code}"
+                return healthy
         except (TimeoutError, socket.timeout):
             self.last_health_error = "probe_timeout"
             return False
@@ -391,6 +392,9 @@ class Supervisor:
                     return False
             listener_pid = find_listening_pid(int(server.get("port", 11435)))
             return self._listener_is_owned(listener_pid)
+        except HTTPError as exc:
+            with exc:
+                return False
         except Exception:
             return False
 

@@ -170,8 +170,9 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
                 unavailable_status = response.status
                 unavailable = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            unavailable_status = error.code
-            unavailable = json.loads(error.read().decode("utf-8"))
+            with error:
+                unavailable_status = error.code
+                unavailable = json.loads(error.read().decode("utf-8"))
         assert unavailable_status == 503
         assert unavailable["success"] is False
         assert unavailable["stop_code"] == "context_task_context_incomplete"

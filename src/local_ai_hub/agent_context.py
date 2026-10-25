@@ -225,22 +225,20 @@ class CompiledContext:
                         separators=(",", ":"),
                     )
                 except (TypeError, ValueError, OverflowError):
-                    serialized = json.dumps(
-                        element_data,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        default=str,
-                    ).encode("utf-8", errors="replace")
+                    serialized = None
             else:
-                serialized = json.dumps(
-                    element_data,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode("utf-8", errors="replace")
-            h.update(serialized)
+                serialized = None
+            if serialized is not None:
+                h.update(serialized)
+                continue
+            encoder = json.JSONEncoder(
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            for chunk in encoder.iterencode(element_data):
+                h.update(chunk.encode("utf-8", errors="replace"))
         return h.hexdigest()[:12]
 
     def to_dict(self, compact: bool = False) -> dict[str, Any]:

@@ -42,6 +42,24 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m compileall -q src tools tests
       - run: pyflakes src tools
+      - name: Probe Linux command process cleanup
+        if: ${{ env.RUN_FULL_SUITE == 'true' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          import tempfile
+          from pathlib import Path
+          from local_ai_hub.commands import CommandBroker
+
+          with tempfile.TemporaryDirectory(prefix="local-ai-ci-probe-") as directory:
+              broker = CommandBroker({"server": {"state_dir": str(Path(directory) / "state")}})
+              result = broker._execute(f'"{sys.executable}" -c "print(123)"', cwd=directory, timeout=10)
+              print(json.dumps({"kind": "command_process_cleanup_probe", "result": result}, default=str, sort_keys=True), flush=True)
+              if result.get("success") is not True:
+                  raise SystemExit(1)
+          PY
       - name: Run primary full suite
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
         run: python -m coverage run -m pytest -ra

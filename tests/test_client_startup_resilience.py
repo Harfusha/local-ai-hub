@@ -33,7 +33,28 @@ def _start_lock_owner(lock: Path, ready: Path) -> subprocess.Popen:
         "time.sleep(30)\n"
     )
     owner = popen_managed([sys.executable, "-c", script], env=env)
-    owner._local_ai_process_identity = process_identity(owner.pid)
+    identity_path = ready.with_suffix(".identity.json")
+    deadline = time.monotonic() + 5
+    try:
+        while not identity_path.exists():
+            if owner.poll() is not None:
+                raise AssertionError("start-lock owner exited before publishing its identity")
+            if time.monotonic() >= deadline:
+                raise AssertionError("start-lock owner did not publish its identity before deadline")
+            time.sleep(0.01)
+        owner_identity = process_identity(owner.pid)
+        if owner_identity is None:
+            raise AssertionError("start-lock owner identity disappeared after handshake")
+    except BaseException:
+        cleanup_deadline = time.monotonic() + 5
+        if owner.poll() is None:
+            terminate_tree(owner.pid, process_handle=owner, grace_seconds=0.25)
+            try:
+                owner.wait(timeout=max(0.01, cleanup_deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
+        raise
+    owner._local_ai_process_identity = owner_identity
     return owner
 
 

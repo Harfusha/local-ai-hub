@@ -127,14 +127,16 @@ def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
         try:
             urllib.request.urlopen(next_url + "&error_offset=0")
         except urllib.error.HTTPError as exc:
-            assert exc.code == 400
+            with exc:
+                assert exc.code == 400
         else:
             raise AssertionError("cursor plus explicit offset must be rejected")
 
         try:
             urllib.request.urlopen(cursor_url + "not-a-valid-cursor!")
         except urllib.error.HTTPError as exc:
-            assert exc.code == 400
+            with exc:
+                assert exc.code == 400
         else:
             raise AssertionError("malformed cursor must be rejected")
     finally:

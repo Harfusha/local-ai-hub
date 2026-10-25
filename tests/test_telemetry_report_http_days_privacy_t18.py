@@ -34,14 +34,15 @@ def test_telemetry_report_invalid_days_does_not_echo_private_input(tmp_path):
         try:
             urllib.request.urlopen(url)
         except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read().decode("utf-8")), expected_error
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8")), expected_error
         raise AssertionError("invalid query must be rejected")
 
     def request_valid(path: str, query: dict[str, int]):
         encoded = urllib.parse.urlencode(query)
         url = f"http://127.0.0.1:{server.server_address[1]}{path}?{encoded}"
-        response = urllib.request.urlopen(url)
-        return response.status, json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(url) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
 
     try:
         metrics_ok_status, metrics_ok_payload = request_valid("/api/metrics", {"days": 1})

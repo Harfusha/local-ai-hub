@@ -414,8 +414,9 @@ def test_task_completion_http_receipt_and_memory_matrix(
                 status = response.status
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            status = error.code
-            payload = json.loads(error.read().decode("utf-8"))
+            with error:
+                status = error.code
+                payload = json.loads(error.read().decode("utf-8"))
         except TimeoutError as error:
             frames = sys._current_frames()
             stacks = {}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +14,7 @@ from local_ai_hub.process_utils import (
     create_sandboxed_job_object,
 )
 from local_ai_hub.vram_balancer import VRAMBalancer
+from local_ai_hub import vram_balancer
 
 
 def test_is_busy_error() -> None:
@@ -67,7 +68,9 @@ def test_retry_busy_does_not_retry_unrelated_errors() -> None:
     assert calls == 1
 
 
-def test_vram_model_pinning() -> None:
+def test_vram_model_pinning(monkeypatch) -> None:
+    monkeypatch.setattr(vram_balancer, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    monkeypatch.setattr(vram_balancer, "get_gpu_telemetry", lambda: {"available": False, "gpus": []})
     balancer = VRAMBalancer()
     assert balancer.get_pinned_model() is None
 
@@ -87,11 +90,13 @@ def test_vram_model_pinning() -> None:
     assert st2["pinned_model"] is None
 
 
-def test_vram_model_pinning_expiry() -> None:
+def test_vram_model_pinning_expiry(monkeypatch) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(vram_balancer, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
     balancer = VRAMBalancer()
     balancer.pin_model("qwen2.5-coder:7b", ttl_seconds=0.05)
     assert balancer.get_pinned_model() == "qwen2.5-coder:7b"
-    time.sleep(0.06)
+    clock["now"] += 0.06
     assert balancer.get_pinned_model() is None
 
 

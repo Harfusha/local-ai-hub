@@ -38,7 +38,7 @@ _SAFE_UNLINK_RETRY_BUDGET_SECONDS = 5.0
 def ensure_extended_path(p: Path | str, threshold: int = 240) -> Path:
     """Prepend Windows extended-length path prefix (\\\\?\\) if path length exceeds threshold."""
     if os.name != "nt":
-        return Path(p)
+        return Path(os.fspath(p).replace("\x00", ""))
     raw = str(p or "").replace("\x00", "")
     if raw.startswith(("\\\\?\\", "\\\\.\\")):
         return Path(raw)

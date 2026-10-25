@@ -140,7 +140,13 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     assert "include config.toml.example" in manifest
     assert "include defaults.toml" in manifest
-    assert project["tool"]["setuptools"]["package-data"]["local_ai_hub"] == ["defaults.toml"]
+    assert project["tool"]["setuptools"]["package-data"]["local_ai_hub"] == [
+        "defaults.toml",
+        "automation_browser.js",
+    ]
+    assert (install_dir / "src" / "local_ai_hub" / "automation_browser.js").read_bytes() == (
+        ROOT / "src" / "local_ai_hub" / "automation_browser.js"
+    ).read_bytes()
 
     prompts = (
         (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),

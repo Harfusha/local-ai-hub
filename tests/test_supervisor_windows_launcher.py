@@ -127,11 +127,29 @@ def test_launcher_probe_rejects_unproven_listener(supervisor_probe, monkeypatch,
 
 
 def test_overload_does_not_accept_foreign_listener(supervisor_probe, monkeypatch):
+    import io
     instance, _ = supervisor_probe
     monkeypatch.setattr(module, "process_parent_pid", lambda _: 99)
+    body = io.BytesIO(b"busy")
+    failure = HTTPError("http://127.0.0.1:11435/health", 503, "busy", {}, body)
 
     def overloaded(*args, **kwargs):
-        raise HTTPError("http://127.0.0.1:11435/health", 503, "busy", {}, None)
+        raise failure
 
     monkeypatch.setattr(module, "urlopen", overloaded)
     assert instance.hub_online() is False
+    assert body.closed
+
+
+def test_readiness_http_error_closes_response(supervisor_probe, monkeypatch):
+    import io
+    instance, _ = supervisor_probe
+    body = io.BytesIO(b"initializing")
+    failure = HTTPError("http://127.0.0.1:11435/ready", 503, "not ready", {}, body)
+
+    def initializing(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(module, "urlopen", initializing)
+    assert instance.hub_ready() is False
+    assert body.closed

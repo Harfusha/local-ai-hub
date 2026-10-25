@@ -22,11 +22,27 @@ def isolate_process_utils_platform_globals(monkeypatch):
     monkeypatch.setattr(process_utils, "Path", ProcessUtilsPath)
 
 
+def _install_windows_startupinfo_double(monkeypatch):
+    class StartupInfo:
+        def __init__(self):
+            self.dwFlags = 0
+            self.wShowWindow = 0
+
+    monkeypatch.setattr(process_utils.subprocess, "STARTUPINFO", StartupInfo, raising=False)
+    monkeypatch.setattr(process_utils.subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
+
+
 class _ProcessHandle:
     def __init__(self, pid: int, returncode: int | None = None) -> None:
         self.pid = pid
         self.returncode = returncode
         self._waitpid_lock = threading.Lock()
+
+
+@pytest.mark.parametrize("value", ["some\x00path", Path("some\x00path")])
+def test_extended_path_posix_branch_sanitizes_nul(monkeypatch, value):
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    assert str(process_utils.ensure_extended_path(value)) == "somepath"
 
 
 @pytest.mark.parametrize("pid", [0, -1, True, "123", 2**32])
@@ -620,6 +636,7 @@ def test_run_hidden_preserves_explicit_posix_process_group(monkeypatch):
 
 
 def test_run_hidden_assigns_suspended_windows_process_to_job_before_resume(monkeypatch):
+    _install_windows_startupinfo_double(monkeypatch)
     process = _FakeProcess([(None, None)])
     process._handle = 1234
     process._thread = 5678
@@ -658,6 +675,8 @@ def test_run_hidden_assigns_suspended_windows_process_to_job_before_resume(monke
     assert ("assign", 77, process.pid) in events
     popen_kwargs = next(event[1] for event in events if event[0] == "popen")
     assert popen_kwargs["creationflags"] & 0x00000004  # CREATE_SUSPENDED
+    assert popen_kwargs["startupinfo"].dwFlags & 1  # STARTF_USESHOWWINDOW
+    assert popen_kwargs["startupinfo"].wShowWindow == 0  # SW_HIDE
 
 
 def test_run_hidden_retries_job_cleanup_after_transient_close_failures(monkeypatch):
@@ -830,6 +849,7 @@ def test_windows_terminate_tree_uses_owned_handle_without_taskkill(monkeypatch):
 
 
 def test_popen_managed_assigns_job_before_resuming_windows_process(monkeypatch):
+    _install_windows_startupinfo_double(monkeypatch)
     events = []
 
     class OwnedProcess:
@@ -844,7 +864,7 @@ def test_popen_managed_assigns_job_before_resuming_windows_process(monkeypatch):
     process = OwnedProcess()
 
     def fake_popen(argv, **kwargs):
-        events.append(("popen", argv, kwargs.get("creationflags", 0)))
+        events.append(("popen", argv, kwargs.get("creationflags", 0), kwargs))
         return process
 
     monkeypatch.setattr(process_utils.os, "name", "nt")
@@ -874,6 +894,8 @@ def test_popen_managed_assigns_job_before_resuming_windows_process(monkeypatch):
     assert events[2] == ("resume", process)
     assert events[0][0] == "popen"
     assert events[0][2] & 0x00000004
+    assert events[0][3]["startupinfo"].dwFlags & 1
+    assert events[0][3]["startupinfo"].wShowWindow == 0
     finalizer = result._local_ai_job_finalizer
     assert process_utils._release_process_job(result) is True
     assert result._local_ai_job_handle is None

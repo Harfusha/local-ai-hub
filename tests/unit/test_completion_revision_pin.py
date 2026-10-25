@@ -114,8 +114,9 @@ def test_completion_revision_pin_http_contract(
                 status = response.status
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            status = error.code
-            payload = json.loads(error.read().decode("utf-8"))
+            with error:
+                status = error.code
+                payload = json.loads(error.read().decode("utf-8"))
         assert status == expected_status
         assert bool(verifier_calls) is should_complete
         if expected_status == 409:
