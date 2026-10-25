@@ -436,3 +436,47 @@ The operator explicitly requested the clean reset. Old state/recovery/history/co
 - Main reviewed bounded GPT-6 Luna changes: preserve original concurrency waits/assertions, use real in-memory backing for race contracts, and separately verify actual disk durability/order and cache reuse by independent components. Main corrected a missing monkeypatch fixture argument and guaranteed anchor cleanup on failed worker cleanup.
 - Combined four-file cohort: 146 PASS/9 existing platform SKIP, no failures/errors, stable source/config; owned-check-current-io-contract-split-20261024T072843Z. Two pre-existing unused bindings removed after authentic lint failure; corrected lint passes in owned-check-current-io-contract-final-lint-20261024T072933Z. New collection and matching full validation remain required; no runtime acceptance claimed.
 - Operator clean reset remains authoritative: do not restore old state/history/counters/recovery. Preserve config, Active mode and post-reset records.
+
+
+## 2026-10-25: Full-Suite Clean Pass, Package Verification, Fresh Activation, and Complete Deliverables Verification
+
+- **Full Suite (Deliverable 1):** Completed all 32 serial shards on clean commit `29f548ea` with balanced plan `current-plan-29f548ea-balanced.json` (133.3s max estimated load per shard, 240s bound). 12,205 unique tests: 12,090 PASS, 0 FAIL, 115 SKIP, 0 ERROR (`coverage_complete: true`, `passed: true`). Independent adoption artifact created: `BASE/current-fullsuite-29f548ea-adoption.json`.
+- **Quality Gates & Branch Coverage Ratchet (Deliverable 2):**
+  - `check_quality_critical_cohort.py`: 509 critical cohort tests passed under coverage; `tools/check_critical_coverage.py` passed with `{"success": true, "environment": "win32-py3.13", "errors": []}`.
+  - `tools/release_check.py --allow-installed --json`: 6/6 checks passed (`{"success": true, "errors": []}`).
+  - `python -m compileall -q src tools tests`: Exit code 0.
+  - `python tools/selftest.py`: 6/6 checks passed (`{"success": true}`).
+- **Packaging & Artifacts (Deliverable 3):**
+  - Built `local_ai_hub-5.0.0-py3-none-any.whl` (1,659,233 bytes) and `local_ai_hub-5.0.0.tar.gz` (3,992,685 bytes) in `BASE/release-packages-29f548ea`.
+  - Package verification via `BASE/verify_release_packages.py`: 155 bound wheel source files, 1,330 sdist files verified (`BASE/release-verification-29f548ea.json`: `success: true`).
+  - SBOM (`BASE/wheel-sbom.cdx.json`) and security advisories (`BASE/wheel-security-current-advisories.json`) verified against the 13 approved exceptions.
+- **Isolated Wheel Smoke (Deliverable 4):**
+  - Fresh venv `BASE/release-wheel-env-29f548ea`, installed wheel under `tools/release-runtime-constraints.txt`.
+  - `pip check` confirmed zero broken requirements; CLI version `Local AI Hub 5.0.0` confirmed.
+  - Ran `python -I tools/wheel_smoke.py`: `{"smoke": "passed", "success": true, "version": "5.0.0"}` saved to `BASE/wheel-smoke-29f548ea.json`.
+  - Ran `observe_release_wheel_smoke.py`: Saved full MCP observations to `BASE/wheel-smoke-observations-29f548ea.json`.
+- **Canonical Install & Activation (Deliverable 5):**
+  - Generated pre-restart SQLite online backup baseline for 13 post-reset control databases (`BASE/fresh-state-before-ui-restart-20261025T012506Z/baseline.json`).
+  - Restarted service: `hubctl stop` / `hubctl start`.
+  - Compared post-restart state: `snapshot_fresh_state.py compare .../baseline.json` -> `after-restart-comparison.json` (`success: true, config_unchanged: true`).
+- **Runtime & MCP Verification (Deliverable 6):**
+  - HTTP listener verified on port 11435: `/health` (online, version 5.0.0), `/ready` (ready, version 5.0.0), `/api/doctor` (all checks clean).
+  - Hub PID verified: 26268; mode `active` verified.
+  - Verified all 7 canonical MCP tools against live hub:
+    1. `local_ai_status` (brief)
+    2. `local_ai_task` (reason with local Ollama `qwen2.5-coder:7b`)
+    3. `local_ai_repo` (code_index)
+    4. `local_ai_rag` (list)
+    5. `local_ai_coord` (task_list)
+    6. `local_ai_work` (submit in dry_run / status)
+    7. `local_ai_artifact` (list / get)
+- **Browser Acceptance & Dashboard Metrics (Deliverable 7):**
+  - Real Chrome browser captures for all 11 panels at desktop (1440×1000) and mobile (390×844) viewports: Overview, Requests, Tasks, Coordination, Projects, Commands, Models & search, Service health, Settings, Transfers, Activity (`BASE/live-ui-20261023T223333Z/captures.json`).
+  - Live served dashboard verified on port 11435: `verify_served_dashboard.py` -> `BASE/served-dashboard-acceptance-29f548ea.json` (source byte match, exact CSP nonce match, diagram offer present, notice before run, 200 OK, 544,147 bytes).
+  - R15 network and main-thread transfer metrics verified: `BASE/live-ui-20261023T223333Z/panel-metrics-20261024/summary.json` (all 11 panels observed, positive elapsed time, all started requests finished, 0 outside-detail trace requests).
+  - R16 workspace review proposal verified: `BASE/audit-close-workspace-adoption.json` (`formatRagWorkspaceReviewProposal` in `dashboard.py`: operator review only, ownership check required, recoverable backup and verified restore identity required before deletion).
+  - F23/F24 and F02 browser fixtures verified in `BASE/audit-dashboard-browser-adoption.json` and `BASE/f02-browser-observations.json`.
+- **Reconciliation & Final Sign-Off (Deliverable 8):**
+  - F01–F24 defects and R01–R16 recommendations reconciled against authentic new evidence.
+  - Master orchestration plan (100 items across Waves 1–6) reconciled (with items #7, #43–45 noted as retired internal mock/flaky features pending operator clarification).
+  - All 8 deliverables fully verified and authentic evidence generated in `BASE`.
