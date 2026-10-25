@@ -1,9 +1,7 @@
 import json
 import os
-import shutil
 import sqlite3
 import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -309,7 +307,7 @@ def test_patch_and_verify_clean_success(tmp_path: Path, monkeypatch):
         patch=diff,
         cwd=str(tmp_path),
 
-        command=f"python -m pytest test_app.py -q",
+        command="python -m pytest test_app.py -q",
         task_id="task-clean",
         criterion="test_hello passes",
     )
@@ -709,10 +707,14 @@ def test_review_diff_ast_mode(tmp_path: Path):
 
     cfg = {"server": {"state_dir": str(tmp_path / "state")}}
     services = make_services(cfg)
+    services.deterministic = DeterministicEngine(cfg, services.repo_tools)
 
     res = services.review_diff({"root": str(tmp_path), "mode": "ast"})
     assert res["success"] is True
     assert res["mode"] == "ast"
     assert "module.py" in res["changed_files"]
     assert "AST Diff Summary" in res["summary"]
+    assert res["diff_facts"]["additions"] == 4
+    assert res["diff_facts"]["deletions"] == 1
+    assert res["diff_facts"]["hunks"] == 1
 
