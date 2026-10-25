@@ -76,6 +76,10 @@ class Supervisor:
         self.child_pidfd: int | None = None
         self.child_ready = False
         self.stopping = False
+        self._stop_event = threading.Event()
+        self._signal_wake_reader: socket.socket | None = None
+        self._signal_wake_writer: socket.socket | None = None
+        self._signal_wake_thread: threading.Thread | None = None
         self.started_at = time.time()
         self.restarts = 0
         self.spawns = 0
@@ -522,6 +526,70 @@ class Supervisor:
         # Avoid logging/locks in a signal handler: the interrupted code may own them.
         self._stop_reason = f"signal={int(signum)}"
         self.stopping = True
+        wake_writer = self._signal_wake_writer
+        if wake_writer is not None:
+            try:
+                wake_writer.send(b"\0")
+            except (OSError, ValueError):
+                pass
+
+    def _wait_interruptibly(self, timeout: float) -> bool:
+        return self._stop_event.wait(max(0.0, float(timeout)))
+
+    def _start_signal_wakeup(self) -> None:
+        reader, writer = socket.socketpair()
+        try:
+            writer.setblocking(False)
+
+            def relay_wakeup() -> None:
+                try:
+                    if reader.recv(1):
+                        self._stop_event.set()
+                except OSError:
+                    pass
+
+            relay = threading.Thread(
+                target=relay_wakeup,
+                name="local-ai-supervisor-signal-wakeup",
+                daemon=True,
+            )
+            self._signal_wake_reader = reader
+            self._signal_wake_writer = writer
+            self._signal_wake_thread = relay
+            relay.start()
+        except BaseException:
+            reader.close()
+            writer.close()
+            self._signal_wake_reader = None
+            self._signal_wake_writer = None
+            self._signal_wake_thread = None
+            raise
+
+    def _stop_signal_wakeup(self) -> None:
+        reader = self._signal_wake_reader
+        writer = self._signal_wake_writer
+        relay = self._signal_wake_thread
+        self._signal_wake_writer = None
+        try:
+            if writer is not None:
+                try:
+                    writer.send(b"\0")
+                except (OSError, ValueError):
+                    pass
+                try:
+                    writer.close()
+                except OSError:
+                    pass
+            if relay is not None and relay.is_alive():
+                relay.join(timeout=1.0)
+        finally:
+            if reader is not None:
+                try:
+                    reader.close()
+                except OSError:
+                    pass
+            self._signal_wake_reader = None
+            self._signal_wake_thread = None
 
     def terminate_child(self) -> bool:
         child = self.child
@@ -564,11 +632,6 @@ class Supervisor:
         if supervisor_owner:
             atomic_json(self.owner_path, supervisor_owner)
         self._stop_reason = "loop_finished"
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                signal.signal(sig, self._handle_signal)
-            except Exception:
-                pass
 
         interval = min(30.0, max(0.5, float(self.cfg.get("health_check_interval_seconds", 2.0))))
         unhealthy_grace = min(300.0, max(interval, float(self.cfg.get("unhealthy_grace_seconds", 45.0))))
@@ -582,6 +645,12 @@ class Supervisor:
         unhealthy_since = 0.0
         self.log(f"supervisor started pid={os.getpid()} parent_pid={os.getppid()} executable={sys.executable}")
         try:
+            self._start_signal_wakeup()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    signal.signal(sig, self._handle_signal)
+                except Exception:
+                    pass
             while not self.stopping:
                 if bool(self.cfg.get("respect_disabled_marker", True)) and self.disabled_path.exists():
                     self.log("disabled marker observed; stopping")
@@ -597,7 +666,7 @@ class Supervisor:
                         self.log(f"reaping stale hub listener pid {int(owner)} before managed start")
                         if not self.terminate_child():
                             self.log("hub listener retained; safe termination unavailable")
-                            time.sleep(interval)
+                            self._wait_interruptibly(interval)
                             continue
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
@@ -607,7 +676,7 @@ class Supervisor:
                     unhealthy_since = 0.0
                     backoff = initial_backoff
                     self.write_status("running", ollama_online=ollama_online)
-                    time.sleep(interval)
+                    self._wait_interruptibly(interval)
                     continue
 
                 if unhealthy_since == 0.0:
@@ -615,20 +684,20 @@ class Supervisor:
                     self.log(f"hub health probe failed: {getattr(self, 'last_health_error', 'probe_failed')}")
                 if self.child is not None and self.child.poll() is None and now - unhealthy_since < unhealthy_grace:
                     self.write_status("starting", getattr(self, "last_health_error", "probe_failed"), ollama_online=ollama_online)
-                    time.sleep(interval)
+                    self._wait_interruptibly(interval)
                     continue
                 if self.child is not None and self.child.poll() is None:
                     self.log(f"hub unhealthy beyond grace; recycling reason={getattr(self, 'last_health_error', 'probe_failed')}")
                     if not self.terminate_child():
                         self.write_status("degraded", "safe hub termination unavailable", ollama_online=ollama_online)
-                        time.sleep(backoff)
+                        self._wait_interruptibly(backoff)
                         backoff = min(max_backoff, backoff * 2)
                         continue
 
                 self.crashes = [t for t in self.crashes if now - t <= rapid_window]
                 if len(self.crashes) >= rapid_limit:
                     self.write_status("cooldown", "rapid crash protection", ollama_online=ollama_online)
-                    time.sleep(cooldown)
+                    self._wait_interruptibly(cooldown)
                     self.crashes.clear()
                     continue
                 try:
@@ -653,23 +722,24 @@ class Supervisor:
                         break
                     if self.child is not None and self.child.poll() is not None:
                         break
-                    time.sleep(0.25)
+                    self._wait_interruptibly(0.25)
                 if not self.child_ready or not self.hub_online():
                     self.log("hub failed startup health check; recycling after backoff")
                     if not self.terminate_child():
                         self.write_status("degraded", "safe hub termination unavailable", ollama_online=ollama_online)
-                        time.sleep(backoff)
+                        self._wait_interruptibly(backoff)
                         backoff = min(max_backoff, backoff * 2)
                         continue
                     unhealthy_since = 0.0
                     self.write_status("degraded", "hub failed health check", ollama_online=ollama_online)
-                    time.sleep(backoff)
+                    self._wait_interruptibly(backoff)
                     backoff = min(max_backoff, backoff * 2)
         except BaseException:
             self._stop_reason = "unhandled_exception"
             self.log(f"supervisor exception pid={os.getpid()}\n{traceback.format_exc()}")
             raise
         finally:
+            self._stop_signal_wakeup()
             self.write_status("stopping", ollama_online=False)
             if not self.terminate_child():
                 self.log("shutdown left hub running; safe termination unavailable")

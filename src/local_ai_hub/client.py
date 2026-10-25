@@ -1149,18 +1149,27 @@ class HubClient:
             for _ in range(3):
                 if not result.get("snapshot_warming"):
                     return result
+                if cancel_event is not None and cancel_event.is_set():
+                    return self._cancelled_response(request_id, request_not_sent=False)
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or (cancel_event is not None and cancel_event.is_set()):
+                if remaining <= 0:
                     return result
                 retry_after_ms = result.get("retry_after_ms", 100)
                 try:
                     delay = min(0.25, max(0.01, float(retry_after_ms) / 1000.0))
                 except (TypeError, ValueError, OverflowError):
                     delay = 0.1
-                time.sleep(min(delay, remaining))
+                delay = min(delay, remaining)
+                if cancel_event is not None:
+                    if cancel_event.wait(delay) or cancel_event.is_set():
+                        return self._cancelled_response(request_id, request_not_sent=False)
+                else:
+                    time.sleep(delay)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return result
+                if cancel_event is not None and cancel_event.is_set():
+                    return self._cancelled_response(request_id, request_not_sent=False)
                 result = once(remaining)
             return result
 
@@ -1177,6 +1186,11 @@ class HubClient:
                         request_id,
                         request_not_sent=bool(getattr(exc, "request_not_sent", False)),
                     )
+                if cancel_event is not None and cancel_event.is_set():
+                    return self._cancelled_response(
+                        request_id,
+                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
+                    )
                 remaining = deadline - time.monotonic()
                 if self._inprocess_transport is not None:
                     server_ready = remaining > 0
@@ -1184,6 +1198,11 @@ class HubClient:
                     server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
                 if server_ready:
                     for attempt in range(4):
+                        if cancel_event is not None and cancel_event.is_set():
+                            return self._cancelled_response(
+                                request_id,
+                                request_not_sent=bool(getattr(exc, "request_not_sent", False)),
+                            )
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             break
@@ -1207,7 +1226,17 @@ class HubClient:
                                         pass
                                     remaining = deadline - time.monotonic()
                                     if remaining > 0:
-                                        time.sleep(min(0.05, remaining))
+                                        delay = min(0.05, remaining)
+                                        request_not_sent = bool(
+                                            getattr(transient_exc, "request_not_sent", False)
+                                        )
+                                        if cancel_event is not None:
+                                            if cancel_event.wait(delay) or cancel_event.is_set():
+                                                return self._cancelled_response(
+                                                    request_id, request_not_sent=request_not_sent
+                                                )
+                                        else:
+                                            time.sleep(delay)
                         except Exception:
                             return self._uncertain_response(request_id, retried=True)
                 unavailable = {
