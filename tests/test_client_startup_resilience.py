@@ -46,16 +46,28 @@ def _start_lock_owner(lock: Path, ready: Path) -> subprocess.Popen:
         if owner_identity is None:
             raise AssertionError("start-lock owner identity disappeared after handshake")
     except BaseException:
-        cleanup_deadline = time.monotonic() + 5
-        if owner.poll() is None:
-            terminate_tree(owner.pid, process_handle=owner, grace_seconds=0.25)
-            try:
-                owner.wait(timeout=max(0.01, cleanup_deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                pass
+        _reap_lock_owner(owner, time.monotonic() + 5)
         raise
     owner._local_ai_process_identity = owner_identity
     return owner
+
+
+def _reap_lock_owner(owner: subprocess.Popen, deadline: float) -> None:
+    # The POSIX fixture script owns one leaf process; use its actual Popen,
+    # rather than claiming production tree-cleanup confirmation from a PID.
+    if owner.poll() is not None:
+        return
+    if os.name == "nt":
+        assert terminate_tree(owner.pid, process_handle=owner, grace_seconds=0.25)
+        owner.wait(timeout=max(0.01, deadline - time.monotonic()))
+        return
+
+    owner.terminate()
+    try:
+        owner.wait(timeout=min(0.25, max(0.01, deadline - time.monotonic())))
+    except subprocess.TimeoutExpired:
+        owner.kill()
+        owner.wait(timeout=max(0.01, deadline - time.monotonic()))
 
 
 def _stop_lock_owner(owner: subprocess.Popen, ready: Path) -> None:
@@ -64,6 +76,8 @@ def _stop_lock_owner(owner: subprocess.Popen, ready: Path) -> None:
     runtime_pid = runtime_identity["pid"]
     assert process_identity(runtime_pid) == runtime_identity
     assert process_identity(owner.pid) == owner._local_ai_process_identity
+    if os.name != "nt":
+        assert runtime_pid == owner.pid
     if os.name == "nt" and sys.prefix != sys.base_prefix:
         assert runtime_pid != owner.pid
     if runtime_pid != owner.pid:
@@ -72,8 +86,7 @@ def _stop_lock_owner(owner: subprocess.Popen, ready: Path) -> None:
     print("START_LOCK_RUNTIME_PROOF " + json.dumps({"launcher_pid": owner.pid, "runtime_pid": runtime_pid}))
     runtime = psutil.Process(runtime_pid)
     deadline = time.monotonic() + 5
-    assert terminate_tree(owner.pid, process_handle=owner, grace_seconds=0.25)
-    owner.wait(timeout=max(0.01, deadline - time.monotonic()))
+    _reap_lock_owner(owner, deadline)
     try:
         runtime.wait(timeout=max(0.01, deadline - time.monotonic()))
     except psutil.NoSuchProcess:
