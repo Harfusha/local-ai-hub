@@ -99,3 +99,31 @@ def test_annotations_are_opt_in(monkeypatch, capsys):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     ci_diagnostics.emit_error("local failure")
     assert capsys.readouterr().out == ""
+
+
+def test_worker_stderr_tail_keeps_child_and_parent_failure(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(ci_diagnostics, "_emitted", 0)
+    report = SimpleNamespace(
+        failed=True, nodeid="test_worker",
+        longreprtext="parent failure begins\n" + "x" * 10_000 + "\nparent assertion ends",
+        sections=[("Captured stderr call", "y" * 10_000 + "\nchild traceback: DATABASE_LOCKED"),
+                  ("Captured stdout call", "unneeded stdout")],
+    )
+    ci_diagnostics.pytest_runtest_logreport(report)
+    output = capsys.readouterr().out
+    annotations = [line for line in output.splitlines() if line.startswith("::error ")]
+    assert len(annotations) == 1 and len(annotations[0]) < 12_000
+    assert "parent failure begins" in annotations[0]
+    assert "parent assertion ends" in annotations[0]
+    assert "child traceback: DATABASE_LOCKED" in annotations[0]
+    assert "unneeded stdout" not in annotations[0]
+
+
+def test_absent_capture_sections_do_not_mask_failure(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(ci_diagnostics, "_emitted", 0)
+    ci_diagnostics.pytest_runtest_logreport(
+        SimpleNamespace(failed=True, nodeid="test_worker", longreprtext="parent failure", sections=None)
+    )
+    assert "parent failure" in capsys.readouterr().out

@@ -84,8 +84,21 @@ def pytest_runtest_logreport(report: Any) -> None:
     _emitted += 1
     nodeid = getattr(report, "nodeid", "")
     longreprtext = getattr(report, "longreprtext", "")
+    message = f"{_bounded_text(str(nodeid))}\n{_bounded_text(str(longreprtext))}"
+    stderr_tail = ""
+    sections = getattr(report, "sections", ())
+    if isinstance(sections, (list, tuple)):
+        for section in sections[-4:]:
+            if (isinstance(section, (list, tuple)) and len(section) == 2
+                    and isinstance(section[0], str) and "stderr" in section[0].lower()
+                    and isinstance(section[1], str) and section[1]):
+                stderr_tail = section[1][-1200:]
+    if stderr_tail:
+        if len(message) > 1500:
+            message = message[:700] + "\n...[failure excerpt bounded]...\n" + message[-700:]
+        message += "\nCaptured stderr tail:\n" + stderr_tail
     print()  # Pytest may have just written a progress character without a newline.
-    emit_error(f"{nodeid}\n{longreprtext}")
+    emit_error(message)
 
 
 def _cli() -> None:
