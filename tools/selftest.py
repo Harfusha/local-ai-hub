@@ -115,7 +115,7 @@ def main() -> int:
         prefix="local-ai-hub-selftest-", ignore_cleanup_errors=True,
     )
     with temp_dir as td:
-        temp = Path(td)
+        temp = Path(td).resolve(strict=True)
         state = temp / "state"
         port = _free_port()
         cfg_path = temp / "config.toml"
