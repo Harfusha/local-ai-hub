@@ -9,6 +9,7 @@ Status: IN PROGRESS. Post-Gemini independent review is active; the earlier COMPL
 - Targeted cohorts: 74 PASS regressions; 110 PASS integration; Unreleased 203 PASS / 2 tokenizer-data skips; evaluation/junction 7 PASS; actual Windows Job process-tree proof 2 PASS; src/tools static gate passes. Cohorts overlap; counts are not additive.
 - Managed/global CLI works outside the checkout. HKCU Run fallback exists; actual reboot/logon behavior remains unobserved.
 - Matching full suite, packages, activation and current browser acceptance remain OPEN. Native validation records are not broker receipts.
+- Additional repairs: GitHub workflow context verified RED/GREEN with actionlint; parser/index regression cohort 176 PASS. Fresh post-unload telemetry and explicit NVIDIA memory.free verified with 54 PASS plus an actual RTX4060 telemetry/admission probe. Current installed server has not yet been activated with these changes. Real generated-answer/semantic-fidelity gates remain OPEN.
 
 ## Historical Gemini deliverables pending current release acceptance
 

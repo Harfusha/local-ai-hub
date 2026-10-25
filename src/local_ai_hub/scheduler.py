@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 import math
 import threading
 import time
@@ -492,7 +493,23 @@ class AffinityScheduler:
             return False
 
     def _post_unload_vram_admission(self, model: str) -> dict[str, Any]:
-        resource = self._resource_status()
+        # Normal status is deliberately nonblocking. Admission after unloading
+        # needs a fresh measurement, using the balancer's existing bounded,
+        # coalesced wait rather than treating sample_pending as device absence.
+        balancer_status = getattr(getattr(self.runtime, "vram_balancer", None), "status", None)
+        if callable(balancer_status):
+            try:
+                resource = balancer_status(force=True)
+            except Exception as exc:
+                # A telemetry boundary fails closed; never reuse stale capacity.
+                logging.getLogger(__name__).warning(
+                    "post-unload GPU telemetry failed (%s)", type(exc).__name__,
+                )
+                resource = {"available": False}
+            if not isinstance(resource, dict) or resource.get("available") is not True:
+                resource = {"available": False}
+        else:
+            resource = self._resource_status()
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
         valid_total = (
@@ -517,7 +534,7 @@ class AffinityScheduler:
             else "measured" if measured is not None
             else "unknown"
         )
-        if not valid_total or not valid_available:
+        if resource.get("available") is False or not valid_total or not valid_available:
             return {
                 "state": "rejected", "reason": "post_unload_vram_unavailable",
                 "vram_admission": "rejected", "vram_admission_phase": "post_unload",

@@ -98,6 +98,17 @@ Installed inventory confirmed qwen2.5-coder:7b and qwen3.5:9b without downloads.
 
 The three-case source-grounded architecture-answer rubric was persisted before inference. A 7B reasoning override was rejected below the configured quality floor (req_1cb16c0ea6ea). The corrected 9B request was rejected at model preparation with post_unload_vram_unavailable (req_879c7b318897). No generated architecture answers exist for these requests; R09/R10 remain OPEN. Preserve resource admission and quality limits; do not lower them, repeat identical calls, pull models or claim a fixture result closes this gate. Request/response artifacts are external under architecture-gold-c5577c4d-*.
 
+### Post-unload telemetry repair
+
+That real admission failure exposed two defects, independently reproduced before changes. Post-unload admission called the intentionally nonblocking balancer status, receiving sample_pending instead of a fresh measurement. Its numeric checks could also accept stale values explicitly marked unavailable. The existing bounded/coalesced force=True path is now used only for this admission boundary; normal status remains nonblocking, unavailable/malformed evidence rejects, and telemetry exceptions log metadata only. No deadline or VRAM threshold was increased.
+
+The first actual-GPU probe then exposed missing upstream data: NVIDIA telemetry never queried memory.free, so an otherwise valid physical sample still had vram_available_mb=null. The native query now includes measured memory.free; unsupported, nonfinite, negative or over-capacity values stay unknown. It does not synthesize free memory from percentages or total-minus-used.
+
+- Authentic RED: owned-check-post-unload-telemetry-red-20261025T103125Z (3 failures); shape RED: owned-check-post-unload-telemetry-shape-red-20261025T103220Z; upstream NVIDIA RED: owned-check-nvidia-measured-free-red-20261025T103414Z. Original actual-GPU failure retained at owned-check-post-unload-actual-gpu-probe-20261025T103319Z.
+- Combined scheduler/transport/balancer/NVIDIA cohort: owned-check-gpu-admission-combined-final-20261025T103428Z, 54 PASS, no skips/failures/errors. Static gate: owned-check-gpu-admission-source-hygiene-20261025T103522Z passes.
+- Actual RTX4060 probe: owned-check-post-unload-actual-gpu-fixed-20261025T103519Z, exit0, stable source/config; measured8188MiB total/4102MiB free. It verifies current telemetry plus the admission predicate against a declared1GiB probe estimate, with no model loaded or inference. It does not establish9B model capacity, live installed-source activation or answer quality.
+- Local review req_e9561d670098 produced a structurally valid but unsupported claim that unavailable/non-dict status was mishandled. Primary rejected this false positive against the explicit source guard and unchanged negative assertions. usable=true is structure only, semantic_truth_verified=false remains correct; R10 is not closed by this model output.
+
 ### Current targeted evidence (not final release acceptance)
 
 Commits a9490cd6, 6b6125a5, 1ea45f80 and ccc616eb contain the independently tested fixes. Operational-mode retries remain bounded cross-process lock contention, not replaceable by an unnotified Event.

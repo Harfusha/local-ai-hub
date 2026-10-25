@@ -142,20 +142,25 @@ def _nvidia_live() -> dict[str, Any] | None:
         return None
     try:
         completed = subprocess.run(
-            [smi, "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw", "--format=csv,noheader,nounits"],
+            [smi, "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,memory.free", "--format=csv,noheader,nounits"],
             stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=2.0, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
         if completed.returncode != 0 or not completed.stdout.strip():
             return None
         parts = [p.strip() for p in completed.stdout.strip().splitlines()[0].split(",")]
-        if len(parts) < 6:
+        if len(parts) < 7:
             return None
         used_mb = _safe_float(parts[2])
         total_mb = _safe_float(parts[3])
+        free_mb = _safe_float(parts[6], default=float("nan"))
+        # Preserve an actual driver measurement, never synthesize free capacity
+        # from usage, percentages or inventory. Unsupported data stays unknown.
+        available_mb = free_mb if math.isfinite(free_mb) and 0 <= free_mb <= total_mb else None
         return {
             "available": True, "vendor": "nvidia", "backend": "cuda", "gpu_name": parts[0],
             "gpu_utilization_pct": _safe_float(parts[1]), "vram_used_mb": used_mb, "vram_total_mb": total_mb,
+            "vram_available_mb": available_mb,
             "vram_used_pct": round(100.0 * used_mb / max(1.0, total_mb), 1), "temperature_c": _safe_float(parts[4]),
             "power_draw_w": _safe_float(parts[5]), "timestamp": time.time(),
         }
