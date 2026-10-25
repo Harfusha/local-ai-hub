@@ -23,6 +23,13 @@ from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope
 from .sqlite_support import connect_sqlite, retry_busy
 
+try:
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+    _NUMPY_AVAILABLE = False
+
 _logger = logging.getLogger(__name__)
 
 _TASK_MEMORY_QUERY: ContextVar[tuple[Any, tuple[str, str], frozenset[str]] | None] = ContextVar(
@@ -1818,13 +1825,20 @@ class MemoryStore:
                 return exact_records
 
             # Hybrid Semantic Search: Vector Embeddings + FTS5 BM25 + Token Overlap
+            base_id_sql = "SELECT record_id FROM agent_memory_records " + base_sql.split("FROM agent_memory_records ", 1)[1]
+
             fts_scores: dict[str, float] = {}
             clean_terms = [re.sub(r"[^\w_]", "", t) for t in query.split()]
             clean_terms = [t for t in clean_terms if len(t) > 1]
             if clean_terms:
                 fts_query = " OR ".join(f'"{t}"' for t in clean_terms[:8])
                 try:
-                    fts_cur = con.execute("SELECT record_id, rank FROM agent_memory_fts WHERE agent_memory_fts MATCH ? ORDER BY rank LIMIT 100", (fts_query,))
+                    fts_sql = (
+                        "SELECT record_id, rank FROM agent_memory_fts "
+                        f"WHERE agent_memory_fts MATCH ? AND record_id IN ({base_id_sql}) "
+                        "ORDER BY rank LIMIT 100"
+                    )
+                    fts_cur = con.execute(fts_sql, (fts_query, *base_params))
                     for r_id, rk in fts_cur.fetchall():
                         fts_scores[r_id] = 1.0 / (1.0 + abs(float(rk)))
                 except sqlite3.OperationalError as exc:
@@ -1838,12 +1852,34 @@ class MemoryStore:
                     emb_res = embed_fn([query])
                     q_vec = emb_res.get("embeddings", [[]])[0]
                     if q_vec:
-                        cur_emb = con.execute("SELECT record_id, embedding FROM agent_memory_embeddings ORDER BY created_at DESC LIMIT 500")
-                        for r_id, emb_json in cur_emb.fetchall():
-                            rec_vec = json.loads(emb_json)
-                            sim = self._cosine_similarity(q_vec, rec_vec)
-                            if sim >= min_score:
-                                vec_scores[r_id] = sim
+                        emb_sql = (
+                            "SELECT record_id, embedding FROM agent_memory_embeddings "
+                            f"WHERE record_id IN ({base_id_sql}) "
+                            "ORDER BY created_at DESC LIMIT 500"
+                        )
+                        cur_emb = con.execute(emb_sql, tuple(base_params))
+                        rows = cur_emb.fetchall()
+                        if rows:
+                            if _NUMPY_AVAILABLE and len(rows) > 4:
+                                rec_ids = [r[0] for r in rows]
+                                rec_vecs = [json.loads(r[1]) for r in rows]
+                                mat = np.array(rec_vecs, dtype=np.float32)
+                                q = np.array(q_vec, dtype=np.float32)
+                                q_norm = float(np.linalg.norm(q))
+                                if q_norm > 0:
+                                    dots = mat @ q
+                                    norms = np.linalg.norm(mat, axis=1) * q_norm
+                                    norms[norms == 0] = 1.0
+                                    sims = dots / norms
+                                    for r_id, sim in zip(rec_ids, sims):
+                                        if sim >= min_score:
+                                            vec_scores[r_id] = float(sim)
+                            else:
+                                for r_id, emb_json in rows:
+                                    rec_vec = json.loads(emb_json)
+                                    sim = self._cosine_similarity(q_vec, rec_vec)
+                                    if sim >= min_score:
+                                        vec_scores[r_id] = sim
                 except Exception:
                     pass
 

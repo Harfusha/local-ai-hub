@@ -182,3 +182,20 @@ deployment, model quality, full suite or all-24 completion from this block.
     - Throughput benchmark on 50 KiB payload: **13.5x speedup** (0.71 ms vs 9.54 ms baseline, threshold >= 20% exceeded).
   - All 44 tests across the 4 modules (`test_json_utils.py`, `test_response_budget.py`, `test_mcp_response_budget.py`, `test_token_estimator_backend_parity.py`) passed in 1.58s.
   - Pyflakes: 0 errors.
+
+## T4 / F08 Scoped Memory Candidate Windows & Vector Cosine Parity (2026-10-25T20:45:00Z)
+
+- Finding F08 resolved: In `src/local_ai_hub/agent_memory.py`, `MemoryStore.find` was previously selecting candidate records from `agent_memory_embeddings` (`SELECT ... ORDER BY created_at DESC LIMIT 500`) and `agent_memory_fts` (`SELECT ... ORDER BY rank LIMIT 100`) globally across all repositories, sessions, and tasks before applying `base_sql` scope filters. When >500 newer records existed in foreign scopes (e.g. other projects or sessions), older relevant records in the target scope were completely starved and returned 0 results.
+- Solution implemented:
+  - Formulated `base_id_sql` from canonical `base_sql` preserving all caller authorization, status, sensitivity, root, repository_id, and provenance filters.
+  - Filtered FTS candidate search with `WHERE agent_memory_fts MATCH ? AND record_id IN ({base_id_sql}) ORDER BY rank LIMIT 100`, preventing foreign FTS hits from exhausting top-100 slots.
+  - Filtered vector candidate search with `WHERE record_id IN ({base_id_sql}) ORDER BY created_at DESC LIMIT 500`, preventing foreign embeddings from displacing the 500 candidate evaluation window.
+  - Added vectorized NumPy BLAS cosine similarity (`mat @ q / norms`) when NumPy is available and candidates > 4, with 100% numerical parity (< 1e-5 difference) against Python `_cosine_similarity`.
+- Verification & Test Coverage:
+  - Created `tests/test_agent_memory_candidate_scope_recall.py` verifying:
+    - Target record in repository A is accurately recalled despite 550 newer foreign embeddings in repository B.
+    - Target record in repository A is accurately recalled despite 150 foreign FTS matches in repository B.
+    - Task-scoped records are strictly isolated and not starved by foreign tasks.
+    - NumPy batched cosine similarity achieves exact numerical parity with reference Python implementation.
+  - All 39 tests in memory cohort (`test_agent_memory_http_identity.py`, `test_agent_memory_root_snapshot.py`, `test_agent_memory_candidate_scope_recall.py`) passed in 24.56s.
+  - Pyflakes: 0 errors.
