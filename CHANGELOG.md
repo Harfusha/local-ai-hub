@@ -17,6 +17,9 @@
 
 Preparation for 5.1.0; package version remains 5.0.0 pending release acceptance.
 
+- Add explicitly configured, task-owned browser and desktop automation behind the existing MCP surface; default disabled, with bounded downloads and exact target permissions. Personal Chrome, native Windows and Sandbox runtime acceptance remains separate.
+- Repair clean development installs and Python 3.11 fixtures while retaining Windows junction/process identity checks and extending the critical CI cohort for automation ownership.
+
 - Align default advisory review generation with its JSON consistency contract and report actual deterministic diff counts; unavailable AST metadata fails explicitly.
 
 - Wake client cancellation and supervisor shutdown during retry, recovery and cooldown waits; preserve bounded cross-process operational-mode lock retries.

@@ -18,6 +18,23 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 # HTTP access is loopback-only. An empty token trusts local clients; a configured token is enforced.
 api_token = "" # optional token for trusted local integrations
 
+[automation]
+enabled = false
+allowed_targets = [] # Exact HTTP(S) origin and optional path; no wildcards.
+max_sessions = 8 # Active resource capacity, not a limit on agent identities.
+session_ttl_seconds = 900
+timeout_seconds = 20
+max_output_chars = 12000
+max_binary_bytes = 8388608
+playwright_command = [] # Absolute node executable and installed @playwright/mcp CLI.
+profile_directory = ""
+winapp_executable = ""
+allowed_applications = {}
+sandbox_enabled = false # Uses an operator-prepared Windows Sandbox; no host fallback.
+allowed_sandbox_applications = {} # Names to absolute executable paths inside the guest.
+allowed_file_roots = []
+allow_physical_input = false
+
 [browser_bridge]
 # Capture is explicit: only the extension action click can request the current tab.
 enabled = true

@@ -162,6 +162,16 @@ def test_startup_retry_cooldown_expires_while_owner_client_stays_alive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _enable_startup(monkeypatch)
+    # Exercise lease expiry independently of filesystem latency within a 100ms
+    # startup deadline. Wall time remains real for the persisted marker age.
+    clock = {"now": 0.0}
+
+    def advance_wait(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(client_module, "time", SimpleNamespace(
+        time=time.time, monotonic=lambda: clock["now"], sleep=advance_wait,
+    ))
     config = _client_config(tmp_path)
     calls = {"count": 0}
 
@@ -197,6 +207,38 @@ def test_startup_retry_cooldown_expires_while_owner_client_stays_alive(
     os.utime(lock, (stale, stale))
     assert second.ensure_server(timeout=0.1) is False
     assert calls["count"] == 2
+
+
+def test_startup_deadline_exhausted_by_lock_does_not_launch_or_keep_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _enable_startup(monkeypatch)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(client_module, "time", SimpleNamespace(
+        time=time.time, monotonic=lambda: clock["now"], sleep=lambda _seconds: None,
+    ))
+    acquire = client_module._acquire_start_lock
+
+    def acquire_after_deadline(*args, **kwargs):
+        handle = acquire(*args, **kwargs)
+        clock["now"] += 0.2
+        return handle
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(client_module, "_acquire_start_lock", acquire_after_deadline)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
+    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+    client = HubClient(config_path=str(_client_config(tmp_path)))
+    monkeypatch.setattr(client, "_online", lambda *_args: False)
+
+    assert client.ensure_server(timeout=0.1) is False
+    assert calls == []
+    assert (tmp_path / "state" / "hub.start.lock").read_bytes() == b""
 
 
 

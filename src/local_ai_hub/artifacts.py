@@ -164,14 +164,22 @@ class _ArtifactBatch:
         return self.put(text, kind=kind)
 
     def put_bytes(self, data: bytes, *, kind: str, mime_type: str) -> str:
+        if not str(mime_type or "").strip().lower().startswith("image/"):
+            raise ArtifactTransportError("invalid_mime_type", "image MIME type required")
+        return self._put_blob(data, kind=kind, mime_type=mime_type)
+
+    def put_file_bytes(self, data: bytes, *, kind: str) -> str:
+        return self._put_blob(data, kind=kind, mime_type="application/octet-stream")
+
+    def _put_blob(self, data: bytes, *, kind: str, mime_type: str) -> str:
         if self._connection is None:
             raise RuntimeError("artifact batch is not active")
         self._check_cancelled()
         if not isinstance(data, bytes):
             raise ArtifactTransportError("invalid_bytes", "artifact bytes must be bytes")
         normalized_mime = str(mime_type or "").strip().lower()
-        if not normalized_mime.startswith("image/"):
-            raise ArtifactTransportError("invalid_mime_type", "image MIME type required")
+        if not normalized_mime.startswith("image/") and normalized_mime != "application/octet-stream":
+            raise ArtifactTransportError("invalid_mime_type", "unsupported binary MIME type")
         if len(data) > self._store.max_binary_bytes:
             raise ArtifactTransportError("artifact_too_large", "artifact size exceeds configured limit")
 
@@ -723,6 +731,11 @@ class ArtifactStore:
         with self.batch() as batch:
             return batch.put_json(value, kind=kind)
 
+    def put_file_bytes(self, data: bytes, *, kind: str) -> str:
+        """Store bounded opaque downloaded bytes without changing image put_bytes."""
+        with self.batch() as batch:
+            return batch.put_file_bytes(data, kind=kind)
+
     @staticmethod
     def _binary_failure(message: str) -> dict[str, Any]:
         return {"success": False, "error": message[:160]}
@@ -774,7 +787,7 @@ class ArtifactStore:
         if expected_size < 0:
             return self._binary_failure("artifact integrity check failed")
         checksum = str(row[6] or "")
-        if not mime_type.startswith("image/") or encoding != "base64":
+        if (not mime_type.startswith("image/") and mime_type != "application/octet-stream") or encoding != "base64":
             return self._binary_failure("artifact integrity check failed")
         if expected_size != len(data) or checksum != hashlib.sha256(data).hexdigest():
             return self._binary_failure("artifact integrity check failed")

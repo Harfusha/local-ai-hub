@@ -126,6 +126,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_agent_state_events_delta_1', frozenset(('/api/agent-state/events/delta',))),
     RouteRule('post_task_vision_1', frozenset(('/api/task/vision', '/api/vision', '/api/vision/review'))),
     RouteRule('post_task_browser_1', frozenset(('/api/task/browser',))),
+    RouteRule('post_task_automation_1', frozenset(('/api/task/automation',))),
     RouteRule('post_repo_split_changes_1', frozenset(('/api/repo/split_changes',))),
     RouteRule('post_repo_synthesize_rules_1', frozenset(('/api/repo/synthesize_rules',))),
     RouteRule('post_rag_docset_index_1', frozenset(('/api/rag/docset/index',))),

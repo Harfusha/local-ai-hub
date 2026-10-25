@@ -141,6 +141,11 @@ def validate_config(data: dict[str, Any]) -> None:
         _number(agent_state, "snapshot_interval_events", minimum=1, maximum=10000)
         _number(agent_state, "cleanup_batch_size", minimum=1, maximum=10000)
 
+    from .automation import validate_config as validate_automation_config
+    try:
+        validate_automation_config(data.get("automation", {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(str(exc)) from exc
     browser_bridge = data.get("browser_bridge", {})
     if isinstance(browser_bridge, dict):
         if "enabled" in browser_bridge and not isinstance(browser_bridge["enabled"], bool):

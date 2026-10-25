@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
+from .automation import AUTOMATION_REQUEST_SCHEMA
 
 REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
 MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
@@ -125,7 +126,7 @@ _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "browser",
-    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
+    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
 _COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
@@ -232,6 +233,7 @@ _REPO_CONDITIONS = {
 _ACTION_SCOPED_FIELDS = {
     "local_ai_status": {},
     "local_ai_task": {
+        "automation": frozenset({"automation"}),
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),
         **{
@@ -518,18 +520,22 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         feature_requirements=("has_any_model",), action_requirements={"vision": ("vision",)},
         read_only=("status", "wait", "result", "evaluation_report"),
         required={
+            "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
         },
         non_empty={
+            "automation": ("root", "task_id"),
             "candidate_promote": ("candidate", "approver"),
         },
         action_effects={
             "submit": "durable_job", "cancel": "durable_job", "candidate_create": "candidate_store",
             "candidate_promote": "candidate_store", "evaluation_record": "evaluation_store",
             "browser": "browser_capture",
+            "automation": "browser_desktop_mutation",
         },
         allowed={
+            "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
             "hardware_benchmark": ("model", "prompt", "max_tokens"),
@@ -550,6 +556,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "prompt_eval": ("prompt", "candidate_data"),
         },
         properties={
+            "automation": AUTOMATION_REQUEST_SCHEMA,
             "action": {"type": "string"},
             "url": {"type": "string", "maxLength": 4096, "description": "Loopback HTTP(S) URL for bounded DOM and screenshot capture in the shared daemon."},
             "delivery": {"type": "string", "enum": ["sync", "async", "auto"], "default": "sync"},
@@ -1178,6 +1185,16 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
     }
     if tool == "local_ai_artifact":
         schema["anyOf"] = _artifact_output_variants(action)
+    elif tool == "local_ai_task" and action == "automation":
+        properties.update({
+            "error_code": {"type": "string"}, "outcome_unknown": {"type": "boolean"},
+            "automation": {"type": "object", "properties": {
+                **{name: {"type": "string"} for name in ("session_id", "session_key", "mode", "isolation", "url", "title", "text", "tab_id", "artifact_id", "mime_type")},
+                **{name: {"type": "boolean"} for name in ("closed", "fenced", "network_egress_isolated")},
+                "expires_in_seconds": {"type": "number"}, "size_bytes": {"type": "integer"},
+                "tabs": {"type": "array", "items": {"type": "object"}},
+            }, "additionalProperties": True},
+        })
     elif tool == "local_ai_status":
         status_variants = _status_output_variants(action)
         if status_variants:

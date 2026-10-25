@@ -2318,6 +2318,7 @@ def local_ai_task(
     viewport: dict[str, Any] | None = None,
     url: str = "",
     page: dict[str, Any] | None = None,
+    automation: dict[str, Any] | None = None,
     complexity: str = "auto",
     max_tokens: int = 0,
     tasks: list[dict[str, Any]] | None = None,
@@ -2355,7 +2356,12 @@ def local_ai_task(
     response_profile: str = "",
     reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Run one bounded semantic local-model task.
+    """Run a bounded semantic task or an explicitly authorized UI automation session.
+
+    automation uses root, task_id and a closed automation object with op
+    open/act/status/close. Browser/desktop targets are default-deny; use the
+    returned session_id and session_key, and a unique request_id for each act.
+    Backends are installed explicitly. Unknown outcomes must never be replayed.
 
     Use deterministic/indexed tools for exact facts, symbols, diffs and tests;
     use this worker for semantic generation, exploration, reasoning, review, independent
@@ -2451,6 +2457,15 @@ def local_ai_task(
     )
     if mode_rejection is not None:
         return mode_rejection
+    if action == "automation":
+        if delivery != "sync" or conversation:
+            return {"success": False, "error": "automation sessions require synchronous delivery without conversations", "terminal": True, "retryable": False}
+        if not isinstance(automation, dict) or not root or not task_id:
+            return {"success": False, "error": "automation requires root, task_id and automation object", "terminal": True, "retryable": False}
+        return _compact(
+            CLIENT.post("/api/task/automation", {"root": root, "task_id": task_id, "automation": automation}, timeout=_timeout("long")),
+            "general", extra_fields=["automation"],
+        )
     if conversation and action not in {"delegate", "explore", "reason"}:
         return {"success": False, "error": "Conversations support delegate, explore, reason and continue only", "terminal": True, "retryable": False}
     if conversation and delivery.strip().lower() != "sync":

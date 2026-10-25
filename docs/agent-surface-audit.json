@@ -4722,6 +4722,47 @@
         ]
       }
     },
+    "MCP local_ai_task.automation": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Explicit owned UI automation using installed Playwright MCP or winapp, with write authorization, active task/root binding, default-deny targets and session keys. This is agent work, not diagnostic model execution.",
+      "response_policy": "Preserve automation session identity/key only for its requesting owner, bounded UI work output and artifact pointers, actionable errors, cancellation and outcome_unknown. Never expose raw upstream MCP snapshots/prose or inline binary payloads; detailed traces remain dashboard-controlled.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "automation",
+          "automation.artifact_id",
+          "automation.closed",
+          "automation.expires_in_seconds",
+          "automation.fenced",
+          "automation.isolation",
+          "automation.mime_type",
+          "automation.mode",
+          "automation.network_egress_isolated",
+          "automation.session_id",
+          "automation.session_key",
+          "automation.size_bytes",
+          "automation.tab_id",
+          "automation.tabs",
+          "automation.text",
+          "automation.title",
+          "automation.url",
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "error_code",
+          "evidence_ids",
+          "outcome_unknown",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_task.batch": {
       "decision": "retain",
       "role": "agent",
@@ -8361,6 +8402,28 @@
         "literal_response_fields": [],
         "response_producers": [
           "APP.services.symbol_callgraph"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/task/automation": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Explicit owned UI automation using installed Playwright MCP or winapp, with write authorization, active task/root binding, default-deny targets and session keys. This is agent work, not diagnostic model execution.",
+      "response_policy": "Preserve automation session identity/key only for its requesting owner, bounded UI work output and artifact pointers, actionable errors, cancellation and outcome_unknown. Never expose raw upstream MCP snapshots/prose or inline binary payloads; detailed traces remain dashboard-controlled.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_task_automation_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "APP.automation.execute",
+          "local:result",
+          "self._handle_task_automation"
         ],
         "action_literals": []
       }

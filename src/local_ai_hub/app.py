@@ -407,6 +407,8 @@ class LocalAIApp:
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
         self.agent_tasks = TaskStore(self.agent_state)
+        from .automation_service import create_automation_broker
+        self.automation = create_automation_broker(self.config, self.artifacts)
         self.agent_memory = MemoryStore(self.agent_state)
         self.agent_incidents = IncidentStore(self.agent_state)
         self.agent_verification = VerificationStore(
@@ -2229,7 +2231,7 @@ class LocalAIApp:
                     ("status_dependencies", lambda: self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)),
                     ("helper_threads", join_helpers),
                 ]
-                for name in ("recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "background_gpu", "scheduler", "telemetry", "deterministic", "code_index"):
+                for name in ("automation", "recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "background_gpu", "scheduler", "telemetry", "deterministic", "code_index"):
                     component = getattr(self, name, None)
                     if component is not None and callable(getattr(component, "close", None)):
                         steps.append((name, component.close))

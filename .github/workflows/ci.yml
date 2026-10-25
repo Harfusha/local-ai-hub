@@ -61,6 +61,9 @@ jobs:
           tests/test_worktree_discovery.py
           tests/test_project_config_worktrees.py
           tests/test_mcp_contract_dispatch.py
+          tests/test_automation_broker.py
+          tests/test_automation_adapters.py
+          tests/test_automation_integration.py
           tests/test_work_fencing.py
           tests/test_t10_treesitter_parser_thread_safety.py
           tests/unit/test_treesitter_native_parser.py
@@ -130,6 +133,9 @@ jobs:
           tests/test_audit_budget_process_isolation.py
           tests/test_audit_budget_diagnostics.py
           tests/test_agent_task_budget_increase.py
+          tests/test_automation_broker.py
+          tests/test_automation_adapters.py
+          tests/test_automation_integration.py
           tests/unit/test_capability_grant_validity.py
           tests/unit/test_capability_grant_canonical_inputs.py
           tests/test_audit_critical_coverage_contract.py

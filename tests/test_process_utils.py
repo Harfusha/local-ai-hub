@@ -4,10 +4,22 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from local_ai_hub import process_utils
+
+
+@pytest.fixture(autouse=True)
+def isolate_process_utils_platform_globals(monkeypatch):
+    class ProcessUtilsPath(type(Path("."))):
+        pass
+
+    monkeypatch.setattr(process_utils, "os", SimpleNamespace(**vars(os)))
+    monkeypatch.setattr(process_utils, "sys", SimpleNamespace(**vars(sys)))
+    monkeypatch.setattr(process_utils, "Path", ProcessUtilsPath)
 
 
 class _ProcessHandle:

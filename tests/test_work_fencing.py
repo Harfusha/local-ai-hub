@@ -3,9 +3,9 @@ from __future__ import annotations
 import multiprocessing
 import json
 import os
+import stat
 import subprocess
 import sys
-import time
 from contextlib import closing
 from pathlib import Path
 from queue import Empty
@@ -299,7 +299,7 @@ def test_rooted_scope_resolves_junction_alias_to_same_path(tmp_path: Path) -> No
     if created.returncode != 0:
         pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
     try:
-        assert alias.is_junction()
+        assert alias.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
         assert normalize_paths(["junction/file.py"], root=root) == normalize_paths(
             ["real/file.py"], root=root
         )

@@ -21,10 +21,11 @@ class RecordingEmbedder:
 def _project(tmp_path: Path, *, skip_rag: bool = False) -> tuple[Path, dict[str, object]]:
     root = tmp_path / "repo"
     root.mkdir()
+    phase_text = '"rag"' if skip_rag else ""
     (root / ".local-ai.toml").write_text(
         'exclude_paths = ["general.py"]\n'
         'force_include_paths = ["general.py"]\n'
-        f'skip_phases = [{"\"rag\"" if skip_rag else ""}]\n'
+        f'skip_phases = [{phase_text}]\n'
         '\n[preprocess]\nexclude_paths = ["preprocess-only.py"]\n',
         encoding="utf-8",
     )

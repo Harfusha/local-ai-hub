@@ -1649,7 +1649,10 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
     assert store.get("bulk-match", scope=AgentScope.REPOSITORY, repository_id='repo-evidence', root=root).status is MemoryStatus.STALE
 
 
-def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: MemoryStore, tmp_path: Path):
+def test_mark_stale_for_revision_matches_relative_and_absolute_roots(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path.parent)
     relative_root = os.path.relpath(tmp_path, Path.cwd())
     record = store.record(
         MemoryRecord.create(

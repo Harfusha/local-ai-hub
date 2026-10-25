@@ -2205,6 +2205,28 @@ class Handler(BaseHTTPRequestHandler):
         except (AttributeError, OSError, TypeError, ValueError):
             return False
 
+    def _handle_task_automation(self, payload: dict[str, Any]) -> None:
+        if not self._authorized(permission="write"):
+            self._send(403, {"success": False, "error": "automation requires write authorization", "terminal": True, "retryable": False}); return
+        if set(payload) - {"root", "task_id", "automation"}:
+            self._send(400, {"success": False, "error": "unexpected automation fields", "terminal": True, "retryable": False}); return
+        if not self._bind_task_payload(payload):
+            return
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id or task_id != task_id.strip():
+            self._send(400, {"success": False, "error": "canonical task_id required", "terminal": True, "retryable": False}); return
+        task = self._request_task(task_id, payload["root"])
+        if task is None:
+            return
+        request = payload.get("automation")
+        if not isinstance(request, dict):
+            self._send(400, {"success": False, "error": "automation must be an object", "terminal": True, "retryable": False}); return
+        status = getattr(task.status, "value", task.status)
+        if request.get("op") != "close" and status not in {"planned", "running"}:
+            self._send(409, {"success": False, "error": "task is not active", "terminal": True, "retryable": False}); return
+        result = APP.automation.execute(root=payload["root"], task_id=task_id, request=request)
+        self._send(result.get("status_code", 200), result)
+
     def _task_budget_increase(self, payload: dict[str, Any]) -> None:
         if not self._authorized(permission="write"):
             self._send(403, {"success": False, "error": "task budget write authorization required",
@@ -8121,6 +8143,8 @@ class Handler(BaseHTTPRequestHandler):
                 from .browser_bridge import capture_browser_page
                 result = capture_browser_page(payload.get("url", ""), artifacts=APP.artifacts, state_dir=APP.config["server"]["state_dir"], viewport=payload.get("viewport"))
                 self._send(200, result); return
+            if 'post_task_automation_1' in post_route_ids:
+                self._handle_task_automation(payload); return
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths", payload.get("changed_files"))
