@@ -2246,20 +2246,23 @@ class CodeIndex:
             return {"success": True, "files_processed": 0, "cached": 0, "symbols": 0, "refs": 0, "edges": 0, "skipped": len(normalized)}
         path_policy = _resolve_code_index_path_policy(api, c_root, settings)
 
+        existing: dict[str, tuple[str, str, str, int | None, int | None]] = {}
         with self._lock, closing(self._connect()) as con:
-            existing = {
-                str(row["path"]): (
-                    str(row["content_hash"] or ""),
-                    str(row["analyzer_version"] or ""),
-                    str(row["language"] or ""),
-                    row["mtime_ns"],
-                    row["size_bytes"],
-                )
-                for row in con.execute(
-                    "SELECT path,content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=?",
-                    (c_root,),
+            con.execute("BEGIN")
+            for batch in sqlite_batches(list(dict.fromkeys(str(path) for path, _ in normalized))):
+                placeholders = ",".join("?" for _ in batch)
+                rows = con.execute(
+                    f"SELECT path,content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=? AND path IN ({placeholders})",
+                    (c_root, *batch),
                 ).fetchall()
-            }
+                for row in rows:
+                    existing[str(row["path"])] = (
+                        str(row["content_hash"] or ""),
+                        str(row["analyzer_version"] or ""),
+                        str(row["language"] or ""),
+                        row["mtime_ns"],
+                        row["size_bytes"],
+                    )
 
         blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]] = {}
 

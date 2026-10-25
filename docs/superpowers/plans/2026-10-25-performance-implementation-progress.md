@@ -218,3 +218,23 @@ deployment, model quality, full suite or all-24 completion from this block.
     - Corrupted non-JSON entries in L2 self-heal gracefully as misses.
   - All 22 tests across `tests/test_embedding_cache.py` and `tests/test_service_embedding_cache_batching.py` passed in 0.95s.
   - Pyflakes: 0 errors.
+
+## T6 / F10 & F11 Incremental SQL Batch Scoping (2026-10-25T20:55:00Z)
+
+- Findings F10 & F11 resolved:
+  - F10: In `src/local_ai_hub/code_index.py`, `CodeIndex.update_files_batch` previously executed `SELECT path,content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=?` querying all files in the repository regardless of batch size. For a 10,000-file project, modifying a single file scanned and instantiated all 10,000 file records into memory on every keystroke/save event.
+  - F11: In `src/local_ai_hub/preprocess.py:_step_hash`, running content card linking, lexical source index linking, and `source_fts` indexing on every 256-file step executed unconstrained queries across all files in the repository (`WHERE root=?`), resulting in ~40 full-table scans per 10k-file project during initial indexing or branch switches.
+- Solution implemented:
+  - In `src/local_ai_hub/code_index.py`, updated `update_files_batch` to batch query only the changed paths using `sqlite_batches(list(dict.fromkeys(str(path) for path, _ in normalized)))` with `WHERE root=? AND path IN ({placeholders})`.
+  - In `src/local_ai_hub/preprocess.py`, extracted `batch_paths = [rel for rel, digest, _ in hashed_results if digest]` and scoped content card linking, `source_index` inserts, and `source_fts` inserts to `batch_paths` via `sqlite_batches(batch_paths)` with `WHERE root=? AND path IN ({placeholders})`.
+- Verification & Test Coverage:
+  - Created `tests/test_code_index_incremental_metadata_scope.py`:
+    - `test_single_file_update_does_not_scan_entire_root`: verified that updating 1 file in a 1,000-file root executes SQL with `path IN (?)` and only scans the target row.
+    - `test_update_files_batch_scales_with_input_paths_not_total_files`: verified that updating multiple files executes queries scoped strictly with `path IN (...)`.
+  - Created `tests/test_preprocess_hash_batch_sql_scope.py`:
+    - `test_step_hash_scopes_queries_to_batch_paths`: verified that `_step_hash` executes `UPDATE file_refs` card linking scoped with `path IN (...)`.
+    - `test_content_card_reuse_preserves_linking_for_scoped_batch`: verified that pre-existing content cards are instantly linked for the scoped batch across branches/worktrees.
+  - Ran validation cohort:
+    - 29 tests passed across `tests/test_code_index_incremental_metadata_scope.py`, `tests/test_code_index_ignored_paths.py`, `tests/test_preprocess_hash_batch_sql_scope.py`, and `tests/test_preprocessing_overhaul.py` in 6.87s.
+  - Pyflakes: 0 errors across modified sources and new tests.
+

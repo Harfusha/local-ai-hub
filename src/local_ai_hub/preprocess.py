@@ -33,6 +33,7 @@ from .sqlite_support import (
     initialize_wal,
     is_busy_error,
     retry_busy,
+    sqlite_batches,
 )
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
@@ -2910,35 +2911,40 @@ class ProjectPreprocessor:
                 "UPDATE file_refs SET content_hash=?,needs_hash=0,card_key=CASE WHEN ? THEN card_key ELSE NULL END,updated_at=? WHERE root=? AND path=?",
                 [(digest, int(same), now, root, rel) for rel, digest, same in hashed_results],
             )
-            # Instantly link pre-existing content cards across branches/worktrees
-            con.execute(
-                """UPDATE file_refs
-                   SET card_key = (
-                       SELECT card_key FROM content_cards
-                       WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?
-                       LIMIT 1
-                   )
-                   WHERE root=? AND card_key IS NULL AND content_hash<>''
-                     AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
-                (__version__, root, __version__),
-            )
-            # Instantly link matching lexical source index across branches/worktrees
-            con.execute(
-                """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
-                   SELECT ?, file_refs.path, file_refs.content_hash, other.text, ?
-                   FROM file_refs
-                   JOIN source_index AS other ON other.content_hash = file_refs.content_hash
-                   WHERE file_refs.root = ? AND file_refs.content_hash <> ''
-                     AND NOT EXISTS (SELECT 1 FROM source_index AS s WHERE s.root = ? AND s.path = file_refs.path)""",
-                (root, now, root, root),
-            )
-            con.execute(
-                """INSERT INTO source_fts(root, path, content)
-                   SELECT s.root, s.path, s.path || char(10) || s.text
-                   FROM source_index s
-                   WHERE s.root = ? AND NOT EXISTS (SELECT 1 FROM source_fts f WHERE f.root = ? AND f.path = s.path)""",
-                (root, root),
-            )
+            batch_paths = [rel for rel, digest, _ in hashed_results if digest]
+            if batch_paths:
+                for batch in sqlite_batches(batch_paths):
+                    placeholders = ",".join("?" for _ in batch)
+                    # Instantly link pre-existing content cards across branches/worktrees
+                    con.execute(
+                        f"""UPDATE file_refs
+                           SET card_key = (
+                               SELECT card_key FROM content_cards
+                               WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?
+                               LIMIT 1
+                           )
+                           WHERE root=? AND path IN ({placeholders}) AND card_key IS NULL AND content_hash<>''
+                             AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
+                        (__version__, root, *batch, __version__),
+                    )
+                    # Instantly link matching lexical source index across branches/worktrees
+                    con.execute(
+                        f"""INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
+                           SELECT ?, file_refs.path, file_refs.content_hash, other.text, ?
+                           FROM file_refs
+                           JOIN source_index AS other ON other.content_hash = file_refs.content_hash
+                           WHERE file_refs.root = ? AND file_refs.path IN ({placeholders}) AND file_refs.content_hash <> ''
+                             AND NOT EXISTS (SELECT 1 FROM source_index AS s WHERE s.root = ? AND s.path = file_refs.path)""",
+                        (root, now, root, *batch, root),
+                    )
+                    con.execute(
+                        f"""INSERT INTO source_fts(root, path, content)
+                           SELECT s.root, s.path, s.path || char(10) || s.text
+                           FROM source_index s
+                           WHERE s.root = ? AND s.path IN ({placeholders})
+                             AND NOT EXISTS (SELECT 1 FROM source_fts f WHERE f.root = ? AND f.path = s.path)""",
+                        (root, *batch, root),
+                    )
             # Do not mark RAG complete from another worktree. Each worktree has a
             # separate path namespace, so it still needs its own chunk rows. The
             # RAG step reuses global content-hash embeddings without re-embedding.
