@@ -26,6 +26,20 @@ def test_clip_and_lines_hardening():
     assert _lines(["test"], limit=True) == "- none supplied"
 
 
+@pytest.mark.parametrize("limit", range(1, 14))
+def test_clip_respects_even_small_positive_limits(limit):
+    text = "source content " * 30
+    clipped = _clip(text, limit)
+    assert len(clipped) <= limit
+    if limit < len("\n...[bounded]"):
+        assert clipped == text[:limit]
+
+
+def test_clip_preserves_existing_default_shape_and_short_text():
+    assert _clip("x" * 500, 256) == "x" * (256 - 24) + "\n...[bounded]"
+    assert _clip("abc", 3) == "abc"
+
+
 def test_model_perform_and_capabilities_hardening():
     assert not can_model_perform(True, "delegate")
     assert not can_model_perform("qwen2.5-coder:7b", True)

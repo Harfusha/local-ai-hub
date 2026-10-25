@@ -96,6 +96,8 @@ def _clip(value: str, limit: int) -> str:
     if value is None or isinstance(value, bool):
         return ""
     text = str(value).replace("\x00", "")
+    if limit < len("\n...[bounded]"):
+        return text[:limit]
     return text if len(text) <= limit else text[: max(0, limit - 24)] + "\n...[bounded]"
 
 
