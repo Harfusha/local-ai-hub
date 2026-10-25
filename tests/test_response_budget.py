@@ -426,3 +426,105 @@ def test_context_budget_inputs_keep_integer_annotations() -> None:
     for callable_, name in typed_inputs:
         annotation = inspect.signature(callable_).parameters[name].annotation
         assert annotation is int or annotation == "int", (callable_.__name__, name, annotation)
+
+
+def test_task_list_envelope_preserves_tasks_across_budget_matrix() -> None:
+    task_item = {
+        "task_id": "post-gemini-audit-20261025",
+        "status": "planned",
+        "owner": "codex",
+        "created_at": 1792920456.9,
+        "contract": {
+            "goal": "Independently audit and finish Local AI Hub after Gemini, verify all eight Unreleased items.",
+            "acceptance_criteria": [f"Criterion {i}: " + "x" * 200 for i in range(10)]
+        },
+        "checkpoint": {
+            "phase": "perf_T1_committed",
+            "next_action": "perf_T2",
+            "state_data": {
+                "memory_context": {"items": [{"id": f"item_{i}", "content": "c" * 200} for i in range(10)]}
+            }
+        }
+    }
+    source = {
+        "success": True,
+        "request_id": "req_00919ef2ad88",
+        "tasks": [dict(task_item, task_id=f"task_{i}") for i in range(6)],
+        "total_count": 6,
+        "active_count": 2,
+        "offset": 0,
+        "limit": 100,
+        "has_more": False,
+    }
+
+    # Verify each tier of the required matrix: 128, 512, 1200, 3500
+    for cap in (128, 512, 1200, 3500):
+        budgeted = budget_response(
+            source,
+            max_tokens=cap,
+            profile="compact",
+            protected_keys=("success", "request_id"),
+        )
+        assert json_tokens(budgeted) <= cap, f"Envelope at cap {cap} exceeded limit"
+        assert budgeted["success"] is True
+        assert budgeted["request_id"] == "req_00919ef2ad88"
+        assert "tasks" in budgeted
+        assert len(budgeted["tasks"]) >= 1, f"Expected at least 1 task at cap {cap}, got empty"
+        assert budgeted["tasks"][0]["task_id"] == "task_0"
+        assert budgeted["tasks"][0]["status"] == "planned"
+        assert budgeted["total_count"] == 6
+        assert budgeted["active_count"] == 2
+        assert "response_budget" in budgeted
+        assert budgeted["response_budget"]["returned_tokens"] <= cap
+
+
+def test_empty_task_list_preserves_explicit_empty_list() -> None:
+    source = {
+        "success": True,
+        "request_id": "req_empty",
+        "tasks": [],
+        "total_count": 0,
+        "active_count": 0,
+        "has_more": False,
+    }
+    for cap in (128, 512, 1200):
+        budgeted = budget_response(
+            source,
+            max_tokens=cap,
+            profile="compact",
+            protected_keys=("success", "request_id"),
+        )
+        assert json_tokens(budgeted) <= cap
+        assert budgeted["success"] is True
+        assert budgeted["tasks"] == []
+        assert budgeted["total_count"] == 0
+
+
+def test_memory_find_records_preserved_across_budget_matrix() -> None:
+    record = {
+        "record_id": "rec_001",
+        "scope": "repository",
+        "key": "arch_pattern",
+        "operation_class": "architecture",
+        "value": "Modular pipeline with bounded MCP response envelope and memory adoption.",
+        "summary": "Verified architectural convention for Local AI Hub.",
+        "timestamp": 1792920456.0,
+    }
+    source = {
+        "success": True,
+        "request_id": "req_mem_find",
+        "records": [dict(record, record_id=f"rec_{i}") for i in range(8)],
+        "total_count": 8,
+    }
+    for cap in (128, 512, 1200, 3500):
+        budgeted = budget_response(
+            source,
+            max_tokens=cap,
+            profile="compact",
+            protected_keys=("success", "request_id"),
+        )
+        assert json_tokens(budgeted) <= cap
+        assert budgeted["success"] is True
+        assert "records" in budgeted
+        assert len(budgeted["records"]) >= 1
+        assert budgeted["records"][0]["record_id"] == "rec_0"

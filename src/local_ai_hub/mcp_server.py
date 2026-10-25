@@ -752,6 +752,15 @@ _RELIABILITY_PROTECTED_KEYS = (
     "mutation_applied", "operation_not_started",
     "semantic_quality", "review_consistency", "advisory_only", "quality_warning", "bypass_reason",
 )
+_COORD_PROTECTED_KEYS = (
+    "tasks", "task", "records", "matches", "items", "negative_knowledge",
+    "receipts", "missing_criteria", "unverified_criteria", "total_count",
+    "active_count", "offset", "limit", "has_more", "next_offset",
+    "board", "columns", "summary",
+)
+_REPO_PROTECTED_KEYS = (
+    "symbols", "files", "results", "evidence", "findings", "issues", "diff",
+)
 _VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts", "completion")
 _TOPOLOGY_PROTECTED_KEYS = (
     "coverage", "architecture_pattern_hypothesis", "architecture_pattern_verified",
@@ -1411,6 +1420,7 @@ def _compact(
             compacted = delta_response(previous, compacted, result_id=result_id(compacted))
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
+            *(_COORD_PROTECTED_KEYS if task_kind in {"task_memory", "coord", "verify"} else ()),
             *(_SECURITY_PROTECTED_KEYS if task_kind == "security" else ()),
             *(_COMPLEXITY_PROTECTED_KEYS if task_kind == "complexity" else ()),
             *(_TOPOLOGY_PROTECTED_KEYS if task_kind == "topology" else ()),
@@ -5360,6 +5370,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         action = str(arguments.get("action") or "").lower()
         protected = (
             *_RELIABILITY_PROTECTED_KEYS,
+            *(_COORD_PROTECTED_KEYS if name == "local_ai_coord" else ()),
             *(_CONTEXT_PROTECTED_KEYS if action in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if name == "local_ai_status" else ()),
         )

@@ -39,6 +39,9 @@ _POINTER_KEYS = (
     "task_context", "complete", "partial", "source_layers", "provenance",
     "omitted_sections", "next_action", "estimated_tokens", "truncated",
     "repository_required", "etag", "context_truncated", "context_chars",
+    "tasks", "task", "records", "matches", "items", "negative_knowledge",
+    "receipts", "total_count", "active_count", "has_more", "offset", "limit", "next_offset",
+    "symbols", "files", "board", "columns", "missing_criteria", "unverified_criteria",
 )
 
 
@@ -146,6 +149,71 @@ def _bounded_pointer_item(value: Any, *, budget_chars: int, depth: int = 0) -> A
     return value
 
 
+
+def _bounded_task_summary(task: Any, budget_chars: int) -> Any:
+    if not isinstance(task, dict):
+        return _bounded_pointer_item(task, budget_chars=budget_chars)
+    out: dict[str, Any] = {}
+    for key in ("task_id", "status", "owner", "created_at", "updated_at", "heartbeat_expires_at", "stale"):
+        if key in task:
+            out[key] = task[key]
+    checkpoint = task.get("checkpoint")
+    if isinstance(checkpoint, dict):
+        if "phase" in checkpoint and checkpoint["phase"]:
+            out["phase"] = checkpoint["phase"]
+        if "next_action" in checkpoint and checkpoint["next_action"]:
+            out["next_action"] = checkpoint["next_action"]
+    contract = task.get("contract")
+    if isinstance(contract, dict):
+        goal = contract.get("goal")
+        if isinstance(goal, str) and goal:
+            out["goal"] = syntax_aware_truncate(goal, min(120, budget_chars), marker="…")
+    return out
+
+
+def _bounded_record_summary(record: Any, budget_chars: int) -> Any:
+    if not isinstance(record, dict):
+        return _bounded_pointer_item(record, budget_chars=budget_chars)
+    out: dict[str, Any] = {}
+    for key in ("record_id", "id", "scope", "scope_id", "key", "operation_class", "timestamp", "score"):
+        if key in record:
+            out[key] = record[key]
+    for key in ("value", "summary", "message", "root_cause", "verified_fix"):
+        if key in record:
+            val = record[key]
+            out[key] = syntax_aware_truncate(str(val), min(120, budget_chars), marker="…") if isinstance(val, (str, dict, list)) else val
+    return out
+
+
+def _is_meaningfully_empty_success(candidate: Any, source: Any) -> bool:
+    """Return True if candidate claimed success but stripped all primary results without a recovery pointer."""
+    if not isinstance(candidate, dict) or not isinstance(source, dict):
+        return False
+    if candidate.get("success") is not True or source.get("success") is not True:
+        return False
+    # If candidate has an authentic artifact pointer or materialization, it is recoverable.
+    if candidate.get("artifact_id") or candidate.get("output_artifact_id") or candidate.get("materialization"):
+        return False
+
+    collection_keys = (
+        "tasks", "records", "matches", "items", "negative_knowledge",
+        "results", "symbols", "files", "receipts",
+    )
+    for key in collection_keys:
+        source_val = source.get(key)
+        if isinstance(source_val, list) and len(source_val) > 0:
+            cand_val = candidate.get(key)
+            if cand_val is None or (isinstance(cand_val, list) and len(cand_val) == 0):
+                return True
+
+    if isinstance(source.get("task"), dict) and "task" not in candidate:
+        return True
+    if any(k in source and isinstance(source[k], dict) for k in ("context_pack", "adaptive_context_pack", "task_context")):
+        if not any(k in candidate and isinstance(candidate[k], dict) for k in ("context_pack", "adaptive_context_pack", "task_context")):
+            return True
+
+    return False
+
 def _pointer_envelope(
     value: Any,
     *,
@@ -158,10 +226,66 @@ def _pointer_envelope(
     budget_chars = max(96, max_tokens * 3)
     out: dict[str, Any] = {}
     if isinstance(value, dict):
+        has_artifact = bool(
+            value.get("artifact_id")
+            or value.get("output_artifact_id")
+            or (isinstance(value.get("artifact"), dict) and value["artifact"].get("id"))
+        )
         for key in dict.fromkeys((*_POINTER_KEYS, *protected_keys)):
             if key not in value:
                 continue
-            out[key] = _bounded_pointer_item(value[key], budget_chars=budget_chars)
+            if key == "tasks" and isinstance(value["tasks"], list):
+                if has_artifact:
+                    continue
+                tasks = value["tasks"]
+                if not tasks:
+                    out["tasks"] = []
+                else:
+                    max_count = max(1, min(len(tasks), max_tokens // 45))
+                    if max_tokens <= 128:
+                        max_count = 1
+                    bounded = [
+                        _bounded_task_summary(t, min(40 if max_tokens <= 128 else 120, budget_chars))
+                        for t in tasks[:max_count]
+                    ]
+                    out["tasks"] = bounded
+                    if len(tasks) > len(bounded):
+                        out["tasks_omitted"] = len(tasks) - len(bounded)
+            elif key in {"records", "matches", "negative_knowledge"} and isinstance(value[key], list):
+                if has_artifact:
+                    continue
+                items = value[key]
+                if not items:
+                    out[key] = []
+                else:
+                    max_count = max(1, min(len(items), max_tokens // 45))
+                    if max_tokens <= 128:
+                        max_count = 1
+                    bounded = [
+                        _bounded_record_summary(r, min(40 if max_tokens <= 128 else 120, budget_chars))
+                        for r in items[:max_count]
+                    ]
+                    out[key] = bounded
+                    if len(items) > len(bounded):
+                        out[f"{key}_omitted"] = len(items) - len(bounded)
+            elif key in {"items", "board"} and isinstance(value[key], list):
+                if has_artifact:
+                    continue
+                items = value[key]
+                if not items:
+                    out[key] = []
+                else:
+                    max_count = max(1, min(len(items), max_tokens // 40))
+                    if max_tokens <= 128:
+                        max_count = 1
+                    bounded = [_bounded_pointer_item(it, budget_chars=budget_chars) for it in items[:max_count]]
+                    out[key] = bounded
+                    if len(items) > len(bounded):
+                        out[f"{key}_omitted"] = len(items) - len(bounded)
+            elif key in {"results", "symbols", "files"} and has_artifact:
+                continue
+            else:
+                out[key] = _bounded_pointer_item(value[key], budget_chars=budget_chars)
         artifact = value.get("artifact")
         artifact = artifact if isinstance(artifact, dict) else {}
         artifact_id = str(value.get("artifact_id") or artifact.get("id") or "").strip()
@@ -229,9 +353,44 @@ def _fit_to_tokens(
                 current = _bounded_string(current, max(1, len(current) // 2))
                 value[key] = current
     if json_tokens(value) > max_tokens:
+        while isinstance(value.get("tasks"), list) and len(value["tasks"]) > 1 and json_tokens(value) > max_tokens:
+            value["tasks"].pop()
+            value["tasks_omitted"] = value.get("tasks_omitted", 0) + 1
+        if isinstance(value.get("tasks"), list) and len(value["tasks"]) == 1 and json_tokens(value) > max_tokens:
+            t = value["tasks"][0]
+            if isinstance(t, dict):
+                for k in ("goal", "next_action", "phase", "contract"):
+                    if json_tokens(value) <= max_tokens:
+                        break
+                    t.pop(k, None)
+
+        while isinstance(value.get("records"), list) and len(value["records"]) > 1 and json_tokens(value) > max_tokens:
+            value["records"].pop()
+            value["records_omitted"] = value.get("records_omitted", 0) + 1
+        if isinstance(value.get("records"), list) and len(value["records"]) == 1 and json_tokens(value) > max_tokens:
+            r = value["records"][0]
+            if isinstance(r, dict):
+                for k in ("value", "summary", "message", "root_cause", "verified_fix"):
+                    if json_tokens(value) <= max_tokens:
+                        break
+                    r.pop(k, None)
+
+        while isinstance(value.get("items"), list) and len(value["items"]) > 1 and json_tokens(value) > max_tokens:
+            value["items"].pop()
+            value["items_omitted"] = value.get("items_omitted", 0) + 1
+
+    if json_tokens(value) > max_tokens:
+        collection_keep = ()
+        if not (value.get("artifact_id") or value.get("materialization")):
+            collection_keep = (
+                "tasks", "records", "matches", "items", "negative_knowledge",
+                "total_count", "active_count", "tasks_omitted", "records_omitted", "items_omitted",
+            )
         keep_keys = (
             "success", "status", "error", "artifact_id", "reuse_key", "reused",
-            "freshness", "fresh_until", "materialization", "response_budget", *protected_keys,
+            "freshness", "fresh_until", "materialization", "response_budget",
+            *collection_keep,
+            *protected_keys,
         )
         keep = {key: value[key] for key in dict.fromkeys(keep_keys) if key in value}
         value.clear()
@@ -907,11 +1066,16 @@ def budget_response(
                     evidence_store=evidence_store,
                 )
                 if json_tokens(result) <= requested:
+                    if _is_meaningfully_empty_success(result, value):
+                        continue
                     return result
                 if not protected:
-                    return _bounded_result(
+                    bounded = _bounded_result(
                         result, requested=requested, original=original, source=value, protected_keys=protected
                     )
+                    if _is_meaningfully_empty_success(bounded, value):
+                        continue
+                    return bounded
                 continue
             return candidate
 
@@ -933,9 +1097,14 @@ def budget_response(
         token_metadata=token_metadata,
         evidence_store=evidence_store,
     )
-    return _bounded_result(
+    bounded = _bounded_result(
         result, requested=requested, original=original, source=value, protected_keys=protected
     )
+    if _is_meaningfully_empty_success(bounded, value):
+        return _budget_rejection(
+            requested=requested, original=original, source=value, protected_keys=protected
+        )
+    return bounded
 
 
 def is_response_budgeted(value: Mapping[str, Any] | None) -> bool:

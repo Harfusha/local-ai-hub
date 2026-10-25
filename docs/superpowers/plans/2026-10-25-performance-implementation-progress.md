@@ -135,3 +135,20 @@ deployment, model quality, full suite or all-24 completion from this block.
     - Cache reuse and invalidation in resolve_project_context
   - All 24 tests in cohort (test_preprocess_path_settings_snapshot.py, test_t21_project_config_preprocess.py, test_watcher_config_generation_cache.py) passed in 3.36s.
   - Pyflakes 0 errors.
+
+## T2 / F14 Response Budget Readability & Minimal Envelope Usability (2026-10-25T20:20:00Z)
+
+- Finding F14 resolved: When task_list or other collection-based coord actions were called with tight response budgets (or when candidate 1/2 exceeded the cap, e.g. evidence req_00919ef2ad88 original 3966 -> returned 124), _pointer_envelope omitted 'tasks' because 'tasks' was not in _POINTER_KEYS or protected keys. Furthermore, when an artifact_id was absent, the agent received a hollow success envelope (success: true with request_id and budget metadata, but 0 tasks and no artifact pointer).
+- Solution implemented:
+  - Added 'tasks', 'task', 'records', 'matches', 'items', 'negative_knowledge', 'receipts', 'total_count', 'active_count', 'has_more', 'offset', 'limit', 'next_offset', 'symbols', 'files', 'board', 'columns' to _POINTER_KEYS.
+  - Implemented _bounded_task_summary and _bounded_record_summary in src/local_ai_hub/response_budget.py to retain essential task identity (task_id, status, owner, phase, next_action, and bounded goal) and record identity across all caps.
+  - Updated _pointer_envelope to adaptively bound collection items according to max_tokens (from 8 down to 1 bounded item at cap=128), and omit bulk duplication only when an authentic artifact_id is present.
+  - Added _is_meaningfully_empty_success to prevent returning empty success shells when the source had non-empty primary collections or context without an artifact recovery pointer. If even 1 item cannot fit, an explicit budget rejection is emitted instead of a misleading success shell.
+  - Updated _fit_to_tokens to progressively shrink collection items (down to 1 item and dropping secondary text fields) before falling back to key pruning.
+  - Added _COORD_PROTECTED_KEYS to src/local_ai_hub/mcp_server.py to protect coordination results in _compact and call_tool.
+- Verification & Test Coverage:
+  - Added test_task_list_envelope_preserves_tasks_across_budget_matrix covering tiers 128, 512, 1200, 3500 tokens with 100% pass.
+  - Added test_empty_task_list_preserves_explicit_empty_list ensuring authentic empty lists are preserved.
+  - Added test_memory_find_records_preserved_across_budget_matrix covering memory records across all budget tiers.
+  - Full response budget test cohort (35 tests across test_response_budget.py, test_mcp_response_budget.py, test_response_budget_failure_identity.py, test_response_budget_readable_rejection.py) passed in 3.37s.
+  - Pyflakes 0 errors.
