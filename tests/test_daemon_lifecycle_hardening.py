@@ -2046,8 +2046,10 @@ def test_restart_recovers_and_stops_owned_group_after_leader_exits(
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')"
     )
+    parent_script = tmp_path / "daemon_parent.py"
+    parent_script.write_text(parent_code, encoding="utf-8")
     daemon = first.spawn_daemon(
-        [sys.executable, "-c", parent_code, str(child_pid_file)],
+        [sys.executable, str(parent_script), str(child_pid_file)],
         str(tmp_path),
         name="leaderless-group-recovery",
         task_id="daemon-test",
@@ -2091,8 +2093,10 @@ def test_posix_daemon_stop_preserves_process_group_lifecycle(tmp_path: Path) -> 
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii'); "
         "time.sleep(60)"
     )
+    parent_script = tmp_path / "daemon_parent.py"
+    parent_script.write_text(parent_code, encoding="utf-8")
     daemon = broker.spawn_daemon(
-        [sys.executable, "-c", parent_code, str(child_pid_file)],
+        [sys.executable, str(parent_script), str(child_pid_file)],
         str(tmp_path),
         task_id="daemon-test",
     )

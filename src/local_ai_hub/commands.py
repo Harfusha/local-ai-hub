@@ -6,6 +6,7 @@ import codecs
 from contextlib import contextmanager
 import getpass
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -258,13 +259,8 @@ class _RecoveredDaemonProcess:
             time.sleep(0.025)
         return 0
 
-    def kill(self) -> bool | None:
-        if self.poll() is None:
-            kwargs: dict[str, Any] = {"grace_seconds": 0.1}
-            if self.process_group_id is not None:
-                kwargs["process_group"] = self.process_group_id
-            return terminate_tree(self.pid, **kwargs)
-        return None
+    def kill(self) -> None:
+        raise OSError("recovered daemon has no stable process-tree ownership handle")
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -1467,6 +1463,39 @@ def _stop_daemon_tree(info: dict[str, Any]) -> bool:
     """Stop a daemon tree through its live owner handle or process group."""
     process = info["process"]
     if os.name != "nt" and isinstance(process, _RecoveredDaemonProcess):
+        if sys.platform == "linux":
+            pgid = info.get("process_group_id")
+            digest = info.get("ownership_token_digest")
+            if (
+                isinstance(pgid, int)
+                and not isinstance(pgid, bool)
+                and pgid > 1
+                and isinstance(digest, str)
+                and _daemon_process_group_owned(pgid, digest)
+            ):
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    return True
+                except OSError:
+                    return False
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    if not _daemon_process_group_alive(pgid):
+                        return True
+                    time.sleep(0.05)
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return True
+                except OSError:
+                    return False
+                kill_deadline = time.monotonic() + 0.5
+                while time.monotonic() < kill_deadline:
+                    if not _daemon_process_group_alive(pgid):
+                        return True
+                    time.sleep(0.02)
+                return not _daemon_process_group_alive(pgid)
         # PID/start-time metadata cannot pin a POSIX group across restart.
         return False
     job_handle = getattr(process, "_local_ai_job_handle", None)
@@ -5754,64 +5783,22 @@ class CommandBroker:
                 return _terminate_and_confirm_windows_job_empty(job_handle)
             if os.name != "nt" and process is not None and process.pid > 0:
                 try:
-                    os.killpg(process.pid, 0)
-                except ProcessLookupError:
-                    return True
-                except PermissionError:
+                    kwargs: dict[str, Any] = {"grace_seconds": float(self.terminate_grace_seconds)}
+                    sig = inspect.signature(terminate_tree)
+                    if "process_group" in sig.parameters:
+                        kwargs["process_group"] = process.pid
+                    if "expected_identity" in sig.parameters:
+                        kwargs["expected_identity"] = proc_ident
+                    if "process_handle" in sig.parameters:
+                        kwargs["process_handle"] = process
+                    res = terminate_tree(process.pid, **kwargs)
+                    if res:
+                        return True
+                    if process.poll() is not None and _process_group_liveness(process.pid) is False:
+                        return True
                     return False
                 except Exception:
-                    return True
-                try:
-                    if terminate_tree(
-                        process.pid,
-                        process_group=process.pid,
-                        expected_identity=proc_ident,
-                        grace_seconds=float(self.terminate_grace_seconds),
-                        process_handle=process,
-                    ):
-                        return True
-                except Exception:
-                    pass
-                try:
-                    os.killpg(process.pid, 0)
-                except ProcessLookupError:
-                    return True
-                except Exception:
-                    pass
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    return True
-                except OSError:
                     return False
-                deadline = time.monotonic() + max(0.5, float(self.terminate_grace_seconds))
-                while True:
-                    try:
-                        os.killpg(process.pid, 0)
-                    except ProcessLookupError:
-                        return True
-                    except OSError:
-                        pass
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    time.sleep(min(0.05, remaining))
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    return True
-                except OSError:
-                    return False
-                kill_deadline = time.monotonic() + 0.5
-                while time.monotonic() < kill_deadline:
-                    try:
-                        os.killpg(process.pid, 0)
-                    except ProcessLookupError:
-                        return True
-                    except OSError:
-                        return False
-                    time.sleep(0.02)
-                return False
             return True if not job_handle and os.name != "nt" else False
 
         out_buf = _BoundedStreamBuffer(self.max_output_chars, self.max_output_bytes)
@@ -10363,6 +10350,16 @@ class CommandBroker:
                         else "daemon did not stop within the bounded termination window"
                     ),
                 }
+            if not tree_stopped:
+                if os.name != "nt":
+                    pgid = info.get("process_group_id")
+                    if (
+                        isinstance(pgid, int)
+                        and not isinstance(pgid, bool)
+                        and pgid > 1
+                        and _process_group_liveness(pgid) is False
+                    ):
+                        tree_stopped = True
             if not tree_stopped:
                 return {
                     "success": False,
