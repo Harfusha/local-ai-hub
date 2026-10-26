@@ -378,18 +378,18 @@ reranker_max_length = 1024
 
 [cache]
 # Two-tier cache. L1 RAM avoids SQLite round-trips; L2 SQLite survives restarts and is shared by all agents.
-l1_generation_entries = 2048
-l1_generation_ttl_seconds = 3600
-l1_repo_entries = 2048
-l1_repo_ttl_seconds = 1800
-l1_embedding_entries = 16384
-l1_embedding_ttl_seconds = 7200
-l1_reranker_entries = 8192
-l1_reranker_ttl_seconds = 7200
+l1_generation_entries = 4096
+l1_generation_ttl_seconds = 7200
+l1_repo_entries = 4096
+l1_repo_ttl_seconds = 3600
+l1_embedding_entries = 32768
+l1_embedding_ttl_seconds = 14400
+l1_reranker_entries = 16384
+l1_reranker_ttl_seconds = 14400
 # Exact local generations are shared across agents. Concurrent duplicates become one single-flight request.
 generation = true
-generation_ttl_seconds = 604800 # 7 days
-generation_max_entries = 10000
+generation_ttl_seconds = 1209600 # 14 days
+generation_max_entries = 20000
 # Embedding/reranker caches are cross-workspace and persist across restarts.
 embeddings = true
 embedding_ttl_seconds = 2592000 # 30 days
@@ -401,17 +401,17 @@ reranker_max_entries = 100000
 [semantic_cache]
 # Conservative semantic reuse: only rephrased tasks with an identical context/model/system/options scope may reuse an answer.
 enabled = true
-threshold = 0.935
-ttl_seconds = 604800
+threshold = 0.89
+ttl_seconds = 1209600
 max_entries = 10000
 max_candidates = 128
 min_query_chars = 8
-l1_entries = 512
-l1_ttl_seconds = 1800
+l1_entries = 1024
+l1_ttl_seconds = 3600
 
 [workspace_cache]
 # Repo-state fingerprints invalidate repo/search/context/command caches as soon as workspace content changes.
-fingerprint_ttl_seconds = 10.0
+fingerprint_ttl_seconds = 30.0
 fingerprint_l1_entries = 256
 # Foreground Git probes are deliberately bounded. Slow Git degrades to a short stale/metadata fingerprint instead of blocking requests.
 git_probe_timeout_seconds = 1.0
@@ -423,9 +423,9 @@ max_changed_paths = 512
 max_untracked_walk_files = 2048
 degraded_fingerprint_max_files = 2048
 non_git_max_files = 12000 # recursive metadata fingerprint; correctness-safe cache invalidation outside Git
-repo_result_ttl_seconds = 604800
+repo_result_ttl_seconds = 1209600
 repo_result_max_entries = 20000
-rag_search_ttl_seconds = 86400
+rag_search_ttl_seconds = 604800
 rag_search_max_entries = 10000
 
 [agent_policy]
@@ -671,10 +671,10 @@ deterministic_skip_min_terms = 1
 max_scan_lines = 12000
 max_selector_chars = 100000
 max_output_lines = 140
-ttl_seconds = 604800
+ttl_seconds = 1209600
 max_entries = 10000
 l1_entries = 256
-l1_ttl_seconds = 1800
+l1_ttl_seconds = 3600
 
 [local_pipeline]
 # fast = explorer only; adaptive = worker/critic only when justified; quality = all stages.
@@ -693,10 +693,10 @@ canonical_max_chars = 6000
 # Foreground execution uses one fast-tier pass, then escalates to the smart tier only when justified.
 same_model_worker_passes = 1
 second_pass_min_complexity_score = 2
-ttl_seconds = 604800
+ttl_seconds = 1209600
 max_entries = 12000
 l1_entries = 256
-l1_ttl_seconds = 1800
+l1_ttl_seconds = 3600
 
 [resilience]
 watchdog_enabled = true
@@ -710,7 +710,7 @@ model_fallback_enabled = true
 max_model_fallbacks = 1
 serve_stale_on_error = true
 stale_generation_ttl_seconds = 2592000
-stale_generation_max_entries = 10000
+stale_generation_max_entries = 20000
 
 # Agent-specific projections happen after canonical local work, so they do not
 # fragment the expensive Ollama cache.
@@ -786,7 +786,7 @@ task_context_warmup = true
 # checkpointed micro-job and yields as soon as foreground work appears.
 enabled = true
 cpu_priority = "idle"
-idle_grace_seconds = 0.0
+idle_grace_seconds = 15.0
 model_switch_idle_seconds = 60.0
 cpu_runs_during_foreground = false
 poll_seconds = 0.75
@@ -796,6 +796,7 @@ auto_recheck_seconds = 1800
 # Background work is globally pausable; only this many projects preprocess simultaneously.
 max_preprocessing_projects = 3
 cpu_workers = 4
+cpu_worker_sleep_seconds = 0.20
 touch_debounce_seconds = 15
 sqlite_busy_timeout_seconds = 0.5
 sqlite_write_retries = 6
@@ -807,7 +808,7 @@ major_change_ratio = 0.15
 major_change_files = 60
 major_change_ratio_min_files = 12
 hash_files_per_step = 256
-rag_files_per_step = 128
+rag_files_per_step = 64
 # Skip embeddings for declarative files fully represented by deterministic parsers.
 skip_rag_for_deterministic_declarative = true
 compact_lexical_for_deterministic_declarative = true
@@ -865,7 +866,7 @@ bootstrap_deterministic_tools = true
 auto_register_project = false
 max_tool_result_chars = 4800
 preprocessed_context_chars = 2800
-semantic_bypass_confidence = 0.94 # local tools cannot waste RAG when exact deterministic facts suffice
+semantic_bypass_confidence = 0.88 # local tools cannot waste RAG when exact deterministic facts suffice
 direct_synthesis_confidence = 0.90 # high-confidence warm evidence skips tool-schema round trips
 
 # ---------------- Adaptive execution / deterministic intelligence ----------------
@@ -912,7 +913,7 @@ max_query_results = 30
 max_evidence = 12
 max_manifest_bytes = 4000000
 # Deterministic resolver results are revision-aware. A source/manifest update bumps the project generation.
-query_cache_l1_entries = 512
+query_cache_l1_entries = 1024
 query_cache_l1_ttl_seconds = 300
 query_cache_l2_ttl_seconds = 86400
 query_cache_l2_max_entries_per_root = 4000

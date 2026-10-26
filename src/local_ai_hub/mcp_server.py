@@ -2639,8 +2639,9 @@ def local_ai_task(
             payload["conversation"] = True
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/delegate", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "explore" if action == "explore" else "delegate")
     if action == "reason":
+        problem_input = task or prompt or context or ""
         payload = {
-            "problem": task, "context": context, "max_tokens": max_tokens or 4096,
+            "problem": problem_input, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
             "operation": "reason", "changed_paths": changed_paths or [], "repository_revision": repository_revision,
             "evidence_ids": context_evidence_ids,
@@ -2664,8 +2665,10 @@ def local_ai_task(
             payload["format"] = format or json_schema
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=code_input, changed_paths=changed_paths), task_context_meta), "review")
     if action == "second_opinion":
+        question_input = task or prompt or ""
+        candidate_input = candidate or prompt or context or ""
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
-            "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 4096,
+            "question": question_input, "candidate": candidate_input, "context": context if candidate_input != context else "", "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
             "changed_paths": changed_paths or [], "repository_revision": repository_revision,
             "evidence_ids": context_evidence_ids,
@@ -3160,6 +3163,9 @@ def _local_ai_repo_impl(
     until: str | None = None,
     days: int | None = None,
     depth: int = 1,
+    pattern: str | None = None,
+    target: str | None = None,
+    replacement: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3281,7 +3287,7 @@ def _local_ai_repo_impl(
         **{name: ("query",) for name in (
             "diagnose", "semantic", "intelligence", "resolve_imports",
             "validate_patch", "generate_mocks", "cross_project_impact",
-            "generate_dataset", "explain_query", "dependency_slice", "structural_search", "git_history_search",
+            "generate_dataset", "explain_query", "dependency_slice", "structural_search",
         )},
         "context": ("query",), "solve": ("task",), "delegate": ("task",),
         "cross_repo_contract": ("path",), "type_stubs": ("path",),
@@ -3797,12 +3803,17 @@ def _local_ai_repo_impl(
             return contract_error("revert requires path")
         return _compact(CLIENT.post("/api/repo/revert", {"root": root, "path": path}, timeout=_timeout("quick")), "status")
     if action == "patch":
-        target_code = old_code or query or ""
-        replacement_code = new_code or task or ""
-        if not path or not target_code or not replacement_code:
-            return contract_error("patch requires path, old_code, and new_code")
+        target_code = old_code if old_code is not None else (target if target is not None else (query or ""))
+        replacement_code = new_code if new_code is not None else (replacement if replacement is not None else (task if task is not None else ""))
+        if not path or target_code is None or target_code == "":
+            return contract_error("patch requires path and old_code/target")
         return _compact(CLIENT.post("/api/repo/patch", {
             "root": root, "path": path, "old_code": target_code, "new_code": replacement_code,
+        }, timeout=_timeout("quick")), "repository result")
+    if action in {"find_files", "glob"}:
+        file_pat = pattern or query or "*"
+        return _compact(CLIENT.post("/api/repo/find_files", {
+            "root": root, "pattern": file_pat, "limit": limit or 100, "offset": offset or 0,
         }, timeout=_timeout("quick")), "repository result")
     if action == "call_graph":
         target_sym = query or task or ""
@@ -3892,9 +3903,10 @@ def _local_ai_repo_impl(
             ])
         return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}"), "diff",
                         extra_fields=[*(extra_fields or []), "stats_complete", "paths_complete", "diff_sha256", "comparison"])
-    if action == "git_history_search":
+    if action in {"git_history_search", "git_log"}:
+        max_c = limit or max_commits or 20
         return _compact(CLIENT.post("/api/git/history_search", {
-            "root": root, "query": query, "max_commits": max_commits,
+            "root": root, "query": query or "", "max_commits": max_c,
             "author": author or None, "since": since or None, "until": until or None,
             "path": path or None,
         }, timeout=_timeout("quick")), "architecture", extra_fields=[
@@ -4013,6 +4025,9 @@ def local_ai_repo(
     until: str | None = None,
     days: int | None = None,
     depth: int = 1,
+    pattern: str | None = None,
+    target: str | None = None,
+    replacement: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     if action == "context" and not query and task:
@@ -4023,6 +4038,13 @@ def local_ai_repo(
         action = "git_diff"
     elif action == "status":
         action = "git_status"
+    elif action == "glob":
+        action = "find_files"
+    elif action == "patch":
+        if target is not None and old_code is None:
+            old_code = target
+        if replacement is not None and new_code is None:
+            new_code = replacement
     forward: dict[str, Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -4066,10 +4088,11 @@ def local_ai_repo(
         if hotspot_error is not None:
             return {"success": False, "error": hotspot_error, "status_code": 400,
                     "terminal": True, "retryable": False}
-    if resolved_action == "git_history_search":
+    if resolved_action in {"git_history_search", "git_log"}:
+        if query is None:
+            query = ""
         if (
             not isinstance(query, str)
-            or not query.strip()
             or len(query) > 512
             or any(ord(char) < 32 or ord(char) == 127 for char in query)
         ):
@@ -4122,7 +4145,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, **forward,
     )
 
 
@@ -4353,6 +4376,9 @@ def local_ai_coord(
     include: list[str] | None = None,
     confidence: float | None = None,
     allow_adopt: bool = False,
+    acceptance_criteria: list[str] | None = None,
+    criteria: list[str] | None = None,
+    error: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4660,8 +4686,8 @@ def local_ai_coord(
         "semaphore_acquire": {k: v for k, v in {"root": root, "name": name, "capacity": capacity, "timeout": timeout, "ttl_seconds": ttl_seconds, "purpose": purpose, "owner": owner}.items() if v is not None and v != ""},
         "semaphore_release": {k: v for k, v in {"root": root, "name": name, "lease_id": lease_id, "owner": owner}.items() if v is not None and v != ""},
         "semaphore_status": {k: v for k, v in {"root": root, "name": name}.items() if v is not None and v != ""},
-        "board_item_create": {k: v for k, v in {"root": root, "title": title, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details}.items() if v is not None and v != ""},
-        "board_item_update": {k: v for k, v in {"root": root, "item_id": item_id, "title": title, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details}.items() if v is not None and v != ""},
+        "board_item_create": {k: v for k, v in {"root": root, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
+        "board_item_update": {k: v for k, v in {"root": root, "item_id": item_id, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
         "board_item_get": {"root": root, "item_id": item_id},
         "board_item_delete": {"root": root, "item_id": item_id},
         "board_item_list": {k: v for k, v in {"root": root, "status": status, "priority": priority, "milestone": milestone, "assignee": assignee, "limit": limit}.items() if v is not None and v != ""},
@@ -4776,10 +4802,30 @@ def local_ai_coord(
                 task_kwargs["response_budget_tokens"] = requested
         if action == "task_list":
             task_kwargs["query"] = query
-        if action == "task_create" and task:
-            task_kwargs["task"] = task
-        if action == "task_create" and paths:
-            task_kwargs["changed_paths"] = paths[:64]
+            if status:
+                task_kwargs["status"] = status
+            if owner:
+                task_kwargs["owner"] = owner
+        if action == "task_fail":
+            fail_reason = reason or error or message or "Task failed"
+            task_kwargs["reason"] = fail_reason
+        if action == "task_create":
+            task_goal = goal or task or ""
+            crit_list = acceptance_criteria or criteria or []
+            if contract is None and (task_goal or crit_list):
+                contract = {
+                    "goal": task_goal,
+                    "acceptance_criteria": crit_list,
+                    "scope": scope or "task",
+                    "non_goals": [],
+                    "constraints": [],
+                    "risk_profile": "normal",
+                }
+                task_kwargs["contract"] = contract
+            elif task:
+                task_kwargs["task"] = task
+            if paths:
+                task_kwargs["changed_paths"] = paths[:64]
         if action == "task_complete" and allow_adopt:
             task_kwargs["allow_adopt"] = True
         if action in {"task_claim", "task_adopt"}:
@@ -4970,11 +5016,13 @@ def local_ai_coord(
         "board_item_create", "board_item_update", "board_item_get", "board_item_delete",
         "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing",
     }:
+        item_title = (title or name) if action.startswith("board_item_") else title
+        item_details = (details or ({"description": description} if description else None)) if action.startswith("board_item_") else details
         coord_kwargs = dict(
             action=action, root=root,
-            name=name, item_id=item_id, title=title, status=status, priority=priority,
+            name=name, item_id=item_id, title=item_title, status=status, priority=priority,
             labels=labels, assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
-            details=details, target_date=target_date, description=description,
+            details=item_details, target_date=target_date, description=description,
             capacity=capacity, timeout=timeout, ttl_seconds=ttl_seconds, purpose=purpose,
             owner=owner, lease_id=lease_id, topic=topic,
             filter=filter or filter_payload, limit=limit, include=include, session_id=session_id,
@@ -5914,6 +5962,13 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 status_code, error = validation
                 from .operation_contracts import operation_argument_hint
                 hint = operation_argument_hint(name, validation_arguments.get(selector, "")) if status_code == 400 else {}
+                if hint and "allowed_arguments" in hint:
+                    import difflib
+                    unknown_keys = [k for k in validation_arguments if k not in hint["allowed_arguments"] and k != selector]
+                    if unknown_keys:
+                        matches = difflib.get_close_matches(unknown_keys[0], hint["allowed_arguments"], n=1, cutoff=0.55)
+                        if matches:
+                            hint["suggestion"] = f"Did you mean '{matches[0]}'?" 
                 payload = {
                     "success": False, "status_code": status_code,
                     "terminal": True, "retryable": False, "error": error,

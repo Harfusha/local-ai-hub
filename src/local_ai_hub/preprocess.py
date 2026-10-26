@@ -2249,6 +2249,9 @@ class ProjectPreprocessor:
                 if progressed:
                     with self._stats_lock:
                         self._stats["steps"] += 1
+                    worker_sleep = max(0.0, float(self.cfg.get("cpu_worker_sleep_seconds", 0.0)))
+                    if worker_sleep > 0:
+                        self._stop.wait(worker_sleep)
                 else:
                     with self._stats_lock:
                         self._stats["yields"] += 1

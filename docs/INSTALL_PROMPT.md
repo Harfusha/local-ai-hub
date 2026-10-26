@@ -608,15 +608,23 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - Success also returns `diagram_indexed` and the resolved image path.
 - `local_ai_repo(action="pipeline")` accepts closed step objects.
 - `local_ai_repo(action="git_status")` (or alias `action="status"`) returns structured Git working tree status: `{success, head, branch, dirty, changed_paths, staged_paths, untracked_paths, count}`.
+- `local_ai_repo(action="find_files", pattern="*.py")` (or alias `action="glob"`) finds relative file paths matching a glob pattern without reading file contents.
+- `local_ai_repo(action="git_log")` returns recent commit history without requiring a query string; `action="git_history_search"` also allows empty `query=""`.
 - `local_ai_repo(action="revert", path="<rel_path>")` safely restores modified files inside the repository to HEAD.
 - `local_ai_repo(action="diff")` is a transparent alias to `action="git_diff"`.
+- `local_ai_repo(action="patch")` supports code deletion (`new_code=""`) and `target`/`replacement` aliases for seamless edits.
 - `local_ai_artifact(action="source")` accepts single file slice (`path`, `line_start`, `line_end`) or batch slicing (`slices=[{"path": "...", "line_start": 1, "line_end": 20}, ...]`, up to 16 slices).
 - `local_ai_artifact(action="slice")` accepts `path` or `slices` as transparent routing to source slicing without requiring an artifact ID.
+- `local_ai_coord(action="task_create")` auto-packages top-level `acceptance_criteria` (or `criteria`) and `goal` into `contract` if omitted.
+- `local_ai_coord(action="task_fail")` accepts `error` and `message` aliases for `reason`.
+- `local_ai_coord(action="task_list")` supports `status` and `owner` filtering.
+- `local_ai_coord(action="board_item_create"|"board_item_update")` accepts `name` (for `title`) and `description` (for `details`).
 - `local_ai_coord(action="task_checkpoint")` auto-packages top-level arguments (`phase`, `reason`/`next_action`, `paths`/`affected_paths`, `state_data`) into canonical `checkpoint` dict if omitted.
 - `local_ai_coord(action="negative_knowledge_record")` accepts top-level incident fields and common aliases (`description` -> `message`, `error_class`/`category` -> `operation_class`, `paths` -> `affected_paths`).
 - `local_ai_coord(action="memory_find")` auto-enables multi-scope search (`include_all_scopes=True`) when both `scope` and `root` are omitted.
 - `local_ai_task(action="compress")` flexibly maps input text from `text`, `context`, `prompt`, `candidate`, or `task`.
 - `local_ai_task(action="review")` flexibly maps input code from `code`, `context`, `candidate`, or `prompt`.
+- `local_ai_task(action="reason"|"second_opinion")` flexibly maps input problem/question from `task`, `prompt`, or `context`.
 - `POST /api/route` accepts canonical string fields `query` and `text`; `task` and `context` are not aliases. `POST /api/reason` accepts `problem` plus optional `context` and rejects `task`; `POST /api/review` accepts `code` plus optional `instructions` and rejects `context`. The `local_ai_task` adapters map canonical `task`/`context` into those HTTP fields.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq`, `limit` (1–1000, default 50), and optional `after_ts`; `after_ts` is distinct from `after_seq`.

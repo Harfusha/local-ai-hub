@@ -1454,7 +1454,7 @@ def _task_create_contract(payload: Mapping[str, Any]) -> GoalContract:
         return GoalContract.from_dict(contract_data)
     return GoalContract.from_dict({
         "goal": payload.get("goal", payload.get("task", "")),
-        "acceptance_criteria": payload.get("acceptance_criteria") or [],
+        "acceptance_criteria": payload.get("acceptance_criteria") or payload.get("criteria") or [],
         "scope": payload.get("scope", "task"),
         "non_goals": payload.get("non_goals") or [],
         "constraints": payload.get("constraints") or [],
@@ -5032,7 +5032,6 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 if (
                     not isinstance(q, str)
-                    or not q.strip()
                     or len(q) > 512
                     or any(ord(char) < 32 or ord(char) == 127 for char in q)
                 ):
@@ -6352,9 +6351,10 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "fail":
                     try:
+                        fail_reason = str(payload.get("reason") or payload.get("error") or payload.get("message") or "failed by agent")
                         task = APP.agent_tasks.fail(
                             str(payload.get("task_id", "")),
-                            reason=str(payload.get("reason", "failed by agent")),
+                            reason=fail_reason,
                             actor=actor,
                             idempotency_key=idempotency_key,
                             response_budget_tokens=payload.get("response_budget_tokens"),
@@ -6570,7 +6570,9 @@ class Handler(BaseHTTPRequestHandler):
                         include_stale=include_stale,
                         query=task_query,
                     )
-                    response = {"success": True, "tasks": [t.to_dict() for t in tasks if self._task_matches_request(t, request_root)]}
+                    owner_filter = payload.get("owner")
+                    filtered_tasks = [t for t in tasks if (not owner_filter or getattr(t, "owner", "") == str(owner_filter)) and self._task_matches_request(t, request_root)]
+                    response = {"success": True, "tasks": [t.to_dict() for t in filtered_tasks]}
                     if getattr(tasks, "query_truncated", False):
                         response["query_truncated"] = True
                     self._send(200, response); return
@@ -8349,6 +8351,13 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 path_val = str(payload.get("path", ""))
                 res = APP.repo_tools.git_revert_file(root, path_val)
+                self._send(200 if res.get("success") else 400, res); return
+            if 'post_repo_find_files_1' in post_route_ids:
+                root = str(payload.get("root", "."))
+                pat = str(payload.get("pattern") or payload.get("query") or "*")
+                limit_val = payload.get("limit", 100)
+                offset_val = payload.get("offset", 0)
+                res = APP.repo_tools.find_files(root, pattern=pat, limit=limit_val, offset=offset_val)
                 self._send(200 if res.get("success") else 400, res); return
             if 'post_callers_1' in post_route_ids:
                 limit = payload.get("limit", 50); offset = payload.get("offset", 0)

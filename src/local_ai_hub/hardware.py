@@ -570,7 +570,7 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         for gpu in gpus
     )
     has_npu = bool(detected.get("npus"))
-    if (profile_name in ("integrated", "cpu") and has_npu) or (profile_name == "integrated" and intel_integrated):
+    if has_npu or (profile_name in ("integrated", "cpu") and intel_integrated):
         # Retrieval models are small enough to be useful on Intel/AMD NPU/iGPU while
         # leaving the shared-memory LLM lane serial and conservative. Runtime
         # failures fall back to the next OpenVINO device and finally CPU.

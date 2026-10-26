@@ -4373,7 +4373,6 @@ class DeterministicEngine:
         git_exe = shutil.which("git") or "git"
         if (
             not isinstance(query, str)
-            or not query.strip()
             or len(query) > _GIT_HISTORY_QUERY_MAX_CHARS
             or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)
         ):
@@ -4418,8 +4417,11 @@ class DeterministicEngine:
                 f"-n{max_commits + 1}", f"--format={fmt}", "-i", "--fixed-strings",
                 "--no-ext-diff", "--no-textconv", "--no-renames",
             ]
+            if not clean_query and match_type == "diff_content":
+                continue
             if match_type == "message":
-                argv.append(f"--grep={clean_query}")
+                if clean_query:
+                    argv.append(f"--grep={clean_query}")
             else:
                 argv.append(f"-S{clean_query}")
             if clean_author:

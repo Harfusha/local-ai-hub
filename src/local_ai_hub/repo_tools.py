@@ -3612,3 +3612,52 @@ class RepositoryTools:
             return {"success": True, "path": path.replace("\\", "/"), "reverted": True}
         except Exception as exc:
             return {"success": False, "error": f"git revert failed: {exc}"}
+
+    def find_files(
+        self,
+        root: str,
+        pattern: str = "*",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Find relative file paths matching a glob pattern without reading file contents."""
+        import fnmatch
+
+        base = self._root(root)
+        try:
+            norm_limit = max(1, min(int(limit), 1000))
+        except (ValueError, TypeError):
+            norm_limit = 100
+        try:
+            norm_offset = max(0, int(offset))
+        except (ValueError, TypeError):
+            norm_offset = 0
+
+        clean_pattern = pattern.strip() if isinstance(pattern, str) and pattern.strip() else "*"
+        matched: list[str] = []
+
+        for p in self.iter_files(base):
+            try:
+                rel = str(p.relative_to(base)).replace("\\", "/")
+            except ValueError:
+                continue
+            name = p.name
+            if fnmatch.fnmatch(rel.lower(), clean_pattern.lower()) or fnmatch.fnmatch(name.lower(), clean_pattern.lower()):
+                matched.append(rel)
+
+        total = len(matched)
+        sliced = matched[norm_offset : norm_offset + norm_limit]
+        has_more = total > (norm_offset + norm_limit)
+
+        return {
+            "success": True,
+            "root": str(base),
+            "pattern": clean_pattern,
+            "files": sliced,
+            "count": len(sliced),
+            "total_matches": total,
+            "limit": norm_limit,
+            "offset": norm_offset,
+            "has_more": has_more,
+        }
+

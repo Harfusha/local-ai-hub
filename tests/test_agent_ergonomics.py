@@ -444,3 +444,132 @@ def test_task_compress_and_review_flexibility():
         local_ai_task(action="review", candidate="def buggy(): return 1/0")
         payload_rev = mock_client.post.call_args[0][1]
         assert payload_rev["code"] == "def buggy(): return 1/0"
+
+
+def test_repo_find_files_and_glob(tmp_path):
+    """Phase 3 Point 6: Verify find_files and glob pattern matching."""
+    from local_ai_hub.repo_tools import RepositoryTools
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import _local_ai_repo_impl
+
+    # Test RepositoryTools directly
+    rt = RepositoryTools({})
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "alpha.py").write_text("print(1)")
+    (tmp_path / "src" / "beta.json").write_text("{}")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text("assert True")
+
+    res = rt.find_files(str(tmp_path), pattern="*.py")
+    assert res["success"] is True
+    assert "src/alpha.py" in res["files"]
+    assert "tests/test_alpha.py" in res["files"]
+    assert "src/beta.json" not in res["files"]
+    assert res["count"] == 2
+
+    # Test MCP routing for find_files and glob alias
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.post.return_value = {"success": True, "files": ["src/alpha.py"]}
+        res_mcp = _local_ai_repo_impl(action="glob", pattern="*.py", root=str(tmp_path))
+        assert mock_client.post.called
+        assert mock_client.post.call_args[0][0] == "/api/repo/find_files"
+        assert mock_client.post.call_args[0][1]["pattern"] == "*.py"
+
+
+def test_repo_patch_deletion_and_aliases(tmp_path):
+    """Phase 3 Point 7: Verify patch supports deletion (new_code="") and target/replacement aliases."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import _local_ai_repo_impl
+
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.post.return_value = {"success": True, "patched": True}
+
+        # 1. Code deletion (replacement="")
+        _local_ai_repo_impl(action="patch", root=str(tmp_path), path="a.py", old_code="obsolete()", new_code="")
+        assert mock_client.post.called
+        assert mock_client.post.call_args[0][1]["new_code"] == ""
+
+        # 2. Target and replacement aliases
+        mock_client.post.reset_mock()
+        _local_ai_repo_impl(action="patch", root=str(tmp_path), path="a.py", target="old()", replacement="new()")
+        assert mock_client.post.called
+        payload = mock_client.post.call_args[0][1]
+        assert payload["old_code"] == "old()"
+        assert payload["new_code"] == "new()"
+
+
+def test_git_log_and_empty_query_history(tmp_path):
+    """Phase 3 Point 8: Verify git_log action and empty query git_history_search."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import _local_ai_repo_impl
+
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.post.return_value = {"success": True, "commits": [{"hash": "abc", "message": "feat: test"}]}
+
+        # git_log
+        _local_ai_repo_impl(action="git_log", root=str(tmp_path), limit=5)
+        assert mock_client.post.called
+        assert mock_client.post.call_args[0][0] == "/api/git/history_search"
+        payload = mock_client.post.call_args[0][1]
+        assert payload["query"] == ""
+        assert payload["max_commits"] == 5
+
+        # git_history_search with empty query
+        mock_client.post.reset_mock()
+        _local_ai_repo_impl(action="git_history_search", root=str(tmp_path), query="")
+        assert mock_client.post.called
+        assert mock_client.post.call_args[0][1]["query"] == ""
+
+
+def test_coord_task_create_and_fail_aliases():
+    """Phase 3 Points 1, 4, 5, 10: Verify task_create criteria, task_fail error, board_item, and task_list filter."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import local_ai_coord
+
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.coord.return_value = {"success": True}
+
+        # 1. task_create with top-level acceptance_criteria and goal
+        local_ai_coord(action="task_create", task_id="t10", goal="Build X", acceptance_criteria=["Tests pass"])
+        assert mock_client.coord.called
+        kwargs = mock_client.coord.call_args[1]
+        assert "contract" in kwargs
+        contract = kwargs["contract"]
+        assert contract["goal"] == "Build X"
+        assert contract["acceptance_criteria"] == ["Tests pass"]
+
+        # 2. task_fail with error and message
+        mock_client.coord.reset_mock()
+        local_ai_coord(action="task_fail", task_id="t10", error="Build failed code 1")
+        assert mock_client.coord.called
+        assert mock_client.coord.call_args[1]["reason"] == "Build failed code 1"
+
+        # 3. task_list with status and owner filter
+        mock_client.coord.reset_mock()
+        local_ai_coord(action="task_list", status="in_progress", owner="gemini")
+        assert mock_client.coord.called
+        list_kwargs = mock_client.coord.call_args[1]
+        assert list_kwargs["status"] == "in_progress"
+        assert list_kwargs["owner"] == "gemini"
+
+        # 4. board_item_create with name and description
+        mock_client.coord.reset_mock()
+        local_ai_coord(action="board_item_create", name="Task 1", description="Details 1")
+        assert mock_client.coord.called
+        board_kwargs = mock_client.coord.call_args[1]
+        assert board_kwargs["title"] == "Task 1"
+        assert board_kwargs["details"] == {"description": "Details 1"}
+
+
+def test_argument_suggestion_hints():
+    """Phase 3 Point 9: Verify argument suggestions when close typos occur."""
+    import asyncio
+    from local_ai_hub import mcp_server
+
+    # Call with a typo in argument name: e.g. 'pattrn' instead of 'pattern' in find_files
+    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {"action": "find_files", "pattrn": "*.py"}))
+    assert response[1]["status_code"] == 400
+    assert "argument_help" in response[1]
+    # Check that suggestion is present and identifies 'pattern'
+    assert "suggestion" in response[1]["argument_help"]
+    assert "pattern" in response[1]["argument_help"]["suggestion"]
