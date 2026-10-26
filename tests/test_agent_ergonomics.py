@@ -1506,7 +1506,8 @@ def test_work_accepts_id_alias_and_goal():
         mc.post.return_value = {"success": True, "work_id": "W-124"}
         res_sub = local_ai_work(action="submit", goal="Build parser", acceptance_criteria="All tests pass")
         assert res_sub.get("success") is True
-        payload = mc.post.call_args_list[-1][0][1]
+        work_calls = [c for c in mc.post.call_args_list if "/api/work-orders" in str(c)]
+        payload = work_calls[-1][0][1]
         assert payload.get("task") == "Build parser"
         assert payload.get("acceptance_criteria") == ["All tests pass"]
 

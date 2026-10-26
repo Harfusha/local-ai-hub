@@ -259,8 +259,13 @@ class _RecoveredDaemonProcess:
             time.sleep(0.025)
         return 0
 
-    def kill(self) -> None:
-        raise OSError("recovered daemon has no stable process-tree ownership handle")
+    def kill(self) -> bool | None:
+        if self.poll() is None:
+            kwargs: dict[str, Any] = {"grace_seconds": 0.1}
+            if self.process_group_id is not None:
+                kwargs["process_group"] = self.process_group_id
+            return terminate_tree(self.pid, **kwargs)
+        return None
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -5796,7 +5801,25 @@ class CommandBroker:
                         return True
                     if process.poll() is not None and _process_group_liveness(process.pid) is False:
                         return True
-                    return False
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    deadline = time.monotonic() + max(0.5, float(self.terminate_grace_seconds))
+                    while time.monotonic() < deadline:
+                        if _process_group_liveness(process.pid) is False:
+                            return True
+                        time.sleep(0.05)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    kill_deadline = time.monotonic() + 0.5
+                    while time.monotonic() < kill_deadline:
+                        if _process_group_liveness(process.pid) is False:
+                            return True
+                        time.sleep(0.02)
+                    return _process_group_liveness(process.pid) is False
                 except Exception:
                     return False
             return True if not job_handle and os.name != "nt" else False

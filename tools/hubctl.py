@@ -376,13 +376,14 @@ def main() -> int:
         return 0
     if args.action == "tasks":
         c = client()
-        target_root = str(args.root.resolve()) if args.root else str(Path.cwd().resolve())
+        target_root = str(args.root.resolve()) if args.root else None
+        root_kw = {"root": target_root} if target_root else {}
         if args.complete or args.fail:
             if not args.task_id:
                 print("Error: --task-id is required when completing or failing a task.", file=sys.stderr)
                 return 1
             reason = args.reason or ("completed via hubctl" if args.complete else "failed via hubctl")
-            res = c.complete_task(args.task_id, reason=reason, root=target_root) if args.complete else c.fail_task(args.task_id, reason=reason, root=target_root)
+            res = c.complete_task(args.task_id, reason=reason, **root_kw) if args.complete else c.fail_task(args.task_id, reason=reason, **root_kw)
             if args.raw_json:
                 print(json.dumps(res, indent=2, ensure_ascii=False))
                 return 0 if res.get("success", True) else 1
@@ -394,9 +395,9 @@ def main() -> int:
                 print(f"Failed to update task {args.task_id}: {res.get('error', 'unknown error')}", file=sys.stderr)
                 return 1
         if args.task_id:
-            res = c.get_task(args.task_id, root=target_root)
+            res = c.get_task(args.task_id, **root_kw)
         else:
-            res = c.list_tasks(status=args.status or None, limit=args.limit, root=target_root)
+            res = c.list_tasks(status=args.status or None, limit=args.limit, **root_kw)
         if args.raw_json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
             return 0 if res.get("success", True) else 1
@@ -434,15 +435,16 @@ def main() -> int:
         return 0
     if args.action == "memory":
         c = client()
-        target_root = str(args.root.resolve()) if args.root else str(Path.cwd().resolve())
+        target_root = str(args.root.resolve()) if args.root else None
+        root_kw = {"root": target_root} if target_root else {}
         if args.compact:
-            res = c.coord("memory_compact", scope=args.scope or None, limit=args.limit, root=target_root)
+            res = c.coord("memory_compact", scope=args.scope or None, limit=args.limit, **root_kw)
             if args.raw_json:
                 print(json.dumps(res, indent=2, ensure_ascii=False))
             else:
                 print(f"Compacted {res.get('compacted_records', 0)} records into {res.get('compacted_groups', 0)} digest group(s).")
             return 0 if res.get("success", True) else 1
-        res = c.find_memory(scope=args.scope or None, key=args.key or None, query=args.query or None, limit=args.limit, root=target_root)
+        res = c.find_memory(scope=args.scope or None, key=args.key or None, query=args.query or None, limit=args.limit, **root_kw)
         if args.raw_json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
             return 0 if res.get("success", True) else 1

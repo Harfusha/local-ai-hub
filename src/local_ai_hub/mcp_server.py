@@ -2273,6 +2273,7 @@ def local_ai_status(
     reuse_key: str = "",
     action: str = "",
     root: str = "",
+    workspace: str = "",
 ) -> dict[str, Any]:
     """Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
     action = str(action or "")
@@ -5039,7 +5040,7 @@ def local_ai_coord(
                     if isinstance(contract.get(col), str):
                         contract[col] = [contract[col]]
                 task_kwargs["contract"] = contract
-            elif task:
+            if task:
                 task_kwargs["task"] = task
             if paths:
                 task_kwargs["changed_paths"] = paths[:64]

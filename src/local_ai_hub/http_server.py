@@ -6375,20 +6375,10 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "checkpoint":
                     chk_data = payload.get("checkpoint")
                     if not isinstance(chk_data, dict):
-                        if any(k in payload for k in ("phase", "next_action", "affected_paths", "paths", "state_data", "evidence_ids", "blockers")):
-                            chk_data = {
-                                "phase": str(payload.get("phase") or ""),
-                                "next_action": str(payload.get("next_action") or payload.get("reason") or ""),
-                                "affected_paths": list(payload.get("affected_paths") or payload.get("paths") or []),
-                                "evidence_ids": list(payload.get("evidence_ids") or []),
-                                "blockers": list(payload.get("blockers") or []),
-                                "state_data": dict(payload.get("state_data") or {}),
-                            }
-                        else:
-                            self._send(400, {
-                                "success": False, "error": "checkpoint must be an object",
-                                "terminal": True, "retryable": False,
-                            }); return
+                        self._send(400, {
+                            "success": False, "error": "checkpoint must be an object",
+                            "terminal": True, "retryable": False,
+                        }); return
                     checkpoint = TaskCheckpoint.from_dict(chk_data)
                     try:
                         task = APP.agent_tasks.checkpoint(
