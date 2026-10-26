@@ -103,9 +103,13 @@ def _validate_fence_schema(connection: sqlite3.Connection) -> None:
 def _preflight_fence_schema(path: Path) -> None:
     if not path.is_file() or path.stat().st_size == 0:
         return
-    with readonly_sqlite_connection(path) as connection:
-        _validate_fence_schema(connection)
-
+    try:
+        with readonly_sqlite_connection(path) as connection:
+            _validate_fence_schema(connection)
+    except sqlite3.DatabaseError as exc:
+        if "incomplete SQLite WAL sidecars" in str(exc):
+            return
+        raise
 
 _COORDINATION_ID_UNSET = object()
 

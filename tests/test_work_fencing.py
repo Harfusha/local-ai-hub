@@ -21,9 +21,9 @@ from local_ai_hub.work_fencing import (
 
 
 def _claim_overlapping_path(db_path: str, root: str, owner: str, start, results) -> None:
-    store = FencingLeaseStore(Path(db_path))
-    start.wait(timeout=20)
     try:
+        store = FencingLeaseStore(Path(db_path))
+        start.wait(timeout=20)
         attempt = store.claim_attempt(root, f"work-{owner}", owner, ttl_seconds=30)
         lease = store.acquire(
             root, owner, ["src/shared.py"], ttl_seconds=30, attempt=attempt
@@ -34,7 +34,6 @@ def _claim_overlapping_path(db_path: str, root: str, owner: str, start, results)
         results.put((owner, "failed", str(exc)))
     else:
         results.put((owner, "acquired", lease.fencing_token))
-
 
 def _record_race_order(order, lock) -> int:
     with lock:
