@@ -335,9 +335,6 @@ Trigger map:
 - project board, milestones, and session briefing: `local_ai_coord(action="board_item_create"|"board_item_update"|"board_item_list"|"board_summary"|"milestone_create"|"milestone_status"|"session_briefing")`. Track Kanban deliverables and query briefings.
 - cross-project dependencies and contracts: `local_ai_repo` cross_project and cross_repo actions
 - repository audits, dead code, secret scanning, and test matrices: `local_ai_repo(action="security_audit"|"dead_code"|"secret_scan"|"test_matrix")`
-- line-ending & whitespace tolerant patcher: `local_ai_repo(action="patch")`
-- call hierarchy & symbol graph: `local_ai_repo(action="call_graph")`
-- cross-agent task adoption & native receipts: `local_ai_coord(action="task_claim"|"record_native_receipt")`
 - operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks
 
 Recipes (guidance, not gates):
@@ -392,7 +389,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
-- Prefer `response_profile="minimal"`/`"compact"`/`"dense"`; request only decision-grade fields.
+- Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 - Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
@@ -640,6 +637,11 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - `local_ai_artifact` redirects single or multi `path`/`file` queries to `source` (even when `action="get"` is used) and accepts `id` as an alias for `artifact_id`.
 - `local_ai_coord` accepts `path`/`file` for single-path operations, `title`/`description` for `task_create`, and `name`/`content` for `memory_record`.
 - `local_ai_repo` accepts `file` and `paths` aliases and supports `changed_paths` for `generate_tests_for_diff`.
+- `local_ai_coord(action="task_checkpoint")` accepts flat parameters `next_action`, `blockers`, and `evidence_ids` in addition to nested `checkpoint` objects.
+- `local_ai_coord` accepts `id` for `task_get` and `board_item_*`, `summary`/`result` for `task_complete`, `timeout_seconds` for `wait_for_event`/`semaphore_acquire`, and converts string `labels` automatically.
+- `local_ai_artifact` accepts universal `root` and `workspace` parameters.
+- `local_ai_repo` accepts `pattern` for `structural_search`, single `path`/`target`/`replacement` directly in `batch_replace`, and filters `git_status` by `path`.
+- `local_ai_rag` accepts `text` for `search` and `ingest_document`.
 - `local_ai_status(detail="models")` (and `action="models"`) inspects installed local models and hardware tier routing.
 - `POST /api/route` accepts canonical string fields `query` and `text`; `task` and `context` are not aliases. `POST /api/reason` accepts `problem` plus optional `context` and rejects `task`; `POST /api/review` accepts `code` plus optional `instructions` and rejects `context`. The `local_ai_task` adapters map canonical `task`/`context` into those HTTP fields.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.

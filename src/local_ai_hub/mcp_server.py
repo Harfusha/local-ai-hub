@@ -2417,6 +2417,8 @@ def local_ai_task(
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
     if action == "summarize":
         action = "compress"
+    if action in {"chat", "ask"}:
+        action = "delegate"
     if action not in operation_actions("local_ai_task", FEATURES):
         return _invalid_action(
             "local_ai_task",
@@ -3240,12 +3242,16 @@ def _local_ai_repo_impl(
         action = "source"
     if symbol and not query:
         query = symbol
+    if pattern and not query:
+        query = pattern
     if file and not path:
         path = file
     if paths and not changed_paths:
         changed_paths = paths
     if not path and changed_paths and len(changed_paths) > 0:
         path = changed_paths[0]
+    if not edits and path and ((target and replacement) or (old_code and new_code)):
+        edits = [{"path": path, "target": target or old_code, "replacement": replacement or new_code}]
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
     scoped_error = validate_operation_arguments(
@@ -3649,9 +3655,10 @@ def _local_ai_repo_impl(
                     return [x for x in items if isinstance(x, str) and (x == clean_p or x.startswith(clean_p + "/"))]
                 return items
             filtered_status = dict(raw_status)
-            for k in ("changed_paths", "modified", "untracked", "staged", "deleted", "unmerged"):
+            for k in ("changed_paths", "modified", "untracked", "staged", "deleted", "unmerged", "files"):
                 if k in filtered_status:
                     filtered_status[k] = _filter_p(filtered_status[k])
+            filtered_status["clean"] = not any(filtered_status.get(k) for k in ("changed_paths", "modified", "untracked", "staged", "deleted", "unmerged", "files"))
             return _compact(filtered_status, "status")
         return _compact(raw_status, "status")
     if action == "repo_state":
@@ -3864,8 +3871,6 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/code/declaration", {
             "root": root, "symbol": query, "path": path or None,
         }, timeout=_timeout("quick")), "architecture")
-    if action in {"git_status", "status"}:
-        return _compact(CLIENT.post("/api/repo/git_status", {"root": root}, timeout=_timeout("quick")), "status")
     if action == "revert":
         if not path:
             return contract_error("revert requires path")
@@ -4124,12 +4129,16 @@ def local_ai_repo(
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     if symbol and not query:
         query = symbol
+    if pattern and not query:
+        query = pattern
     if file and not path:
         path = file
     if paths and not changed_paths:
         changed_paths = paths
     if not path and changed_paths and len(changed_paths) > 0:
         path = changed_paths[0]
+    if not edits and path and ((target and replacement) or (old_code and new_code)):
+        edits = [{"path": path, "target": target or old_code, "replacement": replacement or new_code}]
     if action == "context" and not query and task:
         query = task
     elif action in {"solve", "delegate"} and not task and query:
@@ -4309,6 +4318,7 @@ def local_ai_rag(
     image_path: str = "",
     caption: str = "",
     name: str = "",
+    text: str = "",
 ) -> dict[str, Any]:
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
@@ -4325,6 +4335,10 @@ def local_ai_rag(
         query = task
     if action == "search" and not query and content:
         query = content
+    if action == "search" and not query and text:
+        query = text
+    if action == "ingest_document" and not content and text:
+        content = text
     valid_actions = tuple(RagAction.__args__)
     if not isinstance(action, str) or action not in valid_actions:
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
@@ -4502,6 +4516,13 @@ def local_ai_coord(
     changed_paths: list[str] | None = None,
     path: str = "",
     file: str = "",
+    next_action: str = "",
+    blockers: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+    id: str = "",
+    summary: str = "",
+    result: str = "",
+    timeout_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4510,6 +4531,20 @@ def local_ai_coord(
         paths = changed_paths
     if (path or file) and not paths:
         paths = [p for p in (path, file) if p]
+    if id and not task_id and (action.startswith("task_") or action in {"verify_completion", "verify_export"}):
+        task_id = id
+    if id and not item_id and action.startswith("board_item_"):
+        item_id = id
+    if id and not question_id and action in {"ask", "answer"}:
+        question_id = id
+    if (summary or result) and not reason:
+        reason = summary or result
+    if timeout_seconds and not timeout:
+        timeout = timeout_seconds
+    if isinstance(labels, str):
+        labels = [labels]
+    if action.startswith("board_item_") and task_id and not linked_task_id:
+        linked_task_id = task_id
     if action == "task_update":
         action = "task_checkpoint"
     if action == "memory_list":
@@ -4817,8 +4852,8 @@ def local_ai_coord(
         "semaphore_acquire": {k: v for k, v in {"root": root, "name": name, "capacity": capacity, "timeout": timeout, "ttl_seconds": ttl_seconds, "purpose": purpose, "owner": owner}.items() if v is not None and v != ""},
         "semaphore_release": {k: v for k, v in {"root": root, "name": name, "lease_id": lease_id, "owner": owner}.items() if v is not None and v != ""},
         "semaphore_status": {k: v for k, v in {"root": root, "name": name}.items() if v is not None and v != ""},
-        "board_item_create": {k: v for k, v in {"root": root, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
-        "board_item_update": {k: v for k, v in {"root": root, "item_id": item_id, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
+        "board_item_create": {k: v for k, v in {"root": root, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id or task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
+        "board_item_update": {k: v for k, v in {"root": root, "item_id": item_id or id, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id or task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
         "board_item_get": {"root": root, "item_id": item_id},
         "board_item_delete": {"root": root, "item_id": item_id},
         "board_item_list": {k: v for k, v in {"root": root, "status": status, "priority": priority, "milestone": milestone, "assignee": assignee, "limit": limit}.items() if v is not None and v != ""},
@@ -4899,10 +4934,10 @@ def local_ai_coord(
         if action == "task_checkpoint" and not checkpoint:
             checkpoint = {
                 "phase": phase,
-                "next_action": reason,
+                "next_action": next_action or reason,
                 "affected_paths": paths or [],
-                "evidence_ids": [],
-                "blockers": [],
+                "evidence_ids": evidence_ids or [],
+                "blockers": blockers or [],
                 "state_data": {},
             }
         task_kwargs: dict[str, Any] = {
@@ -5024,7 +5059,7 @@ def local_ai_coord(
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "native_receipt", "root": root, "task_id": task_id,
             "criterion": criterion, "command": command, "passed": True,
-            "output_summary": reason or "native test execution passed",
+            "output_summary": reason or summary or result or "native test execution passed",
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
@@ -5220,7 +5255,7 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "") -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "", root: str = "", workspace: str = "") -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
@@ -5231,6 +5266,7 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
     is_source_slices = bool(slices and isinstance(slices, list) and len(slices) > 0 and isinstance(slices[0], dict) and ("path" in slices[0] or "file" in slices[0]))
     if action in {"get", "slice"} and (path or is_source_slices) and not artifact_id:
         action = "source"
+    target_workspace = root or workspace or _workspace
     if action == "source":
         from .source_slice import read_source_slice
         eff_start = start_line if start_line > 1 else line_start
@@ -5244,14 +5280,14 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
                 s_start = int(item.get("start_line") or item.get("line_start") or 1)
                 s_end = int(item.get("end_line") or item.get("line_end") or 0)
                 s_chars = int(item.get("max_chars", 4000))
-                results.append(read_source_slice(_workspace, path=s_path, line_start=s_start, line_end=s_end, max_chars=s_chars))
+                results.append(read_source_slice(target_workspace, path=s_path, line_start=s_start, line_end=s_end, max_chars=s_chars))
             return _compact({"success": True, "slices": results, "count": len(results)}, "artifact")
         eff_chars = max(512, min(max_chars, 12000)) if max_chars else 4000
         arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": eff_chars}
         error = validate_operation_arguments("local_ai_artifact", "source", arguments)
         if error is not None:
             return {"success": False, "error": error, "terminal": True, "retryable": False}
-        return _compact(read_source_slice(_workspace, **arguments), "artifact")
+        return _compact(read_source_slice(target_workspace, **arguments), "artifact")
     if slices is not None:
         if action not in {"get", "slice"}:
             return {"success": False, "error": "slices are only valid for get or slice actions"}
