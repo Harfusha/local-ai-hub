@@ -11,6 +11,38 @@ from typing import Any, Iterable
 from .deterministic import _git_history_timestamp
 
 
+def handle_post_plan(handler: Any, payload: dict[str, Any], path: str, app: Any) -> bool:
+    """Dispatch canonical repository planner requests without scalar coercion."""
+    if not path.startswith("/api/coord/plan_"):
+        return False
+    from .operation_contracts import operation_contract, validate_operation_arguments
+    from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanNotFoundError
+
+    action = path.removeprefix("/api/coord/")
+    actions = operation_contract("local_ai_coord")["actions"]
+    if action not in actions:
+        handler._send(404, {"success": False, "error": "unknown plan operation",
+                            "terminal": True, "retryable": False})
+        return True
+    error = validate_operation_arguments("local_ai_coord", action, payload)
+    if error:
+        handler._send(400, {"success": False, "error": error, "terminal": True, "retryable": False})
+        return True
+    arguments = {name: value for name, value in payload.items() if name in actions[action]["allowed"]}
+    try:
+        result = getattr(app.services, action)(**arguments)
+    except RepoPlanConflictError as exc:
+        handler._send(409, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+    except RepoPlanNotFoundError as exc:
+        handler._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+    except ValueError as exc:
+        handler._send(getattr(exc, "status_code", 400), {
+            "success": False, "error": str(exc), "terminal": True, "retryable": False})
+    else:
+        handler._send(200, result)
+    return True
+
+
 _ROUTE_PRIORITY = (
     "post_git_status_1",
     "post_repo_state_1",

@@ -229,8 +229,12 @@ async def _stdio_roundtrip(config_path: Path, *, cwd: Path, timeout: float) -> d
                 break
             except json.JSONDecodeError:
                 continue
-    if not isinstance(payload, dict) or payload.get("success") is not True:
-        raise SmokeError("local_ai_status did not return canonical success JSON")
+    if not isinstance(payload, dict):
+        raise SmokeError("local_ai_status did not return canonical JSON")
+    status_success = payload.get("success") is True
+    degraded_but_online = payload.get("hub_online") is True and payload.get("degraded") is True
+    if not status_success and not degraded_but_online:
+        raise SmokeError("local_ai_status reported an offline or unsuccessful Hub")
     if "ollama_online" not in payload:
         raise SmokeError("local_ai_status omitted local-model availability")
     if "queued" in payload or "cache_hits" in payload:
@@ -239,6 +243,9 @@ async def _stdio_roundtrip(config_path: Path, *, cwd: Path, timeout: float) -> d
         "server_name": getattr(getattr(initialized, "serverInfo", None), "name", ""),
         "tool_count": len(tools.tools),
         "ollama_online": payload["ollama_online"],
+        "status_success": status_success,
+        "hub_online": payload.get("hub_online", status_success),
+        "degraded": payload.get("degraded") is True,
     }
 
 

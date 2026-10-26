@@ -1454,6 +1454,36 @@ class VerificationStore:
             evidence_store=self.evidence_store,
         ):
             raise ValueError("passed verification receipt requires matching trusted evidence")
+        if receipt.passed and self.require_execution_provenance:
+            task = self.task_store.get(receipt.task_id) if self.task_store is not None else None
+            state_data = getattr(getattr(task, "checkpoint", None), "state_data", {}) or {}
+            try:
+                from .agent_tasks import _task_scope_root
+
+                trusted_root = _task_scope_root(task) if task is not None else ""
+            except (ImportError, AttributeError, TypeError, ValueError):
+                trusted_root = ""
+            if (
+                task is None
+                or not receipt.command_id
+                or not receipt.owner
+                or getattr(task, "owner", None) != receipt.owner
+                or not trusted_root
+                or not isinstance(state_data, Mapping)
+                or not callable(self.command_execution_record_lookup)
+                or self.artifact_store is None
+                or not _receipt_evidence_matches(
+                    receipt,
+                    self.artifact_store,
+                    expected_owner=receipt.owner,
+                    require_repository_revision=True,
+                    evidence_store=self.evidence_store,
+                    command_execution_record_lookup=self.command_execution_record_lookup,
+                    trusted_repository_root=trusted_root,
+                    require_execution_provenance=True,
+                )
+            ):
+                raise ValueError("passed verification receipt requires authentic broker execution provenance")
         self._init_tables()
         self._reconcile_task_outbox(raise_on_error=False)
         event = AgentEvent.create(

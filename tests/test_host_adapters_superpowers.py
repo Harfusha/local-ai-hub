@@ -62,14 +62,76 @@ def test_probe_host_capabilities(tmp_path: Path):
     assert report2.instructions_integrated is True
     assert report2.support_level == "advisory"
 
-    # 3. Add hooks folder with active hook -> enforced
+    # Files do not establish host invocation or effective enforcement.
     hooks_dir = repo_root / ".local-ai-hub" / "local" / "hooks"
     hooks_dir.mkdir(parents=True)
-    (hooks_dir / "pre_tool_call.py").write_text("# hook", encoding="utf-8")
+    (hooks_dir / "not_a_hook.txt").write_text("# hook", encoding="utf-8")
 
     report3 = probe_host_capabilities("gemini_antigravity", repo_root=repo_root)
-    assert report3.workflow_interception is True
-    assert report3.support_level == "enforced"
+    assert report3.workflow_interception is False
+    assert report3.support_level == "advisory"
+
+
+def test_instruction_probe_reads_bounded_files_and_gemini_instructions(tmp_path: Path):
+    from local_ai_hub.repo_plan.host_adapters import probe_host_capabilities
+
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("x" * 70000 + f"{PLANNER_BLOCK_START}\n{PLANNER_BLOCK_END}")
+    gemini = tmp_path / ".gemini/GEMINI.md"
+    gemini.parent.mkdir()
+    gemini.write_text(f"{PLANNER_BLOCK_START}\n{PLANNER_BLOCK_END}")
+    report = probe_host_capabilities("gemini_cli", tmp_path)
+    assert report.instructions_integrated
+    agents.unlink()
+    gemini.unlink()
+    agents.write_text("x" * 70000 + f"{PLANNER_BLOCK_START}\n{PLANNER_BLOCK_END}")
+    report = probe_host_capabilities("generic_mcp", tmp_path)
+    assert not report.instructions_integrated
+
+
+def test_superpowers_install_timeout_reports_partial_state(tmp_path: Path, monkeypatch):
+    import subprocess
+    import local_ai_hub.process_utils as process_utils
+    from local_ai_hub.repo_plan.host_hooks import install_superpowers
+
+    package = tmp_path / "extensions/superpowers"
+    executable = tmp_path / "node.exe"
+    executable.write_bytes(b"native executable placeholder")
+
+    def timeout(argv, **kwargs):
+        package.mkdir(parents=True)
+        (package / "partial.txt").write_text("partial")
+        raise subprocess.TimeoutExpired(argv, 60)
+
+    monkeypatch.setattr(process_utils, "run_hidden", timeout)
+    result = install_superpowers("gemini_cli", repo_root=tmp_path, package_root=package,
+                                 executable=executable, operator_authorized=True, consent=True)
+    assert result["outcome_unknown"]
+    assert result["changed"] is None
+    assert result["partial_install_review_required"]
+
+
+def test_superpowers_nonzero_partial_install_not_reported_unchanged(tmp_path: Path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    import local_ai_hub.process_utils as process_utils
+    from local_ai_hub.repo_plan.host_hooks import install_superpowers
+
+    package = tmp_path / "extensions/superpowers"
+    executable = tmp_path / "node.exe"
+    executable.write_bytes(b"native executable placeholder")
+
+    def failed(argv, **kwargs):
+        package.mkdir(parents=True)
+        (package / "partial.txt").write_text("partial")
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(process_utils, "run_hidden", failed)
+    result = install_superpowers("gemini_cli", repo_root=tmp_path, package_root=package,
+                                 executable=executable, operator_authorized=True, consent=True)
+    assert not result["success"]
+    assert result["changed"] is None
+    assert result["partial_install_review_required"]
 
 
 def test_steering_manager_lifecycle(tmp_path: Path):

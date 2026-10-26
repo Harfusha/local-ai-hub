@@ -12,6 +12,9 @@ Confirms that:
 """
 
 from pathlib import Path
+import sqlite3
+import time
+from contextlib import closing
 import pytest
 
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
@@ -74,7 +77,7 @@ def test_single_source_of_truth_propagation(repo_env):
     create_res = ws.create_plan(
         plan_id="plan_alpha",
         title="Project Alpha",
-        goal="Deliver Alpha Feature",
+        description="Deliver Alpha Feature",
         tasks={
             "task_1": {
                 "title": "Implement core parser",
@@ -197,7 +200,7 @@ def test_contract_reconciliation_single_source_of_truth(repo_env):
     ws.create_plan(
         plan_id="plan_beta",
         title="Project Beta",
-        goal="Feature Beta",
+        description="Feature Beta",
         tasks={
             "task_b1": {
                 "title": "Build storage layer",
@@ -208,8 +211,17 @@ def test_contract_reconciliation_single_source_of_truth(repo_env):
     )
 
     binding_mgr = TaskBindingManager(str(root))
-    binding = binding_mgr.bind_task(
+    state_store = AgentStateStore(state_dir / "agent_tasks.db")
+    task_store = TaskStore(state_store)
+    task = task_store.create(
+        GoalContract(goal="Build storage", acceptance_criteria=("Supports save and read",)),
+        ScopeContext(repository_id=str(root)),
+        actor="agent",
+        repo_root=str(root),
         task_id="agent_task_200",
+    )
+    binding = binding_mgr.bind_task(
+        task_id=task.task_id,
         plan_id="plan_beta",
         plan_task_id="task_b1",
         plan_rel_path=".local-ai-hub/plans/plan_beta.plan.json",
@@ -224,6 +236,8 @@ def test_contract_reconciliation_single_source_of_truth(repo_env):
         binding=binding,
         new_acceptance_criteria=["Supports save and read", "Supports crash recovery"],
         reason="Operator clarified need for crash recovery durability",
+        task_store=task_store,
+        owner="agent",
         spec_rel_path=".local-ai-hub/specs/storage_spec.md",
         spec_content="# Storage Spec\n\nMust support atomic write and crash recovery.",
     )
@@ -251,11 +265,20 @@ def test_adopt_legacy_board_no_duplicate_planner(repo_env):
     root, state_dir, db_path, task_db_path = repo_env
     legacy_board = BoardStore(db_path)
 
-    # Insert legacy items
-    i1 = legacy_board.item_create(title="Legacy task 1", status="planned")
-    i2 = legacy_board.item_create(title="Legacy task 2", status="in_progress")
-    assert i1["success"] is True
-    assert i2["success"] is True
+    # Seed preserved legacy rows directly; public legacy board writes are retired.
+    legacy_board.item_list(limit=1)  # Initialize the pre-existing SQLite schema.
+    now = time.time()
+    with closing(sqlite3.connect(db_path)) as con, con:
+        con.executemany(
+            """INSERT INTO agent_board_items
+               (item_id, title, status, priority, labels_json, assignee, milestone,
+                linked_task_id, details_json, created_at, updated_at)
+               VALUES (?, ?, ?, 'medium', '[]', '', '', '', '{}', ?, ?)""",
+            [
+                ("legacy-1", "Legacy task 1", "planned", now, now),
+                ("legacy-2", "Legacy task 2", "in_progress", now, now),
+            ],
+        )
 
     # Initial legacy board summary has 2 items
     leg_summary = legacy_board.summary()
@@ -280,3 +303,16 @@ def test_adopt_legacy_board_no_duplicate_planner(repo_env):
     assert new_summary["total_items"] == 2
     assert new_summary["counts"]["planned"] == 1
     assert new_summary["counts"]["in_progress"] == 1
+
+
+def test_all_public_plan_http_paths_are_registered():
+    from local_ai_hub.http_route_registry import select_http_routes
+
+    actions = (
+        "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
+        "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
+        "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task",
+        "plan_reconcile_steering",
+    )
+    for action in actions:
+        assert select_http_routes("POST", f"/api/coord/{action}")

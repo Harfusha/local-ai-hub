@@ -153,7 +153,7 @@ _COORD_ACTIONS = (
     "task_claim", "record_native_receipt",
     "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
     "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
-    "plan_board_view", "plan_adopt_legacy_board",
+    "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task", "plan_reconcile_steering",
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list", "source")
@@ -311,7 +311,7 @@ _ACTION_SCOPED_FIELDS = {
         "budget": frozenset({"task_budget_increase"}),
         "stream_id": frozenset({"task_sync"}),
         "events": frozenset({"task_sync"}),
-        "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list"}),
+        "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list", "plan_list"}),
         "after_seq": frozenset({"task_sync", "pubsub_poll"}),
         "receipt": frozenset({"verify_receipt"}),
         "since_hash": frozenset({"context_compile"}),
@@ -345,8 +345,7 @@ _ACTION_SCOPED_FIELDS = {
         "delete_branch": frozenset({"worktree_release"}),
         "output_path": frozenset({"curate_dataset"}),
         "min_receipts": frozenset({"curate_dataset"}),
-        "output_summary": frozenset({"record_native_receipt"}),
-        "passed": frozenset({"record_native_receipt"}),
+        "command_id": frozenset({"record_native_receipt"}),
         "changed_paths": frozenset({"context_compile", "task_checkpoint", "task_create", "task_update", "claim", "release"}),
         "path": frozenset({"claim", "release", "renew", "task_create", "task_checkpoint", "task_update"}),
         "file": frozenset({"claim", "release", "renew", "task_create", "task_checkpoint", "task_update"}),
@@ -775,18 +774,20 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "name", "content"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
             "task_list": ("root", "query", "status", "owner", "limit", "offset", "include_stale"),
-            "record_native_receipt": ("root", "task_id", "criterion", "command", "passed", "output_summary", "reason", "summary", "result"),
+            "record_native_receipt": ("root", "task_id", "criterion", "command_id"),
             "plan_init": ("root",),
-            "plan_list": ("root", "query", "include_archived"),
+            "plan_list": ("root", "query", "lifecycle", "limit"),
             "plan_get": ("root", "plan_id"),
-            "plan_create": ("root", "plan_id", "title", "description", "goal", "target_branch", "specs", "decisions", "tasks", "owner"),
-            "plan_update": ("root", "plan_id", "expected_revision", "title", "description", "goal", "status", "target_branch", "specs", "decisions", "owner", "idempotency_key"),
+            "plan_create": ("root", "plan_id", "title", "description", "lifecycle", "default_target_ref", "spec_refs", "tasks", "accountable_role", "owner", "idempotency_key"),
+            "plan_update": ("root", "plan_id", "expected_revision", "title", "description", "lifecycle", "default_target_ref", "spec_refs", "accountable_role", "owner", "idempotency_key"),
             "plan_task_edit": ("root", "plan_id", "expected_revision", "task_id", "task_data", "idempotency_key", "owner"),
             "plan_task_delete": ("root", "plan_id", "expected_revision", "task_id", "idempotency_key", "owner"),
             "plan_validate": ("root", "plan_id"),
-            "plan_archive": ("root", "plan_id", "expected_revision", "archive_reason", "idempotency_key", "owner"),
-            "plan_board_view": ("root", "plan_id", "query", "owner"),
-            "plan_adopt_legacy_board": ("root", "plan_id", "title"),
+            "plan_archive": ("root", "plan_id", "expected_revision", "idempotency_key", "owner"),
+            "plan_board_view": ("root", "plan_id", "query", "worktree_id"),
+            "plan_adopt_legacy_board": ("root", "plan_id", "title", "owner", "idempotency_key"),
+            "plan_bind_task": ("root", "task_id", "plan_id", "plan_task_id", "expected_revision", "session_id"),
+            "plan_reconcile_steering": ("root", "task_id", "steering_id", "spec_rel_path", "spec_content", "acceptance_criteria", "expected_revision", "expected_spec_revision", "summary"),
         },
         required={
             "ask": ("root", "session_id"),
@@ -820,7 +821,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_create": ("name",),
             "milestone_status": ("name",),
             "task_claim": ("task_id",),
-            "record_native_receipt": ("task_id", "criterion", "command"),
+            "record_native_receipt": ("task_id", "criterion", "command_id"),
         },
         non_empty={
             "ask": ("root", "session_id"),
@@ -850,14 +851,20 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_create": ("name",),
             "milestone_status": ("name",),
             "task_claim": ("task_id",),
-            "record_native_receipt": ("task_id", "criterion", "command"),
-            "plan_get": ("plan_id",),
-            "plan_create": ("plan_id", "title"),
-            "plan_update": ("plan_id",),
-            "plan_task_edit": ("plan_id", "task_id", "task_data"),
-            "plan_task_delete": ("plan_id", "task_id"),
-            "plan_validate": ("plan_id",),
-            "plan_archive": ("plan_id",),
+            "record_native_receipt": ("task_id", "criterion", "command_id"),
+            "plan_init": ("root",),
+            "plan_list": ("root",),
+            "plan_get": ("root", "plan_id"),
+            "plan_create": ("root", "plan_id", "title"),
+            "plan_update": ("root", "plan_id", "expected_revision"),
+            "plan_task_edit": ("root", "plan_id", "task_id", "task_data", "expected_revision"),
+            "plan_task_delete": ("root", "plan_id", "task_id", "expected_revision"),
+            "plan_validate": ("root", "plan_id"),
+            "plan_archive": ("root", "plan_id", "expected_revision"),
+            "plan_board_view": ("root",),
+            "plan_adopt_legacy_board": ("root", "plan_id"),
+            "plan_bind_task": ("root", "task_id", "plan_id", "plan_task_id"),
+            "plan_reconcile_steering": ("root", "task_id", "steering_id", "spec_rel_path", "spec_content", "acceptance_criteria", "expected_revision", "expected_spec_revision"),
         },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "task_get", "task_list", "memory_get", "memory_find",
@@ -879,20 +886,20 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "timeout_seconds": {"type": "number", "minimum": 0.0, "default": 0.0},
             "id": {"type": "string", "default": ""},
             **{name: {"type": "string", "default": ""} for name in (
-                "lease_id", "task_id", "key", "value", "query", "command", "task", "status", "reason",
+                "lease_id", "task_id", "key", "value", "query", "command", "command_id", "task", "status", "reason",
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
                 "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id",
                 "repository_revision", "phase", "preload_profile", "since_hash",
                 "question_id", "question", "answer", "state_revision",
                 "name", "item_id", "title", "priority", "assignee", "milestone", "linked_task_id",
                 "target_date", "description", "purpose", "owner", "resource", "notes",
-                "plan_id", "idempotency_key", "archive_reason",
+                "plan_id", "idempotency_key", "plan_task_id", "steering_id", "spec_rel_path", "spec_content", "expected_spec_revision", "accountable_role",
             )},
-            "expected_revision": {"type": ["integer", "null"], "default": None},
-            "include_archived": {"type": "boolean", "default": False},
-            "task_data": {"type": ["object", "null"]},
-            "specs": {"type": "array", "items": {"type": "string"}},
-            "decisions": {"type": "array", "items": {"type": "string"}},
+            "expected_revision": {"type": "string", "minLength": 1},
+            "lifecycle": {"type": "string", "enum": ["draft", "active", "paused", "completed", "cancelled", "archived"]},
+            "default_target_ref": {"type": ["string", "null"]},
+            "spec_refs": {"type": "array", "items": {"type": "object"}},
+            "task_data": {"type": "object"},
             "tasks": {"type": ["object", "null"]},
             "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "default": None},
             "output_summary": {"type": "string", "default": ""},
@@ -1200,7 +1207,12 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
         schema["properties"]["max_tokens"] = {
             "type": "integer", "minimum": 0, "maximum": 100000, "default": 4000,
         }
-    required = [selector, *contract["actions"][action].get("required", ())]
+    action_contract = contract["actions"][action]
+    required = [
+        selector,
+        *action_contract.get("required", ()),
+        *action_contract.get("non_empty", ()),
+    ]
     schema["required"] = list(dict.fromkeys(required))
     return schema
 
@@ -2029,6 +2041,20 @@ def validate_operation_arguments(
             return "days must be an integer from 1 to 3650 for action='hotspots'"
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
             return "limit must be an integer from 1 to 50 for action='hotspots'"
+    if tool == "local_ai_coord" and action.startswith("plan_"):
+        from .repository_scope import canonical_repository_root
+        try:
+            canonical_repository_root(arguments.get("root"))
+        except ValueError as exc:
+            return str(exc)
+        if action == "plan_list":
+            limit = arguments.get("limit", 50)
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+                return "limit must be an integer from 1 to 1000 for plan_list"
+        if "expected_revision" in arguments:
+            revision = arguments["expected_revision"]
+            if not isinstance(revision, str) or not revision or revision != revision.strip():
+                return "expected_revision must be a nonempty content revision string"
     if tool == "local_ai_coord" and action == "task_sync":
         sync_action = arguments.get("sync_action", "export")
         if not isinstance(sync_action, str) or sync_action not in {"export", "import"}:

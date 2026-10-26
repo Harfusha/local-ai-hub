@@ -81,7 +81,7 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
     create_res = ws_master.create_plan(
         plan_id="plan_parser_suite",
         title="Parser Suite Project",
-        goal="Deliver robust token and syntax parser",
+        description="Deliver robust token and syntax parser",
         tasks={
             "task_parser": {
                 "title": "Implement core parser",
@@ -189,6 +189,7 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
         binding=binding_a,
         new_acceptance_criteria=new_criteria,
         reason="Operator clarification: Support hex numbers",
+        task_store=task_store,
         spec_rel_path="docs/superpowers/specs/parser.md",
         spec_content=updated_spec_text,
         owner="agent_a",
@@ -241,43 +242,25 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
     )
     assert proc.returncode == 0
 
-    # Mint authentic receipt for both criteria
-    res1 = record_authentic_native_receipt(
-        task_store=task_store,
-        verification_store=verif_store,
-        artifact_store=artifact_store,
-        task_id="agent_task_a1",
-        criterion="Parser passes unit tests",
-        command="python -m pytest tests/test_parser.py",
-        root=wt_a_dir,
-        owner="agent_a",
-        exit_code=0,
-        output_summary=proc.stdout,
-    )
-    assert res1["success"] is True
-    receipt1_id = res1["receipt_id"]
+    # Process output cannot be promoted into broker-authenticated evidence.
+    with pytest.raises(ValueError, match="trusted command_id"):
+        record_authentic_native_receipt(
+            task_store=task_store,
+            verification_store=verif_store,
+            artifact_store=artifact_store,
+            task_id="agent_task_a1",
+            criterion="Parser passes unit tests",
+            command="python -m pytest tests/test_parser.py",
+            root=wt_a_dir,
+            owner="agent_a",
+        )
 
-    res2 = record_authentic_native_receipt(
-        task_store=task_store,
-        verification_store=verif_store,
-        artifact_store=artifact_store,
-        task_id="agent_task_a1",
-        criterion="Parser supports hex literal syntax (0x...)",
-        command="python -m pytest tests/test_parser.py",
-        root=wt_a_dir,
-        owner="agent_a",
-        exit_code=0,
-        output_summary=proc.stdout,
-    )
-    assert res2["success"] is True
-    receipt2_id = res2["receipt_id"]
-
-    # 7. Checkpoint Worktree A task with verification receipts -> source_ready
+    # 7. Keep the task in progress until CommandBroker provides a receipt.
     cp_a_done = TaskCheckpoint(
         phase="verification",
-        next_action="Await integration into master",
+        next_action="Import a receipt from CommandBroker",
         affected_paths=["src/parser.py", "tests/test_parser.py"],
-        evidence_ids=[receipt1_id, receipt2_id],
+        evidence_ids=[],
         blockers=[],
         state_data={"memory_audit": {"not_used_reason": "none", "used_ids": []}},
     )
@@ -285,13 +268,13 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
     sync_checkpoint_to_plan(
         ws_a.storage,
         binding_a,
-        agent_status="completed",
+        agent_status="in_progress",
         phase="verification",
-        next_action="Await integration into master",
+            next_action="Import authentic CommandBroker receipt",
     )
 
     plan_a_final = ws_a.get_plan("plan_parser_suite")["plan"]["tasks"]["task_parser"]
-    assert plan_a_final["work_status"] == TaskWorkStatus.SOURCE_READY.value
+    assert plan_a_final["work_status"] == TaskWorkStatus.IN_PROGRESS.value
 
     # Commit changes on branch feat/parser
     run_git(wt_a_dir, "add", "src", "tests", "docs", ".local-ai-hub")
@@ -301,23 +284,13 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
     # 8. Integrator merges feat/parser into master
     run_git(repo_dir, "merge", "--no-ff", feat_a_head, "-m", "Merge feat/parser into master")
 
-    # In master, the plan delivery is fulfilled -> update delivery disposition to fulfilled
+    # A merge alone does not prove verified delivery.
     plan_master_after = ws_master.get_plan("plan_parser_suite")["plan"]
-    task_master_parser = plan_master_after["tasks"]["task_parser"]
-    task_master_parser["deliveries"]["delivery_master"]["disposition"] = "declared_integrated"
-    task_master_parser["work_status"] = TaskWorkStatus.DONE.value
 
-    save_master_res = ws_master.storage.save_plan_file(
-        ".local-ai-hub/plans/plan_parser_suite.plan.json",
-        plan_master_after,
-        owner="integrator",
-    )
-    assert save_master_res["success"] is True
-
-    # Verify board view on master reflects task_parser is DONE and task_validator is PLANNED
+    # Board retains the parser task in progress and the validator task planned.
     board_master = ws_master.get_board_view()
-    assert len(board_master["columns"]["done"]) == 1
-    assert board_master["columns"]["done"][0]["task_id"] == "task_parser"
+    assert board_master["columns"]["done"] == []
+    assert board_master["columns"]["in_progress"][0]["task_id"] == "task_parser"
     assert len(board_master["columns"]["planned"]) == 1
     assert board_master["columns"]["planned"][0]["task_id"] == "task_validator"
 
@@ -327,5 +300,5 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
 
     # Master plan still exists and is fully intact
     verified_plan = ws_master.get_plan("plan_parser_suite")["plan"]
-    assert verified_plan["tasks"]["task_parser"]["work_status"] == "done"
-    assert board_master["columns"]["done"][0]["verified"] is True
+    assert verified_plan["tasks"]["task_parser"]["work_status"] == "in_progress"
+    assert board_master["columns"]["in_progress"][0]["verified"] is False

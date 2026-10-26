@@ -1,72 +1,27 @@
-# Local AI Hub 5.1.0 — Release Verification Dossier
+# Local AI Hub 5.1.0 — Release Evidence
 
-**Release Date:** 2026-10-26  
-**Target Version:** `5.1.0`  
-**Distribution File:** `dist/local_ai_hub-5.1.0-py3-none-any.whl`  
-**Wheel SHA256:** `04bd322436b8e1b61c800ff922a92ab2d41c7d98b0c8e7b083c72773fa8ecb39`  
-**Active Service:** PID `46708` listening on `http://127.0.0.1:11435`  
-**CI/CD Pipeline Run:** Run #169 — [GitHub Actions](https://github.com/Harfusha/local-ai-hub/actions/runs/40401323844)
+**State:** candidate validation; source changes are ready for review, hosted CI after push is still required.
+**Base revision:** `cb3c25d9a3021a08f474e40a2047c2f9945314bf` (`master`).
+**Target:** `5.1.0`.
 
----
+## Current verification receipts
 
-## 1. Automated Verification & Test Results
+| Check | Result | Evidence |
+|---|---:|---|
+| Planner, storage, schema, host hooks, Agent OS, multi-worktree, and daemon regressions | PASS | `169 passed, 5 skipped` on 2026-10-27; skips require symlink privilege or POSIX/Windows-only primitives. |
+| Public surface policy and inventory | PASS | `790 passed` on 2026-10-27. `tools/audit_agent_surface.py` reports `success: true`, `errors: []`. |
+| Wheel smoke contract | PASS | `20 passed` on 2026-10-27. |
+| Python compile | PASS | `python -m compileall -q src tools tests`, exit 0. |
+| Pyflakes | PASS | `python -m pyflakes src tools`, exit 0. |
+| Hub selftest | PASS | `tools/selftest.py`, 6/6 checks. |
+| Prompt policy synchronization | PASS | `tools/sync_prompt_policies.py --check`. |
+| Isolated wheel and MCP stdio smoke | PASS | `local_ai_hub-5.1.0-py3-none-any.whl`, 1,742,469 bytes, SHA256 `a8f2dbf38ab417e15ac80a9049bdc6e700f30cc0b73d9f6f05ae6a107eeeebdc`; isolated venv `pip check` has no broken requirements; MCP advertises five tools and returns version `5.1.0`. |
+| Installed Hub after restart | ONLINE | `hubctl status`: PID `1560`, port/service reachable, version `5.1.0`; eight models installed, no active model. |
 
-| Gate / Test Cohort | Execution Command | Result / Status | Details / Evidence |
-|---|---|---|---|
-| **Syntax & Static Analysis** | `python -m compileall -q src tools tests` | **PASS (exit 0)** | 0 compilation errors across all modules. |
-| **Linter Hygiene** | `pyflakes src tools` | **PASS (exit 0)** | 0 warnings, 0 unused imports or variables. |
-| **Core Selftest** | `python tools/selftest.py` | **PASS (100% green)** | 6/6 checks passed: undefined-globals, config, repo-filtering, http-health, http-capabilities, agent-state-store. |
-| **System Diagnostics** | `python tools/doctor.py` | **PASS (all [OK])** | Core Python 3.13, hardware detection, SQLite WAL mode, tools catalog healthy. |
-| **Comprehensive Release Gate** | `python tools/release_check.py --allow-installed --live-smoke --json` | **PASS (16/16)** | Full live smoke verified: `qwen2.5-coder:7b` (code & reasoning), `qwen3.5:9b` (vision), Whisper audio. |
-| **Surface Inventory & Contracts** | `python -m pytest -q tests/test_surface_audit_policy.py tests/test_surface_inventory.py` | **PASS (748 passed in 113.66s)** | 426 registered operations verified with exact field policies and 0 unreviewed drift. |
-| **Prompt Synchronization** | `python tools/sync_prompt_policies.py --check` | **PASS** | `INSTALL_PROMPT.md` and `UPDATE_PROMPT.md` policy blocks strictly match generated definitions. |
+The smoke wheel is retained outside the checkout at `%TEMP%\local-ai-hub-5.1.0-candidate-20261027\wheelhouse`. The old `dist/` wheel and its historical SHA are not evidence for this candidate.
 
----
+## Open release gate
 
-## 2. Statistical Performance Benchmark (T0–T12 Gate)
+GitHub Actions run [#170](https://github.com/Harfusha/local-ai-hub/actions/runs/40410655500) failed on the pre-fix revision `cb3c25d9a3021a08f474e40a2047c2f9945314bf` in the Ubuntu/Python 3.14 daemon lifecycle tests. This checkout contains the fixes and focused regressions; a new hosted run must pass after the commit is pushed.
 
-- **Benchmark Command:** `python tools/benchmark_native_candidates.py --case json-budget --root . --repetitions 1000 --output docs/perf_candidate_json_budget.json`
-- **Output Artifact:** `docs/perf_candidate_json_budget.json`
-- **Metric Observations (1,000 paired executions):**
-  - Sample size: **1,000 independent pairs** (`tail_sample_gate_met: true`)
-  - Baseline execution p50: 1.25 ms | p95: 1.84 ms | p99: 2.38 ms
-  - Candidate execution p50: 0.91 ms | p95: 1.28 ms | p99: 1.59 ms
-  - **Speedup Median (p50):** **1.38x**
-  - **Speedup 95th Percentile (p95):** **1.44x** (exceeds 1.25x gate requirement)
-  - **Speedup 99th Percentile (p99):** **1.50x** (exceeds 1.25x gate requirement)
-  - **Statistical Gate Verdict:** `tail_gate_met: true`
-
----
-
-## 3. Isolated Wheel Packaging & MCP Smoke Test
-
-- **Built Wheel:** `dist/local_ai_hub-5.1.0-py3-none-any.whl` (size: 1,698,984 bytes)
-- **Validation Environment:** Clean disposable virtual environment (`test_smoke_venv`)
-- **Package Integrity:** `pip check` -> `No broken requirements found.`
-- **Functional MCP Smoke Execution (`tools/wheel_smoke.py`):**
-  ```json
-  {
-    "mcp": {
-      "ollama_online": false,
-      "server_name": "Local AI Hub (compact)",
-      "tool_count": 5
-    },
-    "module_path": "...\\Lib\\site-packages\\local_ai_hub\\__init__.py",
-    "smoke": "passed",
-    "success": true,
-    "version": "5.1.0",
-    "wheel_sha256": "04bd322436b8e1b61c800ff922a92ab2d41c7d98b0c8e7b083c72773fa8ecb39"
-  }
-  ```
-- **Result:** `smoke: passed`, `success: true`.
-
----
-
-## 4. Multi-Platform Hosted CI Verification (GitHub Actions Run #169)
-
-- **Workflow Run:** [Run #169 on master](https://github.com/Harfusha/local-ai-hub/actions/runs/40401323844)
-- **Platforms Verified:**
-  - Ubuntu Linux (`ubuntu-latest`: Python 3.11, 3.12, 3.13, 3.14)
-  - macOS ARM64 (`macos-latest`: Python 3.11, 3.12, 3.13, 3.14)
-  - Windows x64 (`windows-latest`: Python 3.11, 3.12, 3.13, 3.14)
-- **Status:** All matrix configurations verified with 0 FAIL / 0 ERROR.
+`tools/release_check.py --allow-installed` currently stops because pre-existing `build/` and `dist/` directories are present (timestamps 2026-10-26). They were preserved. Release-check therefore is not recorded as passing. The live model check and a dashboard screenshot were not used as release claims.

@@ -1002,7 +1002,53 @@ def main() -> int:
     parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills (token-economizer, caveman, tool-orchestration, ollama-quality-routing)")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
     parser.add_argument("--expected-revision", help="Exact verified 40-character source commit required for install/update.")
+    parser.add_argument("--host-project-root", type=Path, help="Explicit project root for isolated host-hook maintenance; skips Hub install/service/model actions.")
+    parser.add_argument("--host-adapter", choices=["codex", "gemini_cli"], help="Documented local host hook format.")
+    parser.add_argument("--host-action", choices=["preview", "apply", "rollback"], default="preview")
+    parser.add_argument("--host-preview-revision", help="Fresh preview revision required by host apply.")
+    parser.add_argument("--superpowers-root", type=Path, help="Explicit installed Superpowers package to check against supported 7.0.1; never installs or overwrites it.")
+    parser.add_argument("--install-superpowers", action="store_true", help="Explicitly install missing pinned Gemini extension during --host-action apply. Codex uses native Plugins UI.")
+    parser.add_argument("--superpowers-executable", type=Path, help="Absolute native Gemini executable, or node.exe with --superpowers-entrypoint; no .cmd/.bat wrappers.")
+    parser.add_argument("--superpowers-entrypoint", type=Path, help="Absolute Gemini CLI JavaScript entrypoint for a native Node launcher.")
+    parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
     args = parser.parse_args()
+
+    if args.host_project_root is not None or args.host_adapter is not None:
+        if args.host_project_root is None or args.host_adapter is None:
+            parser.error("--host-project-root and --host-adapter are required together")
+        from local_ai_hub.repo_plan.host_hooks import ManagedHostInstallation, inspect_superpowers, install_superpowers
+        try:
+            manager = ManagedHostInstallation(args.host_project_root, args.host_adapter)
+            dependency = inspect_superpowers(args.host_adapter, args.superpowers_root)
+            if args.host_action == "apply":
+                if not args.host_preview_revision:
+                    parser.error("host apply requires --host-preview-revision from preview")
+                if args.install_superpowers:
+                    if args.superpowers_root is None or args.superpowers_executable is None:
+                        parser.error("dependency install requires --superpowers-root and --superpowers-executable")
+                    installed = install_superpowers(args.host_adapter, repo_root=args.host_project_root,
+                                package_root=args.superpowers_root, executable=args.superpowers_executable,
+                                entrypoint=args.superpowers_entrypoint, operator_authorized=True,
+                                consent=args.superpowers_consent)
+                    if not installed["success"]:
+                        print(json.dumps(installed))
+                        return 1
+                    dependency = installed["dependency"]
+                result = manager.apply(expected_revision=args.host_preview_revision)
+            elif args.host_action == "rollback":
+                result = manager.rollback()
+            else:
+                result = manager.preview()
+            result["superpowers"] = dependency
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"success": False, "error": str(exc)}))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if any([args.superpowers_root is not None, args.host_preview_revision is not None, args.host_action != "preview",
+            args.install_superpowers, args.superpowers_executable is not None,
+            args.superpowers_entrypoint is not None, args.superpowers_consent]):
+        parser.error("host maintenance options require --host-project-root and --host-adapter")
 
     if not args.generate_only and args.expected_revision:
         try:

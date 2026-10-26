@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import copy
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from .schema_validation import (
 from .storage import RepoPlanStorage, get_git_context
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 DEFAULT_README_CONTENT = """# Local AI Hub Project Workspace
 
@@ -86,11 +89,30 @@ class RepoPlanWorkspace:
         return ws_dir.exists() and (self.plans_dir.exists() or any(ws_dir.iterdir()))
 
     def _plan_rel_path(self, plan_id: str) -> str:
-        clean_id = plan_id.strip()
-        if not PLAN_ID_REGEX.match(clean_id):
-            raise RepoPlanValidationError(f"Invalid plan ID: '{clean_id}'")
-        rel_dir = self.plans_dir.relative_to(self.repo_root).as_posix()
-        return f"{rel_dir}/{clean_id}.plan.json"
+        if not isinstance(plan_id, str) or not PLAN_ID_REGEX.fullmatch(plan_id):
+            raise RepoPlanValidationError(f"Invalid plan ID: {plan_id!r}")
+        direct = self.plans_dir / f"{plan_id}.plan.json"
+        if direct.exists():
+            return direct.relative_to(self.repo_root).as_posix()
+        matches: list[Path] = []
+        if self.plans_dir.exists():
+            for path in sorted(self.plans_dir.glob("*.plan.json")):
+                if path.is_symlink():
+                    continue
+                try:
+                    raw = path.read_bytes()
+                    if len(raw) > 1024 * 1024:
+                        continue
+                    data = json.loads(raw.decode("utf-8"))
+                except (OSError, UnicodeError, ValueError):
+                    continue
+                if isinstance(data, dict) and data.get("id") == plan_id:
+                    matches.append(path)
+                    if len(matches) > 1:
+                        break
+        if len(matches) > 1:
+            raise RepoPlanValidationError(f"Duplicate plan identity '{plan_id}' in this worktree")
+        return (matches[0] if matches else direct).relative_to(self.repo_root).as_posix()
 
     def list_plans(
         self,
@@ -103,6 +125,8 @@ class RepoPlanWorkspace:
             return []
 
         plans: list[dict[str, Any]] = []
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise RepoPlanValidationError("limit must be an integer from 1 to 1000")
         query_clean = (query or "").strip().lower()
 
         for path in sorted(self.plans_dir.glob("*.plan.json")):
@@ -111,6 +135,9 @@ class RepoPlanWorkspace:
                 data, rev = self.storage.read_plan_file(rel_path)
             except Exception as exc:
                 logger.warning("Failed to load plan %s: %s", path, exc)
+                plans.append({"invalid": True, "rel_path": rel_path, "error": str(exc)})
+                if len(plans) >= limit:
+                    break
                 continue
 
             plan_life = data.get("lifecycle", "draft")
@@ -145,6 +172,8 @@ class RepoPlanWorkspace:
         """Get full plan file dictionary and file revision."""
         rel_path = self._plan_rel_path(plan_id)
         data, rev = self.storage.read_plan_file(rel_path)
+        if data.get("id") != plan_id:
+            raise RepoPlanNotFoundError(f"Plan '{plan_id}' not found")
         branch, head = get_git_context(self.repo_root)
         return {
             "success": True,
@@ -160,47 +189,49 @@ class RepoPlanWorkspace:
         plan_id: str,
         title: str,
         description: str = "",
-        goal: str = "",
         lifecycle: str = "draft",
-        target_branch: str | None = None,
         default_target_ref: str | None = "refs/heads/master",
-        specs: list[str] | None = None,
         spec_refs: list[dict[str, Any]] | None = None,
-        decisions: list[str] | None = None,
         tasks: dict[str, Any] | None = None,
+        accountable_role: str | None = None,
         owner: str = "agent",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
-        final_desc = (description or goal or "").strip()
-        final_target = f"refs/heads/{target_branch}" if target_branch else default_target_ref
         """Create a new plan file using the 9-step atomic save protocol."""
         self.init_workspace()
         rel_path = self._plan_rel_path(plan_id)
         full_path = self.repo_root / rel_path
-        if full_path.exists():
+        if full_path.exists() and not idempotency_key:
             raise RepoPlanConflictError(f"Plan file already exists: {rel_path}")
 
         plan_dict = {
             "schema_version": 1,
-            "id": plan_id.strip(),
-            "title": title.strip(),
-            "description": final_desc,
-            "lifecycle": lifecycle.strip().lower(),
-            "default_target_ref": final_target.strip() if final_target else None,
-            "spec_refs": spec_refs or [],
+            "id": plan_id,
+            "title": title,
+            "description": description,
+            "lifecycle": lifecycle,
+            "default_target_ref": default_target_ref,
+            "spec_refs": copy.deepcopy(spec_refs if spec_refs is not None else []),
             "tasks": {},
         }
-        if tasks:
-            for tid, t in tasks.items():
-                if isinstance(t, dict):
-                    t.setdefault("description", t.get("title", ""))
-                    t.setdefault("kind", "code")
-                    t.setdefault("work_status", "planned")
-                    t.setdefault("depends_on", [])
-                    t.setdefault("clarifications", [])
-                    t.setdefault("acceptance_criteria", ["Initial acceptance criteria"])
-                    t.setdefault("next_action", "")
-                    t.setdefault("blocker", None)
-            plan_dict["tasks"] = tasks
+        if accountable_role is not None:
+            plan_dict["accountable_role"] = accountable_role
+        if tasks is not None:
+            if not isinstance(tasks, dict):
+                raise RepoPlanValidationError("tasks must be an object keyed by stable task ID")
+            for tid, raw_task in tasks.items():
+                if not isinstance(raw_task, dict):
+                    raise RepoPlanValidationError(f"Task '{tid}' must be an object")
+                task = copy.deepcopy(raw_task)
+                task.setdefault("description", "")
+                task.setdefault("kind", "code")
+                task.setdefault("work_status", "planned")
+                task.setdefault("depends_on", [])
+                task.setdefault("clarifications", [])
+                task.setdefault("acceptance_criteria", [])
+                task.setdefault("next_action", "")
+                task.setdefault("blocker", None)
+                plan_dict["tasks"][tid] = task
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
 
         save_res = self.storage.save_plan_file(
@@ -208,9 +239,11 @@ class RepoPlanWorkspace:
             plan_dict,
             expected_revision="",
             owner=owner,
+            idempotency_key=idempotency_key,
         )
         return {
             "success": True,
+            "root": str(self.repo_root),
             "plan_id": plan_id,
             "file_revision": save_res["file_revision"],
             "rel_path": rel_path,
@@ -220,12 +253,15 @@ class RepoPlanWorkspace:
     def update_plan(
         self,
         plan_id: str,
-        title: str | None = None,
-        description: str | None = None,
-        lifecycle: str | None = None,
-        default_target_ref: str | None = None,
+        title: Any = _UNSET,
+        description: Any = _UNSET,
+        lifecycle: Any = _UNSET,
+        default_target_ref: Any = _UNSET,
+        spec_refs: Any = _UNSET,
+        accountable_role: Any = _UNSET,
         expected_revision: str | None = None,
         owner: str = "agent",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Update top-level plan metadata. Preserves plan identity and does NOT rename file on title change."""
         rel_path = self._plan_rel_path(plan_id)
@@ -236,14 +272,11 @@ class RepoPlanWorkspace:
                 f"Revision conflict on plan '{plan_id}': expected {expected_revision}, current {current_rev}"
             )
 
-        if title is not None:
-            plan_dict["title"] = title.strip()
-        if description is not None:
-            plan_dict["description"] = description.strip()
-        if lifecycle is not None:
-            plan_dict["lifecycle"] = lifecycle.strip().lower()
-        if default_target_ref is not None:
-            plan_dict["default_target_ref"] = default_target_ref.strip() if default_target_ref else None
+        for key, value in (("title", title), ("description", description),
+                           ("lifecycle", lifecycle), ("default_target_ref", default_target_ref),
+                           ("spec_refs", spec_refs), ("accountable_role", accountable_role)):
+            if value is not _UNSET:
+                plan_dict[key] = copy.deepcopy(value)
 
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
 
@@ -252,6 +285,7 @@ class RepoPlanWorkspace:
             plan_dict,
             expected_revision=current_rev,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
         return {
             "success": True,
@@ -266,21 +300,25 @@ class RepoPlanWorkspace:
         plan_id: str,
         task_id: str,
         *,
-        title: str | None = None,
-        description: str | None = None,
-        kind: str | None = None,
-        work_status: str | None = None,
-        depends_on: list[dict[str, Any]] | None = None,
-        clarifications: list[dict[str, Any]] | None = None,
-        acceptance_criteria: list[str] | None = None,
-        next_action: str | None = None,
-        blocker: str | None = None,
-        order: int | None = None,
-        accountable_role: str | None = None,
-        work_phase: str | None = None,
-        deliveries: dict[str, Any] | None = None,
+        title: Any = _UNSET,
+        description: Any = _UNSET,
+        kind: Any = _UNSET,
+        work_status: Any = _UNSET,
+        depends_on: Any = _UNSET,
+        clarifications: Any = _UNSET,
+        acceptance_criteria: Any = _UNSET,
+        next_action: Any = _UNSET,
+        blocker: Any = _UNSET,
+        order: Any = _UNSET,
+        accountable_role: Any = _UNSET,
+        work_phase: Any = _UNSET,
+        spec_refs: Any = _UNSET,
+        scope: Any = _UNSET,
+        results: Any = _UNSET,
+        deliveries: Any = _UNSET,
         expected_revision: str | None = None,
         owner: str = "agent",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Edit or create a task within a plan file using atomic save."""
         rel_path = self._plan_rel_path(plan_id)
@@ -291,65 +329,77 @@ class RepoPlanWorkspace:
                 f"Revision conflict on plan '{plan_id}': expected {expected_revision}, current {current_rev}"
             )
 
-        clean_task_id = task_id.strip()
-        if not TASK_ID_REGEX.match(clean_task_id):
-            raise RepoPlanValidationError(f"Invalid task ID: '{clean_task_id}'")
+        if not isinstance(task_id, str) or not TASK_ID_REGEX.fullmatch(task_id):
+            raise RepoPlanValidationError(f"Invalid task ID: {task_id!r}")
+        clean_task_id = task_id
 
         tasks = plan_dict.setdefault("tasks", {})
         task = tasks.get(clean_task_id)
 
         if task is None:
             # Create new task
-            if not title:
+            if title is _UNSET or not title:
                 raise RepoPlanValidationError(f"Task '{clean_task_id}' requires a title to create")
             task = {
-                "title": title.strip(),
-                "description": description.strip() if description else "",
-                "kind": kind.strip().lower() if kind else "code",
-                "work_status": work_status.strip().lower() if work_status else "planned",
-                "depends_on": depends_on or [],
-                "clarifications": clarifications or [],
-                "acceptance_criteria": acceptance_criteria or [],
-                "next_action": next_action.strip() if next_action else "",
-                "blocker": blocker.strip() if blocker else None,
+                "title": title,
+                "description": "" if description is _UNSET else description,
+                "kind": "code" if kind is _UNSET else kind,
+                "work_status": "planned" if work_status is _UNSET else work_status,
+                "depends_on": [] if depends_on is _UNSET else copy.deepcopy(depends_on),
+                "clarifications": [] if clarifications is _UNSET else copy.deepcopy(clarifications),
+                "acceptance_criteria": [] if acceptance_criteria is _UNSET else copy.deepcopy(acceptance_criteria),
+                "next_action": "" if next_action is _UNSET else next_action,
+                "blocker": None if blocker is _UNSET else blocker,
             }
-            if order is not None:
+            if order is not _UNSET:
                 task["order"] = order
-            if accountable_role is not None:
+            if accountable_role is not _UNSET:
                 task["accountable_role"] = accountable_role
-            if work_phase is not None:
+            if work_phase is not _UNSET:
                 task["work_phase"] = work_phase
-            if deliveries:
-                task["deliveries"] = deliveries
+            if spec_refs is not _UNSET:
+                task["spec_refs"] = copy.deepcopy(spec_refs)
+            if scope is not _UNSET:
+                task["scope"] = copy.deepcopy(scope)
+            if results is not _UNSET:
+                task["results"] = copy.deepcopy(results)
+            if deliveries is not _UNSET:
+                task["deliveries"] = copy.deepcopy(deliveries)
             tasks[clean_task_id] = task
         else:
             # Patch existing task
-            if title is not None:
-                task["title"] = title.strip()
-            if description is not None:
-                task["description"] = description.strip()
-            if kind is not None:
-                task["kind"] = kind.strip().lower()
-            if work_status is not None:
-                task["work_status"] = work_status.strip().lower()
-            if depends_on is not None:
-                task["depends_on"] = depends_on
-            if clarifications is not None:
-                task["clarifications"] = clarifications
-            if acceptance_criteria is not None:
-                task["acceptance_criteria"] = list(acceptance_criteria)
-            if next_action is not None:
-                task["next_action"] = next_action.strip()
-            if blocker is not None:
-                task["blocker"] = blocker.strip() if blocker else None
-            if order is not None:
+            if title is not _UNSET:
+                task["title"] = title
+            if description is not _UNSET:
+                task["description"] = description
+            if kind is not _UNSET:
+                task["kind"] = kind
+            if work_status is not _UNSET:
+                task["work_status"] = work_status
+            if depends_on is not _UNSET:
+                task["depends_on"] = copy.deepcopy(depends_on)
+            if clarifications is not _UNSET:
+                task["clarifications"] = copy.deepcopy(clarifications)
+            if acceptance_criteria is not _UNSET:
+                task["acceptance_criteria"] = copy.deepcopy(acceptance_criteria)
+            if next_action is not _UNSET:
+                task["next_action"] = next_action
+            if blocker is not _UNSET:
+                task["blocker"] = blocker
+            if order is not _UNSET:
                 task["order"] = order
-            if accountable_role is not None:
+            if accountable_role is not _UNSET:
                 task["accountable_role"] = accountable_role
-            if work_phase is not None:
+            if work_phase is not _UNSET:
                 task["work_phase"] = work_phase
-            if deliveries is not None:
-                task["deliveries"] = deliveries
+            if spec_refs is not _UNSET:
+                task["spec_refs"] = copy.deepcopy(spec_refs)
+            if scope is not _UNSET:
+                task["scope"] = copy.deepcopy(scope)
+            if results is not _UNSET:
+                task["results"] = copy.deepcopy(results)
+            if deliveries is not _UNSET:
+                task["deliveries"] = copy.deepcopy(deliveries)
 
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
 
@@ -358,6 +408,7 @@ class RepoPlanWorkspace:
             plan_dict,
             expected_revision=current_rev,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
         return {
             "success": True,
@@ -373,6 +424,7 @@ class RepoPlanWorkspace:
         task_id: str,
         expected_revision: str | None = None,
         owner: str = "agent",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Delete a task from a plan file."""
         rel_path = self._plan_rel_path(plan_id)
@@ -387,6 +439,18 @@ class RepoPlanWorkspace:
         if task_id not in tasks:
             raise RepoPlanNotFoundError(f"Task '{task_id}' not found in plan '{plan_id}'")
 
+        if tasks[task_id].get("work_status") in {"in_progress", "source_ready"}:
+            raise RepoPlanConflictError("Cannot delete a task with active or unintegrated source work")
+        if tasks[task_id].get("deliveries"):
+            raise RepoPlanConflictError("Cannot delete a task with delivery obligations")
+        if any(
+            isinstance(dep, dict) and dep.get("plan_id", plan_id) == plan_id
+            and dep.get("task_id") == task_id
+            for other_id, other in tasks.items() if other_id != task_id
+            for dep in other.get("depends_on", [])
+        ):
+            raise RepoPlanConflictError("Cannot delete a task referenced by another task")
+
         del tasks[task_id]
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
 
@@ -395,6 +459,7 @@ class RepoPlanWorkspace:
             plan_dict,
             expected_revision=current_rev,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
         return {
             "success": True,
@@ -408,6 +473,7 @@ class RepoPlanWorkspace:
         plan_id: str,
         expected_revision: str | None = None,
         owner: str = "agent",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Archive a plan file by setting its lifecycle to 'archived'."""
         return self.update_plan(
@@ -415,6 +481,7 @@ class RepoPlanWorkspace:
             lifecycle=PlanLifecycle.ARCHIVED.value,
             expected_revision=expected_revision,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
 
     def validate_plan(self, plan_id: str) -> dict[str, Any]:
@@ -482,13 +549,13 @@ class RepoPlanWorkspace:
                 work_status = tdata.get("work_status", "planned").lower()
                 target_col = work_status if work_status in columns else "planned"
 
-                results = tdata.get("results", [])
                 deliveries = tdata.get("deliveries", {})
                 has_open_deliveries = any(
                     isinstance(d, dict) and d.get("disposition") == "pending"
                     for d in deliveries.values()
                 )
-                verified = (work_status == "done" or len(results) > 0) and not tdata.get("blocker")
+                # File declarations and result references are not current verifier receipts.
+                verified = False
 
                 board_card = {
                     "task_id": tid,
@@ -509,6 +576,7 @@ class RepoPlanWorkspace:
                     "has_open_deliveries": has_open_deliveries,
                     "saved_to_file": True,
                     "verified": verified,
+                    "verification_status": "unverified",
                     "plan_file_revision": prev,
                     "plan_rel_path": rel,
                 }
@@ -535,6 +603,7 @@ class RepoPlanWorkspace:
         legacy_items: list[dict[str, Any]] | None = None,
         title: str = "",
         owner: str = "agent",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Adopt SQLite board items into a file-backed plan without deleting the originals."""
         items_to_adopt = board_items if board_items is not None else (legacy_items or [])
@@ -582,7 +651,7 @@ class RepoPlanWorkspace:
                 "work_status": plan_status,
                 "depends_on": [],
                 "clarifications": [],
-                "acceptance_criteria": [f"Adopted criteria for {title}"],
+                "acceptance_criteria": [],
                 "next_action": "",
                 "blocker": None,
             }
@@ -595,6 +664,7 @@ class RepoPlanWorkspace:
             plan_dict,
             expected_revision=current_rev,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
         return {
             "success": True,

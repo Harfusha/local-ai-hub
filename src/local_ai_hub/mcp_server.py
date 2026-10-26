@@ -2114,6 +2114,7 @@ def _instrumented_tool():
                 "response_profile": arguments.get("response_profile", ""),
                 "reuse_key": arguments.get("reuse_key", ""),
                 "tool": fn.__name__,
+                "arguments": arguments,
             })
             operational_token = _CURRENT_OPERATIONAL_CONTEXT.set(
                 (action_name, requires_heavy_work)
@@ -4455,6 +4456,7 @@ def local_ai_coord(
     value: str = "",
     query: str = "",
     command: str = "",
+    command_id: str = "",
     ttl_seconds: int | None = None,
     max_tokens: int = 0,
     task: str = "",
@@ -4560,18 +4562,38 @@ def local_ai_coord(
     state_data: dict[str, Any] | None = None,
     resource: str = "",
     plan_id: str = "",
-    expected_revision: int | None = None,
+    expected_revision: str | None = None,
     idempotency_key: str = "",
-    include_archived: bool = False,
-    archive_reason: str = "",
     task_data: dict[str, Any] | None = None,
-    specs: list[str] | None = None,
-    decisions: list[str] | None = None,
+    lifecycle: str | None = None,
+    default_target_ref: str | None = None,
+    spec_refs: list[dict[str, Any]] | None = None,
+    accountable_role: str | None = None,
     tasks: dict[str, Any] | None = None,
+    plan_task_id: str = "",
+    steering_id: str = "",
+    spec_rel_path: str = "",
+    spec_content: str = "",
+    expected_spec_revision: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
+    if isinstance(action, str) and action.startswith("plan_"):
+        # Preserve omission versus explicit null; do not inject other actions' defaults.
+        options = _CURRENT_RESPONSE_OPTIONS.get() or {}
+        supplied = options.get("arguments") if options.get("tool") == "local_ai_coord" else None
+        if not isinstance(supplied, dict):
+            current = locals().copy()
+            signature = inspect.signature(local_ai_coord)
+            supplied = {name: value for name, value in current.items()
+                        if name in signature.parameters and value != signature.parameters[name].default}
+        error = validate_operation_arguments("local_ai_coord", action, supplied)
+        if error:
+            return contract_error(error, status_code=400)
+        metadata = operation_contract("local_ai_coord")["actions"][action]
+        arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
+        return _compact(CLIENT.coord(action=action, **arguments), "status")
     if changed_paths is not None and not paths:
         paths = changed_paths
     if (path or file) and not paths:
@@ -5057,7 +5079,7 @@ def local_ai_coord(
             task_kwargs["allow_adopt"] = True
         if action in {"task_claim", "task_adopt"}:
             return _compact(CLIENT.coord(
-                action="claim", task_id=task_id, owner=owner, root=root,
+                action="task_claim", task_id=task_id, owner=owner, root=root,
             ), "task_memory")
         task_result = CLIENT.coord(
             **task_kwargs,
@@ -5115,12 +5137,11 @@ def local_ai_coord(
             "preload_profile": preload_profile,
         }, timeout=_timeout("context")))
     if action == "record_native_receipt":
-        if not task_id or not criterion or not command:
-            return contract_error("record_native_receipt requires task_id, criterion, and command")
+        if not task_id or not criterion or not command_id:
+            return contract_error("record_native_receipt requires task_id, criterion, and command_id")
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "native_receipt", "root": root, "task_id": task_id,
-            "criterion": criterion, "command": command, "passed": True,
-            "output_summary": reason or summary or result or "native test execution passed",
+            "criterion": criterion, "command_id": command_id,
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
@@ -5258,9 +5279,6 @@ def local_ai_coord(
         "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
         "board_item_create", "board_item_update", "board_item_get", "board_item_delete",
         "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing",
-        "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
-        "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
-        "plan_board_view", "plan_adopt_legacy_board",
     }:
         item_title = (title or name) if action.startswith("board_item_") else title
         item_details = (details or ({"description": description} if description else None)) if action.startswith("board_item_") else details
@@ -5272,9 +5290,6 @@ def local_ai_coord(
             capacity=capacity, timeout=timeout, ttl_seconds=ttl_seconds, purpose=purpose,
             owner=owner, lease_id=lease_id, topic=topic,
             filter=filter or filter_payload, limit=limit, include=include, session_id=session_id,
-            plan_id=plan_id, expected_revision=expected_revision, idempotency_key=idempotency_key,
-            include_archived=include_archived, archive_reason=archive_reason, task_data=task_data,
-            specs=specs, decisions=decisions, tasks=tasks, goal=goal, target_branch=target_branch,
             query=query,
         )
         return _compact(CLIENT.coord(**coord_kwargs), "status")

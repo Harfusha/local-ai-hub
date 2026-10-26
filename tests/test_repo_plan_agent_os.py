@@ -150,10 +150,21 @@ def test_checkpoint_sync_to_plan(test_environment):
 
 def test_contract_revision_reconciliation(test_environment):
     """Test updating contract criteria mid-flight preserves history and appends clarification."""
-    tmp_path, storage, _, _, _, _, binding_manager = test_environment
+    tmp_path, storage, _, task_store, _, _, binding_manager = test_environment
     rel_path = ".local-ai-hub/plans/workflow.plan.json"
     create_initial_plan_file(storage, rel_path)
 
+    task_store.create(
+        GoalContract(
+            goal="Implement core logic",
+            acceptance_criteria=[
+                "Core module passes unit tests",
+                "Specification documentation is verified",
+            ],
+        ),
+        ScopeContext(repository_id=str(tmp_path)),
+        task_id="task_001", actor="test_agent", repo_root=str(tmp_path),
+    )
     binding = binding_manager.bind_task("task_001", "plan_workflow", "task_core", rel_path)
 
     spec_path = "docs/superpowers/specs/feature.md"
@@ -170,6 +181,8 @@ def test_contract_revision_reconciliation(test_environment):
         reason="Operator clarified concurrency requirements during implementation",
         spec_rel_path=spec_path,
         spec_content=spec_content,
+        owner="test_agent",
+        task_store=task_store,
     )
     assert save_res["success"] is True
     assert new_rev == 2
@@ -213,97 +226,21 @@ def test_authentic_native_receipts(test_environment):
 
     binding = binding_manager.bind_task(task_id, "plan_workflow", "task_core", rel_path)
 
-    # 1. Reject fake pass command
-    with pytest.raises(ValueError, match="Trivial pass command"):
-        record_authentic_native_receipt(
-            task_store=task_store,
-            verification_store=verif_store,
-            artifact_store=artifact_store,
-            task_id=task_id,
-            criterion=criteria[0],
-            command="echo PASS",
-            root=tmp_path,
-            owner="test_agent",
-        )
-
-    # 2. Reject nonzero exit code for test
-    with pytest.raises(ValueError, match="Native test command failed"):
-        record_authentic_native_receipt(
-            task_store=task_store,
-            verification_store=verif_store,
-            artifact_store=artifact_store,
-            task_id=task_id,
-            criterion=criteria[0],
-            command="pytest tests/unit",
-            root=tmp_path,
-            owner="test_agent",
-            exit_code=1,
-        )
-
-    # 3. Reject wrong root
-    with pytest.raises(ValueError, match="Root mismatch"):
-        record_authentic_native_receipt(
-            task_store=task_store,
-            verification_store=verif_store,
-            artifact_store=artifact_store,
-            task_id=task_id,
-            criterion=criteria[0],
-            command="pytest tests/unit",
-            root=tmp_path / "wrong_dir",
-            owner="test_agent",
-        )
-
-    # 4. Valid native test receipt
-    res_test = record_authentic_native_receipt(
-        task_store=task_store,
-        verification_store=verif_store,
-        artifact_store=artifact_store,
-        task_id=task_id,
-        criterion=criteria[0],
-        command="pytest tests/test_core.py -q",
-        root=tmp_path,
-        owner="test_agent",
-        exit_code=0,
-        output_summary="10 passed in 0.5s",
-        binding=binding,
-        plan_storage=storage,
-    )
-    assert res_test["success"] is True
-    assert res_test["evidence_type"] == "test"
-
-    # 5. Valid documentation/inspection receipt
-    res_doc = record_authentic_native_receipt(
-        task_store=task_store,
-        verification_store=verif_store,
-        artifact_store=artifact_store,
-        task_id=task_id,
-        criterion=criteria[1],
-        command="git diff --check docs/superpowers/specs/feature.md",
-        root=tmp_path,
-        owner="test_agent",
-        exit_code=0,
-        producer="inspection_producer",
-        output_summary="Specification reviewed and verified",
-        binding=binding,
-        plan_storage=storage,
-    )
-    assert res_doc["success"] is True
-    assert res_doc["evidence_type"] == "source_review"
-
-    # 6. Verify that receipts satisfy evaluate_completion_receipts!
-    updated_task = task_store.get(task_id)
-    assert updated_task.verification_receipts.get(criteria[0]) == res_test["receipt_id"]
-    assert updated_task.verification_receipts.get(criteria[1]) == res_doc["receipt_id"]
-
-    receipts = [res_test["receipt"], res_doc["receipt"]]
-    assert all(r is not None and r.passed for r in receipts)
-
-    comp_res = evaluate_completion_receipts(
-        task_id=task_id,
-        required_criteria=criteria,
-        receipts=receipts,
-        owner="test_agent",
-        artifact_store=artifact_store,
-        command_execution_record_lookup=verif_store.command_execution_record_lookup,
-    )
-    assert comp_res.complete is True
+    # Human supplied process claims and output text are never execution proof.
+    for kwargs in (
+        {"command": "echo PASS"},
+        {"command": "pytest tests/unit"},
+        {"command": "pytest tests/test_core.py -q", "binding": binding, "plan_storage": storage},
+    ):
+        with pytest.raises(ValueError, match="trusted command_id"):
+            record_authentic_native_receipt(
+                task_store=task_store,
+                verification_store=verif_store,
+                artifact_store=artifact_store,
+                task_id=task_id,
+                criterion=criteria[0],
+                root=tmp_path,
+                owner="test_agent",
+                **kwargs,
+            )
+    assert task_store.get(task_id).verification_receipts == {}

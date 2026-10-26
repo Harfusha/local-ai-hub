@@ -5,7 +5,6 @@ import logging
 import sqlite3
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -81,56 +80,9 @@ class BoardStore:
         linked_task_id: str = "",
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._ensure_schema()
-        item_id = f"item_{uuid.uuid4().hex[:10]}"
-        now = time.time()
-        valid_status = status.lower() if status else "planned"
-        if valid_status not in {"planned", "in_progress", "done", "blocked", "cancelled"}:
-            valid_status = "planned"
-
-        with self._lock:
-            con = self._connect()
-            try:
-                with con:
-                    con.execute(
-                        """
-                        INSERT INTO agent_board_items (
-                            item_id, title, status, priority, labels_json,
-                            assignee, milestone, linked_task_id, details_json,
-                            created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            item_id,
-                            title.strip(),
-                            valid_status,
-                            priority.lower(),
-                            json.dumps(labels or [], separators=(",", ":")),
-                            assignee.strip(),
-                            milestone.strip(),
-                            linked_task_id.strip(),
-                            json.dumps(details or {}, separators=(",", ":")),
-                            now,
-                            now,
-                        ),
-                    )
-            finally:
-                con.close()
-        return {
-            "success": True,
-            "item": {
-                "item_id": item_id,
-                "title": title.strip(),
-                "status": valid_status,
-                "priority": priority.lower(),
-                "labels": labels or [],
-                "assignee": assignee.strip(),
-                "milestone": milestone.strip(),
-                "linked_task_id": linked_task_id.strip(),
-                "created_at": now,
-                "updated_at": now,
-            },
-        }
+        return {"success": False, "terminal": True, "retryable": False,
+                "error": "legacy board is read-only; use repository plan operations",
+                "error_code": "legacy_board_read_only"}
 
     def item_update(
         self,
@@ -143,52 +95,9 @@ class BoardStore:
         linked_task_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._ensure_schema()
-        now = time.time()
-        with self._lock:
-            con = self._connect()
-            try:
-                row = con.execute("SELECT * FROM agent_board_items WHERE item_id = ?", (item_id,)).fetchone()
-                if row is None:
-                    return {"success": False, "error": f"item '{item_id}' not found"}
-
-                new_status = status.lower() if status else row[2]
-                new_priority = priority.lower() if priority else row[3]
-                new_labels = json.dumps(labels, separators=(",", ":")) if labels is not None else row[4]
-                new_assignee = assignee.strip() if assignee is not None else row[5]
-                new_milestone = milestone.strip() if milestone is not None else row[6]
-                new_linked = linked_task_id.strip() if linked_task_id is not None else row[7]
-                new_details = json.dumps(details, separators=(",", ":")) if details is not None else row[8]
-
-                with con:
-                    con.execute(
-                        """
-                        UPDATE agent_board_items SET
-                            status = ?, priority = ?, labels_json = ?,
-                            assignee = ?, milestone = ?, linked_task_id = ?,
-                            details_json = ?, updated_at = ?
-                        WHERE item_id = ?
-                        """,
-                        (new_status, new_priority, new_labels, new_assignee, new_milestone, new_linked, new_details, now, item_id),
-                    )
-            finally:
-                con.close()
-        return {
-            "success": True,
-            "item_id": item_id,
-            "status": new_status,
-            "updated_at": now,
-            "item": {
-                "item_id": item_id,
-                "title": row[1] if row else "",
-                "status": new_status,
-                "priority": new_priority,
-                "assignee": new_assignee,
-                "milestone": new_milestone,
-                "linked_task_id": new_linked,
-                "updated_at": now,
-            },
-        }
+        return {"success": False, "terminal": True, "retryable": False,
+                "error": "legacy board is read-only; use repository plan operations",
+                "error_code": "legacy_board_read_only"}
 
     def item_get(self, item_id: str) -> dict[str, Any]:
         self._ensure_schema()
@@ -207,16 +116,9 @@ class BoardStore:
                 con.close()
 
     def item_delete(self, item_id: str) -> dict[str, Any]:
-        self._ensure_schema()
-        with self._lock:
-            con = self._connect()
-            try:
-                with con:
-                    cursor = con.execute("DELETE FROM agent_board_items WHERE item_id = ?", (item_id,))
-                    deleted = cursor.rowcount > 0
-            finally:
-                con.close()
-        return {"success": True, "deleted": deleted, "item_id": item_id}
+        return {"success": False, "terminal": True, "retryable": False,
+                "error": "legacy board is read-only; use repository plan operations",
+                "error_code": "legacy_board_read_only"}
 
     def item_list(
         self,
@@ -290,28 +192,9 @@ class BoardStore:
                 con.close()
 
     def milestone_create(self, name: str, target_date: str = "", description: str = "") -> dict[str, Any]:
-        self._ensure_schema()
-        clean_name = str(name).strip()
-        if not clean_name:
-            raise ValueError("milestone name must be a non-empty string")
-        now = time.time()
-        with self._lock:
-            con = self._connect()
-            try:
-                with con:
-                    con.execute(
-                        """
-                        INSERT INTO agent_milestones (name, target_date, description, created_at)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(name) DO UPDATE SET
-                            target_date = excluded.target_date,
-                            description = excluded.description
-                        """,
-                        (clean_name, target_date.strip(), description.strip(), now),
-                    )
-            finally:
-                con.close()
-        return {"success": True, "milestone": {"name": clean_name, "target_date": target_date, "description": description}}
+        return {"success": False, "terminal": True, "retryable": False,
+                "error": "legacy board is read-only; use repository plan operations",
+                "error_code": "legacy_board_read_only"}
 
     def milestone_status(self, name: str) -> dict[str, Any]:
         self._ensure_schema()
@@ -356,7 +239,8 @@ class BoardStore:
                 summ = self.services.board_summary(root=root)
             else:
                 summ = self.summary()
-            recent = self.item_list(limit=5).get("items", [])
+            recent = (self.services.board_item_list(root=root, limit=5) if root and self.services is not None
+                      else self.item_list(limit=5)).get("items", [])
             briefing["board"] = {
                 "summary": summ,
                 "recent_items": recent,
@@ -384,17 +268,13 @@ class BoardStore:
             except Exception as exc:
                 logger.warning("session_briefing semaphores failed: %s", exc)
 
-        if root or "plans" in inc:
-            try:
-                from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
-                plan_ws = RepoPlanWorkspace(root or ".")
-                if plan_ws.has_workspace():
-                    plans_res = plan_ws.list_plans()
-                    plans = plans_res.get("plans", []) if isinstance(plans_res, dict) else plans_res
-                    briefing["plans"] = plans
-                    if ("board" in inc or "plan_board" in inc) and plans:
-                        briefing["plan_board"] = plan_ws.get_board_view().get("columns", {})
-            except Exception as exc:
-                logger.warning("session_briefing plans failed: %s", exc)
+        if root and self.services is not None:
+            plans_result = self.services.plan_list(root=root)
+            briefing["plans"] = plans_result["plans"]
+            if "board" in inc or "plan_board" in inc:
+                briefing["plan_board"] = self.services.plan_board_view(root=root)["columns"]
+        elif "plans" in inc:
+            briefing["success"] = False
+            briefing["error"] = "plans briefing requires an explicit repository root"
 
         return briefing

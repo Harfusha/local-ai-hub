@@ -85,7 +85,7 @@ from .agent_surface import diagnostic_http_operation, diagnostics_disabled_respo
 from .response_budget import _reconcile_existing_budget
 from .trace_context import reset_context, reset_observer, set_context
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
-from .http_post_repository_analysis import handle_post_repository_analysis
+from .http_post_repository_analysis import handle_post_repository_analysis, handle_post_plan
 from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
@@ -5891,6 +5891,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         if (
             path in root_scoped_repo_paths
+            or path.startswith("/api/coord/plan_")
             or (path.startswith("/api/repo/") and path not in {"/api/repo/cross_repo_contract"})
             or path.startswith("/api/code/")
         ) and not self._bind_repository_root_payload(payload):
@@ -7083,102 +7084,19 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         task_id = str(payload.get("task_id", "")).strip()
                         criterion = str(payload.get("criterion", "")).strip()
-                        command = str(payload.get("command", "")).strip()
-                        passed = bool(payload.get("passed", True))
-                        output_summary = str(payload.get("output_summary", "native test execution passed")).strip()
+                        command_id = payload.get("command_id")
                         root = str(payload.get("root", "")).strip()
-                        task_state = APP.agent_tasks.get(task_id)
-                        if task_state is None:
-                            raise KeyError(f"Task {task_id} not found")
+                        if not task_id or not criterion or not command_id or not root:
+                            raise ValueError("task_id, criterion, command_id and explicit root are required")
+                        from .repo_plan.agent_bridge import record_authentic_native_receipt
 
-                        current_revision = ""
-                        target_root = root or getattr(getattr(task_state, "context", None), "repository_id", "")
-                        if target_root:
-                            current_revision, _ = _completion_revision_or_stop(
-                                target_root, getattr(APP, "repo_tools", None), getattr(APP, "repo_state", None)
-                            )
-                        if not current_revision:
-                            current_revision = getattr(getattr(task_state, "context", None), "repository_revision", "") or "HEAD"
-
-                        owner = task_state.owner or self._agent() or "agent"
-                        command_id = uuid.uuid4().hex
-                        from .agent_verification import criterion_evidence_type
-                        from .agent_tasks import _task_scope_root
-                        evidence_type = criterion_evidence_type(criterion)
-                        command_digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
-                        proof = {
-                            "passed": passed,
-                            "kind": "work_command_verification",
-                            "task_id": task_id,
-                            "owner": owner,
-                            "criterion": criterion,
-                            "command_id": command_id,
-                            "command_sha256": command_digest,
-                            "repository_revision": current_revision,
-                            "mutation_generation": getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0,
-                            "command": command,
-                            "command_classification": evidence_type,
-                            "output_summary": output_summary,
-                            "exit_code": 0 if passed else 1,
-                            "cached": False,
-                            "result": {"success": passed, "exit_code": 0 if passed else 1},
-                        }
-                        proof_text = json_dumps(proof)
-                        evidence_id = APP.artifacts.put(proof_text, kind="command_verification")
-
-                        rcpt = VerificationReceipt.create(
-                            task_id=task_id,
-                            criterion=criterion,
-                            passed=passed,
-                            command_id=command_id,
-                            evidence_id=evidence_id,
-                            evidence_type=evidence_type,
-                            repository_revision=current_revision,
-                            mutation_generation=getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0,
-                            owner=owner,
-                            details={"command": command, "native": True, "output_summary": output_summary},
+                        imported = record_authentic_native_receipt(
+                            APP.agent_tasks, APP.agent_verification, APP.artifacts,
+                            task_id, criterion, None, root, command_id=command_id,
                         )
-                        saved = APP.agent_verification.record(rcpt)
-                        APP.agent_tasks.add_verification_receipt(task_id, criterion, saved.receipt_id)
-
-                        commands_broker = getattr(APP, "commands", None)
-                        if commands_broker is not None:
-                            try:
-                                trusted_root = _task_scope_root(task_state) or root or target_root
-                                canonical_root = str(Path(trusted_root).expanduser().resolve(strict=False)) if trusted_root else ""
-                                receipt_data = saved.to_dict()
-                                exec_record = {
-                                    "schema": "command_execution_record.v2",
-                                    "command_id": command_id,
-                                    "task_id": task_id,
-                                    "owner": owner,
-                                    "criterion": criterion,
-                                    "command_sha256": command_digest,
-                                    "evidence_type": evidence_type,
-                                    "repository_root": canonical_root,
-                                    "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest() if canonical_root else "",
-                                    "repository_revision": current_revision,
-                                    "mutation_generation": getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0,
-                                    "evidence_id": str(evidence_id),
-                                    "receipt_sha256": hashlib.sha256(
-                                        json.dumps(receipt_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
-                                    ).hexdigest(),
-                                    "exit_code": 0 if passed else 1,
-                                    "cached": False,
-                                    "project_alias": "",
-                                    "project_config_digest": "",
-                                    "project_environment_sha256": "",
-                                    "configured_command_sha256": "",
-                                    "caller_arguments_sha256": "",
-                                    "project_execution_binding_sha256": "",
-                                    "created_at_unix": time.time(),
-                                }
-                                encoded = json.dumps(exec_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-                                exec_record["record_sha256"] = hashlib.sha256(encoded).hexdigest()
-                                commands_broker._persist_command_execution_record(command_id, exec_record)
-                            except Exception:
-                                pass
-                        self._send(200, {"success": True, "receipt": saved.to_dict()}); return
+                        self._send(200, {"success": True, "receipt": imported["receipt"].to_dict(),
+                                         "receipt_id": imported["receipt_id"],
+                                         "evidence_id": imported["evidence_id"]}); return
                     except Exception as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "completion":
@@ -8492,93 +8410,8 @@ class Handler(BaseHTTPRequestHandler):
                     include=payload.get("include"),
                     root=str(payload.get("root", "")),
                 )); return
-            if path == "/api/coord/plan_init":
-                self._send(200, APP.services.plan_init(root=str(payload.get("root", ".")))); return
-            if path == "/api/coord/plan_list":
-                self._send(200, APP.services.plan_list(
-                    root=str(payload.get("root", ".")),
-                    query=str(payload.get("query", "")),
-                    include_archived=bool(payload.get("include_archived", False)),
-                )); return
-            if path == "/api/coord/plan_get":
-                self._send(200, APP.services.plan_get(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                )); return
-            if path == "/api/coord/plan_create":
-                self._send(200, APP.services.plan_create(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    title=str(payload.get("title", "")),
-                    description=str(payload.get("description", "")),
-                    goal=str(payload.get("goal", "")),
-                    target_branch=str(payload.get("target_branch", "master")),
-                    specs=payload.get("specs"),
-                    decisions=payload.get("decisions"),
-                    tasks=payload.get("tasks"),
-                    owner=str(payload.get("owner", "")),
-                )); return
-            if path == "/api/coord/plan_update":
-                self._send(200, APP.services.plan_update(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    expected_revision=payload.get("expected_revision"),
-                    title=payload.get("title"),
-                    description=payload.get("description"),
-                    goal=payload.get("goal"),
-                    status=payload.get("status"),
-                    target_branch=payload.get("target_branch"),
-                    specs=payload.get("specs"),
-                    decisions=payload.get("decisions"),
-                    owner=str(payload.get("owner", "")),
-                    idempotency_key=str(payload.get("idempotency_key", "")),
-                )); return
-            if path == "/api/coord/plan_task_edit":
-                self._send(200, APP.services.plan_task_edit(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    task_id=str(payload.get("task_id", "")),
-                    task_data=payload.get("task_data"),
-                    expected_revision=payload.get("expected_revision"),
-                    idempotency_key=str(payload.get("idempotency_key", "")),
-                    owner=str(payload.get("owner", "")),
-                )); return
-            if path == "/api/coord/plan_task_delete":
-                self._send(200, APP.services.plan_task_delete(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    task_id=str(payload.get("task_id", "")),
-                    expected_revision=payload.get("expected_revision"),
-                    idempotency_key=str(payload.get("idempotency_key", "")),
-                    owner=str(payload.get("owner", "")),
-                )); return
-            if path == "/api/coord/plan_validate":
-                self._send(200, APP.services.plan_validate(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                )); return
-            if path == "/api/coord/plan_archive":
-                self._send(200, APP.services.plan_archive(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    expected_revision=payload.get("expected_revision"),
-                    archive_reason=str(payload.get("archive_reason", "")),
-                    idempotency_key=str(payload.get("idempotency_key", "")),
-                    owner=str(payload.get("owner", "")),
-                )); return
-            if path == "/api/coord/plan_board_view":
-                self._send(200, APP.services.plan_board_view(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    query=str(payload.get("query", "")),
-                    owner=str(payload.get("owner", "")),
-                )); return
-            if path == "/api/coord/plan_adopt_legacy_board":
-                self._send(200, APP.services.plan_adopt_legacy_board(
-                    root=str(payload.get("root", ".")),
-                    plan_id=str(payload.get("plan_id", "")),
-                    title=str(payload.get("title", "")),
-                )); return
+            if handle_post_plan(self, payload, path, APP):
+                return
             if 'post_eval_suite_1' in post_route_ids:
                 self._send(200, APP.services.eval_suite(payload)); return
             if 'post_prompt_eval_1' in post_route_ids:

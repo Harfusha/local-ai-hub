@@ -114,6 +114,60 @@ def test_reject_nan_infinity():
         parse_plan_json(bad_json)
 
 
+def test_reject_overflowing_json_number():
+    """Reject finite-looking JSON literals that Python converts to infinity."""
+    with pytest.raises(RepoPlanValidationError, match="Non-finite"):
+        parse_plan_json('{"schema_version":1,"number":1e999}')
+
+
+def test_reject_extreme_raw_nesting_before_json_decoder_recurses():
+    """Reject deeply nested raw JSON as a validation error, not RecursionError."""
+    raw = "[" * 1500 + "0" + "]" * 1500
+    with pytest.raises(RepoPlanValidationError, match="maximum nesting depth"):
+        parse_plan_json(raw)
+
+
+def test_validate_and_serialize_reject_non_finite_values():
+    """Dictionary entry points enforce finite JSON values too."""
+    data = json.loads(EXAMPLE_PLAN_PATH.read_text(encoding="utf-8"))
+    data["tasks"]["task_example"]["order"] = float("inf")
+    with pytest.raises(RepoPlanValidationError, match="Non-finite"):
+        validate_plan_dict(data)
+    with pytest.raises(RepoPlanValidationError, match="Non-finite"):
+        serialize_plan_json(data)
+
+
+def test_model_from_dict_rejects_invalid_root_instead_of_coercing():
+    """Model loading validates complete v1 shape before constructing dataclasses."""
+    data = json.loads(EXAMPLE_PLAN_PATH.read_text(encoding="utf-8"))
+    data["schema_version"] = "1"
+    with pytest.raises(RepoPlanValidationError):
+        RepoPlan.from_dict(data)
+
+
+def test_cycle_detection_handles_maximum_task_chain():
+    """Maximum-sized acyclic plan does not hit Python recursion limit."""
+    data = {
+        "schema_version": 1,
+        "id": "plan_chain",
+        "title": "Chain",
+        "description": "",
+        "lifecycle": "draft",
+        "default_target_ref": None,
+        "spec_refs": [],
+        "tasks": {
+            f"task_{i:04d}": {
+                "title": f"Task {i}", "description": "", "kind": "code",
+                "work_status": "planned",
+                "depends_on": ([{"plan_id": "plan_chain", "task_id": f"task_{i - 1:04d}"}] if i else []),
+                "clarifications": [], "acceptance_criteria": [], "next_action": "", "blocker": None,
+            }
+            for i in range(1000)
+        },
+    }
+    validate_plan_dict(data)
+
+
 def test_reject_oversized_file():
     """Reject plan files exceeding 1 MiB."""
     huge_text = " " * (1024 * 1024 + 10)

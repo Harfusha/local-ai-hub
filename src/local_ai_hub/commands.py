@@ -152,6 +152,50 @@ def _daemon_process_group_owned(
     return _linux_group_member_owns_token(process_group_id, ownership_token_digest)
 
 
+def _terminate_owned_linux_daemon_group(
+    process_group_id: int, ownership_token_digest: str, *, grace_seconds: float = 1.5
+) -> bool:
+    """Stop only a Linux daemon group that still proves possession of its launch token."""
+    if not _daemon_process_group_owned(process_group_id, ownership_token_digest):
+        return False
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + max(0.1, min(float(grace_seconds), 2.0))
+    while time.monotonic() < deadline:
+        alive = _process_group_liveness(process_group_id)
+        if alive is False:
+            return True
+        if alive is None:
+            return False
+        time.sleep(0.025)
+
+    # Recheck the unforgeable launch marker immediately before signalling again;
+    # a numeric PGID alone is never a process-tree capability.
+    if not _daemon_process_group_owned(process_group_id, ownership_token_digest):
+        return False
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        alive = _process_group_liveness(process_group_id)
+        if alive is False:
+            return True
+        if alive is None:
+            return False
+        time.sleep(0.025)
+    return _process_group_liveness(process_group_id) is False
+
+
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
 _PROJECT_COMMAND_ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _PROJECT_COMMAND_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -259,8 +303,23 @@ class _RecoveredDaemonProcess:
             time.sleep(0.025)
         return 0
 
-    def kill(self) -> None:
-        raise OSError("recovered daemon has no stable process-tree ownership handle")
+    def kill(self) -> bool:
+        if os.name != "nt" and sys.platform == "linux":
+            if (
+                self.process_group_id == self.pid
+                and process_identity(self.pid) is None
+                and _process_leader_exited(self.pid)
+                and _process_group_liveness(self.process_group_id) is True
+                and _daemon_process_group_owned(
+                    self.process_group_id, self.ownership_token_digest
+                )
+            ):
+                return bool(terminate_tree(
+                    self.pid,
+                    process_group=self.process_group_id,
+                    grace_seconds=0.1,
+                ))
+        raise OSError("no stable process-tree ownership handle")
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -1462,6 +1521,17 @@ def _terminate_and_confirm_windows_job_empty(job_handle: Any, timeout_ms: int = 
 def _stop_daemon_tree(info: dict[str, Any]) -> bool:
     """Stop a daemon tree through its live owner handle or process group."""
     process = info["process"]
+    if os.name != "nt" and sys.platform == "linux":
+        pgid = info.get("process_group_id")
+        digest = info.get("ownership_token_digest")
+        if (
+            isinstance(pgid, int)
+            and not isinstance(pgid, bool)
+            and pgid > 1
+            and isinstance(digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            return _terminate_owned_linux_daemon_group(pgid, digest)
     if os.name != "nt" and isinstance(process, _RecoveredDaemonProcess):
         if sys.platform == "linux":
             pgid = info.get("process_group_id")
@@ -1492,10 +1562,10 @@ def _stop_daemon_tree(info: dict[str, Any]) -> bool:
                     return False
                 kill_deadline = time.monotonic() + 0.5
                 while time.monotonic() < kill_deadline:
-                    if not _daemon_process_group_alive(pgid):
+                    if _process_group_liveness(pgid) is False:
                         return True
                     time.sleep(0.02)
-                return not _daemon_process_group_alive(pgid)
+                return _process_group_liveness(pgid) is False
         # PID/start-time metadata cannot pin a POSIX group across restart.
         return False
     job_handle = getattr(process, "_local_ai_job_handle", None)
@@ -3983,7 +4053,6 @@ class CommandBroker:
                     "cached": cached,
                 },
             )
-            self.verification_store.record(receipt)
             receipt_data = receipt.to_dict()
             record = {
                 "schema": "command_execution_record.v2",
@@ -4013,7 +4082,11 @@ class CommandBroker:
             }
             encoded_record = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
             record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
+            # Persist the broker-owned execution record first. VerificationStore
+            # requires this record when execution provenance is enabled, so a
+            # caller-supplied receipt can never race ahead and mint completion.
             self._persist_command_execution_record(command_id, record)
+            self.verification_store.record(receipt)
             result["verification_receipt"] = receipt_data
             result["verification_evidence_id"] = str(evidence_id)
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
@@ -5742,17 +5815,29 @@ class CommandBroker:
                 except Exception:
                     cleanup_unconfirmed = True
             if process is not None:
+                cleanup_confirmed = False
                 try:
-                    process.kill()
-                except Exception:
-                    pass
-                try:
-                    process.wait(timeout=1.0)
+                    kwargs: dict[str, Any] = {"grace_seconds": 2.0}
+                    signature = inspect.signature(terminate_tree)
+                    if "process_group" in signature.parameters and os.name != "nt":
+                        kwargs["process_group"] = process.pid
+                    if "expected_identity" in signature.parameters and os.name != "nt":
+                        kwargs["expected_identity"] = process_identity(process.pid)
+                    if "process_handle" in signature.parameters:
+                        kwargs["process_handle"] = process
+                    cleanup_confirmed = bool(terminate_tree(process.pid, **kwargs))
                 except Exception:
                     cleanup_unconfirmed = True
-                try:
-                    cleanup_unconfirmed = cleanup_unconfirmed or process.poll() is None
-                except Exception:
+                if cleanup_confirmed:
+                    try:
+                        process.wait(timeout=2.0)
+                    except Exception:
+                        cleanup_unconfirmed = True
+                    try:
+                        cleanup_unconfirmed = cleanup_unconfirmed or process.poll() is None
+                    except Exception:
+                        cleanup_unconfirmed = True
+                else:
                     cleanup_unconfirmed = True
                 for stream in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
                     try:
@@ -5959,21 +6044,12 @@ class CommandBroker:
                     cleanup_unconfirmed = not _cleanup_owned_tree()
                 except Exception:
                     cleanup_unconfirmed = True
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=max(2.0, self.terminate_grace_seconds))
-            except Exception:
-                cleanup_unconfirmed = True
-            if process.poll() is None:
+            if not cleanup_unconfirmed:
                 try:
-                    process.kill()
-                    process.wait(timeout=1.0)
+                    process.wait(timeout=max(2.0, self.terminate_grace_seconds))
                 except Exception:
                     cleanup_unconfirmed = True
-            cleanup_unconfirmed = cleanup_unconfirmed or process.poll() is None
+                cleanup_unconfirmed = cleanup_unconfirmed or process.poll() is None
             for reader in started_readers:
                 reader.join(timeout=max(0.1, self.terminate_grace_seconds))
                 cleanup_unconfirmed = cleanup_unconfirmed or reader.is_alive()

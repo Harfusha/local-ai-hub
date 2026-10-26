@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -15,13 +16,11 @@ from typing import Any
 from local_ai_hub.agent_verification import (
     VerificationReceipt,
     VerificationStore,
-    classify_verification_command,
-    criterion_evidence_type,
 )
+from local_ai_hub.file_locks import exclusive_file_update
 
 from .models import (
     ClarificationAdoption,
-    ResultRefKind,
     TaskWorkPhase,
     TaskWorkStatus,
 )
@@ -42,6 +41,9 @@ class TaskBinding:
     plan_id: str
     plan_task_id: str
     plan_rel_path: str
+    session_id: str = ""
+    branch_at_bind: str = ""
+    adopted_plan_revision: str = ""
     contract_revision: int = 1
     bound_at: float = field(default_factory=time.time)
     lineage: list[str] = field(default_factory=list)  # previous superseded task_ids
@@ -64,28 +66,45 @@ class TaskBindingManager:
         self._load()
 
     def _load(self) -> None:
+        self._bindings = self._read_disk()
+
+    def _read_disk(self) -> dict[str, TaskBinding]:
         if not self._binding_file.exists():
-            return
-        try:
-            data = json.loads(self._binding_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                for tid, bdata in data.items():
-                    self._bindings[tid] = TaskBinding.from_dict(bdata)
-        except Exception as exc:
-            logger.warning("Failed to load task bindings: %s", exc)
+            return {}
+        if self._binding_file.is_symlink() or self._binding_file.stat().st_size > 1024 * 1024:
+            raise ValueError("task binding file is unsafe or exceeds 1 MiB")
+        raw = self._binding_file.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("task binding file must be an object")
+        bindings: dict[str, TaskBinding] = {}
+        for tid, bdata in data.items():
+            if not isinstance(tid, str) or not isinstance(bdata, dict):
+                raise ValueError("task binding file contains an invalid entry")
+            binding = TaskBinding.from_dict(bdata)
+            if tid != binding.task_id or binding.repo_root != str(self.repo_root):
+                raise ValueError("task binding identity or repository root mismatch")
+            bindings[tid] = binding
+        return bindings
 
     def _save(self) -> None:
         self._binding_file.parent.mkdir(parents=True, exist_ok=True)
-        raw = json.dumps({k: v.to_dict() for k, v in self._bindings.items()}, indent=2, sort_keys=True)
-        temp_path = self._binding_file.parent / f".tmp_bindings_{uuid.uuid4().hex[:6]}"
-        try:
-            temp_path.write_text(raw, encoding="utf-8")
-            temp_path.replace(self._binding_file)
-        finally:
-            if temp_path.exists():
+        with exclusive_file_update(self._binding_file):
+            current = self._read_disk()
+            current.update(self._bindings)
+            raw = json.dumps({k: v.to_dict() for k, v in current.items()}, indent=2, sort_keys=True)
+            temp_path = self._binding_file.parent / f".tmp_bindings_{uuid.uuid4().hex}"
+            try:
+                with temp_path.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_path, self._binding_file)
+                self._bindings = current
+            finally:
                 try:
                     temp_path.unlink()
-                except OSError:
+                except FileNotFoundError:
                     pass
 
     def bind_task(
@@ -96,17 +115,32 @@ class TaskBindingManager:
         plan_rel_path: str,
         contract_revision: int = 1,
         lineage: list[str] | None = None,
+        session_id: str = "",
+        branch_at_bind: str = "",
+        adopted_plan_revision: str = "",
     ) -> TaskBinding:
+        for label, value in (("task_id", task_id), ("plan_id", plan_id),
+                             ("plan_task_id", plan_task_id), ("plan_rel_path", plan_rel_path)):
+            if not isinstance(value, str) or not value or value != value.strip() or "\x00" in value:
+                raise ValueError(f"{label} must be a canonical nonempty string")
+        if not isinstance(session_id, str) or session_id != session_id.strip() or "\x00" in session_id:
+            raise ValueError("session_id must be a canonical string")
         binding = TaskBinding(
             task_id=task_id,
             repo_root=str(self.repo_root),
             plan_id=plan_id,
             plan_task_id=plan_task_id,
             plan_rel_path=plan_rel_path,
+            session_id=session_id,
+            branch_at_bind=branch_at_bind,
+            adopted_plan_revision=adopted_plan_revision,
             contract_revision=contract_revision,
             bound_at=time.time(),
             lineage=list(lineage or []),
         )
+        for current in self._bindings.values():
+            if session_id and current.session_id == session_id and current.task_id != task_id:
+                raise ValueError("session is already bound to another execution task")
         self._bindings[task_id] = binding
         self._save()
         return binding
@@ -114,11 +148,85 @@ class TaskBindingManager:
     def get_binding(self, task_id: str) -> TaskBinding | None:
         return self._bindings.get(task_id)
 
+    def get_session_binding(self, session_id: str) -> TaskBinding | None:
+        if not isinstance(session_id, str) or not session_id or session_id != session_id.strip():
+            return None
+        matches = [binding for binding in self._bindings.values()
+                   if binding.session_id == session_id]
+        if len(matches) > 1:
+            raise RuntimeError("session has ambiguous task bindings")
+        return matches[0] if matches else None
+
     def find_binding_by_plan_task(self, plan_id: str, plan_task_id: str) -> TaskBinding | None:
         for b in self._bindings.values():
             if b.plan_id == plan_id and b.plan_task_id == plan_task_id:
                 return b
         return None
+
+
+def bind_plan_execution(
+    task_store: Any,
+    *,
+    root: str,
+    task_id: str,
+    plan_id: str,
+    plan_task_id: str,
+    expected_revision: str | None = None,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Bind a saved plan task to one real Agent OS task and session."""
+    from local_ai_hub.agent_tasks import _task_scope_root
+    from local_ai_hub.repository_scope import canonical_repository_root
+    from .workspace import RepoPlanWorkspace
+
+    canonical = str(canonical_repository_root(str(root)))
+    if not isinstance(task_id, str) or not task_id or task_id != task_id.strip():
+        raise ValueError("task_id must be a canonical nonempty string")
+    execution = task_store.get(task_id)
+    if execution is None:
+        raise KeyError(f"Task '{task_id}' not found in task store")
+    if _task_scope_root(execution) != canonical:
+        raise ValueError("root does not match the server-managed task scope")
+    actual_session = execution.context.session_id
+    if not actual_session or (session_id and session_id != actual_session):
+        raise ValueError("session_id must match the execution task's persisted session")
+
+    workspace = RepoPlanWorkspace(canonical)
+    plan = workspace.get_plan(plan_id)
+    current_revision = plan["file_revision"]
+    if expected_revision is not None and expected_revision != current_revision:
+        raise ValueError("expected_revision conflicts with the current plan revision")
+    task_data = plan["plan"].get("tasks", {}).get(plan_task_id)
+    if task_data is None:
+        raise RepoPlanNotFoundError(f"Task '{plan_task_id}' not found in plan '{plan_id}'")
+    if tuple(task_data.get("acceptance_criteria", ())) != tuple(execution.contract.acceptance_criteria):
+        raise ValueError("plan task criteria must match the Agent OS contract before binding")
+
+    manager = TaskBindingManager(canonical)
+    existing_task = manager.get_binding(task_id)
+    if existing_task and (existing_task.plan_id, existing_task.plan_task_id) != (plan_id, plan_task_id):
+        raise ValueError("execution task is already bound to another plan task")
+    current_owner = manager.find_binding_by_plan_task(plan_id, plan_task_id)
+    if current_owner and current_owner.task_id != task_id:
+        previous = task_store.get(current_owner.task_id)
+        if previous is not None and previous.status.value not in {"completed", "failed", "cancelled"}:
+            raise ValueError("plan task already has an active execution binding")
+
+    branch, _ = get_git_context(Path(canonical))
+    binding = manager.bind_task(
+        task_id=task_id,
+        plan_id=plan_id,
+        plan_task_id=plan_task_id,
+        plan_rel_path=plan["rel_path"],
+        session_id=actual_session,
+        branch_at_bind=branch or "",
+        adopted_plan_revision=current_revision,
+        contract_revision=int(execution.checkpoint.state_data.get("contract_revision", 1)),
+    )
+    return {"success": True, "root": canonical, "task_id": task_id,
+            "plan_id": plan_id, "plan_task_id": plan_task_id,
+            "session_id": actual_session, "file_revision": current_revision,
+            "binding": binding.to_dict()}
 
 
 def map_agent_status_to_plan_status(
@@ -211,15 +319,22 @@ def reconcile_contract_revision(
     new_acceptance_criteria: list[str],
     reason: str,
     *,
+    task_store: Any | None = None,
     spec_rel_path: str | None = None,
     spec_content: str | None = None,
     owner: str = "agent",
+    idempotency_key: str = "",
 ) -> tuple[dict[str, Any], int]:
-    """Reconcile contract requirements change under the same logical task.
-
-    Updates the plan task's acceptance_criteria, appends a clarification,
-    increments contract_revision, and returns (save_result, new_revision).
-    """
+    """Persist an operator clarification into both the Git plan and real task contract."""
+    if task_store is None:
+        raise ValueError("task_store is required to reconcile the actual execution contract")
+    if not isinstance(new_acceptance_criteria, list) or any(
+        type(item) is not str or not item or item != item.strip() or "\x00" in item
+        for item in new_acceptance_criteria
+    ):
+        raise ValueError("new acceptance criteria must be canonical nonempty strings")
+    if not isinstance(reason, str) or not reason.strip() or "\x00" in reason:
+        raise ValueError("reason must be a nonempty string")
     plan_dict, current_rev = storage.read_plan_file(binding.plan_rel_path)
     tasks = plan_dict.get("tasks", {})
     if binding.plan_task_id not in tasks:
@@ -228,18 +343,32 @@ def reconcile_contract_revision(
         )
 
     task_data = tasks[binding.plan_task_id]
+    execution = task_store.get(binding.task_id)
+    if execution is None:
+        raise KeyError(f"Task '{binding.task_id}' not found in task store")
+    from local_ai_hub.agent_tasks import _task_scope_root
+
+    if _task_scope_root(execution) != str(storage.repo_root):
+        raise ValueError("bound task repository scope no longer matches plan workspace")
+    if owner and execution.owner and owner != execution.owner:
+        raise ValueError("task owner mismatch during contract reconciliation")
+    if tuple(task_data.get("acceptance_criteria", ())) != tuple(execution.contract.acceptance_criteria):
+        raise ValueError("plan and Agent OS criteria diverged before reconciliation")
+    current_contract_revision = execution.checkpoint.state_data.get("contract_revision", 1)
+    if type(current_contract_revision) is not int or current_contract_revision != binding.contract_revision:
+        raise ValueError("binding contract revision is stale; reload before reconciling")
 
     # Create Clarification
     change_id = f"change_{uuid.uuid4().hex[:10]}"
     spec_refs = []
     if spec_rel_path:
         full_spec = storage.repo_root / spec_rel_path
-        spec_sha = compute_file_sha256(full_spec) if full_spec.exists() else ""
-        branch, head = get_git_context(storage.repo_root)
-        if head:
-            rev_dict = {"kind": "git_commit", "commit": head}
-        else:
-            rev_dict = {"kind": "working", "content_sha256": spec_sha or ("0" * 64)}
+        if spec_content is None:
+            raise ValueError("spec_content is required when spec_rel_path is supplied")
+        if full_spec.is_symlink():
+            raise ValueError("spec path cannot be a symlink")
+        spec_sha = hashlib.sha256(spec_content.encode("utf-8")).hexdigest()
+        rev_dict = {"kind": "working", "content_sha256": spec_sha}
         spec_refs.append({"path": spec_rel_path, "revision": rev_dict})
 
     clarification = {
@@ -255,27 +384,19 @@ def reconcile_contract_revision(
     # Update acceptance criteria
     task_data["acceptance_criteria"] = list(new_acceptance_criteria)
 
-    # Save plan (or spec + plan)
-    binding.contract_revision += 1
-    try:
-        TaskBindingManager(storage.repo_root).bind_task(
-            task_id=binding.task_id,
-            plan_id=binding.plan_id,
-            plan_task_id=binding.plan_task_id,
-            plan_rel_path=binding.plan_rel_path,
-            contract_revision=binding.contract_revision,
-            lineage=binding.lineage,
-        )
-    except Exception as exc:
-        logger.warning("Failed to persist updated binding revision: %s", exc)
+    # Plan/spec become the durable user clarification before execution resumes.
     if spec_rel_path and spec_content is not None:
+        spec_path = storage.repo_root / spec_rel_path
+        expected_spec_rev = compute_file_sha256(spec_path) if spec_path.exists() else ""
         save_res = storage.save_spec_and_plan(
             spec_rel_path,
             spec_content,
             binding.plan_rel_path,
             plan_dict,
+            expected_spec_rev=expected_spec_rev,
             expected_plan_rev=current_rev,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
     else:
         save_res = storage.save_plan_file(
@@ -283,8 +404,35 @@ def reconcile_contract_revision(
             plan_dict,
             expected_revision=current_rev,
             owner=owner,
+            idempotency_key=idempotency_key,
         )
-
+    try:
+        revised = task_store.revise_contract(
+            binding.task_id,
+            new_acceptance_criteria,
+            actor=execution.owner,
+            reason=reason,
+            expected_revision=current_contract_revision,
+        )
+    except Exception as exc:
+        pending_dir = storage.repo_root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        pending_file = pending_dir / f"{binding.task_id}.json"
+        payload = {"task_id": binding.task_id, "plan_id": binding.plan_id,
+                   "plan_task_id": binding.plan_task_id,
+                   "contract_revision": current_contract_revision + 1,
+                   "acceptance_criteria": new_acceptance_criteria,
+                   "reason": reason, "plan_revision": save_res.get("file_revision", ""),
+                   "error": str(exc)}
+        pending_file.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        raise RuntimeError(
+            "clarification is saved to the Git plan/spec, but Agent OS contract reconciliation is pending"
+        ) from exc
+    binding.contract_revision = revised.checkpoint.state_data["contract_revision"]
+    binding.adopted_plan_revision = save_res.get("file_revision", "")
+    binding_manager = TaskBindingManager(storage.repo_root)
+    binding_manager._bindings[binding.task_id] = binding
+    binding_manager._save()
     return save_res, binding.contract_revision
 
 
@@ -294,195 +442,85 @@ def record_authentic_native_receipt(
     artifact_store: Any,
     task_id: str,
     criterion: str,
-    command: str,
+    command: str | None,
     root: str | Path,
     *,
+    command_id: str | None = None,
     owner: str = "",
-    exit_code: int = 0,
-    output_summary: str = "",
-    producer: str | None = None,
-    evidence_type: str | None = None,
     binding: TaskBinding | None = None,
     plan_storage: RepoPlanStorage | None = None,
 ) -> dict[str, Any]:
-    """Mint and record an authentic native verification receipt backed by command_execution_record.v2.
+    """Import an existing broker receipt; this function cannot execute or mint proof."""
+    if not isinstance(command_id, str) or not re.fullmatch(r"[0-9a-f]{32}", command_id):
+        raise ValueError("a trusted command_id is required; caller success cannot mint a receipt")
+    from local_ai_hub.agent_tasks import _task_scope_root
+    from local_ai_hub.repository_scope import canonical_repository_root
 
-    Strictly validates producer, provenance, exit_code, and active contract criteria.
-    """
-    canonical_root = str(Path(root).resolve())
-    root_sha256 = hashlib.sha256(canonical_root.encode("utf-8")).hexdigest()
-
-    # 1. Reject fake pass commands
-    clean_command = command.strip()
-    if DISALLOWED_COMMAND_REGEX.match(clean_command):
-        raise ValueError("Trivial pass command ('echo PASS') is not an authentic verification producer")
-
-    # 2. Validate task in task_store
+    canonical_root = str(canonical_repository_root(str(root)))
     task_state = task_store.get(task_id)
     if task_state is None:
         raise KeyError(f"Task '{task_id}' not found in task store")
-
-    expected_owner = task_state.owner or owner or "agent"
+    if _task_scope_root(task_state) != canonical_root:
+        raise ValueError("Root mismatch: task has a different server-managed repository scope")
     if owner and task_state.owner and owner != task_state.owner:
-        raise ValueError(f"Task owner mismatch: expected {task_state.owner}, got {owner}")
-
-    # Validate repo root match
-    task_repo_root = getattr(task_state, "repo_root", "") or getattr(
-        getattr(task_state, "context", None), "repository_id", ""
+        raise ValueError("task owner mismatch")
+    if not isinstance(criterion, str) or criterion not in task_state.contract.acceptance_criteria:
+        raise ValueError("criterion is not in the active Agent OS contract")
+    if not verification_store.require_execution_provenance or not callable(
+        verification_store.command_execution_record_lookup
+    ):
+        raise ValueError("trusted CommandBroker provenance lookup is unavailable")
+    record = verification_store.command_execution_record_lookup(
+        command_id, task_id=task_id, repository_root=canonical_root
     )
-    if task_repo_root:
-        canonical_task_root = str(Path(task_repo_root).resolve())
-        if canonical_root != canonical_task_root:
-            raise ValueError(f"Root mismatch: task belongs to {canonical_task_root}, got {canonical_root}")
-
-    # Validate criterion is in active acceptance criteria
-    active_criteria = list(task_state.contract.acceptance_criteria if task_state.contract else ())
-    plan_storage_to_use = plan_storage or (RepoPlanStorage(canonical_root) if Path(canonical_root).exists() else None)
-    binding_to_use = binding or (TaskBindingManager(canonical_root).get_binding(task_id) if Path(canonical_root).exists() else None)
-    if binding_to_use and plan_storage_to_use:
-        try:
-            p_data, _ = plan_storage_to_use.read_plan_file(binding_to_use.plan_rel_path)
-            t_data = p_data.get("tasks", {}).get(binding_to_use.plan_task_id, {})
-            if "acceptance_criteria" in t_data:
-                for c in t_data["acceptance_criteria"]:
-                    if c not in active_criteria:
-                        active_criteria.append(c)
-        except Exception:
-            pass
-    clean_criterion = criterion.strip()
-    if clean_criterion not in active_criteria:
-        raise ValueError(
-            f"Criterion '{clean_criterion}' is not present in active contract criteria: {active_criteria}"
-        )
-
-    # 3. Classify evidence type and validate producer
-    computed_evidence_type = evidence_type or criterion_evidence_type(clean_criterion)
-    if computed_evidence_type == "test" or classify_verification_command(clean_command) == "test":
-        computed_evidence_type = "test"
-        if exit_code != 0:
-            raise ValueError(f"Native test command failed with exit_code {exit_code}")
-    elif computed_evidence_type == "benchmark":
-        if exit_code != 0:
-            raise ValueError(f"Native benchmark command failed with exit_code {exit_code}")
-    else:
-        # source_review / inspection / documentation
-        computed_evidence_type = "source_review"
-        valid_doc_producers = {"inspection_producer", "review_producer", "git_diff_review", "linter", "manual_review"}
-        if producer and producer not in valid_doc_producers and classify_verification_command(clean_command) != "source_review":
-            raise ValueError(f"Unsupported review producer: '{producer}'")
-        if exit_code != 0:
-            raise ValueError(f"Native inspection check failed with exit_code {exit_code}")
-
-    # 4. Resolve candidate git revision
-    _, head_commit = get_git_context(Path(canonical_root))
-    current_revision = head_commit or "working"
-
-    command_id = uuid.uuid4().hex
-    receipt_id = f"rcpt_{uuid.uuid4().hex[:12]}"
-    command_digest = hashlib.sha256(clean_command.encode("utf-8")).hexdigest()
-    now = time.time()
-
-    mutation_gen = getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0
-
-    # 5. Build command execution record v2
-    execution_record = {
-        "schema": "command_execution_record.v2",
-        "kind": "work_command_verification",
-        "command_id": command_id,
-        "task_id": task_id,
-        "owner": expected_owner,
-        "criterion": clean_criterion,
-        "command": clean_command,
-        "command_sha256": command_digest,
-        "evidence_type": computed_evidence_type,
-        "command_classification": computed_evidence_type,
-        "repository_revision": current_revision,
-        "mutation_generation": mutation_gen,
-        "repository_root": canonical_root,
-        "repository_root_sha256": root_sha256,
-        "exit_code": 0,
-        "cached": False,
-        "result": {"success": True, "exit_code": 0},
-        "output_summary": output_summary or f"native {computed_evidence_type} passed (exit_code 0)",
-        "observed_at": now,
-        "passed": True,
-        "producer": producer or "native_command",
-    }
-
-    evidence_text = json.dumps(execution_record, indent=2, sort_keys=True)
-    evidence_id = artifact_store.put(evidence_text, kind="command_verification")
-    execution_record["evidence_id"] = evidence_id
-
-    # 6. Mint canonical VerificationReceipt
-    receipt = VerificationReceipt.create(
-        task_id=task_id,
-        criterion=clean_criterion,
-        passed=True,
-        change_intent_id="",
-        evidence_id=evidence_id,
-        command_id=command_id,
-        repository_revision=current_revision,
-        owner=expected_owner,
-        mutation_generation=mutation_gen,
-        evidence_type=computed_evidence_type,
-        details={
-            "command": clean_command,
-            "command_execution_record": execution_record,
-            "receipt_id": receipt_id,
-            "producer": producer or "native_command",
-            "output_summary": output_summary,
-        },
-    )
-
-    receipt_sha = hashlib.sha256(
+    if not isinstance(record, dict):
+        raise ValueError("command_id has no persisted broker execution record for this task/root")
+    if (
+        record.get("schema") != "command_execution_record.v2"
+        or record.get("command_id") != command_id
+        or record.get("task_id") != task_id
+        or record.get("owner") != task_state.owner
+        or record.get("criterion") != criterion
+        or record.get("repository_root") != canonical_root
+        or record.get("exit_code") != 0
+        or type(record.get("exit_code")) is not int
+        or record.get("cached") is not False
+        or not record.get("evidence_id")
+        or not record.get("receipt_sha256")
+    ):
+        raise ValueError("broker command record does not prove a passing current task execution")
+    if command is not None and hashlib.sha256(command.encode("utf-8")).hexdigest() != record.get("command_sha256"):
+        raise ValueError("command text does not match the persisted broker command digest")
+    exported = verification_store.export_receipts(task_id, format="json")
+    if not exported.get("success"):
+        raise RuntimeError("stored verification receipts are unavailable")
+    try:
+        receipts = json.loads(exported["output"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("stored verification receipt export is malformed") from exc
+    matches = [item for item in receipts if isinstance(item, dict)
+               and item.get("command_id") == command_id
+               and item.get("task_id") == task_id
+               and item.get("criterion") == criterion]
+    if len(matches) != 1:
+        raise ValueError("no unique persisted receipt matches this broker command")
+    receipt = VerificationReceipt.from_dict(matches[0])
+    receipt_digest = hashlib.sha256(
         json.dumps(receipt.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    execution_record["receipt_sha256"] = receipt_sha
-
-    # 7. Register in verification store
-    recorded_rcpt = verification_store.record(receipt, update_task=True)
-
-    # Also register lookup callback in verification store if present
-    if hasattr(verification_store, "set_command_execution_record_lookup"):
-        existing_lookup = verification_store.command_execution_record_lookup
-
-        def record_lookup(cid: str) -> dict[str, Any] | None:
-            if cid == command_id:
-                return execution_record
-            if callable(existing_lookup):
-                return existing_lookup(cid)
-            return None
-
-        verification_store.set_command_execution_record_lookup(record_lookup)
-
-    # 8. If plan storage & binding provided, record result reference in plan task
+    if (
+        not receipt.passed
+        or receipt.owner != task_state.owner
+        or receipt.evidence_id != record["evidence_id"]
+        or receipt.receipt_id != task_state.verification_receipts.get(criterion)
+        or receipt.mutation_generation != task_state.checkpoint.state_data.get("mutation_generation", 0)
+        or receipt_digest != record["receipt_sha256"]
+    ):
+        raise ValueError("persisted receipt is stale or does not match current task mapping")
     if plan_storage is not None and binding is not None:
-        try:
-            plan_dict, rev = plan_storage.read_plan_file(binding.plan_rel_path)
-            ptask = plan_dict.get("tasks", {}).get(binding.plan_task_id)
-            if ptask is not None:
-                ptask_results = ptask.setdefault("results", [])
-                ptask_results.append({
-                    "kind": ResultRefKind.EVIDENCE_REFERENCE.value,
-                    "evidence_id": evidence_id,
-                    "summary": f"Criterion verified: {clean_criterion} via {clean_command}",
-                })
-                plan_storage.save_plan_file(
-                    binding.plan_rel_path,
-                    plan_dict,
-                    expected_revision=rev,
-                    owner=expected_owner,
-                )
-        except Exception as exc:
-            logger.warning("Failed to record result reference in plan file: %s", exc)
-
-    return {
-        "success": True,
-        "receipt_id": recorded_rcpt.receipt_id,
-        "receipt": recorded_rcpt,
-        "evidence_id": evidence_id,
-        "command_id": command_id,
-        "criterion": clean_criterion,
-        "passed": True,
-        "evidence_type": computed_evidence_type,
-    }
+        if binding.task_id != task_id or binding.repo_root != canonical_root:
+            raise ValueError("plan binding does not match the receipt task/root")
+    return {"success": True, "receipt_id": receipt.receipt_id, "receipt": receipt,
+            "evidence_id": receipt.evidence_id, "command_id": command_id,
+            "criterion": criterion, "passed": receipt.passed,
+            "evidence_type": receipt.evidence_type}

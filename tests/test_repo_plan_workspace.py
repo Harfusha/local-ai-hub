@@ -3,6 +3,7 @@
 import pytest
 
 from local_ai_hub.repo_plan import (
+    RepoPlanConflictError,
     RepoPlanWorkspace,
 )
 
@@ -96,6 +97,9 @@ def test_task_operations_in_workspace(workspace):
     assert res_edit["task"]["next_action"] == "Reviewing code"
 
     # 3. Delete task
+    with pytest.raises(RepoPlanConflictError, match="active or unintegrated"):
+        ws.delete_task("plan_tasks", "task_1")
+    ws.edit_task("plan_tasks", "task_1", work_status="planned")
     res_del = ws.delete_task("plan_tasks", "task_1")
     assert res_del["success"] is True
 

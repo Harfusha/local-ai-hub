@@ -7,6 +7,9 @@ import logging
 import os
 import re
 import uuid
+import hashlib
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -81,8 +84,10 @@ def remove_managed_instructions(content: str) -> str:
 
 def detect_host_environment() -> str:
     """Detect current running host agent environment."""
-    if os.environ.get("ANTIGRAVITY_ENV") or os.environ.get("GEMINI_CLI_HOME"):
+    if os.environ.get("ANTIGRAVITY_ENV"):
         return "gemini_antigravity"
+    if os.environ.get("GEMINI_CLI_HOME"):
+        return "gemini_cli"
     if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_ENV"):
         return "codex"
     if os.environ.get("CLAUDE_ENV") or os.environ.get("CLAUDE_BASE_DIR"):
@@ -113,30 +118,35 @@ def probe_host_capabilities(
     agents_paths = [
         root / "AGENTS.md",
         root / ".gemini" / "AGENTS.md",
+        root / ".gemini" / "GEMINI.md",
         root / ".codex" / "AGENTS.md",
         root / ".cursorrules",
     ]
+    from .host_hooks import confined_path, read_bytes
     for ap in agents_paths:
         if ap.exists():
             try:
-                txt = ap.read_text(encoding="utf-8", errors="ignore")
+                confined_path(root, ap)
+                txt = read_bytes(ap, max_bytes=65536).decode("utf-8", errors="ignore")
                 if PLANNER_BLOCK_START in txt and PLANNER_BLOCK_END in txt:
                     instructions_integrated = True
                     break
-            except OSError:
+            except (OSError, ValueError):
                 pass
 
-    # 3. Workflow interception probe
+    # Configuration and local files cannot authenticate a host's event delivery,
+    # trust decision, coverage or failure behavior. Never promote them to enforced.
     workflow_interception = False
-    # Check for hook configurations or event streams
-    hook_paths = [
-        root / ".local-ai-hub" / "local" / "hooks",
-        root / ".gemini" / "antigravity" / "hooks",
-    ]
-    for hp in hook_paths:
-        if hp.exists() and any(hp.iterdir()):
-            workflow_interception = True
-            break
+    registration = {"configured": False, "reason": "unsupported_host"}
+    if resolved_host in {"codex", "gemini_cli"}:
+        from .host_hooks import ManagedHostInstallation
+        try:
+            preview = ManagedHostInstallation(root, resolved_host).preview()
+            registration = {"configured": preview["installed"],
+                            "config_path": preview["config_path"],
+                            "reason": "host_trust_and_event_delivery_not_verified"}
+        except (OSError, ValueError) as exc:
+            registration = {"configured": False, "reason": str(exc)}
 
     # Determine support level
     if file_management and instructions_integrated and workflow_interception:
@@ -155,19 +165,28 @@ def probe_host_capabilities(
         details={
             "repo_root": str(root),
             "instructions_checked": [str(p) for p in agents_paths if p.exists()],
+            "hook_registration": registration,
+            "host_event_verification": "not_verified",
+            "enforcement_gap": "No authenticated host capability observation; local configuration is advisory.",
         },
     )
 
 
 class SteeringManager:
-    """Captures and manages in-flight operator clarifications, steering, and pending reconciliations."""
+    """Bounded private inbox; records are advisory, never host verification receipts."""
+
+    MAX_RECORDS = 256
 
     def __init__(self, repo_root: str | Path) -> None:
-        self.repo_root = Path(repo_root).resolve()
+        from .host_hooks import checked_root, confined_path
+        self.repo_root = checked_root(repo_root)
         self.steering_dir = self.repo_root / ".local-ai-hub" / "local" / "steering"
+        confined_path(self.repo_root, self.steering_dir)
         self._ensure_dir()
 
     def _ensure_dir(self) -> None:
+        from .host_hooks import confined_path
+        confined_path(self.repo_root, self.steering_dir)
         self.steering_dir.mkdir(parents=True, exist_ok=True)
 
     def capture_steering(
@@ -177,59 +196,133 @@ class SteeringManager:
         *,
         task_id: str | None = None,
         author: str = "operator",
+        event_id: str | None = None,
     ) -> dict[str, Any]:
-        """Capture an operator clarification or mid-execution steering safely without leaking secrets."""
+        """Capture private local text; never copy operator text into tracked plans."""
+        from .host_hooks import atomic_json, bounded_text, confined_path, read_json
+        bounded_text(session_id, "session_id", 200)
+        bounded_text(message, "message", 16384)
+        bounded_text(author, "author", 100)
+        if task_id is not None:
+            bounded_text(task_id, "task_id", 200)
+        if event_id is not None:
+            bounded_text(event_id, "event_id", 300)
         self._ensure_dir()
-        steering_id = f"steer_{uuid.uuid4().hex[:12]}"
-        record = {
-            "steering_id": steering_id,
-            "session_id": session_id,
-            "task_id": task_id,
-            "author": author,
-            "message": message,
-            "status": "pending",  # pending, reconciled, dismissed
-            "created_at": os.environ.get("TEST_TIME") or str(uuid.uuid1().time),
-        }
-        file_path = self.steering_dir / f"{steering_id}.json"
-        temp_path = self.steering_dir / f".tmp_{steering_id}_{uuid.uuid4().hex[:6]}"
-        try:
-            temp_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-            temp_path.replace(file_path)
-        finally:
-            if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except OSError:
-                    pass
-        return {"success": True, "steering_id": steering_id, "record": record}
+        with self._locked():
+            identity = json.dumps([session_id, task_id, event_id], ensure_ascii=True)
+            suffix = hashlib.sha256(identity.encode()).hexdigest()[:24] if event_id else uuid.uuid4().hex[:24]
+            steering_id = f"steer_{suffix}"
+            file_path = confined_path(self.repo_root, self.steering_dir / f"{steering_id}.json")
+            if file_path.exists():
+                existing = read_json(file_path, max_bytes=32768)
+                if any(existing.get(key) != value for key, value in {
+                    "session_id": session_id, "task_id": task_id, "message": message,
+                }.items()):
+                    raise ValueError("event_id reused with different steering payload")
+                return {"success": True, "steering_id": steering_id, "record": existing}
+            if len(self._paths()) >= self.MAX_RECORDS:
+                raise ValueError("steering capacity exceeded; reconcile and archive local records")
+            record = {
+                "steering_id": steering_id,
+                "session_id": session_id,
+                "task_id": task_id,
+                "author": author,
+                "message": message,
+                "status": "pending",  # pending, reconciled, dismissed
+                "created_at": time.time(),
+            }
+            atomic_json(self.repo_root, file_path, record)
+            return {"success": True, "steering_id": steering_id, "record": record}
 
-    def list_pending_steering(self, task_id: str | None = None) -> list[dict[str, Any]]:
+    @contextmanager
+    def _locked(self):
+        from .host_hooks import confined_path
+        lock = confined_path(self.repo_root, self.steering_dir / ".inbox.lock")
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise ValueError("steering inbox busy; do not retry an uncertain write") from exc
+        try:
+            os.close(descriptor)
+            yield
+        finally:
+            lock.unlink(missing_ok=True)
+
+    def _paths(self) -> list[Path]:
+        from .host_hooks import confined_path
+        confined_path(self.repo_root, self.steering_dir)
+        paths = []
+        with os.scandir(self.steering_dir) as entries:
+            for index, entry in enumerate(entries):
+                if index >= self.MAX_RECORDS + 16:
+                    raise ValueError("steering capacity exceeded")
+                if entry.name.endswith(".json"):
+                    paths.append(confined_path(self.repo_root, Path(entry.path)))
+        return paths
+
+    def list_pending_steering(self, task_id: str | None = None, *, session_id: str | None = None) -> list[dict[str, Any]]:
         """List un-reconciled steering items."""
         if not self.steering_dir.exists():
             return []
         items = []
-        for p in self.steering_dir.glob("*.json"):
-            if p.name.startswith(".tmp_"):
-                continue
+        from .host_hooks import read_json
+        for p in self._paths():
             try:
-                data = json.loads(p.read_text(encoding="utf-8"))
+                data = read_json(p, max_bytes=32768)
                 if data.get("status") == "pending":
-                    if task_id is None or data.get("task_id") == task_id:
+                    if (task_id is None or data.get("task_id") == task_id) and (session_id is None or data.get("session_id") == session_id):
                         items.append(data)
-            except Exception:
-                continue
+            except (OSError, ValueError) as exc:
+                raise ValueError("invalid steering record") from exc
         return sorted(items, key=lambda x: str(x.get("created_at", "")))
 
     def mark_reconciled(self, steering_id: str, reconciliation_summary: str = "") -> bool:
         """Mark a steering item as reconciled."""
-        target_file = self.steering_dir / f"{steering_id}.json"
+        from .host_hooks import atomic_json, bounded_text, confined_path, read_json
+        if not isinstance(steering_id, str) or not re.fullmatch(r"steer_[a-f0-9]{12,32}", steering_id):
+            raise ValueError("invalid steering_id")
+        bounded_text(reconciliation_summary, "reconciliation_summary", 4096, allow_empty=True)
+        target_file = confined_path(self.repo_root, self.steering_dir / f"{steering_id}.json")
         if not target_file.exists():
             return False
         try:
-            data = json.loads(target_file.read_text(encoding="utf-8"))
-            data["status"] = "reconciled"
-            data["reconciliation_summary"] = reconciliation_summary
-            target_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            return True
+            with self._locked():
+                data = read_json(target_file, max_bytes=32768)
+                data["status"] = "reconciled"
+                data["reconciliation_summary"] = reconciliation_summary
+                atomic_json(self.repo_root, target_file, data)
+                return True
         except Exception:
             return False
+
+    def confirm_reconciled(
+        self, steering_id: str, *, task_id: str, session_id: str,
+        contract_revision: int, plan_revision: str, spec_revision: str,
+        summary: str = "",
+    ) -> bool:
+        """Persist revisions after the bridge verifies the actual spec/plan/task.
+
+        This is an internal storage primitive, not an evidence validator. Public
+        routes must derive these revisions from authenticated stores, never from
+        caller-provided acknowledgement strings.
+        """
+        from .host_hooks import atomic_json, bounded_text, confined_path, read_json
+        if not isinstance(steering_id, str) or not re.fullmatch(r"steer_[a-f0-9]{12,32}", steering_id):
+            raise ValueError("invalid steering_id")
+        if isinstance(contract_revision, bool) or not isinstance(contract_revision, int) or contract_revision < 1:
+            raise ValueError("invalid contract_revision")
+        for name, value in {"task_id": task_id, "session_id": session_id, "plan_revision": plan_revision,
+                            "spec_revision": spec_revision}.items():
+            bounded_text(value, name, 200)
+        bounded_text(summary, "summary", 4096, allow_empty=True)
+        path = confined_path(self.repo_root, self.steering_dir / f"{steering_id}.json")
+        if not path.exists():
+            return False
+        record = read_json(path, max_bytes=32768)
+        if record.get("session_id") != session_id or record.get("task_id") not in {None, task_id}:
+            raise ValueError("steering task/session scope mismatch")
+        record.update(status="reconciled", task_id=task_id, reconciliation_summary=summary,
+                      reconciliation={"contract_revision": contract_revision,
+                                      "plan_revision": plan_revision, "spec_revision": spec_revision})
+        atomic_json(self.repo_root, path, record)
+        return True

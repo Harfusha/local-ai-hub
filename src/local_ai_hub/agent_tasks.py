@@ -1646,7 +1646,7 @@ class TaskStore:
         t_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
         initial_status = TaskStatus.PLANNED
-        initial_sd: dict[str, Any] = {}
+        initial_sd: dict[str, Any] = {"contract_revision": 1}
         try:
             canonical_root = _canonical_repository_root(repo_root) if repo_root else ""
             if auto_worktree and not canonical_root:
@@ -3055,6 +3055,63 @@ class TaskStore:
             f"Cannot fail task {task_id} from {current.status.value}"
         )
 
+    def revise_contract(
+        self,
+        task_id: str,
+        acceptance_criteria: list[str] | tuple[str, ...],
+        *,
+        actor: str,
+        reason: str,
+        expected_revision: int,
+    ) -> TaskState:
+        """Persist a requirements revision and invalidate prior receipt mappings by CAS."""
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive contract revision")
+        if type(reason) is not str or not reason.strip() or "\x00" in reason:
+            raise ValueError("reason must be a nonempty string")
+        if type(acceptance_criteria) not in (list, tuple):
+            raise ValueError("acceptance_criteria must be an array of strings")
+        current = self.get(task_id)
+        if current is None:
+            raise KeyError(f"Task {task_id} not found")
+        if actor != current.owner:
+            raise PermissionError("only the current task owner can revise its contract")
+        if current.status in {TaskStatus.COMPLETED, TaskStatus.FAILED,
+                              TaskStatus.CANCELLED, TaskStatus.ABANDONED}:
+            raise InvalidTransitionError("terminal task contracts cannot be revised")
+        state_data = dict(current.checkpoint.state_data)
+        revision = state_data.get("contract_revision", 1)
+        if type(revision) is not int or revision != expected_revision:
+            raise ConcurrentTaskUpdateError("contract revision changed; reload and retry")
+        history = state_data.get("contract_history", [])
+        if not isinstance(history, list) or len(history) >= 100:
+            raise ValueError("contract history is corrupt or reached its 100-entry limit")
+        history = [*history, {
+            "revision": revision,
+            "contract": current.contract.to_dict(),
+            "receipt_ids": dict(current.verification_receipts),
+            "recorded_at": time.time(),
+            "reason": reason.strip(),
+        }]
+        criteria = tuple(acceptance_criteria)
+        contract = replace(current.contract, acceptance_criteria=criteria)
+        state_data["contract_history"] = history
+        state_data["contract_revision"] = revision + 1
+        checkpoint = replace(current.checkpoint, state_data=state_data)
+        status = TaskStatus.VERIFYING if current.status == TaskStatus.COMPLETED else current.status
+        updated = replace(current, contract=contract, checkpoint=checkpoint,
+                          verification_receipts={}, status=status, updated_at=time.time())
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}",
+            kind="task.contract_revised",
+            payload={"task_id": task_id, "contract_revision": revision + 1,
+                     "acceptance_criteria": list(contract.acceptance_criteria),
+                     "reason": reason.strip()},
+            idempotency_key=f"contract_revision_{task_id}_{revision + 1}",
+            actor=actor,
+        )
+        return self._commit_update(current, updated, event)
+
     def checkpoint(
         self,
         task_id: str,
@@ -3908,8 +3965,11 @@ class TaskStore:
                         blocker=res.checkpoint.blockers[0] if res.checkpoint.blockers else None,
                         owner=res.owner or "agent",
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                f"Agent OS task {res.task_id} was persisted, but its project-plan checkpoint sync failed; "
+                "the durable task checkpoint remains available for retry"
+            ) from exc
         return res
 
     def _commit_update(
@@ -4058,8 +4118,11 @@ class TaskStore:
                         blocker=res.checkpoint.blockers[0] if res.checkpoint.blockers else None,
                         owner=res.owner or "agent",
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                f"Agent OS task {res.task_id} was persisted, but its project-plan checkpoint sync failed; "
+                "the durable task checkpoint remains available for retry"
+            ) from exc
         return res
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:

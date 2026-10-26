@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -48,16 +49,68 @@ class RepoPlanNotFoundError(RepoPlanError):
 
 
 def _check_nesting_depth(data: Any, current_depth: int = 1) -> None:
-    if current_depth > MAX_PLAN_NESTING_DEPTH:
+    stack = [(data, current_depth)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > MAX_PLAN_NESTING_DEPTH:
+            raise RepoPlanValidationError(
+                f"Plan exceeds maximum nesting depth of {MAX_PLAN_NESTING_DEPTH}"
+            )
+        if isinstance(value, dict):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((item, depth + 1) for item in value)
+
+
+def _check_raw_json_depth(text: str) -> None:
+    """Bound container nesting before json.loads can recurse on untrusted text."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_PLAN_NESTING_DEPTH:
+                raise RepoPlanValidationError(
+                    f"Plan exceeds maximum nesting depth of {MAX_PLAN_NESTING_DEPTH}"
+                )
+        elif char in "]}":
+            depth = max(0, depth - 1)
+
+
+def _reject_non_finite(value: Any) -> None:
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, float) and not math.isfinite(item):
+            raise RepoPlanValidationError("Non-finite JSON number is not allowed")
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+
+
+def _bounded_json_bytes(data: Any) -> bytes:
+    _check_nesting_depth(data)
+    _reject_non_finite(data)
+    try:
+        encoded = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
+        raise RepoPlanValidationError(f"Plan data is not finite, bounded JSON: {exc}") from exc
+    if len(encoded) > MAX_PLAN_FILE_BYTES:
         raise RepoPlanValidationError(
-            f"Plan exceeds maximum nesting depth of {MAX_PLAN_NESTING_DEPTH}"
+            f"Plan file exceeds maximum size of {MAX_PLAN_FILE_BYTES} bytes ({len(encoded)} bytes)"
         )
-    if isinstance(data, dict):
-        for v in data.values():
-            _check_nesting_depth(v, current_depth + 1)
-    elif isinstance(data, (list, tuple)):
-        for item in data:
-            _check_nesting_depth(item, current_depth + 1)
+    return encoded
 
 
 def _strict_object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -82,23 +135,38 @@ def parse_plan_json(json_str_or_bytes: str | bytes) -> dict[str, Any]:
         except UnicodeDecodeError as exc:
             raise RepoPlanValidationError(f"Plan file is not valid UTF-8: {exc}") from exc
     else:
+        if not isinstance(json_str_or_bytes, str):
+            raise RepoPlanValidationError("Plan JSON input must be str or bytes")
         text = json_str_or_bytes
-        encoded = text.encode("utf-8")
+        try:
+            encoded = text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise RepoPlanValidationError(f"Plan file is not valid UTF-8 text: {exc}") from exc
         if len(encoded) > MAX_PLAN_FILE_BYTES:
             raise RepoPlanValidationError(
                 f"Plan file exceeds maximum size of {MAX_PLAN_FILE_BYTES} bytes ({len(encoded)} bytes)"
             )
 
+    _check_raw_json_depth(text)
+    def parse_finite_float(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise RepoPlanValidationError(f"Non-finite JSON number: '{raw}'")
+        return value
+
     try:
         data = json.loads(
             text,
             object_pairs_hook=_strict_object_pairs_hook,
+            parse_float=parse_finite_float,
             parse_constant=lambda c: (_ for _ in ()).throw(
                 RepoPlanValidationError(f"Non-finite JSON number or constant: '{c}'")
             ),
         )
     except json.JSONDecodeError as exc:
         raise RepoPlanValidationError(f"Malformed JSON in plan file: {exc}") from exc
+    except RecursionError as exc:
+        raise RepoPlanValidationError("Plan JSON exceeds parser nesting capacity") from exc
 
     if not isinstance(data, dict):
         raise RepoPlanValidationError("Plan root must be a JSON object")
@@ -165,30 +233,42 @@ def detect_dependency_cycles(tasks: dict[str, Any], plan_id: str) -> None:
             if dep_plan == plan_id and dep_task in tasks:
                 adj[tid].append(dep_task)
 
-    visited: dict[str, int] = {}  # 0: visiting, 1: visited
-
-    def dfs(node: str, path: list[str]) -> None:
-        visited[node] = 0
-        path.append(node)
-        for neighbor in adj.get(node, []):
-            if neighbor not in visited:
-                dfs(neighbor, path)
-            elif visited[neighbor] == 0:
-                cycle_idx = path.index(neighbor)
-                cycle_path = " -> ".join(path[cycle_idx:] + [neighbor])
+    state: dict[str, int] = {}  # 1: active, 2: complete
+    for start in tasks:
+        if state.get(start) == 2:
+            continue
+        path: list[str] = []
+        positions: dict[str, int] = {}
+        stack: list[tuple[str, Any]] = [(start, iter(adj.get(start, [])))]
+        state[start] = 1
+        positions[start] = 0
+        path.append(start)
+        while stack:
+            node, neighbors = stack[-1]
+            try:
+                neighbor = next(neighbors)
+            except StopIteration:
+                stack.pop()
+                path.pop()
+                positions.pop(node, None)
+                state[node] = 2
+                continue
+            if state.get(neighbor) == 1:
+                cycle_path = " -> ".join(path[positions[neighbor]:] + [neighbor])
                 raise RepoPlanValidationError(f"Cyclic dependency detected: {cycle_path}")
-        path.pop()
-        visited[node] = 1
-
-    for tid in tasks:
-        if tid not in visited:
-            dfs(tid, [])
+            if state.get(neighbor) != 2:
+                state[neighbor] = 1
+                positions[neighbor] = len(path)
+                path.append(neighbor)
+                stack.append((neighbor, iter(adj.get(neighbor, []))))
 
 
 def validate_plan_dict(data: dict[str, Any], repo_root: str | Path | None = None) -> None:
     """Perform full JSON Schema and semantic validation on parsed plan dictionary."""
     if not isinstance(data, dict):
         raise RepoPlanValidationError("Plan data must be a dictionary")
+
+    _bounded_json_bytes(data)
 
     # 1. Structural schema validation
     validator = get_plan_validator()
@@ -273,4 +353,11 @@ def validate_plan_dict(data: dict[str, Any], repo_root: str | Path | None = None
 
 def serialize_plan_json(data: dict[str, Any]) -> str:
     """Deterministically serialize plan dictionary to UTF-8 formatted JSON string with trailing newline."""
-    return json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    validate_plan_dict(data)
+    try:
+        text = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
+        raise RepoPlanValidationError(f"Plan data is not finite, bounded JSON: {exc}") from exc
+    if len(text.encode("utf-8")) > MAX_PLAN_FILE_BYTES:
+        raise RepoPlanValidationError(f"Plan file exceeds maximum size of {MAX_PLAN_FILE_BYTES} bytes")
+    return text

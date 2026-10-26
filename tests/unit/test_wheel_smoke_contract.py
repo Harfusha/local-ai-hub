@@ -180,7 +180,23 @@ def test_stdio_roundtrip_accepts_compact_status_without_retired_metrics(monkeypa
         "server_name": "local-ai",
         "tool_count": 7,
         "ollama_online": False,
+        "status_success": True,
+        "hub_online": True,
+        "degraded": False,
     }
+
+
+def test_stdio_roundtrip_reports_degraded_but_online_status(monkeypatch, tmp_path) -> None:
+    _install_fake_stdio_client(monkeypatch, {
+        "success": False, "hub_online": True, "degraded": True,
+        "ollama_online": True,
+    })
+    result = asyncio.run(wheel_smoke._stdio_roundtrip(
+        tmp_path / "smoke.toml", cwd=tmp_path, timeout=1,
+    ))
+    assert result["status_success"] is False
+    assert result["hub_online"] is True
+    assert result["degraded"] is True
 
 
 @pytest.mark.parametrize("metric", ["queued", "cache_hits"])
