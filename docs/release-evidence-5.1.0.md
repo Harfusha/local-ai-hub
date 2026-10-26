@@ -3,8 +3,9 @@
 **Release Date:** 2026-10-26  
 **Target Version:** `5.1.0`  
 **Distribution File:** `dist/local_ai_hub-5.1.0-py3-none-any.whl`  
-**Wheel SHA256:** `7a51e031560f2ab8eabd4531c71114898013bf1fe4efbdae4ee26547a6bb95f4`  
-**Active Service:** PID `37268` listening on `http://127.0.0.1:11435`
+**Wheel SHA256:** `04bd322436b8e1b61c800ff922a92ab2d41c7d98b0c8e7b083c72773fa8ecb39`  
+**Active Service:** PID `46708` listening on `http://127.0.0.1:11435`  
+**CI/CD Pipeline Run:** Run #169 — [GitHub Actions](https://github.com/Harfusha/local-ai-hub/actions/runs/40401323844)
 
 ---
 
@@ -17,7 +18,7 @@
 | **Core Selftest** | `python tools/selftest.py` | **PASS (100% green)** | 6/6 checks passed: undefined-globals, config, repo-filtering, http-health, http-capabilities, agent-state-store. |
 | **System Diagnostics** | `python tools/doctor.py` | **PASS (all [OK])** | Core Python 3.13, hardware detection, SQLite WAL mode, tools catalog healthy. |
 | **Comprehensive Release Gate** | `python tools/release_check.py --allow-installed --live-smoke --json` | **PASS (16/16)** | Full live smoke verified: `qwen2.5-coder:7b` (code & reasoning), `qwen3.5:9b` (vision), Whisper audio. |
-| **Surface Inventory & Contracts** | `python -m pytest -q tests/test_surface_audit_policy.py tests/test_surface_inventory.py` | **PASS (744 passed in 83.92s)** | 426 registered operations verified with exact field policies and 0 unreviewed drift. |
+| **Surface Inventory & Contracts** | `python -m pytest -q tests/test_surface_audit_policy.py tests/test_surface_inventory.py` | **PASS (748 passed in 113.66s)** | 426 registered operations verified with exact field policies and 0 unreviewed drift. |
 | **Prompt Synchronization** | `python tools/sync_prompt_policies.py --check` | **PASS** | `INSTALL_PROMPT.md` and `UPDATE_PROMPT.md` policy blocks strictly match generated definitions. |
 
 ---
@@ -39,8 +40,8 @@
 
 ## 3. Isolated Wheel Packaging & MCP Smoke Test
 
-- **Built Wheel:** `dist/local_ai_hub-5.1.0-py3-none-any.whl` (size: 1,698,590 bytes)
-- **Validation Environment:** Clean disposable virtual environment (`tempfile.TemporaryDirectory`)
+- **Built Wheel:** `dist/local_ai_hub-5.1.0-py3-none-any.whl` (size: 1,698,984 bytes)
+- **Validation Environment:** Clean disposable virtual environment (`test_smoke_venv`)
 - **Package Integrity:** `pip check` -> `No broken requirements found.`
 - **Functional MCP Smoke Execution (`tools/wheel_smoke.py`):**
   ```json
@@ -54,19 +55,18 @@
     "smoke": "passed",
     "success": true,
     "version": "5.1.0",
-    "wheel_sha256": "7a51e031560f2ab8eabd4531c71114898013bf1fe4efbdae4ee26547a6bb95f4"
+    "wheel_sha256": "04bd322436b8e1b61c800ff922a92ab2d41c7d98b0c8e7b083c72773fa8ecb39"
   }
   ```
 - **Result:** `smoke: passed`, `success: true`.
 
 ---
 
-## 4. Live Runtime & Chrome Browser Acceptance
+## 4. Multi-Platform Hosted CI Verification (GitHub Actions Run #169)
 
-- **Running Server:** PID `37268` on `http://127.0.0.1:11435`
-- **Endpoint Health:** `/health`, `/ready`, `/api/live/status?light=1` all return HTTP 200 with `hub_online: true`.
-- **Browser Acceptance:**
-  - URL: `http://127.0.0.1:11435/dashboard#overview`
-  - Browser: Google Chrome (DevTools Protocol)
-  - Console Diagnostics: `browser_console_logs: []` (**0 errors, 0 unhandled rejections**)
-  - Visual Verification: Full dashboard rendered with resident metrics, model routing cards, and zero degraded UI indicators.
+- **Workflow Run:** [Run #169 on master](https://github.com/Harfusha/local-ai-hub/actions/runs/40401323844)
+- **Platforms Verified:**
+  - Ubuntu Linux (`ubuntu-latest`: Python 3.11, 3.12, 3.13, 3.14)
+  - macOS ARM64 (`macos-latest`: Python 3.11, 3.12, 3.13, 3.14)
+  - Windows x64 (`windows-latest`: Python 3.11, 3.12, 3.13, 3.14)
+- **Status:** All matrix configurations verified with 0 FAIL / 0 ERROR.

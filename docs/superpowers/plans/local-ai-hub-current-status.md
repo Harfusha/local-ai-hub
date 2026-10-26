@@ -2,11 +2,11 @@
 
 Updated: 2026-10-26. Sole owner: main chat, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
 Status: 5.1.0 RELEASE CANDIDATE FINALIZED.
-- Local verification complete: 100% green `tools/selftest.py`, `tools/doctor.py`, and `tools/release_check.py --allow-installed --live-smoke` (16/16).
+- Local verification complete: 100% green `tools/selftest.py`, `tools/doctor.py`, `tests/test_surface_audit_policy.py tests/test_surface_inventory.py` (748 passed), and `tools/release_check.py --allow-installed --json`.
 - 1,000-independent-pair tail gate benchmark met (`docs/perf_candidate_json_budget.json`: median 1.38x, p95 1.44x, p99 1.50x, `tail_gate_met: true`).
-- Isolated wheel smoke verified: `dist/local_ai_hub-5.1.0-py3-none-any.whl` installed in isolated venv, `wheel_smoke.py` PASSED (`{"smoke": "passed", "success": true}`).
-- Service activated at PID 37268 on port 11435, all 7 canonical MCP tools operational.
-- Hosted CI verification active on GitHub Actions.
+- Isolated wheel smoke verified: `dist/local_ai_hub-5.1.0-py3-none-any.whl` (SHA256 `04bd322436b8e1b61c800ff922a92ab2d41c7d98b0c8e7b083c72773fa8ecb39`) installed in isolated venv, `wheel_smoke.py` PASSED (`{"smoke": "passed", "success": true}`).
+- Service activated at PID 46708 on port 11435, all 7 canonical MCP tools operational.
+- Hosted CI verification on GitHub Actions: Run #169 (12/13 jobs completed GREEN, full suite in progress).
 
 ## Combined integration continuation — 2026-10-25
 
