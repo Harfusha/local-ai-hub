@@ -81,6 +81,7 @@ def test_cross_process_contenders_get_one_overlapping_writer(tmp_path: Path) -> 
     root = tmp_path / "repo"
     root.mkdir()
     db_path = tmp_path / "fences.sqlite3"
+    FencingLeaseStore(db_path)
     context = multiprocessing.get_context("spawn")
     start = context.Event()
     results = context.Queue()
