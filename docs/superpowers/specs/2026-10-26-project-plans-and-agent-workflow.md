@@ -1,133 +1,124 @@
-# Project plans and automatic agent workflow
+# Repository-owned Hub workspace and agent workflow
 
-Status: PROPOSED DESIGN, 2026-10-26. No runtime, installer or hook implementation is claimed.
+Status: PROPOSED DESIGN, revision 3, 2026-10-26. No runtime, installer or hook implementation is claimed.
 
-## Operator requirements and authority
+## Operator requirements and current decision
 
-The operator clarified the intended workflow during the design conversation:
+Specifications belong in Git and must be updated when the operator clarifies requirements, or created when no relevant specification exists. Plans have editable names, descriptions, clarifications and tasks, with a project Kanban and a plan filter. Active work, unfinished results and required integration must remain visible across chats.
 
-- Specifications belong in Git. When a user clarifies requirements, update the relevant specification; create one when none applies.
-- Live plans belong in Local AI Hub, not in Git Markdown plans. Each project has a Kanban view with a filter for a custom-named plan.
-- Plans and tasks have editable titles, descriptions and clarifications. A task can visibly indicate who is actively working on it.
-- Git may contain periodic plan exports for backup. Exports are not another editable live plan.
-- Superpowers must be an installer-managed dependency of the agent integration when missing.
-- Completed work must reach its authorized integration target, and existing unfinished or unintegrated work must be found before duplicate implementation.
+The latest operator direction replaces the earlier database-owned planner and periodic-export proposal: plans and other repository-specific work artifacts are real files in the selected repository/worktree. Hub creates, validates, edits, saves, indexes and displays those files. Git versions them normally. There is no second canonical plan in Hub's database and no periodic plan export or special backup branch in this design.
 
-These requirements supersede the earlier proposal to keep live plan checkboxes in Git. This document is a specification, not a live implementation plan. Until the new workflow is implemented and validated, existing governing instructions remain in force; do not disable the current planning mechanism prematurely.
+This document is a specification, not a live implementation plan. Existing governing instructions remain in force until the replacement is implemented and validated; do not disable current planning prematurely.
 
-## Current implementation evidence
+## Current source evidence
 
-Source inspected in the current checkout on 2026-10-26:
+Source inspected in this checkout on 2026-10-26:
 
-- `src/local_ai_hub/agent_board.py`: the board schema has no project or plan identity; items have an optional `linked_task_id` and independent status.
-- The same file's `session_briefing(include, root)` accepts `root` but does not use it when listing board items or tasks.
-- `src/local_ai_hub/services.py` forwards board mutations independently from Agent OS task transitions.
-- `src/local_ai_hub/agent_tasks.py` already provides task contracts, checkpoints and completion verification. Reuse these stores and gates rather than introduce a second task engine.
+- `agent_board.py` has no project/plan identity in its board schema; `session_briefing(include, root)` does not use `root` when reading the board and tasks.
+- `services.py` forwards board mutations separately from Agent OS task transitions.
+- `agent_tasks.py` already provides execution contracts, checkpoints and verification. Retain these facilities and usage counters without creating a competing user-plan store.
+- `project_config.py` defines `.local-ai.toml` and `.local-ai.worktree.toml`. Preserve their current authority; do not introduce another competing project configuration inside the proposed folder.
 
 These are source observations, not installed-runtime or UI acceptance.
 
-## One state model per project
+## Repository directory and ownership
 
-The canonical project identity is the resolved repository coordination ID. Authorized roots resolve to this identity. Branches, clones and worktrees remain explicit execution scopes; they must not accidentally create separate project boards or broaden access to other roots.
+Proposed convention, not files created by this specification:
 
-Hub is authoritative for live planning state and its event history. Git is authoritative for specification text. A plan links to specification paths and revisions. The dashboard, agent briefing and any exported Markdown are views of these records, not independent editable stores.
+```
+.local-ai-hub/
+  README.md                    # Short orientation and links to authoritative files
+  .gitignore                   # Ignore only local/generated material
+  plans/<name>.plan.json       # Canonical named plans, including structured task records
+  specs/*.md                   # Default for new specifications when configured
+  decisions/*.md               # Rationale and links to adopted specification changes
+  knowledge/*.md               # Curated repository facts with sources and validity
+  local/                       # Ignored transport/cache material, when needed
+```
 
-A plan has a stable ID, project identity, custom title, description, objective, status, owner, specification references, integration target, clarification history, revision and timestamps. Renaming a plan preserves references and tasks. Plan titles are display names, not storage keys.
+Existing specifications remain at their existing authoritative paths, including `docs/superpowers/specs/` here. Do not copy or move them merely to populate the new folder. A decision note explains why and links to the actual requirement; it must not become another copy of the specification. The README is orientation, not another manually maintained current-state summary.
 
-A task reuses its Agent OS task ID and contract. It belongs to one project and one plan, with title, description, acceptance criteria, clarification history, dependencies, affected paths, execution scope, owner, next action, blocker, verification and integration evidence. Moving it between plans is explicit and audited. Small ad hoc work can use one project Inbox plan instead of requiring a new plan for every request.
+Tracked files contain branch-specific, portable project knowledge: plans, adopted requirements, relevant decisions and curated technical facts. Pending private transcripts, credentials, absolute machine paths, session IDs, active leases, heartbeat data, raw logs, indexes, models and tool environments do not belong in tracked plan files. Keep shared live coordination in the configured Hub state store; keep optional per-worktree cache/spool under ignored `local/` with bounded retention. Ignore rules do not remove data already tracked; installation must detect that case instead of promising privacy from a new ignore entry.
 
-Plans and tasks support revision-checked edits by the human and authorized agents. Every change records actor, origin, time and previous revision. A stale edit conflicts instead of silently overwriting another writer. User edits to requirements create changes requiring reconciliation, not silently accepted implementation claims.
+Owner-global preferences, credentials, model inventory and installation settings remain Hub-owned. This folder is not a reason to copy all Hub state into every repository. Existing memory adoption retains provenance, scope and freshness; moving a fact into a Markdown file does not make it verified.
 
-## Status and active work
+Declare the supported artifact types and roots in one project configuration contract. Keep the existing configuration paths until an explicitly designed replacement is shipped. Never maintain silent aliases or two writable configurations.
 
-Task progress distinguishes planned, ready, implementation, verification, awaiting integration, blocked, paused, integrated and cancelled work. The implementation must define canonical enum values and their mapping to existing Agent OS states; do not add coercive aliases or pretend these are current APIs.
+## Plans as files
 
-Activity is separate from progress. Claiming a task records the actual task/execution owner, session, authorized root/worktree, purpose and a renewable expiring lease. A human assignment does not by itself prove active execution. The dashboard shows who is working and when activity was last confirmed.
+Use a versioned, deterministic, human-readable structured format, proposed as one `<name>.plan.json` per plan. The filename is a location, not identity. Each plan has a stable ID, editable title/description, objective, lifecycle, specification references, default integration target and tasks keyed by stable IDs. Task fields include title, description, clarifications, work status, dependencies, scope, acceptance criteria, next action, blocker, source-result references and required delivery targets. Ordering is explicit and must not depend on array position or title.
 
-Only one writer may own overlapping paths. Plan-level work can have several agents on disjoint tasks. Lease renewal and writes are fenced; an expired worker cannot resume writing under its old claim. Expiry marks ownership stale and work needing reconciliation, never complete, discarded or automatically safe to take over.
+Renaming a file or title preserves identity. A deliberate clone into an independent plan receives a new ID. Duplicated IDs within the same worktree are an error. Cyclic or missing dependencies are visible validation failures. Archive/cancellation preserves the disposition of unfinished source changes; it cannot silently delete tasks or delivery obligations.
 
-The Kanban is a projection of canonical task state. Creating, editing or checkpointing a task updates the card automatically. Agents do not maintain a second board item manually. Dashboard filtering is project first, then plan; an installation-wide overview aggregates only authorized projects. Counts, pagination and briefings use the same filters.
+Plan metadata, work status and Git references are versioned. Current activity is a separate Hub overlay bound to the actual execution. A file saying `done` is a declaration, not an authentic verification receipt: completion imported through manual edits or a merge must be checked against current requirements, source and target evidence before being presented as verified delivery.
 
-## Processing an in-flight clarification
+Kanban is a derived view of these plan files, filtered by project, worktree and custom plan name. Edits in the dashboard and agent tools operate on the same files. External valid file changes are reindexed; cache loss can be repaired by reading the repository. Invalid schemas, duplicate JSON keys, merge conflict markers or unsupported versions are reported without overwriting the file. A last-known-good cached view is explicitly stale and cannot authorize writes or completion.
 
-1. A supported host adapter captures the exact user message with project, session and turn/message identity before the next dependent operation. Store a pending change idempotently; identical delivery does not create duplicate changes.
-2. The agent distinguishes a requirement change from a question or status request. Preserve the original wording and source. Agent guesses remain proposals; ambiguity remains unresolved rather than becoming an invented operator decision.
-3. For a requirement change, update the applicable Git specification, or create a scoped specification when none exists. Record which earlier decision is superseded; do not discard its history.
-4. Reconcile the active Hub plan and affected task contracts, dependencies, acceptance criteria and next actions with the specification change. Supersede only evidence invalidated by that change.
-5. Acknowledge the pending change only after the specification write and Hub updates are confirmed. A crash between them leaves a recoverable pending operation. Further affected implementation and completion remain gated until reconciliation succeeds.
+## Exact repository and worktree binding
 
-Git and the Hub database cannot share one transaction. Use durable intents/outbox records and idempotent acknowledgements for cross-store updates. Reconciliation checks actual file/revision state rather than manufacturing success from a checkpoint flag.
+Every read/write request binds an authorized physical root. Resolve it using the existing repository/coordination identity and actual Git worktree metadata, including a `.git` pointer file. Do not infer shared authority from a repository URL, directory name, branch name or an untrusted ID stored in a plan.
 
-Specification updates are authorized workspace writes subject to ownership and path confinement. Unrelated tasks may continue when a change does not affect them. Explicit cancellation or pause always takes precedence over automatic continuation.
+Default to the current chat's explicitly bound root/worktree. Users may select another authorized registered root in the UI or request. Show project, physical worktree and branch prominently before editing. Never redirect a request to a sibling or primary checkout because it seems newer. An explicit selection must not change another chat's selection.
 
-## Automatic use by agents
+Use the view identity `(repository coordination ID, worktree identity, plan ID, file revision)`; retain branch/ref and HEAD as execution provenance, not immutable identity. A branch switch, rebase or worktree replacement invalidates previously selected file revisions and requires a fresh read before writes. Detached HEAD and non-Git roots need truthful explicit handling, not a guessed target branch.
 
-Provide a Hub-owned workflow adapter over existing public tools. Keep public tool count compact; concrete action schemas must be designed against existing coordination APIs rather than invented here.
+## Multiple branches are multiple file versions
 
-- On start, resume, fork and context restoration: resolve the project, load its selected plan, active task, pending clarifications, blockers and awaiting-integration work. Return a bounded context with exact recovery references for mandatory omitted detail.
-- Before new implementation: locate an existing task/result in the same project, reconcile pending changes, claim the task and affected paths, and verify that the selected specification/plan revisions are current. Similar text alone cannot merge distinct tasks.
-- At meaningful milestones: update the same task with actual progress, evidence, blocker and next action. Derive plan progress and the Kanban projection automatically.
-- Before completion: enforce task-type-specific evidence, processed clarifications, synchronized specification references, released ownership and required integration disposition.
-- On interruption or disconnect: persist the last confirmed state and pending operations. Never infer a successful operation from silence or retry an unknown-outcome mutation blindly.
+Branches A and B may contain different versions of the same logical plan. Hub displays those versions with their worktree/branch context and does not silently combine their statuses into one canonical project plan. A project overview may aggregate registered views while keeping provenance and differences visible. It cannot claim coverage of unknown worktrees or refs.
 
-Host hooks connect these events where supported. Validate receipt of messages submitted during an active turn, not just ordinary new turns. For Codex, assess `UserPromptSubmit`, `PreToolUse`, `Stop`, `Interrupt` and context/session events against the installed host. Other agents need their own tested adapters.
+Independent worktrees may edit the same relative plan path. They do not share a physical-file lock. Hub-mediated edits within one worktree use an exclusive write protocol plus an expected content revision and atomic replacement; stale clients receive a conflict. Verify the root, file confinement and selected Git context again at write time. Durable writes acknowledge the saved file before updating the cache.
 
-MCP alone cannot intercept arbitrary native edits or messages. A host without working interception must be visibly marked advisory/unsupported for enforcement; it cannot pass automatic-adoption acceptance. Completion continuations must be bounded and stop on genuine blockers, explicit pauses or cancellations. Do not create an endless stop-hook loop.
+Require all managed agent writers to use this protocol. Ordinary manual edits are discovered and validated, but arbitrary simultaneous non-cooperating filesystem writers are outside a cooperative lock's guarantee. Acceptance must exercise the actual supported OS/filesystem write protocol; do not claim a filesystem-wide compare-and-swap merely because a checksum was checked before rename.
 
-Hub outages preserve pending work and fail closed for dependent mutations/closure. Provide bounded recovery information; do not silently switch to an independently editable Git plan. A local pending-delivery spool, if needed, is transport state with deduplication, not a second planner.
+Git merges code and plan changes together. Stable task IDs and deterministic formatting reduce unnecessary conflicts. Independent field/task changes may be combined by a validated three-way operation; conflicting requirements/statuses need explicit resolution. Never pick the most advanced status, latest timestamp or one whole side automatically. Structural merge automation is optional for the first version; truthful conflict handling is mandatory.
 
-## Integration and existing abandoned work
+A task specification reference includes its authoritative path and adopted content/committed revision. A clarification saved on one branch is not automatically present on another. The affected attempt must reconcile its required specification version; unrelated tasks may continue. Record unpublished specification drafts honestly until committed.
 
-For repository-changing tasks, record the authorized target branch and integration owner from the start. Verified source work transitions to awaiting integration; the owner integrates each bounded unit promptly before dependent implementation. Direct work on the target branch still needs the required committed result and current validation.
+## Active work and Agent OS execution
 
-Completion requires deterministic evidence that the intended change is present in the target and required checks passed there. Handle ordinary merges, squash and selective integration without treating a source commit's mere existence as proof. Respect approval boundaries and existing writer ownership.
+Logical plan/task IDs identify portable work. Agent OS execution/task IDs identify actual attempts and their contracts. Map executions to the file view and logical task without conflating the two. A retry, resumed chat or replaced worktree is not automatically a new user task. If another registered attempt is already doing the same work, show it before allowing accidental reimplementation; an intentional alternative attempt requires explicit scope.
 
-When integration cannot proceed, retain the task, source location, concrete blocker, accountable owner and next action. A worker may finish its bounded contribution without closing the parent delivery obligation. Non-code tasks use their own explicit acceptance criteria rather than a universal merge requirement.
+Assignment is not activity. Hub records the actual task/execution owner, session, authorized root, affected paths and renewable lease. An expired lease means stale ownership needing reconciliation, never completion or automatic permission to discard work. Physical checkout writes, logical task ownership and target-branch integration have distinct resource boundaries. Independent branches may work in parallel; the target integrator still reconciles overlapping results.
 
-At rollout and on project resume, reconcile registered branches/worktrees and known tasks. Classify every leftover as active, awaiting integration, already integrated, deferred, rejected, cancelled or unresolved. Record disposition of every remaining change before recoverable archival. Never delete by age, fabricate acceptance, reset dirty work or copy another owner's implementation.
+Agent OS checkpoints that change user-visible progress apply a revision-checked mutation to the bound plan file. They do not separately maintain a canonical board row. Record operation identity and save outcome so a crash after the file save but before acknowledgement can be reconciled without applying the change twice. A failed file write leaves the operation pending; a successful cache update cannot substitute for a saved plan.
 
-Stale ownership and awaiting-integration work stay visible in project briefings. Dead-work prevention means a durable continuation/disposition obligation plus actual integration, not merely another forgotten queue.
+Keep lifecycle, work phase, delivery and activity distinct. Verified source work can await integration while no worker is active. A task requiring several delivery targets completes only after each required target is verified or explicitly removed from scope with a reason. Do not create passing receipts from a status field or user assertion.
 
-## Git backups
+## Clarifications and automatic agent use
 
-Support configurable periodic and milestone exports of canonical plan snapshots into a clearly marked backup directory, for example `docs/superpowers/plan-backups/<plan-id>/`. Include schema version, project/plan identity, record revisions, specification references and export time. Serialize a consistent snapshot without credentials or private raw chat transcripts.
+At start/resume/context restoration, load the bound worktree's plan/specification references, pending changes, current attempts and outstanding delivery work. Use bounded summaries and exact recovery references rather than reading every project file into context.
 
-Exports are labelled generated and not edited as live plans. Editing an export does not update Hub state. Restore/import is a separate explicit, reviewed operation with identity validation and conflict detection. Never silently replace newer Hub state with an old export.
+A supported host adapter captures an operator clarification with its actual session/turn identity before dependent implementation proceeds. Preserve the original message in authorized private coordination storage when needed; do not automatically commit whole messages or secrets. Distinguish requirement changes from questions. Update the relevant specification or create one, then patch affected plan/task records. Keep the change pending until both writes are confirmed. Cross-file updates need a durable idempotent intent and recovery path; two renames are not one atomic transaction.
 
-Creating an export file, committing it and pushing it are distinct authorized operations. Respect the current Git writer and dirty baseline. A failed backup is visible and retryable by operation identity; it does not roll back legitimate live work or falsely report a successful Git backup.
+Before new implementation, identify the existing task/result, reconcile affected changes, verify file revisions and acquire actual ownership. At milestones, update the same plan task through Hub. Before final completion, confirm persisted specification/plan changes and required verification/integration. On interruption, save confirmed progress and next action. Explicit pause/cancellation always takes precedence over automatic continuation.
 
-## Installation and instructions
+Superpowers integration must require this workflow persistently: specifications in their authoritative Git files, live planning through Hub-managed repository plan files, no independent Markdown plan for the same work, and no completion without required integration. Adapt supported planning/execution extension points; do not silently edit cached upstream skills or leave conflicting active instructions. Installation manages compatible Superpowers when missing and validates the actual host adapter. Synchronize managed instructions and INSTALL/UPDATE prompts when implementation ships.
 
-Agent integration installation detects the host, installs missing Superpowers through its supported mechanism, validates a pinned compatible version and installs the Hub adapter. Reuse compatible existing installations. Preserve custom modifications and reject incompatible setup explicitly; never silently overwrite plugin caches or install several competing copies.
+Host hooks must be tested for mid-turn messages, ordinary prompts, tool edits, interruption and restoration in each supported agent. MCP alone cannot intercept arbitrary native actions. An unsupported host is visibly advisory, not falsely described as enforced. A lost Hub does not erase the plan files, but active ownership cannot be guessed; preserve pending operations and do not silently start a competing writer. Continuation loops must be bounded.
 
-Keep runtime-only/headless installation distinguishable from a fully working agent workflow. Installation success for this feature requires an executable capability check of the selected host adapter, Superpowers visibility and Hub project binding.
+## Saved, committed and delivered are different states
 
-Put persistent Hub-owned instructions in managed integration files/blocks, not only this chat. The instruction contract must require:
+Hub saves the canonical file immediately; no periodic export is needed. The UI separately reports saved/uncommitted, committed locally and remote publication where configured. Saving a file is not a Git commit, and a local commit is not an off-machine backup. Use ordinary bounded commits containing the owned code/specification/plan changes, preserving unrelated dirty state. No automatic push authorization follows from enabling plan management.
 
-- Update or create Git specifications for requirement clarifications before dependent implementation.
-- Create and maintain live plans/tasks in Hub; do not create parallel live Markdown plans.
-- Load project state on resume; claim and checkpoint actual work; reuse existing tasks/results.
-- Complete delivery only after required integration and recorded disposition of leftovers.
-- Treat generated plan exports as backups, not instructions or a source of live authority.
+Source work records its target delivery obligations before implementation. A completed source contribution remains awaiting integration until the actual change is present and verified in the required target. The integrator merges/resolves the relevant plan changes with the code and records verified delivery in the target's plan. An old source branch may retain its historical plan state; Hub can show confirmed target provenance without rewriting that branch's file behind the owner.
 
-Adapt Superpowers planning/execution at supported extension points so its output uses Hub plans. A competing unmodified instruction to write live Git plans must not remain active. Synchronize the installer, update path, managed agent instructions, `docs/INSTALL_PROMPT.md` and `docs/UPDATE_PROMPT.md` when implementation ships.
+On project activation and before archival, reconcile registered attempts, plan versions, source refs, dirty/untracked files and target results. Every leftover needs an accountable owner, next action or explicit disposition. Preserve useful changes recoverably before removing a worktree. Neither age nor a plan's `done` declaration proves that source work was integrated. The responsible workflow must continue the same task or record why it cannot; an unattended list alone does not solve abandoned work.
 
-## State evolution and rollout boundaries
+Restoring an old Git revision restores that branch's declared plan state. It must not resurrect active leases or automatically replay integrations/pushes. Hub rechecks current ownership and evidence, and marks missing source refs or obsolete delivery claims unresolved. Private execution state has its own existing backup/retention contract; the repository files do not pretend to back up the entire Hub installation.
 
-Use final canonical schemas and explicit versioned records; do not introduce runtime migration shims or runtime ALTER loops. Existing unscoped board records require reviewed project/plan assignment or preserved unresolved disposition. Do not guess identity from a title, label, cwd or current project. Preserve/export existing records before any approved offline conversion or rebuild.
+## Adoption and required acceptance
 
-Introduce the workflow in bounded integrated units: canonical project/plan state and task projection; agent clarification and execution adapters; integration/reconciliation gates; installer and export/UI delivery. This ordering is a design dependency, not a second Git implementation checklist. Track actual execution in Hub once its plan model exists.
+Do not move existing plans/specifications or discard board records automatically. Inventory and explicitly map selected legacy work into file-backed plans; preserve unresolved records. The new planner is accepted only when file writes, indexing and host behavior work together. User-facing project/plan views and counts must use the same bound scope.
 
-## Required acceptance scenarios
+Required scenarios:
 
-- Two projects with identically named plans/tasks remain isolated in lists, counts, edits, exports and briefings; renaming or changing worktrees preserves the correct project and stable IDs.
-- Human edits and two concurrent agents cannot silently lose updates; disjoint tasks may proceed, overlapping writes and expired claims are fenced.
-- A mid-turn clarification updates or creates the Git specification, reconciles the Hub plan and survives restart in another chat. A question does not become an invented requirement.
-- A crash between specification write and Hub acknowledgement leaves recoverable pending work. Duplicate event delivery does not duplicate tasks or decisions.
-- Creating/checkpointing/completing a task updates the project/plan Kanban without manual board calls. An unresolved specification sync or required integration prevents delivery completion.
-- Completed code on another branch is found and integrated once. Conflicts or approvals remain explicit. Old work is archived only after recoverable full disposition.
-- Pauses, cancellation, unavailable Hub, missing hooks and stale leases cannot manufacture progress or cause unbounded continuation loops.
-- Clean install, compatible existing Superpowers and incompatible/custom installations produce truthful distinct results; actual host events and agent behavior are demonstrated end to end.
-- Periodic export produces a consistent Git backup; a dirty checkout, unavailable writer or failed commit cannot be reported as a committed backup. Restore cannot overwrite newer state silently.
+- Plans with identical titles in two projects/worktrees remain correctly scoped. Renaming preserves identity; explicit selection never edits a sibling checkout.
+- Two worktrees edit different tasks on different branches, commit code and plan changes, then merge. Independent edits survive and genuine conflicts remain visible; no export process touches either checkout.
+- A stale UI/agent revision conflicts with another writer. A branch switch between read and save prevents writing stale content onto the new branch. Direct valid edits reindex; malformed/conflicted files are preserved and visibly invalid.
+- A mid-turn clarification updates or creates the correct specification and plan, survives a crash between writes, and is recovered by another chat without duplicate application.
+- Checkpoints update saved plan files and the Kanban automatically. Activity expires independently; a manual `done` edit cannot manufacture verified delivery.
+- Existing source-ready work is found instead of reimplemented, integrated once with the required plan update, or left explicitly blocked under an accountable owner. Archival preserves every remaining change.
+- A restored old branch does not revive sessions/leases or replay external effects. Saved, committed, pushed and integrated indicators reflect actual evidence.
+- Clean install, compatible/custom Superpowers, missing hooks and unavailable Hub produce truthful distinct behavior. End-to-end host proof is required in addition to source tests.
 
-Passing source tests alone does not establish host-hook, installed-agent, dashboard, Git integration or backup acceptance. Keep their evidence separate and current.
+Technical basis: Git gives linked worktrees separate working trees and indexes while sharing repository data; ordinary tracked files follow their selected branch. Ignore rules apply to untracked material and are not a secret-removal mechanism. See [git-worktree](https://git-scm.com/docs/git-worktree) and [gitignore](https://git-scm.com/docs/gitignore). Application-level scope, locking, recovery and adoption still require implementation and failure tests.
