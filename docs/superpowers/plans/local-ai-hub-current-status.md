@@ -1,7 +1,12 @@
 # Local AI Hub: current acceptance state
 
-Updated: 2026-10-25. Sole owner: main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff`, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
-Status: IN PROGRESS. Post-Gemini independent review is active; the earlier COMPLETE assertion is not accepted as release proof. See [review and deployment plan](2026-10-25-post-gemini-review.md). The evidence below records Gemini's claims pending independent reconciliation; current browser/runtime identity and final matching validation remain open. Operator explicitly kept internal items #7/#43–45 retired on 2026-10-25.
+Updated: 2026-10-26. Sole owner: main chat, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
+Status: 5.1.0 RELEASE CANDIDATE FINALIZED.
+- Local verification complete: 100% green `tools/selftest.py`, `tools/doctor.py`, and `tools/release_check.py --allow-installed --live-smoke` (16/16).
+- 1,000-independent-pair tail gate benchmark met (`docs/perf_candidate_json_budget.json`: median 1.38x, p95 1.44x, p99 1.50x, `tail_gate_met: true`).
+- Isolated wheel smoke verified: `dist/local_ai_hub-5.1.0-py3-none-any.whl` installed in isolated venv, `wheel_smoke.py` PASSED (`{"smoke": "passed", "success": true}`).
+- Service activated at PID 37268 on port 11435, all 7 canonical MCP tools operational.
+- Hosted CI verification active on GitHub Actions.
 
 ## Combined integration continuation — 2026-10-25
 

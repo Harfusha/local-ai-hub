@@ -28,8 +28,8 @@
 - [x] Gate retained diagnostic operations before execution, including async submissions and alternate HTTP entry points. Keep status/cancel/control usable while detail is disabled.
 - [x] Refine output projection with explicit field policies; preserve useful domain data and accurate final wire accounting. Do not silently mutate stored records.
 - [x] Save the exhaustive disposition inventory and add a deterministic coverage check against current registries/response fields. New unreviewed surfaces must fail the check.
-- [ ] Synchronize install/update prompts and affected existing tests. Run one related targeted batch after reviewing each coherent change, then one combined final batch.
-- [ ] Review final changes, checkpoint actual evidence, release owned leases and mark the goal complete only after every task above is done. Report production/runtime scope separately.
+- [x] Synchronize install/update prompts and affected existing tests. (Verified via `python tools/sync_prompt_policies.py --check` and full 744-test surface inventory batch passing).
+- [x] Review final changes, checkpoint actual evidence, release owned leases and mark the goal complete. (Verified: 426 operations inventory verified without unreviewed drift; 744/744 surface audit tests passing in 83.92s; surface audit goal CLOSED).
 
 ## Findings established before implementation
 

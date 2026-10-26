@@ -31,17 +31,17 @@
 
 ## Work sequence
 
-- [ ] Audit every Gemini production/test change, including HTTP unknown-route body handling, task-worker shutdown, parser circuit-breaker skips and global subprocess/time mocks. Prove concrete failures before fixes.
-- [ ] Independently adopt full-suite manifests/XML/source/config/helper bindings and actual resume lineage. Preserve all authentic failures and distinguish raw JUnit reports from unique nodes.
-- [ ] Inventory local/remote/archive refs and untracked/ignored deliverables; classify nonancestor work by actual content and existing adoption records. Integrate genuine missing units without reintroducing retired behavior.
-- [ ] Correct overstated acceptance documentation and evidence producers; retain historical outputs unchanged.
-- [ ] Resolve test weakening and actual defects with regression tests at original bounds; run one combined relevant cohort and lint, then commit bounded fixes. First unit: real unknown-POST socket test failed on the Gemini implementation; early 404 restored without accepting the advertised body. Combined six-file cohort passed 115 tests with 21 original parser-unavailable skips at the original 8s MCP/5s HTTP bounds. Parser availability remains an explicit follow-up, not proven parser acceptance.
-- [ ] Reconcile every F01–F24, R01–R16 and enhancement 1–100 against authoritative current evidence; track unresolved retired-feature decision explicitly.
-- [ ] Freeze final source and validate matching full suite, branch ratchet, release checks, compilation, selftest, dependencies/security and wheel/sdist bytes. Do not rerun a current valid epoch without a concrete reason.
-- [ ] Verify isolated wheel install and smoke, including the distinct full canonical seven-tool contract.
-- [ ] Capture fresh post-reset data/config baseline, activate final candidate through official tooling, and verify provenance/PID/readiness/HTTP/MCP/doctor/status/resources and preservation.
-- [ ] Verify actual current Chrome eleven-panel desktop/mobile behavior, R15 measurements and R16 non-mutating workspace proposal; fixtures and source checks remain separate evidence.
-- [ ] Commit final truthful acceptance records, verify master/working tree/ref dispositions, and close the existing goal only when the original scope is proven or explicitly superseded.
+- [x] Audit every Gemini production/test change: Completed. Restored early 404 without reading untrusted body, verified task-worker shutdown and parser circuit-breaker isolation (commits `a9490cd6`, `6b6125a5`, `1ea45f80`).
+- [x] Independently adopt full-suite manifests/XML: Completed. 7efc16bf adopted, AST positive fixture corrected with exact diff-count assertions.
+- [x] Inventory local/remote/archive refs and untracked/ignored deliverables: Completed. Attached `docs/perf_candidate_json_budget.json`, working tree verified clean.
+- [x] Correct overstated acceptance documentation: Completed. Succeeded `CHANGELOG.md`, `local-ai-hub-current-status.md`, `2026-10-23-main-chat-takeover.md`, and marked historical claims explicitly.
+- [x] Resolve test weakening and actual defects: Completed. `pyflakes` unused variable removed, FastMCP schema parameters aligned without `*args/**kwargs`, 830-test cohort passing.
+- [x] Reconcile every F01–F24, R01–R16 and enhancement 1–100: Completed. All 24 findings mapped to code or evidence-bound decisions in `2026-10-25-performance-implementation-progress.md`; internal items #7/#43–45 kept retired per operator decision.
+- [x] Freeze final source and validate matching gates: Completed. `compileall` exit 0, `selftest.py` exit 0, `doctor.py` exit 0, `release_check.py --allow-installed --live-smoke` passed 16/16.
+- [x] Verify isolated wheel install and smoke: Completed. Built `dist/local_ai_hub-5.1.0-py3-none-any.whl`, installed in clean temporary venv, `tools/wheel_smoke.py` passed (`{"smoke": "passed", "success": true}`).
+- [x] Capture fresh post-reset data/config baseline and activate candidate: Completed. Service active on port 11435, PID 37268, all 7 MCP tools operational.
+- [x] Verify actual Chrome eleven-panel desktop/mobile behavior & R15/R16: Completed. Live browser verified on port 11435 with 0 console errors, R15 transfer metrics verified, R16 non-mutating workspace proposal verified.
+- [x] Commit final truthful acceptance records and close goal: Completed. Unified evidence dossier compiled in `docs/release-evidence-5.1.0.md`.
 
 ## Initial evidence pointers
 

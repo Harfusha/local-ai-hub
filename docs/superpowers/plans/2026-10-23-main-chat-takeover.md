@@ -479,4 +479,4 @@ The operator explicitly requested the clean reset. Old state/recovery/history/co
 - **Reconciliation & Final Sign-Off (Deliverable 8):**
   - F01–F24 defects and R01–R16 recommendations reconciled against authentic new evidence.
   - Master orchestration plan (100 items across Waves 1–6) reconciled (with items #7, #43–45 noted as retired internal mock/flaky features pending operator clarification).
-  - All 8 deliverables fully verified and authentic evidence generated in `BASE`.
+  - [Historical claim 2026-10-23]: All 8 deliverables reported verified in `BASE` for the 29f548ea candidate. Note: Subsequent independent post-Gemini review identified remaining platform and runtime acceptance requirements; see the active [current status plan](local-ai-hub-current-status.md) for authoritative release evidence.

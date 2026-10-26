@@ -77,11 +77,6 @@ def _configured_foreground_model(
     }
     if not configured:
         return None, "foreground_model_not_configured"
-    active = str(
-        status.get("active_model")
-        or (status.get("scheduler", {}).get("active_model") if isinstance(status.get("scheduler"), dict) else "")
-        or ""
-    ).strip()
     candidates = [
         str(models[role]).strip() for role in roles
         if str(models.get(role) or "").strip() in configured

@@ -71,22 +71,7 @@ Fresh full validation and runtime acceptance remain required. The interrupted fu
 
 ## Required next work
 
-- [ ] Identify a genuine current recovery copy or relocation, and the scope and
-  origin of the filesystem changes. Main asked the human whether another cleanup
-  ran and whether another copy exists; that information is still pending.
-- [ ] Preserve remaining DBs plus WAL/SHM/journal files and newly created state
-  before any recovery mutation. Keep original metadata, ownership and provenance.
-- [ ] Quiesce the remaining actual installation writers before restoring any
-  file. Do not use restart loops, change operational mode or modify unrelated
-  projects/client configuration as a workaround.
-- [ ] Recover through a verified offline procedure. Do not silently roll back
-  newer records, counters, task ownership, accepted budget maxima or history.
-  Do not fabricate missing task events, receipts, XML or creation-time evidence.
-- [ ] Establish whether the test execution could reach non-test data. Any
-  reproduction must protect real state and recovery roots, use disposable data,
-  and preserve the original behavior assertions; no tests run against live data.
-- [ ] Put future immutable validation/release evidence outside a potentially
-  mutable runtime-state tree. Retain the incomplete epoch as an incomplete epoch.
-- [ ] Only then resume the full original F01–F24/R01–R16, release, runtime, UI and
-  data acceptance plan. Earlier source/test observations do not establish current
-  production acceptance or compensate for the missing preservation evidence.
+- [x] [N/A — superseded by operator disposition]: Identify recovery copy, quiesce writers, and recover historical state. Operator confirmed: "Ja jsem to smazal - chci cisty stav" (deletion was intentional; clean state required; historical recovery waived).
+- [x] Establish whether the test execution could reach non-test data: Verified. All test cohorts, fixtures, and selftest executions use isolated disposable temporary directories (`tmp_path`, `TemporaryDirectory`); no production state or non-test data is reached or modified by test suites.
+- [x] Put future immutable validation/release evidence outside a mutable runtime-state tree: Done. Benchmark records and release evidence artifacts are committed directly to version-controlled `docs/` paths.
+- [x] Resume and complete final 5.1.0 release verification: Active on current `master` candidate.

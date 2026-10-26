@@ -2271,11 +2271,11 @@ def local_ai_status(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
-    *args: Any,
-    **kwargs: Any,
+    action: str = "",
+    root: str = "",
 ) -> dict[str, Any]:
     """Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
-    action = str(kwargs.get("action") or "")
+    action = str(action or "")
     if action in {"health", "ping", "check", "status", "brief"} and not detail:
         detail = "brief"
     if action == "models" or detail == "models":
