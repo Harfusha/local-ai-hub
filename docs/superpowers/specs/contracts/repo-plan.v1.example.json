@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "plan_example",
+  "title": "Project workspace",
+  "description": "Manage project work through repository files.",
+  "lifecycle": "draft",
+  "default_target_ref": "refs/heads/master",
+  "spec_refs": [],
+  "tasks": {
+    "task_example": {
+      "title": "Implement scoped plan editing",
+      "description": "Edit only the selected worktree's canonical file.",
+      "kind": "code",
+      "work_status": "planned",
+      "depends_on": [],
+      "clarifications": [],
+      "acceptance_criteria": [
+        "A stale file revision returns a conflict."
+      ],
+      "next_action": "Bind the adopted specification before execution.",
+      "blocker": null
+    }
+  }
+}

@@ -1,0 +1,513 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:local-ai-hub:repo-plan:1",
+  "title": "Proposed repository-owned plan file v1",
+  "description": "Design contract only. Structural validation does not establish authorization, dependency correctness, authentic evidence, source presence or verified delivery.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "title",
+    "description",
+    "lifecycle",
+    "default_target_ref",
+    "spec_refs",
+    "tasks"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "$ref": "#/$defs/plan_id"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000]*$",
+      "allOf": [
+        {
+          "pattern": "\\S"
+        }
+      ],
+      "not": {
+        "pattern": "[\\u0000-\\u001f]"
+      }
+    },
+    "description": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 32768,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "lifecycle": {
+      "enum": [
+        "draft",
+        "active",
+        "paused",
+        "completed",
+        "cancelled",
+        "archived"
+      ]
+    },
+    "default_target_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/target_ref"
+        }
+      ]
+    },
+    "spec_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/spec_ref"
+      },
+      "maxItems": 64
+    },
+    "tasks": {
+      "type": "object",
+      "maxProperties": 1000,
+      "propertyNames": {
+        "$ref": "#/$defs/task_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "accountable_role": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000]*$"
+    }
+  },
+  "$defs": {
+    "plan_id": {
+      "type": "string",
+      "pattern": "^plan_[A-Za-z0-9][A-Za-z0-9_-]{0,79}$",
+      "not": {
+        "pattern": "\\s"
+      }
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task_[A-Za-z0-9][A-Za-z0-9_-]{0,79}$",
+      "not": {
+        "pattern": "\\s"
+      }
+    },
+    "change_id": {
+      "type": "string",
+      "pattern": "^change_[A-Za-z0-9][A-Za-z0-9_-]{0,79}$",
+      "not": {
+        "pattern": "\\s"
+      }
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^delivery_[A-Za-z0-9][A-Za-z0-9_-]{0,79}$",
+      "not": {
+        "pattern": "\\s"
+      }
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\\\\\u0000-\\u001f]+$",
+      "description": "Lexical repo-relative path only. Actual filesystem confinement and canonical path validation remain mandatory.",
+      "not": {
+        "pattern": "[\\u0000-\\u001f]"
+      }
+    },
+    "git_commit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "not": {
+        "pattern": "\\s"
+      }
+    },
+    "target_ref": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 256,
+      "pattern": "^refs/heads/[^\\s\\u0000]+$",
+      "description": "Full Git ref. The consumer must additionally apply Git ref validation and authorized target lookup.",
+      "not": {
+        "pattern": "[\\s\\u0000]"
+      }
+    },
+    "revision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "commit"
+          ],
+          "properties": {
+            "kind": {
+              "const": "git_commit"
+            },
+            "commit": {
+              "$ref": "#/$defs/git_commit"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "content_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "working"
+            },
+            "content_sha256": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "spec_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "revision"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "task_id"
+      ],
+      "properties": {
+        "plan_id": {
+          "$ref": "#/$defs/plan_id"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        }
+      }
+    },
+    "result_ref": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "commit"
+          ],
+          "properties": {
+            "kind": {
+              "const": "git_commit"
+            },
+            "commit": {
+              "$ref": "#/$defs/git_commit"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "evidence_id",
+            "summary"
+          ],
+          "properties": {
+            "kind": {
+              "const": "evidence_reference"
+            },
+            "evidence_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048,
+              "pattern": "^[^\\u0000]*$"
+            }
+          }
+        }
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paths"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repo_path"
+          },
+          "maxItems": 256,
+          "uniqueItems": true
+        }
+      }
+    },
+    "clarification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "summary",
+        "adoption",
+        "spec_refs",
+        "supersedes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/change_id"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "adoption": {
+          "enum": [
+            "pending",
+            "adopted",
+            "superseded"
+          ]
+        },
+        "spec_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/spec_ref"
+          },
+          "maxItems": 64
+        },
+        "supersedes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/change_id"
+          },
+          "maxItems": 256,
+          "uniqueItems": true
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_ref",
+        "accountable_role",
+        "disposition",
+        "reason",
+        "results"
+      ],
+      "properties": {
+        "target_ref": {
+          "$ref": "#/$defs/target_ref"
+        },
+        "accountable_role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "disposition": {
+          "enum": [
+            "pending",
+            "declared_integrated",
+            "waived"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/result_ref"
+          },
+          "maxItems": 256
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "description",
+        "kind",
+        "work_status",
+        "depends_on",
+        "clarifications",
+        "acceptance_criteria",
+        "next_action",
+        "blocker"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000]*$",
+          "allOf": [
+            {
+              "pattern": "\\S"
+            }
+          ],
+          "not": {
+            "pattern": "[\\u0000-\\u001f]"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 32768,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "kind": {
+          "enum": [
+            "code",
+            "documentation",
+            "analysis",
+            "operation"
+          ]
+        },
+        "work_status": {
+          "enum": [
+            "planned",
+            "ready",
+            "in_progress",
+            "blocked",
+            "source_ready",
+            "done",
+            "cancelled"
+          ]
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "maxItems": 256,
+          "uniqueItems": true
+        },
+        "clarifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/clarification"
+          },
+          "maxItems": 256
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "maxItems": 128
+        },
+        "next_action": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 8192,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "blocker": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192,
+              "pattern": "^[^\\u0000]*$"
+            }
+          ]
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "accountable_role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "work_phase": {
+          "enum": [
+            "discovery",
+            "implementation",
+            "verification",
+            "integration"
+          ]
+        },
+        "spec_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/spec_ref"
+          },
+          "maxItems": 64
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/result_ref"
+          },
+          "maxItems": 256
+        },
+        "deliveries": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "$ref": "#/$defs/delivery_id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/delivery"
+          }
+        }
+      }
+    }
+  }
+}
