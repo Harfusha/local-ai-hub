@@ -14,6 +14,8 @@ from local_ai_hub.mcp_server import (
     local_ai_artifact,
     local_ai_rag,
     local_ai_repo,
+    local_ai_status,
+    local_ai_work,
 )
 
 from local_ai_hub.agent_events import AgentStateStore
@@ -1453,3 +1455,210 @@ def test_coord_record_native_receipt_accepts_summary():
         calls = [c for c in mc.post.call_args_list if "/api/agent-state/verification" in str(c)]
         assert len(calls) >= 1
         assert calls[0][0][1].get("output_summary") == "All 10 passed"
+
+
+# ===========================================================================
+# Phase 8: Agent Ergonomics & Resilience Tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. local_ai_status accepts root= and workspace=
+# ---------------------------------------------------------------------------
+
+def test_status_accepts_root_and_workspace():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.get.return_value = {"success": True, "hub_online": True, "version": "5.1.0"}
+        res = local_ai_status(root="C:\fake_repo", workspace="C:\fake_repo")
+        assert res.get("success") is True, f"status with root/workspace failed: {res}"
+
+
+# ---------------------------------------------------------------------------
+# 2. local_ai_status accepts action= aliases (health, check, ping)
+# ---------------------------------------------------------------------------
+
+def test_status_accepts_health_ping_check():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.get.return_value = {"success": True, "hub_online": True}
+        res_health = local_ai_status(action="health")
+        assert res_health.get("success") is True
+        res_ping = local_ai_status(action="ping")
+        assert res_ping.get("success") is True
+
+
+# ---------------------------------------------------------------------------
+# 3. local_ai_work accepts id= alias for work_id
+# ---------------------------------------------------------------------------
+
+def test_work_accepts_id_alias_and_goal():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "work_orchestrator", True):
+        mc.post.return_value = {"success": True, "work_id": "W-123", "status": "running"}
+        res_get = local_ai_work(action="get", id="W-123")
+        assert res_get.get("success") is True, f"work get with id= failed: {res_get}"
+        calls = [c for c in mc.post.call_args_list if "/api/work-orders" in str(c)]
+        assert len(calls) >= 1
+        assert calls[-1][0][1].get("work_id") == "W-123"
+
+        # submit with goal= and single string acceptance_criteria
+        mc.post.return_value = {"success": True, "work_id": "W-124"}
+        res_sub = local_ai_work(action="submit", goal="Build parser", acceptance_criteria="All tests pass")
+        assert res_sub.get("success") is True
+        payload = mc.post.call_args_list[-1][0][1]
+        assert payload.get("task") == "Build parser"
+        assert payload.get("acceptance_criteria") == ["All tests pass"]
+
+
+# ---------------------------------------------------------------------------
+# 4. local_ai_coord task_create string tolerance and criterion alias
+# ---------------------------------------------------------------------------
+
+def test_coord_task_create_string_criteria_and_criterion():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.coord.return_value = {"success": True, "task_id": "T-99"}
+        # Single string acceptance_criteria
+        res = local_ai_coord(action="task_create", root="/repo", goal="Fix bug", acceptance_criteria="pytest passes")
+        assert res.get("success") is True, f"task_create with string acceptance_criteria failed: {res}"
+        contract = mc.coord.call_args[1].get("contract", {})
+        assert contract.get("acceptance_criteria") == ["pytest passes"]
+
+        # criterion= alias
+        mc.reset_mock()
+        res2 = local_ai_coord(action="task_create", root="/repo", goal="Fix bug 2", criterion="mypy passes")
+        assert res2.get("success") is True, f"task_create with criterion failed: {res2}"
+        contract2 = mc.coord.call_args[1].get("contract", {})
+        assert contract2.get("acceptance_criteria") == ["mypy passes"]
+
+
+# ---------------------------------------------------------------------------
+# 5. local_ai_coord task_checkpoint accepts notes and state_data
+# ---------------------------------------------------------------------------
+
+def test_coord_checkpoint_accepts_notes_and_state_data():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.coord.return_value = {"success": True, "task": {"task_id": "T-1"}}
+        res = local_ai_coord(
+            action="task_checkpoint",
+            task_id="T-1",
+            root="/repo",
+            notes="Refactored internal state",
+            state_data={"step": 2},
+        )
+        assert res.get("success") is True, f"checkpoint with notes/state_data failed: {res}"
+        cp = mc.coord.call_args[1].get("checkpoint", {})
+        assert cp.get("next_action") == "Refactored internal state"
+        assert cp.get("state_data") == {"step": 2}
+
+
+# ---------------------------------------------------------------------------
+# 6. local_ai_coord semaphore_acquire accepts resource= alias
+# ---------------------------------------------------------------------------
+
+def test_coord_semaphore_accepts_resource_alias():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.coord.return_value = {"success": True, "acquired": True}
+        res = local_ai_coord(action="semaphore_acquire", root="/repo", resource="gpu_lock")
+        assert res.get("success") is True, f"semaphore_acquire with resource= failed: {res}"
+        kwargs = mc.coord.call_args[1]
+        assert kwargs.get("name") == "gpu_lock"
+
+
+# ---------------------------------------------------------------------------
+# 7. local_ai_coord task_list accepts state= alias for status
+# ---------------------------------------------------------------------------
+
+def test_coord_task_list_accepts_state_alias():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.coord.return_value = {"success": True, "tasks": []}
+        res = local_ai_coord(action="task_list", root="/repo", state="active")
+        assert res.get("success") is True, f"task_list with state= failed: {res}"
+        kwargs = mc.coord.call_args[1]
+        assert kwargs.get("status") == "active"
+
+
+# ---------------------------------------------------------------------------
+# 8. local_ai_task batch accepts items= alias for tasks
+# ---------------------------------------------------------------------------
+
+def test_task_batch_accepts_items_alias():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "tasks", True),          patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "results": []}
+        res = local_ai_task(action="batch", items=[{"task": "subtask 1"}])
+        assert res.get("success") is True, f"batch with items= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/delegate/batch" in str(c)]
+        assert len(calls) >= 1
+        assert calls[-1][0][1].get("tasks") == [{"task": "subtask 1"}]
+
+
+# ---------------------------------------------------------------------------
+# 9. local_ai_task action="code_review" aliases to "review"
+# ---------------------------------------------------------------------------
+
+def test_task_code_review_alias():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "tasks", True),          patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "text": "Looks good", "analysis": "Looks good"}
+        res = local_ai_task(action="code_review", code="def test(): pass")
+        assert res.get("success") is True, f"code_review failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/review" in str(c)]
+        assert len(calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 10. local_ai_repo symbol navigation aliases (definition, references, find_symbol)
+# ---------------------------------------------------------------------------
+
+def test_repo_symbol_navigation_aliases():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        # definition -> declaration
+        mc.post.return_value = {"success": True, "path": "src/app.py", "line": 10}
+        res_def = _local_ai_repo_impl(action="definition", root="/repo", query="User")
+        assert res_def.get("success") is True
+        calls = [c for c in mc.post.call_args_list if "/api/code/declaration" in str(c)]
+        assert len(calls) >= 1
+
+        # references -> callers
+        mc.post.return_value = {"success": True, "callers": []}
+        res_ref = _local_ai_repo_impl(action="references", root="/repo", query="User")
+        assert res_ref.get("success") is True
+        calls = [c for c in mc.post.call_args_list if "/api/repo/callers" in str(c)]
+        assert len(calls) >= 1
+
+        # find_symbol -> code_index
+        mc.post.return_value = {"success": True, "symbols": []}
+        res_sym = _local_ai_repo_impl(action="find_symbol", root="/repo", query="User")
+        assert res_sym.get("success") is True
+        calls = [c for c in mc.post.call_args_list if "/api/repo/code-index" in str(c)]
+        assert len(calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 11. local_ai_rag ingest_diagram accepts path/file as image_path
+# ---------------------------------------------------------------------------
+
+def test_rag_ingest_diagram_accepts_path():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "rag", True):
+        mc.post.return_value = {"success": True, "diagram_id": "D1"}
+        res = local_ai_rag(action="ingest_diagram", root="C:\fake_repo", path="architecture.png")
+        assert res.get("success") is True, f"ingest_diagram with path= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/rag/ingest_diagram" in str(c)]
+        assert len(calls) >= 1
+        assert calls[-1][0][1].get("image_path") == "architecture.png"
+
+
+# ---------------------------------------------------------------------------
+# 12. local_ai_rag ingest aliases (ingest -> ingest_document, search_docset -> docset_search)
+# ---------------------------------------------------------------------------
+
+def test_rag_action_aliases():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "rag", True):
+        # ingest -> ingest_document
+        mc.post.return_value = {"success": True, "document_id": "DOC1"}
+        res = local_ai_rag(action="ingest", root="C:\fake_repo", content="# My Doc")
+        assert res.get("success") is True, f"rag action=ingest failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/rag/ingest_document" in str(c)]
+        assert len(calls) >= 1
+
+        # search_docset -> docset_search
+        mc.post.return_value = {"success": True, "results": []}
+        res2 = local_ai_rag(action="search_docset", root="C:\fake_repo", query="setup guide")
+        assert res2.get("success") is True, f"rag action=search_docset failed: {res2}"
+        calls = [c for c in mc.post.call_args_list if "/api/rag/docset/search" in str(c)]
+        assert len(calls) >= 1

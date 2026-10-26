@@ -642,6 +642,12 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - `local_ai_artifact` accepts universal `root` and `workspace` parameters.
 - `local_ai_repo` accepts `pattern` for `structural_search`, single `path`/`target`/`replacement` directly in `batch_replace`, and filters `git_status` by `path`.
 - `local_ai_rag` accepts `text` for `search` and `ingest_document`.
+- `local_ai_status` accepts `root` and `workspace` parameters and aliases `health`, `ping`, and `check`.
+- `local_ai_work` accepts `id` (for `work_id`), `goal`/`prompt` (for `task`), and automatically normalizes string `acceptance_criteria` and `constraints` into lists.
+- `local_ai_coord` accepts `notes` and `state_data` for `task_checkpoint`, `criterion` for `task_create`, `resource` for semaphores, `state` for `task_list`, and normalizes string criteria and collections into lists.
+- `local_ai_task` accepts `items` for `batch` and aliases `action="code_review"` to `review`.
+- `local_ai_repo` aliases symbol navigation actions `definition` (to `declaration`), `references`/`find_references` (to `callers`), and `find_symbol`/`symbol` (to `code_index`).
+- `local_ai_rag` aliases `ingest`/`ingest_doc` (to `ingest_document`), `search_docset`/`index_docset`, accepts `path`/`file` for diagrams and automatically reads document content from disk.
 - `local_ai_status(detail="models")` (and `action="models"`) inspects installed local models and hardware tier routing.
 - `POST /api/route` accepts canonical string fields `query` and `text`; `task` and `context` are not aliases. `POST /api/reason` accepts `problem` plus optional `context` and rejects `task`; `POST /api/review` accepts `code` plus optional `instructions` and rejects `context`. The `local_ai_task` adapters map canonical `task`/`context` into those HTTP fields.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.

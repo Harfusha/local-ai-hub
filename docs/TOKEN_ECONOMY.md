@@ -41,7 +41,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 5. **Configures Optional Local Model Runtime & Models**:
    - Uses an already configured llama.cpp endpoint when the active Intel hardware/profile requires it; the Hub never installs or starts a runtime automatically.
    - Ollama is disabled by default and is never installed, started, or pulled unless all explicit Ollama opt-ins are enabled.
-- Uses profile-aware model tiers only when a healthy local backend is available. In role order `background_code/fast_code/heavy_code/reasoning/general/vision`, integrated uses `0.5B/1.5B/3B/7B/1.5B/Qwen3-VL 4B`; balanced uses `1.5B/3B/7B/Qwen3.5 9B/7B/Qwen3.5 9B`; high uses `1.5B/3B/7B/9B/9B/9B`; max uses `1.5B/3B/9B/9B/9B/9B`. Ordinary reasoning routes to `heavy_code`; heavy reasoning routes to `reasoning`. Otherwise deterministic/indexed Hub paths remain active.
+   - Uses profile-aware model tiers only when a healthy local backend is available. In role order `background_code/fast_code/heavy_code/reasoning/general/vision`, cpu/integrated/low use `3B/3B/7B/9B/7B/Qwen3-VL 4B`; balanced uses `3B/3B/7B/9B/7B/9B`; high uses `3B/3B/7B/9B/9B/9B`; max uses `3B/3B/9B/9B/9B/9B`. Preprocessing uses `qwen2.5-coder:1.5b`. Ordinary reasoning routes to `heavy_code`; heavy reasoning routes to `reasoning`. Otherwise deterministic/indexed Hub paths remain active.
 - `cpu` and `low` reuse the integrated model role map while keeping profile-specific scheduler settings. Explicit model overrides and runtime fallbacks preserve the routed request's minimum tier; do not lower its quality floor for latency.
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
@@ -67,7 +67,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 | **`files-to-prompt`** | PyPI (`files-to-prompt`) | Formats files into clean XML prompt structures without shell overhead | Clean prompt format |
 | **`local_ai_artifact`** | Local AI Hub MCP | Fetches exact line slices (`slice`) or evidence fragments | Zero whole-file reads |
 | **`local_ai_task`** | Local AI Hub MCP | Profile-aware role routing; see the model map above | 100% free (0 cloud tokens) |
-| **`local_ai_command`** | Local AI Hub MCP | Single-flight cached command broker with automated ANSI stripping | Prevents rerun token waste |
+| **`local_ai_coord`** | Local AI Hub MCP | Agent OS task contracts, durable memory, and verification receipts | Eliminates repetitive rediscovery and tracks acceptance |
 
 ---
 
@@ -87,7 +87,7 @@ tokcount src/ -q
 
 ### B. Bounded Command & Test Execution
 ```bash
-# Pipe a test log into the stdin filter; run tests through local_ai_command when available
+# Pipe a test log into the stdin filter; run bounded native tests
 pytest -q --tb=short | trim-run -n 40
 
 # Truncate verbose git log or build output via pipe
@@ -150,9 +150,9 @@ When paired with an AI coding agent, the following rules are permanently active 
 - Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
 - AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
-- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
+- Bounded command outputs: Run tests and builds with the agent host native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
-- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model="qwen2.5-coder:7b")`.
+- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(action="review"|"second_opinion")`.
 <!-- END TOKEN ECONOMY POLICY -->
 ```
 ## MCP response economy

@@ -127,15 +127,15 @@ _REPO_ACTIONS = (
     "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel",
     "preprocess_unregister", "call_graph_diff",
     "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-    "patch", "call_graph", "revert", "diff", "find_files", "glob", "git_log", "file_info", "stat", "read_file", "source",
+    "patch", "call_graph", "revert", "diff", "find_files", "glob", "git_log", "file_info", "stat", "read_file", "source", "definition", "references", "find_references", "find_symbol",
 )
 _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "browser",
-    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation", "summarize",
+    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation", "summarize", "code_review",
 )
-_RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram", "query")
+_RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram", "query", "ingest", "ingest_doc", "search_docset", "index_docset")
 _COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
@@ -253,6 +253,9 @@ _ACTION_SCOPED_FIELDS = {
         "query": frozenset({"delegate", "explore", "reason"}),
         "question": frozenset({"second_opinion"}),
         "text": frozenset({"compress"}),
+        "items": frozenset({"batch"}),
+        "code": frozenset({"review", "code_review"}),
+        "diff": frozenset({"review", "code_review"}),
         **{
             name: frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress"})
             for name in ("phase", "focus", "preload_profile", "repository_revision", "changed_paths")
@@ -332,7 +335,10 @@ _ACTION_SCOPED_FIELDS = {
         "role": frozenset({"swarm_step"}),
         "swarm_action": frozenset({"swarm_step"}),
         "payload": frozenset({"swarm_step"}),
-        "state": frozenset({"swarm_list"}),
+        "state": frozenset({"swarm_list", "task_list"}),
+        "resource": frozenset({"semaphore_acquire", "semaphore_release", "semaphore_status"}),
+        "notes": frozenset({"task_checkpoint", "task_update"}),
+        "state_data": frozenset({"task_checkpoint", "task_update"}),
         "source_branch": frozenset({"simulate_merge"}),
         "target_branch": frozenset({"simulate_merge"}),
         "worktree_path": frozenset({"worktree_release"}),
@@ -485,6 +491,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         read_only=tuple(name for name in _REPO_ACTIONS if name not in _REPO_MUTATIONS),
         properties={
             "action": {"type": "string"},
+            "id": {"type": "string", "default": ""},
+            "goal": {"type": "string", "default": ""},
+            "prompt": {"type": "string", "default": ""},
+            "workspace": {"type": "string", "default": ""},
             "root": {"type": "string", "default": "."},
             "query": {"type": "string", "default": ""},
             "max_commits": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
@@ -673,6 +683,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "candidate_data": {"type": "object"},
             "json_schema": {"type": "object"},
             "tasks": {"type": "array", "items": {"type": "object"}},
+            "items": {"type": "array", "items": {"type": "object"}},
             "cases": {"type": "array", "items": {"type": "object"}},
             "format": {"type": ["string", "object"]},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
@@ -698,6 +709,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "metadata": {"type": "object"},
             "image_path": {"type": "string", "default": ""},
             "caption": {"type": "string", "default": ""},
+            "path": {"type": "string", "default": ""},
+            "file": {"type": "string", "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -855,7 +868,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "repository_revision", "phase", "preload_profile", "since_hash",
                 "question_id", "question", "answer", "state_revision",
                 "name", "item_id", "title", "priority", "assignee", "milestone", "linked_task_id",
-                "target_date", "description", "purpose", "owner",
+                "target_date", "description", "purpose", "owner", "resource", "notes",
             )},
             "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "default": None},
             "output_summary": {"type": "string", "default": ""},
@@ -866,6 +879,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "allow_adopt": {"type": "boolean", "default": False},
             "passed": {"type": "boolean", "default": True},
             "format": {"type": ["string", "null"], "default": None},
+            "state_data": {"type": ["object", "null"]},
             "budget": {"type": "object", "additionalProperties": False, "minProperties": 1,
                        "properties": {"max_tokens": {"type": "integer", "minimum": 0},
                                       "max_compute_seconds": {"type": "number", "minimum": 0},

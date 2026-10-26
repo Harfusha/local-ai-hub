@@ -664,7 +664,7 @@ _REPO_ACTIONS = (
     "structural_search", "context_budget",
     "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
     "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
-    "diagnose", "briefing", "pipeline",
+    "diagnose", "briefing", "pipeline", "definition", "references", "find_references", "find_symbol",
 )
 
 
@@ -2265,8 +2265,10 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(detail: Literal["brief", "models"] = "brief", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", action: str = "") -> dict[str, Any]:
+def local_ai_status(detail: Literal["brief", "models"] = "brief", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", action: str = "", root: str = ".", workspace: str = "") -> dict[str, Any]:
     """Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
+    if action in {"health", "ping", "check", "status", "brief"} and not detail:
+        detail = "brief"
     if action == "models" or detail == "models":
         models_resp = CLIENT.get("/api/models")
         data = models_resp.get("data", []) if isinstance(models_resp, dict) else []
@@ -2350,6 +2352,7 @@ def local_ai_task(
     complexity: str = "auto",
     max_tokens: int = 0,
     tasks: list[dict[str, Any]] | None = None,
+    items: list[Any] | None = None,
     cases: list[dict[str, Any]] | None = None,
     delivery: str = "sync",
     latency_budget_ms: float = 0.0,
@@ -2419,6 +2422,10 @@ def local_ai_task(
         action = "compress"
     if action in {"chat", "ask"}:
         action = "delegate"
+    if action == "code_review":
+        action = "review"
+    if items and not tasks:
+        tasks = items
     if action not in operation_actions("local_ai_task", FEATURES):
         return _invalid_action(
             "local_ai_task",
@@ -3240,6 +3247,12 @@ def _local_ai_repo_impl(
         action = "file_info"
     elif action in {"read_file", "source"}:
         action = "source"
+    elif action in {"definition", "declaration"}:
+        action = "declaration"
+    elif action in {"references", "find_references"}:
+        action = "callers"
+    elif action in {"find_symbol", "symbol"}:
+        action = "code_index"
     if symbol and not query:
         query = symbol
     if pattern and not query:
@@ -4319,6 +4332,8 @@ def local_ai_rag(
     caption: str = "",
     name: str = "",
     text: str = "",
+    path: str = "",
+    file: str = "",
 ) -> dict[str, Any]:
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
@@ -4327,6 +4342,12 @@ def local_ai_rag(
         root = _workspace
     if action in {"query", "retrieve", "find", "lookup"}:
         action = "search"
+    elif action in {"ingest", "ingest_doc"}:
+        action = "ingest_document"
+    elif action in {"search_docset", "docset_search"}:
+        action = "docset_search"
+    elif action in {"index_docset", "docset_index"}:
+        action = "docset_index"
     if name and not workspace:
         workspace = name
     if limit > 0:
@@ -4337,6 +4358,17 @@ def local_ai_rag(
         query = content
     if action == "search" and not query and text:
         query = text
+    if (path or file) and not image_path and action == "ingest_diagram":
+        image_path = path or file
+    if (path or file) and not content and action == "ingest_document":
+        doc_p = path or file
+        from pathlib import Path as _P
+        cand_p = _P(doc_p) if _P(doc_p).is_absolute() else (_P(root) / doc_p)
+        if cand_p.is_file():
+            try:
+                content = cand_p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     if action == "ingest_document" and not content and text:
         content = text
     valid_actions = tuple(RagAction.__args__)
@@ -4523,6 +4555,9 @@ def local_ai_coord(
     summary: str = "",
     result: str = "",
     timeout_seconds: float = 0.0,
+    notes: str = "",
+    state_data: dict[str, Any] | None = None,
+    resource: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4545,6 +4580,12 @@ def local_ai_coord(
         labels = [labels]
     if action.startswith("board_item_") and task_id and not linked_task_id:
         linked_task_id = task_id
+    if resource and not name:
+        name = resource
+    if state and not status and action == "task_list":
+        status = state
+    if notes and not next_action:
+        next_action = notes
     if action == "task_update":
         action = "task_checkpoint"
     if action == "memory_list":
@@ -4938,7 +4979,7 @@ def local_ai_coord(
                 "affected_paths": paths or [],
                 "evidence_ids": evidence_ids or [],
                 "blockers": blockers or [],
-                "state_data": {},
+                "state_data": state_data or {},
             }
         task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
@@ -4978,6 +5019,10 @@ def local_ai_coord(
         if action == "task_create":
             task_goal = goal or task or title or description or ""
             crit_list = acceptance_criteria or criteria or []
+            if isinstance(crit_list, str):
+                crit_list = [crit_list]
+            if criterion and not crit_list:
+                crit_list = [criterion]
             if contract is None and (task_goal or crit_list):
                 contract = {
                     "goal": task_goal,
@@ -4987,6 +5032,12 @@ def local_ai_coord(
                     "constraints": [],
                     "risk_profile": "normal",
                 }
+                task_kwargs["contract"] = contract
+            elif contract is not None and isinstance(contract, dict):
+                contract = dict(contract)
+                for col in ("acceptance_criteria", "non_goals", "constraints"):
+                    if isinstance(contract.get(col), str):
+                        contract[col] = [contract[col]]
                 task_kwargs["contract"] = contract
             elif task:
                 task_kwargs["task"] = task
@@ -5235,10 +5286,24 @@ def local_ai_work(
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
     reuse_key: str = "",
+    id: str = "",
+    goal: str = "",
+    prompt: str = "",
+    workspace: str = "",
 ) -> dict[str, Any]:
     """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
     if not getattr(FEATURES, "work_orchestrator", False):
         return {"success": False, "unsupported": True, "error": "local_ai_work is disabled in configuration"}
+    if id and not work_id:
+        work_id = id
+    if (goal or prompt) and not task:
+        task = goal or prompt
+    if workspace and (not root or root == "."):
+        root = workspace
+    if isinstance(acceptance_criteria, str):
+        acceptance_criteria = [acceptance_criteria]
+    if isinstance(constraints, str):
+        constraints = [constraints]
     valid_actions = tuple(WorkAction.__args__)
     if not isinstance(action, str) or action not in valid_actions:
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
