@@ -8473,9 +8473,12 @@ class Handler(BaseHTTPRequestHandler):
                     milestone=payload.get("milestone"),
                     assignee=payload.get("assignee"),
                     limit=int(payload.get("limit", 50)),
+                    root=str(payload.get("root", "")),
                 )); return
             if path == "/api/coord/board_summary":
-                self._send(200, APP.services.board_summary()); return
+                self._send(200, APP.services.board_summary(
+                    root=str(payload.get("root", "")),
+                )); return
             if path == "/api/coord/milestone_create":
                 self._send(200, APP.services.milestone_create(
                     name=str(payload.get("name", "")),
@@ -8488,6 +8491,93 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.session_briefing(
                     include=payload.get("include"),
                     root=str(payload.get("root", "")),
+                )); return
+            if path == "/api/coord/plan_init":
+                self._send(200, APP.services.plan_init(root=str(payload.get("root", ".")))); return
+            if path == "/api/coord/plan_list":
+                self._send(200, APP.services.plan_list(
+                    root=str(payload.get("root", ".")),
+                    query=str(payload.get("query", "")),
+                    include_archived=bool(payload.get("include_archived", False)),
+                )); return
+            if path == "/api/coord/plan_get":
+                self._send(200, APP.services.plan_get(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                )); return
+            if path == "/api/coord/plan_create":
+                self._send(200, APP.services.plan_create(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    title=str(payload.get("title", "")),
+                    description=str(payload.get("description", "")),
+                    goal=str(payload.get("goal", "")),
+                    target_branch=str(payload.get("target_branch", "master")),
+                    specs=payload.get("specs"),
+                    decisions=payload.get("decisions"),
+                    tasks=payload.get("tasks"),
+                    owner=str(payload.get("owner", "")),
+                )); return
+            if path == "/api/coord/plan_update":
+                self._send(200, APP.services.plan_update(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    expected_revision=payload.get("expected_revision"),
+                    title=payload.get("title"),
+                    description=payload.get("description"),
+                    goal=payload.get("goal"),
+                    status=payload.get("status"),
+                    target_branch=payload.get("target_branch"),
+                    specs=payload.get("specs"),
+                    decisions=payload.get("decisions"),
+                    owner=str(payload.get("owner", "")),
+                    idempotency_key=str(payload.get("idempotency_key", "")),
+                )); return
+            if path == "/api/coord/plan_task_edit":
+                self._send(200, APP.services.plan_task_edit(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    task_id=str(payload.get("task_id", "")),
+                    task_data=payload.get("task_data"),
+                    expected_revision=payload.get("expected_revision"),
+                    idempotency_key=str(payload.get("idempotency_key", "")),
+                    owner=str(payload.get("owner", "")),
+                )); return
+            if path == "/api/coord/plan_task_delete":
+                self._send(200, APP.services.plan_task_delete(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    task_id=str(payload.get("task_id", "")),
+                    expected_revision=payload.get("expected_revision"),
+                    idempotency_key=str(payload.get("idempotency_key", "")),
+                    owner=str(payload.get("owner", "")),
+                )); return
+            if path == "/api/coord/plan_validate":
+                self._send(200, APP.services.plan_validate(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                )); return
+            if path == "/api/coord/plan_archive":
+                self._send(200, APP.services.plan_archive(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    expected_revision=payload.get("expected_revision"),
+                    archive_reason=str(payload.get("archive_reason", "")),
+                    idempotency_key=str(payload.get("idempotency_key", "")),
+                    owner=str(payload.get("owner", "")),
+                )); return
+            if path == "/api/coord/plan_board_view":
+                self._send(200, APP.services.plan_board_view(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    query=str(payload.get("query", "")),
+                    owner=str(payload.get("owner", "")),
+                )); return
+            if path == "/api/coord/plan_adopt_legacy_board":
+                self._send(200, APP.services.plan_adopt_legacy_board(
+                    root=str(payload.get("root", ".")),
+                    plan_id=str(payload.get("plan_id", "")),
+                    title=str(payload.get("title", "")),
                 )); return
             if 'post_eval_suite_1' in post_route_ids:
                 self._send(200, APP.services.eval_suite(payload)); return

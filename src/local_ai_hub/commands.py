@@ -259,13 +259,8 @@ class _RecoveredDaemonProcess:
             time.sleep(0.025)
         return 0
 
-    def kill(self) -> bool | None:
-        if self.poll() is None:
-            kwargs: dict[str, Any] = {"grace_seconds": 0.1}
-            if self.process_group_id is not None:
-                kwargs["process_group"] = self.process_group_id
-            return terminate_tree(self.pid, **kwargs)
-        return None
+    def kill(self) -> None:
+        raise OSError("recovered daemon has no stable process-tree ownership handle")
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -6058,23 +6053,24 @@ class CommandBroker:
                     cleanup_unconfirmed = not _cleanup_owned_tree()
                 except Exception:
                     cleanup_unconfirmed = True
-            try:
-                if os.name == "nt":
-                    process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=max(2.0, self.terminate_grace_seconds))
-            except Exception:
-                cleanup_unconfirmed = True
-            if process.poll() is None:
+            if not cleanup_unconfirmed:
                 try:
                     if os.name == "nt":
                         process.kill()
-                    process.wait(timeout=1.0)
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=max(2.0, self.terminate_grace_seconds))
                 except Exception:
                     cleanup_unconfirmed = True
-            cleanup_unconfirmed = cleanup_unconfirmed or process.poll() is None
+                if process.poll() is None:
+                    try:
+                        if os.name == "nt":
+                            process.kill()
+                        process.wait(timeout=1.0)
+                    except Exception:
+                        cleanup_unconfirmed = True
+                cleanup_unconfirmed = cleanup_unconfirmed or process.poll() is None
         elif os.name != "nt":
             # A successful leader may leave children that closed their inherited
             # pipes. Kill the command session here as well as when readers stick.
@@ -6118,10 +6114,11 @@ class CommandBroker:
                 except Exception:
                     cleanup_unconfirmed = True
             else:
-                try:
-                    process.wait(timeout=1.0)
-                except Exception:
-                    pass
+                if not cleanup_unconfirmed:
+                    try:
+                        process.wait(timeout=1.0)
+                    except Exception:
+                        pass
                 try:
                     cleanup_unconfirmed = cleanup_unconfirmed or not _cleanup_owned_tree()
                 except Exception:
@@ -10373,16 +10370,6 @@ class CommandBroker:
                         else "daemon did not stop within the bounded termination window"
                     ),
                 }
-            if not tree_stopped:
-                if os.name != "nt":
-                    pgid = info.get("process_group_id")
-                    if (
-                        isinstance(pgid, int)
-                        and not isinstance(pgid, bool)
-                        and pgid > 1
-                        and _process_group_liveness(pgid) is False
-                    ):
-                        tree_stopped = True
             if not tree_stopped:
                 return {
                     "success": False,

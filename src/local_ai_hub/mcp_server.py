@@ -4559,6 +4559,15 @@ def local_ai_coord(
     notes: str = "",
     state_data: dict[str, Any] | None = None,
     resource: str = "",
+    plan_id: str = "",
+    expected_revision: int | None = None,
+    idempotency_key: str = "",
+    include_archived: bool = False,
+    archive_reason: str = "",
+    task_data: dict[str, Any] | None = None,
+    specs: list[str] | None = None,
+    decisions: list[str] | None = None,
+    tasks: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -5249,6 +5258,9 @@ def local_ai_coord(
         "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
         "board_item_create", "board_item_update", "board_item_get", "board_item_delete",
         "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing",
+        "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
+        "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
+        "plan_board_view", "plan_adopt_legacy_board",
     }:
         item_title = (title or name) if action.startswith("board_item_") else title
         item_details = (details or ({"description": description} if description else None)) if action.startswith("board_item_") else details
@@ -5260,6 +5272,10 @@ def local_ai_coord(
             capacity=capacity, timeout=timeout, ttl_seconds=ttl_seconds, purpose=purpose,
             owner=owner, lease_id=lease_id, topic=topic,
             filter=filter or filter_payload, limit=limit, include=include, session_id=session_id,
+            plan_id=plan_id, expected_revision=expected_revision, idempotency_key=idempotency_key,
+            include_archived=include_archived, archive_reason=archive_reason, task_data=task_data,
+            specs=specs, decisions=decisions, tasks=tasks, goal=goal, target_branch=target_branch,
+            query=query,
         )
         return _compact(CLIENT.coord(**coord_kwargs), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")

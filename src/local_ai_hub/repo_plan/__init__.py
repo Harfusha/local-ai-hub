@@ -1,0 +1,77 @@
+"""Repository-owned plan files and project workspace module."""
+
+from .models import (
+    Clarification,
+    ClarificationAdoption,
+    Delivery,
+    DeliveryDisposition,
+    Dependency,
+    PlanLifecycle,
+    RepoPlan,
+    RepoPlanTask,
+    ResultRef,
+    ResultRefKind,
+    Revision,
+    RevisionKind,
+    SpecRef,
+    TaskKind,
+    TaskScope,
+    TaskWorkPhase,
+    TaskWorkStatus,
+)
+from .schema_validation import (
+    RepoPlanConflictError,
+    RepoPlanError,
+    RepoPlanNotFoundError,
+    RepoPlanValidationError,
+    parse_plan_json,
+    serialize_plan_json,
+    validate_plan_dict,
+    validate_repo_path,
+)
+
+from .storage import (
+    IntentTarget,
+    OperationIntent,
+    RepoPlanStorage,
+    compute_bytes_sha256,
+    compute_file_sha256,
+    get_git_context,
+)
+
+from .workspace import RepoPlanWorkspace
+
+__all__ = [
+    "Clarification",
+    "ClarificationAdoption",
+    "Delivery",
+    "DeliveryDisposition",
+    "Dependency",
+    "IntentTarget",
+    "OperationIntent",
+    "PlanLifecycle",
+    "RepoPlan",
+    "RepoPlanConflictError",
+    "RepoPlanError",
+    "RepoPlanNotFoundError",
+    "RepoPlanStorage",
+    "RepoPlanTask",
+    "RepoPlanValidationError",
+    "RepoPlanWorkspace",
+    "ResultRef",
+    "ResultRefKind",
+    "Revision",
+    "RevisionKind",
+    "SpecRef",
+    "TaskKind",
+    "TaskScope",
+    "TaskWorkPhase",
+    "TaskWorkStatus",
+    "compute_bytes_sha256",
+    "compute_file_sha256",
+    "get_git_context",
+    "parse_plan_json",
+    "serialize_plan_json",
+    "validate_plan_dict",
+    "validate_repo_path",
+]

@@ -4543,13 +4543,76 @@ class LocalAIServices:
         milestone: str | None = None,
         assignee: str | None = None,
         limit: int = 50,
+        root: str = "",
     ) -> dict[str, Any]:
+        if root:
+            try:
+                from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+                ws = RepoPlanWorkspace(root)
+                if ws.has_workspace():
+                    board_view = ws.get_board_view()
+                    items = []
+                    for col_name, col_items in board_view.get("columns", {}).items():
+                        if status and col_name.lower() != status.lower():
+                            continue
+                        for it in col_items:
+                            items.append({
+                                "item_id": it.get("task_id", ""),
+                                "title": it.get("title", ""),
+                                "status": it.get("status", col_name),
+                                "priority": "medium",
+                                "labels": [],
+                                "assignee": it.get("owner", ""),
+                                "milestone": it.get("plan_id", ""),
+                                "linked_task_id": it.get("task_id", ""),
+                                "details": {
+                                    "acceptance_criteria": it.get("acceptance_criteria", []),
+                                    "blocker": it.get("blocker", ""),
+                                    "next_action": it.get("next_action", ""),
+                                    "verified": it.get("verified", False),
+                                },
+                            })
+                    return {"success": True, "items": items[:limit], "count": len(items[:limit]), "total": len(items), "source": "repo_plan"}
+            except Exception:
+                pass
         return self._ensure_board().item_list(
             status=status, priority=priority, milestone=milestone,
             assignee=assignee, limit=limit,
         )
 
-    def board_summary(self) -> dict[str, Any]:
+    def board_summary(self, root: str = "") -> dict[str, Any]:
+        if root:
+            try:
+                from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+                ws = RepoPlanWorkspace(root)
+                if ws.has_workspace():
+                    board_view = ws.get_board_view()
+                    cols = board_view.get("columns", {})
+                    counts = {c: len(items) for c, items in cols.items()}
+                    total = sum(counts.values())
+                    blocked = [
+                        {"item_id": it.get("task_id"), "title": it.get("title"), "priority": "high", "assignee": it.get("owner", "")}
+                        for it in cols.get("blocked", [])
+                    ]
+                    status_counts = {
+                        "planned": counts.get("planned", 0) + counts.get("ready", 0),
+                        "in_progress": counts.get("in_progress", 0),
+                        "done": counts.get("done", 0) + counts.get("source_ready", 0),
+                        "blocked": counts.get("blocked", 0),
+                        "cancelled": 0,
+                        "total": total,
+                    }
+                    return {
+                        "success": True,
+                        "counts": status_counts,
+                        "by_status": status_counts,
+                        "total_items": total,
+                        "blocked_items": blocked,
+                        "source": "repo_plan",
+                        "columns": cols,
+                    }
+            except Exception:
+                pass
         return self._ensure_board().summary()
 
     def milestone_create(self, name: str, target_date: str = "", description: str = "") -> dict[str, Any]:
@@ -4560,6 +4623,156 @@ class LocalAIServices:
 
     def session_briefing(self, include: list[str] | None = None, root: str = "") -> dict[str, Any]:
         return self._ensure_board().session_briefing(include=include, root=root)
+
+    def plan_init(self, root: str = ".") -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.init_workspace()
+
+    def plan_list(self, root: str = ".", query: str = "", include_archived: bool = False) -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.list_plans(query=query, include_archived=include_archived)
+
+    def plan_get(self, root: str = ".", plan_id: str = "") -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.get_plan(plan_id)
+
+    def plan_create(
+        self,
+        root: str = ".",
+        plan_id: str = "",
+        title: str = "",
+        description: str = "",
+        goal: str = "",
+        target_branch: str = "master",
+        specs: list[str] | None = None,
+        decisions: list[str] | None = None,
+        tasks: dict[str, Any] | None = None,
+        owner: str = "",
+    ) -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.create_plan(
+            plan_id=plan_id,
+            title=title,
+            description=description,
+            goal=goal,
+            target_branch=target_branch,
+            specs=specs,
+            decisions=decisions,
+            tasks=tasks,
+            owner=owner,
+        )
+
+    def plan_update(
+        self,
+        root: str = ".",
+        plan_id: str = "",
+        expected_revision: int | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        goal: str | None = None,
+        status: str | None = None,
+        target_branch: str | None = None,
+        specs: list[str] | None = None,
+        decisions: list[str] | None = None,
+        owner: str = "",
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.update_plan(
+            plan_id=plan_id,
+            expected_revision=expected_revision,
+            title=title,
+            description=description,
+            goal=goal,
+            status=status,
+            target_branch=target_branch,
+            specs=specs,
+            decisions=decisions,
+            owner=owner,
+            idempotency_key=idempotency_key,
+        )
+
+    def plan_task_edit(
+        self,
+        root: str = ".",
+        plan_id: str = "",
+        task_id: str = "",
+        task_data: dict[str, Any] | None = None,
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
+        owner: str = "",
+    ) -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.edit_task(
+            plan_id=plan_id,
+            task_id=task_id,
+            task_data=task_data or {},
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            owner=owner,
+        )
+
+    def plan_task_delete(
+        self,
+        root: str = ".",
+        plan_id: str = "",
+        task_id: str = "",
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
+        owner: str = "",
+    ) -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.delete_task(
+            plan_id=plan_id,
+            task_id=task_id,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            owner=owner,
+        )
+
+    def plan_validate(self, root: str = ".", plan_id: str = "") -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.validate_plan(plan_id)
+
+    def plan_archive(
+        self,
+        root: str = ".",
+        plan_id: str = "",
+        expected_revision: int | None = None,
+        archive_reason: str = "",
+        idempotency_key: str = "",
+        owner: str = "",
+    ) -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.archive_plan(
+            plan_id=plan_id,
+            expected_revision=expected_revision,
+            archive_reason=archive_reason,
+            idempotency_key=idempotency_key,
+            owner=owner,
+        )
+
+    def plan_board_view(self, root: str = ".", plan_id: str = "", query: str = "", owner: str = "") -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        return ws.get_board_view(plan_id=plan_id, query=query, owner=owner)
+
+    def plan_adopt_legacy_board(self, root: str = ".", plan_id: str = "", title: str = "") -> dict[str, Any]:
+        from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+        ws = RepoPlanWorkspace(root)
+        board = self._ensure_board()
+        items = board.item_list(limit=1000).get("items", [])
+        return ws.adopt_legacy_board_items(legacy_items=items, plan_id=plan_id, title=title)
+
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []

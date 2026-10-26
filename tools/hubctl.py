@@ -243,7 +243,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs", "pause", "resume", "mode"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode"])
     parser.add_argument("mode_value", nargs="?", choices=ACTIVITY_MODES, metavar="MODE")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
@@ -373,6 +373,31 @@ def main() -> int:
             print(json.dumps({"success": True, "dirs_removed": dirs, "files_removed": files}, indent=2))
         else:
             print(f"Cleaned {dirs} directories and {files} cache/build files.")
+        return 0
+    if args.action == "plans":
+        c = client()
+        target_root = str(args.root.resolve()) if args.root else "."
+        if args.task_id:
+            res = c.get_plan(args.task_id, root=target_root)
+            if args.raw_json:
+                print(json.dumps(res, indent=2))
+            else:
+                plan = res.get("plan", {})
+                print(f"Plan: {plan.get('plan_id')} - {plan.get('title')} [{plan.get('status')}]")
+                print(f"Goal: {plan.get('goal')}")
+                print("Tasks:")
+                for tid, t in plan.get("tasks", {}).items():
+                    print(f"  [{t.get('work_status'):<12}] {tid:<20} {t.get('title')}")
+            return 0
+        res = c.list_plans(root=target_root)
+        if args.raw_json:
+            print(json.dumps(res, indent=2))
+        else:
+            plans = res.get("plans", [])
+            if not plans:
+                print("No plans found in repository.")
+            for p in plans:
+                print(f"{p.get('status', 'draft'):<12} {p.get('plan_id', ''):<24} {p.get('title', '')}")
         return 0
     if args.action == "tasks":
         c = client()

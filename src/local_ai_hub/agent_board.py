@@ -352,13 +352,16 @@ class BoardStore:
         briefing: dict[str, Any] = {"success": True, "timestamp": time.time()}
 
         if "board" in inc:
-            summ = self.summary()
+            if root and self.services is not None:
+                summ = self.services.board_summary(root=root)
+            else:
+                summ = self.summary()
             recent = self.item_list(limit=5).get("items", [])
             briefing["board"] = {
                 "summary": summ,
                 "recent_items": recent,
             }
-            briefing["board_summary"] = summ
+            briefing["board_summary"] = summ.get("counts", summ)
 
         if "active_tasks" in inc and self.services is not None and getattr(self.services, "task_store", None):
             try:
@@ -380,5 +383,18 @@ class BoardStore:
                 briefing["semaphores"] = self.services.semaphores.status()
             except Exception as exc:
                 logger.warning("session_briefing semaphores failed: %s", exc)
+
+        if root or "plans" in inc:
+            try:
+                from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+                plan_ws = RepoPlanWorkspace(root or ".")
+                if plan_ws.has_workspace():
+                    plans_res = plan_ws.list_plans()
+                    plans = plans_res.get("plans", []) if isinstance(plans_res, dict) else plans_res
+                    briefing["plans"] = plans
+                    if ("board" in inc or "plan_board" in inc) and plans:
+                        briefing["plan_board"] = plan_ws.get_board_view().get("columns", {})
+            except Exception as exc:
+                logger.warning("session_briefing plans failed: %s", exc)
 
         return briefing

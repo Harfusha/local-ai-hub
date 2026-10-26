@@ -63,6 +63,7 @@ _TOP_LEVEL = frozenset(
         "model_profile",
         "system_prompt_prefix",
         "shared_namespace",
+        "workspace",
     }
 )
 
@@ -84,6 +85,20 @@ class CommandDefinition:
     def __post_init__(self) -> None:
         object.__setattr__(self, "argv", _freeze(self.argv))
         object.__setattr__(self, "env_references", _freeze(self.env_references))
+
+
+@dataclass(frozen=True)
+class WorkspaceSettings:
+    plans_dir: str = ".local-ai-hub/plans"
+    specs_dir: str = "docs/superpowers/specs"
+    decisions_dir: str = ".local-ai-hub/decisions"
+    knowledge_dir: str = ".local-ai-hub/knowledge"
+    local_dir: str = ".local-ai-hub/local"
+    intents_dir: str = ".local-ai-hub/local/intents"
+
+    def __post_init__(self) -> None:
+        for name in ("plans_dir", "specs_dir", "decisions_dir", "knowledge_dir", "local_dir", "intents_dir"):
+            object.__setattr__(self, name, _freeze(getattr(self, name)))
 
 
 @dataclass(frozen=True)
@@ -109,6 +124,7 @@ class ProjectSettings:
     model_profile: str = "balanced"
     system_prompt_prefix: str | None = None
     shared_namespace: str | None = None
+    workspace: WorkspaceSettings = field(default_factory=WorkspaceSettings)
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -559,6 +575,19 @@ def _normalize(
 ) -> ProjectSettings:
     if set(data) - _TOP_LEVEL:
         raise ProjectConfigError("invalid_config")
+    workspace_data = data.get("workspace", {})
+    if not isinstance(workspace_data, dict):
+        raise ProjectConfigError("invalid_config")
+    _ALLOWED_WORKSPACE = {"plans_dir", "specs_dir", "decisions_dir", "knowledge_dir", "local_dir", "intents_dir"}
+    if set(workspace_data) - _ALLOWED_WORKSPACE:
+        raise ProjectConfigError("invalid_config")
+    ws_args: dict[str, str] = {}
+    for k, v in workspace_data.items():
+        if not isinstance(v, str) or not v.strip() or "\\" in v or v.startswith("/"):
+            raise ProjectConfigError("invalid_config")
+        ws_args[k] = v.strip()
+    workspace_obj = WorkspaceSettings(**ws_args)
+
     preprocess = data.get("preprocess", {})
     extensions = data.get("custom_extensions", {})
     limits = data.get("file_limits", {})
@@ -739,6 +768,7 @@ def _normalize(
         model_profile=profile,
         system_prompt_prefix=prefix,
         shared_namespace=namespace,
+        workspace=workspace_obj,
     )
 
 

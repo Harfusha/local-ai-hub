@@ -1755,7 +1755,230 @@ class HubClient:
                 "include": kwargs.get("include"),
                 "root": kwargs.get("root", ""),
             })
+        if act == "plan_init":
+            return self.post("/api/coord/plan_init", {"root": kwargs.get("root", ".")})
+        if act == "plan_list":
+            return self.post("/api/coord/plan_list", {
+                "root": kwargs.get("root", "."),
+                "query": kwargs.get("query", ""),
+                "include_archived": kwargs.get("include_archived", False),
+            })
+        if act == "plan_get":
+            return self.post("/api/coord/plan_get", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+            })
+        if act == "plan_create":
+            return self.post("/api/coord/plan_create", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "title": kwargs.get("title", ""),
+                "description": kwargs.get("description", ""),
+                "goal": kwargs.get("goal", ""),
+                "target_branch": kwargs.get("target_branch", "master"),
+                "specs": kwargs.get("specs"),
+                "decisions": kwargs.get("decisions"),
+                "tasks": kwargs.get("tasks"),
+                "owner": kwargs.get("owner", ""),
+            })
+        if act == "plan_update":
+            return self.post("/api/coord/plan_update", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "expected_revision": kwargs.get("expected_revision"),
+                "title": kwargs.get("title"),
+                "description": kwargs.get("description"),
+                "goal": kwargs.get("goal"),
+                "status": kwargs.get("status"),
+                "target_branch": kwargs.get("target_branch"),
+                "specs": kwargs.get("specs"),
+                "decisions": kwargs.get("decisions"),
+                "owner": kwargs.get("owner", ""),
+                "idempotency_key": kwargs.get("idempotency_key", ""),
+            })
+        if act == "plan_task_edit":
+            return self.post("/api/coord/plan_task_edit", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "task_id": kwargs.get("task_id", ""),
+                "task_data": kwargs.get("task_data"),
+                "expected_revision": kwargs.get("expected_revision"),
+                "idempotency_key": kwargs.get("idempotency_key", ""),
+                "owner": kwargs.get("owner", ""),
+            })
+        if act == "plan_task_delete":
+            return self.post("/api/coord/plan_task_delete", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "task_id": kwargs.get("task_id", ""),
+                "expected_revision": kwargs.get("expected_revision"),
+                "idempotency_key": kwargs.get("idempotency_key", ""),
+                "owner": kwargs.get("owner", ""),
+            })
+        if act == "plan_validate":
+            return self.post("/api/coord/plan_validate", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+            })
+        if act == "plan_archive":
+            return self.post("/api/coord/plan_archive", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "expected_revision": kwargs.get("expected_revision"),
+                "archive_reason": kwargs.get("archive_reason", ""),
+                "idempotency_key": kwargs.get("idempotency_key", ""),
+                "owner": kwargs.get("owner", ""),
+            })
+        if act == "plan_board_view":
+            return self.post("/api/coord/plan_board_view", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "query": kwargs.get("query", ""),
+                "owner": kwargs.get("owner", ""),
+            })
+        if act == "plan_adopt_legacy_board":
+            return self.post("/api/coord/plan_adopt_legacy_board", {
+                "root": kwargs.get("root", "."),
+                "plan_id": kwargs.get("plan_id", ""),
+                "title": kwargs.get("title", ""),
+            })
         return {"success": False, "error": f"unknown coord action '{action}'"}
+
+
+    def plan_init(self, root: str = ".") -> dict[str, Any]:
+        return self.coord(action="plan_init", root=root)
+
+    def list_plans(self, root: str = ".", query: str = "", include_archived: bool = False) -> dict[str, Any]:
+        return self.coord(action="plan_list", root=root, query=query, include_archived=include_archived)
+
+    def get_plan(self, plan_id: str, root: str = ".") -> dict[str, Any]:
+        return self.coord(action="plan_get", plan_id=plan_id, root=root)
+
+    def create_plan(
+        self,
+        plan_id: str,
+        title: str,
+        root: str = ".",
+        description: str = "",
+        goal: str = "",
+        target_branch: str = "master",
+        specs: list[str] | None = None,
+        decisions: list[str] | None = None,
+        tasks: dict[str, Any] | None = None,
+        owner: str = "",
+    ) -> dict[str, Any]:
+        return self.coord(
+            action="plan_create",
+            plan_id=plan_id,
+            title=title,
+            root=root,
+            description=description,
+            goal=goal,
+            target_branch=target_branch,
+            specs=specs,
+            decisions=decisions,
+            tasks=tasks,
+            owner=owner,
+        )
+
+    def update_plan(
+        self,
+        plan_id: str,
+        root: str = ".",
+        expected_revision: int | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        goal: str | None = None,
+        status: str | None = None,
+        target_branch: str | None = None,
+        specs: list[str] | None = None,
+        decisions: list[str] | None = None,
+        owner: str = "",
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        return self.coord(
+            action="plan_update",
+            plan_id=plan_id,
+            root=root,
+            expected_revision=expected_revision,
+            title=title,
+            description=description,
+            goal=goal,
+            status=status,
+            target_branch=target_branch,
+            specs=specs,
+            decisions=decisions,
+            owner=owner,
+            idempotency_key=idempotency_key,
+        )
+
+    def edit_plan_task(
+        self,
+        plan_id: str,
+        task_id: str,
+        task_data: dict[str, Any],
+        root: str = ".",
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
+        owner: str = "",
+    ) -> dict[str, Any]:
+        return self.coord(
+            action="plan_task_edit",
+            plan_id=plan_id,
+            task_id=task_id,
+            task_data=task_data,
+            root=root,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            owner=owner,
+        )
+
+    def delete_plan_task(
+        self,
+        plan_id: str,
+        task_id: str,
+        root: str = ".",
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
+        owner: str = "",
+    ) -> dict[str, Any]:
+        return self.coord(
+            action="plan_task_delete",
+            plan_id=plan_id,
+            task_id=task_id,
+            root=root,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            owner=owner,
+        )
+
+    def validate_plan(self, plan_id: str, root: str = ".") -> dict[str, Any]:
+        return self.coord(action="plan_validate", plan_id=plan_id, root=root)
+
+    def archive_plan(
+        self,
+        plan_id: str,
+        root: str = ".",
+        expected_revision: int | None = None,
+        archive_reason: str = "",
+        idempotency_key: str = "",
+        owner: str = "",
+    ) -> dict[str, Any]:
+        return self.coord(
+            action="plan_archive",
+            plan_id=plan_id,
+            root=root,
+            expected_revision=expected_revision,
+            archive_reason=archive_reason,
+            idempotency_key=idempotency_key,
+            owner=owner,
+        )
+
+    def get_plan_board_view(self, root: str = ".", plan_id: str = "", query: str = "", owner: str = "") -> dict[str, Any]:
+        return self.coord(action="plan_board_view", root=root, plan_id=plan_id, query=query, owner=owner)
+
+    def adopt_legacy_board(self, plan_id: str, title: str = "", root: str = ".") -> dict[str, Any]:
+        return self.coord(action="plan_adopt_legacy_board", plan_id=plan_id, title=title, root=root)
 
     def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None, since_hash: str = "", compact: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {

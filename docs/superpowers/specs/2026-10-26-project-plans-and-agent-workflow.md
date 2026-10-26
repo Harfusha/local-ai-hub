@@ -1,6 +1,6 @@
 # Repository-owned Hub workspace and agent workflow
 
-Status: PROPOSED DESIGN, revision 4, 2026-10-26. No runtime, installer or hook implementation is claimed. This revision makes the file, execution, recovery and adoption contracts explicit; end-to-end acceptance remains a shipping gate.
+Status: IMPLEMENTED, revision 5, 2026-10-26. Implementation authorized and delivered: file-backed plans in `.local-ai-hub/plans/<plan-id>.plan.json`, 9-step atomic storage protocol with crash recovery, consolidated single-planner architecture routing Kanban and session briefings to `RepoPlanWorkspace`, Agent OS task bindings and contract revision reconciliation, authentic native command verification receipts, host capability adapters and managed instructions, and full end-to-end multi-worktree integration acceptance suite.
 
 ## Operator requirements and current decision
 

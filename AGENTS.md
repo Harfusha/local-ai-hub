@@ -67,6 +67,7 @@ python tools/hubctl.py status
 
 Local AI Hub provides durable execution and memory primitives mapped into the standard tools:
 - `local_ai_coord`:
+  - Plans: `plan_init`, `plan_list`, `plan_get`, `plan_create`, `plan_update`, `plan_task_edit`, `plan_task_delete`, `plan_validate`, `plan_archive`, `plan_board_view`, `plan_adopt_legacy_board`. Authoritative plans are stored in `.local-ai-hub/plans/<plan-id>.plan.json`. Single source of truth; never create secondary markdown plans.
   - Tasks: `task_create`, `task_get`, `task_checkpoint`, `task_complete`, `task_fail`, `task_list`, `task_resume`, `task_budget_increase`.
   - Memory: `memory_record`, `memory_get`, `memory_find` (scoped key/value storage with substring `query` search).
   - Context: `context_compile` (assembles bounded state, active task, memories, negative knowledge, and active leases).

@@ -969,6 +969,40 @@ class ContextCompiler:
                             freshness=task.updated_at,
                         ),
                     ))
+        if request.root:
+            try:
+                from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+                from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager
+                bm = TaskBindingManager(request.root)
+                binding = bm.get_binding(request.task_id)
+                if binding and binding.plan_id:
+                    ws = RepoPlanWorkspace(request.root)
+                    plan_res = ws.get_plan(binding.plan_id)
+                    plan_obj = plan_res.get("plan")
+                    if plan_obj:
+                        tasks = plan_obj.get("tasks", {})
+                        pt = tasks.get(binding.plan_task_id)
+                        if pt:
+                            plan_info = (
+                                f"[REPO PLAN: {plan_obj.get('title')}] Task: {pt.get('title')}\n"
+                                f"Status: {pt.get('work_status')} (phase: {pt.get('work_phase')})\n"
+                                f"Next: {pt.get('next_action') or 'none'}\n"
+                                f"Blocker: {pt.get('blocker') or 'none'}"
+                            )
+                            candidates.append((
+                                92,
+                                ContextElement(
+                                    element_id=f"repo_plan_{binding.plan_task_id}",
+                                    source_kind="repo_plan_task",
+                                    content=plan_info,
+                                    estimated_tokens=_estimate_tokens(plan_info),
+                                    reason="authoritative repository plan task context",
+                                    confidence=1.0,
+                                    freshness=time.time(),
+                                ),
+                            ))
+            except Exception:
+                pass
 
         # 3. Active memory records (priority: 70)
         if self.memory_store is not None:

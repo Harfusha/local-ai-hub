@@ -3887,9 +3887,30 @@ class TaskStore:
                 except Exception:
                     pass
                 raise
-        return self._run_ordered_task_write(
+        res = self._run_ordered_task_write(
             _do_commit, timeout_seconds=0.25
         )
+        try:
+            root = _task_scope_root(res)
+            if root:
+                from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager, sync_checkpoint_to_plan
+                from local_ai_hub.repo_plan.storage import RepoPlanStorage
+                bm = TaskBindingManager(root)
+                binding = bm.get_binding(res.task_id)
+                if binding:
+                    storage = RepoPlanStorage(root)
+                    sync_checkpoint_to_plan(
+                        storage=storage,
+                        binding=binding,
+                        agent_status=res.status.value,
+                        phase=res.checkpoint.phase,
+                        next_action=res.checkpoint.next_action,
+                        blocker=res.checkpoint.blockers[0] if res.checkpoint.blockers else None,
+                        owner=res.owner or "agent",
+                    )
+        except Exception:
+            pass
+        return res
 
     def _commit_update(
         self,
@@ -4016,9 +4037,30 @@ class TaskStore:
                 except Exception:
                     pass
                 raise
-        return self._run_ordered_task_write(
+        res = self._run_ordered_task_write(
             _do_commit, timeout_seconds=0.25
         )
+        try:
+            root = _task_scope_root(res)
+            if root:
+                from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager, sync_checkpoint_to_plan
+                from local_ai_hub.repo_plan.storage import RepoPlanStorage
+                bm = TaskBindingManager(root)
+                binding = bm.get_binding(res.task_id)
+                if binding:
+                    storage = RepoPlanStorage(root)
+                    sync_checkpoint_to_plan(
+                        storage=storage,
+                        binding=binding,
+                        agent_status=res.status.value,
+                        phase=res.checkpoint.phase,
+                        next_action=res.checkpoint.next_action,
+                        blocker=res.checkpoint.blockers[0] if res.checkpoint.blockers else None,
+                        owner=res.owner or "agent",
+                    )
+        except Exception:
+            pass
+        return res
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (
