@@ -1830,7 +1830,7 @@ def test_rollback_restore_stays_inside_pinned_root_if_path_moves_after_check(
 
     def move_root_after_identity_check(root_handle: int, parts: list[str], **kwargs):
         nonlocal replaced
-        if not replaced:
+        if not replaced and root_handle == snapshot.root_guard:
             root.rename(moved_root)
             root.mkdir()
             (root / "state.txt").write_bytes(b"replacement-secret")
@@ -2272,7 +2272,7 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
     monkeypatch.setattr(
         commands_module,
         "time",
-        SimpleNamespace(perf_counter=lambda: 0.0, monotonic=lambda: next(ticks), sleep=lambda _s: None),
+        SimpleNamespace(perf_counter=lambda: 0.0, monotonic=lambda: next(ticks, 2.0), sleep=lambda _s: None),
     )
 
     result = CommandBroker({"commands": {"enabled": True}})._execute(

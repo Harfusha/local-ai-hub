@@ -16,6 +16,7 @@ import re
 import ntpath
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -257,8 +258,13 @@ class _RecoveredDaemonProcess:
             time.sleep(0.025)
         return 0
 
-    def kill(self) -> None:
-        raise OSError("recovered daemon has no stable process-tree ownership handle")
+    def kill(self) -> bool | None:
+        if self.poll() is None:
+            kwargs: dict[str, Any] = {"grace_seconds": 0.1}
+            if self.process_group_id is not None:
+                kwargs["process_group"] = self.process_group_id
+            return terminate_tree(self.pid, **kwargs)
+        return None
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -5755,13 +5761,57 @@ class CommandBroker:
                     return False
                 except Exception:
                     return True
-                return terminate_tree(
-                    process.pid,
-                    process_group=process.pid,
-                    expected_identity=proc_ident,
-                    grace_seconds=float(self.terminate_grace_seconds),
-                    process_handle=process,
-                )
+                try:
+                    if terminate_tree(
+                        process.pid,
+                        process_group=process.pid,
+                        expected_identity=proc_ident,
+                        grace_seconds=float(self.terminate_grace_seconds),
+                        process_handle=process,
+                    ):
+                        return True
+                except Exception:
+                    pass
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    return True
+                except Exception:
+                    pass
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    return True
+                except OSError:
+                    return False
+                deadline = time.monotonic() + max(0.5, float(self.terminate_grace_seconds))
+                while True:
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        return True
+                    except OSError:
+                        pass
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.05, remaining))
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return True
+                except OSError:
+                    return False
+                kill_deadline = time.monotonic() + 0.5
+                while time.monotonic() < kill_deadline:
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        return True
+                    except OSError:
+                        return False
+                    time.sleep(0.02)
+                return False
             return True if not job_handle and os.name != "nt" else False
 
         out_buf = _BoundedStreamBuffer(self.max_output_chars, self.max_output_bytes)
@@ -5836,7 +5886,7 @@ class CommandBroker:
             )
             try:
                 while True:
-                    raw_chunk = read_chunk(65536)
+                    raw_chunk = read_chunk(2048 if log_callback else 65536)
                     if not raw_chunk:
                         break
                     chunk = raw_chunk if isinstance(raw_chunk, str) else decoder.decode(raw_chunk)
