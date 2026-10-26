@@ -252,6 +252,7 @@ def main() -> int:
     parser.add_argument("--complete", action="store_true", help="Mark task as completed")
     parser.add_argument("--fail", action="store_true", help="Mark task as failed")
     parser.add_argument("--reason", type=str, default="", help="Reason for completing or failing task")
+    parser.add_argument("--root", type=Path, default=None, help="Repository root path (defaults to current working directory)")
     parser.add_argument("--scope", type=str, default="", help="Memory scope filter (task, session, branch, project, user, global)")
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory search query")
@@ -375,12 +376,13 @@ def main() -> int:
         return 0
     if args.action == "tasks":
         c = client()
+        target_root = str(args.root.resolve()) if args.root else str(Path.cwd().resolve())
         if args.complete or args.fail:
             if not args.task_id:
                 print("Error: --task-id is required when completing or failing a task.", file=sys.stderr)
                 return 1
             reason = args.reason or ("completed via hubctl" if args.complete else "failed via hubctl")
-            res = c.complete_task(args.task_id, reason=reason) if args.complete else c.fail_task(args.task_id, reason=reason)
+            res = c.complete_task(args.task_id, reason=reason, root=target_root) if args.complete else c.fail_task(args.task_id, reason=reason, root=target_root)
             if args.raw_json:
                 print(json.dumps(res, indent=2, ensure_ascii=False))
                 return 0 if res.get("success", True) else 1
@@ -392,12 +394,15 @@ def main() -> int:
                 print(f"Failed to update task {args.task_id}: {res.get('error', 'unknown error')}", file=sys.stderr)
                 return 1
         if args.task_id:
-            res = c.get_task(args.task_id)
+            res = c.get_task(args.task_id, root=target_root)
         else:
-            res = c.list_tasks(status=args.status or None, limit=args.limit)
+            res = c.list_tasks(status=args.status or None, limit=args.limit, root=target_root)
         if args.raw_json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
             return 0 if res.get("success", True) else 1
+        if not res.get("success", True):
+            print(f"Failed to query tasks: {res.get('error', 'unknown error')}", file=sys.stderr)
+            return 1
         if args.task_id:
             t = res.get("task")
             if not t:
@@ -429,17 +434,21 @@ def main() -> int:
         return 0
     if args.action == "memory":
         c = client()
+        target_root = str(args.root.resolve()) if args.root else str(Path.cwd().resolve())
         if args.compact:
-            res = c.coord("memory_compact", scope=args.scope or None, limit=args.limit)
+            res = c.coord("memory_compact", scope=args.scope or None, limit=args.limit, root=target_root)
             if args.raw_json:
                 print(json.dumps(res, indent=2, ensure_ascii=False))
             else:
                 print(f"Compacted {res.get('compacted_records', 0)} records into {res.get('compacted_groups', 0)} digest group(s).")
             return 0 if res.get("success", True) else 1
-        res = c.find_memory(scope=args.scope or None, key=args.key or None, query=args.query or None, limit=args.limit)
+        res = c.find_memory(scope=args.scope or None, key=args.key or None, query=args.query or None, limit=args.limit, root=target_root)
         if args.raw_json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
             return 0 if res.get("success", True) else 1
+        if not res.get("success", True):
+            print(f"Failed to find memory: {res.get('error', 'unknown error')}", file=sys.stderr)
+            return 1
         records = res.get("records", [])
         if not records:
             print("No memory records found.")
