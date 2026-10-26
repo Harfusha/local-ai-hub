@@ -6613,10 +6613,14 @@ class LocalAIServices:
 
     def review_diff(self, args: dict[str, Any]) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
-        diff = self.repo_diff(
-            str(args.get("root", ".")), str(args.get("base", "HEAD")), bool(args.get("staged", False)),
-            max_tokens=int(args.get("diff_tokens", self.config.get("token_saving", {}).get("max_diff_tokens", 8000))),
-        )
+        diff_text = args.get("diff")
+        if isinstance(diff_text, str) and diff_text.strip():
+            diff = {"success": True, "diff": diff_text, "changed_files": []}
+        else:
+            diff = self.repo_diff(
+                str(args.get("root", ".")), str(args.get("base", "HEAD")), bool(args.get("staged", False)),
+                max_tokens=int(args.get("diff_tokens", self.config.get("token_saving", {}).get("max_diff_tokens", 8000))),
+            )
         if not diff.get("success"):
             return diff
         if not diff.get("diff", "").strip():

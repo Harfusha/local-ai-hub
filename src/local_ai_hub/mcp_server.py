@@ -2383,6 +2383,10 @@ def local_ai_task(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    path: str = "",
+    image_path: str = "",
+    audio_path: str = "",
+    file: str = "",
 ) -> dict[str, Any]:
     """Run a bounded semantic task or an explicitly authorized UI automation session.
 
@@ -2718,11 +2722,12 @@ def local_ai_task(
             "task": task, "file": candidate, "context": context, "root": root,
         }, timeout=_timeout("model")), "delegate")
     if action == "vision":
+        effective_image = image_artifact_id or image_path or path or candidate or ""
         payload = {
             "prompt": prompt,
             "image": candidate,
             "model": model,
-            "image_artifact_id": image_artifact_id,
+            "image_artifact_id": effective_image,
             "screenshot_artifact_id": screenshot_artifact_id,
             "baseline_screenshot_artifact_id": baseline_screenshot_artifact_id,
             "bundle_artifact_id": bundle_artifact_id,
@@ -2763,8 +2768,9 @@ def local_ai_task(
                           "network_requests_denied"],
         )
     if action == "transcribe":
+        audio = candidate or audio_path or file or path or ""
         transcribe_payload = {
-            "audio_path": candidate,
+            "audio_path": audio,
             "model": model,
         }
         language_hint = str(language or "").strip()
@@ -3188,6 +3194,7 @@ def _local_ai_repo_impl(
     end_line: int = 0,
     line_start: int = 1,
     line_end: int = 0,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3219,6 +3226,8 @@ def _local_ai_repo_impl(
         action = "file_info"
     elif action in {"read_file", "source"}:
         action = "source"
+    if symbol and not query:
+        query = symbol
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
     scoped_error = validate_operation_arguments(
@@ -3554,7 +3563,7 @@ def _local_ai_repo_impl(
             "complexity": "auto", "context_tokens": max_tokens or 0, "base": base, "staged": staged,
         }, timeout=_timeout("long")), "solve")
     if action == "review_diff":
-        return _compact(CLIENT.post("/api/review/diff", {
+        payload = {
             "root": root, "base": base, "staged": staged,
             "instructions": task or "Report actionable defects, regressions, security/concurrency issues and missing tests only.",
             "complexity": "auto", "max_tokens": max_tokens or 4096, "mode": mode,
@@ -3562,7 +3571,10 @@ def _local_ai_repo_impl(
             # check. Return its bounded result directly; callers needing
             # durable background execution can use local_ai_task submit/wait.
             "delivery": "sync", "latency_budget_ms": 30000,
-        }, timeout=_timeout("long")), "review_diff")
+        }
+        if diff:
+            payload["diff"] = diff
+        return _compact(CLIENT.post("/api/review/diff", payload, timeout=_timeout("long")), "review_diff")
     if action == "impact":
         return _compact(CLIENT.post("/api/repo/impact", {"root": root, "base": base, "staged": staged}, timeout=_timeout("context")), "impact")
     if action == "refactor_impact":
@@ -4086,8 +4098,11 @@ def local_ai_repo(
     end_line: int = 0,
     line_start: int = 1,
     line_end: int = 0,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    if symbol and not query:
+        query = symbol
     if action == "context" and not query and task:
         query = task
     elif action in {"solve", "delegate"} and not task and query:
@@ -4207,7 +4222,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, symbol=symbol, **forward,
     )
 
 
@@ -4452,10 +4467,13 @@ def local_ai_coord(
     criteria: list[str] | None = None,
     error: str = "",
     kind: str = "",
+    changed_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
+    if changed_paths is not None and not paths:
+        paths = changed_paths
     if action == "task_update":
         action = "task_checkpoint"
     if action == "memory_list":

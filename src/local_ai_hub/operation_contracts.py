@@ -244,6 +244,9 @@ _ACTION_SCOPED_FIELDS = {
         "automation": frozenset({"automation"}),
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),
+        "image_path": frozenset({"vision"}),
+        "audio_path": frozenset({"transcribe"}),
+        "file": frozenset({"transcribe"}),
         **{
             name: frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress"})
             for name in ("phase", "focus", "preload_profile", "repository_revision", "changed_paths")
@@ -289,6 +292,7 @@ _ACTION_SCOPED_FIELDS = {
         "line_end": frozenset({"read_file", "source"}),
         "max_chars": frozenset({"read_file", "source"}),
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
+        "symbol": frozenset({"callers", "callees", "implementations", "declaration", "refactor_impact", "code_index"}),
     },
     "local_ai_coord": {
         "sync_action": frozenset({"task_sync"}),
@@ -328,6 +332,7 @@ _ACTION_SCOPED_FIELDS = {
         "min_receipts": frozenset({"curate_dataset"}),
         "output_summary": frozenset({"record_native_receipt"}),
         "passed": frozenset({"record_native_receipt"}),
+        "changed_paths": frozenset({"context_compile", "task_checkpoint", "task_create", "task_update", "claim", "release"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {

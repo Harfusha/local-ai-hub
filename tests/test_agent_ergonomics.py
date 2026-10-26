@@ -3,7 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 import pytest
+
+from local_ai_hub.mcp_server import (
+    FEATURES,
+    _local_ai_repo_impl,
+    local_ai_coord,
+    local_ai_task,
+)
 
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
@@ -761,3 +769,223 @@ def test_rag_query_limit_and_task_summarize_models(tmp_path: Path):
         assert res_models["success"] is True
         assert "installed_models" in res_models
         assert "qwen2.5-coder:7b" in res_models["installed_models"]
+
+
+# ===========================================================================
+# Phase 5 agent ergonomics regression tests
+# ===========================================================================
+
+# 1. callers/callees accept symbol= alias for query=
+# ---------------------------------------------------------------------------
+
+def test_callers_accepts_symbol_alias():
+    """Agents often pass symbol= instead of query= for callers/callees."""
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {"success": True, "callers": []}
+        res = _local_ai_repo_impl(action="callers", root="/repo", symbol="MyClass.method")
+        assert res.get("success") is True, f"callers should accept symbol= alias: {res}"
+        payload = mc.post.call_args[0][1]
+        assert payload["symbol"] == "MyClass.method"
+
+
+def test_callees_accepts_symbol_alias():
+    """Agents often pass symbol= instead of query= for callees."""
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {"success": True, "callees": []}
+        res = _local_ai_repo_impl(action="callees", root="/repo", symbol="utils.parse")
+        assert res.get("success") is True, f"callees should accept symbol= alias: {res}"
+        payload = mc.post.call_args[0][1]
+        assert payload["symbol"] == "utils.parse"
+
+
+def test_implementations_accepts_symbol_alias():
+    """implementations also uses query= as symbol; symbol= should alias it."""
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {"success": True, "implementations": []}
+        res = _local_ai_repo_impl(action="implementations", root="/repo", symbol="IParser")
+        assert res.get("success") is True, f"implementations should accept symbol= alias: {res}"
+        payload = mc.post.call_args[0][1]
+        assert payload["symbol"] == "IParser"
+
+
+# ---------------------------------------------------------------------------
+# 2. vision accepts path= / image_path= alias for image_artifact_id=
+# ---------------------------------------------------------------------------
+
+def test_vision_accepts_image_path_alias():
+    """Agents may pass path= or image_path= for a local screenshot file."""
+    with (
+        patch.object(FEATURES, "tasks", True),
+        patch.object(FEATURES, "vision", True),
+        patch.object(FEATURES, "has_any_model", return_value=True),
+        patch("local_ai_hub.mcp_server.CLIENT") as mc,
+    ):
+        mc.post.return_value = {"success": True, "text": "looks good"}
+        # path= should map to image_artifact_id
+        res = local_ai_task(
+            action="vision",
+            prompt="What is in this image?",
+            path="/tmp/screen.png",
+        )
+        assert res.get("success") is True, f"vision should accept path= alias: {res}"
+        vision_calls = [c for c in mc.post.call_args_list if "/api/task/vision" in str(c)]
+        assert len(vision_calls) >= 1
+        payload = vision_calls[0][0][1]
+        assert payload.get("image_artifact_id") == "/tmp/screen.png"
+
+
+def test_vision_accepts_image_path_named_alias():
+    """Agents may pass image_path= for a screenshot file."""
+    with (
+        patch.object(FEATURES, "tasks", True),
+        patch.object(FEATURES, "vision", True),
+        patch.object(FEATURES, "has_any_model", return_value=True),
+        patch("local_ai_hub.mcp_server.CLIENT") as mc,
+    ):
+        mc.post.return_value = {"success": True, "text": "chart detected"}
+        res = local_ai_task(
+            action="vision",
+            prompt="Describe this chart",
+            image_path="/screenshots/chart.png",
+        )
+        assert res.get("success") is True, f"vision should accept image_path= alias: {res}"
+        vision_calls = [c for c in mc.post.call_args_list if "/api/task/vision" in str(c)]
+        assert len(vision_calls) >= 1
+        payload = vision_calls[0][0][1]
+        assert payload.get("image_artifact_id") == "/screenshots/chart.png"
+
+
+# ---------------------------------------------------------------------------
+# 3. transcribe accepts audio_path= / path= / file= as alias for candidate=
+# ---------------------------------------------------------------------------
+
+def test_transcribe_accepts_audio_path_alias():
+    """Agents use audio_path= for the audio file path in transcribe."""
+    with (
+        patch.object(FEATURES, "tasks", True),
+        patch.object(FEATURES, "has_any_model", return_value=True),
+        patch("local_ai_hub.mcp_server.CLIENT") as mc,
+    ):
+        mc.post.return_value = {"success": True, "text": "hello world"}
+        res = local_ai_task(action="transcribe", audio_path="/recordings/meeting.mp3")
+        assert res.get("success") is True, f"transcribe should accept audio_path= alias: {res}"
+        transcribe_calls = [c for c in mc.post.call_args_list if "/api/task/transcribe" in str(c)]
+        assert len(transcribe_calls) >= 1
+        payload = transcribe_calls[0][0][1]
+        assert payload.get("audio_path") == "/recordings/meeting.mp3"
+
+
+def test_transcribe_accepts_path_alias():
+    """Agents use path= for audio file path in transcribe."""
+    with (
+        patch.object(FEATURES, "tasks", True),
+        patch.object(FEATURES, "has_any_model", return_value=True),
+        patch("local_ai_hub.mcp_server.CLIENT") as mc,
+    ):
+        mc.post.return_value = {"success": True, "text": "meeting notes"}
+        res = local_ai_task(action="transcribe", path="/audio/standup.ogg")
+        assert res.get("success") is True, f"transcribe should accept path= alias: {res}"
+        transcribe_calls = [c for c in mc.post.call_args_list if "/api/task/transcribe" in str(c)]
+        assert len(transcribe_calls) >= 1
+        payload = transcribe_calls[0][0][1]
+        assert payload.get("audio_path") == "/audio/standup.ogg"
+
+
+def test_transcribe_accepts_file_alias():
+    """Agents use file= for audio file path in transcribe."""
+    with (
+        patch.object(FEATURES, "tasks", True),
+        patch.object(FEATURES, "has_any_model", return_value=True),
+        patch("local_ai_hub.mcp_server.CLIENT") as mc,
+    ):
+        mc.post.return_value = {"success": True, "text": "interview content"}
+        res = local_ai_task(action="transcribe", file="/audio/interview.wav")
+        assert res.get("success") is True, f"transcribe should accept file= alias: {res}"
+        transcribe_calls = [c for c in mc.post.call_args_list if "/api/task/transcribe" in str(c)]
+        assert len(transcribe_calls) >= 1
+        payload = transcribe_calls[0][0][1]
+        assert payload.get("audio_path") == "/audio/interview.wav"
+
+
+# ---------------------------------------------------------------------------
+# 4. complete_code: task= maps to prefix/context (not retired)
+# ---------------------------------------------------------------------------
+
+def test_complete_code_prompt_is_prefix():
+    """complete_code sends prompt as prefix and candidate as suffix."""
+    with (
+        patch.object(FEATURES, "tasks", True),
+        patch.object(FEATURES, "has_any_model", return_value=True),
+        patch("local_ai_hub.mcp_server.CLIENT") as mc,
+    ):
+        mc.post.return_value = {"success": True, "completion": "    return x + y"}
+        res = local_ai_task(action="complete_code", prompt="def add(x, y):\n", candidate="")
+        assert res.get("success") is True, f"complete_code failed: {res}"
+        comp_calls = [c for c in mc.post.call_args_list if "/api/complete" in str(c)]
+        assert len(comp_calls) >= 1
+        payload = comp_calls[0][0][1]
+        assert payload.get("prefix") == "def add(x, y):\n"
+
+
+# ---------------------------------------------------------------------------
+# 5. callers arg error includes helpful suggestion
+# ---------------------------------------------------------------------------
+
+def test_callers_missing_query_gives_hint():
+    """When agent calls callers without query, error should hint at query param."""
+    with patch("local_ai_hub.mcp_server.CLIENT"):
+        # Pass no query/symbol - should fail with hint
+        res = _local_ai_repo_impl(action="callers", root="/repo")
+        assert res.get("success") is False
+        error_text = str(res.get("error", "")) + str(res.get("argument_help", ""))
+        assert "query" in error_text or "symbol" in error_text, (
+            f"Error should hint at query/symbol param: {res}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. context_compile accepts changed_paths= alias for paths=
+# ---------------------------------------------------------------------------
+
+def test_context_compile_accepts_changed_paths_alias():
+    """Agents use changed_paths= everywhere; context_compile should accept it as alias for paths=."""
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {
+            "success": True,
+            "complete": True,
+            "task_context": {"text": "compiled context", "complete": True, "success": True},
+        }
+        res = local_ai_coord(
+            action="context_compile",
+            task_id="task-123",
+            root="/repo",
+            changed_paths=["src/foo.py", "src/bar.py"],
+        )
+        assert res.get("success") is True, f"context_compile with changed_paths= failed: {res}"
+        coord_calls = [c for c in mc.post.call_args_list if "/api/agent-state/context" in str(c)]
+        assert len(coord_calls) >= 1
+        payload = coord_calls[0][0][1]
+        assert "src/foo.py" in payload.get("changed_paths", [])
+
+
+# ---------------------------------------------------------------------------
+# 7. review_diff accepts diff= string shortcut
+# ---------------------------------------------------------------------------
+
+def test_review_diff_accepts_diff_string():
+    """Agents often want to review a diff string directly; diff= should be accepted."""
+    diff_text = "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {"success": True, "findings": []}
+        res = _local_ai_repo_impl(
+            action="review_diff",
+            root="/repo",
+            diff=diff_text,
+        )
+        assert res.get("success") is True, f"review_diff should accept diff= string: {res}"
+        rd_calls = [c for c in mc.post.call_args_list if "/api/review/diff" in str(c)]
+        assert len(rd_calls) >= 1
+        payload = rd_calls[0][0][1]
+        # diff string should be forwarded as diff field
+        assert payload.get("diff") == diff_text
+
