@@ -1,0 +1,546 @@
+{
+  "case": "simhash",
+  "hardware_identity": {
+    "architecture": "AMD64",
+    "platform": "win32",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "python_version": "3.13.2"
+  },
+  "measurement": {
+    "baseline_stats": {
+      "mean_ms": 15.685,
+      "p50_ms": 16.717,
+      "p90_ms": 19.415,
+      "p95_ms": 19.886,
+      "p99_ms": 20.606,
+      "stdev_ms": 3.272
+    },
+    "candidate_stats": {
+      "mean_ms": 15.855,
+      "p50_ms": 16.867,
+      "p90_ms": 19.552,
+      "p95_ms": 19.985,
+      "p99_ms": 20.702,
+      "stdev_ms": 3.311
+    },
+    "note": "1000+ independent pairs executed for tail acceptance",
+    "p95_speedup": 1.0,
+    "p99_speedup": 1.0,
+    "sample_count": 1000,
+    "tail_gate_met": false,
+    "tail_sample_gate_met": true
+  },
+  "quality_scope": {
+    "allow_inference": false,
+    "verified_parity": true
+  },
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "samples_summary": [
+    {
+      "baseline_ms": 11.7622,
+      "candidate_ms": 11.6444,
+      "epoch": 0
+    },
+    {
+      "baseline_ms": 11.4598,
+      "candidate_ms": 11.1691,
+      "epoch": 1
+    },
+    {
+      "baseline_ms": 10.6987,
+      "candidate_ms": 11.0019,
+      "epoch": 2
+    },
+    {
+      "baseline_ms": 11.1592,
+      "candidate_ms": 10.835,
+      "epoch": 3
+    },
+    {
+      "baseline_ms": 10.9484,
+      "candidate_ms": 10.7556,
+      "epoch": 4
+    },
+    {
+      "baseline_ms": 10.8725,
+      "candidate_ms": 10.9495,
+      "epoch": 5
+    },
+    {
+      "baseline_ms": 10.9753,
+      "candidate_ms": 11.144,
+      "epoch": 6
+    },
+    {
+      "baseline_ms": 10.9775,
+      "candidate_ms": 11.1741,
+      "epoch": 7
+    },
+    {
+      "baseline_ms": 11.4119,
+      "candidate_ms": 11.2587,
+      "epoch": 8
+    },
+    {
+      "baseline_ms": 11.4658,
+      "candidate_ms": 11.8415,
+      "epoch": 9
+    },
+    {
+      "baseline_ms": 11.2423,
+      "candidate_ms": 11.1518,
+      "epoch": 10
+    },
+    {
+      "baseline_ms": 11.6856,
+      "candidate_ms": 10.7056,
+      "epoch": 11
+    },
+    {
+      "baseline_ms": 11.113,
+      "candidate_ms": 11.183,
+      "epoch": 12
+    },
+    {
+      "baseline_ms": 10.9157,
+      "candidate_ms": 11.2914,
+      "epoch": 13
+    },
+    {
+      "baseline_ms": 11.3362,
+      "candidate_ms": 11.2561,
+      "epoch": 14
+    },
+    {
+      "baseline_ms": 10.5892,
+      "candidate_ms": 12.0019,
+      "epoch": 15
+    },
+    {
+      "baseline_ms": 10.6158,
+      "candidate_ms": 10.7992,
+      "epoch": 16
+    },
+    {
+      "baseline_ms": 10.8571,
+      "candidate_ms": 11.2577,
+      "epoch": 17
+    },
+    {
+      "baseline_ms": 11.082,
+      "candidate_ms": 11.853,
+      "epoch": 18
+    },
+    {
+      "baseline_ms": 11.3432,
+      "candidate_ms": 11.3748,
+      "epoch": 19
+    },
+    {
+      "baseline_ms": 12.386,
+      "candidate_ms": 10.8311,
+      "epoch": 20
+    },
+    {
+      "baseline_ms": 10.9099,
+      "candidate_ms": 11.3739,
+      "epoch": 21
+    },
+    {
+      "baseline_ms": 11.5353,
+      "candidate_ms": 10.8807,
+      "epoch": 22
+    },
+    {
+      "baseline_ms": 12.527,
+      "candidate_ms": 11.0515,
+      "epoch": 23
+    },
+    {
+      "baseline_ms": 11.0789,
+      "candidate_ms": 11.0165,
+      "epoch": 24
+    },
+    {
+      "baseline_ms": 11.4986,
+      "candidate_ms": 11.31,
+      "epoch": 25
+    },
+    {
+      "baseline_ms": 11.0311,
+      "candidate_ms": 11.05,
+      "epoch": 26
+    },
+    {
+      "baseline_ms": 11.9952,
+      "candidate_ms": 12.0054,
+      "epoch": 27
+    },
+    {
+      "baseline_ms": 10.9337,
+      "candidate_ms": 10.8646,
+      "epoch": 28
+    },
+    {
+      "baseline_ms": 10.7669,
+      "candidate_ms": 10.6831,
+      "epoch": 29
+    },
+    {
+      "baseline_ms": 10.709,
+      "candidate_ms": 10.8218,
+      "epoch": 30
+    },
+    {
+      "baseline_ms": 11.3036,
+      "candidate_ms": 10.6579,
+      "epoch": 31
+    },
+    {
+      "baseline_ms": 10.741,
+      "candidate_ms": 10.7855,
+      "epoch": 32
+    },
+    {
+      "baseline_ms": 11.346,
+      "candidate_ms": 10.774,
+      "epoch": 33
+    },
+    {
+      "baseline_ms": 10.8459,
+      "candidate_ms": 10.8909,
+      "epoch": 34
+    },
+    {
+      "baseline_ms": 10.7249,
+      "candidate_ms": 10.7667,
+      "epoch": 35
+    },
+    {
+      "baseline_ms": 10.8915,
+      "candidate_ms": 11.2607,
+      "epoch": 36
+    },
+    {
+      "baseline_ms": 11.0463,
+      "candidate_ms": 10.9072,
+      "epoch": 37
+    },
+    {
+      "baseline_ms": 11.6728,
+      "candidate_ms": 11.6533,
+      "epoch": 38
+    },
+    {
+      "baseline_ms": 10.6981,
+      "candidate_ms": 10.9469,
+      "epoch": 39
+    },
+    {
+      "baseline_ms": 11.0676,
+      "candidate_ms": 11.0512,
+      "epoch": 40
+    },
+    {
+      "baseline_ms": 10.9015,
+      "candidate_ms": 10.8308,
+      "epoch": 41
+    },
+    {
+      "baseline_ms": 10.9461,
+      "candidate_ms": 11.89,
+      "epoch": 42
+    },
+    {
+      "baseline_ms": 10.9809,
+      "candidate_ms": 11.0141,
+      "epoch": 43
+    },
+    {
+      "baseline_ms": 10.9419,
+      "candidate_ms": 10.9797,
+      "epoch": 44
+    },
+    {
+      "baseline_ms": 10.9324,
+      "candidate_ms": 11.1814,
+      "epoch": 45
+    },
+    {
+      "baseline_ms": 11.1925,
+      "candidate_ms": 11.331,
+      "epoch": 46
+    },
+    {
+      "baseline_ms": 11.3134,
+      "candidate_ms": 11.8084,
+      "epoch": 47
+    },
+    {
+      "baseline_ms": 14.9,
+      "candidate_ms": 12.5449,
+      "epoch": 48
+    },
+    {
+      "baseline_ms": 11.3166,
+      "candidate_ms": 11.2898,
+      "epoch": 49
+    },
+    {
+      "baseline_ms": 11.234,
+      "candidate_ms": 11.4393,
+      "epoch": 50
+    },
+    {
+      "baseline_ms": 11.6641,
+      "candidate_ms": 11.203,
+      "epoch": 51
+    },
+    {
+      "baseline_ms": 11.2508,
+      "candidate_ms": 11.5272,
+      "epoch": 52
+    },
+    {
+      "baseline_ms": 11.0774,
+      "candidate_ms": 11.203,
+      "epoch": 53
+    },
+    {
+      "baseline_ms": 10.9622,
+      "candidate_ms": 12.9222,
+      "epoch": 54
+    },
+    {
+      "baseline_ms": 11.1597,
+      "candidate_ms": 10.9442,
+      "epoch": 55
+    },
+    {
+      "baseline_ms": 10.9665,
+      "candidate_ms": 11.309,
+      "epoch": 56
+    },
+    {
+      "baseline_ms": 10.8567,
+      "candidate_ms": 10.8438,
+      "epoch": 57
+    },
+    {
+      "baseline_ms": 10.7834,
+      "candidate_ms": 10.7845,
+      "epoch": 58
+    },
+    {
+      "baseline_ms": 10.7166,
+      "candidate_ms": 10.6216,
+      "epoch": 59
+    },
+    {
+      "baseline_ms": 11.0348,
+      "candidate_ms": 11.1822,
+      "epoch": 60
+    },
+    {
+      "baseline_ms": 10.9227,
+      "candidate_ms": 10.8979,
+      "epoch": 61
+    },
+    {
+      "baseline_ms": 10.8944,
+      "candidate_ms": 10.7449,
+      "epoch": 62
+    },
+    {
+      "baseline_ms": 10.7539,
+      "candidate_ms": 10.9253,
+      "epoch": 63
+    },
+    {
+      "baseline_ms": 10.896,
+      "candidate_ms": 11.0584,
+      "epoch": 64
+    },
+    {
+      "baseline_ms": 10.9497,
+      "candidate_ms": 10.9685,
+      "epoch": 65
+    },
+    {
+      "baseline_ms": 10.8319,
+      "candidate_ms": 11.3116,
+      "epoch": 66
+    },
+    {
+      "baseline_ms": 10.8922,
+      "candidate_ms": 11.3104,
+      "epoch": 67
+    },
+    {
+      "baseline_ms": 12.4495,
+      "candidate_ms": 10.6207,
+      "epoch": 68
+    },
+    {
+      "baseline_ms": 10.8061,
+      "candidate_ms": 11.2856,
+      "epoch": 69
+    },
+    {
+      "baseline_ms": 11.2162,
+      "candidate_ms": 10.6951,
+      "epoch": 70
+    },
+    {
+      "baseline_ms": 10.5511,
+      "candidate_ms": 11.9831,
+      "epoch": 71
+    },
+    {
+      "baseline_ms": 12.1981,
+      "candidate_ms": 10.7968,
+      "epoch": 72
+    },
+    {
+      "baseline_ms": 12.1108,
+      "candidate_ms": 10.7299,
+      "epoch": 73
+    },
+    {
+      "baseline_ms": 10.7738,
+      "candidate_ms": 10.8559,
+      "epoch": 74
+    },
+    {
+      "baseline_ms": 11.9614,
+      "candidate_ms": 11.555,
+      "epoch": 75
+    },
+    {
+      "baseline_ms": 11.5796,
+      "candidate_ms": 11.7291,
+      "epoch": 76
+    },
+    {
+      "baseline_ms": 10.96,
+      "candidate_ms": 11.3361,
+      "epoch": 77
+    },
+    {
+      "baseline_ms": 11.6306,
+      "candidate_ms": 10.8044,
+      "epoch": 78
+    },
+    {
+      "baseline_ms": 10.9105,
+      "candidate_ms": 14.0752,
+      "epoch": 79
+    },
+    {
+      "baseline_ms": 11.1852,
+      "candidate_ms": 10.954,
+      "epoch": 80
+    },
+    {
+      "baseline_ms": 11.7105,
+      "candidate_ms": 11.353,
+      "epoch": 81
+    },
+    {
+      "baseline_ms": 11.1608,
+      "candidate_ms": 11.1112,
+      "epoch": 82
+    },
+    {
+      "baseline_ms": 11.2946,
+      "candidate_ms": 12.0834,
+      "epoch": 83
+    },
+    {
+      "baseline_ms": 11.2371,
+      "candidate_ms": 12.9326,
+      "epoch": 84
+    },
+    {
+      "baseline_ms": 11.2176,
+      "candidate_ms": 10.9096,
+      "epoch": 85
+    },
+    {
+      "baseline_ms": 10.7224,
+      "candidate_ms": 10.9542,
+      "epoch": 86
+    },
+    {
+      "baseline_ms": 11.1437,
+      "candidate_ms": 10.9532,
+      "epoch": 87
+    },
+    {
+      "baseline_ms": 10.9665,
+      "candidate_ms": 10.7102,
+      "epoch": 88
+    },
+    {
+      "baseline_ms": 10.8341,
+      "candidate_ms": 10.8355,
+      "epoch": 89
+    },
+    {
+      "baseline_ms": 10.8179,
+      "candidate_ms": 10.8249,
+      "epoch": 90
+    },
+    {
+      "baseline_ms": 11.0717,
+      "candidate_ms": 11.2596,
+      "epoch": 91
+    },
+    {
+      "baseline_ms": 10.947,
+      "candidate_ms": 11.1582,
+      "epoch": 92
+    },
+    {
+      "baseline_ms": 11.0163,
+      "candidate_ms": 11.0421,
+      "epoch": 93
+    },
+    {
+      "baseline_ms": 10.9071,
+      "candidate_ms": 14.46,
+      "epoch": 94
+    },
+    {
+      "baseline_ms": 11.2096,
+      "candidate_ms": 11.0345,
+      "epoch": 95
+    },
+    {
+      "baseline_ms": 11.0606,
+      "candidate_ms": 11.225,
+      "epoch": 96
+    },
+    {
+      "baseline_ms": 11.2708,
+      "candidate_ms": 11.0646,
+      "epoch": 97
+    },
+    {
+      "baseline_ms": 11.2537,
+      "candidate_ms": 11.1936,
+      "epoch": 98
+    },
+    {
+      "baseline_ms": 11.0849,
+      "candidate_ms": 11.1931,
+      "epoch": 99
+    }
+  ],
+  "schema_version": "perf_candidate.v1",
+  "source_identity": {
+    "dirty": false,
+    "git_commit": "f91b59ab70bf5f70b6bc6c9e3d33cdc69bab3fa8"
+  },
+  "success": true
+}

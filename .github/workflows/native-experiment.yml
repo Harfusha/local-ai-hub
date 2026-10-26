@@ -51,6 +51,86 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-cython-build-parity-${{ github.sha }}
+          name: native-cython-build-parity-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/native-cython
+          if-no-files-found: error
+
+  linux-build-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Record existing compiler
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-cython"
+          gcc --version > "$RUNNER_TEMP/native-cython/compiler.txt"
+      - name: Install isolated experiment Python dependencies
+        run: python -m pip install -e ".[dev]" "Cython>=3,<4" "setuptools>=75"
+      - name: Build and measure in three fresh processes
+        run: |
+          DIRECTORY="$RUNNER_TEMP/native-cython"
+          for i in 1 2 3; do
+            OUTPUT="$DIRECTORY/result-$i.json"
+            python tools/cython_experiment.py --iterations 30 --hash-count 256 --work-dir "$DIRECTORY/build-$i" --output "$OUTPUT"
+            if [ $? -ne 0 ]; then
+              echo "Native build/parity failed; actual record retained: $OUTPUT"
+              exit 1
+            fi
+            python -c "import json; res = json.load(open('$OUTPUT')); assert res.get('success') is True, 'Experiment record failed'"
+          done
+          git diff --exit-code
+          UNTRACKED=$(git ls-files --others --exclude-standard)
+          IGNORED=$(git ls-files --others --ignored --exclude-standard)
+          if echo "$UNTRACKED $IGNORED" | grep -E '\.(c|o|pyd|so)$'; then
+            echo "Native build escaped into checkout"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-cython-build-parity-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/native-cython
+          if-no-files-found: error
+
+  macos-build-parity:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Record existing compiler
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-cython"
+          clang --version > "$RUNNER_TEMP/native-cython/compiler.txt"
+      - name: Install isolated experiment Python dependencies
+        run: python -m pip install -e ".[dev]" "Cython>=3,<4" "setuptools>=75"
+      - name: Build and measure in three fresh processes
+        run: |
+          DIRECTORY="$RUNNER_TEMP/native-cython"
+          for i in 1 2 3; do
+            OUTPUT="$DIRECTORY/result-$i.json"
+            python tools/cython_experiment.py --iterations 30 --hash-count 256 --work-dir "$DIRECTORY/build-$i" --output "$OUTPUT"
+            if [ $? -ne 0 ]; then
+              echo "Native build/parity failed; actual record retained: $OUTPUT"
+              exit 1
+            fi
+            python -c "import json; res = json.load(open('$OUTPUT')); assert res.get('success') is True, 'Experiment record failed'"
+          done
+          git diff --exit-code
+          UNTRACKED=$(git ls-files --others --exclude-standard)
+          IGNORED=$(git ls-files --others --ignored --exclude-standard)
+          if echo "$UNTRACKED $IGNORED" | grep -E '\.(c|o|pyd|so)$'; then
+            echo "Native build escaped into checkout"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-cython-build-parity-macos-${{ github.sha }}
           path: ${{ runner.temp }}/native-cython
           if-no-files-found: error
