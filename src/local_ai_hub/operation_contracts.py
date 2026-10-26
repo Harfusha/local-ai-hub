@@ -291,7 +291,7 @@ _ACTION_SCOPED_FIELDS = {
         "depth": frozenset({"call_graph"}),
         "rev1": frozenset({"git_diff", "diff"}),
         "rev2": frozenset({"git_diff", "diff"}),
-        "base": frozenset({"git_diff", "diff", "context"}),
+        "base": frozenset({"git_diff", "diff", "context", "solve"}),
         "head": frozenset({"git_diff", "diff"}),
         "start_line": frozenset({"read_file", "source"}),
         "end_line": frozenset({"read_file", "source"}),
@@ -301,7 +301,6 @@ _ACTION_SCOPED_FIELDS = {
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
         "symbol": frozenset({"callers", "callees", "implementations", "declaration", "refactor_impact", "code_index"}),
         "file": frozenset({"source", "read_file", "file_info", "stat", "git_diff", "diff", "generate_tests", "generate_tests_for_diff", "mutation_test", "type_stubs"}),
-        "paths": frozenset({"git_diff", "diff", "context", "generate_tests_for_diff"}),
         "changed_paths": frozenset({"generate_tests_for_diff", "context"}),
     },
     "local_ai_coord": {
@@ -520,7 +519,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "rev2": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "path": {"type": "string", "maxLength": 4096, "default": ""},
             "file": {"type": "string", "maxLength": 4096, "default": ""},
-            "paths": {"type": "array", "items": {"type": "string"}},
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},
@@ -991,8 +989,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             required={"get": ("artifact_id",), "slice": ("artifact_id",), "source": ("path",)},
             non_empty={"get": ("artifact_id",), "slice": ("artifact_id",), "source": ("path",)},
             allowed={
-                "get": ("artifact_id", "id", "offset", "max_chars", "section", "binary", "slices", "root", "workspace"),
-                "slice": ("artifact_id", "id", "offset", "max_chars", "section", "binary", "slices", "root", "workspace"),
+                "get": ("artifact_id", "offset", "max_chars", "section", "binary", "slices", "root", "workspace"),
+                "slice": ("artifact_id", "offset", "max_chars", "section", "binary", "slices", "root", "workspace"),
                 "list": (),
                 "source": ("path", "file", "line_start", "line_end", "start_line", "end_line", "max_chars", "slices", "root", "workspace"),
             },
@@ -1000,7 +998,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             properties={
                 "action": {"type": "string", "default": "get"},
                 "artifact_id": {"type": "string", "default": ""},
-                "id": {"type": "string", "default": ""},
                 "file": {"type": "string", "maxLength": 32768, "default": ""},
                 "root": {"type": "string", "default": "."},
                 "workspace": {"type": "string", "default": ""},

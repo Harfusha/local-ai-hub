@@ -231,7 +231,7 @@ def trim_run_main(argv: list[str] | None = None) -> int:
         return 0
 
     # Subprocess execution mode is deliberately allowlisted. trim-run is not a
-    # shell wrapper: use local_ai_command for arbitrary validation commands.
+    # shell wrapper: use the agent host's native command tool for arbitrary validation commands.
     command_name = os.path.basename(args[0]).lower()
     if os.path.basename(args[0]) != args[0]:
         print("trim-run: command is not in the safe read/validation allowlist", file=sys.stderr)

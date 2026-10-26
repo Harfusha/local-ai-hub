@@ -202,7 +202,7 @@ def test_root_inventory_resolves_imported_actions_and_redacted_pack_route():
     assert not any(item.startswith("missing MCP action handler local_ai_status:") for item in drift)
     assert not any(item.startswith("orphan client target POST /api/context/pack ") for item in drift)
     status_details = set(ROOT_INVENTORY["mcp_actions"]["local_ai_status"])
-    assert status_details == {"brief"}
+    assert status_details == {"brief", "models"}
     assert {"status", "health", "check", "info"}.isdisjoint(status_details)
     assert ROOT_INVENTORY.get("mcp_action_aliases", {}) == {}
     assert any(

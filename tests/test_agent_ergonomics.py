@@ -445,7 +445,10 @@ def test_task_compress_and_review_flexibility():
     from unittest.mock import patch
     from local_ai_hub.mcp_server import local_ai_task, FEATURES
 
-    with patch.object(FEATURES, "tasks", True), patch.object(FEATURES, "has_any_model", return_value=True), patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+    with patch.object(FEATURES, "tasks", True), \
+         patch.object(FEATURES, "has_any_model", return_value=True), \
+         patch("local_ai_hub.mcp_server.operational_mode_gate_error", return_value=None), \
+         patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
         mock_client.post.return_value = {"success": True, "text": "compressed"}
 
         # Compress with prompt instead of context
@@ -454,6 +457,7 @@ def test_task_compress_and_review_flexibility():
         assert payload["text"] == "test failure log output"
 
         # Review with candidate instead of context
+        mock_client.reset_mock()
         local_ai_task(action="review", candidate="def buggy(): return 1/0")
         payload_rev = mock_client.post.call_args[0][1]
         assert payload_rev["code"] == "def buggy(): return 1/0"

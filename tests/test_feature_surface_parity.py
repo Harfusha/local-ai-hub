@@ -96,7 +96,7 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     )
     assert slice_rule["then"]["required"] == ["artifact_id"]
     assert "id" not in artifact_parameters["properties"]
-    assert schemas["local_ai_status"]["parameters"]["properties"]["detail"]["enum"] == ["brief"]
+    assert schemas["local_ai_status"]["parameters"]["properties"]["detail"]["enum"] == ["brief", "models"]
     assert "local_ai_work" not in schemas
 
 
@@ -160,7 +160,7 @@ def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
     assert properties["changed_paths"] == {"type": "array", "items": {"type": "string"}}
     assert properties["approval"]["type"] == ["boolean", "string"]
     assert properties["response_profile"]["default"] == "compact"
-    assert properties["response_profile"]["enum"] == ["minimal", "compact", "standard", "debug", "delta"]
+    assert properties["response_profile"]["enum"] == ["minimal", "compact", "standard", "debug", "delta", "dense"]
 
     guidance = schema["description"].lower()
     for phrase in (

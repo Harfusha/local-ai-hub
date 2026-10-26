@@ -479,8 +479,6 @@ def finalize_tool_accounting(
     action = str(clean_args.get("action", "")).strip().lower()
     if tool_name == "local_ai_repo":
         category = "search" if action in {"search", "code_index", "deterministic", "map", "symbols", "callers", "dead_code"} else "edit" if action in {"ast_refactor", "batch_replace", "validate_patch"} else "validation" if action in {"verify", "affected_tests", "review_diff", "security_audit", "impact"} else "repo"
-    elif tool_name == "local_ai_command":
-        category = "edit" if action in {"format", "auto_fix", "patch_and_verify", "lint_fix", "repair_loop"} else "validation"
     elif tool_name == "local_ai_artifact":
         category = "artifact"
     elif tool_name == "local_ai_coord":

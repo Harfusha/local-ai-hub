@@ -52,7 +52,7 @@ Coordinate available tools and capabilities systematically across six distinct e
 - Avoid unnecessary mass rewrites; preserve existing comments, formatting, and conventions.
 
 ### 5. Verify
-- Run actual project test suites via `local_ai_command`:
+- Run actual project test suites via the agent host's native command tool (e.g. `run_command`):
   - Python: `pytest` / `python -m unittest`
   - .NET / C#: `dotnet test`
   - JavaScript / TypeScript: `npm test` / `pnpm test` / `vitest` / `jest`

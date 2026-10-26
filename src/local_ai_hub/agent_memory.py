@@ -1687,18 +1687,6 @@ class MemoryStore:
         scope_id_val = str(scope_id or "").strip()
         root = str(root or "").strip()
         repository_id = str(repository_id or "").strip()
-        if root and not repository_id:
-            try:
-                from .project_config import resolve_project_context
-                state_dir = getattr(self.state_store, "db_path", None)
-                if state_dir is not None:
-                    state_dir = state_dir.parent
-                ctx = resolve_project_context(root, state_dir)
-                repository_id = str(getattr(ctx, "coordination_id", "") or "").strip()
-                if not scope_id_val and getattr(ctx, "root", None):
-                    scope_id_val = str(ctx.root)
-            except Exception:
-                pass
         identity_scopes = [
             (task_id_val, AgentScope.TASK.value),
             (session_id_val, AgentScope.SESSION.value),

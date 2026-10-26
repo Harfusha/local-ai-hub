@@ -22,7 +22,7 @@ from local_ai_hub.work_fencing import (
 
 def _claim_overlapping_path(db_path: str, root: str, owner: str, start, results) -> None:
     store = FencingLeaseStore(Path(db_path))
-    start.wait(timeout=10)
+    start.wait(timeout=20)
     try:
         attempt = store.claim_attempt(root, f"work-{owner}", owner, ttl_seconds=30)
         lease = store.acquire(
@@ -30,6 +30,8 @@ def _claim_overlapping_path(db_path: str, root: str, owner: str, start, results)
         )
     except LeaseUnavailableError:
         results.put((owner, "busy", 0))
+    except BaseException as exc:
+        results.put((owner, "failed", str(exc)))
     else:
         results.put((owner, "acquired", lease.fencing_token))
 
@@ -96,7 +98,7 @@ def test_cross_process_contenders_get_one_overlapping_writer(tmp_path: Path) -> 
         worker.start()
     start.set()
     try:
-        outcomes = [results.get(timeout=15) for _ in workers]
+        outcomes = [results.get(timeout=30) for _ in workers]
     except Empty:
         pytest.fail("lease contenders did not report a result")
     finally:

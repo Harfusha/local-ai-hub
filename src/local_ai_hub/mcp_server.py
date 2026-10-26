@@ -2265,8 +2265,17 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(detail: Literal["brief", "models"] = "brief", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", action: str = "", root: str = ".", workspace: str = "") -> dict[str, Any]:
+def local_ai_status(
+    detail: Literal["brief", "models"] = "brief",
+    extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
+    action = str(kwargs.get("action") or "")
     if action in {"health", "ping", "check", "status", "brief"} and not detail:
         detail = "brief"
     if action == "models" or detail == "models":
@@ -3215,7 +3224,6 @@ def _local_ai_repo_impl(
     line_end: int = 0,
     symbol: str | None = None,
     file: str | None = None,
-    paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3259,9 +3267,7 @@ def _local_ai_repo_impl(
         query = pattern
     if file and not path:
         path = file
-    if paths and not changed_paths:
-        changed_paths = paths
-    if not path and changed_paths and len(changed_paths) > 0:
+    if not path and changed_paths and len(changed_paths) > 0 and action == "generate_tests_for_diff":
         path = changed_paths[0]
     if not edits and path and ((target and replacement) or (old_code and new_code)):
         edits = [{"path": path, "target": target or old_code, "replacement": replacement or new_code}]
@@ -4135,20 +4141,14 @@ def local_ai_repo(
     end_line: int = 0,
     line_start: int = 1,
     line_end: int = 0,
-    symbol: str | None = None,
     file: str | None = None,
-    paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
-    if symbol and not query:
-        query = symbol
     if pattern and not query:
         query = pattern
     if file and not path:
         path = file
-    if paths and not changed_paths:
-        changed_paths = paths
-    if not path and changed_paths and len(changed_paths) > 0:
+    if not path and changed_paths and len(changed_paths) > 0 and action == "generate_tests_for_diff":
         path = changed_paths[0]
     if not edits and path and ((target and replacement) or (old_code and new_code)):
         edits = [{"path": path, "target": target or old_code, "replacement": replacement or new_code}]
@@ -4271,7 +4271,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, symbol=symbol, file=file, paths=paths, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, file=file, **forward,
     )
 
 

@@ -82,7 +82,7 @@ def _configured_foreground_model(
         or (status.get("scheduler", {}).get("active_model") if isinstance(status.get("scheduler"), dict) else "")
         or ""
     ).strip()
-    candidates = ([active] if active in configured else []) + [
+    candidates = [
         str(models[role]).strip() for role in roles
         if str(models.get(role) or "").strip() in configured
     ]
@@ -327,7 +327,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         benchmark_model, benchmark_model_state = _configured_foreground_model(
             status, installed_models, ("fast_code", "general", "heavy_code", "reasoning"),
         )
-        reasoning_model, reasoning_model_state = _configured_foreground_model(status, installed_models, ("reasoning",))
+        reasoning_model, reasoning_model_state = _configured_foreground_model(status, installed_models, ("heavy_code", "reasoning"))
         dependency_status = status.get("dependency_status") if isinstance(status.get("dependency_status"), dict) else {}
         degraded_dependencies = [
             {
@@ -353,7 +353,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         ollama_ready = status.get("ollama_online") is True
         reason_available = ollama_ready and reasoning_model is not None
         reason = client.post("/api/reason", {
-            "task": "Answer with exactly the word READY.",
+            "problem": "Answer with exactly the word READY.",
             "context": "Release smoke test. No repository changes.",
             "max_tokens": 160,
             "delivery": "sync",
@@ -395,11 +395,18 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         if not model_ok:
             errors.append("live model smoke failed or was not verified")
 
-        async_job = client.post("/api/async-jobs", {
-            "action": "submit", "job_action": "reason",
-            "task": "Answer with exactly the word ASYNC_READY.",
-            "context": "Release async smoke test.", "max_tokens": 160,
-        }, timeout=15) if reason_available else {}
+        async_job = {}
+        if reason_available:
+            for _ in range(3):
+                async_job = client.post("/api/async-jobs", {
+                    "action": "submit", "job_action": "reason",
+                    "task": "Answer with exactly the word ASYNC_READY.",
+                    "context": "Release async smoke test.", "max_tokens": 160,
+                }, timeout=15)
+                if async_job.get("retryable") is True and not async_job.get("job_id"):
+                    time.sleep(2.0)
+                    continue
+                break
         job_id = str(async_job.get("job_id") or "")
         async_result: dict[str, object] = async_job
         async_wait: dict[str, object] = {}

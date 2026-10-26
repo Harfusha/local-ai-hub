@@ -422,7 +422,6 @@ def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
         "mcp(local_ai)",
         "mcp(local-ai/local_ai_status)",
         "mcp(local-ai/local_ai_coord)",
-        "mcp(local-ai/local_ai_command)",
         "mcp(local-ai/local_ai_repo)",
         "mcp(local-ai/local_ai_task)",
         "mcp(local-ai/local_ai_rag)",
@@ -430,13 +429,17 @@ def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
         "mcp(local-ai/local_ai_artifact)",
         "mcp(local_ai/local_ai_status)",
         "mcp(local_ai/local_ai_coord)",
-        "mcp(local_ai/local_ai_command)",
         "mcp(local_ai/local_ai_repo)",
         "mcp(local_ai/local_ai_task)",
         "mcp(local_ai/local_ai_rag)",
         "mcp(local_ai/local_ai_work)",
         "mcp(local_ai/local_ai_artifact)",
     ]
+    allow_list[:] = [
+        grant for grant in allow_list
+        if not (grant.startswith("mcp(local-ai/") or grant.startswith("mcp(local_ai/")) or grant in required_grants
+    ]
+
     for grant in required_grants:
         if grant not in allow_list:
             allow_list.append(grant)
