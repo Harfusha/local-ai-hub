@@ -323,3 +323,124 @@ def test_repo_query_task_aliasing():
         args, kwargs = mock_impl.call_args
         assert args[2] == "investigate issue"  # query is mapped from task!
 
+
+
+import subprocess
+
+
+def test_repo_git_status_and_revert(tmp_path: Path):
+    """Points 6 & 8: Verify git_status and revert operations in repo_tools."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # Init git repo
+    subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), check=True, capture_output=True)
+
+    f1 = repo / "hello.py"
+    f1.write_text("print('hello initial')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "hello.py"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), check=True, capture_output=True)
+
+    rt = RepositoryTools({})
+
+    # Clean state
+    st_clean = rt.git_status(str(repo))
+    assert st_clean["success"] is True
+    assert st_clean["dirty"] is False
+    assert len(st_clean["changed_paths"]) == 0
+    assert len(st_clean["untracked_paths"]) == 0
+
+    # Modify file and add untracked file
+    f1.write_text("print('hello modified')\n", encoding="utf-8")
+    f2 = repo / "untracked.py"
+    f2.write_text("print('untracked')\n", encoding="utf-8")
+
+    st_dirty = rt.git_status(str(repo))
+    assert st_dirty["success"] is True
+    assert st_dirty["dirty"] is True
+    assert "hello.py" in st_dirty["changed_paths"]
+    assert "untracked.py" in st_dirty["untracked_paths"]
+
+    # Revert modified file
+    rev_res = rt.git_revert_file(str(repo), "hello.py")
+    assert rev_res["success"] is True
+    assert rev_res["reverted"] is True
+    assert f1.read_text(encoding="utf-8") == "print('hello initial')\n"
+
+    # Status after revert
+    st_after = rt.git_status(str(repo))
+    assert "hello.py" not in st_after["changed_paths"]
+    assert "untracked.py" in st_after["untracked_paths"]
+
+
+def test_artifact_batch_source_and_slice_alias(tmp_path: Path):
+    """Points 2 & 9: Verify batch source slicing and slice->source alias."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import local_ai_artifact
+
+    f1 = tmp_path / "a.py"
+    f1.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+    with patch("local_ai_hub.mcp_server._workspace", str(tmp_path)):
+        # Calling slice with path (without artifact_id)
+        res_slice = local_ai_artifact(action="slice", path="a.py", line_start=1, line_end=2)
+        assert res_slice["success"] is True
+        assert "line1" in res_slice.get("text", "")
+
+        # Calling batch_source with slices list
+        slices = [
+            {"path": "a.py", "line_start": 1, "line_end": 1},
+            {"path": "a.py", "line_start": 3, "line_end": 3},
+        ]
+        res_batch = local_ai_artifact(action="source", slices=slices)
+        assert res_batch["success"] is True
+        assert len(res_batch.get("slices", [])) == 2
+
+
+def test_checkpoint_packaging_and_incident_aliases():
+    """Points 1 & 4: Verify task_checkpoint packaging and negative_knowledge_record mapping."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import local_ai_coord
+
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.coord.return_value = {"success": True}
+        mock_client.post.return_value = {"success": True}
+
+        # Checkpoint called with top-level phase and paths
+        local_ai_coord(action="task_checkpoint", task_id="t1", phase="testing", reason="pytest passed", paths=["src/a.py"])
+        assert mock_client.coord.called
+        kwargs = mock_client.coord.call_args[1]
+        assert "checkpoint" in kwargs
+        chk = kwargs["checkpoint"]
+        assert chk["phase"] == "testing"
+        assert chk["next_action"] == "pytest passed"
+        assert chk["affected_paths"] == ["src/a.py"]
+
+        # Negative knowledge record with aliases (description, error_class, paths)
+        local_ai_coord(action="negative_knowledge_record", record={"description": "bug in regex", "error_class": "ValueError", "paths": ["src/re.py"]})
+        assert mock_client.post.called
+        post_kwargs = mock_client.post.call_args[0]
+        payload = post_kwargs[1]
+        assert payload["message"] == "bug in regex"
+        assert payload["operation_class"] == "ValueError"
+        assert payload["affected_paths"] == ["src/re.py"]
+
+
+def test_task_compress_and_review_flexibility():
+    """Point 3: Verify local_ai_task compress and review accept prompt/candidate/context."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import local_ai_task, FEATURES
+
+    with patch.object(FEATURES, "tasks", True), patch.object(FEATURES, "has_any_model", return_value=True), patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.post.return_value = {"success": True, "text": "compressed"}
+
+        # Compress with prompt instead of context
+        local_ai_task(action="compress", prompt="test failure log output")
+        payload = mock_client.post.call_args[0][1]
+        assert payload["text"] == "test failure log output"
+
+        # Review with candidate instead of context
+        local_ai_task(action="review", candidate="def buggy(): return 1/0")
+        payload_rev = mock_client.post.call_args[0][1]
+        assert payload_rev["code"] == "def buggy(): return 1/0"

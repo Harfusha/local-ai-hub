@@ -6373,10 +6373,20 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "checkpoint":
                     chk_data = payload.get("checkpoint")
                     if not isinstance(chk_data, dict):
-                        self._send(400, {
-                            "success": False, "error": "checkpoint must be an object",
-                            "terminal": True, "retryable": False,
-                        }); return
+                        if any(k in payload for k in ("phase", "next_action", "affected_paths", "paths", "state_data", "evidence_ids", "blockers")):
+                            chk_data = {
+                                "phase": str(payload.get("phase") or ""),
+                                "next_action": str(payload.get("next_action") or payload.get("reason") or ""),
+                                "affected_paths": list(payload.get("affected_paths") or payload.get("paths") or []),
+                                "evidence_ids": list(payload.get("evidence_ids") or []),
+                                "blockers": list(payload.get("blockers") or []),
+                                "state_data": dict(payload.get("state_data") or {}),
+                            }
+                        else:
+                            self._send(400, {
+                                "success": False, "error": "checkpoint must be an object",
+                                "terminal": True, "retryable": False,
+                            }); return
                     checkpoint = TaskCheckpoint.from_dict(chk_data)
                     try:
                         task = APP.agent_tasks.checkpoint(
@@ -8331,6 +8341,15 @@ class Handler(BaseHTTPRequestHandler):
                 depth = int(payload.get("depth", 1))
                 limit = int(payload.get("limit", 50))
                 self._send(200, APP.services.call_graph(root, symbol, path=path_val, depth=depth, limit=limit)); return
+            if 'post_repo_git_status_1' in post_route_ids:
+                root = str(payload.get("root", "."))
+                res = APP.repo_tools.git_status(root)
+                self._send(200 if res.get("success") else 400, res); return
+            if 'post_repo_revert_1' in post_route_ids:
+                root = str(payload.get("root", "."))
+                path_val = str(payload.get("path", ""))
+                res = APP.repo_tools.git_revert_file(root, path_val)
+                self._send(200 if res.get("success") else 400, res); return
             if 'post_callers_1' in post_route_ids:
                 limit = payload.get("limit", 50); offset = payload.get("offset", 0)
                 bounds_error = pagination_bounds_error(limit, offset)

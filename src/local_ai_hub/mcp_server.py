@@ -2651,8 +2651,10 @@ def local_ai_task(
             payload["conversation"] = True
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/reason", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "reason")
     if action == "review":
+        code_input = context or candidate or prompt
+        instructions_input = task if code_input != task else "Report actionable defects only."
         payload = {
-            "code": context, "instructions": task or "Report actionable defects only.",
+            "code": code_input, "instructions": instructions_input,
             "complexity": complexity, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
             "operation": "review", "changed_paths": changed_paths or [], "repository_revision": repository_revision,
@@ -2660,7 +2662,7 @@ def local_ai_task(
         }
         if format or json_schema:
             payload["format"] = format or json_schema
-        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "review")
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=code_input, changed_paths=changed_paths), task_context_meta), "review")
     if action == "second_opinion":
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
             "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 4096,
@@ -2669,11 +2671,13 @@ def local_ai_task(
             "evidence_ids": context_evidence_ids,
         }), task=task, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
     if action == "compress":
+        text_input = context or prompt or candidate or task
+        instructions_input = task if text_input != task else (prompt if text_input != prompt else "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.")
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/compress", {
-            "text": context, "instruction": task or "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.",
+            "text": text_input, "instruction": instructions_input,
             "target_tokens": max_tokens or 650,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
-        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), task_context_meta), "compress")
+        }, timeout=_timeout("model")), task=task, context=text_input, changed_paths=changed_paths), task_context_meta), "compress")
     if action == "route":
         return _compact(CLIENT.post("/api/route", {"text": context, "query": task, "delivery": delivery, "latency_budget_ms": latency_budget_ms}, timeout=_timeout("model")), "route")
     if action == "batch":
@@ -3179,6 +3183,10 @@ def _local_ai_repo_impl(
     secret_scan_path_supplied = path is not None
     if not FEATURES.repo:
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
+    if action == "diff":
+        action = "git_diff"
+    elif action == "status":
+        action = "git_status"
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
     scoped_error = validate_operation_arguments(
@@ -3782,6 +3790,12 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/code/declaration", {
             "root": root, "symbol": query, "path": path or None,
         }, timeout=_timeout("quick")), "architecture")
+    if action in {"git_status", "status"}:
+        return _compact(CLIENT.post("/api/repo/git_status", {"root": root}, timeout=_timeout("quick")), "status")
+    if action == "revert":
+        if not path:
+            return contract_error("revert requires path")
+        return _compact(CLIENT.post("/api/repo/revert", {"root": root, "path": path}, timeout=_timeout("quick")), "status")
     if action == "patch":
         target_code = old_code or query or ""
         replacement_code = new_code or task or ""
@@ -4005,6 +4019,10 @@ def local_ai_repo(
         query = task
     elif action in {"solve", "delegate"} and not task and query:
         task = query
+    elif action == "diff":
+        action = "git_diff"
+    elif action == "status":
+        action = "git_status"
     forward: dict[str, Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -4355,6 +4373,8 @@ def local_ai_coord(
         )
     if action in {"negative_knowledge_record", "negative_knowledge_find", "incident_decision"}:
         try:
+            if (not root or root == "." or not is_rooted_path(root)) and _workspace:
+                root = _workspace
             root = str(canonical_repository_root(root))
             if isinstance(record, dict):
                 reject_retired_tenancy_fields(record)
@@ -4719,6 +4739,15 @@ def local_ai_coord(
             question_payload["response_budget_tokens"] = requested
         return _compact(CLIENT.coord(**question_payload), "status", extra_fields=["question"])
     if action.startswith("task_"):
+        if action == "task_checkpoint" and not checkpoint:
+            checkpoint = {
+                "phase": phase,
+                "next_action": reason,
+                "affected_paths": paths or [],
+                "evidence_ids": [],
+                "blockers": [],
+                "state_data": {},
+            }
         task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
             "checkpoint": checkpoint, "status": status, "reason": reason,
@@ -4762,13 +4791,17 @@ def local_ai_coord(
         )
         return _compact(task_result, "task_memory")
     if action.startswith("memory_"):
+        mem_root = root if requested_root else _workspace
+        mem_include_all = True if (action == "memory_find" and not requested_root and not scope) else False
         memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
             target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=(root if requested_root else ""), scope=scope, scope_id=scope_id,
+            value=value, query=query, root=mem_root, scope=scope, scope_id=scope_id,
             task_id=task_id, session_id=session_id, clone_id=clone_id,
             worktree_id=worktree_id, branch=branch, repository_id=repository_id,
         )
+        if mem_include_all:
+            memory_kwargs["include_all_scopes"] = True
         if ttl_seconds is not None:
             memory_kwargs["ttl_seconds"] = ttl_seconds
         if confidence is not None:
@@ -4815,8 +4848,23 @@ def local_ai_coord(
             "format": "markdown" if format is None else format,
         }, timeout=_timeout("quick")), "verify")
     if action == "negative_knowledge_record":
+        rec = dict(record) if isinstance(record, dict) else {}
+        if "paths" in rec and "affected_paths" not in rec:
+            rec["affected_paths"] = rec.pop("paths")
+        if "description" in rec and "message" not in rec:
+            rec["message"] = rec.pop("description")
+        if "reason" in rec and "root_cause" not in rec:
+            rec["root_cause"] = rec.pop("reason")
+        if "fix" in rec and "verified_fix" not in rec:
+            rec["verified_fix"] = rec.pop("fix")
+        if "error_class" in rec and "operation_class" not in rec:
+            rec["operation_class"] = rec.pop("error_class")
+        if paths and "affected_paths" not in rec:
+            rec["affected_paths"] = paths
+        if reason and "root_cause" not in rec:
+            rec["root_cause"] = reason
         return _compact(CLIENT.post("/api/agent-state/incidents", {
-            **record, "action": "record", "root": root,
+            **rec, "action": "record", "root": root,
         }, timeout=_timeout("quick")), "task_memory")
     if action == "negative_knowledge_find":
         return _compact(CLIENT.post("/api/agent-state/incidents", {
@@ -4981,12 +5029,26 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
+    is_source_slices = bool(slices and isinstance(slices, list) and len(slices) > 0 and isinstance(slices[0], dict) and "path" in slices[0])
+    if action == "slice" and (path or is_source_slices) and not artifact_id:
+        action = "source"
     if action == "source":
+        from .source_slice import read_source_slice
+        if is_source_slices:
+            results = []
+            for item in slices[:16]:
+                if not isinstance(item, dict):
+                    continue
+                s_path = str(item.get("path") or "")
+                s_start = int(item.get("line_start", 1))
+                s_end = int(item.get("line_end", 0))
+                s_chars = int(item.get("max_chars", 4000))
+                results.append(read_source_slice(_workspace, path=s_path, line_start=s_start, line_end=s_end, max_chars=s_chars))
+            return _compact({"success": True, "slices": results, "count": len(results)}, "artifact")
         arguments = {"path": path, "line_start": line_start, "line_end": line_end, "max_chars": max_chars}
-        error = validate_operation_arguments("local_ai_artifact", action, arguments)
+        error = validate_operation_arguments("local_ai_artifact", "source", arguments)
         if error is not None:
             return {"success": False, "error": error, "terminal": True, "retryable": False}
-        from .source_slice import read_source_slice
         return _compact(read_source_slice(_workspace, **arguments), "artifact")
     if slices is not None:
         if action not in {"get", "slice"}:

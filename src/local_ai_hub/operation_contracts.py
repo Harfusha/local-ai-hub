@@ -23,6 +23,12 @@ _INCIDENT_RECORD_SCHEMA = {
         "state_revision": {"type": "string", "maxLength": 256},
         "evidence_ids": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}},
         "affected_paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
+        "description": {"type": "string", "maxLength": 4096},
+        "error_class": {"type": "string", "maxLength": 160},
+        "category": {"type": "string", "maxLength": 160},
+        "paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
+        "reason": {"type": "string", "maxLength": 4096},
+        "fix": {"type": "string", "maxLength": 4096},
     },
     "additionalProperties": False,
 }
@@ -121,7 +127,7 @@ _REPO_ACTIONS = (
     "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel",
     "preprocess_unregister", "call_graph_diff",
     "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-    "patch", "call_graph",
+    "patch", "call_graph", "revert", "diff",
 )
 _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
@@ -213,7 +219,7 @@ def _tool_contract(
 
 _REPO_MUTATIONS = (
     "batch_replace", "preprocess", "preprocess_refresh", "preprocess_pause", "preprocess_resume",
-    "preprocess_cancel", "preprocess_unregister", "patch",
+    "preprocess_cancel", "preprocess_unregister", "patch", "revert",
 )
 _REPO_CONDITIONS = {
     "batch_replace": ("batch_replacement",),
@@ -270,8 +276,8 @@ _ACTION_SCOPED_FIELDS = {
         "old_code": frozenset({"semantic_diff", "patch"}),
         "new_code": frozenset({"semantic_diff", "patch"}),
         "depth": frozenset({"call_graph"}),
-        "rev1": frozenset({"git_diff"}),
-        "rev2": frozenset({"git_diff"}),
+        "rev1": frozenset({"git_diff", "diff"}),
+        "rev2": frozenset({"git_diff", "diff"}),
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
     },
     "local_ai_coord": {
@@ -323,6 +329,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_repo", "repo", "action", _REPO_ACTIONS, timeout="action-specific: search max 120s, other quick 180s, context 600s, model 1800s, long 2400s",
         projection="repository result", action_requirements=_REPO_CONDITIONS,
         required={
+            "revert": ("path",),
             "patch": ("path", "old_code", "new_code"),
             "call_graph": ("query",),
             "ast_outline": ("path",),
@@ -419,6 +426,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "migration_drift": ("root", "path"),
             "package_audit": ("root", "path"),
             "git_diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2"),
+            "diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2"),
+            "git_status": ("root",),
+            "revert": ("root", "path"),
             "mutation_test": ("root", "path", "diff"),
             "type_stubs": ("root", "path"),
             "split_changes": ("root", "path"),
@@ -894,7 +904,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "get": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "slice": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "list": (),
-                "source": ("path", "line_start", "line_end", "max_chars"),
+                "source": ("path", "line_start", "line_end", "max_chars", "slices"),
             },
             selector_required=False,
             properties={
@@ -1281,20 +1291,31 @@ def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
         "properties": {"success": {"const": False}, "error": {"type": "string"}},
         "additionalProperties": True,
     }
+    source_result = {
+        "type": "object",
+        "required": ["success", "action", "path", "relative_path", "file_sha256",
+                     "line_start", "line_end", "requested_line_end", "total_lines",
+                     "text", "truncated", "complete"],
+        "properties": {
+            "success": {"const": True}, "action": {"const": "source"},
+            **{key: {"type": "string"} for key in ("path", "relative_path", "file_sha256", "text")},
+            **{key: {"type": "integer"} for key in ("line_start", "line_end", "requested_line_end", "total_lines")},
+            "truncated": {"type": "boolean"}, "complete": {"type": "boolean"},
+        },
+        "additionalProperties": True,
+    }
+    batch_source_result = {
+        "type": "object",
+        "required": ["success", "slices", "count"],
+        "properties": {
+            "success": {"const": True},
+            "slices": {"type": "array"},
+            "count": {"type": "integer"},
+        },
+        "additionalProperties": True,
+    }
     if action == "source":
-        return [{
-            "type": "object",
-            "required": ["success", "action", "path", "relative_path", "file_sha256",
-                         "line_start", "line_end", "requested_line_end", "total_lines",
-                         "text", "truncated", "complete"],
-            "properties": {
-                "success": {"const": True}, "action": {"const": "source"},
-                **{key: {"type": "string"} for key in ("path", "relative_path", "file_sha256", "text")},
-                **{key: {"type": "integer"} for key in ("line_start", "line_end", "requested_line_end", "total_lines")},
-                "truncated": {"type": "boolean"}, "complete": {"type": "boolean"},
-            },
-            "additionalProperties": True,
-        }, failure]
+        return [source_result, batch_source_result, failure]
     if action == "list":
         item = {
             "type": "object",
@@ -1376,7 +1397,7 @@ def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
         },
         "additionalProperties": True,
     }
-    return [text_result, multi_slice_result, evidence_result, binary_result, failure]
+    return [text_result, multi_slice_result, evidence_result, binary_result, source_result, batch_source_result, failure]
 
 
 _OPEN_OUTPUT_OBJECT = {"type": "object", "additionalProperties": True}

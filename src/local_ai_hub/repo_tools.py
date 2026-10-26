@@ -3511,3 +3511,104 @@ class RepositoryTools:
             "old_bytes": len(content_bytes),
             "new_bytes": len(new_content.encode(encoding)),
         }
+
+    def git_status(self, root: str) -> dict[str, Any]:
+        """Return structured Git status for the given repository root."""
+        try:
+            repo = self._root(root)
+        except (ValueError, TypeError) as exc:
+            return {"success": False, "error": f"invalid repository root: {exc}", "dirty": False}
+
+        if shutil.which("git") is None:
+            return {"success": False, "error": "git unavailable", "dirty": False}
+
+        try:
+            probe = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=3, check=False,
+                encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+            )
+            if probe.returncode != 0 or probe.stdout.strip().lower() != "true":
+                return {"success": False, "error": "not a git repository", "dirty": False}
+
+            branch_proc = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=3, check=False,
+                encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+            )
+            branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+
+            head_proc = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=3, check=False,
+                encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+            )
+            head = head_proc.stdout.strip() if head_proc.returncode == 0 else ""
+
+            status_output = self._git_snapshot_run(repo, "status", "--porcelain=v2", "--untracked-files=all", "-z")
+            entries = self._git_parse_status(status_output)
+
+            changed: list[str] = []
+            staged: list[str] = []
+            untracked: list[str] = []
+
+            for path_str, x, y, state, _ in entries:
+                if state == "untracked":
+                    untracked.append(path_str)
+                else:
+                    if x != ".":
+                        staged.append(path_str)
+                    if y != ".":
+                        changed.append(path_str)
+
+            all_modified = list(dict.fromkeys(changed + [p for p, x, y, s, _ in entries if s != "untracked"]))
+
+            return {
+                "success": True,
+                "root": str(repo),
+                "head": head,
+                "branch": branch,
+                "dirty": bool(entries),
+                "changed_paths": all_modified,
+                "staged_paths": list(dict.fromkeys(staged)),
+                "untracked_paths": untracked,
+                "count": len(entries),
+            }
+        except Exception as exc:
+            return {"success": False, "error": f"git status failed: {exc}", "root": str(repo), "dirty": False}
+
+    def git_revert_file(self, root: str, path: str) -> dict[str, Any]:
+        """Revert uncommitted changes to a specific file in the working tree."""
+        try:
+            repo = self._root(root)
+        except (ValueError, TypeError) as exc:
+            return {"success": False, "error": f"invalid repository root: {exc}"}
+
+        if not path or not isinstance(path, str) or "\0" in path or len(path) > 4096:
+            return {"success": False, "error": "invalid file path"}
+
+        target_path = (repo / path).resolve()
+        try:
+            target_path.relative_to(repo.resolve())
+        except ValueError:
+            return {"success": False, "error": "path outside repository root"}
+
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "checkout", "HEAD", "--", path],
+                capture_output=True, text=True, timeout=5, check=False,
+                encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+            )
+            if proc.returncode != 0:
+                proc2 = subprocess.run(
+                    ["git", "-C", str(repo), "checkout", "--", path],
+                    capture_output=True, text=True, timeout=5, check=False,
+                    encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+                )
+                if proc2.returncode != 0:
+                    return {"success": False, "error": proc.stderr.strip() or proc2.stderr.strip() or "git checkout failed"}
+
+            self.invalidate_snapshot(target_path)
+            return {"success": True, "path": path.replace("\\", "/"), "reverted": True}
+        except Exception as exc:
+            return {"success": False, "error": f"git revert failed: {exc}"}
