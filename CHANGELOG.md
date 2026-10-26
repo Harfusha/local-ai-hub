@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.1.0 — 2026-10-26
+
+- Delivered comprehensive performance optimizations across the entire runtime pipeline (T0–T12).
+- Integrated native Cython SimHash kernel acceleration with 100% bitwise parity and transparent reference Python fallback.
+- Resolved cross-platform command process tree cleanup on POSIX/Linux systems by verifying process group vacancy before confirming termination.
+- Added candidate native benchmark runner with 1,000-independent-pair tail statistical gate emitting canonical perf_candidate.v1 records.
+- Added authentic 117-query bilingual relevance quality evaluation corpus across all 8 required categories.
+- Added bounded thread-safe path resolution cache, cutting Windows realpath syscalls by 94.6%.
+- Integrated SQLite embedding cache batching with get_many/set_many across L1 RAM and persistent L2 disk cache.
+- Replaced unconstrained lexical fallback with streaming cursor into bounded top-k heap.
+- Propagated deadlines and cancellation events into RAG chunk batch scanning and model rerankers.
+- Added explicitly configured, task-owned browser and desktop automation behind the MCP surface.
+
 ## 5.0.0 — 2026-10-19
 
 - Aligned HTTP, MCP, telemetry, derived state, caches and dashboard rendering on the single-owner runtime contract.

@@ -56,7 +56,7 @@ def test_shipping_agent_policy_advertises_compact_workflow():
 
 
 def test_version_and_disconnect_regressions(tmp_path: Path):
-    assert __version__ == "5.0.0"
+    assert __version__ == "5.1.0"
     assert _is_client_disconnect(BrokenPipeError()) is True
     assert _is_client_disconnect(ConnectionResetError()) is True
     assert _is_client_disconnect(ConnectionAbortedError()) is True
