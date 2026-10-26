@@ -159,6 +159,7 @@ jobs:
           tests/test_agent_policy.py
           tests/test_agent_identity.py
           tests/test_agent_memory.py
+          tests/test_agent_memory_candidate_scope_recall.py
           tests/test_project_command_broker.py
           tests/test_http_admin_action_auth_t18.py
           tests/test_audit_context_transport_contract.py

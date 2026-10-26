@@ -830,7 +830,7 @@ class AsyncJobManager:
                         stopped = terminate_tree(
                             int(process.pid), grace_seconds=1.0, process_handle=process
                         )
-                        if not stopped:
+                        if not stopped and process.poll() is None:
                             cleanup_confirmed = False
                             retry.append(process)
                             continue
