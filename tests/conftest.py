@@ -151,3 +151,20 @@ def _bind_http_stub_mode_state(monkeypatch, request):
         return gate(*args, **kwargs)
 
     monkeypatch.setattr(module, "_http_mode_gate_error", gate_with_test_state)
+
+
+import urllib.error
+
+_ORIGINAL_HTTP_ERROR_DEL = getattr(urllib.error.HTTPError, "__del__", None)
+
+
+def _http_error_del_safe(self):
+    try:
+        self.close()
+    except Exception:
+        pass
+    if _ORIGINAL_HTTP_ERROR_DEL is not None:
+        _ORIGINAL_HTTP_ERROR_DEL(self)
+
+
+urllib.error.HTTPError.__del__ = _http_error_del_safe

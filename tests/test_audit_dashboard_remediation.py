@@ -42,7 +42,8 @@ def test_dashboard_boolean_settings_reject_non_booleans(dashboard_server, value)
         with urllib.request.urlopen(request, timeout=5) as response:
             status = response.status
     except urllib.error.HTTPError as exc:
-        status = exc.code
+        with exc:
+            status = exc.code
     except (OSError, __import__("http.client").client.HTTPException):
         status = 0
     assert status == 400

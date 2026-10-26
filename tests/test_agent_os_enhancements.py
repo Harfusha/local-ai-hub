@@ -234,7 +234,8 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             with urllib.request.urlopen(req) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise AssertionError(exc.read().decode("utf-8", errors="replace")) from exc
+            with exc:
+                raise AssertionError(exc.read().decode("utf-8", errors="replace")) from exc
 
     def post_json_status(endpoint: str, data: dict) -> tuple[int, dict]:
         data = {"root": str(tmp_path), **data}
@@ -251,7 +252,8 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             with urllib.request.urlopen(req) as resp:
                 return resp.status, json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read().decode("utf-8", errors="replace"))
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8", errors="replace"))
 
     try:
         # 1. Flat task_create
