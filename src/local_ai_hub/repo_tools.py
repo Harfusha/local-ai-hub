@@ -3389,3 +3389,125 @@ class RepositoryTools:
             ))
             search["results"] = results[:requested_top_k]
         return self._pack_ranked_context(search, query, max_tokens)
+
+    def apply_patch(
+        self,
+        root: str,
+        path: str,
+        old_code: str,
+        new_code: str,
+    ) -> dict[str, Any]:
+        """Apply a patch with CRLF/LF normalization and trailing-whitespace tolerance."""
+        if not isinstance(path, str) or not path.strip():
+            return {"success": False, "error": "path must be a non-empty string", "status_code": 400}
+        if not isinstance(old_code, str):
+            return {"success": False, "error": "old_code must be a string", "status_code": 400}
+        if not isinstance(new_code, str):
+            return {"success": False, "error": "new_code must be a string", "status_code": 400}
+
+        base = self._root(root)
+        resolved = self._resolve_under_base(base, path)
+        if resolved is None:
+            return {"success": False, "error": f"Path '{path}' escapes repository root", "status_code": 403}
+        target_path, relative_path = resolved
+        if not target_path.is_file():
+            return {"success": False, "error": f"File '{path}' does not exist", "status_code": 404}
+
+        try:
+            content_bytes = target_path.read_bytes()
+        except OSError as exc:
+            return {"success": False, "error": f"Failed to read '{path}': {exc}", "status_code": 500}
+
+        encoding = "utf-8"
+        try:
+            content = content_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            encoding = "latin-1"
+            content = content_bytes.decode(encoding)
+
+        has_crlf = "\r\n" in content
+        newline = "\r\n" if has_crlf else "\n"
+
+        matched_strategy = None
+        new_content = None
+
+        # Strategy 1: Exact match
+        count = content.count(old_code)
+        if count == 1:
+            new_content = content.replace(old_code, new_code, 1)
+            matched_strategy = "exact"
+        elif count > 1:
+            return {
+                "success": False,
+                "error": f"Target old_code found {count} times; provide more surrounding context",
+                "status_code": 400,
+            }
+
+        # Strategy 2: Line-ending normalized match (CRLF vs LF)
+        if matched_strategy is None:
+            norm_content = content.replace("\r\n", "\n")
+            norm_old = old_code.replace("\r\n", "\n")
+            norm_new = new_code.replace("\r\n", "\n")
+            norm_count = norm_content.count(norm_old)
+            if norm_count == 1:
+                replaced_norm = norm_content.replace(norm_old, norm_new, 1)
+                new_content = replaced_norm.replace("\n", "\r\n") if has_crlf else replaced_norm
+                matched_strategy = "normalized_line_endings"
+            elif norm_count > 1:
+                return {
+                    "success": False,
+                    "error": f"Target old_code found {norm_count} times; provide more surrounding context",
+                    "status_code": 400,
+                }
+
+        # Strategy 3: Whitespace-tolerant line window matching
+        if matched_strategy is None:
+            content_lines = content.splitlines(keepends=True)
+            old_lines = old_code.splitlines(keepends=False)
+            new_lines = new_code.splitlines(keepends=False)
+
+            if old_lines:
+                matches = []
+                window_size = len(old_lines)
+                for i in range(len(content_lines) - window_size + 1):
+                    window = [cl.rstrip("\r\n").rstrip() for cl in content_lines[i : i + window_size]]
+                    target_stripped = [ol.rstrip() for ol in old_lines]
+                    if window == target_stripped:
+                        matches.append(i)
+
+                if len(matches) == 1:
+                    match_idx = matches[0]
+                    formatted_new = [nl + newline for nl in new_lines]
+                    if not content_lines[match_idx + window_size - 1].endswith(("\n", "\r")):
+                        if formatted_new:
+                            formatted_new[-1] = formatted_new[-1].rstrip("\r\n")
+                    new_lines_slice = content_lines[:match_idx] + formatted_new + content_lines[match_idx + window_size:]
+                    new_content = "".join(new_lines_slice)
+                    matched_strategy = "whitespace_tolerant"
+                elif len(matches) > 1:
+                    return {
+                        "success": False,
+                        "error": f"Target old_code found {len(matches)} times with whitespace tolerance; provide more surrounding context",
+                        "status_code": 400,
+                    }
+
+        if matched_strategy is None:
+            return {
+                "success": False,
+                "error": "Target old_code was not found in the file (tried exact, line-ending normalized, and whitespace-tolerant)",
+                "status_code": 400,
+            }
+
+        try:
+            target_path.write_bytes(new_content.encode(encoding))
+            self.invalidate_snapshot(target_path)
+        except OSError as exc:
+            return {"success": False, "error": f"Failed to write '{path}': {exc}", "status_code": 500}
+
+        return {
+            "success": True,
+            "path": str(relative_path).replace("\\", "/"),
+            "matched_strategy": matched_strategy,
+            "old_bytes": len(content_bytes),
+            "new_bytes": len(new_content.encode(encoding)),
+        }

@@ -425,7 +425,18 @@ def _with_budget_meta(
     protected_keys: tuple[str, ...] = (),
     token_metadata: Mapping[str, Any] | None = None,
     evidence_store: Any = None,
+    profile: str = "compact",
 ) -> dict[str, Any]:
+    if profile == "dense":
+        value.pop("token_efficiency", None)
+        value.pop("path_hint_usage", None)
+        value["response_budget"] = {
+            "requested_tokens": requested,
+            "returned_tokens": 0,
+        }
+        _fit_to_tokens(value, requested, protected_keys=protected_keys)
+        value["response_budget"]["returned_tokens"] = json_tokens(value)
+        return value
     value["response_budget"] = {
         "requested_tokens": requested,
         "original_tokens": original,
@@ -996,6 +1007,7 @@ def budget_response(
             protected_keys=protected,
             token_metadata=token_metadata,
             evidence_store=evidence_store,
+            profile=profile,
         )
         return (
             result
@@ -1007,6 +1019,17 @@ def budget_response(
     if original <= requested:
         if not isinstance(value, dict):
             return value
+        if profile == "dense":
+            candidate = dict(reconciled or value)
+            return _with_budget_meta(
+                candidate,
+                requested=requested,
+                original=original,
+                protected_keys=protected,
+                token_metadata=token_metadata,
+                evidence_store=evidence_store,
+                profile=profile,
+            )
         if token_metadata is None:
             if reconciled is None:
                 return value
@@ -1024,6 +1047,7 @@ def budget_response(
             protected_keys=protected,
             token_metadata=token_metadata,
             evidence_store=evidence_store,
+            profile=profile,
         )
         return result if json_tokens(result) <= requested else _bounded_result(
             result, requested=requested, original=original, source=value, protected_keys=protected
@@ -1032,6 +1056,8 @@ def budget_response(
     profile_name = str(profile or "compact").strip().lower()
     if profile_name == "minimal":
         text_chars, evidence, items = 420, 2, 3
+    elif profile_name == "dense":
+        text_chars, evidence, items = 1200, 10, 20
     elif profile_name == "standard":
         text_chars, evidence, items = 1000, 6, 8
     elif profile_name == "debug":
@@ -1063,6 +1089,7 @@ def budget_response(
                     protected_keys=protected,
                     token_metadata=token_metadata,
                     evidence_store=evidence_store,
+                    profile=profile,
                 )
                 if json_tokens(result) <= requested:
                     if _is_meaningfully_empty_success(result, value):
@@ -1095,6 +1122,7 @@ def budget_response(
         protected_keys=protected,
         token_metadata=token_metadata,
         evidence_store=evidence_store,
+        profile=profile,
     )
     bounded = _bounded_result(
         result, requested=requested, original=original, source=value, protected_keys=protected

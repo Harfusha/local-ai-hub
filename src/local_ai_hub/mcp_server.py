@@ -865,7 +865,7 @@ def _explicit_budget_rejection(arguments: dict[str, Any]) -> dict[str, Any] | No
 def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str, str, bool]:
     requested_profile = str(options.get("response_profile") or "").strip().lower()
     profile = requested_profile or "compact"
-    if profile not in {"minimal", "compact", "standard", "debug", "delta"}:
+    if profile not in {"minimal", "compact", "standard", "debug", "delta", "dense"}:
         profile = "compact"
     if not requested_profile:
         profile = CONTEXT_LEDGER.adaptive_profile(profile)
@@ -1529,6 +1529,9 @@ def _compact(
                 }
             else:
                 compacted = fitted
+    if profile == "dense" and isinstance(compacted, dict) and compacted.get("success") is True:
+        for key in ("path_hint_usage", "token_efficiency", "workspace_cache", "engine", "scanned_files", "terms"):
+            compacted.pop(key, None)
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
 
@@ -3152,6 +3155,7 @@ def _local_ai_repo_impl(
     since: str | None = None,
     until: str | None = None,
     days: int | None = None,
+    depth: int = 1,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3778,6 +3782,21 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/code/declaration", {
             "root": root, "symbol": query, "path": path or None,
         }, timeout=_timeout("quick")), "architecture")
+    if action == "patch":
+        target_code = old_code or query or ""
+        replacement_code = new_code or task or ""
+        if not path or not target_code or not replacement_code:
+            return contract_error("patch requires path, old_code, and new_code")
+        return _compact(CLIENT.post("/api/repo/patch", {
+            "root": root, "path": path, "old_code": target_code, "new_code": replacement_code,
+        }, timeout=_timeout("quick")), "repository result")
+    if action == "call_graph":
+        target_sym = query or task or ""
+        if not target_sym:
+            return contract_error("call_graph requires query (symbol name)")
+        return _compact(CLIENT.post("/api/repo/call_graph", {
+            "root": root, "symbol": target_sym, "path": path, "depth": depth or 1, "limit": limit or 50,
+        }, timeout=_timeout("quick")), "architecture")
     if action == "dead_code":
         return _compact(CLIENT.post("/api/repo/dead_code", {
             "root": root, "limit": max_tokens or 50,
@@ -3979,8 +3998,13 @@ def local_ai_repo(
     since: str | None = None,
     until: str | None = None,
     days: int | None = None,
+    depth: int = 1,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    if action == "context" and not query and task:
+        query = task
+    elif action in {"solve", "delegate"} and not task and query:
+        task = query
     forward: dict[str, Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -4080,7 +4104,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, days=days, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, **forward,
     )
 
 
@@ -4309,6 +4333,8 @@ def local_ai_coord(
     filter: dict[str, Any] | None = None,
     filter_payload: dict[str, Any] | None = None,
     include: list[str] | None = None,
+    confidence: float | None = None,
+    allow_adopt: bool = False,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4725,6 +4751,12 @@ def local_ai_coord(
             task_kwargs["task"] = task
         if action == "task_create" and paths:
             task_kwargs["changed_paths"] = paths[:64]
+        if action == "task_complete" and allow_adopt:
+            task_kwargs["allow_adopt"] = True
+        if action in {"task_claim", "task_adopt"}:
+            return _compact(CLIENT.coord(
+                action="claim", task_id=task_id, owner=owner, root=root,
+            ), "task_memory")
         task_result = CLIENT.coord(
             **task_kwargs,
         )
@@ -4739,6 +4771,8 @@ def local_ai_coord(
         )
         if ttl_seconds is not None:
             memory_kwargs["ttl_seconds"] = ttl_seconds
+        if confidence is not None:
+            memory_kwargs["confidence"] = confidence
         return _compact(CLIENT.coord(**memory_kwargs), "task_memory")
     if action == "context_compile":
         return _context_pack_projection(CLIENT.post("/api/agent-state/context", {
@@ -4758,6 +4792,14 @@ def local_ai_coord(
             "focus": list(focus or []),
             "preload_profile": preload_profile,
         }, timeout=_timeout("context")))
+    if action == "record_native_receipt":
+        if not task_id or not criterion or not command:
+            return contract_error("record_native_receipt requires task_id, criterion, and command")
+        return _compact(CLIENT.post("/api/agent-state/verification", {
+            "action": "native_receipt", "root": root, "task_id": task_id,
+            "criterion": criterion, "command": command, "passed": True,
+            "output_summary": reason or "native test execution passed",
+        }, timeout=_timeout("quick")), "verify")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "receipt", "receipt": receipt, "root": root,

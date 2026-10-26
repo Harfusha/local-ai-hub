@@ -688,7 +688,7 @@ def test_runtime_validation_enforces_registered_schema_constraints():
     ) == "max_response_tokens must be >= 128 for action='list'"
     assert validate_operation_arguments(
         "local_ai_artifact", "list", {"response_profile": "unregistered"}
-    ) == "response_profile must be one of minimal, compact, standard, debug, delta for action='list'"
+    ) == "response_profile must be one of minimal, compact, standard, debug, delta, dense for action='list'"
     assert validate_operation_arguments(
         "local_ai_task", "reason", {"quality_pass": "true"}
     ) == "quality_pass must be boolean or null for action='reason'"

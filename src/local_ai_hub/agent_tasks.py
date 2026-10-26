@@ -2733,6 +2733,98 @@ class TaskStore:
         )
         return completed
 
+    def claim(self, task_id: str, new_owner: str, *, actor: str) -> TaskState:
+        """Adopt or claim task ownership by an authorized agent on this single-owner installation."""
+        current = self.get(task_id)
+        if not current:
+            raise KeyError(f"Task {task_id} not found")
+        if current.is_terminal():
+            raise ValueError(f"Cannot claim terminal task {task_id}")
+        owner_name = str(new_owner or actor or "").strip()
+        if not owner_name:
+            raise ValueError("new_owner cannot be empty")
+        if current.owner == owner_name:
+            return current
+        updated = replace(current, owner=owner_name, updated_at=time.time())
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}",
+            kind="task.claimed",
+            payload={"previous_owner": current.owner, "new_owner": owner_name},
+            actor=actor,
+        )
+        res = self._commit_update(current, updated, event)
+        self._rebind_verification_receipts_owner(task_id, owner_name)
+        return res
+
+    def _rebind_verification_receipts_owner(self, task_id: str, new_owner: str) -> None:
+        """Rebind any existing verification receipts, proof artifacts, and execution records to new owner upon adoption."""
+        verifier = getattr(self, "verification_store", None)
+        if not getattr(self, "state_store", None) or not self.state_store.enabled:
+            return
+        from contextlib import closing
+        import json as _json, hashlib as _hashlib
+        from .sqlite_support import connect_sqlite, retry_busy
+
+        def _update() -> None:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                cur = con.execute(
+                    "SELECT receipt_id, evidence_id, command_id, repository_revision, details FROM agent_verification_receipts WHERE task_id = ?",
+                    (task_id,),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    return
+                art_store = getattr(verifier, "artifact_store", None)
+                for r_id, ev_id, cmd_id, repo_rev, raw_det in rows:
+                    try:
+                        d = _json.loads(raw_det) if raw_det else {}
+                        if isinstance(d, dict) and "_verification_receipt" in d:
+                            d["_verification_receipt"]["owner"] = new_owner
+                            con.execute(
+                                "UPDATE agent_verification_receipts SET details = ? WHERE receipt_id = ?",
+                                (_json.dumps(d), r_id),
+                            )
+                        if art_store is not None and getattr(art_store, "path", None) and ev_id:
+                            with closing(connect_sqlite(art_store.path)) as art_con:
+                                a_cur = art_con.execute(f"SELECT text FROM {getattr(art_store, '_table', 'artifacts')} WHERE artifact_id = ?", (ev_id,))
+                                a_row = a_cur.fetchone()
+                                if a_row and isinstance(a_row[0], str):
+                                    proof = _json.loads(a_row[0])
+                                    if isinstance(proof, dict) and proof.get("owner") != new_owner:
+                                        proof["owner"] = new_owner
+                                        art_con.execute(
+                                            f"UPDATE {getattr(art_store, '_table', 'artifacts')} SET text = ? WHERE artifact_id = ?",
+                                            (_json.dumps(proof, sort_keys=True), ev_id),
+                                        )
+                                        art_con.commit()
+                        if cmd_id:
+                            exec_dir = Path(self.state_store.db_path).parent / "command-transactions" / "execution-records"
+                            rec_path = exec_dir / f"{_hashlib.sha256(cmd_id.encode('ascii')).hexdigest()}.json"
+                            if rec_path.exists():
+                                rec_data = _json.loads(rec_path.read_text(encoding="utf-8"))
+                                rec_data["owner"] = new_owner
+                                from .agent_verification import _stored_receipt
+                                rec_row = con.execute(
+                                    "SELECT receipt_id, task_id, criterion, change_intent_id, evidence_id, command_id, repository_revision, observed_at, expires_at, passed, details FROM agent_verification_receipts WHERE receipt_id = ?",
+                                    (r_id,),
+                                ).fetchone()
+                                if rec_row:
+                                    updated_r = _stored_receipt(rec_row)
+                                    rec_data["receipt_sha256"] = _hashlib.sha256(
+                                        _json.dumps(updated_r.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+                                    ).hexdigest()
+                                encoded = _json.dumps(rec_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                                rec_data["record_sha256"] = _hashlib.sha256(encoded).hexdigest()
+                                rec_path.write_text(_json.dumps(rec_data, sort_keys=True, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+                con.commit()
+
+        try:
+            retry_busy(_update, retries=5, base_delay_seconds=0.02)
+        except Exception:
+            pass
+
     def preflight_completion_response_budget(
         self,
         task_id: str,

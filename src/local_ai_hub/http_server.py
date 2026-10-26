@@ -1302,8 +1302,9 @@ _AGENT_TASK_ACTIONS = frozenset({
     "create", "list", "get", "transition", "complete", "fail",
     "checkpoint", "rollback", "resume", "heartbeat", "ask", "answer",
     "cleanup_worktree", "reap_expired", "curate_dataset", "budget_increase",
+    "claim", "adopt",
 })
-_AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export"})
+_AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export", "native_receipt"})
 _AGENT_BLACKBOARD_RETIRED_FIELDS = frozenset({"key", "value", "approver", "sections", "record"})
 
 
@@ -6275,6 +6276,14 @@ class Handler(BaseHTTPRequestHandler):
                         }); return
                     except (KeyError, ValueError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action in {"claim", "adopt"}:
+                    try:
+                        task_id = str(payload.get("task_id", "")).strip()
+                        new_owner = str(payload.get("owner") or actor or "").strip()
+                        task = APP.agent_tasks.claim(task_id, new_owner, actor=actor)
+                        self._send(200, {"success": True, "task": task.to_dict()}); return
+                    except (KeyError, ValueError) as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "complete":
                     try:
                         task_id = str(payload.get("task_id", ""))
@@ -6282,7 +6291,8 @@ class Handler(BaseHTTPRequestHandler):
                         if task_state is None:
                             raise KeyError(f"Task {task_id} not found")
                         task_owner = str(getattr(task_state, "owner", "") or "").strip()
-                        if not task_owner or str(actor or "").strip() != task_owner:
+                        allow_adopt = bool(payload.get("allow_adopt") or payload.get("adopt"))
+                        if not task_owner or (str(actor or "").strip() != task_owner and not allow_adopt):
                             self._send(403, {
                                 "success": False,
                                 "error": "task completion is restricted to its owner",
@@ -6290,6 +6300,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "terminal": True,
                                 "retryable": False,
                             }); return
+                        if allow_adopt and task_owner and str(actor or "").strip() != task_owner:
+                            task_state = APP.agent_tasks.claim(task_id, actor, actor=actor)
                         task_context = getattr(task_state, "context", None)
                         root = str(
                             payload.get("root")
@@ -7060,6 +7072,108 @@ class Handler(BaseHTTPRequestHandler):
                                 details=rcpt_data.get("details"),
                             )
                         saved = APP.agent_verification.record(rcpt)
+                        self._send(200, {"success": True, "receipt": saved.to_dict()}); return
+                    except Exception as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action == "native_receipt":
+                    try:
+                        task_id = str(payload.get("task_id", "")).strip()
+                        criterion = str(payload.get("criterion", "")).strip()
+                        command = str(payload.get("command", "")).strip()
+                        passed = bool(payload.get("passed", True))
+                        output_summary = str(payload.get("output_summary", "native test execution passed")).strip()
+                        root = str(payload.get("root", "")).strip()
+                        task_state = APP.agent_tasks.get(task_id)
+                        if task_state is None:
+                            raise KeyError(f"Task {task_id} not found")
+
+                        current_revision = ""
+                        target_root = root or getattr(getattr(task_state, "context", None), "repository_id", "")
+                        if target_root:
+                            current_revision, _ = _completion_revision_or_stop(
+                                target_root, getattr(APP, "repo_tools", None), getattr(APP, "repo_state", None)
+                            )
+                        if not current_revision:
+                            current_revision = getattr(getattr(task_state, "context", None), "repository_revision", "") or "HEAD"
+
+                        owner = task_state.owner or self._agent() or "agent"
+                        command_id = uuid.uuid4().hex
+                        from .agent_verification import criterion_evidence_type
+                        from .agent_tasks import _task_scope_root
+                        evidence_type = criterion_evidence_type(criterion)
+                        command_digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
+                        proof = {
+                            "passed": passed,
+                            "kind": "work_command_verification",
+                            "task_id": task_id,
+                            "owner": owner,
+                            "criterion": criterion,
+                            "command_id": command_id,
+                            "command_sha256": command_digest,
+                            "repository_revision": current_revision,
+                            "mutation_generation": getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0,
+                            "command": command,
+                            "command_classification": evidence_type,
+                            "output_summary": output_summary,
+                            "exit_code": 0 if passed else 1,
+                            "cached": False,
+                            "result": {"success": passed, "exit_code": 0 if passed else 1},
+                        }
+                        proof_text = json_dumps(proof)
+                        evidence_id = APP.artifacts.put(proof_text, kind="command_verification")
+
+                        rcpt = VerificationReceipt.create(
+                            task_id=task_id,
+                            criterion=criterion,
+                            passed=passed,
+                            command_id=command_id,
+                            evidence_id=evidence_id,
+                            evidence_type=evidence_type,
+                            repository_revision=current_revision,
+                            mutation_generation=getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0,
+                            owner=owner,
+                            details={"command": command, "native": True, "output_summary": output_summary},
+                        )
+                        saved = APP.agent_verification.record(rcpt)
+                        APP.agent_tasks.add_verification_receipt(task_id, criterion, saved.receipt_id)
+
+                        commands_broker = getattr(APP, "commands", None)
+                        if commands_broker is not None:
+                            try:
+                                trusted_root = _task_scope_root(task_state) or root or target_root
+                                canonical_root = str(Path(trusted_root).expanduser().resolve(strict=False)) if trusted_root else ""
+                                receipt_data = saved.to_dict()
+                                exec_record = {
+                                    "schema": "command_execution_record.v2",
+                                    "command_id": command_id,
+                                    "task_id": task_id,
+                                    "owner": owner,
+                                    "criterion": criterion,
+                                    "command_sha256": command_digest,
+                                    "evidence_type": evidence_type,
+                                    "repository_root": canonical_root,
+                                    "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest() if canonical_root else "",
+                                    "repository_revision": current_revision,
+                                    "mutation_generation": getattr(task_state.checkpoint, "mutation_generation", 0) if task_state.checkpoint else 0,
+                                    "evidence_id": str(evidence_id),
+                                    "receipt_sha256": hashlib.sha256(
+                                        json.dumps(receipt_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                                    ).hexdigest(),
+                                    "exit_code": 0 if passed else 1,
+                                    "cached": False,
+                                    "project_alias": "",
+                                    "project_config_digest": "",
+                                    "project_environment_sha256": "",
+                                    "configured_command_sha256": "",
+                                    "caller_arguments_sha256": "",
+                                    "project_execution_binding_sha256": "",
+                                    "created_at_unix": time.time(),
+                                }
+                                encoded = json.dumps(exec_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                                exec_record["record_sha256"] = hashlib.sha256(encoded).hexdigest()
+                                commands_broker._persist_command_execution_record(command_id, exec_record)
+                            except Exception:
+                                pass
                         self._send(200, {"success": True, "receipt": saved.to_dict()}); return
                     except Exception as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
@@ -8202,6 +8316,21 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_coord_worktree_prune_1' in post_route_ids:
                 self._send(200, APP.services.prune_worktrees(str(payload.get("root", ".")))); return
 
+            if 'post_repo_patch_1' in post_route_ids:
+                root = str(payload.get("root", "."))
+                path_val = str(payload.get("path", ""))
+                old_code = str(payload.get("old_code", ""))
+                new_code = str(payload.get("new_code", ""))
+                res = APP.repo_tools.apply_patch(root, path_val, old_code, new_code)
+                status = 200 if res.get("success") else res.get("status_code", 400)
+                self._send(status, res); return
+            if 'post_repo_call_graph_1' in post_route_ids:
+                root = str(payload.get("root", "."))
+                symbol = str(payload.get("symbol", "") or payload.get("query", ""))
+                path_val = payload.get("path")
+                depth = int(payload.get("depth", 1))
+                limit = int(payload.get("limit", 50))
+                self._send(200, APP.services.call_graph(root, symbol, path=path_val, depth=depth, limit=limit)); return
             if 'post_callers_1' in post_route_ids:
                 limit = payload.get("limit", 50); offset = payload.get("offset", 0)
                 bounds_error = pagination_bounds_error(limit, offset)

@@ -121,6 +121,7 @@ _REPO_ACTIONS = (
     "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel",
     "preprocess_unregister", "call_graph_diff",
     "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_project_impact",
+    "patch", "call_graph",
 )
 _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
@@ -143,6 +144,7 @@ _COORD_ACTIONS = (
     "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
     "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary",
     "milestone_create", "milestone_status", "session_briefing",
+    "task_claim", "record_native_receipt",
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list", "source")
@@ -155,7 +157,7 @@ _RESPONSE_BUDGET_PROPERTIES = {
     "max_response_tokens": {"type": ["integer", "null"], "minimum": 128, "default": None},
     "response_profile": {
         "type": "string",
-        "enum": ["minimal", "compact", "standard", "debug", "delta"],
+        "enum": ["minimal", "compact", "standard", "debug", "delta", "dense"],
         "default": "compact",
     },
     "reuse_key": {"type": "string", "default": ""},
@@ -211,7 +213,7 @@ def _tool_contract(
 
 _REPO_MUTATIONS = (
     "batch_replace", "preprocess", "preprocess_refresh", "preprocess_pause", "preprocess_resume",
-    "preprocess_cancel", "preprocess_unregister",
+    "preprocess_cancel", "preprocess_unregister", "patch",
 )
 _REPO_CONDITIONS = {
     "batch_replace": ("batch_replacement",),
@@ -258,15 +260,16 @@ _ACTION_SCOPED_FIELDS = {
         "is_worktree": frozenset({"preprocess"}),
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
-        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph"}),
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
         "old_symbol": frozenset({"ast_refactor"}),
         "new_symbol": frozenset({"ast_refactor"}),
-        "old_code": frozenset({"semantic_diff"}),
-        "new_code": frozenset({"semantic_diff"}),
+        "old_code": frozenset({"semantic_diff", "patch"}),
+        "new_code": frozenset({"semantic_diff", "patch"}),
+        "depth": frozenset({"call_graph"}),
         "rev1": frozenset({"git_diff"}),
         "rev2": frozenset({"git_diff"}),
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
@@ -303,6 +306,8 @@ _ACTION_SCOPED_FIELDS = {
         "delete_branch": frozenset({"worktree_release"}),
         "output_path": frozenset({"curate_dataset"}),
         "min_receipts": frozenset({"curate_dataset"}),
+        "output_summary": frozenset({"record_native_receipt"}),
+        "passed": frozenset({"record_native_receipt"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -318,6 +323,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_repo", "repo", "action", _REPO_ACTIONS, timeout="action-specific: search max 120s, other quick 180s, context 600s, model 1800s, long 2400s",
         projection="repository result", action_requirements=_REPO_CONDITIONS,
         required={
+            "patch": ("path", "old_code", "new_code"),
+            "call_graph": ("query",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
             "generate_types": ("path",),
@@ -342,6 +349,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "type_stubs": ("path",),
         },
         non_empty={
+            "patch": ("path", "old_code", "new_code"),
+            "call_graph": ("query",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
             "generate_types": ("path",),
@@ -379,6 +388,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "generate_types": ("root", "path"),
             "complexity": ("root", "path", "max_tokens", "include_tests"),
             "declaration": ("root", "query", "path"),
+            "patch": ("root", "path", "old_code", "new_code"),
+            "call_graph": ("root", "query", "path", "limit", "depth"),
             "ast_refactor": ("root", "path", "old_symbol", "new_symbol", "staged"),
             "context": ("root", "query", "workspace", "mode", "max_tokens", "token_budget", "task_id", "session_id", "phase", "focus", "preload_profile", "repository_revision", "changed_paths", "base", "staged", "guarded", "since_hash", "approval", "override_reason", "clone_id", "worktree_id", "branch", "repository_id", "include_diagnostics", "path_hints", "directory_hints", "exclude_paths", "force_include_paths"),
             "solve": ("root", "task", "workspace", "mode", "max_tokens", "base", "staged"),
@@ -444,6 +455,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "include_code": {"type": "boolean", "default": False},
             "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 24},
             "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},
+            "depth": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1},
             "offset": {"type": "integer", "minimum": 0, "maximum": MAX_PAGE_WINDOW - 1, "default": 0},
             "include_diagnostics": {"type": "boolean", "default": False},
             **{name: {"type": "string", "default": ""} for name in (
@@ -674,6 +686,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_create": ("root", "name", "target_date", "description"),
             "milestone_status": ("root", "name"),
             "session_briefing": ("root", "session_id", "include"),
+            "task_claim": ("root", "task_id", "owner"),
+            "record_native_receipt": ("root", "task_id", "criterion", "command", "passed", "output_summary", "reason"),
         },
         required={
             "ask": ("root", "session_id"),
@@ -706,6 +720,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "board_item_delete": ("item_id",),
             "milestone_create": ("name",),
             "milestone_status": ("name",),
+            "task_claim": ("task_id",),
+            "record_native_receipt": ("task_id", "criterion", "command"),
         },
         non_empty={
             "ask": ("root", "session_id"),
@@ -734,6 +750,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "board_item_delete": ("item_id",),
             "milestone_create": ("name",),
             "milestone_status": ("name",),
+            "task_claim": ("task_id",),
+            "record_native_receipt": ("task_id", "criterion", "command"),
         },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "task_get", "task_list", "memory_get", "memory_find",
@@ -753,6 +771,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "name", "item_id", "title", "priority", "assignee", "milestone", "linked_task_id",
                 "target_date", "description", "purpose", "owner",
             )},
+            "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "default": None},
+            "output_summary": {"type": "string", "default": ""},
+            "allow_adopt": {"type": "boolean", "default": False},
+            "passed": {"type": "boolean", "default": True},
             "format": {"type": ["string", "null"], "default": None},
             "budget": {"type": "object", "additionalProperties": False, "minProperties": 1,
                        "properties": {"max_tokens": {"type": "integer", "minimum": 0},

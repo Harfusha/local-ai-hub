@@ -142,6 +142,8 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_coord_worktree_prune_1', frozenset(('/api/coord/worktree_prune',))),
     RouteRule('post_callers_1', frozenset(('/api/repo/callers',))),
     RouteRule('post_callees_1', frozenset(('/api/code/callees',))),
+    RouteRule('post_repo_patch_1', frozenset(('/api/repo/patch',))),
+    RouteRule('post_repo_call_graph_1', frozenset(('/api/repo/call_graph',))),
     RouteRule('post_implementations_1', frozenset(('/api/code/implementations',))),
     RouteRule('post_declaration_1', frozenset(('/api/code/declaration',))),
     RouteRule('post_repo_secret_scan_1', frozenset(('/api/repo/secret_scan',))),

@@ -4249,6 +4249,68 @@ class LocalAIServices:
             lambda: self.deterministic.find_callees(root, symbol, limit, offset),
         )
 
+    def call_graph(
+        self,
+        root: str,
+        symbol: str,
+        path: str | None = None,
+        depth: int = 1,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Aggregate caller and callee hierarchy for a symbol in a single structured response."""
+        if not isinstance(symbol, str) or not symbol.strip():
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": "symbol must be a non-empty string"}
+
+        decl_res = self.code_find_declaration(root, symbol, path=path)
+        found_in = None
+        if isinstance(decl_res, dict) and decl_res.get("success"):
+            found_in = {
+                "path": decl_res.get("path"),
+                "line": decl_res.get("line"),
+                "kind": decl_res.get("kind"),
+            }
+
+        callers_res = self.callers(root, symbol, limit=limit)
+        caller_items = callers_res.get("callers", []) if isinstance(callers_res, dict) and callers_res.get("success") else []
+
+        callees_res = self.callees(root, symbol, limit=limit)
+        callee_items = callees_res.get("callees", []) if isinstance(callees_res, dict) and callees_res.get("success") else []
+
+        expanded_callers = []
+        if depth > 1 and caller_items:
+            for item in caller_items[:3]:
+                caller_sym = item.get("symbol") if isinstance(item, dict) else str(item)
+                if caller_sym and caller_sym != symbol:
+                    sub = self.callers(root, caller_sym, limit=5)
+                    sub_callers = sub.get("callers", []) if isinstance(sub, dict) and sub.get("success") else []
+                    expanded_callers.append({"symbol": caller_sym, "called_by": sub_callers})
+
+        expanded_callees = []
+        if depth > 1 and callee_items:
+            for item in callee_items[:3]:
+                callee_sym = item.get("symbol") if isinstance(item, dict) else str(item)
+                if callee_sym and callee_sym != symbol:
+                    sub = self.callees(root, callee_sym, limit=5)
+                    sub_callees = sub.get("callees", []) if isinstance(sub, dict) and sub.get("success") else []
+                    expanded_callees.append({"symbol": callee_sym, "calls": sub_callees})
+
+        result = {
+            "success": True,
+            "symbol": symbol,
+            "found_in": found_in,
+            "callers": caller_items,
+            "caller_count": len(caller_items),
+            "callees": callee_items,
+            "callee_count": len(callee_items),
+            "depth": depth,
+        }
+        if depth > 1:
+            result["hierarchy"] = {
+                "expanded_callers": expanded_callers,
+                "expanded_callees": expanded_callees,
+            }
+        return result
+
     def dead_code(self, root: str, limit: int = 200) -> dict[str, Any]:
         return self.deterministic_operation("dead-code", root, {"limit": int(limit)}, lambda: getattr(self.deterministic, "find_dead_code", getattr(self.deterministic, "detect_dead_code", None))(root, int(limit)))
 
