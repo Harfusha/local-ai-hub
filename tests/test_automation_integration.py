@@ -100,7 +100,7 @@ def test_actual_http_task_root_binding_and_session_lifecycle(tmp_path):
     state = tmp_path / "state"
     root = tmp_path / "repo"
     root.mkdir()
-    config.write_text(f'[server]\nstate_dir="{state.as_posix()}"\n[security]\napi_token="automation-test-token"\nallowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n', encoding="utf-8")
+    config.write_text(f'[server]\nstate_dir="{state.as_posix()}"\n[security]\napi_token="automation-test-token"\nallowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n[code_intelligence]\nenabled=false\n', encoding="utf-8")
     app = LocalAIApp(str(config))
     calls = []
     class Backend:

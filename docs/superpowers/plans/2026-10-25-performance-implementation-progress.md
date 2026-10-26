@@ -335,22 +335,40 @@ deployment, model quality, full suite or all-24 completion from this block.
 ative = ["Cython>=3,<4"] in pyproject.toml and updated docs/INSTALLATION.md and docs/TESTING.md.
   - Updated src/local_ai_hub/rag.py to seamlessly delegate _simhash(text) to 
 ative_kernels.simhash_text(text) when native acceleration is available and enabled, with 100% bitwise parity and transparent reference Python fallback.
-  - Added test suite 	ests/test_native_kernels.py (7 tests, exit 0).
+  - Added test suite tests/test_native_kernels.py (7 tests, exit 0).
 - **Linux Command Process Cleanup Fix:**
   - Resolved the pre-existing Ubuntu 3.14 failure in src/local_ai_hub/commands.py: _cleanup_owned_tree() now verifies process group vacancy on POSIX via os.killpg(process.pid, 0) before confirming termination, eliminating false cleanup_unconfirmed: True reports on clean command exit.
-  - Added regression test 	ests/test_posix_command_cleanup_probe.py (2 tests, exit 0).
+  - Added regression test tests/test_posix_command_cleanup_probe.py (2 tests, exit 0).
 - **T0 Native Candidate Benchmark & 1,000-Pair Tail Gate:**
-  - Implemented 	ools/benchmark_native_candidates.py supporting CLI flags (--case, --repetitions, --root, --state-dir, --output, --allow-inference), strictly validating external state directory confinement, recording paired observations, and distinguishing diagnostic cohorts (< 1,000) from tail statistical acceptance (>= 1,000 independent pairs) emitting perf_candidate.v1.
-  - Added contract tests in 	ests/test_native_candidate_benchmark_contract.py (7 tests, exit 0).
+  - Implemented tools/benchmark_native_candidates.py supporting CLI flags (--case, --repetitions, --root, --state-dir, --output, --allow-inference), strictly validating external state directory confinement, recording paired observations, and distinguishing diagnostic cohorts (< 1,000) from tail statistical acceptance (>= 1,000 independent pairs) emitting perf_candidate.v1.
+  - Added contract tests in tests/test_native_candidate_benchmark_contract.py (7 tests, exit 0).
 - **T0c Quality Corpus:**
-  - Generated authentic 117-query bilingual relevance quality evaluation corpus in 	ests/fixtures/relevance_quality_corpus.json across all 8 required categories (exact symbol, substring, Czech problem, English problem, cross-file relation, negative no-match, scope confinement, minimal budget).
-  - Added automated verification test in 	ests/test_relevance_quality_corpus.py (5 tests, exit 0).
+  - Generated authentic 117-query bilingual relevance quality evaluation corpus in tests/fixtures/relevance_quality_corpus.json across all 8 required categories (exact symbol, substring, Czech problem, English problem, cross-file relation, negative no-match, scope confinement, minimal budget).
+  - Added automated verification test in tests/test_relevance_quality_corpus.py (5 tests, exit 0).
 - **Profiling Evidence pro F17, F18, F19, F22:**
-  - Built and executed 	ools/profile_evidence_collector.py measuring real timings:
+  - Built and executed tools/profile_evidence_collector.py measuring real timings:
     - F17 (AST cold indexing): 2.89 MB in 565 ms; 69.5% native CPython st.parse, symbol walk ~160 ms. Confirmed do_not_rewrite.
     - F18 (Telemetry SQL): 100,000 events; 10k window query takes 0.54 ms via idx_telemetry_act_time; warm in-memory cache hit takes 0.005 ms. Confirmed do_not_rewrite.
     - F19 (Subprocess streaming): OS process spawn takes ~19.8 ms on Windows, while pipe streaming throughput exceeds 205 MB/s. Confirmed do_not_rewrite.
     - F22 (MCP residency): Standalone MCP server initialization consumes 45.4 MB peak RAM with 0.0% idle CPU. Confirmed do_not_rewrite.
-  - Persisted authentic evidence to docs/evidence/performance_profile_evidence_f17_f18_f19_f22.json and added regression test 	ests/test_profile_evidence_collector.py.
+  - Persisted authentic evidence to docs/evidence/performance_profile_evidence_f17_f18_f19_f22.json and added regression test tests/test_profile_evidence_collector.py.
 - **Release Documentation:**
   - Prepared truthful 5.1.0 release notes in docs/release/5.1.0-release-notes.md mapping all 8 Unreleased items.
+
+
+## CI Platform Hardening & Multi-Layer Cache Invalidation (2026-10-26T01:25:00Z)
+
+- **Linked Worktree Context Cache Invalidation:**
+  - Resolved cache invalidation defect where `resolve_project_context` in `src/local_ai_hub/project_config.py` did not include `primary_config` or `machine_config` in its `config_sig`.
+  - Updated `resolve_project_context` to compute `common_dir` and `primary_root` before computing `config_sig`, adding `_file_sig(primary_config)` and `_file_sig(machine_config)`.
+  - Verified with `tests/test_project_command_broker.py` (16 passed in 2.84s).
+- **macOS Selftest Startup Deadline Alignment:**
+  - Realigned the hard-coded 12.0s deadline in `tools/selftest.py` to `max(12.0, float(os.environ.get("LOCAL_AI_SELFTEST_STARTUP_TIMEOUT", 30.0)))`, matching `HubClient.startup_wait_seconds = 30.0`. Eliminates cold-start timeouts on constrained macOS arm64 CI runners while preserving fast exit on early health.
+  - Verified with `python tools/selftest.py` (success: true).
+- **Python 3.14 ResourceWarning Elimination:**
+  - In `src/local_ai_hub/client.py`, added `finally: try: exc.close() except Exception: pass` to `_error_response` to close unread/read `urllib.error.HTTPError` handles immediately upon transport error normalization.
+  - In `src/local_ai_hub/process_utils.py`, updated `_terminate_tree_unlocked` on POSIX to probe group vacancy via `os.killpg(group_id, 0)` during and immediately after the grace period, correctly confirming SIGTERM termination (`return True`) before escalating to SIGKILL. Resolves `tests/test_audit_async_finalization_contract.py` on Linux/macOS.
+  - In `src/local_ai_hub/external_tools.py`, added background preflight thread joining on `close()`, added `__del__` finalizers to `MCPStdioClient` and `ExternalCodeIntelligence`, and explicitly disabled `code_intelligence` in `tests/test_automation_integration.py` to prevent background preflight threads during automation tests.
+- **Verification:**
+  - Fixed critical regression cohort (42 test suites, 644 tests): 644 passed.
+  - `pyflakes src tools`: 0 errors.

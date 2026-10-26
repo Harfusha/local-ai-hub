@@ -997,10 +997,23 @@ def _terminate_tree_unlocked(
 
     deadline = time.monotonic() + max(0.5, min(grace_seconds, 5.0))
     while True:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         time.sleep(min(0.05, remaining))
+
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
 
     # Presence alone does not prove this is still the original group: a PGID
     # can be reused while waiting. Escalate only while its original leader

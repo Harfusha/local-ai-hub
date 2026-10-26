@@ -426,6 +426,11 @@ class HubClient:
                 exc.code,
                 {"error": f"HTTP {exc.code}: {exc.reason}", "request_id": request_id},
             )
+        finally:
+            try:
+                exc.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _invalid_json_response(request_id: str, *, outcome_unknown: bool = False) -> dict[str, Any]:

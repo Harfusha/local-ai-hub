@@ -401,6 +401,12 @@ class MCPStdioClient:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
 
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 class ExternalCodeIntelligence:
     """Manage Serena integration for preprocessing and local agents."""
@@ -462,8 +468,10 @@ class ExternalCodeIntelligence:
         self.index_failures = 0
         self.queries = 0
         self.query_failures = 0
+        self._preflight_thread: threading.Thread | None = None
         if self.enabled and self.serena_enabled:
-            threading.Thread(target=self._startup_preflight, name="local-ai-code-intelligence-preflight", daemon=True).start()
+            self._preflight_thread = threading.Thread(target=self._startup_preflight, name="local-ai-code-intelligence-preflight", daemon=True)
+            self._preflight_thread.start()
 
     def _resolve_command(self, backend: str) -> str | None:
         if backend != "serena":
@@ -1295,3 +1303,12 @@ class ExternalCodeIntelligence:
             self._serena_sessions.clear()
             self._session_access["serena"].clear()
         self._close_clients(sessions)
+        preflight = getattr(self, "_preflight_thread", None)
+        if preflight and preflight is not threading.current_thread():
+            preflight.join(timeout=1.0)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

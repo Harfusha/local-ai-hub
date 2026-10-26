@@ -910,9 +910,19 @@ def resolve_project_context(
         except (OSError, RuntimeError):
             return None
 
+    common_dir = _git_common_dir(project_root)
+    primary_root = _git_primary_worktree_root(project_root, common_dir)
+    primary_config = (
+        primary_root / _PROJECT_CONFIG
+        if primary_root is not None and primary_root != project_root
+        else None
+    )
+    machine_config = common_dir / "info" / "local-ai.toml" if common_dir else None
     git_marker = project_root / ".git"
     config_sig = (
+        _file_sig(primary_config),
         _file_sig(project_root / _PROJECT_CONFIG),
+        _file_sig(machine_config),
         _file_sig(project_root / ".local-ai.worktree.toml"),
         _file_sig(git_marker),
     )
@@ -922,7 +932,6 @@ def resolve_project_context(
         if cached is not None and cached[0] == config_sig:
             return cached[1]
 
-    common_dir = _git_common_dir(project_root)
     resolution = _resolve_project_config(project_root, common_dir)
     hint_store = ProjectPathHintStore(
         state_dir,
