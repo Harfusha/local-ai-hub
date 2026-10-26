@@ -278,21 +278,20 @@ Verify `hubctl.py service-status` and exactly one platform user-service entry: W
 
 ---
 
-### PHASE 4: INJECT INSTRUCTIONS INTO CURRENT REPOSITORY
+### PHASE 4: CONFIGURE GLOBAL AGENT INSTRUCTIONS (GLOBAL ONLY — NEVER IN REPOSITORY)
 
-Inspect current repository root for existing agent instruction files:
-- Universal: `AGENTS.md`
-- Claude Code: `CLAUDE.md`
-- Cursor: `.cursorrules` or `.cursor/rules/local-ai.mdc`
-- Windsurf: `.windsurfrules`
-- Gemini: `GEMINI.md`
-- Copilot: `.github/copilot-instructions.md`
+> [!IMPORTANT]
+> **GLOBAL CONFIGURATION ONLY — NEVER INJECT INTO PROJECT REPOSITORIES**
+> Local AI Hub is a machine-wide service. Its MCP servers and tool policies are configured GLOBALLY in user agent profiles, NEVER injected into individual project repositories:
+> - **Codex**: ~/.codex/config.toml (MCP) and ~/.codex/AGENTS.md (policy)
+> - **Claude Code**: ~/.claude.json (MCP) and ~/.claude/CLAUDE.md (policy)
+> - **Gemini / Antigravity**: ~/.gemini/antigravity/ (global rules and MCP config)
+> 
+> **DO NOT** inject Local AI Hub tool policies or MCP configurations into individual project repositories (AGENTS.md, CLAUDE.md, README.md, etc.). Individual project repositories must remain clean of machine-local tooling instructions. Host agents automatically apply global rules across all workspaces.
 
-**Action**:
-1. If no instruction file exists, create `AGENTS.md` at repository root.
-2. In `AGENTS.md` (and any other active instruction files detected above), ensure the following two exact policy blocks are present. If older versions exist, update them between the markers; otherwise append them:
+Reference global policy blocks deployed by 	ools/setup.py into global agent files:
 
-```markdown
+`markdown
 <!-- BEGIN LOCAL AI HUB TOOL POLICY -->
 > [!IMPORTANT]
 > ## AUTOMATIC LOCAL AI HUB PRIORITIZATION IN ANTIGRAVITY

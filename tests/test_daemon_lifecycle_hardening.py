@@ -142,12 +142,18 @@ def test_recovery_accepts_exited_leader_only_when_group_is_verified_alive(
     monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
     monkeypatch.setattr(commands_module, "_process_leader_exited", lambda _pid: True, raising=False)
     monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True, raising=False)
+    monkeypatch.setattr(commands_module, "_daemon_process_group_owned", lambda _pgid, _token: True, raising=False)
 
-    broker._load_daemon_registry()
+    try:
+        broker._load_daemon_registry()
 
-    recovered = broker._daemons["dmn_" + "a" * 32]
-    assert recovered["process_group_id"] == 4321
-    assert recovered["process"].poll() is None
+        recovered = broker._daemons["dmn_" + "a" * 32]
+        assert recovered["process_group_id"] == 4321
+        assert recovered["process"].poll() is None
+    finally:
+        for info in broker._daemons.values():
+            broker._close_daemon_log(info)
+            broker._release_daemon_slot(info)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows named Job Object recovery")
@@ -2033,7 +2039,7 @@ def test_restart_recovers_and_stops_owned_group_after_leader_exits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(CommandBroker, "_watch_daemon_exit", lambda *_args: None)
-    first = _broker(tmp_path)
+    first = _broker(tmp_path, allow_mutating=True)
     child_pid_file = tmp_path / "daemon-child.pid"
     parent_code = (
         "import pathlib, subprocess, sys; "
@@ -2058,7 +2064,7 @@ def test_restart_recovers_and_stops_owned_group_after_leader_exits(
         first._daemons[daemon["daemon_id"]]["process"].wait(timeout=5)
         assert commands_module.process_identity(daemon["pid"]) is None
 
-        recovered = _broker(tmp_path)
+        recovered = _broker(tmp_path, allow_mutating=True)
         status = recovered.daemon_status(daemon["daemon_id"])
         assert status["success"] is True
         assert status["running"] is True
@@ -2077,7 +2083,7 @@ def test_restart_recovers_and_stops_owned_group_after_leader_exits(
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group lifecycle")
 def test_posix_daemon_stop_preserves_process_group_lifecycle(tmp_path: Path) -> None:
-    broker = _broker(tmp_path)
+    broker = _broker(tmp_path, allow_mutating=True)
     child_pid_file = tmp_path / "posix-daemon-child.pid"
     parent_code = (
         "import pathlib, subprocess, sys, time; "

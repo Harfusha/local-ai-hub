@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 
 def test_denied_scheduler_keeps_user_logon_startup(tmp_path, monkeypatch):
@@ -31,6 +34,7 @@ def test_denied_scheduler_keeps_user_logon_startup(tmp_path, monkeypatch):
     registry.DeleteValue.assert_called_once()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows service launcher only")
 def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location('test_hub_service_wmi', Path(__file__).parents[1] / 'tools' / 'service.py')
     service = importlib.util.module_from_spec(spec)
@@ -70,6 +74,7 @@ def test_native_start_does_not_spawn_duplicate_after_scheduler_race(monkeypatch)
     spawn.assert_not_called()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows service launcher only")
 def test_all_supervisor_pids_does_not_match_its_own_powershell_query(monkeypatch):
     module = importlib.util.spec_from_file_location(
         "test_hub_service_process_query", Path(__file__).parents[1] / "tools" / "service.py"

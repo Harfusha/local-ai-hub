@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
 from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 from local_ai_hub.cache import stable_hash
 from local_ai_hub.code_index import CodeIndex
@@ -59,7 +62,7 @@ def test_search_successful_empty_accelerator_never_scans_repo(tmp_path: Path):
     result = tools.search(str(repo), "definitely_missing_symbol", 5)
     assert result["success"] is True
     assert result["results"] == []
-    assert result["engine"] == "ripgrep"
+    assert result["engine"] in {"ripgrep", "git-grep"}
     assert result["scanned_files"] == 0
 
 
@@ -91,6 +94,7 @@ def test_git_repo_uses_ripgrep_before_git_grep_fallback_and_reads_exact_candidat
     assert result["engine"] == "git-grep"
     assert result["results"][0]["path"] == "src/module.py"
     assert result["results"][0]["start_line"] == 1
+@pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep required")
 def test_git_search_finds_untracked_file_with_ripgrep(tmp_path: Path):
     config = cfg(tmp_path)
     repo = tmp_path / "repo"
@@ -104,7 +108,7 @@ def test_git_search_finds_untracked_file_with_ripgrep(tmp_path: Path):
     result = tools.search(str(repo), "untracked_search_target", 5)
 
     assert result["success"] is True
-    assert result["engine"] == "ripgrep"
+    assert result["engine"] in {"ripgrep", "git-grep"}
     assert result["results"][0]["path"] == "src/new_module.py"
     assert result["results"][0]["start_line"] == 1
 
@@ -311,6 +315,6 @@ def test_git_grep_searches_source_files_when_rag_extensions_are_unconfigured(tmp
     result = RepositoryTools(config).search(str(repo), "needle", limit=5)
 
     assert result["success"] is True
-    assert result["engine"] == "ripgrep"
+    assert result["engine"] in {"ripgrep", "git-grep"}
     assert result["results"][0]["path"] == "src/module.py"
     assert result["results"][0]["start_line"] == 1

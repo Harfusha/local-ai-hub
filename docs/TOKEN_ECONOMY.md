@@ -46,7 +46,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
    - Installs companion skills: `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`.
-   - Injects the `LOCAL AI HUB TOOL POLICY` and `TOKEN ECONOMY POLICY` into `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`.
+   - Injects the `LOCAL AI HUB TOOL POLICY` and `TOKEN ECONOMY POLICY` into global agent configuration files (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`).
 7. **Starts Local AI Hub Daemon** & executes self-testing diagnostics.
 
 ---

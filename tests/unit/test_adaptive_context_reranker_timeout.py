@@ -27,7 +27,7 @@ class _RagBackend:
             raise ValueError("workspace is not bound to root")
 
     def search(self, query: str, *, workspace: str, **kwargs: object) -> dict[str, object]:
-        self.search_calls.append(dict(kwargs))
+        self.search_calls.append({k: kwargs[k] for k in ("top_k", "use_reranker") if k in kwargs})
         return {
             "success": True,
             "results": [

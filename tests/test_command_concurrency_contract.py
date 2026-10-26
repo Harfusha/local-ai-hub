@@ -832,7 +832,7 @@ def test_preflight_does_not_write_bytecode_and_reports_syntax_errors(tmp_path) -
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group cleanup contract")
 def test_finished_leader_does_not_leave_descendant_holding_command_pipes(tmp_path) -> None:
-    broker = _broker(tmp_path)
+    broker = _broker(tmp_path, allow_mutating=True)
     script_path = tmp_path / "spawn_pipe_holder.py"
     script_path.write_text(
         "import subprocess, sys\n"
@@ -868,7 +868,7 @@ def test_finished_leader_does_not_leave_descendant_holding_command_pipes(tmp_pat
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group cleanup contract")
 def test_finished_leader_kills_descendant_that_closed_command_pipes(tmp_path) -> None:
-    broker = _broker(tmp_path)
+    broker = _broker(tmp_path, allow_mutating=True)
     script_path = tmp_path / "spawn_detached_pipe_child.py"
     script_path.write_text(
         "import subprocess, sys\n"
@@ -1946,6 +1946,7 @@ def test_recovered_daemon_requests_leaderless_group_cleanup_without_claiming_suc
     digest = "a" * 64
     terminated: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True)
     monkeypatch.setattr(
         commands_module,
         "_daemon_process_group_owned",
@@ -1997,6 +1998,7 @@ def test_recovered_daemon_rejects_leaderless_group_without_ownership_proof(monke
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
     terminated: list[int] = []
     monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True)
     monkeypatch.setattr(
         commands_module, "_daemon_process_group_owned", lambda *_args: False
     )
@@ -2052,6 +2054,7 @@ def test_daemon_restart_requires_proof_for_leaderless_group(
         encoding="utf-8",
     )
     monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: bool(group_verified))
     monkeypatch.setattr(
         commands_module,
         "_daemon_process_group_owned",
@@ -2143,6 +2146,7 @@ def test_daemon_registry_persists_verified_leaderless_process_group(tmp_path, mo
             return 0
 
     monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True)
     monkeypatch.setattr(
         commands_module,
         "_daemon_process_group_owned",

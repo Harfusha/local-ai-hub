@@ -122,7 +122,7 @@ def test_token_economy_policy_generation():
     assert "ast-grep" in policy
     install_prompt = (Path(__file__).resolve().parents[1] / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
     update_prompt = (Path(__file__).resolve().parents[1] / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
-    agents_file = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+    agents_file = (Path(__file__).resolve().parents[1] / "generated" / "token-economy-policy.md").read_text(encoding="utf-8")
     assert all(trigger in instructions for instructions in (install_prompt, update_prompt, agents_file))
 
 
@@ -134,7 +134,7 @@ def test_response_budget_and_fallback_contracts_match_all_agent_instructions():
         TOKEN_ECONOMIZER_SKILL_MD,
         (root / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
         (root / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
-        (root / "AGENTS.md").read_text(encoding="utf-8"),
+        (root / "generated" / "agent-policy.md").read_text(encoding="utf-8"),
         (root / "skills" / "tool-orchestration" / "SKILL.md").read_text(encoding="utf-8"),
     )
     budget_contract = (

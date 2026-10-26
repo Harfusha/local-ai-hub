@@ -198,7 +198,7 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
         assert phrase in policy
 
 
-@pytest.mark.parametrize("relative_path", ["AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md"])
+@pytest.mark.parametrize("relative_path", ["docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md"])
 def test_instruction_policy_blocks_match_generated_policy_sources(relative_path: str) -> None:
     text = (ROOT / relative_path).read_text(encoding="utf-8")
     expected_agent = setup.generate_global_policy({})

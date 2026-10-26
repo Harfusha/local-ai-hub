@@ -266,16 +266,25 @@ Verify `hubctl.py service-status` and exactly one platform user-service entry: W
 
 ---
 
-### PHASE 4: REFRESH INSTRUCTIONS IN CURRENT REPOSITORY
+### PHASE 4: REFRESH GLOBAL AGENT INSTRUCTIONS (GLOBAL ONLY — NEVER IN REPOSITORY)
 
-Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, etc.):
-- Replace or sync the Local AI Hub tool policy block with the latest policy from `~/.local-ai-hub/generated/agent-policy.md`.
-- Replace or sync the token economy policy block with the latest policy from `~/.local-ai-hub/generated/token-economy-policy.md`.
-- If no instruction file exists, ensure `AGENTS.md` is created with both policy blocks.
+> [!IMPORTANT]
+> **GLOBAL CONFIGURATION ONLY — NEVER INJECT INTO PROJECT REPOSITORIES**
+> Local AI Hub is a machine-wide service. Its MCP servers and tool policies are configured GLOBALLY in user agent profiles, NEVER injected into individual project repositories:
+> - **Codex**: `~/.codex/config.toml` (MCP) and `~/.codex/AGENTS.md` (policy)
+> - **Claude Code**: `~/.claude.json` (MCP) and `~/.claude/CLAUDE.md` (policy)
+> - **Gemini / Antigravity**: `~/.gemini/antigravity/` (global rules and MCP config)
+> 
+> **DO NOT** inject or sync Local AI Hub tool policies into individual project repositories (`AGENTS.md`, `CLAUDE.md`, `README.md`, etc.). Individual project repositories must remain clean of machine-local tooling instructions.
+
+Verify that the latest policy from `~/.local-ai-hub/generated/agent-policy.md` and `~/.local-ai-hub/generated/token-economy-policy.md` is updated in the GLOBAL agent configurations:
+- `~/.codex/AGENTS.md`
+- `~/.claude/CLAUDE.md`
+- `~/.gemini/GEMINI.md`
 - Verify the default setup deploys the `token-economizer` skill and registers the token-tool CLI directory on the user's persistent PATH. Keep the generated policy trigger that requires agents to load this skill before every repository task.
 - Ensure the refreshed policy retains this trigger verbatim:
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
-- Keep the `TOKEN ECONOMY POLICY` block identical in `AGENTS.md` and both canonical prompts; use only tooling and setup commands that the installed skill and repository actually provide.
+- Keep the `TOKEN ECONOMY POLICY` block identical across canonical prompts and global agent configurations; use only tooling and setup commands that the installed skill and repository actually provide.
 - Use `local_ai_rag` for semantic retrieval only after deterministic and indexed repository evidence is insufficient.
 - For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. Success also returns `diagram_indexed` and the resolved image path.
 - Contract notes: `local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, or `traces`; `traces` accepts bounded `min_duration_ms` and `trace_action` filters. Action selectors accept canonical names only; aliases reject. `local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; run no more than four steps in parallel. Repository pipelines serialize preprocessing mutation actions with other mutating steps. `local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined. `local_ai_artifact(action="slice", slices=[{"offset": 10, "max_chars": 40}, ...])` fetches up to 16 ordered text ranges in one `/api/artifact/get` call; offsets are zero-based, and combined requested characters stay within `compact_max_text_chars`. Multi-slice mode excludes sections, binary artifacts, and evidence IDs. `local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1, `limit` from 1 through 1000, and optional `after_ts`; `limit` is also used by `task_sync`. `local_ai_coord` bounds `max_tokens` to 0 through 100000.

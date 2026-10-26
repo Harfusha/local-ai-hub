@@ -698,7 +698,7 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol():
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     policy = setup.GLOBAL_POLICY
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    agents = (ROOT / "generated" / "agent-policy.md").read_text(encoding="utf-8")
     skill = generate_skill_markdown({})
     assert setup.GLOBAL_POLICY_BEGIN in agents
     assert setup.GLOBAL_POLICY_END in agents

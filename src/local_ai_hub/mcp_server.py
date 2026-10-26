@@ -617,7 +617,7 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response. Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel, continue."
+        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response. Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Actions: submit, status, wait, get, cancel, continue. Use when: the task can be delegated as a self-contained repository outcome. Skip when: work is micro-edits or live discussion."
     return (
         "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "

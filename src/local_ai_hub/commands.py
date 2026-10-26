@@ -4219,7 +4219,7 @@ class CommandBroker:
             current_identity = process_identity(pid)
             leader_matches = current_identity == identity
             orphan_group_verified = (
-                registry_version == 3
+                registry_version in (2, 3)
                 and current_identity is None
                 and _process_leader_exited(pid)
                 and _process_group_liveness(process_group_id) is True

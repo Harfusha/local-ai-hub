@@ -2849,10 +2849,10 @@ def test_transaction_journal_removal_follows_durable_source_import(
 
     events: list[str] = []
     monkeypatch.setattr(
-        broker, "_fsync_transaction_directory", lambda _path: events.append("journal-dir-fsync")
+        CommandBroker, "_fsync_transaction_directory", lambda *args: events.append("journal-dir-fsync") or (os.name != "nt")
     )
     monkeypatch.setattr(
-        broker, "_fsync_rollback_directories", lambda _root, _paths: events.append("source-dir-fsync")
+        CommandBroker, "_fsync_rollback_directories", lambda *args: events.append("source-dir-fsync") or (os.name != "nt")
     )
     original_restore = commands_module._restore_rollback_scope
 

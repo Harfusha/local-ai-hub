@@ -68,6 +68,7 @@ _CURRENT_ROUTE_PATHS = {
  'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
 }
 _CURRENT_ADDED_ROUTES = {'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
+ 'post_task_automation_1': {'paths': ['/api/task/automation'], 'before': 'post_repo_split_changes_1'},
  'post_callees_1': {'paths': ['/api/code/callees'], 'before': 'post_repo_secret_scan_1'},
  'post_implementations_1': {'paths': ['/api/code/implementations'], 'before': 'post_repo_secret_scan_1'},
  'post_declaration_1': {'paths': ['/api/code/declaration'], 'before': 'post_repo_secret_scan_1'},

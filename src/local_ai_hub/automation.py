@@ -288,7 +288,9 @@ class AutomationBroker:
                     raise ValueError("upload exceeds transfer bound")
                 resolved_files.append(str(path))
             request = {**request, "files": resolved_files}
-        fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True, allow_nan=False).encode()).hexdigest()
+        fingerprint = hashlib.sha256(
+            json.dumps(request, sort_keys=True, allow_nan=False, separators=(",", ":")).encode()
+        ).hexdigest()
         if identity in session.journal:
             previous, result = session.journal[identity]
             return result if hmac.compare_digest(previous, fingerprint) else error("request_id_conflict", "request_id already identifies a different operation", 409)

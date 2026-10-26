@@ -18,7 +18,7 @@ OBSOLETE_FALLBACK_POLICY = (
 
 def test_native_fallback_policy_distinguishes_unknown_commands_and_is_synced() -> None:
     for relative_path in (
-        "AGENTS.md",
+        "generated/agent-policy.md",
         "docs/INSTALL_PROMPT.md",
         "docs/UPDATE_PROMPT.md",
     ):

@@ -168,7 +168,10 @@ class BrowserMCPAdapter:
                 'initialize': not self.initialized, 'initialUrl': self.initial_url, 'timeout': max(1, int(timeout * 1000)),
                 'maxChars': self.config.get('max_output_chars', 12000),
                 'maxBinaryBytes': self.config.get('max_binary_bytes', 8388608), 'outputFile': str(output_file)}
-        code = self.script.replace('__LOCAL_AI_AUTOMATION_INPUT__', json.dumps(data, ensure_ascii=True, allow_nan=False))
+        code = self.script.replace(
+            '__LOCAL_AI_AUTOMATION_INPUT__',
+            json.dumps(data, ensure_ascii=True, allow_nan=False, separators=(',', ':')),
+        )
         result = self.transport.call(code, timeout)
         self.initialized = True
         if result.get('success') is False:
@@ -188,7 +191,7 @@ class BrowserMCPAdapter:
                 raise ValueError('binary artifact persistence unavailable')
             result.update(self.persist_binary(path.read_bytes(), result.pop('mime_type', 'application/octet-stream')))
             path.unlink()
-        if len(json.dumps(result)) > self.config.get('max_output_chars', 12000) * 4:
+        if len(json.dumps(result, separators=(',', ':'))) > self.config.get('max_output_chars', 12000) * 4:
             raise ValueError('backend result exceeds bound')
         return result
 

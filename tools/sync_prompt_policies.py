@@ -13,7 +13,6 @@ import setup as setup_tools  # noqa: E402
 
 
 CANONICAL_PROMPT_PATHS = (
-    ROOT / "AGENTS.md",
     ROOT / "docs" / "INSTALL_PROMPT.md",
     ROOT / "docs" / "UPDATE_PROMPT.md",
 )

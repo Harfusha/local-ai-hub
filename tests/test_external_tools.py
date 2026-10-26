@@ -283,6 +283,7 @@ def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: 
 
 
 def test_serena_structured_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda self: None)
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
         "code_intelligence": {"enabled": True, "serena_enabled": True},

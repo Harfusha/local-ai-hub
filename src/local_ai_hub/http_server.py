@@ -550,6 +550,10 @@ def _token_matches(supplied: str, expected: str) -> bool:
 
 def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
     view = json.loads(json_dumps(config, default=str))
+    if "_config_path" in view:
+        view["_config_path"] = _safe_config_file_label(view["_config_path"])
+    if "_runtime_override_path" in view:
+        view["_runtime_override_path"] = _safe_config_file_label(view["_runtime_override_path"])
     security = view.get("security")
     if not isinstance(security, dict):
         return view

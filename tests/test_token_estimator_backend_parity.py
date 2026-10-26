@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from local_ai_hub.token_accounting import (
     _streaming_json_tokens,
@@ -209,4 +212,6 @@ def test_performance_speedup_on_realistic_payloads():
     # Verify at least 20% speedup (t_fast <= 0.80 * t_streaming)
     speedup_ratio = t_streaming / max(1e-6, t_fast)
     print(f"\nThroughput benchmark: streaming={t_streaming*1000:.2f}ms, fast={t_fast*1000:.2f}ms, speedup={speedup_ratio:.1f}x")
+    if sys.gettrace() is not None:
+        pytest.skip("speedup assertion skipped under coverage/debugger tracing")
     assert t_fast < t_streaming * 0.80, f"Expected >= 20% speedup, got {speedup_ratio:.2f}x (fast={t_fast*1000:.2f}ms vs streaming={t_streaming*1000:.2f}ms)"

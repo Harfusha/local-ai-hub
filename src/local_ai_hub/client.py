@@ -1025,7 +1025,7 @@ class HubClient:
                 return request_until_terminal()
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
-            except (URLError, OSError, http.client.HTTPException) as exc:
+            except (URLError, OSError, http.client.HTTPException, AttributeError) as exc:
                 self._drop_connection()
                 if getattr(exc, "cancelled", False):
                     return self._cancelled_response(request_id, request_not_sent=bool(getattr(exc, "request_not_sent", False)) and not server_reported_in_progress)
@@ -1185,7 +1185,7 @@ class HubClient:
                 return once_ready(timeout, deadline)
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
-            except (URLError, OSError, http.client.HTTPException) as exc:
+            except (URLError, OSError, http.client.HTTPException, AttributeError) as exc:
                 self._drop_connection()
                 if getattr(exc, "cancelled", False):
                     return self._cancelled_response(
@@ -2120,14 +2120,15 @@ class HubClient:
                         cur_data.append(line[len("data:"):].strip())
         except HTTPError:
             raise
-        except (URLError, OSError, http.client.HTTPException) as exc:
+        except (URLError, OSError, http.client.HTTPException, AttributeError) as exc:
             if isinstance(exc, TimeoutError):
                 deadline_expired.set()
-            if cancel_event is None or not cancel_event.is_set():
-                result = self._uncertain_response(request_id)
-                if deadline_expired.is_set():
-                    result["retry_timeout"] = True
-                yield "error", result
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            result = self._uncertain_response(request_id)
+            if deadline_expired.is_set():
+                result["retry_timeout"] = True
+            yield "error", result
         finally:
             monitor_stopped.set()
             if watcher is not None:
