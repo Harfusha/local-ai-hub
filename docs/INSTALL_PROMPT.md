@@ -625,6 +625,17 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - `local_ai_task(action="compress")` flexibly maps input text from `text`, `context`, `prompt`, `candidate`, or `task`.
 - `local_ai_task(action="review")` flexibly maps input code from `code`, `context`, `candidate`, or `prompt`.
 - `local_ai_task(action="reason"|"second_opinion")` flexibly maps input problem/question from `task`, `prompt`, or `context`.
+- `local_ai_coord(action="memory_find")` resolves project coordination ID and repository scope when `root` is provided (e.g. `"."` or absolute path), and filters by `kind` (`convention`, `fact`, `architecture`, `incident`, etc.).
+- `local_ai_coord(action="memory_list")` is a transparent alias to `memory_find` with empty query.
+- `local_ai_coord(action="task_update")` is a transparent alias to `task_checkpoint`.
+- `local_ai_repo(action="file_info")` (and alias `action="stat"`) returns file existence, size in bytes, line count, type (is_file / is_dir), and modification timestamp (`modified` and `mtime`).
+- `local_ai_repo(action="read_file")` (and alias `action="source"`) returns workspace-confined source code slices without requiring `local_ai_artifact`.
+- `local_ai_repo` and `local_ai_artifact` support `start_line` and `end_line` as transparent aliases to `line_start` and `line_end`.
+- `local_ai_repo(action="git_diff")` supports `base` and `head` for comparative diff inspection.
+- `local_ai_repo(action="git_status")` supports `path` filtering to restrict changes to specific subtrees or directories.
+- `local_ai_rag(action="query")` aliases to `action="search"`, and accepts `limit` (aliased to `top_k`) and `task` (aliased to `query`).
+- `local_ai_task(action="summarize")` aliases to `action="compress"`.
+- `local_ai_status(detail="models")` (and `action="models"`) inspects installed local models and hardware tier routing.
 - `POST /api/route` accepts canonical string fields `query` and `text`; `task` and `context` are not aliases. `POST /api/reason` accepts `problem` plus optional `context` and rejects `task`; `POST /api/review` accepts `code` plus optional `instructions` and rejects `context`. The `local_ai_task` adapters map canonical `task`/`context` into those HTTP fields.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq`, `limit` (1–1000, default 50), and optional `after_ts`; `after_ts` is distinct from `after_seq`.

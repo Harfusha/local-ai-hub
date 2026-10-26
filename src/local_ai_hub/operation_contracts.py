@@ -111,7 +111,7 @@ def _action_contracts(
     return result
 
 
-_STATUS_ACTIONS = ("brief",)
+_STATUS_ACTIONS = ("brief", "models")
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -127,21 +127,21 @@ _REPO_ACTIONS = (
     "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel",
     "preprocess_unregister", "call_graph_diff",
     "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-    "patch", "call_graph", "revert", "diff", "find_files", "glob", "git_log",
+    "patch", "call_graph", "revert", "diff", "find_files", "glob", "git_log", "file_info", "stat", "read_file", "source",
 )
 _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "browser",
-    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
+    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation", "summarize",
 )
-_RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
+_RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram", "query")
 _COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
-    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase",
+    "task_create", "task_get", "task_checkpoint", "task_update", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
-    "memory_promote", "memory_delete", "context_compile",
+    "memory_promote", "memory_delete", "memory_list", "context_compile",
     "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease",
@@ -281,6 +281,13 @@ _ACTION_SCOPED_FIELDS = {
         "depth": frozenset({"call_graph"}),
         "rev1": frozenset({"git_diff", "diff"}),
         "rev2": frozenset({"git_diff", "diff"}),
+        "base": frozenset({"git_diff", "diff", "context"}),
+        "head": frozenset({"git_diff", "diff"}),
+        "start_line": frozenset({"read_file", "source"}),
+        "end_line": frozenset({"read_file", "source"}),
+        "line_start": frozenset({"read_file", "source"}),
+        "line_end": frozenset({"read_file", "source"}),
+        "max_chars": frozenset({"read_file", "source"}),
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
     },
     "local_ai_coord": {
@@ -301,9 +308,10 @@ _ACTION_SCOPED_FIELDS = {
         "publisher": frozenset({"pubsub_publish"}),
         "topic": frozenset({"pubsub_publish", "pubsub_poll", "wait_for_event"}),
         "after_ts": frozenset({"pubsub_poll"}),
-        "goal": frozenset({"swarm_dispatch", "task_create"}),
-        "acceptance_criteria": frozenset({"task_create"}),
-        "criteria": frozenset({"task_create"}),
+        "goal": frozenset({"swarm_dispatch", "task_create", "task_update"}),
+        "acceptance_criteria": frozenset({"task_create", "task_update"}),
+        "criteria": frozenset({"task_create", "task_update"}),
+        "kind": frozenset({"memory_record", "memory_find", "memory_get", "memory_list"}),
         "error": frozenset({"task_fail"}),
         "target_paths": frozenset({"swarm_dispatch"}),
         "test_command": frozenset({"swarm_dispatch"}),
@@ -431,9 +439,13 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "structural_search": ("root", "query", "path", "max_tokens"),
             "migration_drift": ("root", "path"),
             "package_audit": ("root", "path"),
-            "git_diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2"),
-            "diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2"),
-            "git_status": ("root",),
+            "git_diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2", "base", "head"),
+            "file_info": ("root", "path"),
+            "stat": ("root", "path"),
+            "read_file": ("root", "path", "line_start", "line_end", "start_line", "end_line", "max_chars"),
+            "source": ("root", "path", "line_start", "line_end", "start_line", "end_line", "max_chars"),
+            "diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2", "base", "head"),
+            "git_status": ("root", "path"),
             "revert": ("root", "path"),
             "find_files": ("root", "query", "pattern", "limit", "offset"),
             "glob": ("root", "query", "pattern", "limit", "offset"),
@@ -464,6 +476,13 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             },
             "old_symbol": {"type": "string", "maxLength": 512},
             "new_symbol": {"type": "string", "maxLength": 512},
+            "base": {"type": "string", "default": "HEAD", "maxLength": 512},
+            "head": {"type": "string", "default": "", "maxLength": 512},
+            "start_line": {"type": "integer", "minimum": 1, "default": 1},
+            "end_line": {"type": "integer", "minimum": 0, "default": 0},
+            "line_start": {"type": "integer", "minimum": 1, "default": 1},
+            "line_end": {"type": "integer", "minimum": 0, "default": 0},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 4000},
             "old_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
             "new_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
             "rev1": {"type": ["string", "null"], "default": None, "maxLength": 512},
@@ -634,7 +653,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     ),
     "local_ai_rag": _tool_contract(
         "local_ai_rag", "rag", "action", _RAG_ACTIONS, timeout="action-specific MCP timeout; HubClient cap applies",
-        projection="retrieval result", read_only=("search", "list", "docset_search"),
+        projection="retrieval result", read_only=("search", "list", "docset_search", "query"),
         action_effects={
             "index": "index_store", "docset_index": "index_store", "ingest_document": "index_store",
             "ingest_diagram": "index_store",
@@ -644,6 +663,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "query": {"type": "string", "default": ""},
             "root": {"type": "string", "description": "Explicit absolute authorized repository root required for index, search, docset_index, ingest_document and ingest_diagram; never inferred from adapter cwd."},
             "top_k": {"type": "integer", "default": 6},
+            "limit": {"type": "integer", "default": 6},
+            "task": {"type": "string", "default": ""},
             "workspace": {"type": "string", "default": ""},
             "content": {"type": "string", "default": ""},
             "title": {"type": "string", "default": ""},
@@ -710,6 +731,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "session_briefing": ("root", "session_id", "include"),
             "task_claim": ("root", "task_id", "owner"),
             "task_create": ("root", "task_id", "goal", "task", "paths", "contract", "scope", "acceptance_criteria", "criteria"),
+            "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
+            "memory_list": ("root", "scope", "query", "limit", "kind"),
+            "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status"),
+            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
             "task_list": ("root", "query", "status", "owner", "limit", "offset", "include_stale"),
             "record_native_receipt": ("root", "task_id", "criterion", "command", "passed", "output_summary", "reason"),
@@ -801,6 +826,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
             "criteria": {"type": "array", "items": {"type": "string"}},
             "error": {"type": "string", "default": ""},
+            "kind": {"type": "string", "default": ""},
             "allow_adopt": {"type": "boolean", "default": False},
             "passed": {"type": "boolean", "default": True},
             "format": {"type": ["string", "null"], "default": None},
@@ -922,7 +948,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "get": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "slice": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "list": (),
-                "source": ("path", "line_start", "line_end", "max_chars", "slices"),
+                "source": ("path", "line_start", "line_end", "start_line", "end_line", "max_chars", "slices"),
             },
             selector_required=False,
             properties={
@@ -931,6 +957,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "path": {"type": "string", "maxLength": 32768, "default": ""},
                 "line_start": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1},
                 "line_end": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0},
+                "start_line": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1},
+                "end_line": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0},
                 "section": {"type": "string", "maxLength": 512, "default": ""},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
                 "max_chars": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 4000},
@@ -1043,7 +1071,7 @@ def operation_actions(tool: str, features: Any = None) -> tuple[str, ...]:
     if contract is None:
         return ()
     if tool == "local_ai_status":
-        return ("brief",)
+        return _STATUS_ACTIONS
     return tuple(
         action
         for action in contract["action_order"]

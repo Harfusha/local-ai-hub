@@ -2504,7 +2504,8 @@ class Handler(BaseHTTPRequestHandler):
             repository_id = getattr(context, "coordination_id", None)
             if not isinstance(repository_id, str) or not repository_id or repository_id != repository_id.strip() or "\x00" in repository_id:
                 return None
-            if _strict_root_path(root) != _strict_root_path(requested_root):
+            req_norm = str(Path(requested_root).resolve(strict=True)) if isinstance(requested_root, str) and requested_root.strip() else requested_root
+            if _strict_root_path(root) != _strict_root_path(req_norm):
                 return None
             return root, repository_id
         except Exception:
@@ -5011,7 +5012,8 @@ class Handler(BaseHTTPRequestHandler):
                 if APP.deterministic is not None:
                     revisions = {key: query[key][0] for key in ("rev1", "rev2") if key in query}
                     max_lines = int((query.get("max_lines") or [1000])[0])
-                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, **revisions))
+                    base_val = (query.get("base") or ["HEAD"])[0]
+                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, base=base_val, **revisions))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
@@ -8358,6 +8360,11 @@ class Handler(BaseHTTPRequestHandler):
                 limit_val = payload.get("limit", 100)
                 offset_val = payload.get("offset", 0)
                 res = APP.repo_tools.find_files(root, pattern=pat, limit=limit_val, offset=offset_val)
+                self._send(200 if res.get("success") else 400, res); return
+            if 'post_repo_file_info_1' in post_route_ids:
+                root = str(payload.get("root", "."))
+                path_val = str(payload.get("path", ""))
+                res = APP.repo_tools.file_info(root, path_val)
                 self._send(200 if res.get("success") else 400, res); return
             if 'post_callers_1' in post_route_ids:
                 limit = payload.get("limit", 50); offset = payload.get("offset", 0)

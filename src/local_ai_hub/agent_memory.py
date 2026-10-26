@@ -1660,6 +1660,7 @@ class MemoryStore:
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
+        kind: MemoryKind | str | None = None,
     ) -> list[MemoryRecord]:
         scope = AgentScope.parse(scope) if scope is not None else None
         if not self.state_store.enabled or not self.state_store.db_path.exists():
@@ -1686,6 +1687,18 @@ class MemoryStore:
         scope_id_val = str(scope_id or "").strip()
         root = str(root or "").strip()
         repository_id = str(repository_id or "").strip()
+        if root and not repository_id:
+            try:
+                from .project_config import resolve_project_context
+                state_dir = getattr(self.state_store, "db_path", None)
+                if state_dir is not None:
+                    state_dir = state_dir.parent
+                ctx = resolve_project_context(root, state_dir)
+                repository_id = str(getattr(ctx, "coordination_id", "") or "").strip()
+                if not scope_id_val and getattr(ctx, "root", None):
+                    scope_id_val = str(ctx.root)
+            except Exception:
+                pass
         identity_scopes = [
             (task_id_val, AgentScope.TASK.value),
             (session_id_val, AgentScope.SESSION.value),
@@ -1748,7 +1761,7 @@ class MemoryStore:
                 params.append(scope_id_val)
             elif scope_val is not None:
                 if scope_val == AgentScope.REPOSITORY.value:
-                    if not repository_id:
+                    if not repository_id and not scope_id_val:
                         sql += " AND 0"
                 elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
                     sql += " AND 0"
@@ -1779,8 +1792,11 @@ class MemoryStore:
             )
             sql += f" AND {provenance_repository_id} = ?"
             params.append(repository_id)
-        if scope_val == AgentScope.REPOSITORY.value and not repository_id:
+        if scope_val == AgentScope.REPOSITORY.value and not repository_id and not scope_id_val:
             sql += " AND 0"
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind.value if hasattr(kind, "value") else str(kind))
         if scope_val == AgentScope.TASK.value:
             # A task identity still requires its repository root.
             if not (root and (task_id_val or scope_id_val)):

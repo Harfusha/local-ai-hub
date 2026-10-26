@@ -68,8 +68,10 @@ def handle_post_repository_analysis(
         staged = bool(payload.get("staged", False))
         max_lines = int(payload.get("max_lines", 1000))
         if app.deterministic is not None:
+            base = payload.get("base", "HEAD")
             revisions = {key: payload[key] for key in ("rev1", "rev2") if key in payload}
-            handler._send(200, app.services.git_diff(root, path=path, staged=staged, max_lines=max_lines, **revisions))
+            handler._send(200, app.services.git_diff(root, path=path, staged=staged, max_lines=max_lines, base=base, **revisions))
+
         else:
             handler._send(200, {"success": False, "error": "deterministic engine disabled"})
         return True

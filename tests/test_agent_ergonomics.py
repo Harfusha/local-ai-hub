@@ -573,3 +573,191 @@ def test_argument_suggestion_hints():
     # Check that suggestion is present and identifies 'pattern'
     assert "suggestion" in response[1]["argument_help"]
     assert "pattern" in response[1]["argument_help"]["suggestion"]
+
+
+
+def test_memory_root_find_and_kind(tmp_path: Path):
+    """Phase 4 Points 1, 2, 3: Verify root-based memory find, kind parameter, and memory_list alias."""
+    from unittest.mock import patch
+    from local_ai_hub.agent_memory import MemoryStore, MemoryRecord, MemoryKind
+    from local_ai_hub.mcp_server import local_ai_coord
+
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+    store = MemoryStore(state_store)
+
+    rec1 = MemoryRecord(
+        record_id="rec-1",
+        key="naming_convention",
+        value="use snake_case for functions",
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-1",
+        kind=MemoryKind.CONVENTION,
+    )
+    rec2 = MemoryRecord(
+        record_id="rec-2",
+        key="architecture_fact",
+        value="single owner PC architecture",
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-1",
+        kind=MemoryKind.FACT,
+    )
+    store.record(rec1)
+    store.record(rec2)
+
+    # 1. Query with kind filter
+    res_conv = store.find(scope=AgentScope.REPOSITORY, query="snake", scope_id="repo-1", kind="convention", semantic=False)
+    assert len(res_conv) == 1
+    assert res_conv[0].key == "naming_convention"
+    assert res_conv[0].kind == MemoryKind.CONVENTION
+
+    res_fact = store.find(scope=AgentScope.REPOSITORY, query="architecture", scope_id="repo-1", kind="fact", semantic=False)
+    assert len(res_fact) == 1
+    assert res_fact[0].key == "architecture_fact"
+
+    # Query with mismatching kind
+    res_none = store.find(scope=AgentScope.REPOSITORY, query="snake", scope_id="repo-1", kind="fact", semantic=False)
+    assert len(res_none) == 0
+
+    # 2. MCP memory_list alias and kind parameter
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.coord.return_value = {"success": True, "results": []}
+
+        # memory_list alias
+        local_ai_coord(action="memory_list", root=str(tmp_path), kind="convention")
+        assert mock_client.coord.called
+        kwargs = mock_client.coord.call_args[1]
+        assert kwargs["action"] == "memory_find"
+        assert kwargs["kind"] == "convention"
+        assert kwargs["query"] == ""
+
+        # task_update alias
+        mock_client.coord.reset_mock()
+        local_ai_coord(action="task_update", task_id="t1", phase="implementation")
+        assert mock_client.coord.called
+        kwargs2 = mock_client.coord.call_args[1]
+        assert kwargs2["action"] == "task_checkpoint"
+        assert (kwargs2.get("phase") or kwargs2.get("checkpoint", {}).get("phase")) == "implementation"
+
+
+def test_repo_file_info_and_stat(tmp_path: Path):
+    """Phase 4 Points 5, 6, 7: Verify file_info/stat, read_file/source, and line aliases."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    test_file = repo / "hello.py"
+    test_file.write_text("line 1\nline 2\nline 3\nline 4\nline 5\n", encoding="utf-8")
+
+    rt = RepositoryTools({})
+
+    # 1. file_info on existing file
+    info = rt.file_info(str(repo), "hello.py")
+    assert info["success"] is True
+    assert info["exists"] is True
+    assert info["is_file"] is True
+    assert info["is_dir"] is False
+    assert info["line_count"] == 5
+    assert info["size_bytes"] > 0
+    assert "mtime" in info
+
+    # 2. file_info on directory
+    sub_dir = repo / "subdir"
+    sub_dir.mkdir()
+    info_dir = rt.file_info(str(repo), "subdir")
+    assert info_dir["success"] is True
+    assert info_dir["exists"] is True
+    assert info_dir["is_dir"] is True
+    assert info_dir["line_count"] == 0
+
+    # 3. file_info on non-existent path
+    info_none = rt.file_info(str(repo), "non_existent.py")
+    assert info_none["success"] is True
+    assert info_none["exists"] is False
+
+    # 4. MCP read_file and line aliases
+    from local_ai_hub.mcp_server import _local_ai_repo_impl
+    res_slice = _local_ai_repo_impl(
+        action="read_file",
+        root=str(repo),
+        path="hello.py",
+        start_line=2,
+        end_line=4,
+    )
+    assert res_slice["success"] is True
+    assert "line 2" in res_slice["content"]
+    assert "line 4" in res_slice["content"]
+    assert "line 5" not in res_slice["content"]
+
+    # 5. MCP source action
+    res_source = _local_ai_repo_impl(
+        action="source",
+        root=str(repo),
+        path="hello.py",
+        start_line=1,
+        end_line=2,
+    )
+    assert res_source["success"] is True
+    assert "line 1" in res_source["content"]
+
+
+def test_git_diff_base_head_and_status_path(tmp_path: Path):
+    """Phase 4 Points 8, 9: Verify git_diff base/head and git_status path filtering."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import _local_ai_repo_impl
+
+    with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.post.return_value = {"success": True, "diff": "test diff"}
+
+        # git_diff with base and head
+        _local_ai_repo_impl(action="git_diff", root=str(tmp_path), base="HEAD~2", head="HEAD")
+        assert mock_client.post.called
+        assert mock_client.post.call_args[0][0] == "/api/git/diff"
+        payload = mock_client.post.call_args[0][1]
+        assert payload["base"] == "HEAD~2"
+        assert payload["head"] == "HEAD"
+
+        # git_status with path filter
+        mock_client.get.reset_mock()
+        mock_client.get.return_value = {
+            "success": True,
+            "changed_paths": ["src/local_ai_hub/foo.py", "docs/bar.md"],
+            "modified": ["src/local_ai_hub/foo.py", "docs/bar.md"],
+        }
+        res_status = _local_ai_repo_impl(action="git_status", root=str(tmp_path), path="src/local_ai_hub")
+        assert mock_client.get.called
+        assert "/api/git/status" in mock_client.get.call_args[0][0]
+        assert res_status["changed_paths"] == ["src/local_ai_hub/foo.py"]
+
+
+def test_rag_query_limit_and_task_summarize_models(tmp_path: Path):
+    """Phase 4 Points 10, 11, 12: Verify RAG query/limit, task summarize, and status models."""
+    from unittest.mock import patch
+    from local_ai_hub.mcp_server import local_ai_rag, local_ai_task, local_ai_status, FEATURES
+
+    with patch.object(FEATURES, "tasks", True), patch.object(FEATURES, "has_any_model", return_value=True), patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
+        mock_client.post.return_value = {"success": True, "text": "summary", "results": []}
+
+        # 1. RAG query and limit alias
+        local_ai_rag(action="query", task="architecture query", limit=5, root=str(tmp_path))
+        assert mock_client.post.called
+        rag_calls = [c for c in mock_client.post.call_args_list if c[0][0] == "/api/rag/search"]
+        assert len(rag_calls) >= 1
+        rag_payload = rag_calls[0][0][1]
+        assert rag_payload["query"] == "architecture query"
+        assert rag_payload["top_k"] == 5
+
+        # 2. Task summarize alias
+        mock_client.post.reset_mock()
+        mock_client.post.return_value = {"success": True, "text": "summary"}
+        local_ai_task(action="summarize", context="long verbose output")
+        assert mock_client.post.called
+        compress_calls = [c for c in mock_client.post.call_args_list if c[0][0] == "/api/compress"]
+        assert len(compress_calls) >= 1
+
+        # 3. Status detail="models"
+        mock_client.get.return_value = {
+            "success": True,
+            "data": [{"id": "qwen2.5-coder:7b"}],
+        }
+        res_models = local_ai_status(detail="models")
+        assert res_models["success"] is True
+        assert "installed_models" in res_models
+        assert "qwen2.5-coder:7b" in res_models["installed_models"]

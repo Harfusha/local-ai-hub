@@ -3661,3 +3661,54 @@ class RepositoryTools:
             "has_more": has_more,
         }
 
+    def file_info(
+        self,
+        root: str,
+        path: str,
+    ) -> dict[str, Any]:
+        """Inspect file metadata (existence, size, lines, type, modification time) without full reading."""
+        base = self._root(root)
+        if not path or not isinstance(path, str):
+            return {"success": False, "error": "path is required", "terminal": True, "retryable": False}
+        clean_path = path.strip().replace("\\", "/")
+        target = (base / clean_path).resolve()
+        try:
+            target.relative_to(base.resolve())
+        except ValueError:
+            return {"success": False, "error": "path escapes repository root", "terminal": True, "retryable": False}
+
+        if not target.exists():
+            return {
+                "success": True,
+                "exists": False,
+                "path": clean_path,
+                "is_file": False,
+                "is_dir": False,
+                "size_bytes": 0,
+                "line_count": 0,
+            }
+
+        is_file = target.is_file()
+        is_dir = target.is_dir()
+        size_bytes = target.stat().st_size if is_file else 0
+        line_count = 0
+        if is_file and size_bytes <= 10_000_000:
+            try:
+                with open(target, "rb") as f:
+                    line_count = sum(1 for _ in f)
+            except Exception:
+                line_count = 0
+
+        return {
+            "success": True,
+            "exists": True,
+            "path": clean_path,
+            "is_file": is_file,
+            "is_dir": is_dir,
+            "size_bytes": size_bytes,
+            "line_count": line_count,
+            "modified": target.stat().st_mtime,
+            "mtime": target.stat().st_mtime,
+        }
+
+
