@@ -117,7 +117,9 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 self.assertTrue(runtime.ensure_running())
             self.assertEqual(popen.call_count, 2)
             self.assertEqual(popen.call_args_list[0].args[0][-1], "SYCL0")
+            self.assertEqual(popen.call_args_list[0].kwargs["env"]["GGML_SYCL_ENABLE_VMM"], "0")
             self.assertEqual(popen.call_args_list[1].args[0][-1], "none")
+            self.assertNotIn("env", popen.call_args_list[1].kwargs)
             self.assertEqual(processes[0].wait_calls, 1)
             self.assertEqual(runtime.mode_path.read_text(encoding="utf-8"), "none")
 

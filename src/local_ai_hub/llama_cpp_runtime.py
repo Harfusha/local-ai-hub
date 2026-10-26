@@ -486,6 +486,12 @@ class LlamaCppManagedRuntime:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
                 args = [str(binary), "--models-preset", str(self.runtime_dir / "hub.models.ini"), "--models-max", "1", "--host", "127.0.0.1", "--port", str(port), "--device", device]
                 kwargs = hidden_run_kwargs(new_group=True)
+                if device.startswith("SYCL"):
+                    # Intel Arc's Level Zero VMM pool can fail during startup on Windows.
+                    # Disable VMM for this child process so SYCL uses its non-VMM allocator.
+                    child_env = os.environ.copy()
+                    child_env["GGML_SYCL_ENABLE_VMM"] = "0"
+                    kwargs["env"] = child_env
                 if os.name != "nt":
                     kwargs["start_new_session"] = True
                 proc: subprocess.Popen[Any] | None = None

@@ -8,7 +8,7 @@ Other supported platforms use the pinned CPU runtime unless the operator configu
 
 Set `ollama.enabled = false` and `llama_cpp.mode = "on"`, then run setup or restart the Hub. The installer selects the pinned platform build; on Windows Intel it uses the official SYCL bundle, which includes the SYCL runtime DLLs. The default GGUF is Qwen2.5-Coder 1.5B Q4_K_M. No model is downloaded while mode is `auto` or `off`. [Official releases](https://github.com/ggml-org/llama.cpp/releases) · [Windows SYCL instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#option-1-download-the-binary-package-directly)
 
-If SYCL initialization fails, the managed server retries on CPU and status reports `device: none`. To use a manually managed server, leave mode at `auto` and point the configured model routes at its loopback URL.
+The managed Intel SYCL process disables Level Zero virtual memory (`GGML_SYCL_ENABLE_VMM=0`) to avoid startup failures in the VMM allocator on affected Windows drivers. If SYCL initialization still fails, the managed server retries on CPU and status reports `device: none`. To use a manually managed server, leave mode at `auto` and point the configured model routes at its loopback URL.
 
 ## Advanced: external Windows router
 

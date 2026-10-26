@@ -763,6 +763,7 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
         scope_id="task-restart-compact",
         task_id="task-restart-compact",
         root=str(tmp_path),
+        repository_id="repository-crash",
         status=MemoryStatus.SUPERSEDED,
     )
     assert len(active) == 1 and active[0].key.startswith("compacted_fact_")
@@ -810,6 +811,7 @@ def test_compaction_preserves_scope_identity_and_never_merges_tasks(tmp_path):
             scope_id=task_id,
             task_id=task_id,
             root=str(tmp_path),
+            repository_id="repository-crash",
             status=MemoryStatus.ACTIVE,
         )
         assert len(scoped) == 1
