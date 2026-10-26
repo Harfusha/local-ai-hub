@@ -11,6 +11,9 @@ from local_ai_hub.mcp_server import (
     _local_ai_repo_impl,
     local_ai_coord,
     local_ai_task,
+    local_ai_artifact,
+    local_ai_rag,
+    local_ai_repo,
 )
 
 from local_ai_hub.agent_events import AgentStateStore
@@ -989,3 +992,244 @@ def test_review_diff_accepts_diff_string():
         # diff string should be forwarded as diff field
         assert payload.get("diff") == diff_text
 
+
+
+# ===========================================================================
+# PHASE 6 ERGONOMICS TESTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. local_ai_task accepts code= and diff= for review
+# ---------------------------------------------------------------------------
+
+def test_task_review_accepts_code_and_diff():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
+         patch.object(FEATURES, "tasks", True), \
+         patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "text": "findings"}
+        res = local_ai_task(action="review", code="def foo(): pass")
+        assert res.get("success") is True, f"review with code= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/review" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("code") == "def foo(): pass"
+
+        # Also test diff=
+        mc.reset_mock()
+        res = local_ai_task(action="review", diff="--- a/foo.py\n+++ b/foo.py\n")
+        assert res.get("success") is True, f"review with diff= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/review" in str(c)]
+        assert len(calls) >= 1
+        assert "--- a/foo.py" in calls[0][0][1].get("code", "")
+
+
+# ---------------------------------------------------------------------------
+# 2. local_ai_task accepts problem= and query= for reason
+# ---------------------------------------------------------------------------
+
+def test_task_reason_accepts_problem_and_query():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
+         patch.object(FEATURES, "tasks", True), \
+         patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "text": "analysis ok"}
+        res = local_ai_task(action="reason", problem="Why does test X fail?")
+        assert res.get("success") is True, f"reason with problem= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/reason" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("problem") == "Why does test X fail?"
+
+        mc.reset_mock()
+        res = local_ai_task(action="reason", query="Why does test Y fail?")
+        assert res.get("success") is True, f"reason with query= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/reason" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("problem") == "Why does test Y fail?"
+
+
+# ---------------------------------------------------------------------------
+# 3. local_ai_task accepts question= for second_opinion
+# ---------------------------------------------------------------------------
+
+def test_task_second_opinion_accepts_question():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
+         patch.object(FEATURES, "tasks", True), \
+         patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "text": "verdict ok"}
+        res = local_ai_task(action="second_opinion", question="Is this secure?", candidate="def login(): ...")
+        assert res.get("success") is True, f"second_opinion with question= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/second-opinion" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("question") == "Is this secure?"
+        assert calls[0][0][1].get("candidate") == "def login(): ..."
+
+
+# ---------------------------------------------------------------------------
+# 4. local_ai_task accepts text= for compress
+# ---------------------------------------------------------------------------
+
+def test_task_compress_accepts_text():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
+         patch.object(FEATURES, "tasks", True), \
+         patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "text": "compressed"}
+        res = local_ai_task(action="compress", text="Line 1\nLine 2\nLine 3")
+        assert res.get("success") is True, f"compress with text= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/compress" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("text") == "Line 1\nLine 2\nLine 3"
+
+
+# ---------------------------------------------------------------------------
+# 5. local_ai_task accepts query= for explore and delegate
+# ---------------------------------------------------------------------------
+
+def test_task_explore_accepts_query():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
+         patch.object(FEATURES, "tasks", True), \
+         patch.object(FEATURES, "has_any_model", return_value=True):
+        mc.post.return_value = {"success": True, "text": "exploration"}
+        res = local_ai_task(action="explore", query="How does caching work?")
+        assert res.get("success") is True, f"explore with query= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/delegate" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("task") == "How does caching work?"
+
+
+# ---------------------------------------------------------------------------
+# 6. local_ai_artifact path= / file= redirects to source even with action='get'
+# ---------------------------------------------------------------------------
+
+def test_artifact_get_with_path_redirects_to_source(tmp_path):
+    test_file = tmp_path / "app.py"
+    test_file.write_text("def main(): pass\n", encoding="utf-8")
+    with patch("local_ai_hub.mcp_server._workspace", str(tmp_path)):
+        # Calling without action (defaults to get) + path
+        res = local_ai_artifact(path="app.py")
+        assert res.get("success") is True, f"artifact with path= failed: {res}"
+        assert "def main" in res.get("text", "")
+
+        # Calling with action='get' + file=
+        res2 = local_ai_artifact(action="get", file="app.py")
+        assert res2.get("success") is True, f"artifact with file= failed: {res2}"
+        assert "def main" in res2.get("text", "")
+
+
+# ---------------------------------------------------------------------------
+# 7. local_ai_artifact accepts id= alias for artifact_id=
+# ---------------------------------------------------------------------------
+
+def test_artifact_accepts_id_alias():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {
+            "success": True,
+            "artifact_id": "art-12345",
+            "kind": "text",
+            "text": "data",
+            "offset": 0,
+            "next_offset": None,
+            "total_chars": 4,
+            "sections": [],
+        }
+        res = local_ai_artifact(action="get", id="art-12345")
+        assert res.get("success") is True, f"artifact with id= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/artifact/get" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("artifact_id") == "art-12345"
+
+
+# ---------------------------------------------------------------------------
+# 8. local_ai_coord accepts path= and file= for single-path operations
+# ---------------------------------------------------------------------------
+
+def test_coord_accepts_path_and_file_for_single_path():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {"success": True, "lease_id": "L1"}
+        res = local_ai_coord(action="claim", root="/repo", path="src/main.py", owner="agent")
+        assert res.get("success") is True, f"claim with path= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/leases/claim_batch" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("paths") == ["src/main.py"]
+
+        mc.reset_mock()
+        res = local_ai_coord(action="claim", root="/repo", file="src/main.py", owner="agent")
+        assert res.get("success") is True, f"claim with file= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/leases/claim_batch" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("paths") == ["src/main.py"]
+
+
+# ---------------------------------------------------------------------------
+# 9. local_ai_coord task_create accepts title= and description=
+# ---------------------------------------------------------------------------
+
+def test_coord_task_create_accepts_title_and_description():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.coord.return_value = {"success": True, "task_id": "T1"}
+        res = local_ai_coord(action="task_create", root="/repo", title="Fix memory leak")
+        assert res.get("success") is True, f"task_create with title= failed: {res}"
+        assert mc.coord.call_count >= 1
+        contract = mc.coord.call_args[1].get("contract", {})
+        assert contract.get("goal") == "Fix memory leak"
+
+        mc.reset_mock()
+        res = local_ai_coord(action="task_create", root="/repo", description="Refactor router")
+        assert res.get("success") is True, f"task_create with description= failed: {res}"
+        assert mc.coord.call_count >= 1
+        contract = mc.coord.call_args[1].get("contract", {})
+        assert contract.get("goal") == "Refactor router"
+
+
+# ---------------------------------------------------------------------------
+# 10. local_ai_coord memory_record accepts content= and name=
+# ---------------------------------------------------------------------------
+
+def test_coord_memory_record_accepts_content_and_name():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.coord.return_value = {"success": True, "memory_id": "M1"}
+        res = local_ai_coord(action="memory_record", root="/repo", name="api_key_format", content="Starts with sk-")
+        assert res.get("success") is True, f"memory_record with name/content failed: {res}"
+        assert mc.coord.call_count >= 1
+        kwargs = mc.coord.call_args[1]
+        assert kwargs.get("key") == "api_key_format"
+        assert kwargs.get("value") == "Starts with sk-"
+
+
+# ---------------------------------------------------------------------------
+# 11. local_ai_rag accepts name= for docsets and retrieve/find action aliases
+# ---------------------------------------------------------------------------
+
+def test_rag_accepts_name_and_action_aliases():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
+         patch.object(FEATURES, "rag", True):
+        mc.post.return_value = {"success": True, "results": []}
+        res = local_ai_rag(action="docset_search", name="developer_docs", query="architecture")
+        assert res.get("success") is True, f"docset_search with name= failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/rag/docset/search" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("name") == "developer_docs"
+
+        mc.reset_mock()
+        res = local_ai_rag(action="retrieve", root="C:\\fake_repo", query="how to run")
+        assert res.get("success") is True, f"rag with retrieve failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/rag/search" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("query") == "how to run"
+
+
+# ---------------------------------------------------------------------------
+# 12. local_ai_repo accepts file= and paths=, and generate_tests_for_diff with changed_paths
+# ---------------------------------------------------------------------------
+
+def test_repo_accepts_file_paths_and_changed_paths():
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc:
+        mc.post.return_value = {"success": True, "tests": "def test_new(): pass"}
+        res = _local_ai_repo_impl(action="generate_tests_for_diff", root="/repo", changed_paths=["src/logic.py"])
+        assert res.get("success") is True, f"generate_tests_for_diff with changed_paths failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/repo/generate_tests_for_diff" in str(c)]
+        assert len(calls) >= 1
+        assert calls[0][0][1].get("path") == "src/logic.py"
+
+        # local_ai_repo git_diff with file=
+        mc.reset_mock()
+        mc.get.return_value = {"success": True, "diff": "diff content"}
+        res = local_ai_repo(action="git_diff", root="/repo", file="src/model.py")
+        assert res.get("success") is True, f"git_diff with file= failed: {res}"

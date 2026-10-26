@@ -2387,6 +2387,12 @@ def local_ai_task(
     image_path: str = "",
     audio_path: str = "",
     file: str = "",
+    code: str = "",
+    diff: str = "",
+    problem: str = "",
+    query: str = "",
+    question: str = "",
+    text: str = "",
 ) -> dict[str, Any]:
     """Run a bounded semantic task or an explicitly authorized UI automation session.
 
@@ -2550,6 +2556,10 @@ def local_ai_task(
             max_tokens = max(160, int(max_tokens))
         if not task and prompt:
             task = prompt
+        if not task and query:
+            task = query
+        if not task and problem:
+            task = problem
     if action in {"candidate_create", "candidate_promote"}:
         if action == "candidate_create":
             return _compact(CLIENT.post("/api/agent-state/learning", {
@@ -2660,7 +2670,7 @@ def local_ai_task(
             payload["conversation"] = True
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/delegate", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "explore" if action == "explore" else "delegate")
     if action == "reason":
-        problem_input = task or prompt or context or ""
+        problem_input = problem or task or prompt or query or context or ""
         payload = {
             "problem": problem_input, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
@@ -2673,8 +2683,8 @@ def local_ai_task(
             payload["conversation"] = True
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/reason", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "reason")
     if action == "review":
-        code_input = context or candidate or prompt
-        instructions_input = task if code_input != task else "Report actionable defects only."
+        code_input = code or diff or context or candidate or prompt
+        instructions_input = task if code_input != task else (prompt if code_input != prompt else "Report actionable defects only.")
         payload = {
             "code": code_input, "instructions": instructions_input,
             "complexity": complexity, "max_tokens": max_tokens or 4096,
@@ -2686,8 +2696,8 @@ def local_ai_task(
             payload["format"] = format or json_schema
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=code_input, changed_paths=changed_paths), task_context_meta), "review")
     if action == "second_opinion":
-        question_input = task or prompt or ""
-        candidate_input = candidate or prompt or context or ""
+        question_input = question or task or prompt or query or ""
+        candidate_input = candidate or prompt or context or code or ""
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
             "question": question_input, "candidate": candidate_input, "context": context if candidate_input != context else "", "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
@@ -2695,7 +2705,7 @@ def local_ai_task(
             "evidence_ids": context_evidence_ids,
         }), task=task, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
     if action == "compress":
-        text_input = context or prompt or candidate or task
+        text_input = text or context or prompt or candidate or task
         instructions_input = task if text_input != task else (prompt if text_input != prompt else "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.")
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/compress", {
             "text": text_input, "instruction": instructions_input,
@@ -3195,6 +3205,8 @@ def _local_ai_repo_impl(
     line_start: int = 1,
     line_end: int = 0,
     symbol: str | None = None,
+    file: str | None = None,
+    paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3228,6 +3240,12 @@ def _local_ai_repo_impl(
         action = "source"
     if symbol and not query:
         query = symbol
+    if file and not path:
+        path = file
+    if paths and not changed_paths:
+        changed_paths = paths
+    if not path and changed_paths and len(changed_paths) > 0:
+        path = changed_paths[0]
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
     scoped_error = validate_operation_arguments(
@@ -3992,8 +4010,9 @@ def _local_ai_repo_impl(
             "recency_weighting", "complete", "incomplete_reasons", "analysis", "hotspots",
         ])
     if action == "generate_tests_for_diff":
+        eff_path = path or (changed_paths[0] if changed_paths and len(changed_paths) > 0 else None)
         return _compact(CLIENT.post("/api/repo/generate_tests_for_diff", {
-            "root": root, "diff": diff or None, "path": path or None,
+            "root": root, "diff": diff or None, "path": eff_path,
         }, timeout=_timeout("context")), "delegate")
     if action == "cross_repo_contract":
         return _compact(CLIENT.post("/api/repo/cross_repo_contract", {
@@ -4099,10 +4118,18 @@ def local_ai_repo(
     line_start: int = 1,
     line_end: int = 0,
     symbol: str | None = None,
+    file: str | None = None,
+    paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     if symbol and not query:
         query = symbol
+    if file and not path:
+        path = file
+    if paths and not changed_paths:
+        changed_paths = paths
+    if not path and changed_paths and len(changed_paths) > 0:
+        path = changed_paths[0]
     if action == "context" and not query and task:
         query = task
     elif action in {"solve", "delegate"} and not task and query:
@@ -4222,7 +4249,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, symbol=symbol, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, symbol=symbol, file=file, paths=paths, **forward,
     )
 
 
@@ -4281,18 +4308,23 @@ def local_ai_rag(
     metadata: dict[str, Any] | None = None,
     image_path: str = "",
     caption: str = "",
+    name: str = "",
 ) -> dict[str, Any]:
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     if (not root or root == ".") and _workspace and is_rooted_path(_workspace):
         root = _workspace
-    if action == "query":
+    if action in {"query", "retrieve", "find", "lookup"}:
         action = "search"
+    if name and not workspace:
+        workspace = name
     if limit > 0:
         top_k = limit
     if task and not query:
         query = task
+    if action == "search" and not query and content:
+        query = content
     valid_actions = tuple(RagAction.__args__)
     if not isinstance(action, str) or action not in valid_actions:
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
@@ -4468,12 +4500,16 @@ def local_ai_coord(
     error: str = "",
     kind: str = "",
     changed_paths: list[str] | None = None,
+    path: str = "",
+    file: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if changed_paths is not None and not paths:
         paths = changed_paths
+    if (path or file) and not paths:
+        paths = [p for p in (path, file) if p]
     if action == "task_update":
         action = "task_checkpoint"
     if action == "memory_list":
@@ -4905,7 +4941,7 @@ def local_ai_coord(
             fail_reason = reason or error or message or "Task failed"
             task_kwargs["reason"] = fail_reason
         if action == "task_create":
-            task_goal = goal or task or ""
+            task_goal = goal or task or title or description or ""
             crit_list = acceptance_criteria or criteria or []
             if contract is None and (task_goal or crit_list):
                 contract = {
@@ -4932,6 +4968,10 @@ def local_ai_coord(
         )
         return _compact(task_result, "task_memory")
     if action.startswith("memory_"):
+        if not key and name:
+            key = name
+        if not value and content:
+            value = str(content) if not isinstance(content, str) else content
         mem_root = root if (requested_root and requested_root != ".") else _workspace
         if not repository_id and mem_root:
             from .project_config import resolve_project_context
@@ -5180,12 +5220,16 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0) -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "") -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
-    is_source_slices = bool(slices and isinstance(slices, list) and len(slices) > 0 and isinstance(slices[0], dict) and "path" in slices[0])
-    if action == "slice" and (path or is_source_slices) and not artifact_id:
+    if id and not artifact_id:
+        artifact_id = id
+    if file and not path:
+        path = file
+    is_source_slices = bool(slices and isinstance(slices, list) and len(slices) > 0 and isinstance(slices[0], dict) and ("path" in slices[0] or "file" in slices[0]))
+    if action in {"get", "slice"} and (path or is_source_slices) and not artifact_id:
         action = "source"
     if action == "source":
         from .source_slice import read_source_slice
@@ -5196,13 +5240,14 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
             for item in slices[:16]:
                 if not isinstance(item, dict):
                     continue
-                s_path = str(item.get("path") or "")
+                s_path = str(item.get("path") or item.get("file") or "")
                 s_start = int(item.get("start_line") or item.get("line_start") or 1)
                 s_end = int(item.get("end_line") or item.get("line_end") or 0)
                 s_chars = int(item.get("max_chars", 4000))
                 results.append(read_source_slice(_workspace, path=s_path, line_start=s_start, line_end=s_end, max_chars=s_chars))
             return _compact({"success": True, "slices": results, "count": len(results)}, "artifact")
-        arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": max_chars}
+        eff_chars = max(512, min(max_chars, 12000)) if max_chars else 4000
+        arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": eff_chars}
         error = validate_operation_arguments("local_ai_artifact", "source", arguments)
         if error is not None:
             return {"success": False, "error": error, "terminal": True, "retryable": False}
