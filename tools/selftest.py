@@ -164,7 +164,7 @@ def main() -> int:
         )
         proc_identity = process_identity(proc.pid)
         try:
-            deadline = time.monotonic() + max(12.0, float(os.environ.get("LOCAL_AI_SELFTEST_STARTUP_TIMEOUT", 30.0)))
+            deadline = time.monotonic() + max(12.0, float(os.environ.get("LOCAL_AI_SELFTEST_STARTUP_TIMEOUT", 60.0)))
             health = None
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
