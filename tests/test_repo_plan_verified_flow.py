@@ -1,6 +1,8 @@
 """Regressions for actual execution authority versus repository declarations."""
 
 from pathlib import Path
+import hashlib
+import json
 
 import pytest
 
@@ -107,3 +109,15 @@ def test_revised_contract_cannot_reuse_old_receipt_mapping(environment):
     assert "tests pass" not in current.verification_receipts
     history = current.checkpoint.state_data["contract_history"]
     assert history[-1]["contract"]["acceptance_criteria"] == ["tests pass"]
+
+
+def test_pending_contract_retry_uses_hash_name_and_atomic_scoped_file(environment):
+    root, _, _, _, storage, _, binding, _ = environment
+    binding.task_id = "../../outside"
+    target = agent_bridge._persist_pending_contract_reconciliation(
+        storage, binding, {"task_id": binding.task_id, "contract_revision": 2},
+    )
+    expected_parent = (root / ".local-ai-hub/local/pending-contract-reconciliation").resolve()
+    assert target.parent == expected_parent
+    assert target.name == hashlib.sha256(binding.task_id.encode()).hexdigest() + ".json"
+    assert json.loads(target.read_text(encoding="utf-8"))["task_id"] == binding.task_id

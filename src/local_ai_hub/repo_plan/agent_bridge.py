@@ -164,6 +164,41 @@ class TaskBindingManager:
         return None
 
 
+def _persist_pending_contract_reconciliation(
+    storage: RepoPlanStorage, binding: TaskBinding, payload: dict[str, Any]
+) -> Path:
+    """Persist a safe, atomic local retry record when the task DB update fails."""
+    root = storage.repo_root.resolve(strict=True)
+    hub_dir = root / ".local-ai-hub"
+    local_dir = hub_dir / "local"
+    pending_dir = local_dir / "pending-contract-reconciliation"
+    for directory in (hub_dir, local_dir, pending_dir):
+        if directory.is_symlink():
+            raise ValueError("pending reconciliation path cannot traverse a symlink")
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    resolved_pending = pending_dir.resolve(strict=True)
+    if not resolved_pending.is_relative_to(root):
+        raise ValueError("pending reconciliation path escapes repository root")
+    # Task IDs are untrusted identifiers and never become path components.
+    name = hashlib.sha256(binding.task_id.encode("utf-8")).hexdigest() + ".json"
+    target = resolved_pending / name
+    encoded = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8")
+    with exclusive_file_update(target):
+        temporary = resolved_pending / f".{name}.{uuid.uuid4().hex}.tmp"
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return target
+
+
 def bind_plan_execution(
     task_store: Any,
     *,
@@ -415,16 +450,19 @@ def reconcile_contract_revision(
             expected_revision=current_contract_revision,
         )
     except Exception as exc:
-        pending_dir = storage.repo_root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
-        pending_dir.mkdir(parents=True, exist_ok=True)
-        pending_file = pending_dir / f"{binding.task_id}.json"
         payload = {"task_id": binding.task_id, "plan_id": binding.plan_id,
                    "plan_task_id": binding.plan_task_id,
                    "contract_revision": current_contract_revision + 1,
                    "acceptance_criteria": new_acceptance_criteria,
                    "reason": reason, "plan_revision": save_res.get("file_revision", ""),
                    "error": str(exc)}
-        pending_file.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        try:
+            _persist_pending_contract_reconciliation(storage, binding, payload)
+        except Exception as persist_exc:
+            raise RuntimeError(
+                "clarification is saved to the Git plan/spec, but both Agent OS reconciliation "
+                "and its local retry record failed"
+            ) from persist_exc
         raise RuntimeError(
             "clarification is saved to the Git plan/spec, but Agent OS contract reconciliation is pending"
         ) from exc

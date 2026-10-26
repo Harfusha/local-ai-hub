@@ -67,13 +67,21 @@ python tools/hubctl.py status
 
 Local AI Hub provides durable execution and memory primitives mapped into the standard tools:
 - `local_ai_coord`:
-  - Plans: `plan_init`, `plan_list`, `plan_get`, `plan_create`, `plan_update`, `plan_task_edit`, `plan_task_delete`, `plan_validate`, `plan_archive`, `plan_board_view`, `plan_adopt_legacy_board`. Authoritative plans are stored in `.local-ai-hub/plans/<plan-id>.plan.json`. Single source of truth; never create secondary markdown plans.
+  - Plans: `plan_init`, `plan_list`, `plan_get`, `plan_create`, `plan_update`, `plan_task_edit`, `plan_task_delete`, `plan_validate`, `plan_archive`, `plan_board_view`, `plan_adopt_legacy_board`, `plan_bind_task`, `plan_reconcile_steering`. Authoritative plans are stored in `.local-ai-hub/plans/<plan-id>.plan.json`. Single source of truth; never create secondary markdown plans.
   - Tasks: `task_create`, `task_get`, `task_checkpoint`, `task_complete`, `task_fail`, `task_list`, `task_resume`, `task_budget_increase`.
   - Memory: `memory_record`, `memory_get`, `memory_find` (scoped key/value storage with substring `query` search).
   - Context: `context_compile` (assembles bounded state, active task, memories, negative knowledge, and active leases).
   - Verification: `verify_receipt`, `verify_completion` (receipt-gated task completion).
   - Negative knowledge: `negative_knowledge_record`, `negative_knowledge_find` (prevents repeating failed approaches).
   - Accepts optional `task_id` and `criterion` to auto-mint verification receipts on passing test/lint commands.
+
+### Required plan workflow
+
+- At session start, resolve the exact repository/worktree root, read its scoped briefing, and list plans. Reuse the matching active plan; create one only when none covers the requested work. Filter the project Kanban by the chosen `plan_id`.
+- Before implementation, bind the Agent OS task and current session to its plan task. Keep title, description, acceptance criteria, owner, active status, next action, blockers, and integration target current through `plan_task_edit` and task checkpoints. Re-read on revision conflicts; never create a duplicate task to bypass a conflict or lost session.
+- Persist every operator clarification from chat before continuing: update the relevant Git specification or create one if none applies, reconcile the plan and Agent OS contract revision, and retain the clarification as durable steering. A failed reconciliation must remain visible and be retried from its persisted task/retry state.
+- Mark source complete only with authentic broker-backed verification receipts. Mark delivery done only after the required branch/worktree changes are integrated and verified in the target repository. A plan status, successful file write, test output pasted by a caller, or merge claim alone is not completion evidence.
+- Before handoff or session end, checkpoint the next action and blockers, verify the plan shows the same state, and leave ownership explicit. On resume, inspect the existing binding and active plan before starting work.
 
 ## Local model policy
 

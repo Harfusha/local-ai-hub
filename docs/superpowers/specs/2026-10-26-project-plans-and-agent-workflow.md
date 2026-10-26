@@ -1,6 +1,6 @@
 # Repository-owned Hub workspace and agent workflow
 
-Status: IMPLEMENTED, revision 5, 2026-10-26. Implementation authorized and delivered: file-backed plans in `.local-ai-hub/plans/<plan-id>.plan.json`, 9-step atomic storage protocol with crash recovery, consolidated single-planner architecture routing Kanban and session briefings to `RepoPlanWorkspace`, Agent OS task bindings and contract revision reconciliation, authentic native command verification receipts, host capability adapters and managed instructions, and full end-to-end multi-worktree integration acceptance suite.
+Status: IMPLEMENTED IN SOURCE, revision 6, 2026-10-27. The candidate provides file-backed plans, crash-recoverable storage, project/plan Kanban views, Agent OS bindings and contract reconciliation, broker-backed verification, and managed host instructions/hooks. Local acceptance passed: 170 planner/Agent OS/host/daemon tests, 790 surface tests, static checks, selftest, and isolated wheel/MCP smoke. Hosted GitHub Actions run #173 is still in progress; release acceptance remains pending its result. The multi-worktree test proves lifecycle and rejects caller-minted receipts; it does not claim a complete production broker receipt-to-merge acceptance run.
 
 ## Operator requirements and current decision
 
@@ -10,7 +10,7 @@ The latest operator direction replaces the earlier database-owned planner and pe
 
 This document is a specification, not a live implementation plan. Existing governing instructions remain in force until the replacement is implemented and validated; do not disable current planning prematurely.
 
-## Current source evidence
+## Initial source evidence (design baseline)
 
 Source inspected in this checkout on 2026-10-26:
 
