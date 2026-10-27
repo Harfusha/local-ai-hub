@@ -1520,15 +1520,15 @@ def test_work_accepts_id_alias_and_goal():
 
 
 # ---------------------------------------------------------------------------
-# 4. local_ai_coord task_create string tolerance and criterion alias
+# 4. local_ai_coord task_create criteria and criterion alias
 # ---------------------------------------------------------------------------
 
-def test_coord_task_create_string_criteria_and_criterion():
+def test_coord_task_create_criteria_and_criterion():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
         mc.coord.return_value = {"success": True, "task_id": "T-99"}
-        # Single string acceptance_criteria
-        res = local_ai_coord(action="task_create", root="/repo", goal="Fix bug", acceptance_criteria="pytest passes")
-        assert res.get("success") is True, f"task_create with string acceptance_criteria failed: {res}"
+        # Acceptance criteria use the canonical array contract.
+        res = local_ai_coord(action="task_create", root="/repo", goal="Fix bug", acceptance_criteria=["pytest passes"])
+        assert res.get("success") is True, f"task_create with acceptance_criteria failed: {res}"
         contract = mc.coord.call_args[1].get("contract", {})
         assert contract.get("acceptance_criteria") == ["pytest passes"]
 

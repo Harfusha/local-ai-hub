@@ -57,6 +57,9 @@ def test_parser_initialization_is_serialized(monkeypatch) -> None:
 
 def test_parser_lock_covers_native_tree_walk_when_parser_is_reused(monkeypatch) -> None:
     monkeypatch.setattr(treesitter_parser, "_use_isolated_worker", lambda: False)
+    # Other tests may permanently disable the shared worker after a simulated crash.
+    # This test exercises the in-process parser lock, independently of that state.
+    monkeypatch.setattr(treesitter_parser, "_worker_disabled_result", lambda: None)
     class Parser:
         def parse(self, _source: bytes) -> SimpleNamespace:
             return SimpleNamespace(root_node=object())

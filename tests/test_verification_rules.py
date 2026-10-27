@@ -384,81 +384,18 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         },
         kind="source_review",
     )
-    project = resolve_project_context(root, state_dir)
-    command = "python -m pytest -q"
-    command_digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
-    environment_digest = project_command_environment_sha256(project.settings, "test")
-    arguments_digest = hashlib.sha256(b"[]").hexdigest()
-    binding = {
-        "project_alias": "test",
-        "project_config_digest": project.config_digest,
-        "configured_command_sha256": command_digest,
-        "caller_arguments_sha256": arguments_digest,
-        "command_sha256": command_digest,
-        "project_environment_sha256": environment_digest,
-    }
-    execution_binding_digest = hashlib.sha256(
-        json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    command_proof = {
-            "kind": "work_command_verification",
-            "passed": True,
-            "task_id": "task-mcp",
-            "owner": "agent",
-            "repository_revision": "rev-mcp",
-            "mutation_generation": 0,
-            "criterion": "test",
-            "command_id": "cmd-mcp",
-            "command_classification": "test",
-            "command": command,
-            "command_sha256": command_digest,
-            **binding,
-            "project_execution_binding_sha256": execution_binding_digest,
-            "exit_code": 0,
-            "result": {"success": True, "exit_code": 0},
-            "cached": False,
-        }
-    command_evidence = artifact_store.put_json(
-        command_proof,
-        kind="command_verification",
-    )
-    verification_store.record(
-        VerificationReceipt.create(
-            "task-mcp",
-            "required_commands",
-            evidence_id=source_evidence,
-            owner="agent",
-            repository_revision="rev-mcp",
+    with pytest.raises(ValueError, match="authentic broker execution provenance"):
+        verification_store.record(
+            VerificationReceipt.create(
+                "task-mcp", "required_commands", evidence_id=source_evidence,
+                owner="agent", repository_revision="rev-mcp",
+            )
         )
-    )
-    command_receipt = VerificationReceipt.create(
-        "task-mcp",
-        "test",
-        evidence_id=command_evidence,
-        command_id="cmd-mcp",
-        owner="agent",
-        repository_revision="rev-mcp",
-        mutation_generation=0,
-        evidence_type="test",
-    )
-    verification_store.record(command_receipt)
     first_completion_attempt = mcp_server.local_ai_coord(
         action="task_complete", task_id="task-mcp", root=str(root), reason="done"
     )
     assert first_completion_attempt["success"] is False
     assert task_store.get("task-mcp").status.value == "planned"
-    _bind_execution_record(
-        verification_store,
-        command_receipt,
-        command_proof,
-        root,
-    )
-
-    completed = mcp_server.local_ai_coord(
-        action="task_complete", task_id="task-mcp", root=str(root), reason="done"
-    )
-    assert completed["success"] is True
-    assert completed["task"]["status"] == "completed"
 
 
 def test_invalid_project_configuration_blocks_completion(tmp_path: Path) -> None:

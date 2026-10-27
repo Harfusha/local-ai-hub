@@ -980,6 +980,7 @@ def test_file_inventory_reuses_stat_for_snapshot_read(tmp_path: Path, monkeypatc
     tools = RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}})
     original_read = tools._read_snapshot
     original_stat = Path.stat
+    original_lstat = Path.lstat
     supplied_stats: list[os.stat_result | None] = []
     stat_calls: list[Path] = []
     link_checks: list[Path] = []
@@ -998,8 +999,14 @@ def test_file_inventory_reuses_stat_for_snapshot_read(tmp_path: Path, monkeypatc
                 link_checks.append(path)
         return original_stat(path, *args, **kwargs)
 
+    def count_lstat(path: Path) -> os.stat_result:
+        if path == source:
+            link_checks.append(path)
+        return original_lstat(path)
+
     monkeypatch.setattr(tools, "_read_snapshot", capture_stat)
     monkeypatch.setattr(Path, "stat", count_stat)
+    monkeypatch.setattr(Path, "lstat", count_lstat)
 
     inventory = tools.file_inventory(str(tmp_path), include_hashes=True)
 
@@ -1008,6 +1015,27 @@ def test_file_inventory_reuses_stat_for_snapshot_read(tmp_path: Path, monkeypatc
     assert supplied_stats[0] is not None
     assert len(stat_calls) == 1
     assert link_checks
+
+
+def test_bounded_inventory_is_stable_when_filesystem_order_varies(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.py").write_text("needle = 1\n", encoding="utf-8")
+    (root / "z.py").write_text("other = 2\n", encoding="utf-8")
+    tools = RepositoryTools({"server": {"state_dir": str(tmp_path / "state")},
+                             "search": {"max_files": 1, "prefer_git_files": False,
+                                        "use_git_grep_fallback": False, "use_ripgrep_if_available": False}})
+    original_walk = os.walk
+
+    def reversed_walk(*args, **kwargs):
+        for directory, dirs, files in original_walk(*args, **kwargs):
+            dirs.reverse()
+            files.reverse()
+            yield directory, dirs, files
+
+    monkeypatch.setattr(os, "walk", reversed_walk)
+    result = tools.file_inventory(str(root), include_hashes=False)
+    assert [item["path"] for item in result["files"]] == ["a.py"]
 
 
 def test_file_inventory_refreshes_stale_stat_before_snapshot_cache_hit(

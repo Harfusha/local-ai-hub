@@ -582,11 +582,11 @@ class RepositoryTools:
                     relative_dir = Path(dirpath).relative_to(base)
                 except ValueError:
                     relative_dir = Path()
-                dirnames[:] = [
+                dirnames[:] = sorted((
                     d for d in dirnames
                     if d.lower() not in self.ignore_dirs
                     and not is_root_archive_path(relative_dir / d)
-                ]
+                ), key=lambda name: (name.casefold(), name))
                 try:
                     rel_parts = Path(dirpath).relative_to(base).parts
                     if len(rel_parts) >= max_depth:
@@ -610,7 +610,7 @@ class RepositoryTools:
                         continue
                 dirnames[:] = kept_dirnames
 
-                for name in filenames:
+                for name in sorted(filenames, key=lambda value: (value.casefold(), value)):
                     p = Path(dirpath) / name
                     if not self._inventory_path_safe(base, p):
                         continue
@@ -1622,14 +1622,14 @@ class RepositoryTools:
                 for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
                     relative_dir = Path(dirpath).relative_to(base)
                     depth = len(relative_dir.parts)
-                    dirnames[:] = [
+                    dirnames[:] = sorted((
                         name for name in dirnames
                         if name.casefold() not in _HARD_SEARCH_DIRS
                         and name.casefold() not in self.ignore_dirs
                         and depth < max_depth
                         and self._inventory_path_safe(base, Path(dirpath) / name)
-                    ]
-                    for name in filenames:
+                    ), key=lambda name: (name.casefold(), name))
+                    for name in sorted(filenames, key=lambda value: (value.casefold(), value)):
                         entries_seen += 1
                         if entries_seen > entry_budget:
                             break
