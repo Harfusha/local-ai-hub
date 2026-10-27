@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -97,6 +99,10 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
         "def target():\n    return 1\n\ndef caller():\n    return target()\n",
         encoding="utf-8",
     )
+    (workspace / "test_sample.py").write_text(
+        "from sample import target\n\ndef test_target():\n    assert target() == 1\n",
+        encoding="utf-8",
+    )
     measurements: dict[str, dict[str, object]] = {}
 
     callers = client.callers(str(workspace), "target", limit=10)
@@ -162,39 +168,26 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
         },
     )
     assert evidence_id
-    receipt_evidence_id = app.artifacts.put_json(
-        {
-            "kind": "work_command_verification",
-            "passed": True,
-            "task_id": "t19-change-check",
-            "owner": task.owner,
-            "criterion": criterion,
-            "command_id": "pytest-focused",
-            "command_classification": "test",
-            "command": "python -m pytest -q tests/test_t19_scenario.py",
-            "repository_revision": repository_revision,
-            "mutation_generation": 0,
-            "exit_code": 0,
-            "cached": False,
-            "result": {"success": True, "exit_code": 0},
-        },
-        kind="command_verification",
+    command = subprocess.list2cmdline(
+        [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_sample.py"]
     )
-    receipt = client.verify_receipt(
-        "t19-change-check",
-        criterion,
-        command_id="pytest-focused",
-        evidence_id=receipt_evidence_id,
-        details={"exit_code": 0},
-        root=str(workspace),
-        repository_revision=repository_revision,
+    execution = app.commands.run(
+        command, str(workspace), task_id="t19-change-check", criterion=criterion,
+        timeout=30, bypass_cache=True,
+    )
+    assert execution.get("success") is True, execution
+    broker_receipt = execution.get("verification_receipt")
+    assert isinstance(broker_receipt, dict), execution
+    receipt = client.post(
+        "/api/agent-state/verification",
+        {"action": "receipt", "root": str(workspace), "receipt": broker_receipt},
     )
     completion = client.verify_completion("t19-change-check", root=str(workspace))
     measurements["change verification"] = {
         "success": receipt.get("success") is True and completion.get("success") is True,
         "calls": len(calls),
     }
-    assert receipt.get("success") is True
+    assert receipt.get("success") is True, (receipt, broker_receipt, repository_revision)
     assert completion.get("success") is True
     assert len(calls) == 3
     assert calls[0]["path"] == "/api/agent-state/tasks"
@@ -209,15 +202,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert calls[1]["path"] == "/api/agent-state/verification"
     assert calls[1]["payload"] == {
         "action": "receipt",
-        "receipt": {
-            "task_id": "t19-change-check",
-            "criterion": criterion,
-            "passed": True,
-            "command_id": "pytest-focused",
-            "evidence_id": receipt_evidence_id,
-            "repository_revision": repository_revision,
-            "details": {"exit_code": 0},
-        },
+        "receipt": broker_receipt,
         "root": str(workspace),
     }
     assert calls[2]["path"] == "/api/agent-state/verification"
@@ -230,6 +215,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert calls[2]["payload"]["action"] == "completion"
 
     calls.clear()
+    generations.clear()
     started = client.post(
         "/api/delegate",
         {
