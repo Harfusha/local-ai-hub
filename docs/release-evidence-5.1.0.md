@@ -1,20 +1,21 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `e4cc6a52051e1db0aad5e0c7a9c4a6374fb751c8` (evidence below refers to that source commit or explicitly identified earlier commits).
+**Candidate revision:** `ff0ef061b72418d71ff9422757432d7057534ec1` (evidence below refers to that source commit or explicitly identified earlier commits).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
-- [CI for `e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) is pending. [CI for `f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) was still running Ubuntu 3.14 at the last check; previous runs for `93b253f6` and `341d44f7` failed.
-- Surface audit and inventory passed **774 tests** on `f3098253`. The dashboard, loading-state and plan verification tests passed **25 tests** on `e4cc6a52`, and `tools/check_dashboard.py` passed. These checks do not prove the complete backend plan lifecycle.
-- An untouched archive of `e4cc6a52` passed `python tools/release_check.py --strict-tree`; selftest passed **6/6** on that candidate. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved.
-- Wheel built from the clean `e4cc6a52` archive: SHA256 `1a05c73d1fd7df151d6888f10adb3a19bab53dd9cc6e699c037f99ba0a3d7c2c`. An isolated Python 3.13 environment and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. MCP status was degraded in that smoke run; it is not live acceptance.
+- [CI for `ff0ef061`](https://github.com/Harfusha/local-ai-hub/actions/runs/40531160997) is queued. The earlier runs for [`f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) and [`e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) failed on Ubuntu 3.14.
+- Surface audit and inventory passed **774 tests** on `37a6d9c9`; the plan binding/Agent OS/MCP cohort passed **24 tests** on `ff0ef061`. The earlier dashboard, loading-state and plan verification checks passed **25 tests** on `e4cc6a52`. These checks do not prove the complete backend plan lifecycle.
+- A clean archive of `37a6d9c9` passed `python tools/release_check.py --strict-tree` and selftest **6/6**. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved. Exact `ff0ef061` release verification remains open.
+- Wheel built from the clean `37a6d9c9` archive: SHA256 `643592a7d3a0099604e9e8c992267bcfe5f091349da3fe67d5ff8f970cc0a5ae`. An isolated Python 3.13 environment and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. This is not live acceptance and predates `ff0ef061`.
 - `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs, parity, p95 1.72x and p99 1.95x. It applies to source `94a485ffecf6bc3c9810718b2f658b6df0120b64` and closes only the JSON-budget tail gate.
 - Pre-restart `/health` returned success/version `5.1.0`; `hubctl status` reported PID `18096`, and its command points to this repository's `.venv` and source tree. The running process has not loaded candidate code yet.
 - Pre-restart MCP `plan_list` on this root failed with `acceptance_criteria is not valid for action='plan_list'` (request on 2026-10-27). Candidate source includes the transport metadata fix; live MCP verification remains open.
 - Current screenshot, config/state baseline, safe restart, post-restart process/source proof, dashboard plan create/list/edit check, and receipt-gated Agent OS completion remain open. Several active chats are using the shared Hub, so restart is deferred until they finish.
 - Plan file status is a declaration: direct edits and checkpoint synchronization do not yet enforce authentic source verification and target integration. The dashboard labels unverified completion accordingly; it does not repair the missing backend gate.
+- The earlier detached agent-evaluation worktree at `1e6584ac` is merged into master. Its remaining tracked two-file diff has the same stable patch ID as integrated commit `c3a0f648`; it is already incorporated, not a new implementation. The checkout and its potentially ignored local files remain preserved, so this is not an archival or cleanup claim.
 
 ## Historical verification receipts
 
