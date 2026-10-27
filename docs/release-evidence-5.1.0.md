@@ -1,8 +1,8 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** current source candidate passes hosted CI and isolated wheel smoke; verified plan completion and live activation remain open.
+**State:** source candidate `f2354144` passes hosted CI and isolated wheel smoke. Documentation-only master snapshot `6926126ce550f1b19c3d10c77ca006dd54ad41cd` is installed and the live Hub was restarted; its CI run is still in progress (0/12 jobs at the latest check). Post-activation `/health` is verified. An earlier dashboard capture showed Healthy, but the latest browser navigation showed “Loading runtime health”; its follow-up was interrupted, so current dashboard readiness and plan lifecycle remain unverified. Agent OS completion remains open because four canonical broker receipts are missing.
 **Candidate revision:** `f2354144357c62f8fa629132589963882496a0a8` (`master`; current run and test receipts below bind to this revision).
-**Final master snapshot checked:** `8a998f06a8963bc53e78d1545a49b2c47e15fcd7`, a documentation-only successor to the source candidate; [its CI run](https://github.com/Harfusha/local-ai-hub/actions/runs/40568498434) concluded **success**. The package and wheel receipt below remain bound to the exact source candidate.
+**Installed master snapshot:** `6926126ce550f1b19c3d10c77ca006dd54ad41cd`, a documentation-only successor to the source candidate; the source/package code remains identical to `f2354144`. [CI run 40574299038](https://github.com/Harfusha/local-ai-hub/actions/runs/40574299038) for this docs-only snapshot remained **in progress (0/12 jobs)** at the 2026-10-27 check. The package and wheel receipt below remain bound to the exact source candidate.
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
@@ -12,7 +12,7 @@
 - Package job passed `release_check.py`, `tools/selftest.py` (**6/6**), dashboard check, clean package-tree checks, wheel build and fresh venv install/`pip check`/MCP smoke. The authentic [wheel smoke receipt artifact](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871/artifacts/12763517660) reports `success=true`, `smoke=passed`, version `5.1.0`, five tools, `degraded=false`; wheel SHA-256 is `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3`.
 - Surface audit at exact commit `f2354144357c62f8fa629132589963882496a0a8`: `python -B -m pytest -q --tb=short tests/test_surface_audit_policy.py tests/test_surface_inventory.py` passed **774 tests in 135.47s** (2026-10-27).
 - Earlier archive `0c373aea` wheel (SHA-256 `7b7b4db464b4f2fb1eba94ecf00f0d32f56ffd6cb5768f36151f76dafccba774`) also passed isolated install, `pip check` and MCP smoke. Its package inputs match `f2354144`, but it is historical and superseded by exact-candidate wheel receipt above.
-- [Pre-activation dashboard screenshot](dashboard-live-2026-10-27.png) records the existing board, not the candidate dashboard. Fresh existing-service `/health` returned HTTP 200 and `success=true`, version `5.1.0`; PID `18096` started before candidate `f2354144` and has not loaded candidate code. Do not interpret either as activation proof.
+- The [earlier post-activation dashboard screenshot](dashboard-live-2026-10-27-post-activation.jpg) (SHA-256 `3b869c462ef33e082b326b4bd1a17eb307a57ab09eea8d088aac532995c3b32a`) showed the restarted service Healthy, with Hub/Ollama running and Agent OS enabled. The service was PID `41656` on port `11435`; `/health` returned HTTP 200 and version `5.1.0`. A later browser navigation displayed “Loading runtime health”; its follow-up capture was interrupted, so this screenshot does not prove current dashboard readiness or plan lifecycle acceptance.
 - Benchmark: [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json) records **1,000** independent pairs, parity, p95 **1.72x**, p99 **1.95x**, source `94a485ffecf6bc3c9810718b2f658b6df0120b64`; closes JSON-budget tail gate only.
 - Agent OS `verify_completion` was run for `task_release_5.1.0`: `complete=false`, no receipts, unsatisfied criteria `selftest passed`, `release check passed`, `wheel smoke passed`, `1000 benchmark passed`. Hosted CI artifacts are evidence but are not canonical Agent OS broker receipts; do not convert or fabricate them as such. Completion remains open until supported receipt production and live integration gates exist.
 
@@ -20,14 +20,14 @@
 |---|---|
 | Candidate commit | `f2354144357c62f8fa629132589963882496a0a8` |
 | Green CI | [Run 40563606871](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871): 14 applicable jobs passed; release-publish job skipped on non-tag run. |
-| Final master snapshot CI | [Run 40568498434](https://github.com/Harfusha/local-ai-hub/actions/runs/40568498434): success on documentation-only commit `8a998f06a8963bc53e78d1545a49b2c47e15fcd7`. |
+| Installed master snapshot CI | [Run 40574299038](https://github.com/Harfusha/local-ai-hub/actions/runs/40574299038): in progress (0/12 jobs) at the 2026-10-27 check on documentation-only commit `6926126ce550f1b19c3d10c77ca006dd54ad41cd`. Earlier docs-only snapshot `8a998f06` passed run 40568498434. |
 | Wheel SHA-256 | `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3` |
 | Wheel smoke | `success=true`, `smoke=passed`, `version=5.1.0`, `tool_count=5`, `degraded=false`; CI artifact bound to candidate commit. |
 | Surface audit | 774 passed on candidate commit in 135.47s. |
 | Selftest | CI package job passed 6/6. |
 | Benchmark | 1,000 pairs; p95 1.72x, p99 1.95x; JSON-budget tail gate only. |
-| Dashboard screenshot | [Existing pre-activation board](dashboard-live-2026-10-27.png); candidate dashboard capture pending. |
-| Live Hub | PID `18096`, HTTP 200 `/health`, version `5.1.0`; process predates candidate; activation pending. |
+| Dashboard screenshot | [Earlier post-activation dashboard](dashboard-live-2026-10-27-post-activation.jpg), SHA-256 `3b869c462ef33e082b326b4bd1a17eb307a57ab09eea8d088aac532995c3b32a`; showed Healthy, Hub/Ollama running and Agent OS enabled. Latest navigation showed “Loading runtime health”; current dashboard readiness and plan lifecycle remain unverified. |
+| Live Hub | PID `41656`, port `11435`, `/health` HTTP 200, version `5.1.0`; restarted from managed `.venv` after installing clean master commit `6926126c`. |
 | Agent OS completion | `complete=false`; no receipts; four criteria unsatisfied. |
 - Clean archive `0c373aea`: strict-tree release check, dashboard static check and selftest **6/6** passed. A separate isolated browser showed the board refusing to present a malformed plan as an empty successful board. This archived candidate's hosted CI [run](https://github.com/Harfusha/local-ai-hub/actions/runs/40562086693) is historical; it does not supersede current run above.
 - Clean archive `4e83ccb1`: strict-tree release check and selftest **6/6** passed. A fresh isolated install of wheel SHA-256 `c53f7e4526cf7658c8bb3191ea8094bb2d59628eeaffc219ed2ca22148e79c15` passed `pip check` and MCP wheel smoke. [CI](https://github.com/Harfusha/local-ai-hub/actions/runs/40561084376) is running. Isolated dashboard testing covered plan and task creation, editing, status movement and reload persistence; it is not live shared-service acceptance.

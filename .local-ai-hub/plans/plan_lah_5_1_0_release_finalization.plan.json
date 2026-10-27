@@ -16,12 +16,12 @@
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "CI pending; plan completion backend and native receipt producer are not yet verified; existing plan task has no Agent OS binding; shared Hub is in use.",
+      "blocker": "Run 40574299038 remains in progress with 0/12 jobs. Existing task_release_5.1.0 cannot bind to this session (plan_bind_task rejects session_id mismatch); do not duplicate. Hub snapshot 6926126 is installed/restarted/online, and live plan_list/get/task_edit API calls succeed; dashboard UI create/list/edit acceptance remains incomplete after Computer Use was stopped with Escape.",
       "clarifications": [],
       "depends_on": [],
       "description": "Finish CI and candidate-bound release checks, confirm the installed runtime reflects the pushed source, resolve the dashboard plan-creation defect, and verify the repo-specific Kanban. Preserve unrelated operator files and do not restart the shared Hub while other chats are active.",
       "kind": "code",
-      "next_action": "Implement authentic plan completion and integration verification; resolve exact-candidate CI; after other active chats release the Hub, restart and validate current runtime and dashboard.",
+      "next_action": "Commit and push the truthful release-status/evidence diff. Reconcile CI 40574299038 (currently 0/12), finish live dashboard plan lifecycle acceptance when UI is available, then obtain authentic Agent OS receipts before closure.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_status": "in_progress"
     }
