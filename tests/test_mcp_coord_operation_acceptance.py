@@ -432,6 +432,62 @@ def _prepare_coord_rpc(monkeypatch):
     return backend
 
 
+def test_local_ai_coord_plan_list_ignores_host_injected_acceptance_criteria(monkeypatch, tmp_path):
+    root = str(tmp_path.resolve())
+    backend = _prepare_coord_rpc(monkeypatch)
+
+    tool_result = asyncio.run(
+        mcp_server.mcp.call_tool(
+            "local_ai_coord",
+            {
+                "action": "plan_list",
+                "root": root,
+                "acceptance_criteria": ["criteria from the active host task"],
+            },
+        )
+    )
+    content = tool_result[0][0] if isinstance(tool_result, tuple) else tool_result[0]
+    result = json.loads(content.text)
+
+    assert result["success"] is True, result
+    assert backend.calls == [{"action": "plan_list", "root": root}]
+
+
+def test_local_ai_coord_plan_actions_still_reject_other_cross_action_fields(monkeypatch, tmp_path):
+    root = str(tmp_path.resolve())
+    backend = _prepare_coord_rpc(monkeypatch)
+
+    tool_result = asyncio.run(
+        mcp_server.mcp.call_tool(
+            "local_ai_coord",
+            {"action": "plan_list", "root": root, "criteria": ["must reject"]},
+        )
+    )
+    content = tool_result[0][0] if isinstance(tool_result, tuple) else tool_result[0]
+    result = json.loads(content.text)
+
+    assert result["success"] is False
+    assert "criteria" in result["error"]
+    assert backend.calls == []
+
+
+def test_local_ai_coord_direct_plan_call_rejects_acceptance_criteria(monkeypatch, tmp_path):
+    root = str(tmp_path.resolve())
+    backend = _prepare_coord_rpc(monkeypatch)
+
+    call_token = mcp_server._CURRENT_MCP_CALL_ARGUMENTS.set(None)
+    try:
+        result = mcp_server.local_ai_coord(
+            action="plan_list", root=root, acceptance_criteria=["must reject as an explicit plan argument"]
+        )
+    finally:
+        mcp_server._CURRENT_MCP_CALL_ARGUMENTS.reset(call_token)
+
+    assert result["success"] is False
+    assert "acceptance_criteria" in result["error"]
+    assert backend.calls == []
+
+
 def test_local_ai_coord_blackboard_get_forwards_board_and_section(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)

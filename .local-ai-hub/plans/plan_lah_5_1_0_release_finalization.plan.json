@@ -1,0 +1,29 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Finalize current Local AI Hub 5.1.0 candidate. Resolve hosted CI; verify clean release/wheel evidence; prove installed runtime source and safe live reload; repair and verify project-plan MCP/dashboard workflow; preserve unrelated user data. Close only after exact candidate is pushed and live checks reflect it.",
+  "id": "plan_lah_5_1_0_release_finalization",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
+      "acceptance_criteria": [
+        "CI matrix passes for exact HEAD",
+        "Clean strict release check and isolated wheel smoke pass for exact HEAD",
+        "Live Hub process is proven to load exact pushed source after safe restart",
+        "Dashboard health and project plan creation/list/task editing verified",
+        "No unrelated user work is modified or committed"
+      ],
+      "accountable_role": "Codex",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Finish CI and candidate-bound release checks, confirm the installed runtime reflects the pushed source, resolve the dashboard plan-creation defect, and verify the repo-specific Kanban. Preserve unrelated operator files and do not restart the shared Hub while other chats are active.",
+      "kind": "code",
+      "next_action": "Wait for CI #198. Fix and test dashboard plan ID generation. After active shared sessions release the Hub, restart from exact pushed source and run doctor, runtime, and dashboard acceptance.",
+      "title": "Complete 5.1.0 release and live acceptance",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Local AI Hub 5.1.0 release finalization"
+}

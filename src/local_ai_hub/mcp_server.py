@@ -4566,10 +4566,9 @@ def local_ai_coord(
                         if name in signature.parameters and value != signature.parameters[name].default}
         else:
             supplied = dict(supplied)
-        # Some MCP hosts attach the active task's changed_paths to every
-        # coordination call. Plans have their own task/path contract, so this
-        # cross-action envelope field must not make read or write operations
-        # fail strict per-action validation.
+        # Some MCP hosts attach current-task metadata to every coordination
+        # call. Plans have their own task/path contract, so these envelope
+        # fields must not make plan actions fail strict per-action validation.
         supplied.pop("changed_paths", None)
         error = validate_operation_arguments("local_ai_coord", action, supplied)
         if error:
@@ -6167,6 +6166,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         return contents, safe
 
     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        arguments = dict(arguments)
+        if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("plan_"):
+            # MCP hosts can append the active task's acceptance criteria to
+            # every call. Plan actions have a separate strict argument schema.
+            arguments.pop("acceptance_criteria", None)
         pending_accounting: list[dict[str, Any]] = []
         pending_token = _PENDING_MCP_ACCOUNTING.set(pending_accounting)
         call_token = _CURRENT_MCP_CALL_ARGUMENTS.set((name, dict(arguments)))

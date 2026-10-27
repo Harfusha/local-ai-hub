@@ -1,0 +1,4 @@
+# Local AI Hub workspace ignores
+local/
+.tmp_*
+*.tmp

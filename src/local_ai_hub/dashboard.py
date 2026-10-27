@@ -6138,12 +6138,12 @@ function openCreatePlanModal(){
   if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap"><form class="modal-form" onsubmit="submitCreatePlan(event)">
       <div class="form-group"><label for="newPlanTitle">Plan name *</label><input id="newPlanTitle" required maxlength="160" autofocus placeholder="e.g. Project planning and delivery"></div>
-      <div class="form-group"><label for="newPlanId">Stable plan ID *</label><input id="newPlanId" required pattern="[a-z0-9][a-z0-9._-]*" maxlength="80" placeholder="project-planning"><span class="form-hint">Stored as a repository file; keep this ID stable.</span></div>
+      <div class="form-group"><label for="newPlanId">Stable plan ID *</label><input id="newPlanId" required pattern="plan_[A-Za-z0-9][A-Za-z0-9_-]{0,79}" maxlength="85" placeholder="plan_project-planning"><span class="form-hint">Stored as a repository file; keep this ID stable.</span></div>
       <div class="form-group"><label for="newPlanDescription">Description</label><textarea id="newPlanDescription" rows="4" maxlength="12000"></textarea></div>
       <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button><button type="submit" class="btn ok">Create Plan</button></div>
     </form></div>`;
   const title=$('newPlanTitle'),id=$('newPlanId');
-  title?.addEventListener('input',()=>{if(id&&!id.dataset.edited)id.value=title.value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80)});
+  title?.addEventListener('input',()=>{if(id&&!id.dataset.edited){const slug=title.value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80);id.value='plan_'+(slug||'new')}});
   id?.addEventListener('input',()=>{id.dataset.edited='true'});
   $('modalBg')?.classList.add('open');
 }
