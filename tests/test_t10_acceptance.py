@@ -982,6 +982,7 @@ def test_file_inventory_reuses_stat_for_snapshot_read(tmp_path: Path, monkeypatc
     original_stat = Path.stat
     supplied_stats: list[os.stat_result | None] = []
     stat_calls: list[Path] = []
+    link_checks: list[Path] = []
 
     def capture_stat(path: Path, *, stat: os.stat_result | None = None) -> tuple[str, list[str]]:
         supplied_stats.append(stat)
@@ -991,7 +992,10 @@ def test_file_inventory_reuses_stat_for_snapshot_read(tmp_path: Path, monkeypatc
 
     def count_stat(path: Path, *args, **kwargs) -> os.stat_result:
         if path == source:
-            stat_calls.append(path)
+            if kwargs.get("follow_symlinks", True):
+                stat_calls.append(path)
+            else:
+                link_checks.append(path)
         return original_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(tools, "_read_snapshot", capture_stat)
@@ -1003,6 +1007,7 @@ def test_file_inventory_reuses_stat_for_snapshot_read(tmp_path: Path, monkeypatc
     assert len(supplied_stats) == 1
     assert supplied_stats[0] is not None
     assert len(stat_calls) == 1
+    assert link_checks
 
 
 def test_file_inventory_refreshes_stale_stat_before_snapshot_cache_hit(

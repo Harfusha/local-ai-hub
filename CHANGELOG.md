@@ -20,6 +20,7 @@
 - Redacted credentials idempotently in decision memory and hardened telemetry and SQLite accounting boundaries.
 - Hardened FastMCP schema generation and aligned ergonomics parameter contracts across all 7 canonical MCP tools.
 - Confined configurable project workspace and plan-intent paths to their repository roots, rejecting traversal and external targets.
+- Rejected symlinks and Windows reparse points during repository inventory before scanning or collecting files.
 
 ## 5.0.0 — 2026-10-19
 
