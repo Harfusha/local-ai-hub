@@ -533,6 +533,22 @@ class RepositoryTools:
             and relative.name.lower() not in self.special_filenames
         )
 
+    @staticmethod
+    def _inventory_path_safe(base: Path, path: Path) -> bool:
+        """Reject links and Windows reparse points before traversal or stat."""
+        try:
+            relative = path.relative_to(base)
+            current = base
+            for part in relative.parts:
+                current = current / part
+                info = current.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                    return False
+            path.resolve(strict=True).relative_to(base.resolve(strict=True))
+            return True
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     def _iter_files_with_stat(
         self, root: str, max_depth: int = 25, *, project_settings: Any | None = None,
         max_files: int | None = None,
@@ -583,17 +599,21 @@ class RepositoryTools:
                 for d in dirnames:
                     subdir = os.path.join(dirpath, d)
                     try:
+                        if not self._inventory_path_safe(base, Path(subdir)):
+                            continue
                         rpath = os.path.realpath(subdir)
                         if rpath in visited_realpaths:
                             continue
                         visited_realpaths.add(rpath)
                         kept_dirnames.append(d)
                     except Exception:
-                        kept_dirnames.append(d)
+                        continue
                 dirnames[:] = kept_dirnames
 
                 for name in filenames:
                     p = Path(dirpath) / name
+                    if not self._inventory_path_safe(base, p):
+                        continue
                     if p.suffix.lower() in self.ignore_extensions:
                         continue
                     if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
@@ -620,6 +640,8 @@ class RepositoryTools:
             # `git ls-files -co --exclude-standard` can return ignored paths from
             # other worktrees; configured exclusions apply to every inventory path.
             if self._is_ignored_relative_path(relative):
+                continue
+            if not self._inventory_path_safe(base, path):
                 continue
             try:
                 stat = path.stat()
@@ -1464,6 +1486,8 @@ class RepositoryTools:
         self, base: Path, path: Path, project_settings: Any, *, force_include: bool = False,
     ) -> bool:
         try:
+            if not self._inventory_path_safe(base, path):
+                return False
             if path.is_symlink():
                 return False
             lexical_relative = Path(os.path.abspath(path)).relative_to(base)
@@ -1541,6 +1565,8 @@ class RepositoryTools:
                             if entry.is_symlink():
                                 continue
                             child = Path(entry.path)
+                            if not self._inventory_path_safe(base, child):
+                                continue
                             relative_parts = child.relative_to(base).parts
                             denied_parts = relative_parts if entry.is_dir(follow_symlinks=False) else relative_parts[:-1]
                             if any(part.casefold() in _HARD_SEARCH_DIRS for part in denied_parts):
@@ -1601,6 +1627,7 @@ class RepositoryTools:
                         if name.casefold() not in _HARD_SEARCH_DIRS
                         and name.casefold() not in self.ignore_dirs
                         and depth < max_depth
+                        and self._inventory_path_safe(base, Path(dirpath) / name)
                     ]
                     for name in filenames:
                         entries_seen += 1
