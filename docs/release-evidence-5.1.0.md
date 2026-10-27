@@ -1,13 +1,15 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `dd06af108e00590385b2f030122c17a464ef0310` (evidence below refers to that source commit or explicitly identified earlier commits).
+**Candidate revision:** `7e30585b` (evidence below identifies its source commit; later changes require fresh verification).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
+- A wheel built from a clean Git archive of `7e30585b` has SHA-256 `1a17d891f2334402bc6f6b8691378eeb2f5c0d6a5f6e646fed56312d28c658f9`; installation in a fresh venv, `pip check` and `tools/wheel_smoke.py` passed. Smoke reported `tool_count=5` in its isolated degraded environment; this is not live runtime acceptance. A separate clean archive passed strict-tree release check and selftest **6/6**.
+- [CI for `7e30585b`](https://github.com/Harfusha/local-ai-hub/actions/runs/40546801072) is running; its Ubuntu 3.14 result and complete matrix are not yet established. Linux process-parent handling and a late HTTP watchdog race have regression coverage, but their relationship to every previous CI failure remains to be confirmed by the full run.
 - Subsequent planner, storage, Agent OS, host and Superpowers test cohort on `c42faaab` passed **88 tests**, with one Windows directory-symlink test skipped because the account lacked symlink privilege. These results do not establish authenticated delivery completion.
-- [CI for `2dfc4ee8`](https://github.com/Harfusha/local-ai-hub/actions/runs/40538366360) failed on Ubuntu 3.14: stdio cleanup compared a supervisor PID to the Hub owner PID, a concurrent delegate request failed before transport write, and Serena failure accounting reported zero instead of one. Cleanup was corrected subsequently; the other failures remain under investigation. [CI for `093a16bb`](https://github.com/Harfusha/local-ai-hub/actions/runs/40539833709) was still running at the latest check.
+- [CI for `2dfc4ee8`](https://github.com/Harfusha/local-ai-hub/actions/runs/40538366360) failed on Ubuntu 3.14: stdio cleanup compared a supervisor PID to the Hub owner PID, a concurrent delegate request failed before transport write, and Serena failure accounting reported zero instead of one. [CI for `093a16bb`](https://github.com/Harfusha/local-ai-hub/actions/runs/40539833709) subsequently failed on cleanup and transport. Later commits addressed observed Linux parent lookup, a transport watchdog race and test isolation; current CI must verify the integrated result.
 - Surface audit and inventory passed **774 tests** on `dd06af10`; the plan binding/Agent OS/MCP cohort passed **25 tests** on `354e73e1`. The earlier dashboard, loading-state and plan verification checks passed **25 tests** on `e4cc6a52`. These checks do not prove the complete backend plan lifecycle.
 - A clean archive of `dd06af10` passed `python tools/release_check.py --strict-tree` and selftest **6/6**. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved.
 - Wheel built from the clean `dd06af10` archive: SHA256 `72b5a4905687b4cd84cd9c7dab9ce6541b1521d0d1b1bef62375f30433b0d608`. A fresh isolated Python 3.13 environment passed `pip check`; `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. This is not live acceptance.
