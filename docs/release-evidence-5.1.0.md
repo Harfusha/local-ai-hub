@@ -6,6 +6,7 @@
 
 ## Current candidate evidence — 2026-10-27
 
+- Subsequent planner, storage, Agent OS, host and Superpowers test cohort on `c42faaab` passed **88 tests**, with one Windows directory-symlink test skipped because the account lacked symlink privilege. These results do not establish authenticated delivery completion.
 - [CI for `2dfc4ee8`](https://github.com/Harfusha/local-ai-hub/actions/runs/40538366360) had Ubuntu 3.14 running at the latest check. [CI for `354e73e1`](https://github.com/Harfusha/local-ai-hub/actions/runs/40532239885) failed there: the stdio cleanup compared a supervisor PID to the Hub owner PID, and a concurrent delegate request failed before transport write. The latter's cause remains under investigation. Earlier runs for [`f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) and [`e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) also failed on Ubuntu 3.14.
 - Surface audit and inventory passed **774 tests** on `dd06af10`; the plan binding/Agent OS/MCP cohort passed **25 tests** on `354e73e1`. The earlier dashboard, loading-state and plan verification checks passed **25 tests** on `e4cc6a52`. These checks do not prove the complete backend plan lifecycle.
 - A clean archive of `dd06af10` passed `python tools/release_check.py --strict-tree` and selftest **6/6**. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved.
