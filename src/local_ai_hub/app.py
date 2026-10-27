@@ -126,9 +126,12 @@ def _status_probe_key(view: str, scope: str, key: str) -> str:
     return f"{view}:{scope}:{key}" if key in {"telemetry.summary", "preprocessing.status"} else key
 
 
+_CORE_STATUS_PROBES = frozenset({"headless", "runtime.online", "scheduler"})
+
+
 def _status_probe_affects_core_health(key: str, *, healthy: bool) -> bool:
-    """Keep optional reporting timeouts out of the Hub's core availability state."""
-    return not healthy and key != "telemetry.summary"
+    """Only required availability probes decide overall Hub health."""
+    return not healthy and key in _CORE_STATUS_PROBES
 
 
 def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None, completed_cache=None):

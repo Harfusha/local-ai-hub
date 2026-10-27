@@ -6,9 +6,12 @@ import pytest
 from local_ai_hub import app as app_module
 
 
-def test_telemetry_summary_timeout_does_not_degrade_core_hub_health():
+def test_diagnostic_probe_timeouts_do_not_degrade_core_hub_health():
     assert not app_module._status_probe_affects_core_health("telemetry.summary", healthy=False)
+    assert not app_module._status_probe_affects_core_health("preprocessing.stats", healthy=False)
+    assert not app_module._status_probe_affects_core_health("accelerators", healthy=False)
     assert app_module._status_probe_affects_core_health("runtime.online", healthy=False)
+    assert app_module._status_probe_affects_core_health("scheduler", healthy=False)
     assert not app_module._status_probe_affects_core_health("telemetry.summary", healthy=True)
 
 
