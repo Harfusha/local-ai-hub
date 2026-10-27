@@ -276,7 +276,7 @@ def test_registry_metadata_and_selector_schemas_cover_all_public_tools():
     for tool, selector in expected_selectors.items():
         contract = OPERATION_CONTRACTS[tool]
         schema = schemas[tool]
-        assert schema["x-operation-contract"]["actions"] == contract["actions"]
+        assert schema["x-operation-contract"]["actions"] == operation_metadata(tool)["actions"]
         assert schema["parameters"]["properties"][selector]["enum"] == list(contract["actions"])
 
 
@@ -972,7 +972,7 @@ def test_status_readiness_has_typed_identity_and_failure_contract():
     assert validate_operation_output("local_ai_status", "brief", brief) is None
     assert validate_operation_output("local_ai_status", "brief", {**brief, "degraded": "false"}) is not None
     assert validate_operation_output("local_ai_status", "brief", {**brief, "active_model": 42}) is not None
-    assert operation_actions("local_ai_status") == ("brief", "models")
+    assert operation_actions("local_ai_status") == ("brief",)
 
 
 
