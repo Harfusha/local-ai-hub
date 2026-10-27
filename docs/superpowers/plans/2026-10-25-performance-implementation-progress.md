@@ -79,6 +79,16 @@ current-source owned matrix and measurement contracts; execute Windows native
 experiment, then whole indexing A/B before any native adoption. Later historical
 claims do not establish current 5.1.0 release or hosted CI acceptance.
 
+**Gate reconciliation (2026-10-27):** The separate JSON-budget tail gate is closed
+by [`docs/perf_candidate_json_budget.json`](../../perf_candidate_json_budget.json):
+1,000 independently measured baseline/candidate pairs, matching outputs, p95
+speedup 1.72x and p99 speedup 1.95x at source
+`94a485ffecf6bc3c9810718b2f658b6df0120b64`. This closes that benchmark gate only.
+The next-gates paragraph above is a dated historical checkpoint, and the T12
+statement that all 24 findings are mapped records disposition coverage, not
+blanket performance acceptance. No broader T0–T12 acceptance is claimed here;
+current release gates remain tracked in [current status](local-ai-hub-current-status.md).
+
 ## Takeover, CI diagnosis, T0a producer sample timing and T7a whole-workflow measurement (2026-10-25T19:43:00Z)
 
 - Sole writer takeover on clean master `83ee70736289a4e097218f1d0abfc7c319155b9f`; task `post-gemini-audit-20261025` preserved; lease `lease_de297b580b43432a83dd`.

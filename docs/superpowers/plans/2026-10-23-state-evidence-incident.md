@@ -75,4 +75,5 @@ Fresh full validation and runtime acceptance remain required. The interrupted fu
 - [ ] Establish whether the incident's test execution could reach non-test data. Isolation of selected fixtures is not evidence that every executed path was isolated; retain this investigation until the original execution and its configured paths are verified.
   On 2026-10-27, the preserved `shard-05.manifest.json` (SHA-256 `1d26bebd6443c8e0e53febaefb573dbcb1961c4dbb7e76fe2fd3c847615da4c9`) contained 390 selected node IDs, 210 call reports and `session_finished=false`. It therefore cannot establish isolation for all selected tests, and the unavailable earlier manifests prevent an exhaustive audit of shards 0–4. The finding remains unverified.
 - [x] Put future immutable validation/release evidence outside a mutable runtime-state tree: Done. Benchmark records and release evidence artifacts are committed directly to version-controlled `docs/` paths.
-- [ ] Complete final 5.1.0 release verification on the current `master` candidate.
+
+Release verification is tracked separately in [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md); it is not part of this incident's remaining data-exposure investigation.

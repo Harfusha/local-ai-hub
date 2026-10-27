@@ -39,11 +39,11 @@ Completed entries record work and evidence for their original revisions. Current
 - [x] Correct overstated acceptance documentation: Completed. Succeeded `CHANGELOG.md`, `local-ai-hub-current-status.md`, `2026-10-23-main-chat-takeover.md`, and marked historical claims explicitly.
 - [x] Resolve test weakening and actual defects: Completed. `pyflakes` unused variable removed, FastMCP schema parameters aligned without `*args/**kwargs`, 830-test cohort passing.
 - [x] Reconcile every F01–F24, R01–R16 and enhancement 1–100: Completed. All 24 findings mapped to code or evidence-bound decisions in `2026-10-25-performance-implementation-progress.md`; internal items #7/#43–45 kept retired per operator decision.
-- [ ] Freeze final source and validate matching gates. The listed compile, selftest, doctor and live-smoke results are historical; current CI and full-suite acceptance remain open.
-- [x] Verify isolated wheel install and smoke: Completed. Built `dist/local_ai_hub-5.1.0-py3-none-any.whl`, installed in clean temporary venv, `tools/wheel_smoke.py` passed (`{"smoke": "passed", "success": true}`).
-- [ ] Capture a current data/config baseline and activate the final candidate. PID 37268 and the prior activation are historical.
-- [ ] Verify the current live dashboard and required browser behavior. The earlier Chrome captures and R15/R16 measurements are historical.
-- [ ] Commit final evidence and close the goal after the current candidate satisfies the open gates in `docs/release-evidence-5.1.0.md`.
+- [x] Freeze and validate source candidate `f2354144`: [CI run](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871) concluded success with all 14 applicable jobs passing (including Ubuntu 3.14 full suite); package job passed release check, selftest, dashboard static check, fresh wheel install/`pip check` and installed MCP smoke. The release-publish job was skipped for this non-tag run. This closes source/matrix/package validation for this candidate; activation and final integration remain separate open items below.
+- [x] Verify isolated wheel install and smoke: exact candidate `f2354144` package job passed fresh venv install, `pip check`, CLI smoke and MCP smoke. Authentic receipt artifact `wheel-mcp-smoke-f2354144357c62f8fa629132589963882496a0a8` binds wheel SHA-256 `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3`, `success=true`, `smoke=passed`, version `5.1.0`, tool_count=5.
+- [ ] Capture a current data/config baseline and activate the final candidate. Still open: live PID `18096` predates `f2354144`; three other active Codex chats use this Hub, so service restart is deferred. No current candidate baseline exists yet.
+- [ ] Verify the current live dashboard and required browser behavior. Still open: existing screenshot is explicitly pre-activation; no browser evidence from candidate process exists.
+- [ ] Commit final evidence and close the goal after the current candidate satisfies the open gates in `docs/release-evidence-5.1.0.md`. CI and exact-candidate wheel smoke now pass; still open until supported Agent OS receipts and post-activation service/dashboard evidence are complete.
 
 ## Initial evidence pointers
 

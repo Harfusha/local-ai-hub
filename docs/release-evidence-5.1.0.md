@@ -1,12 +1,32 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `0c373aea` (evidence below identifies its source commit; later changes require fresh verification).
+**State:** current source candidate passes hosted CI and isolated wheel smoke; verified plan completion and live activation remain open.
+**Candidate revision:** `f2354144357c62f8fa629132589963882496a0a8` (`master`; current run and test receipts below bind to this revision).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
-- Clean archive `0c373aea`: strict-tree release check, dashboard static check and selftest **6/6** passed. A fresh isolated install of wheel SHA-256 `7b7b4db464b4f2fb1eba94ecf00f0d32f56ffd6cb5768f36151f76dafccba774` passed `pip check` and MCP wheel smoke. [CI](https://github.com/Harfusha/local-ai-hub/actions/runs/40562086693) is running; the shared service has not been restarted. An isolated browser showed the board refusing to present a malformed plan as an empty successful board.
+- [Current hosted CI run](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871) targets exact commit `f2354144357c62f8fa629132589963882496a0a8`; run conclusion **success**. All **14 applicable jobs succeeded**, including Ubuntu 3.14 primary full suite; the separate “Publish verified release” job was skipped because this is not a release-tag run.
+- Package job passed `release_check.py`, `tools/selftest.py` (**6/6**), dashboard check, clean package-tree checks, wheel build and fresh venv install/`pip check`/MCP smoke. The authentic [wheel smoke receipt artifact](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871/artifacts/12763517660) reports `success=true`, `smoke=passed`, version `5.1.0`, five tools, `degraded=false`; wheel SHA-256 is `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3`.
+- Surface audit at exact commit `f2354144357c62f8fa629132589963882496a0a8`: `python -B -m pytest -q --tb=short tests/test_surface_audit_policy.py tests/test_surface_inventory.py` passed **774 tests in 135.47s** (2026-10-27).
+- Earlier archive `0c373aea` wheel (SHA-256 `7b7b4db464b4f2fb1eba94ecf00f0d32f56ffd6cb5768f36151f76dafccba774`) also passed isolated install, `pip check` and MCP smoke. Its package inputs match `f2354144`, but it is historical and superseded by exact-candidate wheel receipt above.
+- [Pre-activation dashboard screenshot](dashboard-live-2026-10-27.png) records the existing board, not the candidate dashboard. Fresh existing-service `/health` returned HTTP 200 and `success=true`, version `5.1.0`; PID `18096` started before candidate `f2354144` and has not loaded candidate code. Do not interpret either as activation proof.
+- Benchmark: [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json) records **1,000** independent pairs, parity, p95 **1.72x**, p99 **1.95x**, source `94a485ffecf6bc3c9810718b2f658b6df0120b64`; closes JSON-budget tail gate only.
+- Agent OS `verify_completion` was run for `task_release_5.1.0`: `complete=false`, no receipts, unsatisfied criteria `selftest passed`, `release check passed`, `wheel smoke passed`, `1000 benchmark passed`. Hosted CI artifacts are evidence but are not canonical Agent OS broker receipts; do not convert or fabricate them as such. Completion remains open until supported receipt production and live integration gates exist.
+
+| Requested release evidence | Current result |
+|---|---|
+| Candidate commit | `f2354144357c62f8fa629132589963882496a0a8` |
+| Green CI | [Run 40563606871](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871): 14 applicable jobs passed; release-publish job skipped on non-tag run. |
+| Wheel SHA-256 | `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3` |
+| Wheel smoke | `success=true`, `smoke=passed`, `version=5.1.0`, `tool_count=5`, `degraded=false`; CI artifact bound to candidate commit. |
+| Surface audit | 774 passed on candidate commit in 135.47s. |
+| Selftest | CI package job passed 6/6. |
+| Benchmark | 1,000 pairs; p95 1.72x, p99 1.95x; JSON-budget tail gate only. |
+| Dashboard screenshot | [Existing pre-activation board](dashboard-live-2026-10-27.png); candidate dashboard capture pending. |
+| Live Hub | PID `18096`, HTTP 200 `/health`, version `5.1.0`; process predates candidate; activation pending. |
+| Agent OS completion | `complete=false`; no receipts; four criteria unsatisfied. |
+- Clean archive `0c373aea`: strict-tree release check, dashboard static check and selftest **6/6** passed. A separate isolated browser showed the board refusing to present a malformed plan as an empty successful board. This archived candidate's hosted CI [run](https://github.com/Harfusha/local-ai-hub/actions/runs/40562086693) is historical; it does not supersede current run above.
 - Clean archive `4e83ccb1`: strict-tree release check and selftest **6/6** passed. A fresh isolated install of wheel SHA-256 `c53f7e4526cf7658c8bb3191ea8094bb2d59628eeaffc219ed2ca22148e79c15` passed `pip check` and MCP wheel smoke. [CI](https://github.com/Harfusha/local-ai-hub/actions/runs/40561084376) is running. Isolated dashboard testing covered plan and task creation, editing, status movement and reload persistence; it is not live shared-service acceptance.
 - Clean archive `3e03f918`: strict-tree release check and selftest **6/6** passed. Its wheel SHA-256 is `b4a411bd2c71ce6155f009302e6c696f2f5bfe12af449a036e1923daa91a09ed`; a fresh isolated installation passed `pip check`, wheel smoke, and MCP forwarding checks for steering criteria and unrelated host metadata. Dashboard static check passed (`279` unique IDs; Node available), not a live browser acceptance. [CI for `3e03f918`](https://github.com/Harfusha/local-ai-hub/actions/runs/40558131430) is running. The shared service has not been restarted with this source.
 - Clean archive `1c8410b2`: strict-tree release check passed. A wheel built from that archive has SHA-256 `9ab5255fe27abfbe104813486d806f26a243de42c298c621410b5da9589ffff9`; isolated installation, `pip check` and wheel smoke passed. The working checkout passed selftest **6/6** and **102** focused planner, task and crash-recovery tests. [CI for `1c8410b2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40555900092) is still running; these results do not establish live activation or verified delivery.
