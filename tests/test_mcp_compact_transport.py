@@ -187,9 +187,11 @@ def test_mcp_status_remains_usable_when_hub_daemon_is_offline(tmp_path, monkeypa
         assert not Path(client.config["server"]["state_dir"]).exists()
 
 
-def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_path, monkeypatch, request) -> None:
+@pytest.mark.parametrize("simulate_posix", [False, True])
+def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_path, monkeypatch, request, simulate_posix) -> None:
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
+    import os
     import sys
     import subprocess
     import time
@@ -199,6 +201,9 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     import threading
     from local_ai_hub.external_tools import ExternalCodeIntelligence
     from local_ai_hub.operational_mode import operational_mode_gate_error as mode_gate_error
+
+    if simulate_posix:
+        monkeypatch.setattr(client_module, "sys", SimpleNamespace(platform="linux", executable=sys.executable))
 
     operational_mode = types.ModuleType("local_ai_hub.operational_mode")
     operational_mode.load_operational_mode = lambda _path: SimpleNamespace(mode="active", degraded=False)
@@ -259,7 +264,10 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         thread = threading.Thread(target=serve, daemon=True)
         server_box.update(server=server, thread=thread)
         thread.start()
-        child = SimpleNamespace(poll=lambda: None)
+        # This fixture starts a server thread, not a child process. Give the
+        # Popen stand-in an existing PID for POSIX identity setup, while the
+        # termination guard below prevents signaling the test process.
+        child = SimpleNamespace(pid=os.getpid(), poll=lambda: None)
         owned_children.append(child)
         return child
 
@@ -321,6 +329,9 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         TimeoutExpired=subprocess.TimeoutExpired,
     ))
     monkeypatch.setattr(client_module, "popen_managed", start_owned_server)
+    monkeypatch.setattr(client_module, "terminate_tree", lambda *_args, **_kwargs: pytest.fail(
+        "the thread-backed Popen stand-in must never terminate a process"
+    ))
     monkeypatch.setattr(
         client_module, "retain_process_job_in_child",
         lambda process: any(process is child for child in owned_children),

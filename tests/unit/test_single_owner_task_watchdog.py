@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -59,7 +60,13 @@ def test_watchdog_stops_before_mutation_on_deadline_or_shutdown(tmp_path, monkey
     if shutdown:
         instance._shutdown.set()
     clock = iter([10.0, 12.0])
-    monkeypatch.setattr(app_module.time, "monotonic", lambda: next(clock))
+    real_monotonic = time.monotonic
+    # Patch only this module's clock; patching the shared stdlib time module
+    # also changes unrelated scheduler threads in the full test suite.
+    monkeypatch.setattr(app_module, "time", SimpleNamespace(
+        time=app_module.time.time, monotonic=lambda: next(clock)
+    ))
+    assert time.monotonic is real_monotonic
     assert instance._reap_expired_task_scopes() == []
     tasks.reap_expired_heartbeats.assert_not_called()
 
