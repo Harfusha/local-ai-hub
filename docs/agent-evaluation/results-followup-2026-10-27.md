@@ -1,6 +1,6 @@
 # Následné testování chybějících scénářů — 27. 10. 2026
 
-Průběžný záznam. Nové chaty mají oddělený syntetický root, nikoli oddělený připojený Hub daemon. Hodnocení zahrnuje jen skutečně pozorovanou část scénáře; běhy nelze považovat za release ani plnou izolaci.
+Průběžný záznam. Izolace se liší podle běhu: některé chaty měly oddělený syntetický root, ale sdílený Hub; níže výslovně uvedené běhy použily také samostatný daemon a stav. Hodnocení zahrnuje jen skutečně pozorovanou část scénáře; žádný z těchto běhů sám o sobě neprokazuje release ani provoz po restartu produkčního Hubu.
 
 Pro 040/046/048/055/076 byl navíc použit skutečný oddělený Hub na loopback portu 54542 a explicitně oddělený MCP klient. Po skončení běhů byly jeho vlastní procesy po ověření identity ukončeny; port již neposlouchá, testovací data zůstala zachována.
 
@@ -64,7 +64,7 @@ Chat `01a17da6-0ea5-7c63-a299-1c8f04e076af`. Jedno volání `local_ai_task(actio
 
 ## Dosud neprovedené
 
-048, 066, 068 a 088 dosud vyžadují autentický receipt, zrušení skutečné modelové inference, vyčerpaný budget nebo exkluzivní benchmark. Bez skutečné fixture a izolace je neznačit plně PASS. Scénáře 080 a 081 také vyžadují opakování při dostupné kapacitě; 067 vyžaduje další běh se STOP během aktivního procesu, 070 opravu a skutečný průchod přes MCP a 081 řízenou dílčí chybu. 040 potřebuje ověřit binding i stav po skutečném receipt.
+048, 066, 068 a 088 dosud vyžadují autentický receipt, zrušení skutečné modelové inference, vyčerpaný budget nebo exkluzivní benchmark. Bez odpovídající fixture a izolace je neznačit plně PASS. Scénáře 080 a 081 také vyžadují opakování při dostupné kapacitě; 067 vyžaduje další běh se STOP během aktivního procesu, 070 ověření opravy a skutečný průchod přes MCP a 081 řízenou dílčí chybu. 040 potřebuje ověřit binding i stav po skutečném receipt.
 
 Pro 068 bylo dodatečně spuštěno `tests/test_agent_task_budget_increase.py`: 50 passed. Jde o cílené automatizované testy, nikoli o požadovaný agentní průchod s dosaženým limitem. Samostatná izolovaná úloha `eval068-task` vznikla, její budget však vyčerpaný není; bez oprávněného mechanismu nebyl jeho stav uměle upravován.
 
