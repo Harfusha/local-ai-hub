@@ -403,18 +403,33 @@ def test_removal_and_prune_share_one_fake_clock_deadline(monkeypatch, tmp_path):
     clock = [0.0]
     deadline = 8.0
     original_run_hidden = process_utils.run_hidden
+    original_popen = process_utils.popen_managed
+    children = []
     started_at = []
     commands_started = []
+    fake_clock = SimpleNamespace(monotonic=lambda: clock[0])
+
+    def tracked_popen(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
 
     def advancing_runner(command, *args, **kwargs):
         started_at.append(clock[0])
         commands_started.append(tuple(command))
-        result = original_run_hidden(command, *args, **kwargs)
+        # The simulated worktree deadline must not replace the real clock used
+        # by subprocess polling and cleanup inside run_hidden.
+        monkeypatch.setattr(process_utils, "time", time)
+        try:
+            result = original_run_hidden(command, *args, **kwargs)
+        finally:
+            monkeypatch.setattr(process_utils, "time", fake_clock)
         clock[0] += 3.0
         return result
 
-    monkeypatch.setattr(process_utils, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(process_utils, "time", fake_clock)
     monkeypatch.setattr(process_utils, "run_hidden", advancing_runner)
+    monkeypatch.setattr(process_utils, "popen_managed", tracked_popen)
     try:
         result = remove_git_worktree(
             repo, worktree, worktree_id=worktree_id, required_base_commit=base_commit,
@@ -426,6 +441,7 @@ def test_removal_and_prune_share_one_fake_clock_deadline(monkeypatch, tmp_path):
         assert not any("prune" in command for command in commands_started)
         assert result["success"] is False
         assert worktree.is_dir()
+        assert children and all(child.poll() is not None for child in children)
     finally:
         monkeypatch.setattr(process_utils, "run_hidden", original_run_hidden)
         monkeypatch.setattr(process_utils, "time", time)
