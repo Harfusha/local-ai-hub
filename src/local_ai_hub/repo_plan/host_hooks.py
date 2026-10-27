@@ -256,7 +256,7 @@ def inspect_superpowers(host: str, source_root: str | Path | None = None) -> dic
         result["install_argv"] = ["gemini", "extensions", "install", "https://github.com/obra/superpowers", "--ref", "v7.0.1"]
         result["installation"] = "Use native Gemini extension manager; preserve consent and restart/review extension status."
     else:
-        result["installation"] = "Install Superpowers in the official Codex Plugins UI (/plugins in CLI); verify exact 7.0.1 package before enablement. No automatic version override."
+        result["installation"] = "Install Superpowers through Codex Plugins UI or a supported Codex plugin CLI. Hub does not automate Codex installation; verify exact 7.0.1 and host enablement."
     if source_root is None:
         return result
     if not Path(source_root).exists():
@@ -305,7 +305,7 @@ def install_superpowers(
     if operator_authorized is not True:
         raise ValueError("explicit operator authorization required")
     if host == "codex":
-        raise ValueError("Codex Superpowers requires the official Plugins UI; automatic install unsupported")
+        raise ValueError("Hub does not support automatic Codex Superpowers installation; use the Codex plugin manager")
     if host != "gemini_cli":
         raise ValueError("unsupported host")
     root = checked_root(repo_root)
