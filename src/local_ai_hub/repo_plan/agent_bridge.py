@@ -113,10 +113,13 @@ class TaskBindingManager:
                 if (existing.plan_id, existing.plan_task_id) != (binding.plan_id, binding.plan_task_id):
                     continue
                 prior = task_store.get(existing.task_id) if task_store is not None else None
-                if prior is None or getattr(getattr(prior, "status", None), "value", None) not in {
-                    "completed", "failed", "cancelled"
-                }:
-                    raise ValueError("plan task already has an active execution binding or unresolved prior binding")
+                if prior is None:
+                    raise ValueError("plan task has an unresolved prior binding; reconcile it before starting")
+                prior_status = getattr(getattr(prior, "status", None), "value", None)
+                if prior_status == "failed":
+                    raise ValueError("plan task has a failed execution binding that can resume; reconcile it before starting")
+                if prior_status not in {"completed", "cancelled"}:
+                    raise ValueError("plan task already has an active execution binding")
             current[binding.task_id] = binding
             raw = json.dumps({k: v.to_dict() for k, v in current.items()}, indent=2, sort_keys=True)
             temp_path = self._binding_file.parent / f".tmp_bindings_{uuid.uuid4().hex}"

@@ -10,7 +10,7 @@ from threading import Barrier
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
-from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
+from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStatus, TaskStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.repo_plan import agent_bridge
@@ -132,7 +132,7 @@ def test_revised_contract_cannot_reuse_old_receipt_mapping(environment):
 
 def test_terminal_history_does_not_hide_an_active_plan_binding(environment):
     root, tasks, _, _, _, _, _, revision = environment
-    tasks.fail("execution_a", reason="superseded", actor="agent_a")
+    tasks.transition("execution_a", TaskStatus.CANCELLED, reason="superseded", actor="agent_a", idempotency_key="dispose-a")
     for name in ("b", "c"):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
@@ -167,6 +167,22 @@ def test_unknown_prior_binding_requires_reconciliation(environment, monkeypatch)
         )
 
 
+def test_failed_attempt_remains_reserved_because_it_can_resume(environment):
+    root, tasks, _, _, _, _, _, _ = environment
+    tasks.fail("execution_a", reason="retry possible", actor="agent_a")
+    tasks.create(
+        GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
+        context=ScopeContext(repository_id=str(root), session_id="session_b"),
+        actor="agent_b", repo_root=str(root), task_id="execution_b",
+    )
+    revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
+    with pytest.raises(ValueError, match="failed execution binding"):
+        agent_bridge.bind_plan_execution(
+            tasks, root=root, task_id="execution_b", plan_id="plan_work",
+            plan_task_id="task_work", expected_revision=revision,
+        )
+
+
 def test_stale_manager_does_not_overwrite_another_binding_update(environment):
     root, _, _, _, _, manager, _, _ = environment
     stale_manager = agent_bridge.TaskBindingManager(root)
@@ -184,7 +200,7 @@ def test_stale_manager_does_not_overwrite_another_binding_update(environment):
 
 def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
     root, tasks, _, _, _, _, _, _ = environment
-    tasks.fail("execution_a", reason="superseded", actor="agent_a")
+    tasks.transition("execution_a", TaskStatus.CANCELLED, reason="superseded", actor="agent_a", idempotency_key="dispose-a")
     for name in ("b", "c"):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
@@ -212,7 +228,7 @@ def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
 
 def test_separate_processes_cannot_bind_two_active_attempts(environment):
     root, tasks, _, _, _, _, _, _ = environment
-    tasks.fail("execution_a", reason="superseded", actor="agent_a")
+    tasks.transition("execution_a", TaskStatus.CANCELLED, reason="superseded", actor="agent_a", idempotency_key="dispose-a")
     for name in ("b", "c"):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
