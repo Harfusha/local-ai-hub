@@ -347,6 +347,8 @@ max_tokens = 8192
 temperature = 0.03
 
 [token_saving]
+concise_local_output = true
+compress_local_input = true
 # The hub itself reads/searches repositories so broad source context never has to enter the cloud agent.
 default_repo_context_tokens = 8000
 max_diff_tokens = 24000

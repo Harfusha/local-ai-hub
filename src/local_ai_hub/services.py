@@ -1193,10 +1193,12 @@ class LocalAIServices:
             )
             system = str(project_payload.get("system", system))
         saving = self.config.get("token_saving", {})
-        if source.startswith("delegate:"):
+        if saving.get("concise_local_output") is True or saving.get("compress_local_input") is True:
             from .caveman_instructions import compact_local_prompt
             prompt, system = compact_local_prompt(
-                prompt, system, enabled=saving.get("concise_local_output") is True,
+                prompt, system,
+                input_enabled=saving.get("compress_local_input") is True,
+                output_enabled=saving.get("concise_local_output") is True,
                 structured=format is not None,
             )
         resilience = self.config.get("resilience", {})

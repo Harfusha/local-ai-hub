@@ -1,26 +1,29 @@
 {
   "default_target_ref": "refs/heads/master",
-  "description": "See docs/superpowers/specs/2026-10-27-caveman-instructions.md: safe session repair, instruction compression with backups, concise model output, input compression evaluation.",
+  "description": "Complete backup-first instruction compression across agent/MCP/skill sources, local input/output compression with meaningful performance evidence, and safe repair/rebinding of the existing task session.",
   "id": "plan_caveman_instructions",
-  "lifecycle": "draft",
+  "lifecycle": "active",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
     "task_caveman_cli": {
       "acceptance_criteria": [
-        "CLI compresses instruction files safely with backups",
-        "Generated instructions preserve contracts",
-        "Validate integration"
+        "Every changed instruction file has byte-identical verified backup and reversible restore path",
+        "Meaning checks reject omissions and protect code, commands, URLs, headings, and policy requirements; only reviewed candidates apply",
+        "Input and generated-output compression works for local models without changing structured/code payloads",
+        "Paired baseline and candidate measurements show latency, tokens, and semantic results separately, with no claim on regressions",
+        "Existing Agent OS task retains ID and gets canonical session binding after safe Hub activation; no direct task-store editing",
+        "Focused tests and exact integrated source validation pass; plan task and durable receipts match"
       ],
       "accountable_role": "Codex",
-      "blocker": "Live session repair is not activated while release owner is using shared Hub. Synthetic 3B compression lost instructions; 7B returned exit 2. Semantic preservation and speed improvement are not proven.",
+      "blocker": "58/58 backups hash-match; no file candidate passed upstream validation. Input compaction currently normalizes whitespace only; paired inference speed/savings unproven. Live local_ai_coord lacks task_repair_session, so binding remains empty. Shared release chat active.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Implement staging compression and concise local prompts in parallel; restore and bind existing task after activation; verify semantics, backups and speed.",
+      "description": "Implement backup-first Caveman compression for discovered agent instructions and supported MCP/skill prompts, validate meaning before apply, compress local model inputs and outputs, measure paired latency/token savings, then activate safe existing task session repair and rebind the existing task.",
       "kind": "code",
-      "next_action": "Review all tracked and untracked changes; establish reliable semantics and paired performance evidence; integrate and activate session repair when shared Hub is available; then bind the existing task and complete all-agent compression.",
-      "title": "Caveman instruction compression",
-      "work_status": "blocked"
+      "next_action": "Retain 58 verified backups; select a local compressor that yields reviewable candidates; measure paired inference latency/tokens; activate task_repair_session, then bind this existing task to session 01a17efe-13ba-7473-95aa-25137873da2f. Do not apply unreviewed files or restart Hub while release owner active.",
+      "title": "Complete Caveman compression and repair task binding",
+      "work_status": "in_progress"
     }
   },
   "title": "Caveman instruction compression"
