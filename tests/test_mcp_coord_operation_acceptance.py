@@ -1102,6 +1102,30 @@ def test_local_ai_coord_task_create_forwards_goal_and_contract(monkeypatch, tmp_
     }]
 
 
+@pytest.mark.parametrize("field", ["acceptance_criteria", "non_goals", "constraints"])
+@pytest.mark.parametrize("bad_value", ["", "one item", False, 0, None])
+def test_task_contract_invalid_collections_are_not_coerced(monkeypatch, tmp_path, field, bad_value):
+    backend = _prepare_coord_rpc(monkeypatch)
+    contract = {"goal": "test", field: bad_value}
+    asyncio.run(mcp_server.mcp.call_tool(
+        "local_ai_coord", {"action": "task_create", "root": str(tmp_path.resolve()),
+                           "task_id": "bad-collection", "contract": contract}
+    ))
+    assert backend.calls[0]["contract"][field] == bad_value
+    with pytest.raises(ValueError):
+        GoalContract.from_dict(backend.calls[0]["contract"])
+
+
+def test_task_create_explicit_empty_criteria_is_not_replaced(monkeypatch, tmp_path):
+    backend = _prepare_coord_rpc(monkeypatch)
+    asyncio.run(mcp_server.mcp.call_tool(
+        "local_ai_coord", {"action": "task_create", "root": str(tmp_path.resolve()),
+                           "task_id": "empty-criteria", "goal": "test",
+                           "acceptance_criteria": [], "criteria": ["not selected"]}
+    ))
+    assert backend.calls[0]["contract"]["acceptance_criteria"] == []
+
+
 def test_local_ai_coord_verify_receipt_forwards_criterion_and_pass_state(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)

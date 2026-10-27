@@ -5036,11 +5036,9 @@ def local_ai_coord(
             task_kwargs["reason"] = fail_reason
         if action == "task_create":
             task_goal = goal or task or title or description or ""
-            crit_list = acceptance_criteria or criteria or []
-            if isinstance(crit_list, str):
-                crit_list = [crit_list]
-            if criterion and not crit_list:
-                crit_list = [criterion]
+            crit_list = acceptance_criteria if acceptance_criteria is not None else criteria
+            if crit_list is None:
+                crit_list = [criterion] if criterion else []
             if contract is None and (task_goal or crit_list):
                 contract = {
                     "goal": task_goal,
@@ -5052,11 +5050,7 @@ def local_ai_coord(
                 }
                 task_kwargs["contract"] = contract
             elif contract is not None and isinstance(contract, dict):
-                contract = dict(contract)
-                for col in ("acceptance_criteria", "non_goals", "constraints"):
-                    if isinstance(contract.get(col), str):
-                        contract[col] = [contract[col]]
-                task_kwargs["contract"] = contract
+                task_kwargs["contract"] = dict(contract)
             if task:
                 task_kwargs["task"] = task
             if paths:
