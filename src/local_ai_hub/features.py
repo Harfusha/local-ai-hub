@@ -60,6 +60,7 @@ class FeatureSet:
             and bool(tok.get("compact_responses", True))
         )
         self.rag: bool = bool(feat.get("rag", True))
+        self.async_jobs: bool = _tbl("async_jobs").get("enabled", False) is True
         self.ollama: bool = bool(srv.get("auto_start_ollama", True))
         llama = _tbl("llama_cpp")
         llama_mode = str(llama.get("mode", "off")).strip().lower()
