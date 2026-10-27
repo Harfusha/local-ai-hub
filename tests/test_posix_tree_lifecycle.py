@@ -4,6 +4,28 @@ from threading import Lock
 import pytest
 
 from local_ai_hub import process_utils
+from local_ai_hub import commands
+
+
+@pytest.mark.parametrize("exited", [False, True])
+def test_wait_observation_preserves_unreaped_leader(monkeypatch, exited):
+    class Handle:
+        pid = 4242
+        returncode = None
+        _waitpid_lock = Lock()
+
+        def poll(self):
+            raise AssertionError("poll would reap the leader")
+
+    handle = Handle()
+
+    def waitid(*_args):
+        assert handle._waitpid_lock.locked()
+        return SimpleNamespace(si_pid=handle.pid) if exited else None
+
+    monkeypatch.setattr(commands, "os", SimpleNamespace(name="posix", waitid=waitid,
+        P_PID=1, WEXITED=2, WNOHANG=4, WNOWAIT=8))
+    assert commands._process_exited_without_reaping(handle) is exited
 
 
 @pytest.mark.parametrize("descendants, expected", [(False, True), (True, False)])

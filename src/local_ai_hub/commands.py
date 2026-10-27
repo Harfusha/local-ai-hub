@@ -232,6 +232,22 @@ _COMMAND_LOG_QUEUE_MAX_CHUNKS = 256
 
 
 
+def _process_exited_without_reaping(process: Any) -> bool:
+    """Observe a POSIX child without releasing its process-group identity."""
+    lock = getattr(process, "_waitpid_lock", None)
+    if (os.name == "posix" and lock is not None and
+            all(hasattr(os, name) for name in ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT"))):
+        try:
+            with lock:
+                if process.returncode is not None:
+                    return True
+                info = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                return info is not None and info.si_pid == process.pid
+        except (OSError, ValueError, AttributeError):
+            pass
+    return process.poll() is not None
+
+
 def _process_group_liveness(process_group_id: int) -> bool | None:
     """Return True/False only when POSIX can establish process-group liveness."""
     if (
@@ -5881,8 +5897,6 @@ class CommandBroker:
                     res = terminate_tree(process.pid, **kwargs)
                     if res:
                         return True
-                    if process.poll() is not None and _process_group_liveness(process.pid) is False:
-                        return True
                     # A failed ownership check cannot authorize another signal
                     # to a numeric process group that may already be reused.
                     return False
@@ -6084,7 +6098,7 @@ class CommandBroker:
         aborted_interactive = False
         cleanup_unconfirmed = False
         deadline = time.monotonic() + max(1, timeout)
-        while process.poll() is None:
+        while not _process_exited_without_reaping(process):
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
                 break
