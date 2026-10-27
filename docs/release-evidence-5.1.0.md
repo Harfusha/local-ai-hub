@@ -1,7 +1,7 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** candidate validation in progress; CI and runtime acceptance remain open.
-**Latest verified source revision:** `50ce188493b9d000b21599fb572d47aad23f4d7f` (`master`).
+**Revision for wheel evidence below:** `50ce188493b9d000b21599fb572d47aad23f4d7f` (superseded; current source needs fresh wheel and CI evidence).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
@@ -10,7 +10,7 @@
 - Clean `git archive` snapshot: `python tools/release_check.py --strict-tree` passed. The checkout retains its existing ignored `build/` and `dist/`.
 - Wheel built from the source revision above: SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`. Isolated-venv `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. The wheel is retained under `%TEMP%/lah-release-f14c726ef5c04476b213966b02d324e5/wheel/`.
 - [CI run #178](https://github.com/Harfusha/local-ai-hub/actions/runs/40479922045) failed the Ubuntu 3.14 full suite; twelve other matrix and coverage jobs passed. Its annotations identify generated-policy/status expectations, Serena fixture timing, command cleanup and async child cleanup. Subsequent fixes require a fresh run and wheel.
-- Historical `docs/perf_candidate_json_budget.json` is not benchmark acceptance evidence: its recorded source `01a72dec90252019060fb40a08a8c4a10f520228` calculated the baseline from candidate time instead of measuring it. Fresh independent paired measurements are required.
+- The historical JSON-budget artifact at source `01a72dec90252019060fb40a08a8c4a10f520228` used a synthetic baseline and is invalid. Its replacement, `docs/perf_candidate_json_budget.json`, records 1,000 independently measured pairs from clean source `94a485ffecf6bc3c9810718b2f658b6df0120b64`, with parity, p95 1.72x and p99 1.95x on the recorded Windows host. This is candidate-specific performance evidence, not full release or live-runtime acceptance.
 - Runtime restart, current dashboard screenshot, Agent OS completion, and preserved-data comparison are not yet established for this candidate.
 
 ## Historical verification receipts
