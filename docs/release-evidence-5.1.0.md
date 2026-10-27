@@ -2,11 +2,13 @@
 
 **State:** current source candidate passes hosted CI and isolated wheel smoke; verified plan completion and live activation remain open.
 **Candidate revision:** `f2354144357c62f8fa629132589963882496a0a8` (`master`; current run and test receipts below bind to this revision).
+**Final master snapshot checked:** `8a998f06a8963bc53e78d1545a49b2c47e15fcd7`, a documentation-only successor to the source candidate; [its CI run](https://github.com/Harfusha/local-ai-hub/actions/runs/40568498434) concluded **success**. The package and wheel receipt below remain bound to the exact source candidate.
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
 - [Current hosted CI run](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871) targets exact commit `f2354144357c62f8fa629132589963882496a0a8`; run conclusion **success**. All **14 applicable jobs succeeded**, including Ubuntu 3.14 primary full suite; the separate “Publish verified release” job was skipped because this is not a release-tag run.
+- The later documentation-only master snapshot `8a998f06a8963bc53e78d1545a49b2c47e15fcd7` also passed [CI run 40568498434](https://github.com/Harfusha/local-ai-hub/actions/runs/40568498434) (**success**, 29m 10s). No package source changed after `f2354144`; wheel SHA and smoke receipt remain tied to the package job on that exact source candidate.
 - Package job passed `release_check.py`, `tools/selftest.py` (**6/6**), dashboard check, clean package-tree checks, wheel build and fresh venv install/`pip check`/MCP smoke. The authentic [wheel smoke receipt artifact](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871/artifacts/12763517660) reports `success=true`, `smoke=passed`, version `5.1.0`, five tools, `degraded=false`; wheel SHA-256 is `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3`.
 - Surface audit at exact commit `f2354144357c62f8fa629132589963882496a0a8`: `python -B -m pytest -q --tb=short tests/test_surface_audit_policy.py tests/test_surface_inventory.py` passed **774 tests in 135.47s** (2026-10-27).
 - Earlier archive `0c373aea` wheel (SHA-256 `7b7b4db464b4f2fb1eba94ecf00f0d32f56ffd6cb5768f36151f76dafccba774`) also passed isolated install, `pip check` and MCP smoke. Its package inputs match `f2354144`, but it is historical and superseded by exact-candidate wheel receipt above.
@@ -18,6 +20,7 @@
 |---|---|
 | Candidate commit | `f2354144357c62f8fa629132589963882496a0a8` |
 | Green CI | [Run 40563606871](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871): 14 applicable jobs passed; release-publish job skipped on non-tag run. |
+| Final master snapshot CI | [Run 40568498434](https://github.com/Harfusha/local-ai-hub/actions/runs/40568498434): success on documentation-only commit `8a998f06a8963bc53e78d1545a49b2c47e15fcd7`. |
 | Wheel SHA-256 | `d672a8acedc6db5bcf80fe02245001cf59c5d1f9b4057be49086e0803992e0e3` |
 | Wheel smoke | `success=true`, `smoke=passed`, `version=5.1.0`, `tool_count=5`, `degraded=false`; CI artifact bound to candidate commit. |
 | Surface audit | 774 passed on candidate commit in 135.47s. |
