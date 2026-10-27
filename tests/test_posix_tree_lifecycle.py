@@ -75,7 +75,7 @@ def test_reaped_leader_only_confirms_cleanup_when_group_is_empty(monkeypatch, de
     assert state["reaped"]
     assert state["wait_lock_held"]
     assert handle.returncode == -15
-    assert state["signals"] == [15, 9, 0]
+    assert state["signals"] == [15, 0, 9, 0]
 
 
 @pytest.mark.parametrize("observed_start, owned", [("123", True), ("different", False)])
