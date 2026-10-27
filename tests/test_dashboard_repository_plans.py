@@ -38,6 +38,38 @@ def test_dashboard_plan_edits_write_the_selected_repository_plan() -> None:
     assert "expected_revision" in task_actions
 
 
+def test_board_and_progress_distinguish_declared_and_verified_completion() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    board = DASHBOARD_HTML[DASHBOARD_HTML.index("function renderKanbanBoard(){"):
+                           DASHBOARD_HTML.index("function renderSemaphoresTable(){")]
+    progress = DASHBOARD_HTML[DASHBOARD_HTML.index("function renderPlanProgressView(){"):
+                              DASHBOARD_HTML.index("function updateCoordOverviewCards(){")]
+    harness = r"""
+const nodes={kanbanBoardContainer:{},coordPlanProgressGrid:{}};
+const $=id=>nodes[id]||null;
+const esc=value=>String(value);
+const cachedPlanItems=[];
+const coordinationLoadErrors={};
+const cachedPlanBoard={project_root:'repo',columns:{done:[]}};
+const cachedBoardItems=[
+  {plan_id:'p',plan_title:'Plan',task_id:'a',title:'Declared',status:'done',work_status:'done',verified:false},
+  {plan_id:'p',plan_title:'Plan',task_id:'b',title:'Verified',status:'done',work_status:'done',verified:true}
+];
+""" + board + progress + r"""
+renderKanbanBoard(); renderPlanProgressView();
+console.log(JSON.stringify({board:nodes.kanbanBoardContainer.innerHTML,progress:nodes.coordPlanProgressGrid.innerHTML}));
+"""
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    rendered = json.loads(result.stdout)
+    assert "Unverified" in rendered["board"]
+    assert "Verified" in rendered["board"]
+    assert "50% verified complete" in rendered["progress"]
+    assert "1 awaiting verification" in rendered["progress"]
+
+
 def test_dashboard_task_edit_sends_only_canonical_coordination_fields() -> None:
     node = shutil.which("node")
     if node is None:

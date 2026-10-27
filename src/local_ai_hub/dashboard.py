@@ -5935,7 +5935,7 @@ function renderKanbanBoard(){
       const moveOptions=moveable.map(status=>`<option value="${status}" ${status===c.key?'selected':''}>${esc(labels[status]||status)}</option>`).join('');
       const statusControl=moveable.includes(c.key)
         ?`<select class="action-btn-sm" aria-label="Move task status" style="font-size:11px;padding:2px 6px;height:26px" onchange="updateCardStatus(this.dataset.planId,this.dataset.taskId,this.value)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">${moveOptions}</select>`
-        :`<span class="chip" title="Status is receipt/integration gated">${esc(labels[c.key]||c.key)} · gated</span>`;
+        :`<span class="chip ${item.verified===true?'ok':'warn-t'}" title="${item.verified===true?'Verification confirmed':'File status is a declaration; verification is pending'}">${esc(labels[c.key]||c.key)} · ${item.verified===true?'Verified':'Unverified'}</span>`;
 
       return `
         <div class="kanban-card" data-item-id="${esc(item.task_id)}">
@@ -6009,11 +6009,12 @@ function renderPlanProgressView(){
   const planMap = {};
   cachedBoardItems.forEach(item => {
     const key = String(item.plan_title || item.plan_id || 'Untitled plan');
-    if(!planMap[key]) planMap[key] = {total: 0, done: 0, in_progress: 0, blocked: 0, planned: 0, ready: 0, source_ready: 0};
+    if(!planMap[key]) planMap[key] = {total: 0, done: 0, verified_done: 0, in_progress: 0, blocked: 0, planned: 0, ready: 0, source_ready: 0};
     planMap[key].total++;
     const st = String(item.work_status || item.status || 'planned').toLowerCase();
     if(Object.prototype.hasOwnProperty.call(planMap[key], st) && st !== 'total') planMap[key][st]++;
     else planMap[key].planned++;
+    if(st === 'done' && item.verified === true) planMap[key].verified_done++;
   });
 
   const keys = Object.keys(planMap);
@@ -6024,16 +6025,17 @@ function renderPlanProgressView(){
 
   grid.innerHTML = keys.map(k => {
     const data = planMap[k];
-    const pct = data.total > 0 ? Math.round((data.done / data.total) * 100) : 0;
+    const pct = data.total > 0 ? Math.round((data.verified_done / data.total) * 100) : 0;
     return `
       <div class="milestone-card">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <strong style="font-size:14px">▤ ${esc(k)}</strong>
-          <span class="chip ${pct === 100 ? 'ok' : (pct > 0 ? 'warn-t' : '')}">${pct}% complete</span>
+          <span class="chip ${pct === 100 ? 'ok' : (pct > 0 ? 'warn-t' : '')}">${pct}% verified complete</span>
         </div>
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div class="tiny" style="display:flex;gap:8px;flex-wrap:wrap">
-          <span class="chip ok">✅ ${data.done} Done</span>
+          <span class="chip ok">✅ ${data.verified_done} verified done</span>
+          ${data.done > data.verified_done ? `<span class="chip warn-t">${data.done - data.verified_done} awaiting verification</span>` : ''}
           <span class="chip">⚡ ${data.in_progress} In Progress</span>
           <span class="chip">📋 ${data.planned} Planned</span>
           ${data.ready ? `<span class="chip">◉ ${data.ready} Ready</span>` : ''}
