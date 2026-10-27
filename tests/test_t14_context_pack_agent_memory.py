@@ -6,6 +6,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub import http_server
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
@@ -196,17 +198,19 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             },
             kind="source_review",
         )
-        receipt = app.agent_verification.record(VerificationReceipt.create(
-            task_id=task_id,
-            criterion="context pack",
-            evidence_id=evidence_id,
-            repository_revision="revision-1",
-            owner=task.owner,
-            details={"context_id": result["task_context"]["context_id"], "complete": True},
-        ))
+        # A successful context response is not a broker-backed command receipt.
+        with pytest.raises(ValueError, match="authentic broker execution provenance"):
+            app.agent_verification.record(VerificationReceipt.create(
+                task_id=task_id,
+                criterion="context pack",
+                evidence_id=evidence_id,
+                repository_revision="revision-1",
+                owner=task.owner,
+                details={"context_id": result["task_context"]["context_id"], "complete": True},
+            ))
         completion = app.agent_verification.completion(task_id, current_revision="revision-1")
-        assert app.agent_tasks.get(task_id).verification_receipts["context pack"] == receipt.receipt_id
-        assert completion.complete is True
+        assert "context pack" not in app.agent_tasks.get(task_id).verification_receipts
+        assert completion.complete is False
     finally:
         server.shutdown()
         server.server_close()
