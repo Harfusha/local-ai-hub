@@ -206,6 +206,14 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         return child
 
     client = local_ai_mcp.HubClient(config_path=str(config_path), auto_start=True)
+    transport_failures: list[str] = []
+    original_transport_failure = client._transport_failure_response
+
+    def capture_transport_failure(request_id, *errors, **kwargs):
+        transport_failures.extend(f"{type(error).__name__}: {error!s}" for error in errors)
+        return original_transport_failure(request_id, *errors, **kwargs)
+
+    monkeypatch.setattr(client, "_transport_failure_response", capture_transport_failure)
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
@@ -281,7 +289,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         content = result[0][0] if isinstance(result, tuple) else result[0]
         assert isinstance(content, t.TextContent)
         payload = json.loads(content.text)
-        assert payload["success"] is True, payload
+        assert payload["success"] is True, f"payload={payload!r}; transport_failures={transport_failures!r}"
         assert payload["text"].startswith("HTTP result ")
     assert sorted(received, key=lambda item: item["task"]) == [
         {

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import atexit
 from pathlib import Path
 import socket
 import sys
@@ -13,7 +12,7 @@ import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from local_ai_hub.process_utils import pid_alive, process_identity, terminate_owned_process
+from local_ai_hub.process_utils import process_identity, terminate_owned_process
 
 
 def _free_port() -> int:
@@ -134,18 +133,64 @@ def _stop_recorded_children(rows: list[dict[str, object]], state_dir: Path) -> N
         while time.monotonic() < deadline and _same_process(row):
             time.sleep(0.05)
         if _same_process(row):
-            owner_path = state_dir / "hub.owner.json"
-            assert owner_path.is_file(), "live test Hub has no owner receipt"
+            from local_ai_hub.process_utils import process_owner_state, process_parent_pid
+
+            owner_path = state_dir / "supervisor.owner.json"
+            assert owner_path.is_file(), "live test supervisor has no owner receipt"
             owner = json.loads(owner_path.read_text(encoding="utf-8"))
             assert owner.get("pid") == pid, (
-                f"test child {pid} differs from recorded Hub owner {owner.get('pid')}; "
+                f"test child {pid} differs from recorded supervisor owner {owner.get('pid')}; "
                 "refusing to terminate a different process"
             )
-            assert terminate_owned_process(owner, state_dir, "hub", grace_seconds=1.0)
+            hub_path = state_dir / "hub.owner.json"
+            hub = json.loads(hub_path.read_text(encoding="utf-8")) if hub_path.is_file() else None
+            if hub is not None:
+                hub_state = process_owner_state(hub, state_dir, "hub")
+                assert hub_state in {"owned", "stale"}, "test Hub ownership is not verified"
+                if hub_state == "owned":
+                    assert process_parent_pid(hub["pid"]) == pid, "test Hub is not the supervisor's child"
+            assert terminate_owned_process(owner, state_dir, "supervisor", grace_seconds=1.0)
+            if hub is not None:
+                assert terminate_owned_process(hub, state_dir, "hub", grace_seconds=1.0)
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and _same_process(row):
                 time.sleep(0.05)
         assert not _same_process(row), f"isolated Hub child {pid} survived test cleanup"
+
+
+def test_cleanup_uses_supervisor_owner_and_its_hub(tmp_path, monkeypatch):
+    import local_ai_hub.process_utils as processes
+
+    supervisor = {"pid": 101}
+    hub = {"pid": 102}
+    (tmp_path / "supervisor.owner.json").write_text(json.dumps(supervisor))
+    (tmp_path / "hub.owner.json").write_text(json.dumps(hub))
+    alive = iter([False, True, False, False])
+    monkeypatch.setattr(sys.modules[__name__], "_same_process", lambda _row: next(alive))
+    monkeypatch.setattr(processes, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(processes, "process_parent_pid", lambda _pid: 101)
+    calls = []
+    monkeypatch.setattr(sys.modules[__name__], "terminate_owned_process",
+                        lambda owner, state_dir, role, **kwargs: calls.append((owner["pid"], role)) or True)
+    _stop_recorded_children([{"pid": 101}], tmp_path)
+    assert calls == [(101, "supervisor"), (102, "hub")]
+
+
+def test_cleanup_refuses_unrelated_hub(tmp_path, monkeypatch):
+    import local_ai_hub.process_utils as processes
+
+    (tmp_path / "supervisor.owner.json").write_text(json.dumps({"pid": 101}))
+    (tmp_path / "hub.owner.json").write_text(json.dumps({"pid": 102}))
+    alive = iter([False, True])
+    monkeypatch.setattr(sys.modules[__name__], "_same_process", lambda _row: next(alive))
+    monkeypatch.setattr(processes, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(processes, "process_parent_pid", lambda _pid: 999)
+    calls = []
+    monkeypatch.setattr(sys.modules[__name__], "terminate_owned_process",
+                        lambda *args, **kwargs: calls.append(args) or True)
+    with pytest.raises(AssertionError, match="not the supervisor's child"):
+        _stop_recorded_children([{"pid": 101}], tmp_path)
+    assert calls == []
 
 
 async def _mcp_status(parameters: StdioServerParameters) -> dict[str, object]:
