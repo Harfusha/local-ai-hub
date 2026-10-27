@@ -325,7 +325,7 @@ _ACTION_SCOPED_FIELDS = {
         "topic": frozenset({"pubsub_publish", "pubsub_poll", "wait_for_event"}),
         "after_ts": frozenset({"pubsub_poll"}),
         "goal": frozenset({"swarm_dispatch", "task_create", "task_update"}),
-        "acceptance_criteria": frozenset({"task_create", "task_update"}),
+        "acceptance_criteria": frozenset({"task_create", "task_update", "plan_reconcile_steering"}),
         "criteria": frozenset({"task_create", "task_update"}),
         "kind": frozenset({"memory_record", "memory_find", "memory_get", "memory_list"}),
         "error": frozenset({"task_fail"}),

@@ -6175,9 +6175,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
 
     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
         arguments = dict(arguments)
-        if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("plan_"):
+        if (name == "local_ai_coord" and str(arguments.get("action") or "").startswith("plan_")
+                and "acceptance_criteria" not in operation_contract("local_ai_coord")["actions"].get(
+                    arguments.get("action"), {}).get("allowed", ())):
             # MCP hosts can append the active task's acceptance criteria to
-            # every call. Plan actions have a separate strict argument schema.
+            # every call. Keep them when the plan action explicitly accepts them.
             arguments.pop("acceptance_criteria", None)
         pending_accounting: list[dict[str, Any]] = []
         pending_token = _PENDING_MCP_ACCOUNTING.set(pending_accounting)

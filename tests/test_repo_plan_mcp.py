@@ -45,6 +45,28 @@ def test_mcp_plan_list_drops_host_acceptance_metadata(monkeypatch, tmp_path, val
     assert forwarded == {"action": "plan_list", "root": str(tmp_path)}
 
 
+@pytest.mark.parametrize("criteria", [["The clarification persists across sessions"], []])
+def test_mcp_reconcile_steering_forwards_explicit_acceptance_criteria(monkeypatch, tmp_path, criteria):
+    forwarded = {}
+
+    class FakeClient:
+        def coord(self, **kwargs):
+            forwarded.update(kwargs)
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
+    monkeypatch.setattr(mcp_server, "_compact", lambda payload, *_args: payload)
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_reconcile_steering", "root": str(tmp_path),
+        "task_id": "task-1", "steering_id": "steer-1", "acceptance_criteria": criteria,
+    }))
+
+    assert result.get("error") is None
+    assert result["success"] is True, result
+    assert forwarded["acceptance_criteria"] == criteria
+
+
 def test_plan_action_ignores_shared_changed_paths_transport_metadata(monkeypatch, tmp_path):
     forwarded = {}
 
