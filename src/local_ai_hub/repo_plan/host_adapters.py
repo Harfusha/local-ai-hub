@@ -26,6 +26,7 @@ MANAGED_PLANNER_INSTRUCTIONS = f"""{PLANNER_BLOCK_START}
 - **Pre-execution Resolution**: Always resolve the repository root before starting work. Adopt or reuse an existing plan and task rather than duplicating goals.
 - **Contract & Clarifications**: If project requirements or acceptance criteria change, update the specification, record a clarification on the task, and reconcile the contract revision before editing code.
 - **Agent OS Checkpoint Sync**: Checkpoint progress through `local_ai_coord(action="task_checkpoint")`. Bound tasks automatically synchronize progress, phase, next action, and blockers to the plan file.
+- **Checkpoint Recovery**: If a checkpoint persisted but plan sync failed, resolve the error, reread the plan revision, and call `plan_bind_task` again with the same task and session. Do not repeat the persisted task mutation.
 - **Kanban & Briefings**: Board views (`board_summary`, `board_item_list`) and `session_briefing` reflect the authoritative plan files.
 - **Authentic Verification**: Deliveries and tasks can only be completed when verified by authentic command receipts from native test/lint runs.
 - **Interruption & Resumption**: On interruption, preserve explicit blockers and next actions in the checkpoint rather than restarting with a blank plan.

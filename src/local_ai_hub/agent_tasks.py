@@ -3981,7 +3981,8 @@ class TaskStore:
         except Exception as exc:
             raise RuntimeError(
                 f"Agent OS task {res.task_id} was persisted, but its project-plan checkpoint sync failed; "
-                "the durable task checkpoint remains available for retry"
+                "the durable checkpoint is available; if bound, reread the plan and use plan_bind_task "
+                "with the same task and session after resolving the error"
             ) from exc
         return res
 
@@ -4118,7 +4119,8 @@ class TaskStore:
         except Exception as exc:
             raise RuntimeError(
                 f"Agent OS task {res.task_id} was persisted, but its project-plan checkpoint sync failed; "
-                "the durable task checkpoint remains available for retry"
+                "the durable checkpoint is available; if bound, reread the plan and use plan_bind_task "
+                "with the same task and session after resolving the error"
             ) from exc
         return res
 

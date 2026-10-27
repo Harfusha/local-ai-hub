@@ -160,6 +160,24 @@ def test_binding_sync_failure_is_explicit_and_rebinding_recovers(environment, mo
     assert result["success"] and result["file_revision"] == storage.read_plan_file(binding.plan_rel_path)[1]
 
 
+def test_persisted_checkpoint_sync_failure_can_recover_without_repeating_update(environment, monkeypatch):
+    root, tasks, _, _, storage, _, binding, _ = environment
+    real_sync = tasks._sync_project_plan_checkpoint
+
+    def fail(_state):
+        raise OSError("simulated plan write failure")
+
+    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", fail)
+    with pytest.raises(RuntimeError, match="persisted.*plan_bind_task"):
+        tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="persisted action"), actor="agent_a")
+    assert tasks.get("execution_a").checkpoint.next_action == "persisted action"
+    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", real_sync)
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a",
+                                             plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
+    assert result["success"]
+    assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "persisted action"
+
+
 def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment, monkeypatch):
     _, tasks, _, _, storage, _, binding, _ = environment
     stale = tasks.get("execution_a")

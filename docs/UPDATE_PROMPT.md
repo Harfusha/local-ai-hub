@@ -1,5 +1,7 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+If a task checkpoint persisted but its plan sync failed, do not repeat the task mutation. Resolve the error, reread the plan revision, and rebind the same task and session with `plan_bind_task` to reconcile the durable checkpoint.
+
 Normal setup checks Superpowers when Codex or Gemini CLI is on PATH and agent configuration and companion skills are enabled. Codex reuses an enabled compatible plugin, or attempts installation only when the supported marketplace version is available, then verifies the result. Gemini reuses compatible extension files or installs the pinned ref through its native manager and verifies the files; enablement is not verified. A changed version, incompatible existing package, unsupported CLI, or indeterminate installation requires review; do not overwrite or retry an indeterminate installation. A missing host CLI is reported as not checked. `--generate-only` and skipped agent configuration do not install it. Plugin installation or enablement does not prove hook execution.
 
 **Evidence and retrieval:** A heuristic `suggested_fix` is advice, not a verified repair; an unresolved incident cannot authorize `apply_verified_fix`. Search documents ingested with `local_ai_rag(action="ingest_document")` using `action="search"` in the same root-bound workspace. `docset_index` and `docset_search` use a separate owner-global namespace. Repeated unchanged `delta` responses carry `unchanged=true`; task memory may remain inline to preserve its required identity and adoption context.

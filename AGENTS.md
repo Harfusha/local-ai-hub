@@ -82,6 +82,7 @@ Local AI Hub provides durable execution and memory primitives mapped into the st
 - Persist every operator clarification from chat before continuing: update the relevant Git specification or create one if none applies, reconcile the plan and Agent OS contract revision, and retain the clarification as durable steering. A failed reconciliation must remain visible and be retried from its persisted task/retry state.
 - Mark source complete only with authentic broker-backed verification receipts. Mark delivery done only after the required branch/worktree changes are integrated and verified in the target repository. A plan status, successful file write, test output pasted by a caller, or merge claim alone is not completion evidence.
 - Before handoff or session end, checkpoint the next action and blockers, verify the plan shows the same state, and leave ownership explicit. On resume, inspect the existing binding and active plan before starting work.
+- If a checkpoint reports that the task persisted but plan synchronization failed, do not repeat the task mutation. Resolve the error, reread the plan revision, and call `plan_bind_task` again with the same task and session to reconcile its latest persisted checkpoint.
 
 ## Local model policy
 
