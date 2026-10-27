@@ -14,14 +14,7 @@ MAX_PLAN_FILE_BYTES = 1024 * 1024  # 1 MiB
 MAX_PLAN_TASKS = 1000
 MAX_PLAN_NESTING_DEPTH = 32
 
-SCHEMA_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "docs"
-    / "superpowers"
-    / "specs"
-    / "contracts"
-    / "repo-plan.v1.schema.json"
-)
+SCHEMA_PATH = Path(__file__).resolve().with_name("repo-plan.v1.schema.json")
 
 PLAN_ID_REGEX = re.compile(r"^plan_[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 TASK_ID_REGEX = re.compile(r"^task_[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")

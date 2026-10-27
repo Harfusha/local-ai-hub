@@ -15,6 +15,16 @@ import pytest
 from tools import wheel_smoke
 
 
+def test_smoke_fails_if_installed_planner_schema_is_missing(monkeypatch, tmp_path):
+    from local_ai_hub.repo_plan import schema_validation
+
+    monkeypatch.setattr(wheel_smoke, "_verify_installed_package", lambda: {})
+    monkeypatch.setattr(schema_validation, "SCHEMA_PATH", tmp_path / "missing-schema.json")
+    monkeypatch.setattr(schema_validation, "_VALIDATOR", None)
+    with pytest.raises(FileNotFoundError, match="Plan schema not found"):
+        wheel_smoke.run_smoke()
+
+
 def _install_fake_stdio_client(monkeypatch, payload: dict[str, object]) -> None:
     class FakeServerParameters:
         def __init__(self, **_kwargs) -> None:

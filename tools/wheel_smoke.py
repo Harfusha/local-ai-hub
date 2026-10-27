@@ -290,6 +290,19 @@ def run_smoke() -> dict[str, Any]:
     # Imports that can construct app/runtime objects happen only after origin validation.
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub import http_server
+    from local_ai_hub.repo_plan.schema_validation import validate_plan_dict
+
+    validate_plan_dict({
+        "schema_version": 1,
+        "id": "plan_wheel_smoke",
+        "title": "Wheel smoke",
+        "description": "",
+        "lifecycle": "draft",
+        "default_target_ref": "refs/heads/master",
+        "spec_refs": [],
+        "tasks": {},
+    })
+    provenance["planner_schema"] = "passed"
 
     with tempfile.TemporaryDirectory(prefix="local-ai-hub-wheel-smoke-") as raw_temp:
         temp_dir = Path(raw_temp).resolve()

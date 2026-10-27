@@ -7,6 +7,7 @@ import jsonschema
 import pytest
 
 from local_ai_hub.project_config import resolve_project_config
+from local_ai_hub.repo_plan.schema_validation import SCHEMA_PATH
 from local_ai_hub.repo_plan import (
     PlanLifecycle,
     RepoPlan,
@@ -25,16 +26,6 @@ EXAMPLE_PLAN_PATH = (
     / "contracts"
     / "repo-plan.v1.example.json"
 )
-
-SCHEMA_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "docs"
-    / "superpowers"
-    / "specs"
-    / "contracts"
-    / "repo-plan.v1.schema.json"
-)
-
 
 def test_schema_metaschema_valid():
     """Verify that repo-plan.v1.schema.json is a valid Draft 2020-12 schema."""

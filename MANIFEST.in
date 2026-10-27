@@ -16,6 +16,7 @@ include requirements-openvino.txt
 include install.ps1
 include install.sh
 recursive-include tools *.py
+include src/local_ai_hub/repo_plan/repo-plan.v1.schema.json
 include tools/release-build-requirements.txt
 include tools/release-pip-requirements.txt
 include tools/release-runtime-constraints.txt
