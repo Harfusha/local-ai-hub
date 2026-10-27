@@ -211,10 +211,13 @@ def test_blocked_fake_pipe_write_times_out_and_cleanup_closes_only_owned_stream(
     class BlockingPipe:
         def __init__(self):
             self.release = threading.Event()
+            self.write_started = threading.Event()
             self.incoming = queue.Queue()
             self.closed = False
 
         def write(self, data):
+            self.write_started.set()
+            stop.set()
             self.release.wait()
             return len(data)
 
@@ -238,13 +241,11 @@ def test_blocked_fake_pipe_write_times_out_and_cleanup_closes_only_owned_stream(
     source.parent.mkdir()
     source.write_text("const value = 1;\n", encoding="utf-8")
     stop = threading.Event()
-    timer = threading.Timer(0.05, stop.set)
-    timer.start()
 
     with pytest.raises(TimeoutError, match="write timed out or cancelled"):
         daemon.diagnostics(str(tmp_path), paths=["src/app.ts"],
                            deadline=time.monotonic() + 2, should_stop=stop.is_set)
-    timer.join()
+    assert pipe.write_started.is_set()
     assert pipe.closed
     assert daemon.close() is True
 
