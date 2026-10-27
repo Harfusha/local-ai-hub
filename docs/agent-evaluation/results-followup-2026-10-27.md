@@ -22,6 +22,8 @@ Chat `01a17e53-6745-72d1-afff-e0458e40bec9` poté skutečně přes izolované MC
 
 Opakování po opravě routování dosáhlo `/api/generate` syntetického loopback backendu a MCP job `0d766cf8d9a6487bb777301155941773` byl `running` (`req_2c08eed68678`). Zrušení stejného jobu bylo přijato (`req_88bf0d1e0490`), ale po jednorázovém 20s wait (`req_788c39a321e4`) zůstal aktivní. Po přirozeném dokončení odpovědi backendu a ukončení izolované instance měla jeho DB stav `cancelled`; od začátku generování do terminálního zápisu uplynulo přibližně 120 sekund. Toto dokládá administrativní zrušení po návratu backendu, nikoli včasné přerušení fyzické práce. Produkční inference nebyla testována. Izolované procesy skončily a oba porty byly volné.
 
+Po opravě `34412f96` dosáhl job `1d423f5a63694d19b8d7e7fff07daee6` na izolovaném syntetickém backendu `/api/generate` a byl skutečně běžící. Jediné zrušení `req_b4744f3a792c` bylo přijato a následný wait `req_97ebfc667e1a` vrátil terminální `cancelled`, `outcome_unknown=false`, se zápisem v čase 1793122640.138896. Backend zaznamenal `ConnectionAbortedError` v 1793122640.7974334 a ukončení handleru v 1793122640.7980268, tedy asi 0,66 s po terminálním zápisu. To prokazuje ukončení klientské práce a následné odpojení a konec syntetického handleru, nikoli současné ukončení serveru ani zastavení skutečného modelu. Předchozí pokus s opakujícími se chunky skončil detekcí opakování před odesláním zrušení a není důkazem zrušení.
+
 ## 046 — Konflikt plánu, eval-followup-046-20261027
 
 Chat `01a17db4-9144-7a53-b71b-75f17c8d828b`. Izolovaný MCP adaptér po prvním `plan_get` provedl skutečnou konkurenční úpravu. Agent narazil na 409 `req_08f9548d72a8`, znovu načetl plán a změnu provedl na nové revizi `req_1dbe12603c1b`; nové `next_action` i konkurenční popis se zachovaly. PASS pro tento konflikt. Před správným API agent třikrát zkusil neplatnou kombinaci akce/argumentu; to je náklad na orientaci ve schématu.
@@ -62,7 +64,7 @@ Chat `01a17da6-0ea5-7c63-a299-1c8f04e076af`. Jedno volání `local_ai_task(actio
 
 ## Dosud neprovedené
 
-048, 066, 068 a 088 dosud vyžadují autentický receipt, běžící cancellable job, vyčerpaný budget nebo exkluzivní benchmark. Bez skutečné fixture a izolace je neznačit PASS. Scénáře 080 a 081 také vyžadují opakování při dostupné kapacitě; 067 vyžaduje další běh se STOP během aktivního procesu, 070 opravu a skutečný průchod přes MCP a 081 řízenou dílčí chybu. 040 potřebuje ověřit binding i stav po skutečném receipt.
+048, 066, 068 a 088 dosud vyžadují autentický receipt, zrušení skutečné modelové inference, vyčerpaný budget nebo exkluzivní benchmark. Bez skutečné fixture a izolace je neznačit plně PASS. Scénáře 080 a 081 také vyžadují opakování při dostupné kapacitě; 067 vyžaduje další běh se STOP během aktivního procesu, 070 opravu a skutečný průchod přes MCP a 081 řízenou dílčí chybu. 040 potřebuje ověřit binding i stav po skutečném receipt.
 
 Pro 068 bylo dodatečně spuštěno `tests/test_agent_task_budget_increase.py`: 50 passed. Jde o cílené automatizované testy, nikoli o požadovaný agentní průchod s dosaženým limitem. Samostatná izolovaná úloha `eval068-task` vznikla, její budget však vyčerpaný není; bez oprávněného mechanismu nebyl jeho stav uměle upravován.
 
