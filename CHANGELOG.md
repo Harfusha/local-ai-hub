@@ -17,6 +17,7 @@
 - Aligned advisory review generation with JSON consistency contracts and reported deterministic diff counts.
 - Redacted credentials idempotently in decision memory and hardened telemetry and SQLite accounting boundaries.
 - Hardened FastMCP schema generation and aligned ergonomics parameter contracts across all 7 canonical MCP tools.
+- Confined configurable project workspace and plan-intent paths to their repository roots, rejecting traversal and external targets.
 
 ## 5.0.0 — 2026-10-19
 
