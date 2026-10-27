@@ -6260,6 +6260,7 @@ class CommandBroker:
             "exit_code": -9 if (timed_out or cancelled or aborted_interactive) else int(process.returncode or 0),
             "timed_out": timed_out, "cancelled": cancelled, "aborted_interactive": aborted_interactive,
             "cleanup_unconfirmed": cleanup_unconfirmed,
+            **({"outcome_unknown": True, "fail_closed": True, "retryable": False} if cleanup_unconfirmed else {}),
             "output_capture_unconfirmed": capture_unconfirmed,
             "stdout": stdout, "stderr": stderr,
             "duration_ms": round((capture_finished - started) * 1000, 1),

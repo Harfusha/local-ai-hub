@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -261,6 +262,7 @@ def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: 
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
     ext._serena = sys.executable
+    ext._backend_health["serena"]["last_preflight_at"] = time.monotonic()
 
     class RejectedSerenaClient:
         def tool_names(self):

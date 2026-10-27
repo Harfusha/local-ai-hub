@@ -248,7 +248,7 @@ def test_dependency_install_explicit_and_bounded(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     monkeypatch.setattr(process_utils, "run_hidden", fake_run)
-    arguments = dict(repo_root=tmp_path, package_root=package, executable=sys.executable)
+    arguments = dict(repo_root=tmp_path, package_root=package, executable=str(Path(sys.executable).resolve()))
     with pytest.raises(ValueError, match="authorization"):
         host_hooks.install_superpowers("gemini_cli", **arguments)
     waiting = host_hooks.install_superpowers("gemini_cli", **arguments, operator_authorized=True)
