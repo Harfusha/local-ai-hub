@@ -299,8 +299,15 @@ def test_recovery_accepts_live_version_two_registry_row(
     broker._load_daemon_registry()
 
     recovered = broker._daemons["dmn_" + "a" * 32]
-    assert recovered["process_group_id"] == 4321
-    assert recovered["process"].poll() is None
+    try:
+        assert recovered["process_group_id"] == 4321
+        assert recovered["process"].poll() is None
+    finally:
+        timer = recovered.get("ttl_timer")
+        if timer is not None:
+            timer.cancel()
+        recovered["log_fh"].close()
+        broker._daemon_slots.release()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows rejects legacy daemon registry rows")
