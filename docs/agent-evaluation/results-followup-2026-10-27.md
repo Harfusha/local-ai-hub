@@ -68,6 +68,8 @@ Chat `01a17da6-0ea5-7c63-a299-1c8f04e076af`. Jedno volání `local_ai_task(actio
 
 Pro 068 bylo dodatečně spuštěno `tests/test_agent_task_budget_increase.py`: 50 passed. Jde o cílené automatizované testy, nikoli o požadovaný agentní průchod s dosaženým limitem. Samostatná izolovaná úloha `eval068-task` vznikla, její budget však vyčerpaný není; bez oprávněného mechanismu nebyl jeho stav uměle upravován.
 
+Další izolovaný běh 068 vytvořil úlohu `eval068-isolated` přes MCP (`req_9ba7dc5e6bce`) a checkpoint (`req_76d9464742f9`). Ohraničený nativní Python příkaz skončil exit 0; následný read-only dotaz na izolovanou databázi nenašel pro tuto úlohu budgetový záznam. Agent nenašel ověřeného producenta účtování pro nativní příkaz; interní broker účtuje vlastní běhy, ale tento výsledek nepokrývá všechny cesty. Vyčerpání budgetu a požadovaný scénář zůstávají **BLOCKED**. Interní storage ani limity nebyly upravovány. Izolovaná služba byla zastavena, port ověřen jako volný a stav zachován.
+
 Pro 066 a 088 byla spuštěna kontrola zrušení čekající úlohy v scheduleru a sada `tests/test_t12_benchmark_contract.py`: dohromady 20 passed. Tyto automatizované testy nejsou důkazem zrušení běžící MCP úlohy ani měřeného výkonu modelu. Aktuální jednorázový status `req_4e79e62ecd02` hlásil model online, ale také degradaci a neznámý tlak VRAM; exkluzivní benchmark zůstává neověřen.
 
 ## Zrušený nástroj a aktuální instrukce
