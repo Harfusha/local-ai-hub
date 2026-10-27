@@ -1,11 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `1c8410b2` (evidence below identifies its source commit; later changes require fresh verification).
+**Candidate revision:** `3e03f918` (evidence below identifies its source commit; later changes require fresh verification).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
+- Clean archive `3e03f918`: strict-tree release check and selftest **6/6** passed. Its wheel SHA-256 is `b4a411bd2c71ce6155f009302e6c696f2f5bfe12af449a036e1923daa91a09ed`; a fresh isolated installation passed `pip check`, wheel smoke, and MCP forwarding checks for steering criteria and unrelated host metadata. Dashboard static check passed (`279` unique IDs; Node available), not a live browser acceptance. [CI for `3e03f918`](https://github.com/Harfusha/local-ai-hub/actions/runs/40558131430) is running. The shared service has not been restarted with this source.
 - Clean archive `1c8410b2`: strict-tree release check passed. A wheel built from that archive has SHA-256 `9ab5255fe27abfbe104813486d806f26a243de42c298c621410b5da9589ffff9`; isolated installation, `pip check` and wheel smoke passed. The working checkout passed selftest **6/6** and **102** focused planner, task and crash-recovery tests. [CI for `1c8410b2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40555900092) is still running; these results do not establish live activation or verified delivery.
 - [CI for `9c55ed91`](https://github.com/Harfusha/local-ai-hub/actions/runs/40552077288) failed Ubuntu 3.14 after 12 other jobs passed: `test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload` reported a pre-send connection refusal. The log does not establish why startup failed; later tests capture the startup result, duration and launch events without weakening the assertion.
 - Source commit `a6888c14` fixes MCP dropping and contract validation rejecting steering acceptance criteria. Its related MCP, plan and operation-contract suite passed **220 tests**, and the expanded plan MCP cases passed **8 tests**. The earlier wheel and CI do not validate this newer source.
