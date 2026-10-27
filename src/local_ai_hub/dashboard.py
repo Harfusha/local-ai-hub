@@ -5844,13 +5844,13 @@ let cachedSemaphores = {};
 let coordinationLoadErrors={},coordinationLoadGeneration=0;
 function coordinationUnavailable(key){return `<div class="diag-banner bad" role="status">Coordination unavailable: ${esc(coordinationLoadErrors[key])}. Refresh to retry.</div>`}
 
-function renderCoordPlanFilter(plans){
+function renderCoordPlanFilter(plans,preferredPlanId){
   const select=$('coordBoardPlan');
   const invalid=(Array.isArray(plans)?plans:[]).filter(plan=>plan?.invalid);
   const warning=$('coordPlanWarnings');
   if(warning)warning.textContent=invalid.length?`${invalid.length} invalid plan file(s) were skipped: ${invalid.map(plan=>plan.rel_path||'unknown file').join(', ')}. Fix the files before editing those plans.`:'';
   if(!select)return;
-  const previous=select.value;
+  const previous=typeof preferredPlanId==='string'&&preferredPlanId?preferredPlanId:select.value;
   const valid=(Array.isArray(plans)?plans:[]).filter(plan=>plan&&!plan.invalid&&plan.id);
   const invalidOptions=invalid.map(plan=>`<option disabled>${esc(plan.rel_path||'Invalid plan')}</option>`).join('');
   select.innerHTML='<option value="">All plans</option>'+valid.map(plan=>`<option value="${esc(plan.id)}">${esc(plan.title||plan.id)} · ${esc(plan.lifecycle||'draft')}</option>`).join('')+invalidOptions;
@@ -5859,7 +5859,7 @@ function renderCoordPlanFilter(plans){
   if(edit)edit.disabled=!select.value;
 }
 
-async function loadCoordinationView(){
+async function loadCoordinationView(preferredPlanId){
     const generation=++coordinationLoadGeneration;
     const root=String($('coordBoardRoot')?.value||'').trim();
     const planSelect=$('coordBoardPlan');
@@ -5870,7 +5870,7 @@ async function loadCoordinationView(){
     }
     if(generation!==coordinationLoadGeneration)return;
     cachedPlanItems=plansResult.success===true&&Array.isArray(plansResult.plans)?plansResult.plans:[];
-    renderCoordPlanFilter(cachedPlanItems);
+    renderCoordPlanFilter(cachedPlanItems,preferredPlanId);
     try{if(root)localStorage.setItem('local-ai-hub.coordBoardRoot',root)}catch{}
     const planId=String(planSelect?.value||'').trim();
     const boardRequest=root&&plansResult.success===true
@@ -6159,8 +6159,7 @@ async function submitCreatePlan(e){
     const res=await post('/api/coord/plan_create',{root,plan_id,title,description,lifecycle:'active',owner:'dashboard',idempotency_key:coordOperationId(`create-${plan_id}`)});
     if(res.success===false)throw new Error(res.error||'Could not create plan');
     $('modalClose')?.click();
-    if($('coordBoardPlan'))$('coordBoardPlan').value=plan_id;
-    await loadCoordinationView();
+    await loadCoordinationView(plan_id);
   }catch(error){alert('Create plan failed: '+(error.message||error))}
 }
 
@@ -6271,7 +6270,7 @@ async function submitPlanTaskEdit(e){
   const status=$('editTaskStatus');
   if(status)task_data.work_status=status.value;
   try{
-    const res=await post('/api/coord/plan_task_edit',{...edit,task_id:edit.taskId,expected_revision:edit.revision,task_data,owner:'dashboard',idempotency_key:coordOperationId(`update-${edit.taskId}`)});
+    const res=await post('/api/coord/plan_task_edit',{root:edit.root,plan_id:edit.planId,task_id:edit.taskId,expected_revision:edit.revision,task_data,owner:'dashboard',idempotency_key:coordOperationId(`update-${edit.taskId}`)});
     if(res.success===false)throw new Error(res.error||'Could not update task');
     activePlanTaskEdit=null;
     $('modalClose')?.click();

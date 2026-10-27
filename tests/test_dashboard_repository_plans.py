@@ -13,7 +13,7 @@ from local_ai_hub.repo_plan.schema_validation import PLAN_ID_REGEX
 def test_project_board_requires_repository_and_plan_filter() -> None:
     assert 'id="coordBoardRoot"' in DASHBOARD_HTML
     assert 'id="coordBoardPlan"' in DASHBOARD_HTML
-    start = DASHBOARD_HTML.index("async function loadCoordinationView()")
+    start = DASHBOARD_HTML.index("async function loadCoordinationView(")
     end = DASHBOARD_HTML.index("function renderKanbanBoard()", start)
     loader = DASHBOARD_HTML[start:end]
     assert "/api/coord/plan_list" in loader
@@ -36,6 +36,82 @@ def test_dashboard_plan_edits_write_the_selected_repository_plan() -> None:
     assert "/api/coord/plan_update" in DASHBOARD_HTML
     assert "function editPlanTask(planId,taskId)" in DASHBOARD_HTML
     assert "expected_revision" in task_actions
+
+
+def test_dashboard_task_edit_sends_only_canonical_coordination_fields() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    start = DASHBOARD_HTML.index("async function submitPlanTaskEdit(")
+    end = DASHBOARD_HTML.index("function openAcquireSemModal(", start)
+    source = DASHBOARD_HTML[start:end]
+    harness = r"""
+let activePlanTaskEdit={root:'C:/repo',planId:'plan_alpha',taskId:'task_beta',revision:'rev-1'};
+const values={editTaskTitle:'Updated',editTaskDescription:'Details',editTaskOwner:'agent',
+  editTaskNextAction:'Continue',editTaskBlocker:'Waiting',editTaskAcceptance:'One\nTwo',editTaskStatus:'blocked'};
+const $=id=>id==='modalClose'?{click(){}}:(id in values?{value:values[id]}:null);
+let request;
+const post=async(path,payload)=>{request={path,payload};return {success:true};};
+const coordOperationId=()=> 'operation-1';
+const loadCoordinationView=async()=>{};
+const alert=message=>{throw Error(message);};
+""" + source + r"""
+submitPlanTaskEdit({preventDefault(){}}).then(()=>console.log(JSON.stringify(request)));
+"""
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    request = json.loads(completed.stdout)
+    assert request["path"] == "/api/coord/plan_task_edit"
+    assert set(request["payload"]) == {
+        "root", "plan_id", "task_id", "expected_revision", "task_data", "owner", "idempotency_key"
+    }
+    assert request["payload"]["plan_id"] == "plan_alpha"
+    assert request["payload"]["task_id"] == "task_beta"
+    assert request["payload"]["expected_revision"] == "rev-1"
+    assert request["payload"]["task_data"]["work_status"] == "blocked"
+    assert request["payload"]["task_data"]["acceptance_criteria"] == ["One", "Two"]
+
+
+def test_created_plan_is_selected_when_board_refreshes() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    start = DASHBOARD_HTML.index("async function submitCreatePlan(")
+    end = DASHBOARD_HTML.index("function openEditPlanModal(", start)
+    source = DASHBOARD_HTML[start:end]
+    harness = r"""
+const elements={coordBoardRoot:{value:'C:/repo'},newPlanId:{value:'plan_new'},
+  newPlanTitle:{value:'New plan'},newPlanDescription:{value:''},
+  coordBoardPlan:{value:''},modalClose:{click(){}}};
+const $=id=>elements[id]||null;
+let selected;
+const post=async()=>({success:true});
+const coordOperationId=()=> 'operation-1';
+const loadCoordinationView=async(id)=>{selected=id;};
+const alert=message=>{throw Error(message);};
+""" + source + r"""
+submitCreatePlan({preventDefault(){}}).then(()=>console.log(JSON.stringify({selected})));
+"""
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    assert json.loads(completed.stdout).get("selected") == "plan_new"
+
+
+def test_plan_filter_can_select_a_newly_loaded_plan() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    start = DASHBOARD_HTML.index("function renderCoordPlanFilter(")
+    end = DASHBOARD_HTML.index("async function loadCoordinationView(", start)
+    source = DASHBOARD_HTML[start:end]
+    harness = r"""
+const select={value:'',innerHTML:''}; const edit={disabled:true};
+const $=id=>({coordBoardPlan:select,coordEditPlanBtn:edit})[id]||null;
+const esc=value=>String(value);
+""" + source + r"""
+renderCoordPlanFilter([{id:'plan_new',title:'New',lifecycle:'active'}],'plan_new');
+console.log(JSON.stringify({value:select.value,disabled:edit.disabled}));
+"""
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    assert json.loads(completed.stdout) == {"value": "plan_new", "disabled": False}
 
 
 def test_dashboard_generates_plan_ids_accepted_by_repository_schema() -> None:

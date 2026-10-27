@@ -14,6 +14,7 @@
 - Added explicitly configured, task-owned browser and desktop automation behind the MCP surface.
 - Fixed dashboard plan creation to emit IDs accepted by the repository plan schema; plan calls now ignore the MCP host's injected active-task acceptance metadata.
 - Packaged the repository plan schema with the application and added installed-wheel validation of planner support.
+- Fixed dashboard task edits to send canonical coordination fields and select a newly created plan on its board.
 - Repaired clean development installs and Python 3.11/3.12/3.13/3.14 compatibility while retaining Windows junction/process identity checks.
 - Aligned advisory review generation with JSON consistency contracts and reported deterministic diff counts.
 - Redacted credentials idempotently in decision memory and hardened telemetry and SQLite accounting boundaries.
