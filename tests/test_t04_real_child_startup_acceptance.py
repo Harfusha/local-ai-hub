@@ -113,6 +113,8 @@ def test_autostart_launches_real_hub_child_and_returns_http_search_result(tmp_pa
         assert supervisor_owner["pid"] == supervisor_pid
         assert process_owner_state(supervisor_owner, state_dir, "supervisor") == "owned"
         assert process_identity(child.pid) == child._local_ai_process_identity
+        if os.name == "posix":
+            assert child._local_ai_process_group == child.pid == os.getpgid(child.pid)
         runtime_identity = process_identity(supervisor_pid)
         assert runtime_identity is not None
         if os.name == "nt" and sys.prefix != sys.base_prefix:

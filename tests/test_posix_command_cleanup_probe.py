@@ -41,6 +41,8 @@ def test_posix_command_normal_exit_confirms_cleanup(monkeypatch, tmp_path):
 
     fake_os = FakePosixOs()
     monkeypatch.setattr(commands_module, "os", fake_os)
+    # Exercise the fallback probe even when native tree cleanup succeeds.
+    monkeypatch.setattr(commands_module, "terminate_tree", lambda *_args, **_kwargs: False)
 
     result = broker._execute(
         ["python", "-c", "print(123)"],

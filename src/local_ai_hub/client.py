@@ -744,6 +744,8 @@ class HubClient:
                 except OSError:
                     return False
                 if sys.platform != "win32":
+                    # start_new_session makes this child the leader of its own group.
+                    process._local_ai_process_group = process.pid
                     process._local_ai_process_identity = process_identity(process.pid)
                 _retain_detached_child(process)
             while remaining() > 0:
