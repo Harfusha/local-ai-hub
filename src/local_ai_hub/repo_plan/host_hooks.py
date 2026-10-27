@@ -368,6 +368,42 @@ def ensure_codex_superpowers(executable: str | Path, *, repo_root: str | Path) -
             "partial_install_review_required": True, "error": error}
 
 
+def ensure_gemini_superpowers(executable: str | Path, *, repo_root: str | Path) -> dict[str, Any]:
+    """Run the pinned extension installer through the detected native Gemini CLI."""
+    import shutil
+
+    binary = Path(executable)
+    if not binary.is_absolute() or not binary.is_file():
+        raise ValueError("absolute Gemini executable required")
+    entrypoint = None
+    if binary.suffix.lower() in {".cmd", ".bat"}:
+        package = binary.parent / "node_modules" / "@google" / "gemini-cli"
+        manifest = read_json(package / "package.json", max_bytes=65536)
+        if manifest.get("name") != "@google/gemini-cli":
+            raise ValueError("unrecognized Gemini npm package")
+        entry = manifest.get("bin")
+        if isinstance(entry, dict):
+            entry = entry.get("gemini")
+        if not isinstance(entry, str) or not entry:
+            raise ValueError("missing Gemini npm entrypoint")
+        entrypoint = (package / entry).resolve()
+        if not entrypoint.is_relative_to(package.resolve()) or entrypoint.suffix not in {".js", ".mjs", ".cjs"}:
+            raise ValueError("Gemini npm entrypoint escapes its package")
+        node = shutil.which("node")
+        if not node:
+            raise ValueError("native Node executable required for Gemini npm installation")
+        binary = Path(node).absolute().resolve()
+    else:
+        binary = binary.resolve()
+    gemini_home = Path(os.environ.get("GEMINI_CLI_HOME", str(Path.home())))
+    if not gemini_home.is_absolute():
+        raise ValueError("GEMINI_CLI_HOME must be absolute")
+    return install_superpowers("gemini_cli", repo_root=repo_root,
+                               package_root=gemini_home / ".gemini" / "extensions" / "superpowers",
+                               executable=binary, entrypoint=entrypoint,
+                               operator_authorized=True, consent=True)
+
+
 def install_superpowers(
     host: str, *, repo_root: str | Path, package_root: str | Path,
     executable: str | Path, entrypoint: str | Path | None = None,

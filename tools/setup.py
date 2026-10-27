@@ -1179,6 +1179,19 @@ def main() -> int:
             log("Codex Superpowers dependency is installed and enabled.")
         else:
             log("Codex was not found on PATH; its Superpowers dependency was not checked.")
+        gemini = shutil.which("gemini")
+        if gemini:
+            from local_ai_hub.repo_plan.host_hooks import ensure_gemini_superpowers
+            try:
+                dependency = ensure_gemini_superpowers(Path(gemini).absolute(), repo_root=install_dir)
+            except (OSError, ValueError) as exc:
+                dependency = {"success": False, "error": str(exc)}
+            if not dependency.get("success"):
+                log(f"Setup incomplete: Gemini Superpowers dependency: {json.dumps(dependency)}")
+                return 1
+            log("Gemini Superpowers dependency is present; host activation still requires verification.")
+        else:
+            log("Gemini CLI was not found on PATH; its Superpowers dependency was not checked.")
 
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
         configure_agents(install_dir, hub_python, serena, cfg, include_companion=include_companion)
