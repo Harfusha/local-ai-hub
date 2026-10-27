@@ -500,7 +500,7 @@ Recipes (guidance, not gates):
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.
 
-- Semantic delegation is on-demand: use `local_ai_task` for bounded generation, review, second opinions, compression or drafting after indexed evidence. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
+- Semantic delegation is on-demand and optional. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Use it only when an approved backend is available. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Local model routes follow the active hardware profile and user overrides; verify model availability before inference.
 - Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
 - Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.

@@ -3,7 +3,7 @@
 ## 5.1.0 — 2026-10-26
 
 - Delivered comprehensive performance optimizations across the entire runtime pipeline (T0–T12).
-- Integrated native Cython SimHash kernel acceleration with 100% bitwise parity and transparent reference Python fallback.
+- Added opt-in native Cython SimHash acceleration through the `[native]` extra with 100% bitwise parity; the default and production wheel remain pure Python.
 - Resolved cross-platform command process tree cleanup on POSIX/Linux systems by verifying process group vacancy before confirming termination.
 - Added a native benchmark runner emitting perf_candidate.v1 records. The historical JSON-budget tail result used a synthetic baseline and is not acceptance evidence.
 - Added authentic 117-query bilingual relevance quality evaluation corpus across all 8 required categories.

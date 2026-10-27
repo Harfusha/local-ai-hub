@@ -33,7 +33,11 @@ def test_release_uses_only_current_local_ai_hub_contracts():
     for base in roots:
         for path in base.rglob("*"):
             if path.is_file() and path.suffix in {".py", ".md", ".toml", ".yml", ".yaml"}:
-                if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
+                relative = path.relative_to(ROOT)
+                if relative.parts[:2] == ("docs", "superpowers") or relative in {
+                    Path("docs/agent-evaluation/results.md"),
+                    Path("docs/agent-evaluation/evaluation-key.md"),
+                }:
                     continue
                 files.append(path)
 
@@ -280,6 +284,11 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
         if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
             continue
         relative = path.relative_to(ROOT)
+        if relative in {
+            Path("docs/agent-evaluation/results.md"),
+            Path("docs/agent-evaluation/evaluation-key.md"),
+        }:
+            continue  # local/private evaluation outputs are not release sources
         if relative.parts[0].startswith(".t") and "overlay" in relative.parts[0]:
             continue  # internal candidate overlays are not release sources
         try:

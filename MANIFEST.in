@@ -36,6 +36,7 @@ prune .t*-overlay*
 
 recursive-include docs *.md
 prune docs/superpowers
+exclude docs/agent-evaluation/results.md docs/agent-evaluation/evaluation-key.md
 exclude docs/integration-*.md
 prune docs/integration
 exclude docs/*SYNC*.md docs/*STASH*.md docs/*WORKTREE*.md docs/PRIORITY_STASH*.md

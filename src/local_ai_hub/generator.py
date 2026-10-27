@@ -185,8 +185,10 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
     else:
         delegation_task = (
-            "- Local model inference is disabled in this configuration. "
-            "Use cloud/native agent reasoning; Local AI Hub operates in deterministic/indexed mode only."
+            "- Semantic delegation is on-demand and optional. "
+            "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, "
+            "and semantic compression. Use it only when an approved backend is available. Cloud/native reasoning "
+            "remains available; do not infer that a local model is installed."
         )
 
     work_delegation = ""
@@ -675,10 +677,16 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled)"
     recipe_lines = "\n".join(fs.recipe_lines())
 
-    task_delegation = ""
+    task_delegation = (
+        "\n- Semantic delegation is on-demand and optional. "
+        "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, "
+        "and semantic compression. Use it only when an approved backend is available. Cloud reasoning and planning "
+        "are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact "
+        "facts, symbols, diff and tests."
+    )
     if fs.tasks and fs.has_any_model():
-        task_delegation = (
-            "\n- Semantic delegation is on-demand: use `local_ai_task` for bounded generation, review, second opinions, compression or drafting after indexed evidence. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests."
+        task_delegation += (
+            " Local model routes follow the active hardware profile and user overrides; verify model availability before inference."
         )
 
     model_default = ""

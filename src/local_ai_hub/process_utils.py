@@ -1000,7 +1000,7 @@ def _terminate_tree_unlocked(
             return False
 
     if not leader_still_owned():
-        return False
+        return _process_group_liveness(group_id) is False
 
     try:
         os.killpg(group_id, signal.SIGTERM)
@@ -1020,7 +1020,7 @@ def _terminate_tree_unlocked(
     # can be reused while waiting. Escalate only while its original leader
     # still has the identity captured immediately after spawn.
     if not leader_still_owned():
-        return False
+        return _process_group_liveness(group_id) is False
 
     try:
         os.killpg(group_id, 0)
@@ -1030,7 +1030,7 @@ def _terminate_tree_unlocked(
         return False
 
     if not leader_still_owned():
-        return False
+        return _process_group_liveness(group_id) is False
 
     # The unreaped leader still pins the group identity. Escalate before
     # reaping it, so descendants that ignored SIGTERM cannot survive merely
@@ -1071,6 +1071,24 @@ def _terminate_tree_unlocked(
         return False
 
     return False
+
+
+def _process_group_liveness(process_group_id: int) -> bool | None:
+    """Return whether a POSIX process group exists without signaling it."""
+    if (
+        os.name != "posix"
+        or isinstance(process_group_id, bool)
+        or not isinstance(process_group_id, int)
+        or process_group_id <= 1
+    ):
+        return None
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError, ValueError):
+        return None
+    return True
 
 
 def terminate_tree(

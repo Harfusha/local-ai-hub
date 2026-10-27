@@ -1,11 +1,13 @@
 # Local AI Hub: current acceptance state
 
-Updated: 2026-10-27. Canonical checkout: `C:/Users/Adam/.local-ai-hub`, branch `master`.
-Status: RELEASE VALIDATION IN PROGRESS; current candidate is not yet accepted or installed.
-- Revision `50ce188493b9d000b21599fb572d47aad23f4d7f`: isolated wheel smoke passed with SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`; a clean snapshot passed `release_check.py --strict-tree`; surface audit passed 774 tests. Subsequent MCP and process-cleanup fixes require a new wheel and fresh checks.
-- [CI run #178](https://github.com/Harfusha/local-ai-hub/actions/runs/40479922045) failed the Ubuntu 3.14 full suite; twelve other matrix and coverage jobs passed. A fresh CI run is required after the corrections.
-- The historical `docs/perf_candidate_json_budget.json` result is invalid: its source revision computed the baseline as 1.5 times the candidate time. A genuine paired benchmark and parity check are required.
-- Current runtime activation, dashboard screenshot, full-suite result, receipt-gated Agent OS completion, and current data/config preservation remain open. See [release evidence](../../release-evidence-5.1.0.md).
+Updated: 2026-10-27. Repository branch: `master`.
+Status: SOURCE REPAIRS LOCALLY VALIDATED; hosted acceptance pending. Repair candidate is based on `0883f6a4739823917abd7cacab5555cad4e3bfb1`.
+- [CI run #196](https://github.com/Harfusha/local-ai-hub/actions/runs/40493352684) completed **failed** on Ubuntu 3.14 with 10 test failures. Failures covered cleanup expectations/owned-child cleanup, native-start race, policy generation, release scans of evaluation outputs, fallback path cache, and one concurrent MCP transport request not sent before write. This run validates only `0883f6a4`, not the repair candidate.
+- Repair candidate updates optional semantic policy generation, temporary policy artifact verification, release exclusion for local evaluation outputs, search fallback path confinement/cache, supervisor race recheck, and safe cleanup receipts. Affected modules plus T04 lifecycle cases: **148 passed, 1 Windows skip** on 2026-10-27. `pyflakes src tools` and prompt synchronization pass. Fresh Linux/3.14 CI remains required; MCP concurrency has not yet been re-verified there.
+- A clean `git archive` wheel smoke of `0883f6a4` returned `success=true`, `smoke=passed`, version `5.1.0`, five MCP tools; SHA256 `d7e80f176986cab2de32074b82bf0e81ca4f37c248af4fbbd19aa8d0d505e4fd`. This wheel is evidence for the base revision only, not the uncommitted repair candidate. Wheel and venv retained under `%TEMP%/lah-release-0883f6a4-2154c0ccf3994715bfe4ef7b1159b380/`.
+- `tests/test_surface_audit_policy.py` and `tests/test_surface_inventory.py`: **774 passed** on this checkout. Fresh `tools/selftest.py`: **6/6 passed**, including HTTP health and Agent State Store.
+- `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs with parity, p95 1.72x and p99 1.95x; this benchmark is specific to clean source `94a485ffecf6bc3c9810718b2f658b6df0120b64`, not a full-release performance claim.
+- Live Hub `/health` returned success/version `5.1.0` from checkout process PID `18096` at 12:01:46 local, still on base `0883f6a4`. Dashboard exposes repository root, per-plan Kanban, plan progress and briefing; this repo board has zero plans/tasks. Do not restart while another active chat uses this shared Hub. Persisted dashboard screenshot, new full CI, candidate wheel/release checks, safe restart/doctor, and receipt-gated Agent OS completion remain open. The prior benchmark artifact's synthetic-baseline finding is historical; see replacement evidence above and [release evidence](../../release-evidence-5.1.0.md).
 
 ## Combined integration continuation — 2026-10-25
 

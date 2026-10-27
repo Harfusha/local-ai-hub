@@ -367,12 +367,16 @@ def native_start() -> None:
         if dest.exists():
             cp = run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(dest)])
             if cp.returncode == 0: return
+        if supervisor_pid() > 0:
+            return
         spawn_detached(); return
     systemctl = shutil.which("systemctl")
     dest = Path.home() / ".config/systemd/user/local-ai-hub.service"
     if systemctl and dest.exists():
         cp = run([systemctl, "--user", "start", "local-ai-hub.service"])
         if cp.returncode == 0: return
+    if supervisor_pid() > 0:
+        return
     spawn_detached()
 
 

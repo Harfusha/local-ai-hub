@@ -5897,6 +5897,8 @@ class CommandBroker:
                     res = terminate_tree(process.pid, **kwargs)
                     if res:
                         return True
+                    if process.poll() is not None and _process_group_liveness(process.pid) is False:
+                        return True
                     # A failed ownership check cannot authorize another signal
                     # to a numeric process group that may already be reused.
                     return False

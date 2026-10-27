@@ -385,5 +385,6 @@ ative_kernels.simhash_text(text) when native acceleration is available and enabl
 
 ## Release-state reconciliation (2026-10-27)
 
-- JSON-budget benchmark acceptance is open. Replace `docs/perf_candidate_json_budget.json` only with a genuine 1,000-pair run recording both timings, parity, source and hardware identity.
-- Current 5.1.0 release acceptance also requires a green hosted CI matrix and matching wheel and live-service receipts.
+- The earlier “next gates” list is a historical implementation checkpoint, not the current release checklist. The F01–F24 disposition is recorded in the T12 reconciliation above; this does not imply that one microbenchmark proves every performance characteristic.
+- **JSON-budget tail gate: PASS.** `docs/perf_candidate_json_budget.json` records 1,000 independently measured baseline/candidate pairs, matching outputs, source and hardware identity, p95 speedup 1.72x and p99 speedup 1.95x. This closes the JSON-budget benchmark item only; it is not a claim of general T0–T12 performance acceptance.
+- Current 5.1.0 release acceptance remains tracked in [current status](local-ai-hub-current-status.md) and requires green hosted CI, matching wheel evidence, and final live-service/Agent OS receipts.

@@ -13,7 +13,7 @@ import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from local_ai_hub.process_utils import pid_alive, process_identity, terminate_owned_process, terminate_tree
+from local_ai_hub.process_utils import pid_alive, process_identity, terminate_owned_process
 
 
 def _free_port() -> int:
@@ -127,14 +127,17 @@ def _same_process(row: dict[str, object]) -> bool:
     )
 
 
-def _stop_recorded_children(rows: list[dict[str, object]], config_path: Path | None = None) -> None:
+def _stop_recorded_children(rows: list[dict[str, object]], state_dir: Path) -> None:
     for row in rows:
         pid = int(row["pid"])
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline and _same_process(row):
             time.sleep(0.05)
         if _same_process(row):
-            terminate_tree(pid, expected_identity=row.get("identity"), grace_seconds=1.0)
+            owner_path = state_dir / "hub.owner.json"
+            assert owner_path.is_file(), "live test Hub has no owner receipt"
+            owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            assert terminate_owned_process(owner, state_dir, "hub", grace_seconds=1.0)
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and _same_process(row):
                 time.sleep(0.05)
@@ -199,7 +202,7 @@ def test_stdio_handshake_starts_one_hub_for_simultaneous_cold_clients(tmp_path: 
         assert (state_dir / "hub.pid").exists()
         assert (state_dir / "hub.start.lock").read_bytes() == b""
     finally:
-        _stop_recorded_children(_launches(child_log), config_path=config_path)
+        _stop_recorded_children(_launches(child_log), state_dir=state_dir)
 
 
 def test_stdio_handshake_timeout_reaps_owned_hub_child(tmp_path: Path) -> None:
@@ -240,4 +243,4 @@ def test_stdio_handshake_timeout_reaps_owned_hub_child(tmp_path: Path) -> None:
         for worker in _launches(Path(str(child_log) + ".workers")):
             if _same_process(worker):
                 assert terminate_owned_process(worker["owner"], config_path.parent, "t04-delayed-worker", grace_seconds=1.0)
-        _stop_recorded_children(_launches(child_log))
+        _stop_recorded_children(_launches(child_log), state_dir=state_dir)

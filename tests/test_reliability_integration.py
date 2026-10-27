@@ -16,7 +16,7 @@ import pytest
 
 from local_ai_hub.cache import SQLiteCache
 from local_ai_hub.client import HubClient
-from local_ai_hub.generator import generate_skill_markdown
+from local_ai_hub.generator import generate_skill_markdown, write_all_generated
 from local_ai_hub.http_server import Handler, LocalAIHTTPServer
 from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.resilience import RecoveryJournal
@@ -692,13 +692,15 @@ def test_code_index_impact_batches_large_changed_file_sets(tmp_path: Path):
     assert result["indexed_changed_files"] == 0
 
 
-def test_agent_policy_is_consistent_and_has_stop_reuse_protocol():
+def test_agent_policy_is_consistent_and_has_stop_reuse_protocol(tmp_path: Path):
     spec = importlib.util.spec_from_file_location("local_ai_hub_setup_policy_v15", ROOT / "tools" / "setup.py")
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     policy = setup.GLOBAL_POLICY
-    agents = (ROOT / "generated" / "agent-policy.md").read_text(encoding="utf-8")
+    generated_root = tmp_path / "generated-policy"
+    write_all_generated({}, generated_root)
+    agents = (generated_root / "generated" / "agent-policy.md").read_text(encoding="utf-8")
     skill = generate_skill_markdown({})
     assert setup.GLOBAL_POLICY_BEGIN in agents
     assert setup.GLOBAL_POLICY_END in agents

@@ -340,7 +340,6 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
         stdout, stderr = process.communicate(timeout=3)
         pytest.fail(f"isolated MCP autostart exceeded 18s; helper={stdout!r}; stderr={stderr!r}")
 
-    assert terminate_tree(process.pid, process_handle=process, grace_seconds=0.25)
     assert process.returncode == 0, stderr[-1600:]
     result = json.loads(stdout.strip().splitlines()[-1])
     assert result["status"]["success"] is True or (

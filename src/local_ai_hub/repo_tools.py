@@ -2192,7 +2192,11 @@ class RepositoryTools:
                 scanned += 1
                 python_fallback_scanned += 1
                 rel = str(path.relative_to(base)).replace("\\", "/")
-                fallback_jobs.append((rel, path))
+                resolved_info = self._resolve_under_base(base, rel)
+                if resolved_info is None:
+                    continue
+                resolved_path, _relative = resolved_info
+                fallback_jobs.append((rel, resolved_path))
             for rel, file_hash, lines, error in self._read_search_snapshots(fallback_jobs):
                 path_lower = rel.lower()
                 if error is not None:
