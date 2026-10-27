@@ -96,6 +96,29 @@ renderPlanProgressView(); console.log(nodes.coordPlanProgressGrid.innerHTML);
     assert "0% verified complete" in result.stdout
 
 
+@pytest.mark.parametrize("status", ["done", "source_ready", "cancelled"])
+def test_edit_dialog_does_not_claim_declared_completion_is_verified(status: str) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    start = DASHBOARD_HTML.index("async function editPlanTask(")
+    end = DASHBOARD_HTML.index("async function submitPlanTaskEdit(", start)
+    source = DASHBOARD_HTML[start:end]
+    harness = r"""
+let activePlanTaskEdit;
+const elements={coordBoardRoot:{value:'C:/repo'},modalBody:{innerHTML:''},modalBg:{classList:{add(){}}}};
+const $=id=>elements[id]||null;
+const esc=value=>String(value);
+const post=async()=>({success:true,file_revision:'rev',plan:{title:'Plan',tasks:{t:{title:'Task',work_status:STATUS}}}});
+const alert=message=>{throw Error(message);};
+""".replace("STATUS", json.dumps(status)) + source + r"""
+editPlanTask('p','t').then(()=>console.log(elements.modalBody.innerHTML));
+"""
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    assert ("not verified" in completed.stdout) == (status != "cancelled")
+    assert "controlled by verification" not in completed.stdout
+
+
 def test_dashboard_task_edit_sends_only_canonical_coordination_fields() -> None:
     node = shutil.which("node")
     if node is None:

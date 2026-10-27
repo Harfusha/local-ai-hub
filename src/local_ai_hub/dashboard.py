@@ -6245,7 +6245,7 @@ async function editPlanTask(planId,taskId){
     const statusOptions=['planned','ready','in_progress','blocked'];
     const statusEditor=statusOptions.includes(task.work_status)
       ?`<div class="form-group"><label for="editTaskStatus">Work status</label><select id="editTaskStatus">${statusOptions.map(status=>`<option value="${status}" ${status===task.work_status?'selected':''}>${status.replaceAll('_',' ')}</option>`).join('')}</select></div>`
-      :`<p class="tiny warn-t">${esc(task.work_status)} is controlled by verification and integration evidence; edit details here without changing that status.</p>`;
+      :`<p class="tiny warn-t">${esc(task.work_status)} is saved in the plan and cannot be changed in this dialog.${['done','source_ready'].includes(task.work_status)?' Completion and delivery are not verified by this declaration.':''}</p>`;
     const clarifications=Array.isArray(task.clarifications)?task.clarifications:[];
     if($('modalTitle'))$('modalTitle').textContent=`Edit Task · ${taskId}`;
     if($('modalLive'))$('modalLive').textContent=`Plan ${res.plan.title||planId} · file revision ${res.file_revision}`;
