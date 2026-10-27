@@ -247,7 +247,7 @@ def test_run_hidden_timeout_terminates_tree_before_reporting_timeout(monkeypatch
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None, process_handle=None: calls.append((pid, process_group)) or True,
+        lambda pid, *, process_group=None, process_handle=None, expected_identity=None: calls.append((pid, process_group)) or True,
     )
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
@@ -272,7 +272,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
 
-    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0, process_handle=None):
+    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0, process_handle=None, expected_identity=None):
         calls.append((pid, process_group, grace_seconds))
         process.returncode = -9
         return True
@@ -300,7 +300,7 @@ def test_run_hidden_timeout_terminates_explicit_posix_process_group(monkeypatch)
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None, process_handle=None: calls.append((pid, process_group)) or True,
+        lambda pid, *, process_group=None, process_handle=None, expected_identity=None: calls.append((pid, process_group)) or True,
     )
 
     with pytest.raises(subprocess.TimeoutExpired):
@@ -323,7 +323,7 @@ def test_run_hidden_timeout_keeps_explicit_no_session_descendants_owned(monkeypa
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None, process_handle=None: terminated.append((pid, process_group)) or True,
+        lambda pid, *, process_group=None, process_handle=None, expected_identity=None: terminated.append((pid, process_group)) or True,
     )
 
     with pytest.raises(subprocess.TimeoutExpired):
