@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -13,10 +12,8 @@ import pytest
 
 from local_ai_hub import http_server
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint
-from local_ai_hub.agent_verification import VerificationReceipt, criterion_evidence_type
+from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStatus
 from local_ai_hub.app import LocalAIApp
-from local_ai_hub.commands import CommandInvocation
 from local_ai_hub.project_config import resolve_project_context
 from local_ai_hub.verification_rules import project_command_environment_sha256
 
@@ -33,122 +30,40 @@ def _record_command(
     project_config_digest: str,
     repository_root: str | Path = "",
     record_root_override: str | Path = "",
-) -> tuple[str, bool]:
-    if len(command_id) != 32 or any(character not in "0123456789abcdef" for character in command_id):
-        command_id = hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:32]
-    command_text = {
-        "test": "python -m pytest -q tests/test_contract.py",
-        "lint": "python -m ruff check src",
-    }.get(criterion, "unknown configured command")
-    command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
-    project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
-    configured_command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
-    if criterion in {"test", "lint"}:
-        resolved = app.commands._resolve_project_command(criterion, str(repository_root))
-        configured = resolved.configured_command
-        if isinstance(configured, CommandInvocation):
-            configured_text = json.dumps(
-                {"argv": configured.argv, "cwd": configured.cwd, "shell": configured.shell},
-                sort_keys=True, separators=(",", ":"),
-            )
-            configured_command_sha256 = hashlib.sha256(configured_text.encode("utf-8")).hexdigest()
-            command_text = subprocess.list2cmdline(resolved.command.argv)
-            command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
-    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
-    execution_binding = hashlib.sha256(
-        json.dumps(
-            {
-                "project_alias": criterion,
-                "project_config_digest": project_config_digest,
-                "configured_command_sha256": configured_command_sha256,
-                "caller_arguments_sha256": caller_arguments_sha256,
-                "command_sha256": command_sha256,
-                "project_environment_sha256": project_environment_sha256,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    evidence_id = app.artifacts.put_json(
-        {
-            "kind": "work_command_verification",
-            "passed": True,
-            "task_id": proof_task_id,
-            "owner": owner,
-            "repository_revision": revision,
-            "mutation_generation": 0,
-            "criterion": criterion,
-            "command_id": command_id,
-            "command_classification": criterion_evidence_type(criterion),
-            "command": command_text,
-            "project_alias": criterion,
-            "project_config_digest": project_config_digest,
-            "project_environment_sha256": project_environment_sha256,
-            "configured_command_sha256": configured_command_sha256,
-            "caller_arguments_sha256": caller_arguments_sha256,
-            "project_execution_binding_sha256": execution_binding,
-            "command_sha256": command_sha256,
-            "exit_code": 0,
-            "result": {"success": True, "exit_code": 0},
-            "cached": False,
-        },
-        kind="command_verification",
-    )
-    receipt = VerificationReceipt.create(
-        receipt_task_id,
-        criterion,
-        evidence_id=evidence_id,
-        command_id=command_id,
-        owner=owner,
-        repository_revision=revision,
-        mutation_generation=0,
-        evidence_type=criterion_evidence_type(criterion),
-        details={
-            "exit_code": 0,
-            "duration_ms": 0.0,
-            "cached": False,
-        },
-    )
+) -> tuple[str, dict[str, object] | None]:
+    del revision, command_id, project_config_digest
+    root = record_root_override or repository_root
+    task = app.agent_tasks.get(receipt_task_id)
+    if (
+        criterion not in {"test", "lint"}
+        or not root
+        or receipt_task_id != proof_task_id
+        or task is None
+        or task.owner != owner
+    ):
+        return "", None
     try:
-        app.agent_verification.record(receipt)
-    except ValueError:
-        return evidence_id, False
-
-    if repository_root and hasattr(app, "commands") and hasattr(app.commands, "_persist_command_execution_record"):
-        canonical_root = str(Path(record_root_override or repository_root).expanduser().resolve(strict=False))
-        receipt_dict = receipt.to_dict()
-        record = {
-            "schema": "command_execution_record.v2",
-            "command_id": command_id,
-            "task_id": receipt_task_id,
-            "owner": owner,
-            "criterion": criterion,
-            "command_sha256": command_sha256,
-            "evidence_type": criterion_evidence_type(criterion),
-            "repository_root": canonical_root,
-            "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest(),
-            "repository_revision": revision,
-            "mutation_generation": 0,
-            "evidence_id": str(evidence_id),
-            "receipt_sha256": hashlib.sha256(
-                json.dumps(receipt_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest(),
-            "exit_code": 0,
-            "cached": False,
-            "project_alias": criterion,
-            "project_config_digest": project_config_digest,
-            "project_environment_sha256": project_environment_sha256,
-            "configured_command_sha256": configured_command_sha256,
-            "caller_arguments_sha256": caller_arguments_sha256,
-            "project_execution_binding_sha256": execution_binding,
-            "created_at_unix": 1000.0,
-        }
-        encoded_record = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
-        app.commands._persist_command_execution_record(command_id, record)
-
-    return evidence_id, True
-
+        result = app.commands.run_project_command(
+            criterion,
+            str(root),
+            task_id=proof_task_id,
+            criterion=criterion,
+            timeout=60,
+            force=True,
+        )
+    except (OSError, ValueError):
+        return "", None
+    if result.get("success") is not True:
+        return str(result.get("error") or result), None
+    receipt = result.get("verification_receipt")
+    if not isinstance(receipt, dict) or receipt.get("task_id") != receipt_task_id:
+        details = {key: result.get(key) for key in (
+            "status", "task_id", "criterion", "command_id", "verification_receipt",
+            "error", "allowed", "reason", "classification", "summary", "stderr"
+        ) if key in result}
+        return f"missing authentic receipt: {details}; keys={sorted(result)}", None
+    evidence_id = receipt.get("evidence_id")
+    return (str(evidence_id), receipt) if isinstance(evidence_id, str) and evidence_id else ("", None)
 
 _CASES = (
     pytest.param(
@@ -172,11 +87,11 @@ _CASES = (
         True,
         id="used-volatile-memory-has-current-source-check",
     ),
-    pytest.param("owner-mismatch", {"test_owner": "other-agent"}, False, id="owner-mismatch"),
+    pytest.param("owner-mismatch", {"task_owner": "other-agent"}, False, id="owner-mismatch"),
     pytest.param("repository-mismatch", {"test_record_root": "other-repository"}, False, id="repository-mismatch"),
     pytest.param("task-mismatch", {"test_receipt_task_id": "other-task", "test_proof_task_id": "other-task"}, False, id="task-mismatch"),
-    pytest.param("revision-mismatch", {"test_revision": "stale-revision"}, False, id="revision-mismatch"),
-    pytest.param("criterion-mismatch", {"test_criterion": "test-other"}, False, id="criterion-mismatch"),
+    pytest.param("revision-mismatch", {"task_revision": "stale-revision"}, False, id="revision-mismatch"),
+    pytest.param("criterion-mismatch", {"test_criterion": "lint"}, False, id="criterion-mismatch"),
     pytest.param("missing-project-lint", {"include_lint": False}, False, id="additive-project-command-required"),
     pytest.param(
         "used-volatile-without-source",
@@ -210,16 +125,28 @@ def test_task_completion_http_receipt_and_memory_matrix(
 ) -> None:
     api_token = "t09-isolated-http-matrix-token-long"
     task_id = f"task-t09-{case}"
-    revision = "rev-t09-matrix-current"
     project_root = tmp_path / "repo"
     project_root.mkdir()
     session_id = f"session-{task_id}"
     (project_root / ".local-ai.toml").write_text(
-        '[commands]\ntest = "python -m pytest -q tests/test_contract.py"\n'
-        'lint = "python -m ruff check src"\n'
+        '[commands]\ntest = "python -B -m pytest -p no:cacheprovider -q tests/test_contract.py"\n'
+            'lint = "pyflakes src"\n'
         '[verification_rules]\ntest = ["test", "lint"]\n',
         encoding="utf-8",
     )
+    (project_root / "tests").mkdir()
+    (project_root / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n", encoding="utf-8")
+    (project_root / "tests/test_contract.py").write_text("def test_contract():\n    assert True\n", encoding="utf-8")
+    (project_root / "src").mkdir()
+    (project_root / "src/__init__.py").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet"], cwd=project_root, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Agent OS Test"], cwd=project_root, check=True)
+    subprocess.run(["git", "config", "user.email", "agent-os-test@example.invalid"], cwd=project_root, check=True)
+    subprocess.run(["git", "add", "."], cwd=project_root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "test fixture"], cwd=project_root, check=True, capture_output=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=project_root, check=True, text=True, capture_output=True
+    ).stdout.strip()
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     config_path = tmp_path / "config.toml"
@@ -228,6 +155,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         "\n[agent_state]\nenabled = true\n"
         "[prewarm]\nenabled = false\n"
         "[preprocessing]\nenabled = false\n"
+        "[commands]\nenabled = true\nallow_validation = true\nallow_read = true\n"
         f'[security]\napi_token = "{api_token}"\n'
         f'allowed_roots = [{json.dumps(project_root.as_posix())}]\n',
         encoding="utf-8",
@@ -239,6 +167,11 @@ def test_task_completion_http_receipt_and_memory_matrix(
 
     app = LocalAIApp(str(config_path))
     request.addfinalizer(app.close)
+    app.commands.set_task_store(app.agent_tasks)
+    app.commands.set_verification_store(app.agent_verification)
+    app.agent_verification.set_command_execution_record_lookup(
+        app.commands.get_command_execution_record
+    )
     memory_context = changes.get("memory_context")
     if memory_context is not None:
         memory_context = {
@@ -267,27 +200,71 @@ def test_task_completion_http_receipt_and_memory_matrix(
     app.agent_tasks.create(
         GoalContract(
             goal="exercise project completion receipt gates over HTTP",
-            acceptance_criteria=("test",),
+            acceptance_criteria=("test", "lint"),
         ),
         ScopeContext(repository_id=coordination_id, task_id=task_id, session_id=session_id),
         task_id=task_id,
-        actor="agent-t09",
+        actor=str(changes.get("task_owner", "agent-t09")),
         repo_root=str(project_root),
+        repository_revision=("0" * 40 if case == "revision-mismatch" else revision),
     )
+    task_owner = str(changes.get("task_owner", "agent-t09"))
+    app.agent_tasks.transition(
+        task_id,
+        TaskStatus.ACTIVE,
+        reason="begin verification",
+        actor=task_owner,
+        idempotency_key=f"{task_id}-active",
+    )
+    app.agent_tasks.transition(
+        task_id,
+        TaskStatus.VERIFYING,
+        reason="receipt expected",
+        actor=task_owner,
+        idempotency_key=f"{task_id}-verifying",
+    )
+    if changes.get("memory_context") is None and changes.get("memory_audit") is None:
+        app.agent_tasks.checkpoint(
+            task_id,
+            TaskCheckpoint(state_data={"repository_revision": revision, "mutation_generation": 0}),
+            actor=task_owner,
+            idempotency_key=f"{task_id}-revision",
+        )
     if changes.get("test_receipt_task_id") == "other-task":
         app.agent_tasks.create(
             GoalContract(goal="unrelated task", acceptance_criteria=("test",)),
             ScopeContext(repository_id=coordination_id, task_id="other-task", session_id=session_id),
             task_id="other-task",
-            actor="agent-t09",
+            actor=str(changes.get("task_owner", "agent-t09")),
             repo_root=str(project_root),
+            repository_revision=revision,
+        )
+        app.agent_tasks.transition(
+            "other-task",
+            TaskStatus.ACTIVE,
+            reason="begin verification",
+            actor="agent-t09",
+            idempotency_key="other-task-active",
+        )
+        app.agent_tasks.transition(
+            "other-task",
+            TaskStatus.VERIFYING,
+            reason="receipt expected",
+            actor="agent-t09",
+            idempotency_key="other-task-verifying",
+        )
+        app.agent_tasks.checkpoint(
+            "other-task",
+            TaskCheckpoint(state_data={"repository_revision": revision, "mutation_generation": 0}),
+            actor="agent-t09",
+            idempotency_key="other-task-revision",
         )
     memory_audit = changes.get("memory_audit")
     if memory_context is not None or memory_audit is not None:
         task = app.agent_tasks.get(task_id)
         assert task is not None
         state_data = dict(task.checkpoint.state_data)
-        state_data["repository_revision"] = revision
+        state_data["repository_revision"] = str(changes.get("task_revision", revision))
         if memory_audit is not None:
             state_data["memory_audit"] = memory_audit
         checkpoint = TaskCheckpoint(phase="verification", state_data=state_data)
@@ -295,6 +272,9 @@ def test_task_completion_http_receipt_and_memory_matrix(
             "used-volatile-without-source",
             "unused-memory-without-reason",
             "skipped-memory-without-reason",
+                "used-memory-requires-source-check",
+                "unused-memory-requires-reason",
+                "skipped-memory-requires-reason",
         }:
             # New writes reject invalid audits before persistence. Still exercise
             # completion's fail-closed handling of legacy/malformed stored state.
@@ -310,12 +290,23 @@ def test_task_completion_http_receipt_and_memory_matrix(
         else:
             app.agent_tasks.checkpoint(task_id, checkpoint, actor="agent-t09")
 
+    if "task_revision" in changes and memory_context is None and memory_audit is None:
+        task = app.agent_tasks.get(task_id)
+        assert task is not None
+        state_data = dict(task.checkpoint.state_data)
+        state_data["repository_revision"] = str(changes["task_revision"])
+        app.agent_tasks.checkpoint(
+            task_id,
+            TaskCheckpoint(phase="verification", state_data=state_data),
+            actor="agent-t09",
+        )
+
     test_criterion = str(changes.get("test_criterion", "test"))
     test_owner = str(changes.get("test_owner", "agent-t09"))
-    test_revision = str(changes.get("test_revision", revision))
+    test_revision = str(changes.get("task_revision", revision))
     test_task_id = str(changes.get("test_receipt_task_id", task_id))
     test_proof_task_id = str(changes.get("test_proof_task_id", test_task_id))
-    test_evidence_id, test_receipt_recorded = _record_command(
+    test_evidence_id, test_receipt = _record_command(
         app,
         criterion=test_criterion,
         receipt_task_id=test_task_id,
@@ -327,12 +318,17 @@ def test_task_completion_http_receipt_and_memory_matrix(
         repository_root=project_root,
         record_root_override=(project_root.parent / str(changes["test_record_root"])) if changes.get("test_record_root") else "",
     )
+    test_receipt_recorded = isinstance(test_receipt, dict)
     # Receipt storage binds task owner; completion gates repository execution-record scope.
-    assert test_receipt_recorded is True, case
-    evidence_view = app.artifacts.get(test_evidence_id, max_chars=50_000)
-    assert evidence_view.get("success") is True, (case, evidence_view)
+    assert test_receipt_recorded is (case not in {"repository-mismatch", "owner-mismatch"}), (
+        case, test_evidence_id, test_receipt
+    )
+    if test_evidence_id and test_receipt_recorded:
+        evidence_view = app.artifacts.get(test_evidence_id, max_chars=50_000)
+        assert evidence_view.get("success") is True, (case, evidence_view)
+    lint_receipt = None
     if changes.get("include_lint", True):
-        _record_command(
+        lint_evidence_id, lint_receipt = _record_command(
             app,
             criterion="lint",
             receipt_task_id=task_id,
@@ -343,6 +339,52 @@ def test_task_completion_http_receipt_and_memory_matrix(
             project_config_digest=project_config_digest,
             repository_root=project_root,
         )
+        if case == "valid":
+            assert isinstance(lint_receipt, dict), lint_evidence_id
+
+    project_revision = (
+        lint_receipt.get("repository_revision")
+        if isinstance(lint_receipt, dict)
+        else test_receipt.get("repository_revision") if isinstance(test_receipt, dict) else ""
+    )
+    if project_revision:
+        revision = str(project_revision)
+        if str(changes.get("task_revision", "")) != "stale-revision":
+            task = app.agent_tasks.get(task_id)
+            assert task is not None
+            state_data = dict(task.checkpoint.state_data)
+            state_data["repository_revision"] = revision
+            checkpoint = TaskCheckpoint(phase="verification", state_data=state_data)
+            if case in {
+                "used-volatile-without-source",
+                "unused-memory-without-reason",
+                "skipped-memory-without-reason",
+                "used-memory-requires-source-check",
+                "unused-memory-requires-reason",
+                "skipped-memory-requires-reason",
+            }:
+                with monkeypatch.context() as legacy_fixture:
+                    legacy_fixture.setattr(app.agent_tasks, "_validate_memory_audit", lambda _task: None)
+                    app.agent_tasks.checkpoint(
+                        task_id, checkpoint, actor=str(changes.get("task_owner", "agent-t09"))
+                    )
+            else:
+                app.agent_tasks.checkpoint(
+                    task_id,
+                    checkpoint,
+                    actor=str(changes.get("task_owner", "agent-t09")),
+                )
+
+    if case == "revision-mismatch":
+        task = app.agent_tasks.get(task_id)
+        assert task is not None
+        state_data = dict(task.checkpoint.state_data)
+        state_data["repository_revision"] = "0" * 40
+        app.agent_tasks.checkpoint(
+            task_id,
+            TaskCheckpoint(phase="verification", state_data=state_data),
+            actor=task_owner,
+        )
 
     if memory_context is not None:
         before_validation = app.agent_tasks.get(task_id)
@@ -350,15 +392,30 @@ def test_task_completion_http_receipt_and_memory_matrix(
         try:
             app.agent_tasks.validate_completion(task_id)
             memory_gate_complete = True
-        except CompletionGateError:
+            memory_gate_error = ""
+        except CompletionGateError as error:
             memory_gate_complete = False
-        assert memory_gate_complete is expected_success, case
+            memory_gate_error = str(error)
+        receipt_identity = {
+            key: test_receipt.get(key)
+            for key in ("receipt_id", "task_id", "criterion", "owner", "repository_revision", "evidence_type", "mutation_generation")
+        } if isinstance(test_receipt, dict) else None
+        if receipt_identity is not None:
+            receipt_identity["revision_matches_current"] = test_receipt.get("repository_revision") == revision
+            receipt_identity["evidence_id"] = test_receipt.get("evidence_id")
+        current_task = app.agent_tasks.get(task_id)
+        assert memory_gate_complete is expected_success, (
+            case,
+            receipt_identity,
+            getattr(current_task, "verification_receipts", None),
+        )
         assert app.agent_tasks.get(task_id) == before_validation
         assert app.agent_state.events(f"task:{task_id}") == before_events
 
+    verification_revision = "0" * 40 if case == "revision-mismatch" else revision
     preflight = app.agent_verification.completion(
         task_id,
-        current_revision=revision,
+        current_revision=verification_revision,
         current_mutation_generation=0,
         verification_rules=project_context.settings.verification_rules,
         configured_criteria=tuple(project_context.settings.commands),
@@ -382,7 +439,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
     monkeypatch.setattr(
         http_server,
         "_completion_revision_or_stop",
-        lambda *_args: (revision, None),
+        lambda *_args: (verification_revision, None),
     )
     previous_app = http_server.APP
     http_server.APP = app
@@ -446,7 +503,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
         assert stored.checkpoint.state_data["repository_revision"] == revision
     else:
-        assert status == 400
+        assert status == (403 if case == "owner-mismatch" else 400)
         stored = app.agent_tasks.get(task_id)
         assert stored is not None
         assert stored.status.value != "completed"

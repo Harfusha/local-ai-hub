@@ -116,6 +116,25 @@ def test_revision_schema_is_content_revision_string():
     assert "expected_revision" in schema["required"]
 
 
+def test_http_plan_endpoint_ignores_shared_changed_paths_transport_metadata(public_planner):
+    from local_ai_hub.http_post_repository_analysis import handle_post_plan
+
+    services, root = public_planner
+    responses = []
+    handler = SimpleNamespace(_send=lambda code, body: responses.append((code, body)))
+
+    assert handle_post_plan(
+        handler,
+        {"root": root, "changed_paths": ["src/changed.py"]},
+        "/api/coord/plan_list",
+        SimpleNamespace(services=services),
+    )
+    code, body = responses[0]
+    assert code == 200
+    assert body["success"] is True
+    assert body["plans"] == []
+
+
 def test_real_http_client_mcp_plan_roundtrip(public_planner, monkeypatch):
     from local_ai_hub import mcp_server
     from local_ai_hub.http_post_repository_analysis import handle_post_plan

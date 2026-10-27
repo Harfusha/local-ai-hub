@@ -97,10 +97,17 @@ def _norm_rel(value: str, root: str = "") -> str:
         return "."
     if norm_path.startswith("..") or norm_path.startswith("/"):
         raise ValueError(f"lease path must be repository-relative: {value}")
+    if Path(root).is_absolute() and not (os.name != "nt" and PureWindowsPath(root).is_absolute()):
+        try:
+            resolved_root = Path(root).resolve(strict=False)
+            resolved_path = (resolved_root / norm_path).resolve(strict=False)
+            resolved_path.relative_to(resolved_root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError(f"lease path must be repository-relative: {value}") from exc
     return norm_path
 
 
-def _overlap(a: str, b: str) -> bool:
+def _overlap(a: str, b: str, *, case_insensitive: bool | None = None) -> bool:
     try:
         na = _norm_rel(a)
         nb = _norm_rel(b)
@@ -108,7 +115,8 @@ def _overlap(a: str, b: str) -> bool:
         return True
     if na == "." or nb == ".":
         return True
-    if os.name == "nt":
+    insensitive = os.name == "nt" if case_insensitive is None else case_insensitive
+    if insensitive:
         na = na.lower()
         nb = nb.lower()
     if na == nb:
@@ -237,9 +245,16 @@ class ScopeLeaseStore:
         for p in paths:
             if not isinstance(p, str) or not p.strip() or "\x00" in p:
                 return {"success": False, "error": f"invalid lease path: {p}"}
-        if not Path(root).is_absolute() and not PureWindowsPath(root).is_absolute():
+        windows_root = PureWindowsPath(root)
+        posix_drive_relative_root = os.name != "nt" and bool(windows_root.drive)
+        if (
+            not Path(root).is_absolute()
+            and not windows_root.is_absolute()
+            and not posix_drive_relative_root
+        ):
             return {"success": False, "error": "root must be an absolute repository root"}
         root_path, physical_root_id = self._root(root)
+        case_insensitive_paths = os.name == "nt" or windows_root.is_absolute()
         if coordination_id is None:
             return {"success": False, "error": "project coordination id is required"}
         if coordination_id is _COORDINATION_ID_UNSET:
@@ -276,7 +291,11 @@ class ScopeLeaseStore:
                 conflicts = []
                 for requested in rels:
                     for row in existing:
-                        if _overlap(requested, row[2]):
+                        if _overlap(
+                            requested,
+                            row[2],
+                            case_insensitive=case_insensitive_paths,
+                        ):
                             conflicts.append({
                                 "requested": requested, "held_path": row[2], "owner": row[1],
                                 "lease_id": row[0], "purpose": row[3], "expires_at": row[4],
@@ -614,6 +633,7 @@ class ScopeLeaseStore:
             return {"leased": False, "conflict": False, "path": rel_path, "owner": None, "lease_id": None, "expires_at": None, "purpose": None}
         else:
             root_id = f"project:{coordination_id}"
+        case_insensitive_paths = os.name == "nt" or PureWindowsPath(root).is_absolute()
 
         now = time.time()
 
@@ -632,7 +652,11 @@ class ScopeLeaseStore:
                         (root_id, physical_root_id, root_path, now),
                     ).fetchall()
                 for row in rows:
-                    if _overlap(rel_path, row[2]):
+                    if _overlap(
+                        rel_path,
+                        row[2],
+                        case_insensitive=case_insensitive_paths,
+                    ):
                         return row
                 return None
 

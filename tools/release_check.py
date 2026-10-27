@@ -398,7 +398,13 @@ def run_live_smoke(root: Path) -> dict[str, object]:
                     "task": "Answer with exactly the word ASYNC_READY.",
                     "context": "Release async smoke test.", "max_tokens": 160,
                 }, timeout=15)
-                if async_job.get("retryable") is True and not async_job.get("job_id"):
+                admission = async_job.get("admission") if isinstance(async_job.get("admission"), dict) else {}
+                admission_rejected = async_job.get("state") == "rejected"
+                pressure_rejection = admission_rejected and admission.get("reason") in {
+                    "resource_pressure",
+                    "queue_limit",
+                }
+                if async_job.get("retryable") is True and not async_job.get("job_id") and not pressure_rejection:
                     time.sleep(2.0)
                     continue
                 break

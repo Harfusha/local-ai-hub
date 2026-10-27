@@ -2108,10 +2108,14 @@ def _instrumented_tool():
                 return diagnostics_disabled_response()
             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
+            response_profile = arguments.get("response_profile", "")
+            if (not response_profile and fn.__name__ == "local_ai_repo"
+                    and arguments.get("action") in {"context", "search", "code_index"}):
+                response_profile = "compact"
             response_token = _CURRENT_RESPONSE_OPTIONS.set({
                 "action": arguments.get("action", ""),
                 "max_response_tokens": arguments.get("max_response_tokens", 0),
-                "response_profile": arguments.get("response_profile", ""),
+                "response_profile": response_profile,
                 "reuse_key": arguments.get("reuse_key", ""),
                 "tool": fn.__name__,
                 "arguments": arguments,
@@ -2267,36 +2271,15 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_status(
-    detail: Literal["brief", "models"] = "brief",
+    detail: Literal["brief"] = "brief",
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
-    action: str = "",
-    root: str = "",
-    workspace: str = "",
 ) -> dict[str, Any]:
     """Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
-    action = str(action or "")
-    if action in {"health", "ping", "check", "status", "brief"} and not detail:
-        detail = "brief"
-    if action == "models" or detail == "models":
-        models_resp = CLIENT.get("/api/models")
-        data = models_resp.get("data", []) if isinstance(models_resp, dict) else []
-        installed = [m.get("id") for m in data if isinstance(m, dict) and m.get("id")]
-        return {
-            "success": True,
-            "installed_models": installed,
-            "count": len(installed),
-            "tier_routing": {
-                "preprocessing": "qwen2.5-coder:1.5b",
-                "fast": "qwen2.5-coder:3b",
-                "ordinary": "qwen2.5-coder:7b",
-                "smart": "qwen3.5:9b",
-            },
-        }
     if detail != "brief":
-        return contract_error("detail supports only brief or models")
+        return contract_error("detail supports only brief")
     if not FEATURES.status:
         return {**contract_error("local_ai_status is disabled in configuration", status_code=403), "unsupported": True}
     status = CLIENT.get("/api/live/status?light=1")
@@ -2429,12 +2412,6 @@ def local_ai_task(
     model. Use when: one bounded semantic task should run on a configured
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
-    if action == "summarize":
-        action = "compress"
-    if action in {"chat", "ask"}:
-        action = "delegate"
-    if action == "code_review":
-        action = "review"
     if items and not tasks:
         tasks = items
     if action not in operation_actions("local_ai_task", FEATURES):
@@ -4145,7 +4122,7 @@ def local_ai_repo(
     line_end: int = 0,
     file: str | None = None,
 ) -> dict[str, Any]:
-    """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    """Primary bounded repository worker. For simple fact/location questions, use one concise `context` query for natural language, `search` for a known filename/term, or `code_index` for a known symbol. These lookup actions default to compact output; an explicit `response_profile` overrides that default. Stop when source-backed evidence answers the question; inspect only the exact candidate path if needed. Avoid generic one-word searches, repeated retrieval layers, unrelated call sites, and language-specific actions unsupported by the project."""
     if pattern and not query:
         query = pattern
     if file and not path:
@@ -4193,6 +4170,8 @@ def local_ai_repo(
     if scoped_validation is not None:
         return {"success": False, "error": scoped_validation, "status_code": 400,
                 "terminal": True, "retryable": False}
+    if not response_profile and resolved_action in {"context", "search", "code_index"}:
+        response_profile = "compact"
     if resolved_action == "hotspots" and (diff is not None or max_tokens is not None):
         return {"success": False, "error": "hotspots accepts only canonical days and limit fields",
                 "status_code": 400, "terminal": True, "retryable": False}
@@ -4340,16 +4319,10 @@ def local_ai_rag(
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
-    if (not root or root == ".") and _workspace and is_rooted_path(_workspace):
-        root = _workspace
-    if action in {"query", "retrieve", "find", "lookup"}:
-        action = "search"
-    elif action in {"ingest", "ingest_doc"}:
-        action = "ingest_document"
-    elif action in {"search_docset", "docset_search"}:
-        action = "docset_search"
-    elif action in {"index_docset", "docset_index"}:
-        action = "docset_index"
+    valid_actions = tuple(RagAction.__args__)
+    if not isinstance(action, str) or action not in valid_actions:
+        action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
+        return _invalid_action("local_ai_rag", action_label, valid_actions, "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
     if name and not workspace:
         workspace = name
     if limit > 0:
@@ -4373,10 +4346,6 @@ def local_ai_rag(
                 pass
     if action == "ingest_document" and not content and text:
         content = text
-    valid_actions = tuple(RagAction.__args__)
-    if not isinstance(action, str) or action not in valid_actions:
-        action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
-        return _invalid_action("local_ai_rag", action_label, valid_actions, "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
     if action in {"index", "search", "docset_index", "ingest_document", "ingest_diagram"}:
         explicit_root = str(root or "").strip()
         if not is_rooted_path(explicit_root):
@@ -4588,6 +4557,13 @@ def local_ai_coord(
             signature = inspect.signature(local_ai_coord)
             supplied = {name: value for name, value in current.items()
                         if name in signature.parameters and value != signature.parameters[name].default}
+        else:
+            supplied = dict(supplied)
+        # Some MCP hosts attach the active task's changed_paths to every
+        # coordination call. Plans have their own task/path contract, so this
+        # cross-action envelope field must not make read or write operations
+        # fail strict per-action validation.
+        supplied.pop("changed_paths", None)
         error = validate_operation_arguments("local_ai_coord", action, supplied)
         if error:
             return contract_error(error, status_code=400)
@@ -4618,10 +4594,6 @@ def local_ai_coord(
         status = state
     if notes and not next_action:
         next_action = notes
-    if action == "task_update":
-        action = "task_checkpoint"
-    if action == "memory_list":
-        action = "memory_find"
     if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE):
         return contract_error(f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}")
     if not isinstance(action, str) or action not in operation_actions("local_ai_coord", None):
@@ -4638,8 +4610,11 @@ def local_ai_coord(
         )
     if action in {"negative_knowledge_record", "negative_knowledge_find", "incident_decision"}:
         try:
-            if (not root or root == "." or not is_rooted_path(root)) and _workspace:
-                root = _workspace
+            if not isinstance(root, str) or not root.strip() or root != root.strip() or not is_rooted_path(root):
+                raise RepositoryScopeError(
+                    "incident operations require an explicit absolute repository root",
+                    "incident_root_required",
+                )
             root = str(canonical_repository_root(root))
             if isinstance(record, dict):
                 reject_retired_tenancy_fields(record)

@@ -104,7 +104,9 @@ const nodes=new Proxy({}, {get(target,key){return target[key]??={value:'',textCo
 const $=id=>nodes[id];
 const esc=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 let responses={};
-async function fetchDashboardJson(path){const name=path.split('/').pop(),value=responses[name];
+nodes.coordBoardRoot.value='C:/repo';
+const requested=[];
+async function fetchDashboardJson(path){requested.push(path);const name=path.split('/').pop(),value=responses[name];
   if(value instanceof Error)throw value;return await value}
 const post=(path)=>fetchDashboardJson(path);
 """
@@ -114,25 +116,25 @@ const post=(path)=>fetchDashboardJson(path);
 
 def test_coordination_rejected_reads_replace_loading_and_unknown_counts():
     _coordination("""
-responses={board_item_list:Error('hub paused: gaming mode active'),
-  semaphore_status:Error('hub paused: gaming mode active'),milestone_status:Error('hub paused: gaming mode active')};
+responses={plan_list:Error('hub paused: gaming mode active'),
+  semaphore_status:Error('hub paused: gaming mode active')};
 await loadCoordinationView();
 assert.match(nodes.kanbanBoardContainer.innerHTML,/gaming mode active/);
 assert.match(nodes.coordSemaphoresBody.innerHTML,/gaming mode active/);
-assert.match(nodes.coordMilestonesGrid.innerHTML,/gaming mode active/);
+assert.match(nodes.coordPlanProgressGrid.innerHTML,/gaming mode active/);
 assert.doesNotMatch(nodes.coordBoardSummaryText.textContent,/Loading/);
 assert.equal(nodes.overviewBoardCount.textContent,'—');
 assert.equal(nodes.overviewSemCount.textContent,'—');
 assert.doesNotMatch(nodes.overviewBoardSub.textContent,/healthy/);
-renderKanbanBoard();renderSemaphoresTable();renderMilestonesView({});
+renderKanbanBoard();renderSemaphoresTable();renderPlanProgressView();
 assert.match(nodes.kanbanBoardContainer.innerHTML,/gaming mode active/);
 """)
 
 
 def test_coordination_business_rejections_are_not_empty_successful_views():
     _coordination("""
-responses={board_item_list:{success:false,error:'read denied <reason>'},
-  semaphore_status:{success:false,error:'read denied'},milestone_status:{success:false,error:'read denied'}};
+responses={plan_list:{success:false,error:'read denied <reason>'},
+  semaphore_status:{success:false,error:'read denied'}};
 await loadCoordinationView();
 assert.match(nodes.kanbanBoardContainer.innerHTML,/read denied/);
 assert.doesNotMatch(nodes.kanbanBoardContainer.innerHTML,/<reason>|No cards/);
@@ -142,12 +144,15 @@ assert.doesNotMatch(nodes.coordSemaphoresBody.innerHTML,/No semaphores/);
 
 def test_partial_coordination_failure_does_not_hide_loaded_board_or_survive_retry():
     _coordination("""
-responses={board_item_list:{success:true,items:[{item_id:'one',title:'Saved card',status:'planned',milestone:'Release'}]},
-  semaphore_status:Error('semaphores unavailable'),milestone_status:{success:true}};
+responses={plan_list:{success:true,plans:[{id:'release',title:'Release',lifecycle:'active',file_revision:'rev-1'}]},
+  plan_board_view:{success:true,project_root:'C:/repo',columns:{planned:[{task_id:'one',plan_id:'release',plan_title:'Release',title:'Saved card',work_status:'planned',plan_file_revision:'rev-1'}],ready:[],in_progress:[],blocked:[],source_ready:[],done:[]}},
+  semaphore_status:Error('semaphores unavailable')};
 await loadCoordinationView();
 assert.match(nodes.kanbanBoardContainer.innerHTML,/Saved card/);
 assert.match(nodes.coordSemaphoresBody.innerHTML,/semaphores unavailable/);
-assert.match(nodes.coordMilestonesGrid.innerHTML,/Release/);
+assert.match(nodes.coordPlanProgressGrid.innerHTML,/Release/);
+assert.match(nodes.coordPlanProgressGrid.innerHTML,/1 Planned/);
+assert.equal(requested.some(path=>path.includes('milestone_')),false);
 responses.semaphore_status={success:true,semaphores:{}};
 await loadCoordinationView();
 assert.doesNotMatch(nodes.coordSemaphoresBody.innerHTML,/unavailable/);
@@ -155,25 +160,26 @@ assert.equal(nodes.overviewSemCount.textContent,'0 / 0');
 """)
 
 
-def test_board_failure_does_not_claim_there_are_no_milestones():
+def test_board_failure_does_not_claim_there_are_no_plan_tasks():
     _coordination("""
-responses={board_item_list:Error('board unavailable'),
-  semaphore_status:{success:true,semaphores:{}},milestone_status:{success:true}};
+responses={plan_list:{success:true,plans:[]},plan_board_view:Error('board unavailable'),
+  semaphore_status:{success:true,semaphores:{}}};
 await loadCoordinationView();
-assert.match(nodes.coordMilestonesGrid.innerHTML,/board unavailable/);
-assert.doesNotMatch(nodes.coordMilestonesGrid.innerHTML,/No milestones/);
+assert.match(nodes.coordPlanProgressGrid.innerHTML,/board unavailable/);
+assert.doesNotMatch(nodes.coordPlanProgressGrid.innerHTML,/No tasks/);
 """)
 
 
 def test_superseded_coordination_read_cannot_replace_newer_results():
     _coordination("""
 let finishOld;
-responses={board_item_list:new Promise(resolve=>{finishOld=resolve}),
-  semaphore_status:{success:true,semaphores:{}},milestone_status:{success:true}};
+responses={plan_list:new Promise(resolve=>{finishOld=resolve}),
+  semaphore_status:{success:true,semaphores:{}}};
 const oldRead=loadCoordinationView();
-responses.board_item_list={success:true,items:[{item_id:'new',title:'Current card',status:'planned'}]};
+responses.plan_list={success:true,plans:[]};
+responses.plan_board_view={success:true,project_root:'C:/repo',columns:{planned:[{task_id:'new',plan_id:'p',plan_title:'P',title:'Current card',work_status:'planned',plan_file_revision:'rev-2'}],ready:[],in_progress:[],blocked:[],source_ready:[],done:[]}};
 await loadCoordinationView();
-finishOld({success:false,error:'old failure'});await oldRead;
+finishOld({success:true,plans:[]});await oldRead;
 assert.match(nodes.kanbanBoardContainer.innerHTML,/Current card/);
 assert.doesNotMatch(nodes.kanbanBoardContainer.innerHTML,/old failure/);
 """)

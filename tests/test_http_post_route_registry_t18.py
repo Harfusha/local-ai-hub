@@ -85,7 +85,26 @@ _CURRENT_ADDED_ROUTES = {'post_task_browser_1': {'paths': ['/api/task/browser'],
  'post_coord_semaphore_status_1': {'paths': ['/api/coord/semaphore_status'], 'before': 'post_coord_board_item_create_1'},
  'post_coord_semaphore_release_1': {'paths': ['/api/coord/semaphore_release'], 'before': 'post_coord_semaphore_status_1'},
  'post_coord_semaphore_acquire_1': {'paths': ['/api/coord/semaphore_acquire'], 'before': 'post_coord_semaphore_release_1'},
- 'post_coord_wait_for_event_1': {'paths': ['/api/coord/wait_for_event'], 'before': 'post_coord_semaphore_acquire_1'}}
+ 'post_coord_wait_for_event_1': {'paths': ['/api/coord/wait_for_event'], 'before': 'post_coord_semaphore_acquire_1'},
+ 'post_coord_plan_init_1': {'paths': ['/api/coord/plan_init'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_list_1': {'paths': ['/api/coord/plan_list'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_get_1': {'paths': ['/api/coord/plan_get'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_create_1': {'paths': ['/api/coord/plan_create'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_update_1': {'paths': ['/api/coord/plan_update'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_task_edit_1': {'paths': ['/api/coord/plan_task_edit'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_task_delete_1': {'paths': ['/api/coord/plan_task_delete'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_validate_1': {'paths': ['/api/coord/plan_validate'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_archive_1': {'paths': ['/api/coord/plan_archive'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_board_view_1': {'paths': ['/api/coord/plan_board_view'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_adopt_legacy_board_1': {'paths': ['/api/coord/plan_adopt_legacy_board'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_bind_task_1': {'paths': ['/api/coord/plan_bind_task'], 'before': 'post_benchmark_run_1'},
+ 'post_coord_plan_reconcile_steering_1': {'paths': ['/api/coord/plan_reconcile_steering'], 'before': 'post_benchmark_run_1'},
+ 'post_repo_patch_1': {'paths': ['/api/repo/patch'], 'before': 'post_implementations_1'},
+ 'post_repo_call_graph_1': {'paths': ['/api/repo/call_graph'], 'before': 'post_implementations_1'},
+ 'post_repo_git_status_1': {'paths': ['/api/repo/git_status'], 'before': 'post_implementations_1'},
+ 'post_repo_revert_1': {'paths': ['/api/repo/revert'], 'before': 'post_implementations_1'},
+ 'post_repo_find_files_1': {'paths': ['/api/repo/find_files'], 'before': 'post_implementations_1'},
+ 'post_repo_file_info_1': {'paths': ['/api/repo/file_info'], 'before': 'post_implementations_1'}}
 _ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 

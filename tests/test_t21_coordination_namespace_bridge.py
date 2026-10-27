@@ -204,17 +204,12 @@ def test_session_memory_remains_bound_to_actual_session_id(coordination_bridge):
         repository,
         "memory_record",
         scope="session",
+        scope_id="session-a",
         session_id="session-a",
         key="session-rule",
         value="private session rule",
-        record={
-            "kind": "finding",
-            "scope": "session",
-            "key": "session-rule",
-            "value": "private session rule",
-        },
     )
-    assert created["success"] is True
+    assert created["success"] is True, created
 
     found = env.app.agent_memory.find(
         scope="session",

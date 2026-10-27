@@ -181,95 +181,19 @@ def test_wait_for_event_with_filter() -> None:
     assert received.get("event", {}).get("message", {}).get("task_id") == "task-42"
 
 
-def test_board_item_lifecycle_and_milestones(tmp_path: Path) -> None:
+def test_legacy_board_writes_are_rejected(tmp_path: Path) -> None:
     db_path = tmp_path / "board.sqlite"
     board = BoardStore(db_path)
 
-    # 1. Create milestone
-    m_res = board.milestone_create("v1.0", target_date="2026-11-01", description="Initial release")
-    assert m_res["success"] is True
-    assert m_res["milestone"]["name"] == "v1.0"
-
-    # 2. Create board items
-    item1 = board.item_create(
-        title="Implement semaphores",
-        status="planned",
-        priority="high",
-        labels=["sync", "core"],
-        assignee="agent-1",
-        milestone="v1.0",
-        details={"note": "generic counting semaphore"},
+    milestone = board.milestone_create(
+        "v1.0", target_date="2026-11-01", description="Initial release"
     )
-    assert item1["success"] is True
-    id1 = item1["item"]["item_id"]
+    item = board.item_create(title="Implement semaphores", status="planned")
 
-    item2 = board.item_create(
-        title="Implement board",
-        status="in_progress",
-        priority="high",
-        labels=["board"],
-        assignee="agent-2",
-        milestone="v1.0",
-    )
-    assert item2["success"] is True
-    id2 = item2["item"]["item_id"]
-
-    item3 = board.item_create(
-        title="Add documentation",
-        status="planned",
-        priority="medium",
-        milestone="v1.0",
-    )
-    assert item3["success"] is True
-    id3 = item3["item"]["item_id"]
-
-    # 3. Get item
-    got = board.item_get(id1)
-    assert got["success"] is True
-    assert got["item"]["title"] == "Implement semaphores"
-    assert got["item"]["labels"] == ["sync", "core"]
-
-    # 4. Update item
-    upd = board.item_update(id1, status="done")
-    assert upd["success"] is True
-    assert upd["item"]["status"] == "done"
-
-    # 5. List items with filters
-    done_items = board.item_list(status="done")
-    assert done_items["total"] == 1
-    assert done_items["items"][0]["item_id"] == id1
-
-    agent2_items = board.item_list(assignee="agent-2")
-    assert agent2_items["total"] == 1
-    assert agent2_items["items"][0]["item_id"] == id2
-
-    # 6. Milestone status
-    m_stat = board.milestone_status("v1.0")
-    assert m_stat["success"] is True
-    assert m_stat["total_items"] == 3
-    assert m_stat["done_items"] == 1
-    assert m_stat["progress_percentage"] == 33.3
-
-    # 7. Summary
-    summ = board.summary()
-    assert summ["success"] is True
-    assert summ["by_status"]["done"] == 1
-    assert summ["by_status"]["in_progress"] == 1
-    assert summ["by_status"]["planned"] == 1
-    assert summ["total_items"] == 3
-
-    # 8. Delete item
-    del_res = board.item_delete(id3)
-    assert del_res["success"] is True
-    del_get = board.item_get(id3)
-    assert del_get["success"] is False
-
-    # 9. Session briefing
-    brief = board.session_briefing()
-    assert brief["success"] is True
-    assert "board" in brief
-    assert brief["board"]["summary"]["total_items"] == 2
-    assert "recent_items" in brief["board"]
+    assert milestone["success"] is False
+    assert milestone["error_code"] == "legacy_board_read_only"
+    assert item["success"] is False
+    assert item["error_code"] == "legacy_board_read_only"
 
 
 def test_mcp_coord_routing_and_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:

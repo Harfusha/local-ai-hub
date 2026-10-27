@@ -564,6 +564,7 @@ class RepoPlanWorkspace:
                     "title": title,
                     "description": desc,
                     "kind": tdata.get("kind", "code"),
+                    "accountable_role": tdata.get("accountable_role"),
                     "work_status": work_status,
                     "work_phase": tdata.get("work_phase"),
                     "order": tdata.get("order"),

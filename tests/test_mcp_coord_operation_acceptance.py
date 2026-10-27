@@ -14,6 +14,14 @@ from local_ai_hub import http_server
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
+from local_ai_hub.project_config import resolve_project_context
+from local_ai_hub.state_paths import configured_state_dir
+
+
+def _repository_coordination_id(root: str) -> str:
+    return resolve_project_context(
+        root, configured_state_dir(mcp_server.load_config())
+    ).coordination_id
 
 
 class CoordBackend:
@@ -508,7 +516,7 @@ def test_local_ai_coord_memory_promote_forwards_record_identity(monkeypatch, tmp
         "value": "", "query": "", "root": root, "scope": "task",
         "scope_id": "task-42", "task_id": "task-42", "session_id": "session-3",
         "clone_id": "", "worktree_id": "", "branch": "",
-        "repository_id": "",
+        "repository_id": _repository_coordination_id(root),
     }]
 
 
@@ -953,17 +961,17 @@ def test_local_ai_coord_memory_find_forwards_query_and_scope(monkeypatch, tmp_pa
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "memory_find", "root": root,
-         "query": "lease timeout", "scope": "task", "scope_id": "task-63",
-         "task_id": "task-63"}
+         "query": "lease timeout", "scope": "repository"}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls == [{
         "action": "memory_find", "record": None, "record_id": "",
         "target_scope": "", "approver": "", "key": "", "value": "",
-        "query": "lease timeout", "root": root, "scope": "task",
-        "scope_id": "task-63", "task_id": "task-63", "session_id": "",
-        "clone_id": "", "worktree_id": "", "branch": "", "repository_id": "",
+        "query": "lease timeout", "root": root, "scope": "repository",
+        "scope_id": root, "task_id": "", "session_id": "",
+        "clone_id": "", "worktree_id": "", "branch": "",
+        "repository_id": _repository_coordination_id(root),
     }]
 
 
@@ -981,27 +989,27 @@ def test_local_ai_coord_memory_get_forwards_record_identity(monkeypatch, tmp_pat
         "target_scope": "", "approver": "", "key": "", "value": "",
         "query": "", "root": root, "scope": "project", "scope_id": "project-4",
         "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
-        "branch": "", "repository_id": "",
+        "branch": "", "repository_id": _repository_coordination_id(root),
     }]
 
 
 def test_local_ai_coord_memory_record_forwards_record_and_ttl(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    record = {"finding": "bounded retry", "verified": True}
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "memory_record", "root": root,
-         "record": record, "record_id": "memory-65", "ttl_seconds": 3600,
-         "scope": "task", "scope_id": "task-65"}
+         "key": "bounded-retry", "value": "verified", "kind": "fact",
+         "ttl_seconds": 3600, "scope": "repository"}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls == [{
-        "action": "memory_record", "record": record, "record_id": "memory-65",
-        "target_scope": "", "approver": "", "key": "", "value": "",
-        "query": "", "root": root, "scope": "task", "scope_id": "task-65",
+        "action": "memory_record", "record": None, "record_id": "",
+        "target_scope": "", "approver": "", "key": "bounded-retry", "value": "verified",
+        "query": "", "root": root, "scope": "repository", "scope_id": root,
         "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
-        "branch": "", "repository_id": "", "ttl_seconds": 3600,
+        "branch": "", "repository_id": _repository_coordination_id(root),
+        "kind": "fact", "ttl_seconds": 3600,
     }]
 
 

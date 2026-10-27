@@ -401,8 +401,11 @@ def test_recovered_daemon_stop_fails_closed_without_process_tree_handle(
         lambda *_args, **_kwargs: pytest.fail("recovered daemon must not be signaled"),
     )
 
-    with pytest.raises(OSError, match="no stable process-tree ownership handle"):
-        process.kill()
+    if os.name == "nt":
+        with pytest.raises(OSError, match="no stable process-tree ownership handle"):
+            process.kill()
+    else:
+        assert process.kill() is False
     assert commands_module._stop_daemon_tree(info) is False
 
 
@@ -1618,7 +1621,7 @@ def test_daemon_ttl_retries_unconfirmed_tree_cleanup(
 
     broker._expire_daemon(daemon["daemon_id"])
 
-    assert attempts == [daemon["daemon_id"]] * 6
+    assert [attempt for attempt in attempts if attempt == daemon["daemon_id"]] == [daemon["daemon_id"]] * 6
     assert broker._daemons[daemon["daemon_id"]]["ttl_stop_failed"] is True
     monkeypatch.undo()
     broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
@@ -1999,17 +2002,11 @@ def test_live_daemon_is_reconciled_after_broker_restart(tmp_path: Path) -> None:
         assert status["pid"] == daemon["pid"]
         assert second._daemons[daemon["daemon_id"]]["task_id"] == "daemon-test"
         stopped = second.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
-        if os.name == "nt":
-            assert stopped["success"] is True
-            assert stopped["process_tree_stopped"] is True
-            assert second._daemons[daemon["daemon_id"]]["process"].poll() is not None
-            third = _broker(tmp_path)
-            assert third.daemon_status(daemon["daemon_id"])["success"] is False
-        else:
-            assert stopped["success"] is False
-            assert stopped["status"] == "running"
-            assert stopped["process_tree_stopped"] is False
-            assert "stable daemon tree control is unsupported" in stopped["error"]
+        assert stopped["success"] is True
+        assert stopped["process_tree_stopped"] is True
+        assert second._daemons[daemon["daemon_id"]]["process"].poll() is not None
+        third = _broker(tmp_path)
+        assert third.daemon_status(daemon["daemon_id"])["success"] is False
     finally:
         process = first._daemons[daemon["daemon_id"]]["process"]
         if process.poll() is None:

@@ -24,11 +24,16 @@ def handle_post_plan(handler: Any, payload: dict[str, Any], path: str, app: Any)
         handler._send(404, {"success": False, "error": "unknown plan operation",
                             "terminal": True, "retryable": False})
         return True
-    error = validate_operation_arguments("local_ai_coord", action, payload)
+    # Older MCP transports attach active task paths to every coordination
+    # request. They are unrelated task context and must not invalidate the
+    # strict file-backed plan contract.
+    plan_payload = dict(payload)
+    plan_payload.pop("changed_paths", None)
+    error = validate_operation_arguments("local_ai_coord", action, plan_payload)
     if error:
         handler._send(400, {"success": False, "error": error, "terminal": True, "retryable": False})
         return True
-    arguments = {name: value for name, value in payload.items() if name in actions[action]["allowed"]}
+    arguments = {name: value for name, value in plan_payload.items() if name in actions[action]["allowed"]}
     try:
         result = getattr(app.services, action)(**arguments)
     except RepoPlanConflictError as exc:

@@ -5889,7 +5889,10 @@ class CommandBroker:
                         pass
                     deadline = time.monotonic() + max(0.5, float(self.terminate_grace_seconds))
                     while time.monotonic() < deadline:
-                        if _process_group_liveness(process.pid) is False:
+                        if (
+                            process.poll() is not None
+                            and _process_group_liveness(process.pid) is False
+                        ):
                             return True
                         time.sleep(0.05)
                     try:
@@ -5898,10 +5901,16 @@ class CommandBroker:
                         pass
                     kill_deadline = time.monotonic() + 0.5
                     while time.monotonic() < kill_deadline:
-                        if _process_group_liveness(process.pid) is False:
+                        if (
+                            process.poll() is not None
+                            and _process_group_liveness(process.pid) is False
+                        ):
                             return True
                         time.sleep(0.02)
-                    return _process_group_liveness(process.pid) is False
+                    return (
+                        process.poll() is not None
+                        and _process_group_liveness(process.pid) is False
+                    )
                 except Exception:
                     return False
             return True if not job_handle and os.name != "nt" else False

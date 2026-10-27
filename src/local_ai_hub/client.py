@@ -1756,11 +1756,16 @@ class HubClient:
                 "root": kwargs.get("root", ""),
             })
         if act.startswith("plan_"):
-            error = validate_operation_arguments("local_ai_coord", act, kwargs)
+            # The MCP host may append active-task path hints to every
+            # coordination call. They belong to task/repository context and
+            # are not part of the file-backed plan operation contract.
+            plan_arguments = dict(kwargs)
+            plan_arguments.pop("changed_paths", None)
+            error = validate_operation_arguments("local_ai_coord", act, plan_arguments)
             if error:
                 return {"success": False, "status_code": 400, "terminal": True,
                         "retryable": False, "error": error}
-            return self.post(f"/api/coord/{act}", dict(kwargs))
+            return self.post(f"/api/coord/{act}", plan_arguments)
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
 

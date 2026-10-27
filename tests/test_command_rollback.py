@@ -2268,11 +2268,20 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
         "terminate_tree",
         lambda pid, *, grace_seconds: cleanup_calls.append((pid, grace_seconds)) or False,
     )
-    ticks = iter((0.0, 2.0))
+    clock = {"now": -2.0}
+
+    def advance_monotonic() -> float:
+        clock["now"] += 2.0
+        return clock["now"]
+
+    def missing_process_group(*_args, **_kwargs) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(commands_module.os, "killpg", missing_process_group)
     monkeypatch.setattr(
         commands_module,
         "time",
-        SimpleNamespace(perf_counter=lambda: 0.0, monotonic=lambda: next(ticks, 2.0), sleep=lambda _s: None),
+        SimpleNamespace(perf_counter=lambda: 0.0, monotonic=advance_monotonic, sleep=lambda _s: None),
     )
 
     result = CommandBroker({"commands": {"enabled": True}})._execute(

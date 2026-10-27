@@ -59,6 +59,12 @@ def test_public_action_parameters_are_explicit_literals() -> None:
         "local_ai_coord": {"claim", "renew", "release", "leases", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
     }
     expected["local_ai_task"].update({"browser", "automation"})
+    expected["local_ai_coord"].update({
+        "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
+        "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
+        "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task",
+        "plan_reconcile_steering", "task_claim", "record_native_receipt",
+    })
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
         expected["local_ai_task"].discard("vision")
     for name, values in expected.items():

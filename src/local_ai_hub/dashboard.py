@@ -622,13 +622,13 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 <div id="coordination" class="page">
   <header class="page-heading" data-section="04 / Coordination">
     <h1 tabindex="-1" id="page-title-coordination">Coordination</h1>
-    <p>Track tasks, shared resources, and milestones in one place.</p>
+    <p>Track repository plans, plan tasks, and shared resources in one place.</p>
   </header>
 
   <div class="subtabs" style="margin-bottom:14px">
     <button class="subtab-btn active" id="subtabCoordBoard" data-coord-subtab="board">Project Board (Kanban)</button>
     <button class="subtab-btn" id="subtabCoordSemaphores" data-coord-subtab="semaphores">Resource Semaphores</button>
-    <button class="subtab-btn" id="subtabCoordMilestones" data-coord-subtab="milestones">Milestones</button>
+    <button class="subtab-btn" id="subtabCoordPlanProgress" data-coord-subtab="plan-progress">Plan Progress</button>
     <button class="subtab-btn" id="subtabCoordBriefing" data-coord-subtab="briefing">Session Briefing</button>
   </div>
 
@@ -636,12 +636,17 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <section class="section">
       <div class="project-toolbar" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn primary" id="coordNewCardBtn">+ Add Card</button>
+          <button class="btn primary" id="coordNewPlanBtn">+ New Plan</button>
+          <button class="btn" id="coordEditPlanBtn" disabled>Edit Plan</button>
+          <button class="btn primary" id="coordNewCardBtn">+ Add Task</button>
           <button class="btn" id="coordRefreshBoardBtn">↻ Refresh Board</button>
-          <input id="coordBoardSearch" type="search" aria-label="Search project board cards" placeholder="Filter cards by title, tag, assignee..." style="min-width:240px">
+          <input id="coordBoardRoot" type="search" list="worktreeRoots" aria-label="Repository or worktree root for project board" placeholder="Repository or worktree root" style="min-width:240px">
+          <select id="coordBoardPlan" aria-label="Filter project board by plan" style="min-width:180px"><option value="">All plans</option></select>
+          <input id="coordBoardSearch" type="search" aria-label="Search project board tasks" placeholder="Filter tasks by title, description, next action..." style="min-width:240px">
         </div>
-        <div id="coordBoardSummaryText" class="tiny muted">Loading board...</div>
+        <div id="coordBoardSummaryText" class="tiny muted">Choose a repository or worktree to load file-backed plans.</div>
       </div>
+      <div id="coordPlanWarnings" class="tiny bad-t" role="status" style="margin-top:6px"></div>
       <div class="kanban-board" id="kanbanBoardContainer"></div>
     </section>
   </div>
@@ -666,16 +671,15 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     </section>
   </div>
 
-  <div id="coordMilestonesSec" style="display:none">
+  <div id="coordPlanProgressSec" style="display:none">
     <section class="section">
       <div class="project-toolbar" style="display:flex;justify-content:space-between;align-items:center">
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn primary" id="coordNewMilestoneBtn">+ Create Milestone</button>
-          <button class="btn" id="coordRefreshMilestoneBtn">↻ Refresh</button>
+          <button class="btn" id="coordRefreshPlanProgressBtn">↻ Refresh</button>
         </div>
-        <span class="tiny muted" id="coordMilestoneSummary">Milestone progress across board items</span>
+        <span class="tiny muted" id="coordPlanProgressSummary">Progress by plan in the selected repository/worktree</span>
       </div>
-      <div id="coordMilestonesGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-top:12px;padding:12px"></div>
+      <div id="coordPlanProgressGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-top:12px;padding:12px"></div>
     </section>
   </div>
 
@@ -5834,31 +5838,67 @@ document.addEventListener('click',e=>{
 
 // ── Coordination, Project Board & Resource Semaphores ────────────────────────
 let cachedBoardItems = [];
+let cachedPlanItems = [];
+let cachedPlanBoard = null;
 let cachedSemaphores = {};
 let coordinationLoadErrors={},coordinationLoadGeneration=0;
 function coordinationUnavailable(key){return `<div class="diag-banner bad" role="status">Coordination unavailable: ${esc(coordinationLoadErrors[key])}. Refresh to retry.</div>`}
 
+function renderCoordPlanFilter(plans){
+  const select=$('coordBoardPlan');
+  const invalid=(Array.isArray(plans)?plans:[]).filter(plan=>plan?.invalid);
+  const warning=$('coordPlanWarnings');
+  if(warning)warning.textContent=invalid.length?`${invalid.length} invalid plan file(s) were skipped: ${invalid.map(plan=>plan.rel_path||'unknown file').join(', ')}. Fix the files before editing those plans.`:'';
+  if(!select)return;
+  const previous=select.value;
+  const valid=(Array.isArray(plans)?plans:[]).filter(plan=>plan&&!plan.invalid&&plan.id);
+  const invalidOptions=invalid.map(plan=>`<option disabled>${esc(plan.rel_path||'Invalid plan')}</option>`).join('');
+  select.innerHTML='<option value="">All plans</option>'+valid.map(plan=>`<option value="${esc(plan.id)}">${esc(plan.title||plan.id)} · ${esc(plan.lifecycle||'draft')}</option>`).join('')+invalidOptions;
+  select.value=valid.some(plan=>plan.id===previous)?previous:'';
+  const edit=$('coordEditPlanBtn');
+  if(edit)edit.disabled=!select.value;
+}
+
 async function loadCoordinationView(){
     const generation=++coordinationLoadGeneration;
-    const [boardRes, semRes, mileRes] = await Promise.allSettled([
-      fetchDashboardJson('/api/coord/board_item_list', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),
-      fetchDashboardJson('/api/coord/semaphore_status', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),
-      fetchDashboardJson('/api/coord/milestone_status', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+    const root=String($('coordBoardRoot')?.value||'').trim();
+    const planSelect=$('coordBoardPlan');
+    let plansResult={success:false,error:root?'Plan list unavailable':'Choose a repository or worktree root.'};
+    if(root){
+      try{plansResult=await fetchDashboardJson('/api/coord/plan_list',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({root})})}
+      catch(error){plansResult={success:false,error:String(error?.message||error)}}
+    }
+    if(generation!==coordinationLoadGeneration)return;
+    cachedPlanItems=plansResult.success===true&&Array.isArray(plansResult.plans)?plansResult.plans:[];
+    renderCoordPlanFilter(cachedPlanItems);
+    try{if(root)localStorage.setItem('local-ai-hub.coordBoardRoot',root)}catch{}
+    const planId=String(planSelect?.value||'').trim();
+    const boardRequest=root&&plansResult.success===true
+      ?fetchDashboardJson('/api/coord/plan_board_view',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({root,plan_id:planId})})
+      :Promise.resolve({success:false,error:plansResult.error||'Choose a repository or worktree root.'});
+    const [boardRes, semRes] = await Promise.allSettled([
+      boardRequest,
+      fetchDashboardJson('/api/coord/semaphore_status', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
     ]);
     if(generation!==coordinationLoadGeneration)return;
     coordinationLoadErrors={};
-    for(const [key,result] of [['board',boardRes],['semaphores',semRes],['milestones',mileRes]]){
+    for(const [key,result] of [['board',boardRes],['semaphores',semRes]]){
       if(result.status==='fulfilled'&&result.value?.success===true)continue;
       const error=result.status==='rejected'?result.reason:result.value?.error||'Invalid server response';
       coordinationLoadErrors[key]=String(error?.message||error);
     }
-    cachedBoardItems=coordinationLoadErrors.board?[]:(boardRes.value.items||[]);
+    if(!root)coordinationLoadErrors.board='Choose a repository or worktree root. The global legacy board is not used.';
+    if(plansResult.success!==true)coordinationLoadErrors.board=String(plansResult.error||'Could not load repository plans');
+    cachedPlanBoard=coordinationLoadErrors.board?null:boardRes.value;
+    cachedBoardItems=coordinationLoadErrors.board?[]:Object.entries(cachedPlanBoard?.columns||{}).flatMap(([status,items])=>
+      (Array.isArray(items)?items:[]).map(item=>({...item,item_id:item.task_id,status}))
+    );
     cachedSemaphores=coordinationLoadErrors.semaphores?{}:(semRes.value.semaphores||{});
     if(!Array.isArray(cachedBoardItems)||cachedBoardItems.some(item=>!item||typeof item!=='object')){cachedBoardItems=[];coordinationLoadErrors.board='Invalid board data'}
     if(!cachedSemaphores||typeof cachedSemaphores!=='object'||Array.isArray(cachedSemaphores)||Object.values(cachedSemaphores).some(item=>!item||typeof item!=='object')){cachedSemaphores={};coordinationLoadErrors.semaphores='Invalid semaphore data'}
     renderKanbanBoard();
     renderSemaphoresTable();
-    renderMilestonesView(mileRes.status==='fulfilled'?mileRes.value:{});
+    renderPlanProgressView();
     updateCoordOverviewCards();
 }
 
@@ -5868,17 +5908,13 @@ function renderKanbanBoard(){
   if(!container) return;
   if(coordinationLoadErrors.board){if($('coordBoardSummaryText'))$('coordBoardSummaryText').textContent='Board unavailable';container.innerHTML=coordinationUnavailable('board');return}
 
-  const cols = [
-    {key: 'planned', label: 'Planned', icon: '📋'},
-    {key: 'in_progress', label: 'In Progress', icon: '⚡'},
-    {key: 'done', label: 'Done', icon: '✅'},
-    {key: 'blocked', label: 'Blocked', icon: '⛔'},
-    {key: 'cancelled', label: 'Cancelled', icon: '❌'}
-  ];
+  const labels={planned:'Planned',ready:'Ready',in_progress:'In Progress',blocked:'Blocked',source_ready:'Source Ready',done:'Done'};
+  const icons={planned:'📋',ready:'🟦',in_progress:'⚡',blocked:'⛔',source_ready:'📦',done:'✅'};
+  const cols=Object.keys(cachedPlanBoard?.columns||{}).map(key=>({key,label:labels[key]||key.replaceAll('_',' '),icon:icons[key]||'•'}));
 
   const filtered = cachedBoardItems.filter(item => {
     if(!query) return true;
-    const text = [item.item_id, item.title, item.status, item.priority, item.assignee, item.milestone, (item.labels || []).join(' ')].join(' ').toLowerCase();
+    const text = [item.task_id,item.title,item.description,item.status,item.plan_title,item.accountable_role,item.next_action,item.blocker].join(' ').toLowerCase();
     return text.includes(query);
   });
 
@@ -5889,41 +5925,35 @@ function renderKanbanBoard(){
     counts[st] = (counts[st] || 0) + 1;
   });
 
-  if($('coordBoardSummaryText')){
-    $('coordBoardSummaryText').textContent = `${filtered.length} total cards · ${counts.in_progress || 0} active · ${counts.blocked || 0} blocked`;
-  }
+  if($('coordBoardSummaryText'))$('coordBoardSummaryText').textContent=`${cachedPlanBoard?.project_root||''} · ${planIdLabel()} · ${filtered.length} tasks · ${counts.in_progress||0} active · ${counts.blocked||0} blocked`;
 
   container.innerHTML = cols.map(c => {
     const colItems = filtered.filter(item => String(item.status || 'planned').toLowerCase() === c.key);
     const cardsHtml = colItems.length ? colItems.map(item => {
-      const pri = String(item.priority || 'normal').toLowerCase();
-      const priClass = pri === 'critical' ? 'bad-t' : (pri === 'high' ? 'warn-t' : (pri === 'low' ? 'muted' : 'ok'));
-      const assigneeBadge = item.assignee ? `<span class="chip" title="Assignee">👤 ${esc(item.assignee)}</span>` : '';
-      const milestoneBadge = item.milestone ? `<span class="chip" title="Milestone">🎯 ${esc(item.milestone)}</span>` : '';
-      const taskBadge = item.linked_task_id ? `<span class="chip mono" title="Linked Task">🔗 ${esc(item.linked_task_id)}</span>` : '';
-      const labels = (item.labels || []).map(l => `<span class="chip">${esc(l)}</span>`).join('');
-      
-      const moveOptions = cols.map(targetCol => 
-        `<option value="${targetCol.key}" ${targetCol.key === c.key ? 'selected' : ''}>${targetCol.label}</option>`
-      ).join('');
+      const accountable=item.accountable_role||'';
+      const moveable=['planned','ready','in_progress','blocked'];
+      const moveOptions=moveable.map(status=>`<option value="${status}" ${status===c.key?'selected':''}>${esc(labels[status]||status)}</option>`).join('');
+      const statusControl=moveable.includes(c.key)
+        ?`<select class="action-btn-sm" aria-label="Move task status" style="font-size:11px;padding:2px 6px;height:26px" onchange="updateCardStatus(this.dataset.planId,this.dataset.taskId,this.value)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">${moveOptions}</select>`
+        :`<span class="chip" title="Status is receipt/integration gated">${esc(labels[c.key]||c.key)} · gated</span>`;
 
       return `
-        <div class="kanban-card" data-item-id="${esc(item.item_id)}">
+        <div class="kanban-card" data-item-id="${esc(item.task_id)}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
-            <span class="kanban-card-title">${esc(item.title || item.item_id)}</span>
-            <span class="chip ${priClass}" style="text-transform:uppercase;font-size:10px;font-weight:700">${esc(pri)}</span>
+            <button type="button" class="kanban-card-title" style="border:0;background:none;color:inherit;text-align:left;cursor:pointer;padding:0" onclick="editPlanTask(this.dataset.planId,this.dataset.taskId)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">${esc(item.title||item.task_id)}</button>
+            <span class="chip mono" style="font-size:10px">${esc(item.task_id)}</span>
           </div>
           <div class="kanban-card-meta">
-            ${assigneeBadge}
-            ${milestoneBadge}
-            ${taskBadge}
-            ${labels}
+            <span class="chip" title="Plan">📁 ${esc(item.plan_title||item.plan_id)}</span>
+            ${accountable?`<span class="chip" title="Accountable role">👤 ${esc(accountable)}</span>`:''}
+            ${item.work_phase?`<span class="chip">${esc(String(item.work_phase).replaceAll('_',' '))}</span>`:''}
           </div>
+          ${item.description?`<p class="tiny muted">${esc(item.description)}</p>`:''}
+          ${item.next_action?`<p class="tiny"><b>Next:</b> ${esc(item.next_action)}</p>`:''}
+          ${item.blocker?`<p class="tiny bad-t"><b>Blocked:</b> ${esc(item.blocker)}</p>`:''}
           <div class="kanban-card-actions">
-            <select class="action-btn-sm" style="font-size:11px;padding:2px 6px;height:26px" onchange="updateCardStatus('${esc(item.item_id)}', this.value)">
-              ${moveOptions}
-            </select>
-            <button class="action-btn-sm danger" style="padding:2px 7px;font-size:11px" onclick="deleteBoardCard(this.dataset.itemId)" data-item-id="${esc(item.item_id)}">✕</button>
+            ${statusControl}
+            <button class="action-btn-sm danger" style="padding:2px 7px;font-size:11px" onclick="deletePlanTask(this.dataset.planId,this.dataset.taskId)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">Delete</button>
           </div>
         </div>
       `;
@@ -5942,6 +5972,8 @@ function renderKanbanBoard(){
     `;
   }).join('');
 }
+
+function planIdLabel(){const selected=$('coordBoardPlan')?.value||'';return selected?(cachedPlanItems.find(plan=>plan.id===selected)?.title||selected):'All plans'}
 
 function renderSemaphoresTable(){
   const body = $('coordSemaphoresBody');
@@ -5969,37 +6001,34 @@ function renderSemaphoresTable(){
   }).join('');
 }
 
-function renderMilestonesView(statusData){
-  const grid = $('coordMilestonesGrid');
+function renderPlanProgressView(){
+  const grid = $('coordPlanProgressGrid');
   if(!grid) return;
-  const errorKey=coordinationLoadErrors.milestones?'milestones':coordinationLoadErrors.board?'board':'';
-  if(errorKey){if($('coordMilestoneSummary'))$('coordMilestoneSummary').textContent='Milestones unavailable';grid.innerHTML=coordinationUnavailable(errorKey);return}
-  if($('coordMilestoneSummary'))$('coordMilestoneSummary').textContent='Milestone progress across board items';
-  const milestoneMap = {};
+  if(coordinationLoadErrors.board){if($('coordPlanProgressSummary'))$('coordPlanProgressSummary').textContent='Plan progress unavailable';grid.innerHTML=coordinationUnavailable('board');return}
+  if($('coordPlanProgressSummary'))$('coordPlanProgressSummary').textContent='Progress by plan in the selected repository/worktree';
+  const planMap = {};
   cachedBoardItems.forEach(item => {
-    const m = item.milestone || 'General Backlog';
-    if(!milestoneMap[m]) milestoneMap[m] = {total: 0, done: 0, in_progress: 0, blocked: 0, planned: 0};
-    milestoneMap[m].total++;
-    const st = String(item.status || 'planned').toLowerCase();
-    if(st === 'done') milestoneMap[m].done++;
-    else if(st === 'in_progress') milestoneMap[m].in_progress++;
-    else if(st === 'blocked') milestoneMap[m].blocked++;
-    else milestoneMap[m].planned++;
+    const key = String(item.plan_title || item.plan_id || 'Untitled plan');
+    if(!planMap[key]) planMap[key] = {total: 0, done: 0, in_progress: 0, blocked: 0, planned: 0, ready: 0, source_ready: 0};
+    planMap[key].total++;
+    const st = String(item.work_status || item.status || 'planned').toLowerCase();
+    if(Object.prototype.hasOwnProperty.call(planMap[key], st) && st !== 'total') planMap[key][st]++;
+    else planMap[key].planned++;
   });
 
-  const keys = Object.keys(milestoneMap);
+  const keys = Object.keys(planMap);
   if(!keys.length){
-    grid.innerHTML = '<div class="empty" style="grid-column:1/-1">No milestones recorded yet. Create board cards with milestone tags.</div>';
+    grid.innerHTML = '<div class="empty" style="grid-column:1/-1">No tasks in the selected plan. Choose another plan or add a task.</div>';
     return;
   }
 
   grid.innerHTML = keys.map(k => {
-    const data = milestoneMap[k];
+    const data = planMap[k];
     const pct = data.total > 0 ? Math.round((data.done / data.total) * 100) : 0;
     return `
       <div class="milestone-card">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <strong style="font-size:14px">🎯 ${esc(k)}</strong>
+          <strong style="font-size:14px">▤ ${esc(k)}</strong>
           <span class="chip ${pct === 100 ? 'ok' : (pct > 0 ? 'warn-t' : '')}">${pct}% complete</span>
         </div>
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -6007,6 +6036,8 @@ function renderMilestonesView(statusData){
           <span class="chip ok">✅ ${data.done} Done</span>
           <span class="chip">⚡ ${data.in_progress} In Progress</span>
           <span class="chip">📋 ${data.planned} Planned</span>
+          ${data.ready ? `<span class="chip">◉ ${data.ready} Ready</span>` : ''}
+          ${data.source_ready ? `<span class="chip">⇧ ${data.source_ready} Source Ready</span>` : ''}
           ${data.blocked ? `<span class="chip bad-t">⛔ ${data.blocked} Blocked</span>` : ''}
         </div>
       </div>
@@ -6033,24 +6064,40 @@ function updateCoordOverviewCards(){
   }
 }
 
-async function updateCardStatus(itemId, newStatus){
+function coordOperationId(prefix){
+  const randomId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${randomId}`;
+}
+
+async function updateCardStatus(planId, taskId, newStatus){
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  const item=cachedBoardItems.find(entry=>entry.plan_id===planId&&entry.task_id===taskId);
+  if(!root||!item)return;
   try{
-    const res = await post('/api/coord/board_item_update', {item_id: itemId, status: newStatus});
-    if(res.success === false) throw new Error(res.error || 'Failed to update card');
+    const res=await post('/api/coord/plan_task_edit',{
+      root,plan_id:planId,task_id:taskId,expected_revision:item.plan_file_revision,
+      task_data:{work_status:newStatus},owner:'dashboard',idempotency_key:coordOperationId(`status-${taskId}`)
+    });
+    if(res.success===false)throw new Error(res.error||'Failed to update plan task');
     await loadCoordinationView();
   }catch(e){
-    alert('Failed to move card: ' + (e.message || e));
+    alert('Failed to update plan task: '+(e.message||e));
   }
 }
 
-async function deleteBoardCard(itemId){
-  if(!confirm(`Delete board card "${itemId}"?`)) return;
+async function deletePlanTask(planId,taskId){
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  const item=cachedBoardItems.find(entry=>entry.plan_id===planId&&entry.task_id===taskId);
+  if(!root||!item||!confirm(`Delete task "${taskId}" from plan "${item.plan_title||planId}"?`))return;
   try{
-    const res = await post('/api/coord/board_item_delete', {item_id: itemId});
-    if(res.success === false) throw new Error(res.error || 'Failed to delete card');
+    const res=await post('/api/coord/plan_task_delete',{
+      root,plan_id:planId,task_id:taskId,expected_revision:item.plan_file_revision,
+      owner:'dashboard',idempotency_key:coordOperationId(`delete-${taskId}`)
+    });
+    if(res.success===false)throw new Error(res.error||'Failed to delete plan task');
     await loadCoordinationView();
   }catch(e){
-    alert('Failed to delete card: ' + (e.message || e));
+    alert('Failed to delete plan task: '+(e.message||e));
   }
 }
 
@@ -6081,80 +6128,155 @@ async function quickAcquireSem(name, capacity){
   }
 }
 
+let activePlanTaskEdit=null;
+
+function openCreatePlanModal(){
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  if(!root){alert('Choose a repository or worktree root first.');return}
+  if($('modalTitle'))$('modalTitle').textContent='Create Repository Plan';
+  if($('modalLive'))$('modalLive').textContent='Saved directly to .local-ai-hub/plans in this repository.';
+  if($('modalBody'))$('modalBody').innerHTML=`
+    <div class="modal-body-wrap"><form class="modal-form" onsubmit="submitCreatePlan(event)">
+      <div class="form-group"><label for="newPlanTitle">Plan name *</label><input id="newPlanTitle" required maxlength="160" autofocus placeholder="e.g. Project planning and delivery"></div>
+      <div class="form-group"><label for="newPlanId">Stable plan ID *</label><input id="newPlanId" required pattern="[a-z0-9][a-z0-9._-]*" maxlength="80" placeholder="project-planning"><span class="form-hint">Stored as a repository file; keep this ID stable.</span></div>
+      <div class="form-group"><label for="newPlanDescription">Description</label><textarea id="newPlanDescription" rows="4" maxlength="12000"></textarea></div>
+      <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button><button type="submit" class="btn ok">Create Plan</button></div>
+    </form></div>`;
+  const title=$('newPlanTitle'),id=$('newPlanId');
+  title?.addEventListener('input',()=>{if(id&&!id.dataset.edited)id.value=title.value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80)});
+  id?.addEventListener('input',()=>{id.dataset.edited='true'});
+  $('modalBg')?.classList.add('open');
+}
+
+async function submitCreatePlan(e){
+  e.preventDefault();
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  const plan_id=$('newPlanId')?.value?.trim();
+  const title=$('newPlanTitle')?.value?.trim();
+  const description=$('newPlanDescription')?.value||'';
+  if(!root||!plan_id||!title)return;
+  try{
+    const res=await post('/api/coord/plan_create',{root,plan_id,title,description,lifecycle:'active',owner:'dashboard',idempotency_key:coordOperationId(`create-${plan_id}`)});
+    if(res.success===false)throw new Error(res.error||'Could not create plan');
+    $('modalClose')?.click();
+    if($('coordBoardPlan'))$('coordBoardPlan').value=plan_id;
+    await loadCoordinationView();
+  }catch(error){alert('Create plan failed: '+(error.message||error))}
+}
+
+function openEditPlanModal(){
+  const planId=String($('coordBoardPlan')?.value||'');
+  const plan=cachedPlanItems.find(item=>item.id===planId);
+  if(!plan){alert('Select a plan first.');return}
+  if($('modalTitle'))$('modalTitle').textContent='Edit Plan';
+  if($('modalLive'))$('modalLive').textContent=`Plan file revision ${plan.file_revision||'unknown'}`;
+  if($('modalBody'))$('modalBody').innerHTML=`
+    <div class="modal-body-wrap"><form class="modal-form" onsubmit="submitPlanUpdate(event)">
+      <div class="form-group"><label>Stable plan ID</label><input value="${esc(plan.id)}" disabled></div>
+      <div class="form-group"><label for="editPlanTitle">Plan name *</label><input id="editPlanTitle" required maxlength="160" value="${esc(plan.title||'')}"></div>
+      <div class="form-group"><label for="editPlanDescription">Description</label><textarea id="editPlanDescription" rows="5" maxlength="12000">${esc(plan.description||'')}</textarea></div>
+      <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button><button type="submit" class="btn ok">Save Plan</button></div>
+    </form></div>`;
+  $('modalBg')?.classList.add('open');
+}
+
+async function submitPlanUpdate(e){
+  e.preventDefault();
+  const planId=String($('coordBoardPlan')?.value||'');
+  const plan=cachedPlanItems.find(item=>item.id===planId);
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  if(!root||!plan)return;
+  try{
+    const res=await post('/api/coord/plan_update',{root,plan_id:planId,expected_revision:plan.file_revision,title:$('editPlanTitle')?.value?.trim(),description:$('editPlanDescription')?.value||'',owner:'dashboard',idempotency_key:coordOperationId(`update-${planId}`)});
+    if(res.success===false)throw new Error(res.error||'Could not update plan');
+    $('modalClose')?.click();
+    await loadCoordinationView();
+  }catch(error){alert('Update plan failed: '+(error.message||error))}
+}
+
 function openAddCardModal(){
-  if($('modalTitle')) $('modalTitle').textContent = 'Add Kanban Board Card';
-  if($('modalLive')) $('modalLive').textContent = '';
-  if($('modalBody')) $('modalBody').innerHTML = `
-    <div class="modal-body-wrap">
-      <form class="modal-form" onsubmit="submitAddCard(event)">
-        <div class="form-group">
-          <label for="newCardTitle">Card Title *</label>
-          <input type="text" id="newCardTitle" required placeholder="Card title or task objective..." autofocus>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group">
-            <label for="newCardStatus">Status</label>
-            <select id="newCardStatus">
-              <option value="planned" selected>Planned</option>
-              <option value="in_progress">In Progress</option>
-              <option value="done">Done</option>
-              <option value="blocked">Blocked</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="newCardPriority">Priority</label>
-            <select id="newCardPriority">
-              <option value="low">Low</option>
-              <option value="normal" selected>Normal</option>
-              <option value="high">High</option>
-              <option value="critical">Critical</option>
-            </select>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group">
-            <label for="newCardAssignee">Assignee</label>
-            <input type="text" id="newCardAssignee" placeholder="e.g. primary_agent, coder_1">
-          </div>
-          <div class="form-group">
-            <label for="newCardMilestone">Milestone</label>
-            <input type="text" id="newCardMilestone" placeholder="e.g. v1.0, Sprint 4">
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="newCardTask">Linked Task ID (optional)</label>
-          <input type="text" id="newCardTask" placeholder="e.g. task-930">
-        </div>
-        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
-          <button type="submit" class="btn ok">Create Card</button>
-        </div>
-      </form>
-    </div>
-  `;
+  const planId=String($('coordBoardPlan')?.value||'');
+  const plan=cachedPlanItems.find(item=>item.id===planId);
+  if(!String($('coordBoardRoot')?.value||'').trim()){alert('Choose a repository or worktree root first.');return}
+  if(!plan){alert('Select one plan before adding a task.');return}
+  if($('modalTitle'))$('modalTitle').textContent=`Add Task · ${plan.title||planId}`;
+  if($('modalLive'))$('modalLive').textContent='Task will be saved to the selected plan file.';
+  if($('modalBody'))$('modalBody').innerHTML=`
+    <div class="modal-body-wrap"><form class="modal-form" onsubmit="submitAddCard(event)">
+      <div class="form-group"><label for="newCardTitle">Task title *</label><input id="newCardTitle" required maxlength="240" autofocus></div>
+      <div class="form-group"><label for="newCardDescription">Description</label><textarea id="newCardDescription" rows="4" maxlength="12000"></textarea></div>
+      <div class="form-group"><label for="newCardStatus">Work status</label><select id="newCardStatus"><option value="planned">Planned</option><option value="ready">Ready</option><option value="in_progress">In Progress</option><option value="blocked">Blocked</option></select></div>
+      <div class="form-group"><label for="newCardOwner">Accountable role</label><input id="newCardOwner" maxlength="120" placeholder="e.g. integrator"></div>
+      <div class="form-group"><label for="newCardNextAction">Next action</label><textarea id="newCardNextAction" rows="2" maxlength="2000"></textarea></div>
+      <div class="form-group"><label for="newCardAcceptance">Acceptance criteria (one per line)</label><textarea id="newCardAcceptance" rows="4" maxlength="8000"></textarea></div>
+      <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button><button type="submit" class="btn ok">Create Task</button></div>
+    </form></div>`;
   $('modalBg')?.classList.add('open');
 }
 
 async function submitAddCard(e){
   e.preventDefault();
-  const title = $('newCardTitle')?.value?.trim();
-  const status = $('newCardStatus')?.value || 'planned';
-  const priority = $('newCardPriority')?.value || 'normal';
-  const assignee = $('newCardAssignee')?.value?.trim() || '';
-  const milestone = $('newCardMilestone')?.value?.trim() || '';
-  const linked_task_id = $('newCardTask')?.value?.trim() || '';
-  if(!title) return;
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  const planId=String($('coordBoardPlan')?.value||'');
+  const plan=cachedPlanItems.find(item=>item.id===planId);
+  const title=$('newCardTitle')?.value?.trim();
+  if(!root||!plan||!title)return;
+  const task_id=`task_${coordOperationId('dashboard').replace(/[^a-zA-Z0-9_-]/g,'_')}`;
+  const task_data={title,description:$('newCardDescription')?.value||'',kind:'code',work_status:$('newCardStatus')?.value||'planned',depends_on:[],clarifications:[],acceptance_criteria:String($('newCardAcceptance')?.value||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean),next_action:$('newCardNextAction')?.value?.trim()||'',blocker:null,accountable_role:$('newCardOwner')?.value?.trim()||undefined};
   try{
-    const res = await post('/api/coord/board_item_create', {
-      title, status, priority, assignee, milestone, linked_task_id
-    });
-    if(res.success === false) throw new Error(res.error || 'Failed to create card');
+    const res=await post('/api/coord/plan_task_edit',{root,plan_id:planId,task_id,task_data,expected_revision:plan.file_revision,owner:'dashboard',idempotency_key:coordOperationId(`create-${task_id}`)});
+    if(res.success===false)throw new Error(res.error||'Could not create task');
     $('modalClose')?.click();
     await loadCoordinationView();
-  }catch(err){
-    alert('Create card error: ' + (err.message || err));
-  }
+  }catch(error){alert('Create task failed: '+(error.message||error))}
+}
+
+async function editPlanTask(planId,taskId){
+  const root=String($('coordBoardRoot')?.value||'').trim();
+  if(!root)return;
+  try{
+    const res=await post('/api/coord/plan_get',{root,plan_id:planId});
+    if(res.success===false||!res.plan)throw new Error(res.error||'Could not load plan task');
+    const task=res.plan.tasks?.[taskId];
+    if(!task)throw new Error(`Task ${taskId} no longer exists`);
+    activePlanTaskEdit={root,planId,taskId,revision:res.file_revision};
+    const statusOptions=['planned','ready','in_progress','blocked'];
+    const statusEditor=statusOptions.includes(task.work_status)
+      ?`<div class="form-group"><label for="editTaskStatus">Work status</label><select id="editTaskStatus">${statusOptions.map(status=>`<option value="${status}" ${status===task.work_status?'selected':''}>${status.replaceAll('_',' ')}</option>`).join('')}</select></div>`
+      :`<p class="tiny warn-t">${esc(task.work_status)} is controlled by verification and integration evidence; edit details here without changing that status.</p>`;
+    const clarifications=Array.isArray(task.clarifications)?task.clarifications:[];
+    if($('modalTitle'))$('modalTitle').textContent=`Edit Task · ${taskId}`;
+    if($('modalLive'))$('modalLive').textContent=`Plan ${res.plan.title||planId} · file revision ${res.file_revision}`;
+    if($('modalBody'))$('modalBody').innerHTML=`
+      <div class="modal-body-wrap"><form class="modal-form" onsubmit="submitPlanTaskEdit(event)">
+        <div class="form-group"><label for="editTaskTitle">Title *</label><input id="editTaskTitle" required maxlength="240" value="${esc(task.title||'')}"></div>
+        <div class="form-group"><label for="editTaskDescription">Description</label><textarea id="editTaskDescription" rows="4" maxlength="12000">${esc(task.description||'')}</textarea></div>
+        ${statusEditor}
+        <div class="form-group"><label for="editTaskOwner">Accountable role</label><input id="editTaskOwner" maxlength="120" value="${esc(task.accountable_role||'')}"></div>
+        <div class="form-group"><label for="editTaskNextAction">Next action</label><textarea id="editTaskNextAction" rows="2" maxlength="2000">${esc(task.next_action||'')}</textarea></div>
+        <div class="form-group"><label for="editTaskBlocker">Blocker</label><textarea id="editTaskBlocker" rows="2" maxlength="2000">${esc(typeof task.blocker==='string'?task.blocker:(task.blocker?.message||''))}</textarea></div>
+        <div class="form-group"><label for="editTaskAcceptance">Acceptance criteria (one per line)</label><textarea id="editTaskAcceptance" rows="4" maxlength="8000">${esc((task.acceptance_criteria||[]).join('\n'))}</textarea></div>
+        ${clarifications.length?`<details><summary>${clarifications.length} saved clarification(s)</summary><pre class="tiny">${esc(JSON.stringify(clarifications,null,2))}</pre></details>`:''}
+        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button><button type="submit" class="btn ok">Save Task</button></div>
+      </form></div>`;
+    $('modalBg')?.classList.add('open');
+  }catch(error){alert('Could not open task: '+(error.message||error))}
+}
+
+async function submitPlanTaskEdit(e){
+  e.preventDefault();
+  if(!activePlanTaskEdit)return;
+  const edit=activePlanTaskEdit;
+  const task_data={title:$('editTaskTitle')?.value?.trim(),description:$('editTaskDescription')?.value||'',accountable_role:$('editTaskOwner')?.value?.trim()||'',next_action:$('editTaskNextAction')?.value?.trim()||'',blocker:$('editTaskBlocker')?.value?.trim()||null,acceptance_criteria:String($('editTaskAcceptance')?.value||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean)};
+  const status=$('editTaskStatus');
+  if(status)task_data.work_status=status.value;
+  try{
+    const res=await post('/api/coord/plan_task_edit',{...edit,task_id:edit.taskId,expected_revision:edit.revision,task_data,owner:'dashboard',idempotency_key:coordOperationId(`update-${edit.taskId}`)});
+    if(res.success===false)throw new Error(res.error||'Could not update task');
+    activePlanTaskEdit=null;
+    $('modalClose')?.click();
+    await loadCoordinationView();
+  }catch(error){alert('Save task failed: '+(error.message||error))}
 }
 
 function openAcquireSemModal(){
@@ -6221,50 +6343,6 @@ async function submitAcquireSem(e){
   }
 }
 
-function openAddMilestoneModal(){
-  if($('modalTitle')) $('modalTitle').textContent = 'Create Milestone';
-  if($('modalLive')) $('modalLive').textContent = '';
-  if($('modalBody')) $('modalBody').innerHTML = `
-    <div class="modal-body-wrap">
-      <form class="modal-form" onsubmit="submitAddMilestone(event)">
-        <div class="form-group">
-          <label for="newMileName">Milestone Name *</label>
-          <input type="text" id="newMileName" required placeholder="e.g. v1.0 Release, Core Engine" autofocus>
-        </div>
-        <div class="form-group">
-          <label for="newMileTarget">Target Date</label>
-          <input type="date" id="newMileTarget">
-        </div>
-        <div class="form-group">
-          <label for="newMileDesc">Description</label>
-          <textarea id="newMileDesc" rows="3" placeholder="Milestone deliverables and scope..."></textarea>
-        </div>
-        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
-          <button type="submit" class="btn ok">Create Milestone</button>
-        </div>
-      </form>
-    </div>
-  `;
-  $('modalBg')?.classList.add('open');
-}
-
-async function submitAddMilestone(e){
-  e.preventDefault();
-  const milestone = $('newMileName')?.value?.trim();
-  const target_date = $('newMileTarget')?.value || '';
-  const description = $('newMileDesc')?.value?.trim() || '';
-  if(!milestone) return;
-  try{
-    const res = await post('/api/coord/milestone_create', {milestone, target_date, description});
-    if(res.success === false) throw new Error(res.error || 'Failed to create milestone');
-    $('modalClose')?.click();
-    await loadCoordinationView();
-  }catch(err){
-    alert('Create milestone error: ' + (err.message || err));
-  }
-}
-
 async function generateSessionBriefing(){
   const agentId = $('coordBriefingAgentId')?.value?.trim() || 'primary_agent';
   const out = $('coordBriefingOutput');
@@ -6298,11 +6376,15 @@ async function generateSessionBriefing(){
 }
 
 function switchCoordSubtab(tabKey){
-  ['board', 'semaphores', 'milestones', 'briefing'].forEach(t => {
-    const btn = $('subtabCoord' + t.charAt(0).toUpperCase() + t.slice(1));
-    const sec = $('coord' + t.charAt(0).toUpperCase() + t.slice(1) + 'Sec');
-    if(btn) btn.classList.toggle('active', t === tabKey);
-    if(sec) sec.style.display = t === tabKey ? 'block' : 'none';
+  const tabs = [
+    ['board','BoardSec'], ['semaphores','SemaphoresSec'],
+    ['plan-progress','PlanProgressSec'], ['briefing','BriefingSec']
+  ];
+  tabs.forEach(([key,suffix]) => {
+    const btn = $('subtabCoord' + suffix);
+    const sec = $('coord' + suffix);
+    if(btn) btn.classList.toggle('active', key === tabKey);
+    if(sec) sec.style.display = key === tabKey ? 'block' : 'none';
   });
 }
 
@@ -6311,13 +6393,21 @@ document.querySelectorAll('.subtab-btn[data-coord-subtab]').forEach(btn => {
 });
 
 $('coordRefreshBoardBtn')?.addEventListener('click', loadCoordinationView);
+$('coordBoardRoot')?.addEventListener('change', loadCoordinationView);
+$('coordBoardPlan')?.addEventListener('change', loadCoordinationView);
 $('coordBoardSearch')?.addEventListener('input', renderKanbanBoard);
+$('coordNewPlanBtn')?.addEventListener('click', openCreatePlanModal);
+$('coordEditPlanBtn')?.addEventListener('click', openEditPlanModal);
 $('coordNewCardBtn')?.addEventListener('click', openAddCardModal);
 $('coordRefreshSemBtn')?.addEventListener('click', loadCoordinationView);
 $('coordAcquireSemBtn')?.addEventListener('click', openAcquireSemModal);
-$('coordRefreshMilestoneBtn')?.addEventListener('click', loadCoordinationView);
-$('coordNewMilestoneBtn')?.addEventListener('click', openAddMilestoneModal);
+$('coordRefreshPlanProgressBtn')?.addEventListener('click', loadCoordinationView);
 $('coordGenerateBriefingBtn')?.addEventListener('click', generateSessionBriefing);
+
+if($('coordBoardRoot')&&!$('coordBoardRoot').value){
+  try{$('coordBoardRoot').value=localStorage.getItem('local-ai-hub.coordBoardRoot')||''}catch{}
+  if(!$('coordBoardRoot').value)$('coordBoardRoot').value=$('agentOsRoot')?.value?.trim()||$('agentOsRepoSelect')?.value?.trim()||'';
+}
 
 if($('coordBoardCard')) $('coordBoardCard').onclick = () => switchTab('coordination');
 if($('coordSemCard')) $('coordSemCard').onclick = () => { switchTab('coordination'); switchCoordSubtab('semaphores'); };

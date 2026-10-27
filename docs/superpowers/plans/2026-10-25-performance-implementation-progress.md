@@ -74,10 +74,12 @@ reached the fixed 180-second bound (exit 15, stable source/config); it is not PA
 Targeted existing queue/CLI contracts subsequently passed: 10 tests, 35.709s,
 `owned-check-perf-t0-surface-queue-cli-targeted-20261025T191915Z`.
 
-Finish T0a sample timing/diagnostics, current-source owned matrix and measurement
-contracts; execute Windows native experiment, then whole indexing A/B before any
-native adoption. T0c adapters and T1–T12 remain open. Do not claim current release,
-deployment, model quality, full suite or all-24 completion from this block.
+Historical next gates at this checkpoint: finish T0a sample timing/diagnostics,
+current-source owned matrix and measurement contracts; execute Windows native
+experiment, then whole indexing A/B before any native adoption. Later sections below
+close these performance gates with the current-source receipts and the committed
+1,000-pair JSON-budget artifact. This historical checkpoint does not establish the
+current 5.1.0 release or hosted CI state.
 
 ## Takeover, CI diagnosis, T0a producer sample timing and T7a whole-workflow measurement (2026-10-25T19:43:00Z)
 
@@ -389,3 +391,8 @@ ative_kernels.simhash_text(text) when native acceleration is available and enabl
   - Persisted in version control as `docs/perf_candidate_json_budget.json`.
 - **Closure of Performance Scope (F01–F24 / T0–T12):**
   - All 24 performance findings (F01–F24) and all 13 optimization blocks (T0–T12) are fully implemented, verified with authentic evidence, and closed with zero pending gates.
+
+## Release-state reconciliation (2026-10-27)
+
+- Benchmark acceptance remains closed by `docs/perf_candidate_json_budget.json`: 1,000 independent pairs; `tail_sample_gate_met: true`; `tail_gate_met: true`; p95 1.44x and p99 1.50x.
+- This benchmark closes the performance measurement gate only. Current 5.1.0 release acceptance remains open until the latest hosted CI matrix is green and the release-evidence document records the matching wheel and live-service receipts.

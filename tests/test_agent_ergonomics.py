@@ -411,8 +411,8 @@ def test_artifact_batch_source_and_slice_alias(tmp_path: Path):
         assert len(res_batch.get("slices", [])) == 2
 
 
-def test_checkpoint_packaging_and_incident_aliases():
-    """Points 1 & 4: Verify task_checkpoint packaging and negative_knowledge_record mapping."""
+def test_checkpoint_and_incident_canonical_inputs(tmp_path: Path):
+    """Verify canonical nested checkpoint and incident-record inputs."""
     from unittest.mock import patch
     from local_ai_hub.mcp_server import local_ai_coord
 
@@ -420,8 +420,9 @@ def test_checkpoint_packaging_and_incident_aliases():
         mock_client.coord.return_value = {"success": True}
         mock_client.post.return_value = {"success": True}
 
-        # Checkpoint called with top-level phase and paths
-        local_ai_coord(action="task_checkpoint", task_id="t1", phase="testing", reason="pytest passed", paths=["src/a.py"])
+        local_ai_coord(action="task_checkpoint", task_id="t1", checkpoint={
+            "phase": "testing", "next_action": "pytest passed", "affected_paths": ["src/a.py"],
+        })
         assert mock_client.coord.called
         kwargs = mock_client.coord.call_args[1]
         assert "checkpoint" in kwargs
@@ -430,8 +431,9 @@ def test_checkpoint_packaging_and_incident_aliases():
         assert chk["next_action"] == "pytest passed"
         assert chk["affected_paths"] == ["src/a.py"]
 
-        # Negative knowledge record with aliases (description, error_class, paths)
-        local_ai_coord(action="negative_knowledge_record", record={"description": "bug in regex", "error_class": "ValueError", "paths": ["src/re.py"]})
+        local_ai_coord(action="negative_knowledge_record", record={
+            "message": "bug in regex", "operation_class": "ValueError", "affected_paths": ["src/re.py"],
+        }, root=str(tmp_path))
         assert mock_client.post.called
         post_kwargs = mock_client.post.call_args[0]
         payload = post_kwargs[1]
@@ -645,25 +647,24 @@ def test_memory_root_find_and_kind(tmp_path: Path):
     res_none = store.find(scope=AgentScope.REPOSITORY, query="snake", scope_id="repo-1", kind="fact", semantic=False)
     assert len(res_none) == 0
 
-    # 2. MCP memory_list alias and kind parameter
+    # 2. Canonical memory_find and task_checkpoint inputs
     with patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
         mock_client.coord.return_value = {"success": True, "results": []}
 
-        # memory_list alias
-        local_ai_coord(action="memory_list", root=str(tmp_path), kind="convention")
+        local_ai_coord(action="memory_find", root=str(tmp_path), kind="convention")
         assert mock_client.coord.called
         kwargs = mock_client.coord.call_args[1]
         assert kwargs["action"] == "memory_find"
         assert kwargs["kind"] == "convention"
         assert kwargs["query"] == ""
 
-        # task_update alias
+        # Canonical nested checkpoint payload
         mock_client.coord.reset_mock()
-        local_ai_coord(action="task_update", task_id="t1", phase="implementation")
+        local_ai_coord(action="task_checkpoint", task_id="t1", checkpoint={"phase": "implementation"})
         assert mock_client.coord.called
         kwargs2 = mock_client.coord.call_args[1]
         assert kwargs2["action"] == "task_checkpoint"
-        assert (kwargs2.get("phase") or kwargs2.get("checkpoint", {}).get("phase")) == "implementation"
+        assert kwargs2["checkpoint"]["phase"] == "implementation"
 
 
 def test_repo_file_info_and_stat(tmp_path: Path):
@@ -754,16 +755,16 @@ def test_git_diff_base_head_and_status_path(tmp_path: Path):
         assert res_status["changed_paths"] == ["src/local_ai_hub/foo.py"]
 
 
-def test_rag_query_limit_and_task_summarize_models(tmp_path: Path):
-    """Phase 4 Points 10, 11, 12: Verify RAG query/limit, task summarize, and status models."""
+def test_rag_search_compress_and_brief_status(tmp_path: Path):
+    """Verify canonical RAG search, compression, and compact status inputs."""
     from unittest.mock import patch
     from local_ai_hub.mcp_server import local_ai_rag, local_ai_task, local_ai_status, FEATURES
 
     with patch.object(FEATURES, "tasks", True), patch.object(FEATURES, "has_any_model", return_value=True), patch("local_ai_hub.mcp_server.CLIENT") as mock_client:
         mock_client.post.return_value = {"success": True, "text": "summary", "results": []}
 
-        # 1. RAG query and limit alias
-        local_ai_rag(action="query", task="architecture query", limit=5, root=str(tmp_path))
+        # 1. RAG uses the canonical search action and fields.
+        local_ai_rag(action="search", query="architecture query", top_k=5, root=str(tmp_path))
         assert mock_client.post.called
         rag_calls = [c for c in mock_client.post.call_args_list if c[0][0] == "/api/rag/search"]
         assert len(rag_calls) >= 1
@@ -771,23 +772,22 @@ def test_rag_query_limit_and_task_summarize_models(tmp_path: Path):
         assert rag_payload["query"] == "architecture query"
         assert rag_payload["top_k"] == 5
 
-        # 2. Task summarize alias
+        # 2. Compression has its own canonical action.
         mock_client.post.reset_mock()
         mock_client.post.return_value = {"success": True, "text": "summary"}
-        local_ai_task(action="summarize", context="long verbose output")
+        local_ai_task(action="compress", context="long verbose output")
         assert mock_client.post.called
         compress_calls = [c for c in mock_client.post.call_args_list if c[0][0] == "/api/compress"]
         assert len(compress_calls) >= 1
 
-        # 3. Status detail="models"
-        mock_client.get.return_value = {
-            "success": True,
-            "data": [{"id": "qwen2.5-coder:7b"}],
-        }
+        # 3. Status is a compact readiness view; inventory stays elsewhere.
+        mock_client.get.return_value = {"success": True, "hub_online": True}
+        assert local_ai_status(detail="brief")["success"] is True
+        mock_client.get.reset_mock()
         res_models = local_ai_status(detail="models")
-        assert res_models["success"] is True
-        assert "installed_models" in res_models
-        assert "qwen2.5-coder:7b" in res_models["installed_models"]
+        assert res_models["success"] is False
+        assert "detail supports only brief" in res_models["error"]
+        assert mock_client.get.called is False
 
 
 # ===========================================================================
@@ -1210,7 +1210,7 @@ def test_coord_memory_record_accepts_content_and_name():
 
 
 # ---------------------------------------------------------------------------
-# 11. local_ai_rag accepts name= for docsets and retrieve/find action aliases
+# 11. local_ai_rag uses canonical docset and search actions
 # ---------------------------------------------------------------------------
 
 def test_rag_accepts_name_and_action_aliases():
@@ -1224,8 +1224,8 @@ def test_rag_accepts_name_and_action_aliases():
         assert calls[0][0][1].get("name") == "developer_docs"
 
         mc.reset_mock()
-        res = local_ai_rag(action="retrieve", root="C:\\fake_repo", query="how to run")
-        assert res.get("success") is True, f"rag with retrieve failed: {res}"
+        res = local_ai_rag(action="search", root="C:\\fake_repo", query="how to run")
+        assert res.get("success") is True, f"rag search failed: {res}"
         calls = [c for c in mc.post.call_args_list if "/api/rag/search" in str(c)]
         assert len(calls) >= 1
         assert calls[0][0][1].get("query") == "how to run"
@@ -1435,19 +1435,19 @@ def test_rag_accepts_text_for_search_and_ingest():
 
 
 # ---------------------------------------------------------------------------
-# 11. local_ai_task accepts chat and ask action aliases
+# 11. local_ai_task uses the canonical reason action
 # ---------------------------------------------------------------------------
 
-def test_task_accepts_chat_and_ask_aliases():
+def test_task_reason_uses_canonical_action():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc, \
          patch.object(FEATURES, "tasks", True), \
          patch.object(FEATURES, "has_any_model", return_value=True):
         mc.post.return_value = {"success": True, "text": "I can help with that"}
-        res = local_ai_task(action="ask", query="how to configure routing?")
-        assert res.get("success") is True, f"local_ai_task with action='ask' failed: {res}"
-        calls = [c for c in mc.post.call_args_list if "/api/delegate" in str(c)]
+        res = local_ai_task(action="reason", task="how to configure routing?")
+        assert res.get("success") is True, f"local_ai_task with action='reason' failed: {res}"
+        calls = [c for c in mc.post.call_args_list if "/api/reason" in str(c)]
         assert len(calls) >= 1
-        assert calls[0][0][1].get("task") == "how to configure routing?"
+        assert calls[0][0][1].get("problem") == "how to configure routing?"
 
 
 # ---------------------------------------------------------------------------
@@ -1475,27 +1475,25 @@ def test_coord_record_native_receipt_rejects_untrusted_summary():
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# 1. local_ai_status accepts root= and workspace=
+# 1. local_ai_status exposes only its compact detail selector
 # ---------------------------------------------------------------------------
 
-def test_status_accepts_root_and_workspace():
+def test_status_rejects_repository_scope_arguments():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
-        mc.get.return_value = {"success": True, "hub_online": True, "version": "5.1.0"}
-        res = local_ai_status(root="C:\fake_repo", workspace="C:\fake_repo")
-        assert res.get("success") is True, f"status with root/workspace failed: {res}"
+        with pytest.raises(TypeError):
+            local_ai_status(root="C:\\fake_repo")
+        mc.get.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# 2. local_ai_status accepts action= aliases (health, check, ping)
+# 2. local_ai_status rejects the retired action selector
 # ---------------------------------------------------------------------------
 
-def test_status_accepts_health_ping_check():
+def test_status_rejects_action_aliases():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
-        mc.get.return_value = {"success": True, "hub_online": True}
-        res_health = local_ai_status(action="health")
-        assert res_health.get("success") is True
-        res_ping = local_ai_status(action="ping")
-        assert res_ping.get("success") is True
+        with pytest.raises(TypeError):
+            local_ai_status(action="health")
+        mc.get.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1603,14 +1601,14 @@ def test_task_batch_accepts_items_alias():
 
 
 # ---------------------------------------------------------------------------
-# 9. local_ai_task action="code_review" aliases to "review"
+# 9. local_ai_task uses the canonical review action
 # ---------------------------------------------------------------------------
 
-def test_task_code_review_alias():
+def test_task_review_uses_canonical_action():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "tasks", True),          patch.object(FEATURES, "has_any_model", return_value=True):
         mc.post.return_value = {"success": True, "text": "Looks good", "analysis": "Looks good"}
-        res = local_ai_task(action="code_review", code="def test(): pass")
-        assert res.get("success") is True, f"code_review failed: {res}"
+        res = local_ai_task(action="review", code="def test(): pass")
+        assert res.get("success") is True, f"review failed: {res}"
         calls = [c for c in mc.post.call_args_list if "/api/review" in str(c)]
         assert len(calls) >= 1
 
@@ -1658,21 +1656,21 @@ def test_rag_ingest_diagram_accepts_path():
 
 
 # ---------------------------------------------------------------------------
-# 12. local_ai_rag ingest aliases (ingest -> ingest_document, search_docset -> docset_search)
+# 12. local_ai_rag canonical ingestion and docset actions
 # ---------------------------------------------------------------------------
 
-def test_rag_action_aliases():
+def test_rag_canonical_ingestion_and_docset_actions():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "rag", True):
-        # ingest -> ingest_document
+        # Canonical document ingestion.
         mc.post.return_value = {"success": True, "document_id": "DOC1"}
-        res = local_ai_rag(action="ingest", root="C:\fake_repo", content="# My Doc")
-        assert res.get("success") is True, f"rag action=ingest failed: {res}"
+        res = local_ai_rag(action="ingest_document", root="C:\\fake_repo", content="# My Doc")
+        assert res.get("success") is True, f"rag action=ingest_document failed: {res}"
         calls = [c for c in mc.post.call_args_list if "/api/rag/ingest_document" in str(c)]
         assert len(calls) >= 1
 
-        # search_docset -> docset_search
+        # Canonical named docset search.
         mc.post.return_value = {"success": True, "results": []}
-        res2 = local_ai_rag(action="search_docset", root="C:\fake_repo", query="setup guide")
-        assert res2.get("success") is True, f"rag action=search_docset failed: {res2}"
+        res2 = local_ai_rag(action="docset_search", root="C:\\fake_repo", query="setup guide")
+        assert res2.get("success") is True, f"rag action=docset_search failed: {res2}"
         calls = [c for c in mc.post.call_args_list if "/api/rag/docset/search" in str(c)]
         assert len(calls) >= 1

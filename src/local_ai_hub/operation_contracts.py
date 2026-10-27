@@ -111,7 +111,7 @@ def _action_contracts(
     return result
 
 
-_STATUS_ACTIONS = ("brief", "models")
+_STATUS_ACTIONS = ("brief",)
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -133,15 +133,15 @@ _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "browser",
-    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation", "summarize", "code_review",
+    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
-_RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram", "query", "ingest", "ingest_doc", "search_docset", "index_docset")
+_RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
 _COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
-    "task_create", "task_get", "task_checkpoint", "task_update", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase",
+    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
-    "memory_promote", "memory_delete", "memory_list", "context_compile",
+    "memory_promote", "memory_delete", "context_compile",
     "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease",
@@ -1133,7 +1133,9 @@ def operation_guide_cards(features: Any = None) -> dict[str, Any]:
         action_contract = contract["actions"][selected]
         cards.append({
             "tool": tool, "selector": selector,
-            "required": ([selector] if contract["selector_required"] else []) + list(action_contract["required"]),
+            "required": ([selector] if contract["selector_required"] else []) + list(dict.fromkeys(
+                (*action_contract["required"], *action_contract["non_empty"])
+            )),
             "required_scope": selected,
             "example": dict(example),
             "action_count": len(enabled),
@@ -1177,10 +1179,15 @@ def operation_metadata(tool: str) -> dict[str, Any]:
         "projection": contract["projection"],
         "actions": contract["actions"],
     }
-    # Preserve the registry's exact Python contract shape (including tuples).
-    # Tuples remain JSON-serializable as arrays, while the JSON round-trip here
-    # made generated metadata compare differently from the authoritative registry.
-    return deepcopy(raw)
+    # Publish effective required fields, including non-empty requirements used
+    # by the generated action schema, while retaining the registry's tuples.
+    result = deepcopy(raw)
+    for action_metadata in result["actions"].values():
+        action_metadata["required"] = tuple(dict.fromkeys((
+            *action_metadata.get("required", ()),
+            *action_metadata.get("non_empty", ()),
+        )))
+    return result
 
 
 def operation_input_schema(tool: str, action: str) -> dict[str, Any]:

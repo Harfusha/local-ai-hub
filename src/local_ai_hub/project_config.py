@@ -901,7 +901,9 @@ def _resolve_project_config(
 
 
 _PROJECT_CONTEXT_CACHE_LOCK = threading.Lock()
-_PROJECT_CONTEXT_CACHE: dict[tuple[str, str], tuple[tuple[Any, ...], ProjectContext]] = {}
+_PROJECT_CONTEXT_CACHE: dict[
+    tuple[str, str], tuple[tuple[Any, ...], ProjectContext, Path | None, Path | None]
+] = {}
 
 
 def invalidate_project_context_cache(root: str | os.PathLike[str] | None = None) -> None:
@@ -940,6 +942,29 @@ def resolve_project_context(
         except (OSError, RuntimeError):
             return None
 
+    git_marker = project_root / ".git"
+    with _PROJECT_CONTEXT_CACHE_LOCK:
+        cached = _PROJECT_CONTEXT_CACHE.get(cache_key)
+    if cached is not None:
+        cached_config_sig, cached_context, cached_common_dir, cached_primary_root = cached
+        primary_config = (
+            cached_primary_root / _PROJECT_CONFIG
+            if cached_primary_root is not None and cached_primary_root != project_root
+            else None
+        )
+        machine_config = (
+            cached_common_dir / "info" / "local-ai.toml" if cached_common_dir else None
+        )
+        cached_files_sig = (
+            _file_sig(primary_config),
+            _file_sig(project_root / _PROJECT_CONFIG),
+            _file_sig(machine_config),
+            _file_sig(project_root / ".local-ai.worktree.toml"),
+            _file_sig(git_marker),
+        )
+        if cached_config_sig == cached_files_sig:
+            return cached_context
+
     common_dir = _git_common_dir(project_root)
     primary_root = _git_primary_worktree_root(project_root, common_dir)
     primary_config = (
@@ -948,7 +973,6 @@ def resolve_project_context(
         else None
     )
     machine_config = common_dir / "info" / "local-ai.toml" if common_dir else None
-    git_marker = project_root / ".git"
     config_sig = (
         _file_sig(primary_config),
         _file_sig(project_root / _PROJECT_CONFIG),
@@ -972,7 +996,7 @@ def resolve_project_context(
     context = ProjectContext(project_root, resolution, hint_store)
 
     with _PROJECT_CONTEXT_CACHE_LOCK:
-        _PROJECT_CONTEXT_CACHE[cache_key] = (config_sig, context)
+        _PROJECT_CONTEXT_CACHE[cache_key] = (config_sig, context, common_dir, primary_root)
 
     return context
 
