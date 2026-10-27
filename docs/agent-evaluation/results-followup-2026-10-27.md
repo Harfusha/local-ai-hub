@@ -20,6 +20,8 @@ Oddělený Hub s vlastním stavem a syntetickým loopback backendem nejprve odm�
 
 Chat `01a17e53-6745-72d1-afff-e0458e40bec9` poté skutečně přes izolované MCP založil job `5ac8c485915a447c96b5b38611d6b0e5`. Jediný status před druhým kolem ukázal `queued` (`req_cf6957ce4c1b`); druhá skutečná zpráva požádala o zrušení stejného ID a MCP odpověděl `cancelled`, `terminal=true`, `cleanup_unconfirmed=false` (`req_041ada26bff4`). Žádná událost generování v syntetickém backendu nebyla doložena. PASS pouze pro přijetí a zrušení **čekající** úlohy; zrušení běžící inference **NOT VERIFIED**. Produkční Hub nebyl použit.
 
+Opakování po opravě routování dosáhlo `/api/generate` syntetického loopback backendu a MCP job `0d766cf8d9a6487bb777301155941773` byl `running` (`req_2c08eed68678`). Zrušení stejného jobu bylo přijato (`req_88bf0d1e0490`), ale po jednorázovém 20s wait (`req_788c39a321e4`) zůstal aktivní. Po přirozeném dokončení odpovědi backendu a ukončení izolované instance měla jeho DB stav `cancelled`; od začátku generování do terminálního zápisu uplynulo přibližně 120 sekund. Toto dokládá administrativní zrušení po návratu backendu, nikoli včasné přerušení fyzické práce. Produkční inference nebyla testována. Izolované procesy skončily a oba porty byly volné.
+
 ## 046 — Konflikt plánu, eval-followup-046-20261027
 
 Chat `01a17db4-9144-7a53-b71b-75f17c8d828b`. Izolovaný MCP adaptér po prvním `plan_get` provedl skutečnou konkurenční úpravu. Agent narazil na 409 `req_08f9548d72a8`, znovu načetl plán a změnu provedl na nové revizi `req_1dbe12603c1b`; nové `next_action` i konkurenční popis se zachovaly. PASS pro tento konflikt. Před správným API agent třikrát zkusil neplatnou kombinaci akce/argumentu; to je náklad na orientaci ve schématu.

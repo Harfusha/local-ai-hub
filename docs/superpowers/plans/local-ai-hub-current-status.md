@@ -1,7 +1,8 @@
 # Local AI Hub: current acceptance state
 
 Updated: 2026-10-27. Repository branch: `master`.
-Status: source candidate `5bb7ee92`; CI, verified completion and live activation pending.
+Status: source candidate `7a86e250`; CI, verified completion and live activation pending.
+- Clean archive `7a86e250` passed strict-tree release check and selftest **6/6**; its wheel (`SHA256 c59b1058aeef1a4cc2d4041390e4967abea14445ae612fd1a9abda8bb195e168`) passed isolated installation, pip check and wheel smoke. [CI](https://github.com/Harfusha/local-ai-hub/actions/runs/40549127595) remains pending; the isolated smoke reported degraded status and is not live acceptance.
 - [CI for `5bb7ee92`](https://github.com/Harfusha/local-ai-hub/actions/runs/40548722639) is running with Ubuntu 3.11 failed: the Biome blocked-write test used a timer that could cancel before the write started. Its test synchronization was corrected afterward. Previous Ubuntu 3.14 failures involved Linux parent lookup, transport and Serena test isolation; subsequent fixes need full matrix confirmation.
 - Surface audit and inventory passed **774 tests** on `e743e816`; plan binding/Agent OS/MCP checks passed **25 tests** on `354e73e1`. Earlier dashboard and plan verification checks passed **25 tests** on `e4cc6a52`. These results are revision-specific.
 - A clean `5bb7ee92` archive passed `python tools/release_check.py --strict-tree` and selftest **6/6**. Working-checkout release validation previously found existing `build/` and `dist/`, which were preserved.

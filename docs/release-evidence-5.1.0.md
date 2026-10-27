@@ -1,11 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `5bb7ee92` (evidence below identifies its source commit; later changes require fresh verification).
+**Candidate revision:** `7a86e250` (evidence below identifies its source commit; later changes require fresh verification).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
+- Clean archive `7a86e250`: strict-tree release check and selftest **6/6** passed. Its wheel SHA-256 is `c59b1058aeef1a4cc2d4041390e4967abea14445ae612fd1a9abda8bb195e168`; isolated installation, `pip check` and wheel smoke passed. The smoke instance reported degraded status and does not prove production readiness. [CI for `7a86e250`](https://github.com/Harfusha/local-ai-hub/actions/runs/40549127595) is pending.
 - A wheel built from a clean archive of `5bb7ee92` has SHA-256 `975cad52120b61e011675882ee2370cfe901ee1407fe1ba28184f9551656a767`; isolated installation, `pip check` and wheel smoke passed. A separate clean archive passed strict-tree release check and selftest **6/6**. [CI for `5bb7ee92`](https://github.com/Harfusha/local-ai-hub/actions/runs/40548722639) is running but Ubuntu 3.11 failed a Biome test whose cancellation timer could fire before the intended blocked write. Its synchronization was subsequently corrected and the local Biome suite passed **12 tests**. These checks do not establish live activation or verified plan completion.
 - A wheel built from a clean archive of `e743e816` has SHA-256 `eec1a14795b7e75888e049e02fb215ae2d6ead911e809f01509eb29e8a83a6c9`; a fresh venv passed `pip check` and wheel smoke. A separate clean archive passed strict-tree release check and selftest **6/6**. These checks do not establish deployment. [CI for `e743e816`](https://github.com/Harfusha/local-ai-hub/actions/runs/40547831457) was running when recorded.
 - Live Agent OS `verify_completion` for `task_release_5.1.0` returned `complete=false`, no receipts, and four unsatisfied criteria (`req_7ad6b6327eb2`). The command outputs above are not broker-backed receipts and cannot satisfy that gate.
