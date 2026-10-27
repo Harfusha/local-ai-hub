@@ -70,6 +70,32 @@ console.log(JSON.stringify({board:nodes.kanbanBoardContainer.innerHTML,progress:
     assert "1 awaiting verification" in rendered["progress"]
 
 
+def test_progress_keeps_same_named_plans_distinct() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    progress = DASHBOARD_HTML[DASHBOARD_HTML.index("function renderPlanProgressView(){"):
+                              DASHBOARD_HTML.index("function updateCoordOverviewCards(){")]
+    harness = r"""
+const nodes={coordPlanProgressGrid:{}};
+const $=id=>nodes[id]||null;
+const esc=value=>String(value);
+const coordinationLoadErrors={};
+const cachedBoardItems=[
+  {plan_id:'first',plan_title:'Release',work_status:'done',verified:true},
+  {plan_id:'second',plan_title:'Release',work_status:'planned',verified:false}
+];
+""" + progress + r"""
+renderPlanProgressView(); console.log(nodes.coordPlanProgressGrid.innerHTML);
+"""
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count('class="milestone-card"') == 2
+    assert "first" in result.stdout and "second" in result.stdout
+    assert "100% verified complete" in result.stdout
+    assert "0% verified complete" in result.stdout
+
+
 def test_dashboard_task_edit_sends_only_canonical_coordination_fields() -> None:
     node = shutil.which("node")
     if node is None:

@@ -6006,10 +6006,11 @@ function renderPlanProgressView(){
   if(!grid) return;
   if(coordinationLoadErrors.board){if($('coordPlanProgressSummary'))$('coordPlanProgressSummary').textContent='Plan progress unavailable';grid.innerHTML=coordinationUnavailable('board');return}
   if($('coordPlanProgressSummary'))$('coordPlanProgressSummary').textContent='Progress by plan in the selected repository/worktree';
-  const planMap = {};
+  const planMap = Object.create(null);
   cachedBoardItems.forEach(item => {
-    const key = String(item.plan_title || item.plan_id || 'Untitled plan');
-    if(!planMap[key]) planMap[key] = {total: 0, done: 0, verified_done: 0, in_progress: 0, blocked: 0, planned: 0, ready: 0, source_ready: 0};
+    const key = String(item.plan_id || '');
+    if(!key) return;
+    if(!planMap[key]) planMap[key] = {title: String(item.plan_title || key), total: 0, done: 0, verified_done: 0, in_progress: 0, blocked: 0, planned: 0, ready: 0, source_ready: 0};
     planMap[key].total++;
     const st = String(item.work_status || item.status || 'planned').toLowerCase();
     if(Object.prototype.hasOwnProperty.call(planMap[key], st) && st !== 'total') planMap[key][st]++;
@@ -6029,7 +6030,7 @@ function renderPlanProgressView(){
     return `
       <div class="milestone-card">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <strong style="font-size:14px">▤ ${esc(k)}</strong>
+          <strong style="font-size:14px">▤ ${esc(data.title)} <span class="muted tiny mono">${esc(k)}</span></strong>
           <span class="chip ${pct === 100 ? 'ok' : (pct > 0 ? 'warn-t' : '')}">${pct}% verified complete</span>
         </div>
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
