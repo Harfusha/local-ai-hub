@@ -1,11 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `34412f96` (evidence below identifies its source commit; later changes require fresh verification).
+**Candidate revision:** `1c8410b2` (evidence below identifies its source commit; later changes require fresh verification).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
+- Clean archive `1c8410b2`: strict-tree release check passed. A wheel built from that archive has SHA-256 `9ab5255fe27abfbe104813486d806f26a243de42c298c621410b5da9589ffff9`; isolated installation, `pip check` and wheel smoke passed. The working checkout passed selftest **6/6** and **102** focused planner, task and crash-recovery tests. [CI for `1c8410b2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40555900092) is still running; these results do not establish live activation or verified delivery.
 - Clean archive `34412f96`: strict-tree release check, selftest **6/6**, and surface audit **774 tests** passed. Its wheel SHA-256 is `55d44fe05b599d58e206b70ecabaee885896844143a7dff7d17212a170df28cc`; isolated installation, `pip check` and wheel smoke passed. [CI](https://github.com/Harfusha/local-ai-hub/actions/runs/40551439948) is running. These results do not establish live activation or delivery verification.
 - As of `da6a69b0`, Git reports no changes under `src` or packaging configuration since `34412f96`; later changes are tests and documentation. This is source equivalence for those paths, not a freshly built or validated wheel for `da6a69b0`.
 - [Live dashboard screenshot](dashboard-live-2026-10-27.png) shows the repository board and current release task in the existing shared Hub. It predates activation of this candidate; it does not demonstrate the current source is installed or that plan completion is verified.
