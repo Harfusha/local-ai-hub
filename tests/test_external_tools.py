@@ -533,6 +533,7 @@ def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path):
     ext._serena_sessions[str(root.resolve())] = HangingClient()
     ext._session_access["serena"][str(root.resolve())] = time.monotonic()
     ext._serena = "serena"
+    ext._backend_health["serena"]["last_preflight_at"] = time.monotonic()
 
     res = ext.query(str(root), "my_function", backend="serena", action="find_symbol")
     assert res["success"] is True

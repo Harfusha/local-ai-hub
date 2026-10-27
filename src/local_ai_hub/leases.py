@@ -101,7 +101,7 @@ def _norm_rel(value: str, root: str = "") -> str:
         try:
             resolved_root = Path(root).resolve(strict=False)
             resolved_path = (resolved_root / norm_path).resolve(strict=False)
-            resolved_path.relative_to(resolved_root)
+            norm_path = resolved_path.relative_to(resolved_root).as_posix() or "."
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError(f"lease path must be repository-relative: {value}") from exc
     return norm_path

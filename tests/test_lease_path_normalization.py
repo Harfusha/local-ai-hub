@@ -277,7 +277,7 @@ def test_relative_symlink_within_repository_is_allowed(tmp_path: Path):
     )
 
     assert result["success"] is True
-    assert result["paths"] == ["alias.py"]
+    assert result["paths"] == ["inside.py"]
 
 
 def test_relative_symlink_target_within_repository_is_allowed(tmp_path: Path):
@@ -310,7 +310,7 @@ def test_relative_symlink_target_within_repository_is_allowed(tmp_path: Path):
     )
 
     assert result["success"] is True
-    assert result["paths"] == ["alias.py"]
+    assert result["paths"] == ["inside.py"]
 
 
 @pytest.mark.parametrize(
