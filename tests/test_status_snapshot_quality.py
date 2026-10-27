@@ -358,6 +358,7 @@ def test_telemetry_summary_within_diagnostic_budget_does_not_time_out(monkeypatc
         telemetry = result["dependency_status"]["telemetry.summary"]
         assert finished.wait(timeout=1), telemetry
         assert telemetry["degraded"] is False
+        assert telemetry["deadline_ms"] == 1000
         assert result["degraded"] is False
         assert result["success"] is True
     finally:

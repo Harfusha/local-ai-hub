@@ -17,9 +17,9 @@
       "depends_on": [],
       "description": "Diagnose intermittent telemetry.summary probe timeout; keep its failure visible without degrading core Hub health; add regression coverage.",
       "kind": "code",
-      "next_action": "Restart the installed editable Hub, then verify telemetry.summary timing and overall health.",
+      "next_action": "Restart Hub and verify telemetry.summary reports the actual 1000ms deadline.",
       "title": "Fix recurring telemetry.summary status degradation",
-      "work_status": "done"
+      "work_status": "in_progress"
     }
   },
   "title": "Prevent telemetry summary timeout from degrading Hub status"

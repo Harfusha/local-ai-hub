@@ -893,7 +893,7 @@ class LocalAIApp:
                 )
                 dependency_status[key] = {
                     "degraded": not healthy,
-                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    "deadline_ms": max(0, int(timeout_seconds * 1000)),
                     **diagnostic,
                 }
                 return value, healthy
