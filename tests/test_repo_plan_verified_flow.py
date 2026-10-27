@@ -115,6 +115,14 @@ def test_session_binding_is_persisted_and_unambiguous(environment):
     manager = agent_bridge.TaskBindingManager(root)
     assert manager.get_session_binding("session_a").task_id == "execution_a"
     assert manager.get_session_binding("other_session") is None
+    binding_path = root / ".local-ai-hub/local/task_bindings.json"
+    before = binding_path.read_bytes()
+    repeated = agent_bridge.bind_plan_execution(
+        tasks, root=root, task_id="execution_a", plan_id="plan_work",
+        plan_task_id="task_work", expected_revision=revision, session_id="session_a",
+    )
+    assert repeated["binding"]["bound_at"] == result["binding"]["bound_at"]
+    assert binding_path.read_bytes() == before
 
 
 def test_revised_contract_cannot_reuse_old_receipt_mapping(environment):
@@ -128,6 +136,21 @@ def test_revised_contract_cannot_reuse_old_receipt_mapping(environment):
     assert "tests pass" not in current.verification_receipts
     history = current.checkpoint.state_data["contract_history"]
     assert history[-1]["contract"]["acceptance_criteria"] == ["tests pass"]
+
+
+def test_rebinding_preserves_lineage_and_rejects_a_different_session(environment):
+    root, tasks, _, _, _, manager, _, revision = environment
+    manager.bind_task("execution_a", "plan_work", "task_work",
+                      ".local-ai-hub/plans/plan_work.plan.json",
+                      session_id="session_a", lineage=["previous_attempt"])
+    rebound = agent_bridge.bind_plan_execution(
+        tasks, root=root, task_id="execution_a", plan_id="plan_work",
+        plan_task_id="task_work", expected_revision=revision, session_id="session_a",
+    )
+    assert rebound["binding"]["lineage"] == ["previous_attempt"]
+    with pytest.raises(ValueError, match="session cannot be replaced"):
+        manager.bind_task("execution_a", "plan_work", "task_work",
+                          ".local-ai-hub/plans/plan_work.plan.json", session_id="other")
 
 
 def test_terminal_history_does_not_hide_an_active_plan_binding(environment):

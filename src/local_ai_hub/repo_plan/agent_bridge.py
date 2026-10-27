@@ -91,7 +91,7 @@ class TaskBindingManager:
 
     def _save(
         self, binding: TaskBinding, task_store: Any | None = None, *, check_plan_ownership: bool = True
-    ) -> None:
+    ) -> TaskBinding:
         validate_repo_path(self._binding_rel_path, repo_root=self.repo_root)
         self._binding_file.parent.mkdir(parents=True, exist_ok=True)
         with exclusive_file_update(self._binding_file):
@@ -103,6 +103,15 @@ class TaskBindingManager:
                 raise ValueError("execution task is already bound to another plan task")
             if previous_self and binding.contract_revision < previous_self.contract_revision:
                 raise ValueError("contract revision cannot move backwards")
+            if previous_self:
+                if previous_self.plan_rel_path != binding.plan_rel_path:
+                    raise ValueError("execution binding cannot move to a different plan file")
+                if previous_self.session_id and binding.session_id and previous_self.session_id != binding.session_id:
+                    raise ValueError("execution binding session cannot be replaced")
+                binding.session_id = binding.session_id or previous_self.session_id
+                binding.branch_at_bind = previous_self.branch_at_bind or binding.branch_at_bind
+                binding.lineage = binding.lineage or list(previous_self.lineage)
+                binding.bound_at = previous_self.bound_at
             for existing in current.values():
                 if existing.task_id == binding.task_id:
                     continue
@@ -120,6 +129,9 @@ class TaskBindingManager:
                     raise ValueError("plan task has a failed execution binding that can resume; reconcile it before starting")
                 if prior_status not in {"completed", "cancelled"}:
                     raise ValueError("plan task already has an active execution binding")
+            if previous_self and binding.to_dict() == previous_self.to_dict():
+                self._bindings = current
+                return previous_self
             current[binding.task_id] = binding
             raw = json.dumps({k: v.to_dict() for k, v in current.items()}, indent=2, sort_keys=True)
             temp_path = self._binding_file.parent / f".tmp_bindings_{uuid.uuid4().hex}"
@@ -135,6 +147,7 @@ class TaskBindingManager:
                     temp_path.unlink()
                 except FileNotFoundError:
                     pass
+            return binding
 
     def bind_task(
         self,
@@ -168,8 +181,7 @@ class TaskBindingManager:
             bound_at=time.time(),
             lineage=list(lineage or []),
         )
-        self._save(binding, task_store=task_store)
-        return binding
+        return self._save(binding, task_store=task_store)
 
     def get_binding(self, task_id: str) -> TaskBinding | None:
         return self._bindings.get(task_id)
