@@ -4,6 +4,8 @@ Status: IMPLEMENTED IN SOURCE, revision 7, 2026-10-27; integrated acceptance is 
 
 ## Operator requirements and current decision
 
+**Open implementation gap, 2026-10-27:** `RepoPlanWorkspace.edit_task` currently accepts `source_ready` and `done` as direct status edits without authentic execution or integration verification. Checkpoint synchronization also derives `done` from an execution status and the absence of pending deliveries, without independently verifying required delivery targets. These states are declarations, not proof. Do not treat them as completion until the bound execution's receipts and each required target's integration have been verified. The host-native receipt producer remains an independent required capability; an ordinary test result or caller-supplied pass flag is insufficient.
+
 Specifications belong in Git and must be updated when the operator clarifies requirements, or created when no relevant specification exists. Plans have editable names, descriptions, clarifications and tasks, with a project Kanban and a plan filter. Active work, unfinished results and required integration must remain visible across chats.
 
 The latest operator direction replaces the earlier database-owned planner and periodic-export proposal: plans and other repository-specific work artifacts are real files in the selected repository/worktree. Hub creates, validates, edits, saves, indexes and displays those files. Git versions them normally. There is no second canonical plan in Hub's database and no periodic plan export or special backup branch in this design.
