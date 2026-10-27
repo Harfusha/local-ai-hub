@@ -127,6 +127,39 @@ def test_checkpoint_clearing_blockers_clears_plan_blocker(environment):
     assert plan["tasks"]["task_work"]["blocker"] is None
 
 
+def test_rebinding_repairs_a_missed_checkpoint_sync(environment):
+    root, tasks, _, _, storage, _, binding, _ = environment
+    tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="continue work"), actor="agent_a")
+    plan, revision = storage.read_plan_file(binding.plan_rel_path)
+    plan["tasks"]["task_work"]["next_action"] = "stale action"
+    stale_revision = storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)["file_revision"]
+    result = agent_bridge.bind_plan_execution(
+        tasks, root=str(root), task_id="execution_a", plan_id="plan_work", plan_task_id="task_work",
+        expected_revision=stale_revision, session_id="session_a",
+    )
+    repaired, current_revision = storage.read_plan_file(binding.plan_rel_path)
+    assert repaired["tasks"]["task_work"]["next_action"] == "continue work"
+    assert result["file_revision"] == current_revision
+
+
+def test_binding_sync_failure_is_explicit_and_rebinding_recovers(environment, monkeypatch):
+    root, tasks, _, _, storage, manager, binding, _ = environment
+    real_sync = tasks._sync_project_plan_checkpoint
+
+    def fail(_state):
+        raise OSError("simulated plan write failure")
+
+    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", fail)
+    with pytest.raises(RuntimeError, match="binding was persisted.*synchronization failed"):
+        agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a",
+                                         plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
+    assert manager.get_binding("execution_a").task_id == "execution_a"
+    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", real_sync)
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a",
+                                             plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
+    assert result["success"] and result["file_revision"] == storage.read_plan_file(binding.plan_rel_path)[1]
+
+
 def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment, monkeypatch):
     _, tasks, _, _, storage, _, binding, _ = environment
     stale = tasks.get("execution_a")
@@ -285,14 +318,15 @@ def test_terminal_history_does_not_hide_an_active_plan_binding(environment):
             actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
-    assert agent_bridge.bind_plan_execution(
+    result = agent_bridge.bind_plan_execution(
         tasks, root=root, task_id="execution_b", plan_id="plan_work",
         plan_task_id="task_work", expected_revision=revision,
-    )["success"] is True
+    )
+    assert result["success"] is True
     with pytest.raises(ValueError, match="active execution binding"):
         agent_bridge.bind_plan_execution(
             tasks, root=root, task_id="execution_c", plan_id="plan_work",
-            plan_task_id="task_work", expected_revision=revision,
+            plan_task_id="task_work", expected_revision=result["file_revision"],
         )
 
 

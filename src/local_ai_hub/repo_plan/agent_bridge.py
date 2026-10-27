@@ -289,6 +289,14 @@ def bind_plan_execution(
         contract_revision=int(execution.checkpoint.state_data.get("contract_revision", 1)),
         task_store=task_store,
     )
+    try:
+        task_store._sync_project_plan_checkpoint(execution)
+        current_revision = workspace.get_plan(plan_id)["file_revision"]
+    except Exception as exc:
+        raise RuntimeError(
+            "Plan binding was persisted, but checkpoint synchronization failed; "
+            "retry this same binding after resolving the error"
+        ) from exc
     return {"success": True, "root": canonical, "task_id": task_id,
             "plan_id": plan_id, "plan_task_id": plan_task_id,
             "session_id": actual_session, "file_revision": current_revision,

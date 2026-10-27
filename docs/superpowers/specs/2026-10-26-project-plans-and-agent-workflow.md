@@ -4,7 +4,7 @@ Status: IMPLEMENTED IN SOURCE, revision 7, 2026-10-27; integrated acceptance is 
 
 ## Operator requirements and current decision
 
-**Checkpoint ordering:** Agent OS plan synchronization serializes writers across processes and projects the latest persisted task state under that lock, so a delayed earlier sync cannot replace a newer checkpoint. Clearing the task's blockers also clears the plan blocker. This ordering protection does not establish delivery verification or repair a sync interrupted after task persistence.
+**Checkpoint ordering and recovery:** Agent OS plan synchronization serializes writers across processes and projects the latest persisted task state under that lock, so a delayed earlier sync cannot replace a newer checkpoint. Clearing the task's blockers also clears the plan blocker. Rebinding the same task and session reconciles the latest persisted checkpoint; a synchronization failure reports that the binding was already persisted and can be retried. This does not establish delivery verification or automatically repair an interrupted sync.
 
 **Dependency progress, 2026-10-27:** Normal setup checks Superpowers for Codex and Gemini CLI when those hosts are on PATH and agent configuration and companion skills are enabled. Codex checks compatible enabled bytes and attempts the supported marketplace plugin when missing; its CLI has no version pin, so unexpected versions or indeterminate outcomes require review. Gemini uses the pinned extension ref and verifies installed files. On `01a073de`, an isolated Gemini CLI 0.65.0 installation reported the extension enabled for user and workspace and a repeat check was a no-op; the user's Gemini host is absent. Plugin installation and enablement do not establish host hook delivery.
 
