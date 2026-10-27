@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+import socket
+from urllib.parse import urlparse
 
 import pytest
 
@@ -81,7 +83,6 @@ def test_unsupported_chat_completions_rejects_valid_payload(live_api):
         "not-a-list",
         [],
         [{}] * 129,
-        [{"role": "user", "content": "x" * 1_000_001}],
     ],
 )
 def test_unsupported_chat_completions_returns_404_for_invalid_payloads(live_api, messages):
@@ -91,6 +92,26 @@ def test_unsupported_chat_completions_returns_404_for_invalid_payloads(live_api,
 
     assert result["success"] is False
     assert result["status_code"] == 404
+
+
+def test_unsupported_route_rejects_before_waiting_for_large_body(live_api):
+    _app, client = live_api
+    endpoint = urlparse(client.base_url)
+    with socket.create_connection((endpoint.hostname, endpoint.port), timeout=5) as conn:
+        conn.settimeout(5)
+        conn.sendall(
+            b"POST /api/chat/completions HTTP/1.1\r\n"
+            b"Host: localhost\r\nContent-Length: 1000001\r\n\r\n"
+        )
+        assert conn.recv(4096).startswith(b"HTTP/1.1 404")
+
+    # A full-body client can encounter a reset while the server rejects it;
+    # an unknown outcome must not be fabricated into an HTTP response.
+    result = client.post("/api/chat/completions", {
+        "messages": [{"role": "user", "content": "x" * 1_000_001}]
+    })
+    assert result["success"] is False
+    assert result.get("status_code") == 404 or result.get("outcome_unknown") is True
 
 
 @pytest.mark.parametrize("message", [None, "text"])
