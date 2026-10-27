@@ -106,7 +106,7 @@ def test_incident_record_helpers_and_sanitization() -> None:
     assert rec.is_resolved() is False
     assert rec.is_ignored() is False
     assert rec.is_active() is True
-    assert rec.has_verified_fix() is True
+    assert rec.has_verified_fix() is False
 
 
 def test_retry_decision_helpers() -> None:

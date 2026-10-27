@@ -344,6 +344,23 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
     assert [call["body"]["action"] for call in calls] == ["create", "checkpoint", "get", "resume"]
 
 
+def test_repeated_task_get_delta_marks_unchanged_over_stdio(tmp_path, monkeypatch):
+    requests = [
+        {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
+        {"action": "task_get", "response_profile": "delta", "reuse_key": "task-delta-wire"},
+        {"action": "task_get", "response_profile": "delta", "reuse_key": "task-delta-wire"},
+    ]
+    _, calls, results = _round_trip(tmp_path, requests, monkeypatch, real_store=True)
+    first, repeated = (item.structuredContent for item in results[1:])
+    assert first.get("unchanged") is not True
+    assert repeated["unchanged"] is True
+    assert repeated["task_id"] == TASK_ID
+    assert repeated["request_id"] == calls[-1]["request_id"]
+    assert repeated["task"]["checkpoint"]["state_data"]["memory_context"] == (
+        first["task"]["checkpoint"]["state_data"]["memory_context"]
+    )
+
+
 def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_path, monkeypatch):
     audit = {"used_ids": ["mem_store_wire"]}
     _, calls, results, tasks = _round_trip(tmp_path, [
@@ -593,3 +610,26 @@ def test_task_memory_wire_cannot_succeed_with_overlong_identity_at_tiny_budget(t
             "structuredContent": structured, "isError": False}
     assert json_tokens(wire) <= 128
     assert structured["response_budget"]["returned_tokens"] == json_tokens(wire)
+
+
+def test_task_memory_wire_keeps_unchanged_when_optional_metadata_is_trimmed(tmp_path):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.project_config import resolve_project_context
+
+    repository_id = resolve_project_context(tmp_path, tmp_path).coordination_id
+    value = {"success": True, "task_id": TASK_ID, "unchanged": True, "reused": True,
+             "optional_blob": "x" * 20000,
+             "task": {"task_id": TASK_ID, "status": "running", "checkpoint": {
+                 "state_data": {"memory_context": _memory(repository_id, root=str(tmp_path))}}}}
+    contents, structured = mcp_server._mcp_budget_payload("local_ai_coord", {
+        "action": "task_get", "max_response_tokens": 2000,
+    }, value)
+    assert structured["success"] is True
+    assert structured["unchanged"] is True
+    assert structured["reused"] is True
+    assert structured["task"]["checkpoint"]["state_data"]["memory_context"] == (
+        value["task"]["checkpoint"]["state_data"]["memory_context"]
+    )
+    wire = {"content": [{"type": "text", "text": contents[0].text}],
+            "structuredContent": structured, "isError": False}
+    assert json_tokens(wire) <= 2000

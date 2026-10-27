@@ -40,7 +40,8 @@ def test_command_failure_attaches_auto_remediation(tmp_path: Path):
     assert "remediation" in res
     rem = res["remediation"]
     assert "missing Python module 'non_existent_mod_99999'" in rem["root_cause"]
-    assert "install 'non_existent_mod_99999'" in rem["verified_fix"]
+    assert rem["verified_fix"] is None
+    assert "install 'non_existent_mod_99999'" in rem["suggested_fix"]
     assert rem["confidence"] >= 0.9
     assert rem["attempts"] == 1
 

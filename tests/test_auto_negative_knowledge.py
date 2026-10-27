@@ -27,11 +27,12 @@ def test_auto_mint_negative_knowledge_missing_module(store: IncidentStore, tmp_p
     incident = store.capture(outcome)
     assert incident is not None
     assert "fastapi" in (incident.root_cause or "")
-    assert "install" in (incident.verified_fix or "")
+    assert incident.verified_fix is None
+    assert "install" in (incident.suggested_fix or "")
 
     decision = store.retry_decision(incident.fingerprint, incident.state_revision, root=str(root))
-    assert decision.action == "apply_verified_fix"
-    assert "fastapi" in (decision.verified_fix or "")
+    assert decision.action == "stop"
+    assert decision.verified_fix is None
 
 
 def test_auto_mint_negative_knowledge_sqlite_lock(store: IncidentStore, tmp_path: Path):
@@ -48,7 +49,12 @@ def test_auto_mint_negative_knowledge_sqlite_lock(store: IncidentStore, tmp_path
     incident = store.capture(outcome)
     assert incident is not None
     assert "lock" in (incident.root_cause or "").lower()
-    assert "backoff" in (incident.verified_fix or "").lower()
+    assert incident.verified_fix is None
+    assert "backoff" in (incident.suggested_fix or "").lower()
+    found = store.find_negative_knowledge("backoff", root=str(root))
+    assert len(found) == 1
+    assert found[0]["verified_fix"] == ""
+    assert "backoff" in found[0]["suggested_fix"].lower()
 
 
 def test_find_negative_knowledge_by_query(store: IncidentStore, tmp_path: Path):

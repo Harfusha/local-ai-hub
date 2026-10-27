@@ -26,6 +26,7 @@ from .context_identity import (
 from .json_utils import backend_name as json_backend_name
 from .json_utils import dumps as json_dumps
 from .json_utils import dumps_bytes as json_dumps_bytes
+from .process_utils import is_rooted_path
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -1134,12 +1135,14 @@ class ContextCompiler:
                 ))
 
         # 4. Negative knowledge / incidents (priority: 60 / 50)
-        if self.incident_store is not None:
-            incidents = self.incident_store.list_incidents(limit=10)
+        if (self.incident_store is not None and isinstance(request.root, str)
+                and request.root == request.root.strip() and "\x00" not in request.root
+                and is_rooted_path(request.root)):
+            incidents = self.incident_store.list_incidents(limit=10, root=request.root)
             for inc in incidents:
                 if inc.ignored:
                     continue
-                if inc.verified_fix:
+                if inc.has_verified_fix():
                     inc_content = f"[VERIFIED FIX] {inc.error_class}: {inc.verified_fix}"
                     candidates.append((
                         60,
@@ -1153,7 +1156,7 @@ class ContextCompiler:
                             freshness=inc.updated_at,
                         ),
                     ))
-                elif not inc.resolved:
+                elif not inc.is_resolved():
                     inc_content = f"[NEGATIVE KNOWLEDGE] Prior failure {inc.error_class}: {inc.redacted_message}"
                     candidates.append((
                         50,

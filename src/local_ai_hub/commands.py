@@ -8628,8 +8628,8 @@ class CommandBroker:
                 and not result.get("incident_recorded")
             ):
                 try:
-                    from .agent_incidents import ToolOutcome
-                    inc = self.incident_store.capture(ToolOutcome(
+                    from .agent_incidents import ToolOutcome, _extract_root_cause_and_fix
+                    outcome = ToolOutcome(
                         tool_name="command",
                         command=command,
                         error=(
@@ -8646,15 +8646,20 @@ class CommandBroker:
                         affected_paths=tuple(
                             scope_paths or result.get("rollback_paths") or set(diag_paths)
                         ),
-                    ))
+                    )
+                    inc = self.incident_store.capture(outcome)
+                    _, suggested_fix, _ = _extract_root_cause_and_fix(
+                        outcome.error, outcome.tool_name, outcome.timed_out
+                    )
                     if inc:
                         result["incident_id"] = inc.incident_id
                         result["incident_recorded"] = True
-                    if inc and (inc.root_cause or inc.verified_fix):
+                    if inc and (inc.root_cause or inc.has_verified_fix() or suggested_fix):
                         result["remediation"] = {
                             "incident_id": inc.incident_id,
                             "root_cause": inc.root_cause,
-                            "verified_fix": inc.verified_fix,
+                            "verified_fix": inc.verified_fix if inc.has_verified_fix() else None,
+                            "suggested_fix": suggested_fix or None,
                             "confidence": inc.confidence,
                             "attempts": inc.attempts,
                         }
@@ -8671,6 +8676,7 @@ class CommandBroker:
                     if target_paths and not result.get("success") and not result.get("cancelled"):
                         regs = self.incident_store.find_regressions(
                             list(target_paths),
+                            root=cwd,
                             state_revision=str(state.get("fingerprint") or ""),
                         )
                         if regs:

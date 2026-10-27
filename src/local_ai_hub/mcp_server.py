@@ -546,7 +546,7 @@ def _desc_rag() -> str:
     if LEAN_SCHEMAS:
         return (
             "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
-            " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Document ingestion requires non-empty content; diagram files stay inside that root."
+            " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
             " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
             " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
         )
@@ -567,7 +567,7 @@ def _desc_rag() -> str:
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
         " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
-        " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Document ingestion requires non-empty content; diagram files stay inside that root."
+        " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
     )
 
 
@@ -750,7 +750,7 @@ _SECURITY_PROTECTED_KEYS = (
 _RELIABILITY_PROTECTED_KEYS = (
     *LIFECYCLE_PROTECTED_KEYS,
     "request_id", "context_id",
-    "success", "terminal", "retryable", "unsupported", "degraded", "stale",
+    "success", "terminal", "retryable", "unsupported", "degraded", "stale", "unchanged",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
     "mutation_applied", "operation_not_started",
     "semantic_quality", "review_consistency", "advisory_only", "quality_warning", "bypass_reason",
@@ -1333,6 +1333,8 @@ def _compact(
                     memory_projection["delta"][section].pop("task", None)
             elif repeated:
                 memory_projection["reused"] = True
+                if profile == "delta":
+                    memory_projection["unchanged"] = True
         return _normalize_task_memory_response(account_projection(value, memory_projection))
     raw_value = value
     exact_artifact_text = None
@@ -1419,8 +1421,11 @@ def _compact(
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
         repeated, previous = _reuse_state(reuse_key, compacted)
-        if profile == "delta" and previous is not None and not repeated:
-            compacted = delta_response(previous, compacted, result_id=result_id(compacted))
+        if profile == "delta" and previous is not None:
+            if repeated and isinstance(compacted, dict):
+                compacted["unchanged"] = True
+            elif not repeated:
+                compacted = delta_response(previous, compacted, result_id=result_id(compacted))
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
             *(_COORD_PROTECTED_KEYS if task_kind in {"task_memory", "coord", "verify"} else ()),
@@ -5551,6 +5556,9 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             return None
 
         essential = _task_memory_essential_response(canonical)
+        for key in ("reused", "unchanged"):
+            if key in value:
+                essential[key] = value[key]
         # Strip only optional task metadata. The complete memory bundle remains
         # byte-for-byte equivalent JSON in every successful candidate.
         for source in (value, essential):

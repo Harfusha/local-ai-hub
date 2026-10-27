@@ -1114,7 +1114,10 @@ class TaskStore:
                             except (TypeError, ValueError, OverflowError):
                                 warnings.append({"code": "negative_knowledge_invalid"})
                                 continue
-                            detail = str(incident.get("verified_fix") or incident.get("root_cause") or "").strip()
+                            detail = str(
+                                incident.get("verified_fix") or incident.get("root_cause")
+                                or incident.get("redacted_message") or ""
+                            ).strip()
                             if not detail:
                                 continue
                             content = f"[NEGATIVE KNOWLEDGE] {str(incident.get('error_class', ''))[:100]}: {detail[:700]}"
