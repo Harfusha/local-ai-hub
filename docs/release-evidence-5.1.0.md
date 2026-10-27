@@ -6,6 +6,7 @@
 
 ## Current candidate evidence — 2026-10-27
 
+- Clean checkout of `29c455ff` passed `python tools/release_check.py --strict-tree`. A wheel built from that checkout has SHA256 `fff1b423f33fa8894f9bc2fa89edf713ea9878acaf86d53f637b4e7bac9c4d1a`; installation into a fresh virtual environment and `tools/wheel_smoke.py` passed, with version `5.1.0` loaded from that environment's site-packages. This does not establish CI or the live installation.
 - `tests/test_surface_audit_policy.py tests/test_surface_inventory.py`: **774 passed**.
 - Clean `git archive` snapshot: `python tools/release_check.py --strict-tree` passed. The checkout retains its existing ignored `build/` and `dist/`.
 - Wheel built from the source revision above: SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`. Isolated-venv `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. The wheel is retained under `%TEMP%/lah-release-f14c726ef5c04476b213966b02d324e5/wheel/`.
