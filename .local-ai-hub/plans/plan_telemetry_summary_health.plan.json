@@ -1,0 +1,26 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Investigate recurring status degradation caused by telemetry.summary probe timeouts. Keep telemetry availability visible while preventing this optional diagnostic probe from falsely degrading core Hub health. Add a deterministic regression test and validate.",
+  "id": "plan_telemetry_summary_health",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_telemetry_summary_fix": {
+      "acceptance_criteria": [
+        "Root cause addressed",
+        "Regression proves a telemetry.summary timeout leaves core status healthy while reporting telemetry degradation",
+        "Focused status tests pass"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Diagnose intermittent telemetry.summary probe timeout; keep its failure visible without degrading core Hub health; add regression coverage.",
+      "kind": "code",
+      "next_action": "Implementation, focused regression tests, push, and live Hub verification complete.",
+      "title": "Fix recurring telemetry.summary status degradation",
+      "work_status": "done"
+    }
+  },
+  "title": "Prevent telemetry summary timeout from degrading Hub status"
+}

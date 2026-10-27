@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import http_server
+from local_ai_hub import mcp_server
 import local_ai_hub.app as app_module
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.telemetry import TelemetryStore
@@ -303,6 +304,110 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
     assert result["degraded"] is True
     assert result["dependency_status"]["runtime.online"]["reason"] == "probe_timeout"
     assert 10 <= result["dependency_status"]["runtime.online"]["duration_ms"] < 100
+
+
+def test_telemetry_summary_timeout_does_not_degrade_core_hub_status(monkeypatch):
+    app = make_realtime_app()
+    monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {})
+    executor = app_module._new_status_dependency_executor()
+    app._status_dependency_executor = executor
+    finished = threading.Event()
+
+    def slow_summary(*args, **kwargs):
+        try:
+            time.sleep(app_module._STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS + 0.05)
+            return {"events": 1}
+        finally:
+            finished.set()
+
+    app.telemetry.realtime_summary = slow_summary
+
+    try:
+        result = app.realtime_status(light=True)
+        telemetry = result["dependency_status"]["telemetry.summary"]
+        assert finished.wait(timeout=1), telemetry
+        assert telemetry["degraded"] is True
+        assert telemetry["reason"] == "probe_timeout"
+        assert result["degraded"] is False, {
+            name: diagnostic for name, diagnostic in result["dependency_status"].items()
+            if diagnostic.get("degraded") is True
+        }
+        assert result["success"] is True
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_telemetry_summary_within_diagnostic_budget_does_not_time_out(monkeypatch):
+    app = make_realtime_app()
+    monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {})
+    executor = app_module._new_status_dependency_executor()
+    app._status_dependency_executor = executor
+    finished = threading.Event()
+
+    def slow_summary(*args, **kwargs):
+        try:
+            time.sleep(app_module._STATUS_DEPENDENCY_TIMEOUT_SECONDS + 0.05)
+            return {"events": 1}
+        finally:
+            finished.set()
+
+    app.telemetry.realtime_summary = slow_summary
+
+    try:
+        result = app.realtime_status(light=True)
+        telemetry = result["dependency_status"]["telemetry.summary"]
+        assert finished.wait(timeout=1), telemetry
+        assert telemetry["degraded"] is False
+        assert telemetry["deadline_ms"] == 1000
+        assert result["degraded"] is False
+        assert result["success"] is True
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_full_status_telemetry_summary_uses_diagnostic_budget(monkeypatch):
+    app = make_app()
+    monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {})
+    executor = app_module._new_status_dependency_executor()
+    app._status_dependency_executor = executor
+    finished = threading.Event()
+
+    def slow_summary(*args, **kwargs):
+        try:
+            time.sleep(app_module._STATUS_DEPENDENCY_TIMEOUT_SECONDS + 0.05)
+            return {"events": 1}
+        finally:
+            finished.set()
+
+    app.telemetry.responses["summary"] = slow_summary
+
+    try:
+        result = app.status()
+        telemetry = result["dependency_status"]["telemetry.summary"]
+        assert finished.wait(timeout=1), telemetry
+        assert telemetry["degraded"] is False
+        assert telemetry["deadline_ms"] == 1000
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_local_ai_status_keeps_telemetry_timeout_visible_without_global_degraded(monkeypatch):
+    telemetry_diagnostic = {"degraded": True, "reason": "probe_timeout", "deadline_ms": 250}
+    status = {
+        "success": True,
+        "hub_online": True,
+        "version": "test",
+        "degraded": False,
+        "dependency_status": {"telemetry.summary": telemetry_diagnostic},
+    }
+    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(status=True))
+    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(get=lambda _path: status))
+
+    result = mcp_server.local_ai_status()
+
+    assert result["success"] is True
+    assert result["degraded"] is False
+    assert result["dependency_status"] == {"telemetry.summary": telemetry_diagnostic}
 
 
 def test_status_dependency_reports_probe_exception_without_exception_text():

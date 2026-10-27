@@ -73,8 +73,16 @@ from .status_executor import StatusDependencyExecutor
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
+
+
+def _status_dependency_timeout_seconds(key: str) -> float:
+    timeout = float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)
+    if key == "telemetry.summary":
+        timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
+    return max(0.0, timeout)
 
 
 def _new_status_dependency_executor() -> StatusDependencyExecutor:
@@ -874,7 +882,8 @@ class LocalAIApp:
 
             def read(key: str, callback, fallback):
                 diagnostic: dict[str, Any] = {}
-                dep_deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+                timeout_seconds = _status_dependency_timeout_seconds(key)
+                dep_deadline = time.monotonic() + timeout_seconds
                 value, healthy = _status_dependency(
                     callback,
                     fallback,
@@ -889,7 +898,7 @@ class LocalAIApp:
                 )
                 dependency_status[key] = {
                     "degraded": not healthy,
-                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    "deadline_ms": int(timeout_seconds * 1000),
                     **diagnostic,
                 }
                 return value, healthy
@@ -955,9 +964,15 @@ class LocalAIApp:
                 runtime_stats["deterministic"], _ = read("runtime_stats.deterministic", self.deterministic.status, {})
             if not light and self.code_index is not None:
                 runtime_stats["code_index"], _ = read("runtime_stats.code_index", self.code_index.status, {})
+            # Telemetry is diagnostic; a slow summary must not imply a Hub outage.
+            core_dependencies = (
+                item for name, item in dependency_status.items()
+                if name != "telemetry.summary"
+            )
+            core_degraded = any(item["degraded"] for item in core_dependencies)
             result = {
-                "success": not any(item["degraded"] for item in dependency_status.values()), "hub_online": True, "version": __version__,
-                "snapshot_cached": False, "degraded": any(item["degraded"] for item in dependency_status.values()),
+                "success": not core_degraded, "hub_online": True, "version": __version__,
+                "snapshot_cached": False, "degraded": core_degraded,
                 "dependency_status": dependency_status,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
@@ -1022,6 +1037,9 @@ class LocalAIApp:
         import os
 
         def dependency(key, callback, fallback, diagnostic=None):
+            dependency_deadline = deadline
+            if key == "telemetry.summary":
+                dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
             return _status_dependency(
                 callback,
                 fallback,
@@ -1031,7 +1049,7 @@ class LocalAIApp:
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
                 executor=self._status_dependency_executor,
-                deadline=deadline,
+                deadline=dependency_deadline,
                 diagnostic=diagnostic,
             )
 
@@ -1072,7 +1090,7 @@ class LocalAIApp:
                 return cached_snapshot(cached, now)
             degraded = False
             dependency_status: dict[str, dict[str, Any]] = {}
-            pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any]]] = {}
+            pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any], float]] = {}
 
             def read(key, callback, fallback):
                 nonlocal degraded
@@ -1082,12 +1100,14 @@ class LocalAIApp:
                     diagnostic: dict[str, Any] = {}
                     value, healthy = dependency(key, callback, fallback, diagnostic)
                 else:
-                    handle, fallback, diagnostic = pending
-                    value, healthy = _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
+                    handle, fallback, diagnostic, dependency_deadline = pending
+                    value, healthy = _resolve_status_dependency(
+                        handle, deadline=dependency_deadline, diagnostic=diagnostic
+                    )
                 degraded = degraded or _status_probe_affects_core_health(key, healthy=healthy)
                 dependency_status[key] = {
                     "degraded": not healthy,
-                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    "deadline_ms": int(_status_dependency_timeout_seconds(key) * 1000),
                     "duration_ms": max(0, int((time.monotonic() - probe_started) * 1000)),
                     **diagnostic,
                 }
@@ -1142,6 +1162,9 @@ class LocalAIApp:
             }
             for key, (callback, fallback) in status_probes.items():
                 diagnostic: dict[str, Any] = {}
+                dependency_deadline = deadline
+                if key == "telemetry.summary":
+                    dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
                 handle = _schedule_status_dependency(
                     callback,
                     fallback,
@@ -1151,10 +1174,10 @@ class LocalAIApp:
                     inflight=self._status_dependency_inflight,
                     slots=self._status_dependency_slots,
                     executor=self._status_dependency_executor,
-                    deadline=deadline,
+                    deadline=dependency_deadline,
                     diagnostic=diagnostic,
                 )
-                pending_dependencies[key] = (handle, fallback, diagnostic)
+                pending_dependencies[key] = (handle, fallback, diagnostic, dependency_deadline)
             scheduler = read("scheduler", self.scheduler.status, {})
             accelerators = read(
                 "accelerators",

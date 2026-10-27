@@ -873,14 +873,18 @@ function dashboardPreprocessingHealth(preprocessing={},dependencies={},features=
   return {available:true,statsAvailable,errorCount,disabled:false};
 }
 
+function isTelemetrySummaryDependency(name){
+  return name==='telemetry.summary'||name.endsWith('.telemetry.summary');
+}
+
 function dashboardHealthBadge(status={}){
-  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>name!=='telemetry.summary').map(([,value])=>value):[];
+  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>!isTelemetrySummaryDependency(name)).map(([,value])=>value):[];
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
   const preprocessingDeps=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?status.dependency_status:{};
   const preprocessingAdvertised=Object.hasOwn(status,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
   const preprocessing=preprocessingAdvertised?dashboardPreprocessingHealth(status.preprocessing||{},status.dependency_status||{},status.features||{}):{available:true,statsAvailable:true,errorCount:0,disabled:false};
   const preprocessingWarning=preprocessingAdvertised&&(!preprocessing.available||!preprocessing.statsAvailable||preprocessing.errorCount>0);
-  const telemetryOnlyFailure=status.dependency_status?.['telemetry.summary']?.degraded&&degradedCount===0;
+  const telemetryOnlyFailure=Object.entries(status.dependency_status||{}).some(([name,value])=>isTelemetrySummaryDependency(name)&&value?.degraded===true)&&degradedCount===0;
   const degraded=(status.success===false&&!telemetryOnlyFailure)||degradedCount>0;
   const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
   const className=status.hub_online?(degraded||ollamaState!=='online'||preprocessingWarning?'warn-t':'ok'):'bad-t';
@@ -1001,7 +1005,7 @@ function dashboardHealth(snapshot={}){
   const terminalStatuses=['down','offline','unavailable','crashed','stopped'];
   const processLiveness=hubOnline===false||terminalStatuses.includes(status)?'offline':heartbeatStale||status==='stale'?'stale':hubOnline===true||['running','healthy','ok','online'].includes(status)?'live':'unknown';
   const signals=[];
-  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&name!=='telemetry.summary'&&!name.endsWith('.telemetry.summary')&&value?.degraded).map(([name])=>name);
+  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&!isTelemetrySummaryDependency(name)&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
   const features=snapshot.features||current.features||{};
