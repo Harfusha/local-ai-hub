@@ -137,6 +137,10 @@ def _stop_recorded_children(rows: list[dict[str, object]], state_dir: Path) -> N
             owner_path = state_dir / "hub.owner.json"
             assert owner_path.is_file(), "live test Hub has no owner receipt"
             owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            assert owner.get("pid") == pid, (
+                f"test child {pid} differs from recorded Hub owner {owner.get('pid')}; "
+                "refusing to terminate a different process"
+            )
             assert terminate_owned_process(owner, state_dir, "hub", grace_seconds=1.0)
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and _same_process(row):
