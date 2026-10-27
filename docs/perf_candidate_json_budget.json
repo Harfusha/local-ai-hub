@@ -7,540 +7,6043 @@
     "python_version": "3.13.2"
   },
   "measurement": {
+    "baseline_provenance": "measured_reference",
     "baseline_stats": {
-      "mean_ms": 0.011,
-      "p50_ms": 0.011,
-      "p90_ms": 0.012,
-      "p95_ms": 0.013,
-      "p99_ms": 0.015,
-      "stdev_ms": 0.003
+      "mean_ms": 0.14311,
+      "p50_ms": 0.1346,
+      "p90_ms": 0.17951,
+      "p95_ms": 0.190105,
+      "p99_ms": 0.266313,
+      "stdev_ms": 0.060989
     },
     "candidate_stats": {
-      "mean_ms": 0.007,
-      "p50_ms": 0.007,
-      "p90_ms": 0.008,
-      "p95_ms": 0.009,
-      "p99_ms": 0.01,
-      "stdev_ms": 0.002
+      "mean_ms": 0.081832,
+      "p50_ms": 0.07825,
+      "p90_ms": 0.1049,
+      "p95_ms": 0.1108,
+      "p99_ms": 0.136514,
+      "stdev_ms": 0.021243
     },
-    "note": "1000+ independent pairs executed for tail acceptance",
-    "p95_speedup": 1.44,
-    "p99_speedup": 1.5,
+    "note": "1000+ independently measured pairs",
+    "p95_speedup": 1.72,
+    "p99_speedup": 1.95,
     "sample_count": 1000,
     "tail_gate_met": true,
     "tail_sample_gate_met": true
   },
   "quality_scope": {
     "allow_inference": false,
+    "candidate_backend_active": true,
+    "candidate_source_bound": true,
     "verified_parity": true
   },
-  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root": "C:\\Users\\Adam\\AppData\\Local\\Temp\\lah-perf-7905f8ae9484424380076f015ba6f8ac\\repo",
   "samples_summary": [
     {
-      "candidate_ms": 0.0262,
+      "baseline_ms": 0.1855,
+      "candidate_ms": 0.1108,
       "epoch": 0,
       "tokens": 605
     },
     {
-      "candidate_ms": 0.0103,
+      "baseline_ms": 0.1377,
+      "candidate_ms": 0.0725,
       "epoch": 1,
       "tokens": 604
     },
     {
-      "candidate_ms": 0.0081,
+      "baseline_ms": 0.1579,
+      "candidate_ms": 0.0817,
       "epoch": 2,
       "tokens": 603
     },
     {
-      "candidate_ms": 0.0074,
+      "baseline_ms": 0.1303,
+      "candidate_ms": 0.0861,
       "epoch": 3,
       "tokens": 602
     },
     {
-      "candidate_ms": 0.0073,
+      "baseline_ms": 0.1165,
+      "candidate_ms": 0.0663,
       "epoch": 4,
       "tokens": 602
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.1115,
+      "candidate_ms": 0.0721,
       "epoch": 5,
       "tokens": 601
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.1225,
+      "candidate_ms": 0.056,
       "epoch": 6,
       "tokens": 602
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1274,
+      "candidate_ms": 0.0561,
       "epoch": 7,
       "tokens": 603
     },
     {
-      "candidate_ms": 0.0079,
+      "baseline_ms": 0.11,
+      "candidate_ms": 0.0631,
       "epoch": 8,
       "tokens": 601
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.103,
+      "candidate_ms": 0.0579,
       "epoch": 9,
       "tokens": 603
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.0988,
+      "candidate_ms": 0.0567,
       "epoch": 10,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1077,
+      "candidate_ms": 0.0559,
       "epoch": 11,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.0968,
+      "candidate_ms": 0.056,
       "epoch": 12,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.1174,
+      "candidate_ms": 0.0549,
       "epoch": 13,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1009,
+      "candidate_ms": 0.067,
       "epoch": 14,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0074,
+      "baseline_ms": 0.0999,
+      "candidate_ms": 0.063,
       "epoch": 15,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1059,
+      "candidate_ms": 0.0578,
       "epoch": 16,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1046,
+      "candidate_ms": 0.055,
       "epoch": 17,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.098,
+      "candidate_ms": 0.0615,
       "epoch": 18,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.0967,
+      "candidate_ms": 0.0547,
       "epoch": 19,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.0077,
+      "baseline_ms": 0.101,
+      "candidate_ms": 0.0593,
       "epoch": 20,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.1035,
+      "candidate_ms": 0.053,
       "epoch": 21,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.0947,
+      "candidate_ms": 0.0533,
       "epoch": 22,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1046,
+      "candidate_ms": 0.0532,
       "epoch": 23,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0066,
+      "baseline_ms": 0.0957,
+      "candidate_ms": 0.0594,
       "epoch": 24,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.094,
+      "candidate_ms": 0.0536,
       "epoch": 25,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.0995,
+      "candidate_ms": 0.0537,
       "epoch": 26,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0066,
+      "baseline_ms": 0.0956,
+      "candidate_ms": 0.0543,
       "epoch": 27,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.1027,
+      "candidate_ms": 0.0539,
       "epoch": 28,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.1031,
+      "candidate_ms": 0.056,
       "epoch": 29,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.0957,
+      "candidate_ms": 0.0542,
       "epoch": 30,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0073,
+      "baseline_ms": 0.0972,
+      "candidate_ms": 0.0546,
       "epoch": 31,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.1233,
+      "candidate_ms": 0.0735,
       "epoch": 32,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1174,
+      "candidate_ms": 0.073,
       "epoch": 33,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.1375,
+      "candidate_ms": 0.0705,
       "epoch": 34,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.2385,
+      "candidate_ms": 0.0789,
       "epoch": 35,
       "tokens": 613
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.1116,
+      "candidate_ms": 0.0709,
       "epoch": 36,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1615,
+      "candidate_ms": 0.0771,
       "epoch": 37,
       "tokens": 608
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1223,
+      "candidate_ms": 0.0722,
       "epoch": 38,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.118,
+      "candidate_ms": 0.0589,
       "epoch": 39,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1173,
+      "candidate_ms": 0.0762,
       "epoch": 40,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1202,
+      "candidate_ms": 0.0683,
       "epoch": 41,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0075,
+      "baseline_ms": 0.1182,
+      "candidate_ms": 0.0623,
       "epoch": 42,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1114,
+      "candidate_ms": 0.0584,
       "epoch": 43,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1212,
+      "candidate_ms": 0.0667,
       "epoch": 44,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1195,
+      "candidate_ms": 0.0646,
       "epoch": 45,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.128,
+      "candidate_ms": 0.0701,
       "epoch": 46,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1198,
+      "candidate_ms": 0.0605,
       "epoch": 47,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0066,
+      "baseline_ms": 0.0968,
+      "candidate_ms": 0.0551,
       "epoch": 48,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1196,
+      "candidate_ms": 0.055,
       "epoch": 49,
       "tokens": 612
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.115,
+      "candidate_ms": 0.0652,
       "epoch": 50,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.1053,
+      "candidate_ms": 0.0555,
       "epoch": 51,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1316,
+      "candidate_ms": 0.0699,
       "epoch": 52,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.1241,
+      "candidate_ms": 0.0719,
       "epoch": 53,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.124,
+      "candidate_ms": 0.071,
       "epoch": 54,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0075,
+      "baseline_ms": 0.118,
+      "candidate_ms": 0.0764,
       "epoch": 55,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0075,
+      "baseline_ms": 0.124,
+      "candidate_ms": 0.0861,
       "epoch": 56,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1747,
+      "candidate_ms": 0.1019,
       "epoch": 57,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0064,
+      "baseline_ms": 0.1682,
+      "candidate_ms": 0.1066,
       "epoch": 58,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1755,
+      "candidate_ms": 0.0993,
       "epoch": 59,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1733,
+      "candidate_ms": 0.1036,
       "epoch": 60,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0068,
+      "baseline_ms": 0.1784,
+      "candidate_ms": 0.0991,
       "epoch": 61,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0064,
+      "baseline_ms": 0.1638,
+      "candidate_ms": 0.1049,
       "epoch": 62,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1788,
+      "candidate_ms": 0.1001,
       "epoch": 63,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1844,
+      "candidate_ms": 0.103,
       "epoch": 64,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0076,
+      "baseline_ms": 0.1744,
+      "candidate_ms": 0.1004,
       "epoch": 65,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.1717,
+      "candidate_ms": 0.1065,
       "epoch": 66,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1714,
+      "candidate_ms": 0.1036,
       "epoch": 67,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0073,
+      "baseline_ms": 0.1749,
+      "candidate_ms": 0.1019,
       "epoch": 68,
       "tokens": 613
     },
     {
-      "candidate_ms": 0.009,
+      "baseline_ms": 0.1768,
+      "candidate_ms": 0.1017,
       "epoch": 69,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0097,
+      "baseline_ms": 0.1698,
+      "candidate_ms": 0.1026,
       "epoch": 70,
       "tokens": 613
     },
     {
-      "candidate_ms": 0.0079,
+      "baseline_ms": 0.171,
+      "candidate_ms": 0.0982,
       "epoch": 71,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1324,
+      "candidate_ms": 0.0605,
       "epoch": 72,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0072,
+      "baseline_ms": 0.1011,
+      "candidate_ms": 0.059,
       "epoch": 73,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.1003,
+      "candidate_ms": 0.0555,
       "epoch": 74,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.0981,
+      "candidate_ms": 0.0548,
       "epoch": 75,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0066,
+      "baseline_ms": 0.0975,
+      "candidate_ms": 0.0545,
       "epoch": 76,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.006,
+      "baseline_ms": 0.1013,
+      "candidate_ms": 0.0703,
       "epoch": 77,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1035,
+      "candidate_ms": 0.057,
       "epoch": 78,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0065,
+      "baseline_ms": 0.0982,
+      "candidate_ms": 0.0556,
       "epoch": 79,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.0956,
+      "candidate_ms": 0.0543,
       "epoch": 80,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.096,
+      "candidate_ms": 0.0619,
       "epoch": 81,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1163,
+      "candidate_ms": 0.0545,
       "epoch": 82,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.0979,
+      "candidate_ms": 0.0533,
       "epoch": 83,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1423,
+      "candidate_ms": 0.0684,
       "epoch": 84,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.1152,
+      "candidate_ms": 0.0557,
       "epoch": 85,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.1455,
+      "candidate_ms": 0.0671,
       "epoch": 86,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0074,
+      "baseline_ms": 0.1109,
+      "candidate_ms": 0.0663,
       "epoch": 87,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0095,
+      "baseline_ms": 0.136,
+      "candidate_ms": 0.0586,
       "epoch": 88,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0086,
+      "baseline_ms": 0.1182,
+      "candidate_ms": 0.0594,
       "epoch": 89,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0071,
+      "baseline_ms": 0.115,
+      "candidate_ms": 0.0789,
       "epoch": 90,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1064,
+      "candidate_ms": 0.0603,
       "epoch": 91,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0079,
+      "baseline_ms": 1.722,
+      "candidate_ms": 0.0671,
       "epoch": 92,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.1122,
+      "candidate_ms": 0.0559,
       "epoch": 93,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0066,
+      "baseline_ms": 0.1081,
+      "candidate_ms": 0.0584,
       "epoch": 94,
       "tokens": 608
     },
     {
-      "candidate_ms": 0.0067,
+      "baseline_ms": 0.1038,
+      "candidate_ms": 0.0553,
       "epoch": 95,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.007,
+      "baseline_ms": 0.1193,
+      "candidate_ms": 0.0709,
       "epoch": 96,
       "tokens": 609
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1206,
+      "candidate_ms": 0.0621,
       "epoch": 97,
       "tokens": 610
     },
     {
-      "candidate_ms": 0.0069,
+      "baseline_ms": 0.1196,
+      "candidate_ms": 0.0677,
       "epoch": 98,
       "tokens": 611
     },
     {
-      "candidate_ms": 0.0066,
+      "baseline_ms": 0.132,
+      "candidate_ms": 0.0748,
       "epoch": 99,
       "tokens": 610
+    },
+    {
+      "baseline_ms": 0.13,
+      "candidate_ms": 0.074,
+      "epoch": 100,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1359,
+      "candidate_ms": 0.0684,
+      "epoch": 101,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1299,
+      "candidate_ms": 0.0658,
+      "epoch": 102,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1362,
+      "candidate_ms": 0.0734,
+      "epoch": 103,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1267,
+      "candidate_ms": 0.0782,
+      "epoch": 104,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1222,
+      "candidate_ms": 0.0722,
+      "epoch": 105,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1439,
+      "candidate_ms": 0.088,
+      "epoch": 106,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1222,
+      "candidate_ms": 0.0698,
+      "epoch": 107,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1531,
+      "candidate_ms": 0.0856,
+      "epoch": 108,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1446,
+      "candidate_ms": 0.0746,
+      "epoch": 109,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1316,
+      "candidate_ms": 0.0771,
+      "epoch": 110,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1346,
+      "candidate_ms": 0.0676,
+      "epoch": 111,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1338,
+      "candidate_ms": 0.0824,
+      "epoch": 112,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1267,
+      "candidate_ms": 0.0667,
+      "epoch": 113,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1291,
+      "candidate_ms": 0.08,
+      "epoch": 114,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1221,
+      "candidate_ms": 0.0547,
+      "epoch": 115,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1094,
+      "candidate_ms": 0.0554,
+      "epoch": 116,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1253,
+      "candidate_ms": 0.0748,
+      "epoch": 117,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1189,
+      "candidate_ms": 0.0689,
+      "epoch": 118,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1252,
+      "candidate_ms": 0.0667,
+      "epoch": 119,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1299,
+      "candidate_ms": 0.0701,
+      "epoch": 120,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1243,
+      "candidate_ms": 0.0765,
+      "epoch": 121,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1136,
+      "candidate_ms": 0.0545,
+      "epoch": 122,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1224,
+      "candidate_ms": 0.0703,
+      "epoch": 123,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1026,
+      "candidate_ms": 0.0642,
+      "epoch": 124,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1322,
+      "candidate_ms": 0.0636,
+      "epoch": 125,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1266,
+      "candidate_ms": 0.0673,
+      "epoch": 126,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1268,
+      "candidate_ms": 0.0803,
+      "epoch": 127,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1251,
+      "candidate_ms": 0.0725,
+      "epoch": 128,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1484,
+      "candidate_ms": 0.0791,
+      "epoch": 129,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1954,
+      "candidate_ms": 0.1041,
+      "epoch": 130,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1785,
+      "candidate_ms": 0.0907,
+      "epoch": 131,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1746,
+      "candidate_ms": 0.0917,
+      "epoch": 132,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1598,
+      "candidate_ms": 0.1111,
+      "epoch": 133,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1493,
+      "candidate_ms": 0.0909,
+      "epoch": 134,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1631,
+      "candidate_ms": 0.098,
+      "epoch": 135,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1889,
+      "candidate_ms": 0.1094,
+      "epoch": 136,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1757,
+      "candidate_ms": 0.0986,
+      "epoch": 137,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1637,
+      "candidate_ms": 0.1006,
+      "epoch": 138,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1679,
+      "candidate_ms": 0.0958,
+      "epoch": 139,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1599,
+      "candidate_ms": 0.097,
+      "epoch": 140,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1619,
+      "candidate_ms": 0.0968,
+      "epoch": 141,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1738,
+      "candidate_ms": 0.1167,
+      "epoch": 142,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1816,
+      "candidate_ms": 0.0869,
+      "epoch": 143,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1755,
+      "candidate_ms": 0.09,
+      "epoch": 144,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1615,
+      "candidate_ms": 0.114,
+      "epoch": 145,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1691,
+      "candidate_ms": 0.1184,
+      "epoch": 146,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1801,
+      "candidate_ms": 0.088,
+      "epoch": 147,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1605,
+      "candidate_ms": 0.1003,
+      "epoch": 148,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1737,
+      "candidate_ms": 0.0998,
+      "epoch": 149,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1826,
+      "candidate_ms": 0.0909,
+      "epoch": 150,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.3086,
+      "candidate_ms": 0.1094,
+      "epoch": 151,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1779,
+      "candidate_ms": 0.088,
+      "epoch": 152,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1648,
+      "candidate_ms": 0.1066,
+      "epoch": 153,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1518,
+      "candidate_ms": 0.1108,
+      "epoch": 154,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1819,
+      "candidate_ms": 0.0887,
+      "epoch": 155,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.176,
+      "candidate_ms": 0.0934,
+      "epoch": 156,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1657,
+      "candidate_ms": 0.1035,
+      "epoch": 157,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.172,
+      "candidate_ms": 0.0943,
+      "epoch": 158,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1694,
+      "candidate_ms": 0.1126,
+      "epoch": 159,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1568,
+      "candidate_ms": 0.1085,
+      "epoch": 160,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1762,
+      "candidate_ms": 0.0876,
+      "epoch": 161,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1714,
+      "candidate_ms": 0.1046,
+      "epoch": 162,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.155,
+      "candidate_ms": 0.0909,
+      "epoch": 163,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1193,
+      "candidate_ms": 0.0706,
+      "epoch": 164,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1178,
+      "candidate_ms": 0.0564,
+      "epoch": 165,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1253,
+      "candidate_ms": 0.067,
+      "epoch": 166,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1221,
+      "candidate_ms": 0.0747,
+      "epoch": 167,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0981,
+      "candidate_ms": 0.0559,
+      "epoch": 168,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0966,
+      "candidate_ms": 0.054,
+      "epoch": 169,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.0947,
+      "candidate_ms": 0.0542,
+      "epoch": 170,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.095,
+      "candidate_ms": 0.061,
+      "epoch": 171,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0969,
+      "candidate_ms": 0.0553,
+      "epoch": 172,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1154,
+      "candidate_ms": 0.0548,
+      "epoch": 173,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0952,
+      "candidate_ms": 0.0542,
+      "epoch": 174,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0967,
+      "candidate_ms": 0.0546,
+      "epoch": 175,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0949,
+      "candidate_ms": 0.0536,
+      "epoch": 176,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0944,
+      "candidate_ms": 0.0534,
+      "epoch": 177,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.094,
+      "candidate_ms": 0.0598,
+      "epoch": 178,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.115,
+      "candidate_ms": 0.0617,
+      "epoch": 179,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1144,
+      "candidate_ms": 0.059,
+      "epoch": 180,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0959,
+      "candidate_ms": 0.0542,
+      "epoch": 181,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1335,
+      "candidate_ms": 0.0677,
+      "epoch": 182,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1079,
+      "candidate_ms": 0.0542,
+      "epoch": 183,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0994,
+      "candidate_ms": 0.0645,
+      "epoch": 184,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1062,
+      "candidate_ms": 0.0647,
+      "epoch": 185,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1087,
+      "candidate_ms": 0.0546,
+      "epoch": 186,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0986,
+      "candidate_ms": 0.0544,
+      "epoch": 187,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.114,
+      "candidate_ms": 0.076,
+      "epoch": 188,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1191,
+      "candidate_ms": 0.0637,
+      "epoch": 189,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1168,
+      "candidate_ms": 0.0785,
+      "epoch": 190,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1174,
+      "candidate_ms": 0.077,
+      "epoch": 191,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1042,
+      "candidate_ms": 0.0548,
+      "epoch": 192,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1014,
+      "candidate_ms": 0.0544,
+      "epoch": 193,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1037,
+      "candidate_ms": 0.0659,
+      "epoch": 194,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1054,
+      "candidate_ms": 0.0666,
+      "epoch": 195,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1384,
+      "candidate_ms": 0.0939,
+      "epoch": 196,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1807,
+      "candidate_ms": 0.1114,
+      "epoch": 197,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1689,
+      "candidate_ms": 0.0962,
+      "epoch": 198,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2025,
+      "candidate_ms": 0.1053,
+      "epoch": 199,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1672,
+      "candidate_ms": 0.1028,
+      "epoch": 200,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.164,
+      "candidate_ms": 0.0826,
+      "epoch": 201,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1566,
+      "candidate_ms": 0.1036,
+      "epoch": 202,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1822,
+      "candidate_ms": 0.0823,
+      "epoch": 203,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.174,
+      "candidate_ms": 0.1054,
+      "epoch": 204,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1768,
+      "candidate_ms": 0.1031,
+      "epoch": 205,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1795,
+      "candidate_ms": 0.1089,
+      "epoch": 206,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1725,
+      "candidate_ms": 0.102,
+      "epoch": 207,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.173,
+      "candidate_ms": 0.1019,
+      "epoch": 208,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1837,
+      "candidate_ms": 0.1027,
+      "epoch": 209,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1446,
+      "candidate_ms": 0.0875,
+      "epoch": 210,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1411,
+      "candidate_ms": 0.2048,
+      "epoch": 211,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1375,
+      "candidate_ms": 0.0821,
+      "epoch": 212,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1372,
+      "candidate_ms": 0.0835,
+      "epoch": 213,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1438,
+      "candidate_ms": 0.0778,
+      "epoch": 214,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1308,
+      "candidate_ms": 0.0776,
+      "epoch": 215,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1352,
+      "candidate_ms": 0.0771,
+      "epoch": 216,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1386,
+      "candidate_ms": 0.0779,
+      "epoch": 217,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1332,
+      "candidate_ms": 0.0882,
+      "epoch": 218,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1332,
+      "candidate_ms": 0.0788,
+      "epoch": 219,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.133,
+      "candidate_ms": 0.0782,
+      "epoch": 220,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1349,
+      "candidate_ms": 0.0876,
+      "epoch": 221,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1368,
+      "candidate_ms": 0.0761,
+      "epoch": 222,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1314,
+      "candidate_ms": 0.0758,
+      "epoch": 223,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1333,
+      "candidate_ms": 0.0769,
+      "epoch": 224,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.139,
+      "candidate_ms": 0.0767,
+      "epoch": 225,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1304,
+      "candidate_ms": 0.0813,
+      "epoch": 226,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1332,
+      "candidate_ms": 0.0815,
+      "epoch": 227,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1198,
+      "candidate_ms": 0.0853,
+      "epoch": 228,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1117,
+      "candidate_ms": 0.0657,
+      "epoch": 229,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1455,
+      "candidate_ms": 0.0835,
+      "epoch": 230,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1742,
+      "candidate_ms": 0.0916,
+      "epoch": 231,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1881,
+      "candidate_ms": 0.1039,
+      "epoch": 232,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.174,
+      "candidate_ms": 0.1022,
+      "epoch": 233,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1699,
+      "candidate_ms": 0.1021,
+      "epoch": 234,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1792,
+      "candidate_ms": 0.0988,
+      "epoch": 235,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1708,
+      "candidate_ms": 0.104,
+      "epoch": 236,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1739,
+      "candidate_ms": 0.0996,
+      "epoch": 237,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1689,
+      "candidate_ms": 0.0996,
+      "epoch": 238,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1733,
+      "candidate_ms": 0.1135,
+      "epoch": 239,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1712,
+      "candidate_ms": 0.1016,
+      "epoch": 240,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1667,
+      "candidate_ms": 0.0915,
+      "epoch": 241,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1695,
+      "candidate_ms": 0.0979,
+      "epoch": 242,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1179,
+      "candidate_ms": 0.0743,
+      "epoch": 243,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1041,
+      "candidate_ms": 0.0754,
+      "epoch": 244,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1516,
+      "candidate_ms": 0.0742,
+      "epoch": 245,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1517,
+      "candidate_ms": 0.0855,
+      "epoch": 246,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1394,
+      "candidate_ms": 0.0821,
+      "epoch": 247,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1346,
+      "candidate_ms": 0.0781,
+      "epoch": 248,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1384,
+      "candidate_ms": 0.0781,
+      "epoch": 249,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1317,
+      "candidate_ms": 0.0771,
+      "epoch": 250,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1322,
+      "candidate_ms": 0.0764,
+      "epoch": 251,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1315,
+      "candidate_ms": 0.0789,
+      "epoch": 252,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.137,
+      "candidate_ms": 0.0784,
+      "epoch": 253,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1359,
+      "candidate_ms": 0.0773,
+      "epoch": 254,
+      "tokens": 621
+    },
+    {
+      "baseline_ms": 0.1327,
+      "candidate_ms": 0.0772,
+      "epoch": 255,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1315,
+      "candidate_ms": 0.0764,
+      "epoch": 256,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1367,
+      "candidate_ms": 0.078,
+      "epoch": 257,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2057,
+      "candidate_ms": 0.109,
+      "epoch": 258,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1771,
+      "candidate_ms": 0.0954,
+      "epoch": 259,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1664,
+      "candidate_ms": 0.1013,
+      "epoch": 260,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1738,
+      "candidate_ms": 0.0977,
+      "epoch": 261,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1408,
+      "candidate_ms": 0.0725,
+      "epoch": 262,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1119,
+      "candidate_ms": 0.0769,
+      "epoch": 263,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1185,
+      "candidate_ms": 0.0723,
+      "epoch": 264,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1736,
+      "candidate_ms": 0.1058,
+      "epoch": 265,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1731,
+      "candidate_ms": 0.1039,
+      "epoch": 266,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1118,
+      "candidate_ms": 0.0863,
+      "epoch": 267,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1417,
+      "candidate_ms": 0.0738,
+      "epoch": 268,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1196,
+      "candidate_ms": 0.0727,
+      "epoch": 269,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2663,
+      "candidate_ms": 0.0951,
+      "epoch": 270,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1346,
+      "candidate_ms": 0.0735,
+      "epoch": 271,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1204,
+      "candidate_ms": 0.0781,
+      "epoch": 272,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0998,
+      "candidate_ms": 0.0594,
+      "epoch": 273,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0973,
+      "candidate_ms": 0.0698,
+      "epoch": 274,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1762,
+      "candidate_ms": 0.0879,
+      "epoch": 275,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1627,
+      "candidate_ms": 0.1162,
+      "epoch": 276,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1491,
+      "candidate_ms": 0.0848,
+      "epoch": 277,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1243,
+      "candidate_ms": 0.0797,
+      "epoch": 278,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1357,
+      "candidate_ms": 0.0558,
+      "epoch": 279,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1182,
+      "candidate_ms": 0.0627,
+      "epoch": 280,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1126,
+      "candidate_ms": 0.0683,
+      "epoch": 281,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1106,
+      "candidate_ms": 0.0649,
+      "epoch": 282,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1115,
+      "candidate_ms": 0.0658,
+      "epoch": 283,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0945,
+      "candidate_ms": 0.0545,
+      "epoch": 284,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1156,
+      "candidate_ms": 0.0536,
+      "epoch": 285,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1372,
+      "candidate_ms": 0.0886,
+      "epoch": 286,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.122,
+      "candidate_ms": 0.0697,
+      "epoch": 287,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.133,
+      "candidate_ms": 0.0729,
+      "epoch": 288,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1879,
+      "candidate_ms": 0.0693,
+      "epoch": 289,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1811,
+      "candidate_ms": 0.0733,
+      "epoch": 290,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1819,
+      "candidate_ms": 0.0887,
+      "epoch": 291,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.179,
+      "candidate_ms": 0.1037,
+      "epoch": 292,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1738,
+      "candidate_ms": 0.0983,
+      "epoch": 293,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.156,
+      "candidate_ms": 0.0876,
+      "epoch": 294,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1345,
+      "candidate_ms": 0.0669,
+      "epoch": 295,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1206,
+      "candidate_ms": 0.1154,
+      "epoch": 296,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1328,
+      "candidate_ms": 0.0804,
+      "epoch": 297,
+      "tokens": 621
+    },
+    {
+      "baseline_ms": 0.1234,
+      "candidate_ms": 0.1083,
+      "epoch": 298,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.133,
+      "candidate_ms": 0.0742,
+      "epoch": 299,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1248,
+      "candidate_ms": 0.0663,
+      "epoch": 300,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.119,
+      "candidate_ms": 0.0596,
+      "epoch": 301,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1283,
+      "candidate_ms": 0.0905,
+      "epoch": 302,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.192,
+      "candidate_ms": 0.0719,
+      "epoch": 303,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1185,
+      "candidate_ms": 0.0825,
+      "epoch": 304,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1462,
+      "candidate_ms": 0.0808,
+      "epoch": 305,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1215,
+      "candidate_ms": 0.1063,
+      "epoch": 306,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1763,
+      "candidate_ms": 0.0982,
+      "epoch": 307,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1877,
+      "candidate_ms": 0.1042,
+      "epoch": 308,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1702,
+      "candidate_ms": 0.1024,
+      "epoch": 309,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1072,
+      "candidate_ms": 0.0932,
+      "epoch": 310,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1829,
+      "candidate_ms": 0.1011,
+      "epoch": 311,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1685,
+      "candidate_ms": 0.0826,
+      "epoch": 312,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1329,
+      "candidate_ms": 0.0613,
+      "epoch": 313,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1685,
+      "candidate_ms": 0.0877,
+      "epoch": 314,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1241,
+      "candidate_ms": 0.0581,
+      "epoch": 315,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1178,
+      "candidate_ms": 0.0711,
+      "epoch": 316,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1358,
+      "candidate_ms": 0.0654,
+      "epoch": 317,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1111,
+      "candidate_ms": 0.0605,
+      "epoch": 318,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1226,
+      "candidate_ms": 0.0793,
+      "epoch": 319,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1,
+      "candidate_ms": 0.0586,
+      "epoch": 320,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.116,
+      "candidate_ms": 0.0831,
+      "epoch": 321,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1452,
+      "candidate_ms": 0.0816,
+      "epoch": 322,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2193,
+      "candidate_ms": 0.058,
+      "epoch": 323,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1374,
+      "candidate_ms": 0.09,
+      "epoch": 324,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.15,
+      "candidate_ms": 0.0679,
+      "epoch": 325,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1257,
+      "candidate_ms": 0.1019,
+      "epoch": 326,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1508,
+      "candidate_ms": 0.0797,
+      "epoch": 327,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1388,
+      "candidate_ms": 0.0857,
+      "epoch": 328,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1472,
+      "candidate_ms": 0.0776,
+      "epoch": 329,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2976,
+      "candidate_ms": 0.2083,
+      "epoch": 330,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1324,
+      "candidate_ms": 0.0795,
+      "epoch": 331,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1254,
+      "candidate_ms": 0.0661,
+      "epoch": 332,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1444,
+      "candidate_ms": 0.0983,
+      "epoch": 333,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1097,
+      "candidate_ms": 0.084,
+      "epoch": 334,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1522,
+      "candidate_ms": 0.0791,
+      "epoch": 335,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.14,
+      "candidate_ms": 0.1004,
+      "epoch": 336,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.11,
+      "candidate_ms": 0.0725,
+      "epoch": 337,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1339,
+      "candidate_ms": 0.0871,
+      "epoch": 338,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1257,
+      "candidate_ms": 0.0869,
+      "epoch": 339,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1215,
+      "candidate_ms": 0.0712,
+      "epoch": 340,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1276,
+      "candidate_ms": 0.0809,
+      "epoch": 341,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1297,
+      "candidate_ms": 0.0768,
+      "epoch": 342,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.133,
+      "candidate_ms": 0.0665,
+      "epoch": 343,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1162,
+      "candidate_ms": 0.0904,
+      "epoch": 344,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1456,
+      "candidate_ms": 0.0819,
+      "epoch": 345,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1677,
+      "candidate_ms": 0.0821,
+      "epoch": 346,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1434,
+      "candidate_ms": 0.0805,
+      "epoch": 347,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.184,
+      "candidate_ms": 0.0767,
+      "epoch": 348,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1146,
+      "candidate_ms": 0.0594,
+      "epoch": 349,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1416,
+      "candidate_ms": 0.0634,
+      "epoch": 350,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1261,
+      "candidate_ms": 0.0641,
+      "epoch": 351,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1123,
+      "candidate_ms": 0.0714,
+      "epoch": 352,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1235,
+      "candidate_ms": 0.074,
+      "epoch": 353,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1316,
+      "candidate_ms": 0.0701,
+      "epoch": 354,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1176,
+      "candidate_ms": 0.0794,
+      "epoch": 355,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1526,
+      "candidate_ms": 0.0845,
+      "epoch": 356,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1266,
+      "candidate_ms": 0.0795,
+      "epoch": 357,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1479,
+      "candidate_ms": 0.09,
+      "epoch": 358,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1725,
+      "candidate_ms": 0.0957,
+      "epoch": 359,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1226,
+      "candidate_ms": 0.0809,
+      "epoch": 360,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1197,
+      "candidate_ms": 0.0988,
+      "epoch": 361,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1251,
+      "candidate_ms": 0.0826,
+      "epoch": 362,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1426,
+      "candidate_ms": 0.0705,
+      "epoch": 363,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.13,
+      "candidate_ms": 0.0666,
+      "epoch": 364,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1051,
+      "candidate_ms": 0.0671,
+      "epoch": 365,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1159,
+      "candidate_ms": 0.0556,
+      "epoch": 366,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1116,
+      "candidate_ms": 0.0694,
+      "epoch": 367,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1611,
+      "candidate_ms": 0.087,
+      "epoch": 368,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1133,
+      "candidate_ms": 0.0662,
+      "epoch": 369,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1154,
+      "candidate_ms": 0.074,
+      "epoch": 370,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1437,
+      "candidate_ms": 0.0846,
+      "epoch": 371,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1113,
+      "candidate_ms": 0.0582,
+      "epoch": 372,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1387,
+      "candidate_ms": 0.0675,
+      "epoch": 373,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1036,
+      "candidate_ms": 0.0767,
+      "epoch": 374,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1165,
+      "candidate_ms": 0.0782,
+      "epoch": 375,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1153,
+      "candidate_ms": 0.0629,
+      "epoch": 376,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1209,
+      "candidate_ms": 0.061,
+      "epoch": 377,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1244,
+      "candidate_ms": 0.0729,
+      "epoch": 378,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1537,
+      "candidate_ms": 0.0722,
+      "epoch": 379,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1702,
+      "candidate_ms": 0.1066,
+      "epoch": 380,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1763,
+      "candidate_ms": 0.0982,
+      "epoch": 381,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1706,
+      "candidate_ms": 0.0792,
+      "epoch": 382,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1657,
+      "candidate_ms": 0.0898,
+      "epoch": 383,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1796,
+      "candidate_ms": 0.0767,
+      "epoch": 384,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1311,
+      "candidate_ms": 0.0607,
+      "epoch": 385,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1754,
+      "candidate_ms": 0.1023,
+      "epoch": 386,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1714,
+      "candidate_ms": 0.0987,
+      "epoch": 387,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1699,
+      "candidate_ms": 0.1045,
+      "epoch": 388,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1709,
+      "candidate_ms": 0.2531,
+      "epoch": 389,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1766,
+      "candidate_ms": 0.1533,
+      "epoch": 390,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1748,
+      "candidate_ms": 0.1194,
+      "epoch": 391,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1615,
+      "candidate_ms": 0.0993,
+      "epoch": 392,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1636,
+      "candidate_ms": 0.0935,
+      "epoch": 393,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1593,
+      "candidate_ms": 0.0949,
+      "epoch": 394,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1484,
+      "candidate_ms": 0.0925,
+      "epoch": 395,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1181,
+      "candidate_ms": 0.0808,
+      "epoch": 396,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.185,
+      "candidate_ms": 0.0775,
+      "epoch": 397,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1762,
+      "candidate_ms": 0.1085,
+      "epoch": 398,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1754,
+      "candidate_ms": 0.0985,
+      "epoch": 399,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1215,
+      "candidate_ms": 0.0755,
+      "epoch": 400,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1648,
+      "candidate_ms": 0.074,
+      "epoch": 401,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1604,
+      "candidate_ms": 0.0791,
+      "epoch": 402,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1489,
+      "candidate_ms": 0.0771,
+      "epoch": 403,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1781,
+      "candidate_ms": 0.0874,
+      "epoch": 404,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1398,
+      "candidate_ms": 0.0787,
+      "epoch": 405,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1362,
+      "candidate_ms": 0.0799,
+      "epoch": 406,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1337,
+      "candidate_ms": 0.0769,
+      "epoch": 407,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1363,
+      "candidate_ms": 0.0762,
+      "epoch": 408,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1316,
+      "candidate_ms": 0.0766,
+      "epoch": 409,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1295,
+      "candidate_ms": 0.0761,
+      "epoch": 410,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.131,
+      "candidate_ms": 0.0781,
+      "epoch": 411,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1339,
+      "candidate_ms": 0.0779,
+      "epoch": 412,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1312,
+      "candidate_ms": 0.0766,
+      "epoch": 413,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1303,
+      "candidate_ms": 0.0765,
+      "epoch": 414,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1337,
+      "candidate_ms": 0.0763,
+      "epoch": 415,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1307,
+      "candidate_ms": 0.0767,
+      "epoch": 416,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1313,
+      "candidate_ms": 0.0808,
+      "epoch": 417,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1311,
+      "candidate_ms": 0.0766,
+      "epoch": 418,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.132,
+      "candidate_ms": 0.0767,
+      "epoch": 419,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.133,
+      "candidate_ms": 0.0775,
+      "epoch": 420,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.132,
+      "candidate_ms": 0.0798,
+      "epoch": 421,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1312,
+      "candidate_ms": 0.0766,
+      "epoch": 422,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1317,
+      "candidate_ms": 0.0779,
+      "epoch": 423,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1318,
+      "candidate_ms": 0.0777,
+      "epoch": 424,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1317,
+      "candidate_ms": 0.0771,
+      "epoch": 425,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1323,
+      "candidate_ms": 0.0775,
+      "epoch": 426,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1316,
+      "candidate_ms": 0.0789,
+      "epoch": 427,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1312,
+      "candidate_ms": 0.0769,
+      "epoch": 428,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1351,
+      "candidate_ms": 0.0773,
+      "epoch": 429,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1349,
+      "candidate_ms": 0.0772,
+      "epoch": 430,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1321,
+      "candidate_ms": 0.0776,
+      "epoch": 431,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.132,
+      "candidate_ms": 0.0763,
+      "epoch": 432,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1316,
+      "candidate_ms": 0.0765,
+      "epoch": 433,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1325,
+      "candidate_ms": 0.0771,
+      "epoch": 434,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1327,
+      "candidate_ms": 0.0769,
+      "epoch": 435,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1309,
+      "candidate_ms": 0.0771,
+      "epoch": 436,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1318,
+      "candidate_ms": 0.077,
+      "epoch": 437,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1313,
+      "candidate_ms": 0.0769,
+      "epoch": 438,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1399,
+      "candidate_ms": 0.0814,
+      "epoch": 439,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1315,
+      "candidate_ms": 0.0771,
+      "epoch": 440,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1322,
+      "candidate_ms": 0.0782,
+      "epoch": 441,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1329,
+      "candidate_ms": 0.0771,
+      "epoch": 442,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1318,
+      "candidate_ms": 0.0796,
+      "epoch": 443,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1308,
+      "candidate_ms": 0.077,
+      "epoch": 444,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1334,
+      "candidate_ms": 0.0776,
+      "epoch": 445,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1315,
+      "candidate_ms": 0.0768,
+      "epoch": 446,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.132,
+      "candidate_ms": 0.0787,
+      "epoch": 447,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2632,
+      "candidate_ms": 0.0842,
+      "epoch": 448,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1366,
+      "candidate_ms": 0.0777,
+      "epoch": 449,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1322,
+      "candidate_ms": 0.0775,
+      "epoch": 450,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1329,
+      "candidate_ms": 0.0779,
+      "epoch": 451,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1328,
+      "candidate_ms": 0.077,
+      "epoch": 452,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1327,
+      "candidate_ms": 0.0768,
+      "epoch": 453,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1355,
+      "candidate_ms": 0.0769,
+      "epoch": 454,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1326,
+      "candidate_ms": 0.0769,
+      "epoch": 455,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1315,
+      "candidate_ms": 0.079,
+      "epoch": 456,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2271,
+      "candidate_ms": 0.0772,
+      "epoch": 457,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1334,
+      "candidate_ms": 0.0953,
+      "epoch": 458,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1225,
+      "candidate_ms": 0.0893,
+      "epoch": 459,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1402,
+      "candidate_ms": 0.0829,
+      "epoch": 460,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1602,
+      "candidate_ms": 0.0843,
+      "epoch": 461,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1301,
+      "candidate_ms": 0.0693,
+      "epoch": 462,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.178,
+      "candidate_ms": 0.0762,
+      "epoch": 463,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1335,
+      "candidate_ms": 0.0755,
+      "epoch": 464,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1345,
+      "candidate_ms": 0.0718,
+      "epoch": 465,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1181,
+      "candidate_ms": 0.0626,
+      "epoch": 466,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1137,
+      "candidate_ms": 0.0677,
+      "epoch": 467,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1186,
+      "candidate_ms": 0.0601,
+      "epoch": 468,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1076,
+      "candidate_ms": 0.0662,
+      "epoch": 469,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.131,
+      "candidate_ms": 0.0854,
+      "epoch": 470,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1438,
+      "candidate_ms": 0.0738,
+      "epoch": 471,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1054,
+      "candidate_ms": 0.0714,
+      "epoch": 472,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1206,
+      "candidate_ms": 0.0622,
+      "epoch": 473,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1112,
+      "candidate_ms": 0.0653,
+      "epoch": 474,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1223,
+      "candidate_ms": 0.0693,
+      "epoch": 475,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1425,
+      "candidate_ms": 0.0713,
+      "epoch": 476,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1236,
+      "candidate_ms": 0.0699,
+      "epoch": 477,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1382,
+      "candidate_ms": 0.0929,
+      "epoch": 478,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1279,
+      "candidate_ms": 0.1007,
+      "epoch": 479,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1173,
+      "candidate_ms": 0.0688,
+      "epoch": 480,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1106,
+      "candidate_ms": 0.0661,
+      "epoch": 481,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0941,
+      "candidate_ms": 0.0541,
+      "epoch": 482,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.101,
+      "candidate_ms": 0.0546,
+      "epoch": 483,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0943,
+      "candidate_ms": 0.0543,
+      "epoch": 484,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1261,
+      "candidate_ms": 0.0595,
+      "epoch": 485,
+      "tokens": 615
+    },
+    {
+      "baseline_ms": 0.107,
+      "candidate_ms": 0.0563,
+      "epoch": 486,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1018,
+      "candidate_ms": 0.0548,
+      "epoch": 487,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1001,
+      "candidate_ms": 0.0662,
+      "epoch": 488,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0976,
+      "candidate_ms": 0.0549,
+      "epoch": 489,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0957,
+      "candidate_ms": 0.0543,
+      "epoch": 490,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0979,
+      "candidate_ms": 0.0618,
+      "epoch": 491,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1033,
+      "candidate_ms": 0.0551,
+      "epoch": 492,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0976,
+      "candidate_ms": 0.0606,
+      "epoch": 493,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.12,
+      "candidate_ms": 0.0781,
+      "epoch": 494,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.097,
+      "candidate_ms": 0.0616,
+      "epoch": 495,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.0944,
+      "candidate_ms": 0.0546,
+      "epoch": 496,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0946,
+      "candidate_ms": 0.06,
+      "epoch": 497,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0932,
+      "candidate_ms": 0.0558,
+      "epoch": 498,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0955,
+      "candidate_ms": 0.0546,
+      "epoch": 499,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1014,
+      "candidate_ms": 0.0732,
+      "epoch": 500,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0992,
+      "candidate_ms": 0.0551,
+      "epoch": 501,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0991,
+      "candidate_ms": 0.0619,
+      "epoch": 502,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0949,
+      "candidate_ms": 0.0549,
+      "epoch": 503,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0944,
+      "candidate_ms": 0.0744,
+      "epoch": 504,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1721,
+      "candidate_ms": 0.0984,
+      "epoch": 505,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.171,
+      "candidate_ms": 0.1053,
+      "epoch": 506,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1857,
+      "candidate_ms": 0.0987,
+      "epoch": 507,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.2431,
+      "candidate_ms": 0.0941,
+      "epoch": 508,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1023,
+      "candidate_ms": 0.0806,
+      "epoch": 509,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1337,
+      "candidate_ms": 0.0835,
+      "epoch": 510,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.122,
+      "candidate_ms": 0.076,
+      "epoch": 511,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1159,
+      "candidate_ms": 0.0833,
+      "epoch": 512,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1308,
+      "candidate_ms": 0.065,
+      "epoch": 513,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1399,
+      "candidate_ms": 0.0715,
+      "epoch": 514,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.122,
+      "candidate_ms": 0.0715,
+      "epoch": 515,
+      "tokens": 615
+    },
+    {
+      "baseline_ms": 0.125,
+      "candidate_ms": 0.0672,
+      "epoch": 516,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1096,
+      "candidate_ms": 0.0637,
+      "epoch": 517,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1171,
+      "candidate_ms": 0.0712,
+      "epoch": 518,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1155,
+      "candidate_ms": 0.0753,
+      "epoch": 519,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0985,
+      "candidate_ms": 0.0686,
+      "epoch": 520,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1025,
+      "candidate_ms": 0.0699,
+      "epoch": 521,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1244,
+      "candidate_ms": 0.0669,
+      "epoch": 522,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1107,
+      "candidate_ms": 0.0606,
+      "epoch": 523,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1333,
+      "candidate_ms": 0.07,
+      "epoch": 524,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1275,
+      "candidate_ms": 0.0653,
+      "epoch": 525,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1305,
+      "candidate_ms": 0.0929,
+      "epoch": 526,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.2071,
+      "candidate_ms": 0.0835,
+      "epoch": 527,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1694,
+      "candidate_ms": 0.1053,
+      "epoch": 528,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1732,
+      "candidate_ms": 0.0955,
+      "epoch": 529,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1671,
+      "candidate_ms": 0.1022,
+      "epoch": 530,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1466,
+      "candidate_ms": 0.0984,
+      "epoch": 531,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1759,
+      "candidate_ms": 0.1101,
+      "epoch": 532,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1209,
+      "candidate_ms": 0.1309,
+      "epoch": 533,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1254,
+      "candidate_ms": 0.0715,
+      "epoch": 534,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1087,
+      "candidate_ms": 0.0652,
+      "epoch": 535,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.118,
+      "candidate_ms": 0.0659,
+      "epoch": 536,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1136,
+      "candidate_ms": 0.0627,
+      "epoch": 537,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.116,
+      "candidate_ms": 0.0565,
+      "epoch": 538,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1003,
+      "candidate_ms": 0.0688,
+      "epoch": 539,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1047,
+      "candidate_ms": 0.0657,
+      "epoch": 540,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.111,
+      "candidate_ms": 0.0548,
+      "epoch": 541,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1029,
+      "candidate_ms": 0.0649,
+      "epoch": 542,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1156,
+      "candidate_ms": 0.0631,
+      "epoch": 543,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1059,
+      "candidate_ms": 0.0583,
+      "epoch": 544,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1046,
+      "candidate_ms": 0.0554,
+      "epoch": 545,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1047,
+      "candidate_ms": 0.0553,
+      "epoch": 546,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1125,
+      "candidate_ms": 0.0545,
+      "epoch": 547,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1077,
+      "candidate_ms": 0.0684,
+      "epoch": 548,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.107,
+      "candidate_ms": 0.0605,
+      "epoch": 549,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1027,
+      "candidate_ms": 0.065,
+      "epoch": 550,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0982,
+      "candidate_ms": 0.0546,
+      "epoch": 551,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1182,
+      "candidate_ms": 0.06,
+      "epoch": 552,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.104,
+      "candidate_ms": 0.0644,
+      "epoch": 553,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1013,
+      "candidate_ms": 0.0621,
+      "epoch": 554,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1557,
+      "candidate_ms": 0.0804,
+      "epoch": 555,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1065,
+      "candidate_ms": 0.0647,
+      "epoch": 556,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1198,
+      "candidate_ms": 0.0685,
+      "epoch": 557,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1008,
+      "candidate_ms": 0.0554,
+      "epoch": 558,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1641,
+      "candidate_ms": 0.0832,
+      "epoch": 559,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1041,
+      "candidate_ms": 0.0834,
+      "epoch": 560,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1174,
+      "candidate_ms": 0.079,
+      "epoch": 561,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1313,
+      "candidate_ms": 0.0596,
+      "epoch": 562,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1688,
+      "candidate_ms": 0.0761,
+      "epoch": 563,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1798,
+      "candidate_ms": 0.1119,
+      "epoch": 564,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1376,
+      "candidate_ms": 0.0627,
+      "epoch": 565,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1014,
+      "candidate_ms": 0.0794,
+      "epoch": 566,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1021,
+      "candidate_ms": 0.0573,
+      "epoch": 567,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.2185,
+      "candidate_ms": 0.0653,
+      "epoch": 568,
+      "tokens": 621
+    },
+    {
+      "baseline_ms": 0.1116,
+      "candidate_ms": 0.0558,
+      "epoch": 569,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1054,
+      "candidate_ms": 0.0737,
+      "epoch": 570,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1077,
+      "candidate_ms": 0.0718,
+      "epoch": 571,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1097,
+      "candidate_ms": 0.0732,
+      "epoch": 572,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1155,
+      "candidate_ms": 0.0643,
+      "epoch": 573,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.108,
+      "candidate_ms": 0.072,
+      "epoch": 574,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1017,
+      "candidate_ms": 0.0547,
+      "epoch": 575,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1053,
+      "candidate_ms": 0.0698,
+      "epoch": 576,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1096,
+      "candidate_ms": 0.0591,
+      "epoch": 577,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.106,
+      "candidate_ms": 0.0546,
+      "epoch": 578,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.099,
+      "candidate_ms": 0.0539,
+      "epoch": 579,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.099,
+      "candidate_ms": 0.0546,
+      "epoch": 580,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1033,
+      "candidate_ms": 0.0543,
+      "epoch": 581,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1539,
+      "candidate_ms": 0.1035,
+      "epoch": 582,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1705,
+      "candidate_ms": 0.1007,
+      "epoch": 583,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1593,
+      "candidate_ms": 0.0955,
+      "epoch": 584,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1533,
+      "candidate_ms": 0.0904,
+      "epoch": 585,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1654,
+      "candidate_ms": 0.1026,
+      "epoch": 586,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.163,
+      "candidate_ms": 0.0937,
+      "epoch": 587,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1527,
+      "candidate_ms": 0.1047,
+      "epoch": 588,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.157,
+      "candidate_ms": 0.1,
+      "epoch": 589,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1796,
+      "candidate_ms": 0.1048,
+      "epoch": 590,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1749,
+      "candidate_ms": 0.0994,
+      "epoch": 591,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.168,
+      "candidate_ms": 0.0963,
+      "epoch": 592,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.179,
+      "candidate_ms": 0.0983,
+      "epoch": 593,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1682,
+      "candidate_ms": 0.1027,
+      "epoch": 594,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1756,
+      "candidate_ms": 0.0985,
+      "epoch": 595,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1653,
+      "candidate_ms": 0.1022,
+      "epoch": 596,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1696,
+      "candidate_ms": 0.0966,
+      "epoch": 597,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1693,
+      "candidate_ms": 0.1032,
+      "epoch": 598,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1691,
+      "candidate_ms": 0.098,
+      "epoch": 599,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1664,
+      "candidate_ms": 0.1012,
+      "epoch": 600,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1696,
+      "candidate_ms": 0.0969,
+      "epoch": 601,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1665,
+      "candidate_ms": 0.109,
+      "epoch": 602,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.3834,
+      "candidate_ms": 0.1,
+      "epoch": 603,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1791,
+      "candidate_ms": 0.1073,
+      "epoch": 604,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1697,
+      "candidate_ms": 0.0999,
+      "epoch": 605,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1674,
+      "candidate_ms": 0.1049,
+      "epoch": 606,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1709,
+      "candidate_ms": 0.0969,
+      "epoch": 607,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1725,
+      "candidate_ms": 0.1001,
+      "epoch": 608,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1596,
+      "candidate_ms": 0.1147,
+      "epoch": 609,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1834,
+      "candidate_ms": 0.1252,
+      "epoch": 610,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1501,
+      "candidate_ms": 0.0906,
+      "epoch": 611,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1389,
+      "candidate_ms": 0.0805,
+      "epoch": 612,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1786,
+      "candidate_ms": 0.0792,
+      "epoch": 613,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.17,
+      "candidate_ms": 0.1116,
+      "epoch": 614,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1924,
+      "candidate_ms": 0.0966,
+      "epoch": 615,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.169,
+      "candidate_ms": 0.1011,
+      "epoch": 616,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1659,
+      "candidate_ms": 0.0846,
+      "epoch": 617,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1726,
+      "candidate_ms": 0.1243,
+      "epoch": 618,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1836,
+      "candidate_ms": 0.1255,
+      "epoch": 619,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1343,
+      "candidate_ms": 0.1017,
+      "epoch": 620,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1279,
+      "candidate_ms": 0.0875,
+      "epoch": 621,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1793,
+      "candidate_ms": 0.1144,
+      "epoch": 622,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1901,
+      "candidate_ms": 0.0996,
+      "epoch": 623,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1671,
+      "candidate_ms": 0.132,
+      "epoch": 624,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2052,
+      "candidate_ms": 0.1365,
+      "epoch": 625,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2194,
+      "candidate_ms": 0.1265,
+      "epoch": 626,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.271,
+      "candidate_ms": 0.0991,
+      "epoch": 627,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.3547,
+      "candidate_ms": 0.1015,
+      "epoch": 628,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1835,
+      "candidate_ms": 0.0967,
+      "epoch": 629,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1845,
+      "candidate_ms": 0.1063,
+      "epoch": 630,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1819,
+      "candidate_ms": 0.0994,
+      "epoch": 631,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.212,
+      "candidate_ms": 0.0972,
+      "epoch": 632,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1722,
+      "candidate_ms": 0.1032,
+      "epoch": 633,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2071,
+      "candidate_ms": 0.1077,
+      "epoch": 634,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1844,
+      "candidate_ms": 0.0969,
+      "epoch": 635,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1833,
+      "candidate_ms": 0.1217,
+      "epoch": 636,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1944,
+      "candidate_ms": 0.1012,
+      "epoch": 637,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1605,
+      "candidate_ms": 0.1068,
+      "epoch": 638,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1813,
+      "candidate_ms": 0.1003,
+      "epoch": 639,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1791,
+      "candidate_ms": 0.0974,
+      "epoch": 640,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1666,
+      "candidate_ms": 0.093,
+      "epoch": 641,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1642,
+      "candidate_ms": 0.0999,
+      "epoch": 642,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1451,
+      "candidate_ms": 0.108,
+      "epoch": 643,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1697,
+      "candidate_ms": 0.105,
+      "epoch": 644,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1829,
+      "candidate_ms": 0.0964,
+      "epoch": 645,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1666,
+      "candidate_ms": 0.1008,
+      "epoch": 646,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1924,
+      "candidate_ms": 0.1041,
+      "epoch": 647,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1686,
+      "candidate_ms": 0.1088,
+      "epoch": 648,
+      "tokens": 615
+    },
+    {
+      "baseline_ms": 0.1877,
+      "candidate_ms": 0.0989,
+      "epoch": 649,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.2079,
+      "candidate_ms": 0.0918,
+      "epoch": 650,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.159,
+      "candidate_ms": 0.074,
+      "epoch": 651,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2134,
+      "candidate_ms": 0.103,
+      "epoch": 652,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1724,
+      "candidate_ms": 0.0953,
+      "epoch": 653,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1674,
+      "candidate_ms": 0.0979,
+      "epoch": 654,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1723,
+      "candidate_ms": 0.098,
+      "epoch": 655,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.2128,
+      "candidate_ms": 0.1107,
+      "epoch": 656,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1552,
+      "candidate_ms": 0.0933,
+      "epoch": 657,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1356,
+      "candidate_ms": 0.1087,
+      "epoch": 658,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.2006,
+      "candidate_ms": 0.1163,
+      "epoch": 659,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1696,
+      "candidate_ms": 0.0911,
+      "epoch": 660,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.2055,
+      "candidate_ms": 0.0877,
+      "epoch": 661,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1516,
+      "candidate_ms": 0.1167,
+      "epoch": 662,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1755,
+      "candidate_ms": 0.1011,
+      "epoch": 663,
+      "tokens": 615
+    },
+    {
+      "baseline_ms": 0.1666,
+      "candidate_ms": 0.1042,
+      "epoch": 664,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1742,
+      "candidate_ms": 0.1142,
+      "epoch": 665,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1659,
+      "candidate_ms": 0.1076,
+      "epoch": 666,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1695,
+      "candidate_ms": 0.0971,
+      "epoch": 667,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1651,
+      "candidate_ms": 0.0992,
+      "epoch": 668,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1683,
+      "candidate_ms": 0.0942,
+      "epoch": 669,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1689,
+      "candidate_ms": 0.1331,
+      "epoch": 670,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1906,
+      "candidate_ms": 0.0833,
+      "epoch": 671,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1771,
+      "candidate_ms": 0.0879,
+      "epoch": 672,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.145,
+      "candidate_ms": 0.0802,
+      "epoch": 673,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1429,
+      "candidate_ms": 0.0805,
+      "epoch": 674,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1706,
+      "candidate_ms": 0.1038,
+      "epoch": 675,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.176,
+      "candidate_ms": 0.0935,
+      "epoch": 676,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1476,
+      "candidate_ms": 0.0846,
+      "epoch": 677,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1459,
+      "candidate_ms": 0.0941,
+      "epoch": 678,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1597,
+      "candidate_ms": 0.0869,
+      "epoch": 679,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1493,
+      "candidate_ms": 0.0887,
+      "epoch": 680,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1552,
+      "candidate_ms": 0.0846,
+      "epoch": 681,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1514,
+      "candidate_ms": 0.0875,
+      "epoch": 682,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1813,
+      "candidate_ms": 0.1187,
+      "epoch": 683,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1702,
+      "candidate_ms": 0.1032,
+      "epoch": 684,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1741,
+      "candidate_ms": 0.1009,
+      "epoch": 685,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1669,
+      "candidate_ms": 0.1036,
+      "epoch": 686,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1297,
+      "candidate_ms": 0.0762,
+      "epoch": 687,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.3063,
+      "candidate_ms": 0.1093,
+      "epoch": 688,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1458,
+      "candidate_ms": 0.0923,
+      "epoch": 689,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1533,
+      "candidate_ms": 0.0781,
+      "epoch": 690,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.155,
+      "candidate_ms": 0.09,
+      "epoch": 691,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1678,
+      "candidate_ms": 0.0922,
+      "epoch": 692,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1423,
+      "candidate_ms": 0.0684,
+      "epoch": 693,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1459,
+      "candidate_ms": 0.0857,
+      "epoch": 694,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1192,
+      "candidate_ms": 0.0709,
+      "epoch": 695,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1093,
+      "candidate_ms": 0.0822,
+      "epoch": 696,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1401,
+      "candidate_ms": 0.0932,
+      "epoch": 697,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.114,
+      "candidate_ms": 0.1098,
+      "epoch": 698,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1699,
+      "candidate_ms": 0.0801,
+      "epoch": 699,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1786,
+      "candidate_ms": 0.1008,
+      "epoch": 700,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1592,
+      "candidate_ms": 0.0792,
+      "epoch": 701,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1556,
+      "candidate_ms": 0.0966,
+      "epoch": 702,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1335,
+      "candidate_ms": 0.1086,
+      "epoch": 703,
+      "tokens": 621
+    },
+    {
+      "baseline_ms": 0.1603,
+      "candidate_ms": 0.1119,
+      "epoch": 704,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1741,
+      "candidate_ms": 0.0995,
+      "epoch": 705,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1661,
+      "candidate_ms": 0.1031,
+      "epoch": 706,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.173,
+      "candidate_ms": 0.0993,
+      "epoch": 707,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1746,
+      "candidate_ms": 0.1959,
+      "epoch": 708,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2029,
+      "candidate_ms": 0.1059,
+      "epoch": 709,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1536,
+      "candidate_ms": 0.1085,
+      "epoch": 710,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.2352,
+      "candidate_ms": 0.087,
+      "epoch": 711,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1528,
+      "candidate_ms": 0.1078,
+      "epoch": 712,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1627,
+      "candidate_ms": 0.1002,
+      "epoch": 713,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1361,
+      "candidate_ms": 0.0841,
+      "epoch": 714,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1764,
+      "candidate_ms": 0.1321,
+      "epoch": 715,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1668,
+      "candidate_ms": 0.1038,
+      "epoch": 716,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1514,
+      "candidate_ms": 0.0666,
+      "epoch": 717,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1353,
+      "candidate_ms": 0.0618,
+      "epoch": 718,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1164,
+      "candidate_ms": 0.0662,
+      "epoch": 719,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1098,
+      "candidate_ms": 0.0885,
+      "epoch": 720,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1764,
+      "candidate_ms": 0.1012,
+      "epoch": 721,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1385,
+      "candidate_ms": 0.0889,
+      "epoch": 722,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1528,
+      "candidate_ms": 0.0858,
+      "epoch": 723,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1453,
+      "candidate_ms": 0.0997,
+      "epoch": 724,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.157,
+      "candidate_ms": 0.1037,
+      "epoch": 725,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1715,
+      "candidate_ms": 0.1055,
+      "epoch": 726,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1717,
+      "candidate_ms": 0.085,
+      "epoch": 727,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1374,
+      "candidate_ms": 0.0964,
+      "epoch": 728,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1841,
+      "candidate_ms": 0.0988,
+      "epoch": 729,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1645,
+      "candidate_ms": 0.119,
+      "epoch": 730,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2317,
+      "candidate_ms": 0.0837,
+      "epoch": 731,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1828,
+      "candidate_ms": 0.1004,
+      "epoch": 732,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1868,
+      "candidate_ms": 0.0911,
+      "epoch": 733,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.14,
+      "candidate_ms": 0.0884,
+      "epoch": 734,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1604,
+      "candidate_ms": 0.0907,
+      "epoch": 735,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1681,
+      "candidate_ms": 0.0992,
+      "epoch": 736,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1706,
+      "candidate_ms": 0.1009,
+      "epoch": 737,
+      "tokens": 615
+    },
+    {
+      "baseline_ms": 0.1195,
+      "candidate_ms": 0.0685,
+      "epoch": 738,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1388,
+      "candidate_ms": 0.0692,
+      "epoch": 739,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1165,
+      "candidate_ms": 0.0675,
+      "epoch": 740,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1026,
+      "candidate_ms": 0.0571,
+      "epoch": 741,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1147,
+      "candidate_ms": 0.0614,
+      "epoch": 742,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1265,
+      "candidate_ms": 0.064,
+      "epoch": 743,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1859,
+      "candidate_ms": 0.1079,
+      "epoch": 744,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1194,
+      "candidate_ms": 0.1011,
+      "epoch": 745,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1115,
+      "candidate_ms": 0.059,
+      "epoch": 746,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1004,
+      "candidate_ms": 0.0647,
+      "epoch": 747,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.2686,
+      "candidate_ms": 0.1036,
+      "epoch": 748,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1391,
+      "candidate_ms": 0.0935,
+      "epoch": 749,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1025,
+      "candidate_ms": 0.0778,
+      "epoch": 750,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1088,
+      "candidate_ms": 0.0557,
+      "epoch": 751,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0985,
+      "candidate_ms": 0.0559,
+      "epoch": 752,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1013,
+      "candidate_ms": 0.0546,
+      "epoch": 753,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0952,
+      "candidate_ms": 0.0544,
+      "epoch": 754,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0985,
+      "candidate_ms": 0.0548,
+      "epoch": 755,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0961,
+      "candidate_ms": 0.0547,
+      "epoch": 756,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0997,
+      "candidate_ms": 0.1422,
+      "epoch": 757,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0985,
+      "candidate_ms": 0.0558,
+      "epoch": 758,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1,
+      "candidate_ms": 0.0551,
+      "epoch": 759,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.098,
+      "candidate_ms": 0.0653,
+      "epoch": 760,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1047,
+      "candidate_ms": 0.0615,
+      "epoch": 761,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1023,
+      "candidate_ms": 0.0577,
+      "epoch": 762,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0984,
+      "candidate_ms": 0.0578,
+      "epoch": 763,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1138,
+      "candidate_ms": 0.0552,
+      "epoch": 764,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1051,
+      "candidate_ms": 0.0678,
+      "epoch": 765,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0998,
+      "candidate_ms": 0.0634,
+      "epoch": 766,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0988,
+      "candidate_ms": 0.0704,
+      "epoch": 767,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.097,
+      "candidate_ms": 0.0569,
+      "epoch": 768,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.108,
+      "candidate_ms": 0.058,
+      "epoch": 769,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1077,
+      "candidate_ms": 0.055,
+      "epoch": 770,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0979,
+      "candidate_ms": 0.055,
+      "epoch": 771,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0974,
+      "candidate_ms": 0.0557,
+      "epoch": 772,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0978,
+      "candidate_ms": 0.0549,
+      "epoch": 773,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0968,
+      "candidate_ms": 0.0542,
+      "epoch": 774,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0985,
+      "candidate_ms": 0.0581,
+      "epoch": 775,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0965,
+      "candidate_ms": 0.0547,
+      "epoch": 776,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0976,
+      "candidate_ms": 0.0542,
+      "epoch": 777,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0975,
+      "candidate_ms": 0.0551,
+      "epoch": 778,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1736,
+      "candidate_ms": 0.0965,
+      "epoch": 779,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.176,
+      "candidate_ms": 0.1146,
+      "epoch": 780,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1798,
+      "candidate_ms": 0.1093,
+      "epoch": 781,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1817,
+      "candidate_ms": 0.106,
+      "epoch": 782,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1646,
+      "candidate_ms": 0.1151,
+      "epoch": 783,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1536,
+      "candidate_ms": 0.069,
+      "epoch": 784,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1395,
+      "candidate_ms": 0.0763,
+      "epoch": 785,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1057,
+      "candidate_ms": 0.0811,
+      "epoch": 786,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0996,
+      "candidate_ms": 0.0563,
+      "epoch": 787,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1154,
+      "candidate_ms": 0.0724,
+      "epoch": 788,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1219,
+      "candidate_ms": 0.0616,
+      "epoch": 789,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.101,
+      "candidate_ms": 0.0902,
+      "epoch": 790,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1036,
+      "candidate_ms": 0.0684,
+      "epoch": 791,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1056,
+      "candidate_ms": 0.0567,
+      "epoch": 792,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1149,
+      "candidate_ms": 0.0547,
+      "epoch": 793,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0975,
+      "candidate_ms": 0.0575,
+      "epoch": 794,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1017,
+      "candidate_ms": 0.0561,
+      "epoch": 795,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1197,
+      "candidate_ms": 0.0753,
+      "epoch": 796,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0984,
+      "candidate_ms": 0.0555,
+      "epoch": 797,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1159,
+      "candidate_ms": 0.0547,
+      "epoch": 798,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.096,
+      "candidate_ms": 0.0549,
+      "epoch": 799,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1034,
+      "candidate_ms": 0.0553,
+      "epoch": 800,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1011,
+      "candidate_ms": 0.0652,
+      "epoch": 801,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0992,
+      "candidate_ms": 0.0585,
+      "epoch": 802,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1237,
+      "candidate_ms": 0.0574,
+      "epoch": 803,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1035,
+      "candidate_ms": 0.0634,
+      "epoch": 804,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1048,
+      "candidate_ms": 0.0604,
+      "epoch": 805,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0979,
+      "candidate_ms": 0.0562,
+      "epoch": 806,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1009,
+      "candidate_ms": 0.1882,
+      "epoch": 807,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0983,
+      "candidate_ms": 0.0566,
+      "epoch": 808,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1007,
+      "candidate_ms": 0.0546,
+      "epoch": 809,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.099,
+      "candidate_ms": 0.0672,
+      "epoch": 810,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.127,
+      "candidate_ms": 0.0595,
+      "epoch": 811,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1021,
+      "candidate_ms": 0.0717,
+      "epoch": 812,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1786,
+      "candidate_ms": 0.0997,
+      "epoch": 813,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1024,
+      "candidate_ms": 0.0677,
+      "epoch": 814,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1078,
+      "candidate_ms": 0.0567,
+      "epoch": 815,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0984,
+      "candidate_ms": 0.055,
+      "epoch": 816,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0964,
+      "candidate_ms": 0.0548,
+      "epoch": 817,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1009,
+      "candidate_ms": 0.0558,
+      "epoch": 818,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1088,
+      "candidate_ms": 0.0748,
+      "epoch": 819,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0978,
+      "candidate_ms": 0.0674,
+      "epoch": 820,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1042,
+      "candidate_ms": 0.0588,
+      "epoch": 821,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1005,
+      "candidate_ms": 0.0851,
+      "epoch": 822,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1124,
+      "candidate_ms": 0.0695,
+      "epoch": 823,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.105,
+      "candidate_ms": 0.0562,
+      "epoch": 824,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.098,
+      "candidate_ms": 0.0549,
+      "epoch": 825,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1267,
+      "candidate_ms": 0.0679,
+      "epoch": 826,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0991,
+      "candidate_ms": 0.0552,
+      "epoch": 827,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.0985,
+      "candidate_ms": 0.0555,
+      "epoch": 828,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1024,
+      "candidate_ms": 0.0554,
+      "epoch": 829,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1181,
+      "candidate_ms": 0.0567,
+      "epoch": 830,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1121,
+      "candidate_ms": 0.0554,
+      "epoch": 831,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1031,
+      "candidate_ms": 0.213,
+      "epoch": 832,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1393,
+      "candidate_ms": 0.0699,
+      "epoch": 833,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1401,
+      "candidate_ms": 0.1041,
+      "epoch": 834,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1722,
+      "candidate_ms": 0.0985,
+      "epoch": 835,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1551,
+      "candidate_ms": 0.0692,
+      "epoch": 836,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1087,
+      "candidate_ms": 0.0602,
+      "epoch": 837,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1134,
+      "candidate_ms": 0.0648,
+      "epoch": 838,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1419,
+      "candidate_ms": 0.087,
+      "epoch": 839,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.116,
+      "candidate_ms": 0.0673,
+      "epoch": 840,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1419,
+      "candidate_ms": 0.074,
+      "epoch": 841,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1247,
+      "candidate_ms": 0.0791,
+      "epoch": 842,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1396,
+      "candidate_ms": 0.0892,
+      "epoch": 843,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1446,
+      "candidate_ms": 0.0791,
+      "epoch": 844,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1431,
+      "candidate_ms": 0.0971,
+      "epoch": 845,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1906,
+      "candidate_ms": 0.1117,
+      "epoch": 846,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1755,
+      "candidate_ms": 0.1023,
+      "epoch": 847,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1074,
+      "candidate_ms": 0.0965,
+      "epoch": 848,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1271,
+      "candidate_ms": 0.0706,
+      "epoch": 849,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1074,
+      "candidate_ms": 0.0632,
+      "epoch": 850,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1556,
+      "candidate_ms": 0.0556,
+      "epoch": 851,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1934,
+      "candidate_ms": 0.0987,
+      "epoch": 852,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1962,
+      "candidate_ms": 0.0818,
+      "epoch": 853,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1823,
+      "candidate_ms": 0.0938,
+      "epoch": 854,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.165,
+      "candidate_ms": 0.0936,
+      "epoch": 855,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1632,
+      "candidate_ms": 0.1105,
+      "epoch": 856,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1159,
+      "candidate_ms": 0.0628,
+      "epoch": 857,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1301,
+      "candidate_ms": 0.0685,
+      "epoch": 858,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.125,
+      "candidate_ms": 0.082,
+      "epoch": 859,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1271,
+      "candidate_ms": 0.0669,
+      "epoch": 860,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1149,
+      "candidate_ms": 0.0664,
+      "epoch": 861,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1548,
+      "candidate_ms": 0.0766,
+      "epoch": 862,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1008,
+      "candidate_ms": 0.0695,
+      "epoch": 863,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.113,
+      "candidate_ms": 0.0783,
+      "epoch": 864,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1304,
+      "candidate_ms": 0.0612,
+      "epoch": 865,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.254,
+      "candidate_ms": 0.0887,
+      "epoch": 866,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1631,
+      "candidate_ms": 0.067,
+      "epoch": 867,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1356,
+      "candidate_ms": 0.0629,
+      "epoch": 868,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1177,
+      "candidate_ms": 0.0562,
+      "epoch": 869,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.0986,
+      "candidate_ms": 0.0568,
+      "epoch": 870,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1364,
+      "candidate_ms": 0.082,
+      "epoch": 871,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1216,
+      "candidate_ms": 0.0811,
+      "epoch": 872,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1087,
+      "candidate_ms": 0.0557,
+      "epoch": 873,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1222,
+      "candidate_ms": 0.0675,
+      "epoch": 874,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1075,
+      "candidate_ms": 0.0557,
+      "epoch": 875,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.152,
+      "candidate_ms": 0.097,
+      "epoch": 876,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1117,
+      "candidate_ms": 0.0966,
+      "epoch": 877,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1088,
+      "candidate_ms": 0.062,
+      "epoch": 878,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1089,
+      "candidate_ms": 0.0613,
+      "epoch": 879,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1057,
+      "candidate_ms": 0.0744,
+      "epoch": 880,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.155,
+      "candidate_ms": 0.0662,
+      "epoch": 881,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1697,
+      "candidate_ms": 0.097,
+      "epoch": 882,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1623,
+      "candidate_ms": 0.1007,
+      "epoch": 883,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.175,
+      "candidate_ms": 0.0991,
+      "epoch": 884,
+      "tokens": 621
+    },
+    {
+      "baseline_ms": 0.1514,
+      "candidate_ms": 0.087,
+      "epoch": 885,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2153,
+      "candidate_ms": 0.1023,
+      "epoch": 886,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1601,
+      "candidate_ms": 0.0951,
+      "epoch": 887,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1632,
+      "candidate_ms": 0.0986,
+      "epoch": 888,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1804,
+      "candidate_ms": 0.088,
+      "epoch": 889,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1767,
+      "candidate_ms": 0.1046,
+      "epoch": 890,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1547,
+      "candidate_ms": 0.0986,
+      "epoch": 891,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1572,
+      "candidate_ms": 0.091,
+      "epoch": 892,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1876,
+      "candidate_ms": 0.0967,
+      "epoch": 893,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1582,
+      "candidate_ms": 0.0972,
+      "epoch": 894,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1651,
+      "candidate_ms": 0.0867,
+      "epoch": 895,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1524,
+      "candidate_ms": 0.0666,
+      "epoch": 896,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1855,
+      "candidate_ms": 0.1379,
+      "epoch": 897,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.146,
+      "candidate_ms": 0.09,
+      "epoch": 898,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1669,
+      "candidate_ms": 0.09,
+      "epoch": 899,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1614,
+      "candidate_ms": 0.0913,
+      "epoch": 900,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1448,
+      "candidate_ms": 0.0776,
+      "epoch": 901,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.166,
+      "candidate_ms": 0.0803,
+      "epoch": 902,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1789,
+      "candidate_ms": 0.0746,
+      "epoch": 903,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1692,
+      "candidate_ms": 0.1014,
+      "epoch": 904,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1474,
+      "candidate_ms": 0.0864,
+      "epoch": 905,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1574,
+      "candidate_ms": 0.1003,
+      "epoch": 906,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2055,
+      "candidate_ms": 0.091,
+      "epoch": 907,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.16,
+      "candidate_ms": 0.1004,
+      "epoch": 908,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1458,
+      "candidate_ms": 0.0974,
+      "epoch": 909,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1347,
+      "candidate_ms": 0.0907,
+      "epoch": 910,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1446,
+      "candidate_ms": 0.0681,
+      "epoch": 911,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1619,
+      "candidate_ms": 0.0889,
+      "epoch": 912,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1468,
+      "candidate_ms": 0.1078,
+      "epoch": 913,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1902,
+      "candidate_ms": 0.1085,
+      "epoch": 914,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2624,
+      "candidate_ms": 0.0991,
+      "epoch": 915,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1883,
+      "candidate_ms": 0.1,
+      "epoch": 916,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1482,
+      "candidate_ms": 0.0882,
+      "epoch": 917,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1388,
+      "candidate_ms": 0.0889,
+      "epoch": 918,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1658,
+      "candidate_ms": 0.093,
+      "epoch": 919,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1657,
+      "candidate_ms": 0.1011,
+      "epoch": 920,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1744,
+      "candidate_ms": 0.1056,
+      "epoch": 921,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1729,
+      "candidate_ms": 0.1028,
+      "epoch": 922,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.161,
+      "candidate_ms": 0.0995,
+      "epoch": 923,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1629,
+      "candidate_ms": 0.0898,
+      "epoch": 924,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1586,
+      "candidate_ms": 0.0883,
+      "epoch": 925,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.3014,
+      "candidate_ms": 0.1071,
+      "epoch": 926,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1964,
+      "candidate_ms": 0.0935,
+      "epoch": 927,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.145,
+      "candidate_ms": 0.1046,
+      "epoch": 928,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1668,
+      "candidate_ms": 0.0992,
+      "epoch": 929,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.164,
+      "candidate_ms": 0.1169,
+      "epoch": 930,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1422,
+      "candidate_ms": 0.0937,
+      "epoch": 931,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1748,
+      "candidate_ms": 0.0975,
+      "epoch": 932,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1695,
+      "candidate_ms": 0.103,
+      "epoch": 933,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1605,
+      "candidate_ms": 0.0965,
+      "epoch": 934,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1578,
+      "candidate_ms": 0.0905,
+      "epoch": 935,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1743,
+      "candidate_ms": 0.0976,
+      "epoch": 936,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1806,
+      "candidate_ms": 0.0975,
+      "epoch": 937,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1825,
+      "candidate_ms": 0.0976,
+      "epoch": 938,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1819,
+      "candidate_ms": 0.0955,
+      "epoch": 939,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1672,
+      "candidate_ms": 0.1124,
+      "epoch": 940,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1584,
+      "candidate_ms": 0.1,
+      "epoch": 941,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1626,
+      "candidate_ms": 0.1036,
+      "epoch": 942,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1615,
+      "candidate_ms": 0.0971,
+      "epoch": 943,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1956,
+      "candidate_ms": 0.0998,
+      "epoch": 944,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1535,
+      "candidate_ms": 0.1093,
+      "epoch": 945,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1658,
+      "candidate_ms": 0.0983,
+      "epoch": 946,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.165,
+      "candidate_ms": 0.0556,
+      "epoch": 947,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1672,
+      "candidate_ms": 0.1037,
+      "epoch": 948,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1593,
+      "candidate_ms": 0.1031,
+      "epoch": 949,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2243,
+      "candidate_ms": 0.1318,
+      "epoch": 950,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1612,
+      "candidate_ms": 0.1026,
+      "epoch": 951,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1546,
+      "candidate_ms": 0.0906,
+      "epoch": 952,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.149,
+      "candidate_ms": 0.1499,
+      "epoch": 953,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1848,
+      "candidate_ms": 0.1151,
+      "epoch": 954,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1654,
+      "candidate_ms": 0.1033,
+      "epoch": 955,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1738,
+      "candidate_ms": 0.1232,
+      "epoch": 956,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1794,
+      "candidate_ms": 0.1027,
+      "epoch": 957,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1746,
+      "candidate_ms": 0.106,
+      "epoch": 958,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1736,
+      "candidate_ms": 0.1001,
+      "epoch": 959,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1716,
+      "candidate_ms": 0.1043,
+      "epoch": 960,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1836,
+      "candidate_ms": 0.0989,
+      "epoch": 961,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1777,
+      "candidate_ms": 0.1098,
+      "epoch": 962,
+      "tokens": 615
+    },
+    {
+      "baseline_ms": 0.1431,
+      "candidate_ms": 0.0682,
+      "epoch": 963,
+      "tokens": 620
+    },
+    {
+      "baseline_ms": 0.1586,
+      "candidate_ms": 0.0943,
+      "epoch": 964,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.146,
+      "candidate_ms": 0.0783,
+      "epoch": 965,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1678,
+      "candidate_ms": 0.1048,
+      "epoch": 966,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.197,
+      "candidate_ms": 0.1219,
+      "epoch": 967,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.156,
+      "candidate_ms": 0.0817,
+      "epoch": 968,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1261,
+      "candidate_ms": 0.0851,
+      "epoch": 969,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1051,
+      "candidate_ms": 0.0574,
+      "epoch": 970,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1571,
+      "candidate_ms": 0.07,
+      "epoch": 971,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1161,
+      "candidate_ms": 0.0773,
+      "epoch": 972,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1388,
+      "candidate_ms": 0.0563,
+      "epoch": 973,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1224,
+      "candidate_ms": 0.0648,
+      "epoch": 974,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.11,
+      "candidate_ms": 0.0785,
+      "epoch": 975,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1159,
+      "candidate_ms": 0.06,
+      "epoch": 976,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1159,
+      "candidate_ms": 0.0793,
+      "epoch": 977,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1016,
+      "candidate_ms": 0.0702,
+      "epoch": 978,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.1341,
+      "candidate_ms": 0.0675,
+      "epoch": 979,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1101,
+      "candidate_ms": 0.0658,
+      "epoch": 980,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.0967,
+      "candidate_ms": 0.0544,
+      "epoch": 981,
+      "tokens": 616
+    },
+    {
+      "baseline_ms": 0.0953,
+      "candidate_ms": 0.0585,
+      "epoch": 982,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1409,
+      "candidate_ms": 0.0853,
+      "epoch": 983,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1354,
+      "candidate_ms": 0.0777,
+      "epoch": 984,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1252,
+      "candidate_ms": 0.0747,
+      "epoch": 985,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.2676,
+      "candidate_ms": 0.0705,
+      "epoch": 986,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1087,
+      "candidate_ms": 0.0604,
+      "epoch": 987,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1266,
+      "candidate_ms": 0.0964,
+      "epoch": 988,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.162,
+      "candidate_ms": 0.0935,
+      "epoch": 989,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1635,
+      "candidate_ms": 0.106,
+      "epoch": 990,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1709,
+      "candidate_ms": 0.0988,
+      "epoch": 991,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1644,
+      "candidate_ms": 0.0956,
+      "epoch": 992,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1545,
+      "candidate_ms": 0.0946,
+      "epoch": 993,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.14,
+      "candidate_ms": 0.085,
+      "epoch": 994,
+      "tokens": 619
+    },
+    {
+      "baseline_ms": 0.1321,
+      "candidate_ms": 0.0758,
+      "epoch": 995,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1327,
+      "candidate_ms": 0.0737,
+      "epoch": 996,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1243,
+      "candidate_ms": 0.0717,
+      "epoch": 997,
+      "tokens": 618
+    },
+    {
+      "baseline_ms": 0.1258,
+      "candidate_ms": 0.0789,
+      "epoch": 998,
+      "tokens": 617
+    },
+    {
+      "baseline_ms": 0.1364,
+      "candidate_ms": 0.0678,
+      "epoch": 999,
+      "tokens": 618
     }
   ],
   "schema_version": "perf_candidate.v1",
   "source_identity": {
     "dirty": false,
-    "git_commit": "01a72dec90252019060fb40a08a8c4a10f520228"
+    "git_commit": "94a485ffecf6bc3c9810718b2f658b6df0120b64"
   },
   "success": true
 }
