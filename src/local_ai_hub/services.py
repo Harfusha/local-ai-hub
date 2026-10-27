@@ -37,13 +37,14 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
+from .scheduler import SchedulerCancelledError
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
 from .speculative_lint import normalize_changed_paths
 from .lint_daemon import RuffDaemonPool, OwnedBiomeDaemonPool
-from .async_jobs import current_job_should_stop
+from .async_jobs import capture_job_cancellation, current_job_should_stop
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
@@ -60,6 +61,31 @@ from .retrieval import (
     prioritize_source_context_paths,
     source_context_path_tier,
 )
+
+
+class _LinkedCancelEvent:
+    """Combine a caller event with an async job callback across threads."""
+
+    def __init__(self, event: threading.Event, parent_stop: Any) -> None:
+        self._event = event
+        self._parent_stop = parent_stop
+        self._lock = threading.Lock()
+
+    def set(self) -> None:
+        self._event.set()
+
+    def is_set(self) -> bool:
+        if self._event.is_set():
+            return True
+        with self._lock:
+            if self._event.is_set():
+                return True
+            try:
+                if self._parent_stop():
+                    self._event.set()
+            except Exception:
+                self._event.set()
+        return self._event.is_set()
 
 
 # Keep optional context workers bounded across concurrent requests. Each backend
@@ -1155,6 +1181,9 @@ class LocalAIServices:
         mode_pause_result: dict[str, Any] | None = None
         if cancel_event is None:
             cancel_event = threading.Event()
+        parent_stop = capture_job_cancellation()
+        if parent_stop is not None:
+            cancel_event = _LinkedCancelEvent(cancel_event, parent_stop)
         if project_settings is not None:
             model, project_payload = self.model_policy.apply_project_settings(
                 model,
@@ -1480,6 +1509,21 @@ class LocalAIServices:
                         wait_timeout=max(0.05, request_deadline - time.monotonic()),
                         cancel_event=cancel_event,
                     )
+                except SchedulerCancelledError as exc:
+                    cleanup_wait = max(0.0, min(0.5, request_deadline - time.monotonic()))
+                    if exc.job.done.wait(cleanup_wait):
+                        result = {
+                            "success": False, "cancelled": True, "preempted": True,
+                            "error": str(exc), "model": candidate,
+                            "terminal": True, "retryable": False,
+                        }
+                    else:
+                        result = {
+                            "success": False, "error": "model worker cleanup unconfirmed after cancellation",
+                            "error_code": "scheduler_cleanup_unconfirmed", "model": candidate,
+                            "cleanup_unconfirmed": True, "outcome_unknown": True,
+                            "terminal": True, "retryable": False,
+                        }
                 except TimeoutError as exc:
                     timeout_error = True
                     retryable_error = True

@@ -29,6 +29,11 @@ def current_job_should_stop() -> bool:
     return callback() if callback is not None else False
 
 
+def capture_job_cancellation() -> Callable[[], bool] | None:
+    """Capture the current job's stop callback for use in worker threads."""
+    return _JOB_CANCELLED.get()
+
+
 def report_job_progress(progress_percent: float, current_stage: str) -> bool:
     """Report from the executing job context; outside it this is a harmless no-op."""
     callback = _JOB_PROGRESS.get()
@@ -1280,6 +1285,8 @@ class AsyncJobManager:
                     "terminal": True,
                     "retryable": False,
                 }
+                if not cleanup_confirmed or result.get("cleanup_unconfirmed") is True:
+                    final["cleanup_unconfirmed"] = True
                 con.execute(
                     "UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id),
@@ -1473,6 +1480,13 @@ class AsyncJobManager:
             "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
             "admission": self._admission("accepted", "capacity_available", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
         }
+        if state == "outcome_unknown":
+            try:
+                retained = json.loads(str(row["result_json"] or "{}"))
+                if isinstance(retained, dict) and retained.get("cleanup_unconfirmed") is True:
+                    result["cleanup_unconfirmed"] = True
+            except (TypeError, ValueError):
+                pass
         progress_percent, current_stage = 0.0, state
         progress_available = True
         try:
@@ -1562,7 +1576,15 @@ class AsyncJobManager:
         if state == "expired" or (float(row["expires_at"]) <= time.time() and state in self.TERMINAL_STATES):
             return {"success": False, "job_id": job_id, "state": "expired", "error": "async job result expired", "terminal": True, "retryable": False}
         if row["state"] != "done":
-            return {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
+            result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
+            if state == "outcome_unknown":
+                try:
+                    retained = json.loads(str(row["result_json"] or "{}"))
+                    if isinstance(retained, dict) and retained.get("cleanup_unconfirmed") is True:
+                        result["cleanup_unconfirmed"] = True
+                except (TypeError, ValueError):
+                    pass
+            return result
         artifact_id = str(row["artifact_id"] or "").strip()
         if not self._result_artifact_available(artifact_id):
             return {"success": False, "job_id": job_id, "state": "outcome_unknown", "error": "async job result artifact unavailable", "outcome_unknown": True, "terminal": True, "retryable": False}

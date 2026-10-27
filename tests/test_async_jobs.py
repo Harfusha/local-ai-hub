@@ -59,6 +59,36 @@ def _wait_for_terminal(manager, job_id, expected_state="done"):
     return waited
 
 
+def test_cancelled_job_with_unconfirmed_worker_cleanup_remains_unknown(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    started = threading.Event()
+    finish = threading.Event()
+
+    def executor(_action, _payload):
+        started.set()
+        assert finish.wait(5)
+        return {"success": False, "cleanup_unconfirmed": True, "outcome_unknown": True,
+                "error": "model worker cleanup unconfirmed"}
+
+    manager.executor = executor
+    try:
+        submitted = manager.submit("reason", {"task": "bounded test"})
+        job_id = submitted["job_id"]
+        assert started.wait(5)
+        cancelled = manager.cancel(job_id)
+        assert cancelled["cancel_requested"] is True
+        finish.set()
+        status = _wait_for_terminal(manager, job_id, "outcome_unknown")
+        assert status["cleanup_unconfirmed"] is True
+        result = manager.result(job_id)
+        assert result["outcome_unknown"] is True
+        assert result["cleanup_unconfirmed"] is True
+        assert result["state"] != "cancelled"
+    finally:
+        finish.set()
+        manager.close()
+
+
 def test_async_jobs_rejects_non_current_schema_without_deleting_rows(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()

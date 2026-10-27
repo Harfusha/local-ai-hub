@@ -886,6 +886,56 @@ def test_async_job_actions_are_rejected_when_async_jobs_are_disabled(monkeypatch
     assert calls == []
 
 
+@pytest.mark.parametrize("action", ["status", "result"])
+def test_mcp_async_outcome_unknown_preserves_cleanup_evidence(monkeypatch, action):
+    from types import SimpleNamespace
+
+    class Client:
+        def post(self, _path, payload, timeout, **kwargs):
+            return {"success": action == "status", "job_id": payload["job_id"],
+                    "state": "outcome_unknown", "outcome_unknown": True,
+                    "cleanup_unconfirmed": True, "terminal": True, "retryable": False}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=True, async_jobs=True, has_any_model=lambda: True))
+    result = local_ai_mcp.local_ai_task(action=action, job_id="job-unknown", max_response_tokens=1200)
+    assert result["state"] == "outcome_unknown"
+    assert result["outcome_unknown"] is True
+    assert result["cleanup_unconfirmed"] is True
+
+
+@pytest.mark.parametrize("profile", ["compact", "delta"])
+@pytest.mark.parametrize("action", ["status", "result"])
+def test_mcp_async_unknown_at_minimum_budget_is_preserved_or_rejected(monkeypatch, profile, action):
+    from types import SimpleNamespace
+
+    class Client:
+        def post(self, _path, payload, timeout, **kwargs):
+            return {"success": action == "status", "job_id": payload["job_id"], "state": "outcome_unknown",
+                    "outcome_unknown": True, "cleanup_unconfirmed": True,
+                    "terminal": True, "retryable": False}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=True, async_jobs=True, has_any_model=lambda: True))
+    result = local_ai_mcp.local_ai_task(action=action, job_id="job-unknown-budget",
+                                        max_response_tokens=128, response_profile=profile,
+                                        reuse_key="cancel-unknown-budget-test-" + action)
+    if result.get("error") in {"budget_too_small", "max_response_tokens too small"}:
+        assert result.get("error") in {"budget_too_small", "max_response_tokens too small"}
+        assert result.get("terminal") is True and result.get("retryable") is False
+    else:
+        assert result["outcome_unknown"] is True
+        assert result["cleanup_unconfirmed"] is True
+        assert result["state"] == "outcome_unknown"
+        if profile == "delta":
+            repeated = local_ai_mcp.local_ai_task(action=action, job_id="job-unknown-budget",
+                                                    max_response_tokens=128, response_profile=profile,
+                                                    reuse_key="cancel-unknown-budget-test-" + action)
+            assert repeated["unchanged"] is True
+            assert repeated["cleanup_unconfirmed"] is True
+            assert repeated["outcome_unknown"] is True
+
+
 def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
     from types import SimpleNamespace
 

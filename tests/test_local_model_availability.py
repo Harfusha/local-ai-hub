@@ -256,6 +256,98 @@ def test_generate_persists_semantic_cache_result_once() -> None:
     assert len(semantic_cache.writes) == 1
 
 
+def test_async_job_cancel_reaches_running_model_transport_across_threads() -> None:
+    from local_ai_hub.async_jobs import _JOB_CANCELLED
+
+    services = _offline_services()
+    job_cancel = threading.Event()
+    started = threading.Event()
+    observed_cancel = threading.Event()
+    outcomes = []
+
+    class Runtime:
+        def is_online(self):
+            return True
+
+        def request_interruptible(self, _endpoint, _payload, *, should_stop, **kwargs):
+            started.set()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if should_stop():
+                    observed_cancel.set()
+                    return {"success": False, "preempted": True, "error": "cancelled"}
+                threading.Event().wait(0.01)
+            return {"error": "test backend timed out"}
+
+    class ThreadScheduler:
+        def submit(self, _model, *, source, execute, **kwargs):
+            results = []
+            worker = threading.Thread(target=lambda: results.append(execute()))
+            worker.start()
+            worker.join(timeout=3)
+            assert not worker.is_alive()
+            return results[0]
+
+    services.runtime = Runtime()
+    services.scheduler = ThreadScheduler()
+    services.inference_admission = lambda _action: nullcontext(None)
+
+    def run_job():
+        token = _JOB_CANCELLED.set(job_cancel.is_set)
+        try:
+            outcomes.append(services._generate("fast", "bounded request", "", 64, 0.0,
+                                               source="delegate:general", priority=5))
+        finally:
+            _JOB_CANCELLED.reset(token)
+
+    job = threading.Thread(target=run_job)
+    job.start()
+    try:
+        assert started.wait(2), "model call did not start"
+        job_cancel.set()
+        assert observed_cancel.wait(0.8), "job cancellation did not reach transport"
+    finally:
+        job_cancel.set()
+        job.join(timeout=4)
+    assert not job.is_alive()
+    assert outcomes and outcomes[0]["success"] is False
+
+
+def test_linked_cancel_preserves_local_event_and_fails_closed():
+    from local_ai_hub.services import _LinkedCancelEvent
+
+    local = threading.Event()
+    linked = _LinkedCancelEvent(local, lambda: False)
+    assert not linked.is_set()
+    local.set()
+    assert linked.is_set()
+    other = threading.Event()
+    _LinkedCancelEvent(other, lambda: False).set()
+    assert other.is_set()
+    broken = _LinkedCancelEvent(threading.Event(), lambda: 1 / 0)
+    assert broken.is_set()
+
+
+def test_cancelled_scheduler_worker_without_cleanup_is_outcome_unknown():
+    from local_ai_hub.scheduler import SchedulerCancelledError
+
+    services = _offline_services()
+    services.runtime = type("OnlineRuntime", (), {"is_online": lambda self: True})()
+    pending_worker = SimpleNamespace(id=7, done=threading.Event())
+
+    class CancelledScheduler:
+        def submit(self, *_args, **_kwargs):
+            raise SchedulerCancelledError(pending_worker, "running")
+
+    services.scheduler = CancelledScheduler()
+    result = services._generate("fast", "bounded request", "", 64, 0.0,
+                                source="delegate:general", priority=5)
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert result["cleanup_unconfirmed"] is True
+    assert result.get("cancelled") is not True
+
+
 def test_generate_exposes_retryable_scheduler_timeout_metadata() -> None:
     services = _offline_services()
     services.runtime = type("OnlineRuntime", (), {"is_online": lambda self: True})()
