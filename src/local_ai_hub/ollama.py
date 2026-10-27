@@ -1701,7 +1701,8 @@ class OllamaRuntime:
             return self.llama_cpp_managed.ensure_running()
         if not bool(self.config.get("ollama", {}).get("enabled", False)):
             return self.llama_cpp.is_online()
-        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+        llama = self.config.get("llama_cpp", {})
+        if str(llama.get("mode", "auto")).strip().lower() != "off" and not bool(llama.get("fallback_to_ollama", True)):
             return False
         # An already-running endpoint is borrowed. PID/name/port discovery
         # never grants permission to stop it or apply a different profile.
@@ -2039,7 +2040,8 @@ class OllamaRuntime:
         check_active()
         # llama.cpp loads the configured GGUF in its local server. Avoid also
         # loading that same model into Ollama when the SYCL endpoint is ready.
-        if post_unload_admission is not None and self.llama_cpp.supports_model(model):
+        llama_enabled = str(self.config.get("llama_cpp", {}).get("mode", "auto")).strip().lower() != "off"
+        if post_unload_admission is not None and llama_enabled and self.llama_cpp.supports_model(model):
             raise ModelPreparationAdmissionRejected({
                 "state": "rejected", "reason": "post_unload_admission_unsupported_backend",
                 "vram_admission": "rejected", "vram_admission_phase": "post_unload",
@@ -2052,7 +2054,7 @@ class OllamaRuntime:
         ):
             return []
         check_active()
-        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)) and self.llama_cpp.supports_model(model):
+        if llama_enabled and not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)) and self.llama_cpp.supports_model(model):
             raise RuntimeError("configured llama.cpp SYCL model is not available")
         if not self.ensure_running():
             raise RuntimeError("Ollama is not available")
@@ -2135,6 +2137,8 @@ class OllamaRuntime:
     def supports_post_unload_admission(self, model: str) -> bool:
         """Whether this model uses Ollama's unload-then-load preparation path."""
         try:
+            if str(self.config.get("llama_cpp", {}).get("mode", "auto")).strip().lower() == "off":
+                return bool(self.config.get("ollama", {}).get("enabled", False))
             return not bool(self.llama_cpp.supports_model(model))
         except Exception:
             return False

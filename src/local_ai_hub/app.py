@@ -284,7 +284,11 @@ def _prewarm_route_is_eligible(runtime: Any, model: str) -> bool:
         if not callable(supports) or not callable(hardware_enabled):
             continue
         try:
-            fallback = bool(getattr(candidate, "config", {}).get("llama_cpp", {}).get("fallback_to_ollama", True))
+            config = getattr(candidate, "config", {})
+            llama = config.get("llama_cpp", {})
+            fallback = bool(llama.get("fallback_to_ollama", True))
+            if str(llama.get("mode", "auto")).strip().lower() == "off" and bool(config.get("ollama", {}).get("enabled", False)):
+                continue
             if bool(supports(model)) and not bool(hardware_enabled()) and not fallback:
                 return False
         except Exception:
