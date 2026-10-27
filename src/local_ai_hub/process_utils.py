@@ -1002,26 +1002,33 @@ def _terminate_tree_unlocked(
             break
         time.sleep(min(0.05, remaining))
 
-    # Reap only the owned leader, so a terminated zombie does not keep its
-    # otherwise empty process group visible. This does not prove descendants
-    # stopped: when a group remains after losing the leader identity, fail closed.
-    if process_handle is not None and getattr(process_handle, "pid", None) == pid:
-        try:
-            process_handle.poll()
-        except Exception:
-            return False
-
     # Presence alone does not prove this is still the original group: a PGID
     # can be reused while waiting. Escalate only while its original leader
     # still has the identity captured immediately after spawn.
     if not leader_still_owned():
-        try:
-            os.killpg(group_id, 0)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return False
         return False
+
+    # The caller holds Popen's wait lock. Reap the still-owned leader only
+    # after proving its identity, then check for an empty group without sending
+    # another signal. A surviving or reused group remains unconfirmed.
+    finish = getattr(process_handle, "_handle_exitstatus", None)
+    if process_handle is not None and getattr(process_handle, "pid", None) == pid and callable(finish):
+        try:
+            waited_pid, wait_status = os.waitpid(pid, os.WNOHANG)
+            if waited_pid == pid:
+                finish(wait_status)
+                try:
+                    os.killpg(group_id, 0)
+                except ProcessLookupError:
+                    return True
+                except OSError:
+                    return False
+                return False
+            if waited_pid != 0:
+                return False
+        except (ChildProcessError, OSError):
+            return False
+
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
@@ -1083,6 +1090,7 @@ def terminate_tree(
             process_group=process_group,
             expected_identity=expected_identity,
             grace_seconds=grace_seconds,
+            process_handle=process_handle,
         )
 
 

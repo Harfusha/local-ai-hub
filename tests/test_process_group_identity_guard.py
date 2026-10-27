@@ -12,9 +12,20 @@ def _posix(monkeypatch):
         calls.append(sig)
         if sig == 0:
             raise ProcessLookupError
-    monkeypatch.setattr(process_utils.os, "name", "posix")
-    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 4321, raising=False)
-    monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+
+    real_os = process_utils.os
+
+    class PosixOS:
+        name = "posix"
+        getpgid = staticmethod(lambda pid: 4321)
+
+        def killpg(self, group, sig):
+            return killpg(group, sig)
+
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+    monkeypatch.setattr(process_utils, "os", PosixOS())
     return calls
 
 
