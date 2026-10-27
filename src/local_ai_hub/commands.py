@@ -3371,6 +3371,35 @@ class CommandBroker:
     def set_task_store(self, task_store: Any) -> None:
         self.task_store = task_store
 
+    def repair_task_session(
+        self, task_id: str, *, root: str, session_id: str, reason: str,
+        authorization_actor: str, authorization_permissions: frozenset[str],
+        response_budget_tokens: int | None = None,
+    ) -> Any:
+        """Repair only a sessionless task through verified write authority."""
+        if (type(authorization_actor) is not str
+                or type(authorization_permissions) is not frozenset
+                or not (
+                    authorization_actor == "local" and not authorization_permissions
+                    or authorization_actor == "api_token" and bool(authorization_permissions & {"write", "admin"})
+                    or authorization_actor == "action_token" and "api:write" in authorization_permissions
+                )):
+            raise PermissionError("task session write authorization required")
+        if self.task_store is None:
+            raise RuntimeError("task authority unavailable")
+        from .agent_tasks import _canonical_repository_root, _task_matches_scope
+
+        canonical = _canonical_repository_root(root)
+        task = self.task_store.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        if not _task_matches_scope(task, canonical, task_id):
+            raise PermissionError("task repository scope mismatch")
+        return self.task_store.repair_missing_session(
+            task_id, session_id=session_id, repo_root=canonical, actor=task.owner, reason=reason,
+            authorization_actor=authorization_actor, response_budget_tokens=response_budget_tokens,
+        )
+
     def increase_task_budget(
         self, task_id: str, *, root: str, reason: str, limits: Mapping[str, Any],
         authorization_actor: str, authorization_permissions: frozenset[str],

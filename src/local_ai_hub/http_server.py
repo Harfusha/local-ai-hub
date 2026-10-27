@@ -1302,7 +1302,7 @@ _AGENT_TASK_ACTIONS = frozenset({
     "create", "list", "get", "transition", "complete", "fail",
     "checkpoint", "rollback", "resume", "heartbeat", "ask", "answer",
     "cleanup_worktree", "reap_expired", "curate_dataset", "budget_increase",
-    "claim", "adopt",
+    "claim", "adopt", "repair_session",
 })
 _AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export", "native_receipt"})
 _AGENT_BLACKBOARD_RETIRED_FIELDS = frozenset({"key", "value", "approver", "sections", "record"})
@@ -2271,6 +2271,35 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError, KeyError) as exc:
             self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         self._send(200, result); return
+
+    def _task_repair_session(self, payload: dict[str, Any]) -> None:
+        if not self._authorized(permission="write"):
+            self._send(403, {"success": False, "error": "task session write authorization required", "terminal": True, "retryable": False}); return
+        if not self._bind_task_payload(payload):
+            return
+        permitted = {"action", "root", "repo_root", "context", "task_id", "session_id", "reason", "response_budget_tokens"}
+        if set(payload) - permitted:
+            self._send(400, {"success": False, "error": "unexpected session repair fields", "terminal": True, "retryable": False}); return
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id or task_id != task_id.strip():
+            self._send(400, {"success": False, "error": "canonical task_id required"}); return
+        if self._request_task(task_id, payload["root"]) is None:
+            return
+        try:
+            result = APP.commands.repair_task_session(
+                task_id, root=payload["root"], session_id=payload.get("session_id"), reason=payload.get("reason"),
+                authorization_actor=self._authorization_actor, authorization_permissions=self._authorization_permissions,
+                response_budget_tokens=payload.get("response_budget_tokens"),
+            )
+        except CheckpointResponseBudgetError as exc:
+            self._send(413, {"success": False, "error": str(exc), "terminal": True, "retryable": False,
+                             "mutation_applied": False, "operation_not_started": True,
+                             "response_budget": {"requested_tokens": exc.requested_tokens, "required_tokens": exc.required_tokens}}); return
+        except PermissionError as exc:
+            self._send(403, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        except (TypeError, ValueError, KeyError) as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        self._send(200, {"success": True, "task": result.to_dict()}); return
 
     def _request_task(self, task_id: str, root: str) -> Any | None:
         task = APP.agent_tasks.get(task_id) if APP is not None and getattr(APP, "agent_tasks", None) else None
@@ -6086,6 +6115,9 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 if action == "budget_increase":
                     self._task_budget_increase(payload)
+                    return
+                if action == "repair_session":
+                    self._task_repair_session(payload)
                     return
                 scoped_task_actions = {
                     "curate_dataset",

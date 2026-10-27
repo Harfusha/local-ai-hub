@@ -1193,6 +1193,12 @@ class LocalAIServices:
             )
             system = str(project_payload.get("system", system))
         saving = self.config.get("token_saving", {})
+        if source.startswith("delegate:"):
+            from .caveman_instructions import compact_local_prompt
+            prompt, system = compact_local_prompt(
+                prompt, system, enabled=saving.get("concise_local_output") is True,
+                structured=format is not None,
+            )
         resilience = self.config.get("resilience", {})
         default_request_timeout = float(self.config.get("server", {}).get("request_timeout_seconds", 300)) + 30.0
         request_timeout = max(0.05, float(resilience.get("scheduler_wait_timeout_seconds", default_request_timeout)))

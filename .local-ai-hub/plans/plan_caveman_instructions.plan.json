@@ -1,0 +1,27 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "See docs/superpowers/specs/2026-10-27-caveman-instructions.md: safe session repair, instruction compression with backups, concise model output, input compression evaluation.",
+  "id": "plan_caveman_instructions",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_caveman_cli": {
+      "acceptance_criteria": [
+        "CLI compresses instruction files safely with backups",
+        "Generated instructions preserve contracts",
+        "Validate integration"
+      ],
+      "accountable_role": "Codex",
+      "blocker": "Live session repair is not activated while release owner is using shared Hub. Synthetic 3B compression lost instructions; 7B returned exit 2. Semantic preservation and speed improvement are not proven.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Implement staging compression and concise local prompts in parallel; restore and bind existing task after activation; verify semantics, backups and speed.",
+      "kind": "code",
+      "next_action": "Review all tracked and untracked changes; establish reliable semantics and paired performance evidence; integrate and activate session repair when shared Hub is available; then bind the existing task and complete all-agent compression.",
+      "title": "Caveman instruction compression",
+      "work_status": "blocked"
+    }
+  },
+  "title": "Caveman instruction compression"
+}

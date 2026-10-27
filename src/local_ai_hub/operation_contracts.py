@@ -139,7 +139,7 @@ _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ing
 _COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
-    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase",
+    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
     "memory_promote", "memory_delete", "context_compile",
     "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
