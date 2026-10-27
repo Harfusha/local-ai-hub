@@ -3929,7 +3929,7 @@ class TaskStore:
 
     @staticmethod
     def _write_plan_sync_intent(path: Path, record: dict[str, Any]) -> None:
-        payload = json.dumps(record, sort_keys=True).encode("utf-8")
+        payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
         if len(payload) > 65536:
             raise ValueError("checkpoint recovery record is too large")
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
