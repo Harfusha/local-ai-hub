@@ -446,21 +446,24 @@ def install_superpowers(
         return {"success": False, "changed": False, "requires_consent": True,
                 "install_argv": argv, "dependency": dependency}
     argv.append("--consent")
-    package_existed = package.exists()
     try:
         completed = run_hidden(argv, cwd=str(root), stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, timeout=60, max_output_bytes=65536, shell=False)
     except subprocess.TimeoutExpired:
         return {"success": False, "changed": None, "outcome_unknown": True,
-                "partial_install_review_required": package.exists() and any(package.iterdir()),
+                "partial_install_review_required": True,
                 "error": "Superpowers install timed out; inspect native extension state before any retry"}
-    dependency = inspect_superpowers(host, package_root)
+    try:
+        dependency = inspect_superpowers(host, package_root)
+    except (OSError, ValueError) as exc:
+        return {"success": False, "changed": None, "outcome_unknown": True,
+                "partial_install_review_required": True, "exit_code": completed.returncode,
+                "error": f"Superpowers installation could not be inspected: {exc}"}
     dependency["install_executed"] = True
     success = completed.returncode == 0 and dependency["compatible"]
-    partial = completed.returncode != 0 and package.exists() and (not package_existed or any(package.iterdir()))
     return {"success": success,
-            "changed": True if success else (None if partial else False),
-            "partial_install_review_required": partial, "exit_code": completed.returncode,
+            "changed": True if success else None, "outcome_unknown": not success,
+            "partial_install_review_required": not success, "exit_code": completed.returncode,
             "dependency": dependency, "host_activation": "not_verified"}
 
 

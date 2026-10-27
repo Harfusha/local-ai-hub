@@ -78,3 +78,29 @@ def test_missing_extension_installs_pinned_ref_and_checks_files(tmp_path, monkey
     assert calls == [[str(executable), "extensions", "install", "https://github.com/obra/superpowers",
                       "--ref", "v7.0.1", "--consent"]]
     assert result["host_activation"] == "not_verified"
+
+
+@pytest.mark.parametrize("exit_code,malformed", [(0, True), (0, False), (1, False)])
+def test_incomplete_install_is_indeterminate_and_not_retried(tmp_path, monkeypatch, exit_code, malformed):
+    import local_ai_hub.process_utils as process_utils
+
+    executable = tmp_path / "gemini.exe"
+    executable.touch()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(home))
+    package = home / ".gemini/extensions/superpowers"
+    calls = []
+
+    def install(argv, **kwargs):
+        calls.append(argv)
+        if malformed:
+            package.mkdir(parents=True)
+            (package / "gemini-extension.json").write_text("{")
+        return SimpleNamespace(returncode=exit_code)
+
+    monkeypatch.setattr(process_utils, "run_hidden", install)
+    result = host_hooks.ensure_gemini_superpowers(executable, repo_root=tmp_path)
+    assert not result["success"] and result["changed"] is None
+    assert result["outcome_unknown"] and result["partial_install_review_required"]
+    assert len(calls) == 1
