@@ -89,12 +89,35 @@ class TaskBindingManager:
             bindings[tid] = binding
         return bindings
 
-    def _save(self) -> None:
+    def _save(
+        self, binding: TaskBinding, task_store: Any | None = None, *, check_plan_ownership: bool = True
+    ) -> None:
         validate_repo_path(self._binding_rel_path, repo_root=self.repo_root)
         self._binding_file.parent.mkdir(parents=True, exist_ok=True)
         with exclusive_file_update(self._binding_file):
             current = self._read_disk()
-            current.update(self._bindings)
+            previous_self = current.get(binding.task_id)
+            if previous_self and (previous_self.plan_id, previous_self.plan_task_id) != (
+                binding.plan_id, binding.plan_task_id
+            ):
+                raise ValueError("execution task is already bound to another plan task")
+            if previous_self and binding.contract_revision < previous_self.contract_revision:
+                raise ValueError("contract revision cannot move backwards")
+            for existing in current.values():
+                if existing.task_id == binding.task_id:
+                    continue
+                if binding.session_id and existing.session_id == binding.session_id:
+                    raise ValueError("session is already bound to another execution task")
+                if not check_plan_ownership and previous_self is not None:
+                    continue
+                if (existing.plan_id, existing.plan_task_id) != (binding.plan_id, binding.plan_task_id):
+                    continue
+                prior = task_store.get(existing.task_id) if task_store is not None else None
+                if prior is None or getattr(getattr(prior, "status", None), "value", None) not in {
+                    "completed", "failed", "cancelled"
+                }:
+                    raise ValueError("plan task already has an active execution binding or unresolved prior binding")
+            current[binding.task_id] = binding
             raw = json.dumps({k: v.to_dict() for k, v in current.items()}, indent=2, sort_keys=True)
             temp_path = self._binding_file.parent / f".tmp_bindings_{uuid.uuid4().hex}"
             try:
@@ -121,6 +144,7 @@ class TaskBindingManager:
         session_id: str = "",
         branch_at_bind: str = "",
         adopted_plan_revision: str = "",
+        task_store: Any | None = None,
     ) -> TaskBinding:
         for label, value in (("task_id", task_id), ("plan_id", plan_id),
                              ("plan_task_id", plan_task_id), ("plan_rel_path", plan_rel_path)):
@@ -141,11 +165,7 @@ class TaskBindingManager:
             bound_at=time.time(),
             lineage=list(lineage or []),
         )
-        for current in self._bindings.values():
-            if session_id and current.session_id == session_id and current.task_id != task_id:
-                raise ValueError("session is already bound to another execution task")
-        self._bindings[task_id] = binding
-        self._save()
+        self._save(binding, task_store=task_store)
         return binding
 
     def get_binding(self, task_id: str) -> TaskBinding | None:
@@ -159,13 +179,6 @@ class TaskBindingManager:
         if len(matches) > 1:
             raise RuntimeError("session has ambiguous task bindings")
         return matches[0] if matches else None
-
-    def find_binding_by_plan_task(self, plan_id: str, plan_task_id: str) -> TaskBinding | None:
-        for b in self._bindings.values():
-            if b.plan_id == plan_id and b.plan_task_id == plan_task_id:
-                return b
-        return None
-
 
 def _persist_pending_contract_reconciliation(
     storage: RepoPlanStorage, binding: TaskBinding, payload: dict[str, Any]
@@ -244,12 +257,6 @@ def bind_plan_execution(
     existing_task = manager.get_binding(task_id)
     if existing_task and (existing_task.plan_id, existing_task.plan_task_id) != (plan_id, plan_task_id):
         raise ValueError("execution task is already bound to another plan task")
-    current_owner = manager.find_binding_by_plan_task(plan_id, plan_task_id)
-    if current_owner and current_owner.task_id != task_id:
-        previous = task_store.get(current_owner.task_id)
-        if previous is not None and previous.status.value not in {"completed", "failed", "cancelled"}:
-            raise ValueError("plan task already has an active execution binding")
-
     branch, _ = get_git_context(Path(canonical))
     binding = manager.bind_task(
         task_id=task_id,
@@ -260,6 +267,7 @@ def bind_plan_execution(
         branch_at_bind=branch or "",
         adopted_plan_revision=current_revision,
         contract_revision=int(execution.checkpoint.state_data.get("contract_revision", 1)),
+        task_store=task_store,
     )
     return {"success": True, "root": canonical, "task_id": task_id,
             "plan_id": plan_id, "plan_task_id": plan_task_id,
@@ -472,8 +480,7 @@ def reconcile_contract_revision(
     binding.contract_revision = revised.checkpoint.state_data["contract_revision"]
     binding.adopted_plan_revision = save_res.get("file_revision", "")
     binding_manager = TaskBindingManager(storage.repo_root)
-    binding_manager._bindings[binding.task_id] = binding
-    binding_manager._save()
+    binding_manager._save(binding, task_store=task_store, check_plan_ownership=False)
     return save_res, binding.contract_revision
 
 
