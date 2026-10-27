@@ -5,12 +5,12 @@ import hashlib
 import json
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
-from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStatus, TaskStore
+from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStatus, TaskStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.repo_plan import agent_bridge
@@ -32,6 +32,40 @@ def _bind_from_process(root, state_path, task_id, revision, start, outcomes):
         outcomes.put(("success", result["success"]))
     except Exception as error:
         outcomes.put(("error", str(error)))
+
+
+def _delayed_plan_sync_from_process(state_path, entered, release, outcomes):
+    store = TaskStore(AgentStateStore(state_path))
+    real_sync = agent_bridge.sync_checkpoint_to_plan
+
+    def slow_sync(*args, **kwargs):
+        entered.set()
+        if not release.wait(15):
+            raise TimeoutError("plan sync test timed out")
+        return real_sync(*args, **kwargs)
+
+    agent_bridge.sync_checkpoint_to_plan = slow_sync
+    try:
+        store._sync_project_plan_checkpoint(store.get("execution_a"))
+        outcomes.put("success")
+    except Exception as exc:
+        outcomes.put(f"error: {exc}")
+
+
+def _checkpoint_from_process(state_path, committed, outcomes):
+    store = TaskStore(AgentStateStore(state_path))
+    real_project = store._sync_project_plan_checkpoint
+
+    def notify(state):
+        committed.set()
+        return real_project(state)
+
+    store._sync_project_plan_checkpoint = notify
+    try:
+        store.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="process update"), actor="agent_a")
+        outcomes.put("success")
+    except Exception as exc:
+        outcomes.put(f"error: {exc}")
 
 
 @pytest.fixture
@@ -74,6 +108,82 @@ def test_caller_success_cannot_mint_native_receipt(environment):
             command="python -m pytest never_executed.py", root=root,
             owner="agent_a",
         )
+
+
+def test_delayed_checkpoint_sync_uses_latest_persisted_state(environment):
+    _, tasks, _, _, storage, _, binding, _ = environment
+    stale = tasks.get("execution_a")
+    tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="new action"), actor="agent_a")
+    tasks._sync_project_plan_checkpoint(stale)
+    plan, _ = storage.read_plan_file(binding.plan_rel_path)
+    assert plan["tasks"]["task_work"]["next_action"] == "new action"
+
+
+def test_checkpoint_clearing_blockers_clears_plan_blocker(environment):
+    _, tasks, _, _, storage, _, binding, _ = environment
+    tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", blockers=("waiting",)), actor="agent_a")
+    tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="continue"), actor="agent_a")
+    plan, _ = storage.read_plan_file(binding.plan_rel_path)
+    assert plan["tasks"]["task_work"]["blocker"] is None
+
+
+def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment, monkeypatch):
+    _, tasks, _, _, storage, _, binding, _ = environment
+    stale = tasks.get("execution_a")
+    entered, release, committed = Event(), Event(), Event()
+    real_sync = agent_bridge.sync_checkpoint_to_plan
+    real_project = tasks._sync_project_plan_checkpoint
+
+    def slow_sync(*args, **kwargs):
+        if kwargs.get("next_action") == "":
+            entered.set()
+            assert release.wait(10)
+        return real_sync(*args, **kwargs)
+
+    def notify(state):
+        if state.checkpoint.next_action == "new action":
+            committed.set()
+        return real_project(state)
+
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", slow_sync)
+    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", notify)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(real_project, stale)
+        try:
+            assert entered.wait(10)
+            second = pool.submit(tasks.checkpoint, "execution_a", TaskCheckpoint(
+                phase="implementation", next_action="new action"), actor="agent_a")
+            assert committed.wait(10)
+        finally:
+            release.set()
+        first.result(timeout=10)
+        second.result(timeout=10)
+    plan, _ = storage.read_plan_file(binding.plan_rel_path)
+    assert plan["tasks"]["task_work"]["next_action"] == "new action"
+
+
+def test_cross_process_checkpoint_sync_retains_newer_update(environment):
+    _, tasks, _, _, storage, _, binding, _ = environment
+    ctx = multiprocessing.get_context("spawn")
+    entered, release, committed = ctx.Event(), ctx.Event(), ctx.Event()
+    outcomes = ctx.Queue()
+    state_path = str(tasks.state_store.db_path)
+    first = ctx.Process(target=_delayed_plan_sync_from_process, args=(state_path, entered, release, outcomes))
+    second = ctx.Process(target=_checkpoint_from_process, args=(state_path, committed, outcomes))
+    first.start()
+    try:
+        assert entered.wait(15)
+        second.start()
+        assert committed.wait(15)
+    finally:
+        release.set()
+        first.join(20)
+        if second.pid is not None:
+            second.join(20)
+    assert first.exitcode == second.exitcode == 0
+    assert [outcomes.get(timeout=2), outcomes.get(timeout=2)].count("success") == 2
+    plan, _ = storage.read_plan_file(binding.plan_rel_path)
+    assert plan["tasks"]["task_work"]["next_action"] == "process update"
 
 
 def test_actual_contract_changes_with_adopted_requirements(environment):

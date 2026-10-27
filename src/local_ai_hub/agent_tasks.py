@@ -3866,6 +3866,32 @@ class TaskStore:
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
 
+    def _sync_project_plan_checkpoint(self, state: TaskState) -> None:
+        """Serialize projection writes and project the latest persisted checkpoint."""
+        import hashlib
+        from .file_locks import exclusive_file_update
+
+        root = _task_scope_root(state)
+        if not root:
+            return
+        stripe = int(hashlib.sha256(state.task_id.encode("utf-8")).hexdigest()[:8], 16) % 64
+        db_path = Path(self.state_store.db_path)
+        lock_target = db_path.parent / f".{db_path.name}.plan-sync-{stripe}"
+        with exclusive_file_update(lock_target):
+            latest = self.get(state.task_id)
+            if latest is None or _task_scope_root(latest) != root:
+                raise RuntimeError("persisted task or repository scope changed during plan sync")
+            from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager, sync_checkpoint_to_plan
+            from local_ai_hub.repo_plan.storage import RepoPlanStorage
+            binding = TaskBindingManager(root).get_binding(latest.task_id)
+            if binding:
+                sync_checkpoint_to_plan(
+                    storage=RepoPlanStorage(root), binding=binding, agent_status=latest.status.value,
+                    phase=latest.checkpoint.phase, next_action=latest.checkpoint.next_action,
+                    blocker=latest.checkpoint.blockers[0] if latest.checkpoint.blockers else "",
+                    owner=latest.owner or "agent",
+                )
+
     def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
         """Atomically create initial projection, sequence cursor, and task event."""
         if not self.state_store.enabled:
@@ -3951,23 +3977,7 @@ class TaskStore:
             _do_commit, timeout_seconds=0.25
         )
         try:
-            root = _task_scope_root(res)
-            if root:
-                from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager, sync_checkpoint_to_plan
-                from local_ai_hub.repo_plan.storage import RepoPlanStorage
-                bm = TaskBindingManager(root)
-                binding = bm.get_binding(res.task_id)
-                if binding:
-                    storage = RepoPlanStorage(root)
-                    sync_checkpoint_to_plan(
-                        storage=storage,
-                        binding=binding,
-                        agent_status=res.status.value,
-                        phase=res.checkpoint.phase,
-                        next_action=res.checkpoint.next_action,
-                        blocker=res.checkpoint.blockers[0] if res.checkpoint.blockers else None,
-                        owner=res.owner or "agent",
-                    )
+            self._sync_project_plan_checkpoint(res)
         except Exception as exc:
             raise RuntimeError(
                 f"Agent OS task {res.task_id} was persisted, but its project-plan checkpoint sync failed; "
@@ -4104,23 +4114,7 @@ class TaskStore:
             _do_commit, timeout_seconds=0.25
         )
         try:
-            root = _task_scope_root(res)
-            if root:
-                from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager, sync_checkpoint_to_plan
-                from local_ai_hub.repo_plan.storage import RepoPlanStorage
-                bm = TaskBindingManager(root)
-                binding = bm.get_binding(res.task_id)
-                if binding:
-                    storage = RepoPlanStorage(root)
-                    sync_checkpoint_to_plan(
-                        storage=storage,
-                        binding=binding,
-                        agent_status=res.status.value,
-                        phase=res.checkpoint.phase,
-                        next_action=res.checkpoint.next_action,
-                        blocker=res.checkpoint.blockers[0] if res.checkpoint.blockers else None,
-                        owner=res.owner or "agent",
-                    )
+            self._sync_project_plan_checkpoint(res)
         except Exception as exc:
             raise RuntimeError(
                 f"Agent OS task {res.task_id} was persisted, but its project-plan checkpoint sync failed; "
