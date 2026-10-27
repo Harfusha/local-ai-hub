@@ -73,5 +73,6 @@ Fresh full validation and runtime acceptance remain required. The interrupted fu
 
 - [x] [N/A — superseded by operator disposition]: Identify recovery copy, quiesce writers, and recover historical state. Operator confirmed: "Ja jsem to smazal - chci cisty stav" (deletion was intentional; clean state required; historical recovery waived).
 - [ ] Establish whether the incident's test execution could reach non-test data. Isolation of selected fixtures is not evidence that every executed path was isolated; retain this investigation until the original execution and its configured paths are verified.
+  On 2026-10-27, the preserved `shard-05.manifest.json` (SHA-256 `1d26bebd6443c8e0e53febaefb573dbcb1961c4dbb7e76fe2fd3c847615da4c9`) contained 390 selected node IDs, 210 call reports and `session_finished=false`. It therefore cannot establish isolation for all selected tests, and the unavailable earlier manifests prevent an exhaustive audit of shards 0–4. The finding remains unverified.
 - [x] Put future immutable validation/release evidence outside a mutable runtime-state tree: Done. Benchmark records and release evidence artifacts are committed directly to version-controlled `docs/` paths.
 - [ ] Complete final 5.1.0 release verification on the current `master` candidate.
