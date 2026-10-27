@@ -559,14 +559,12 @@ def generate_autosetup_policy(skills_dir: Path) -> str:
     orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
     tok_skill_path = skills_dir / "token-economizer" / "SKILL.md"
     tok_skill = tok_skill_path.as_posix()
-    ensure_tools = (tok_skill_path.parent / "scripts" / "ensure-tools.ps1").as_posix()
     return (
         f"{AUTOSETUP_BEGIN}\n"
         "## Local AI Hub and Token-economizer automatic setup\n\n"
         f"- For every coding or repository task, load and follow `{orch_skill}` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.\n"
         f"- Load and follow `{tok_skill}` before repository discovery for bounded output limits.\n"
-        f"- After required Local AI Hub indexing, run `& '{ensure_tools}'` before native discovery or validation. It installs only missing tools and updates the current process plus User `PATH`.\n"
-        "- For read-only audits, run the same script with `-PlanOnly`; do not install packages or modify `PATH`.\n"
+        "- Use tools already available in the environment; missing optional setup helpers do not block repository discovery or validation.\n"
         f"{AUTOSETUP_END}"
     )
 

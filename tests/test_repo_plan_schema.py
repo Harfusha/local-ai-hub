@@ -332,3 +332,13 @@ unknown_field = "bad"
 """, encoding="utf-8")
     res = resolve_project_config(tmp_path)
     assert "invalid_config" in res.error_codes
+
+
+@pytest.mark.parametrize("plans_dir", ["../outside", "custom/../../outside", "C:/outside", "/outside", "custom//plans"])
+def test_project_config_rejects_escaping_or_ambiguous_workspace_paths(tmp_path, plans_dir):
+    config_file = tmp_path / ".local-ai.toml"
+    config_file.write_text(f'[workspace]\nplans_dir = "{plans_dir}"\n', encoding="utf-8")
+
+    result = resolve_project_config(tmp_path)
+
+    assert "invalid_config" in result.error_codes

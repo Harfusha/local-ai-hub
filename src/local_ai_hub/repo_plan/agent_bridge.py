@@ -24,7 +24,7 @@ from .models import (
     TaskWorkPhase,
     TaskWorkStatus,
 )
-from .schema_validation import RepoPlanNotFoundError
+from .schema_validation import RepoPlanNotFoundError, validate_repo_path
 from .storage import RepoPlanStorage, compute_file_sha256, get_git_context
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,9 @@ class TaskBindingManager:
 
     def __init__(self, repo_root: str | Path) -> None:
         self.repo_root = Path(repo_root).resolve()
-        self._binding_file = self.repo_root / ".local-ai-hub" / "local" / "task_bindings.json"
+        self._binding_rel_path = ".local-ai-hub/local/task_bindings.json"
+        validate_repo_path(self._binding_rel_path, repo_root=self.repo_root)
+        self._binding_file = self.repo_root / self._binding_rel_path
         self._bindings: dict[str, TaskBinding] = {}
         self._load()
 
@@ -88,6 +90,7 @@ class TaskBindingManager:
         return bindings
 
     def _save(self) -> None:
+        validate_repo_path(self._binding_rel_path, repo_root=self.repo_root)
         self._binding_file.parent.mkdir(parents=True, exist_ok=True)
         with exclusive_file_update(self._binding_file):
             current = self._read_disk()

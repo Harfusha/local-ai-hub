@@ -4,6 +4,7 @@ import pytest
 
 from local_ai_hub.repo_plan import (
     RepoPlanConflictError,
+    RepoPlanValidationError,
     RepoPlanWorkspace,
 )
 
@@ -23,6 +24,22 @@ def test_init_workspace(tmp_path):
     assert (tmp_path / ".local-ai-hub" / "README.md").exists()
     assert (tmp_path / ".local-ai-hub" / ".gitignore").exists()
     assert (tmp_path / ".local-ai-hub" / "plans").is_dir()
+
+
+def test_workspace_rejects_symlinked_plan_directory_outside_repo(tmp_path):
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    local_hub_dir = root / ".local-ai-hub"
+    local_hub_dir.mkdir()
+    try:
+        (local_hub_dir / "plans").symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    with pytest.raises(RepoPlanValidationError):
+        RepoPlanWorkspace(root)
 
 
 def test_create_get_list_plans(workspace):

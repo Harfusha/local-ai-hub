@@ -1,7 +1,7 @@
 from pathlib import Path
 import tempfile
 from local_ai_hub.generator import generate_global_policy, generate_token_economy_policy
-from tools.setup import codex_mcp_merge, generate_autosetup_policy, merge_autosetup_policy
+from tools.setup import codex_mcp_merge, merge_autosetup_policy
 
 
 def test_generated_policy_contains_codex_prioritization_directive() -> None:
@@ -46,4 +46,6 @@ def test_autosetup_policy_merges_orchestrator_and_token_economizer() -> None:
         assert "<!-- BEGIN TOKEN ECONOMIZER AUTOSETUP -->" in content
         assert "local-ai-orchestrator" in content
         assert "token-economizer" in content
+        assert "missing optional setup helpers do not block" in content
+        assert "ensure-tools.ps1" not in content
         assert "<!-- END TOKEN ECONOMIZER AUTOSETUP -->" in content

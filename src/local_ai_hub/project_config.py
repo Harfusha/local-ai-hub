@@ -76,6 +76,24 @@ class ProjectConfigError(ValueError):
         super().__init__(code)
 
 
+def _validate_workspace_relative_path(value: object) -> str:
+    if not isinstance(value, str):
+        raise ProjectConfigError("invalid_config")
+    path = value.strip()
+    if (
+        not path
+        or len(path) > _MAX_RELATIVE_PATH
+        or "\\" in path
+        or path.startswith("/")
+        or re.match(r"^[A-Za-z]:", path)
+        or ":" in path
+        or any(ord(char) < 32 for char in path)
+        or any(segment in {"", ".", ".."} for segment in path.split("/"))
+    ):
+        raise ProjectConfigError("invalid_config")
+    return path
+
+
 @dataclass(frozen=True)
 class CommandDefinition:
     argv: tuple[str, ...]
@@ -98,7 +116,7 @@ class WorkspaceSettings:
 
     def __post_init__(self) -> None:
         for name in ("plans_dir", "specs_dir", "decisions_dir", "knowledge_dir", "local_dir", "intents_dir"):
-            object.__setattr__(self, name, _freeze(getattr(self, name)))
+            object.__setattr__(self, name, _validate_workspace_relative_path(getattr(self, name)))
 
 
 @dataclass(frozen=True)
@@ -583,9 +601,7 @@ def _normalize(
         raise ProjectConfigError("invalid_config")
     ws_args: dict[str, str] = {}
     for k, v in workspace_data.items():
-        if not isinstance(v, str) or not v.strip() or "\\" in v or v.startswith("/"):
-            raise ProjectConfigError("invalid_config")
-        ws_args[k] = v.strip()
+        ws_args[k] = _validate_workspace_relative_path(v)
     workspace_obj = WorkspaceSettings(**ws_args)
 
     preprocess = data.get("preprocess", {})

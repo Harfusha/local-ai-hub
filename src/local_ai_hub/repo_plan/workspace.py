@@ -19,6 +19,7 @@ from .schema_validation import (
     RepoPlanNotFoundError,
     RepoPlanValidationError,
     validate_plan_dict,
+    validate_repo_path,
 )
 from .storage import RepoPlanStorage, get_git_context
 
@@ -47,12 +48,19 @@ class RepoPlanWorkspace:
         self.repo_root = Path(repo_root).resolve()
         config_res = resolve_project_config(self.repo_root)
         self.settings = config_res.settings.workspace
+        self._validate_workspace_paths()
         self.plans_dir = self.repo_root / self.settings.plans_dir
         self.intents_dir = self.repo_root / self.settings.intents_dir
-        self.storage = RepoPlanStorage(self.repo_root, intents_dir=self.intents_dir)
+        self.storage = RepoPlanStorage(self.repo_root, intents_dir=self.settings.intents_dir)
+
+    def _validate_workspace_paths(self) -> None:
+        validate_repo_path(".local-ai-hub", repo_root=self.repo_root)
+        for name in ("plans_dir", "specs_dir", "decisions_dir", "knowledge_dir", "local_dir", "intents_dir"):
+            validate_repo_path(getattr(self.settings, name), repo_root=self.repo_root)
 
     def init_workspace(self, force: bool = False) -> dict[str, Any]:
         """Initialize project workspace folder structure, README, and .gitignore."""
+        self._validate_workspace_paths()
         created_paths: list[str] = []
         existing_paths: list[str] = []
 

@@ -8,6 +8,8 @@ Specifications belong in Git and must be updated when the operator clarifies req
 
 The latest operator direction replaces the earlier database-owned planner and periodic-export proposal: plans and other repository-specific work artifacts are real files in the selected repository/worktree. Hub creates, validates, edits, saves, indexes and displays those files. Git versions them normally. There is no second canonical plan in Hub's database and no periodic plan export or special backup branch in this design.
 
+Project workspace directory settings and persisted project-file targets are canonical relative paths from the resolved repository root. Reject POSIX and Windows absolute or drive-relative paths, empty, `.` and `..` segments, and malformed separators. Resolve and check containment beneath the repository root before creating directories or writing files; symlink or junction traversal outside the root rejects. Do not persist absolute filesystem paths as project-file targets.
+
 The Coordination dashboard uses an explicit repository/worktree root and a plan filter. Kanban cards and plan-progress summaries derive from the selected plan files; mutations use their file revision. The legacy global SQLite milestone panel is not a project-status source and must not offer writes after legacy-board mutation is disabled. Resource semaphores remain an installation-wide coordination surface, not project tasks.
 
 This document is a specification, not a live implementation plan. Existing governing instructions remain in force until the replacement is implemented and validated; do not disable current planning prematurely.

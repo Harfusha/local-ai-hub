@@ -21,6 +21,7 @@ from ..process_utils import clean_git_env, hidden_run_kwargs
 from .schema_validation import (
     RepoPlanConflictError,
     RepoPlanError,
+    RepoPlanValidationError,
     parse_plan_json,
     serialize_plan_json,
     validate_plan_dict,
@@ -134,13 +135,30 @@ class RepoPlanStorage:
 
     def __init__(self, repo_root: str | Path, intents_dir: str | Path | None = None) -> None:
         self.repo_root = Path(repo_root).resolve()
-        if intents_dir is not None:
-            self.intents_dir = Path(intents_dir).resolve()
-        else:
-            self.intents_dir = self.repo_root / ".local-ai-hub" / "local" / "intents"
+        try:
+            relative_intents_dir = (
+                ".local-ai-hub/local/intents" if intents_dir is None else os.fspath(intents_dir)
+            )
+        except TypeError as exc:
+            raise RepoPlanError("Intent directory must be a project-relative path") from exc
+        if not isinstance(relative_intents_dir, str):
+            raise RepoPlanError("Intent directory must be a project-relative path")
+        requested_intents_dir = Path(relative_intents_dir)
+        if requested_intents_dir.is_absolute():
+            resolved_intents_dir = requested_intents_dir.resolve()
+            try:
+                relative_intents_dir = resolved_intents_dir.relative_to(self.repo_root).as_posix()
+            except ValueError as exc:
+                raise RepoPlanValidationError(
+                    f"Intent directory escapes repository root '{self.repo_root}'"
+                ) from exc
+        validate_repo_path(relative_intents_dir, repo_root=self.repo_root)
+        self.intents_dir_rel = relative_intents_dir
+        self.intents_dir = self.repo_root / relative_intents_dir
         self._lock_path = self.repo_root / ".local-ai-hub" / "local" / "repo-plan-storage"
 
     def _ensure_intents_dir(self) -> None:
+        validate_repo_path(self.intents_dir_rel, repo_root=self.repo_root)
         validate_repo_path(".local-ai-hub/local/repo-plan-storage", repo_root=self.repo_root)
         self.intents_dir.mkdir(parents=True, exist_ok=True)
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)

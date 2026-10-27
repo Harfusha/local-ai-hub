@@ -1,18 +1,18 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** candidate validation in progress; CI and runtime acceptance remain open.
-**Revision for wheel evidence below:** `50ce188493b9d000b21599fb572d47aad23f4d7f` (superseded; current source needs fresh wheel and CI evidence).
+**State:** candidate `7a60788102b35001f9cccc3a5520d56be837080a` pushed; local gates pass; hosted CI and live activation remain open.
+**Candidate revision:** `7a60788102b35001f9cccc3a5520d56be837080a`.
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
-- Clean checkout of `29c455ff` passed `python tools/release_check.py --strict-tree`. A wheel built from that checkout has SHA256 `fff1b423f33fa8894f9bc2fa89edf713ea9878acaf86d53f637b4e7bac9c4d1a`; installation into a fresh virtual environment and `tools/wheel_smoke.py` passed, with version `5.1.0` loaded from that environment's site-packages. This does not establish CI or the live installation.
-- `tests/test_surface_audit_policy.py tests/test_surface_inventory.py`: **774 passed**.
-- Clean `git archive` snapshot: `python tools/release_check.py --strict-tree` passed. The checkout retains its existing ignored `build/` and `dist/`.
-- Wheel built from the source revision above: SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`. Isolated-venv `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. The wheel is retained under `%TEMP%/lah-release-f14c726ef5c04476b213966b02d324e5/wheel/`.
-- [CI run #178](https://github.com/Harfusha/local-ai-hub/actions/runs/40479922045) failed the Ubuntu 3.14 full suite; twelve other matrix and coverage jobs passed. Its annotations identify generated-policy/status expectations, Serena fixture timing, command cleanup and async child cleanup. Subsequent fixes require a fresh run and wheel.
-- The historical JSON-budget artifact at source `01a72dec90252019060fb40a08a8c4a10f520228` used a synthetic baseline and is invalid. Its replacement, `docs/perf_candidate_json_budget.json`, records 1,000 independently measured pairs from clean source `94a485ffecf6bc3c9810718b2f658b6df0120b64`, with parity, p95 1.72x and p99 1.95x on the recorded Windows host. This is candidate-specific performance evidence, not full release or live-runtime acceptance.
-- Runtime restart, current dashboard screenshot, Agent OS completion, and preserved-data comparison are not yet established for this candidate.
+- [CI run #199](https://github.com/Harfusha/local-ai-hub/actions/runs/40506126169) validates this exact candidate. Latest check: critical coverage and 11 matrix jobs passed; Ubuntu 3.14 full suite is still running.
+- Candidate regressions: **90 passed** (`test_mcp_coord_operation_acceptance.py`, `test_dashboard_repository_plans.py`). Surface audit and inventory: **774 passed**; `tools/audit_agent_surface.py` returned `success=true`, `errors=[]`.
+- Candidate `pyflakes src tools` and changed-test lint passed; `python -m compileall -q src tools tests` passed. Clean candidate worktree `python tools/release_check.py --strict-tree` returned `release-check: OK`; `python tools/selftest.py` returned **6/6 checks passed**.
+- Wheel built from this commit: SHA256 `26b5adbde93343404c2836926cae4314712d625ac45298db63b39a79943ea74e`. Fresh Python 3.13 virtual-environment install and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. Wheel and environment retained under `%TEMP%/lah-release-7a607881-a6b8a3f0/`.
+- `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs, parity, p95 1.72x and p99 1.95x. It applies to source `94a485ffecf6bc3c9810718b2f658b6df0120b64` and closes only the JSON-budget tail gate.
+- Pre-restart `/health` returned success/version `5.1.0`; `hubctl status` reported PID `18096`, and its command points to this repository's `.venv` and source tree. The running process has not loaded candidate code yet.
+- Current screenshot, config/state baseline, safe restart, post-restart process/source proof, dashboard plan create/list/edit check, and receipt-gated Agent OS completion remain open. Several active chats are using the shared Hub, so restart is deferred until they finish.
 
 ## Historical verification receipts
 

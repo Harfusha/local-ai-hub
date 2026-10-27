@@ -7,6 +7,7 @@ from local_ai_hub.repo_plan import (
     RepoPlanConflictError,
     RepoPlanStorage,
 )
+from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
 
 
 @pytest.fixture
@@ -16,6 +17,23 @@ def temp_workspace(tmp_path):
     intents_dir = tmp_path / ".local-ai-hub" / "local" / "intents"
     storage = RepoPlanStorage(tmp_path, intents_dir=intents_dir)
     return tmp_path, storage
+
+
+def test_storage_rejects_intent_directory_outside_repo(tmp_path):
+    with pytest.raises(RepoPlanValidationError):
+        RepoPlanStorage(tmp_path, intents_dir="../outside/intents")
+
+    outside_intents = tmp_path.parent / f"{tmp_path.name}-outside" / "intents"
+    with pytest.raises(RepoPlanValidationError):
+        RepoPlanStorage(tmp_path, intents_dir=outside_intents)
+
+
+def test_storage_accepts_absolute_intent_directory_inside_repo(tmp_path):
+    intents_dir = tmp_path / ".local-ai-hub" / "local" / "intents"
+
+    storage = RepoPlanStorage(tmp_path, intents_dir=intents_dir)
+
+    assert storage.intents_dir == intents_dir
 
 
 def create_sample_plan_dict(plan_id="plan_sample", title="Sample Plan"):
