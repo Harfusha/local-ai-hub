@@ -419,8 +419,9 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
     assert resumed_checkpoint["state_data"]["marker"] == "checkpoint-preserved"
     assert resumed_checkpoint["state_data"]["repo_root"] == root
     assert resumed_checkpoint["state_data"]["_agent_task_scope"]["repo_root"] == root
-    assert receipt["success"] is True, receipt
-    assert receipt["receipt"]["criterion"] == "change_verified"
+    assert receipt["success"] is False, receipt
+    assert "authentic broker execution provenance" in receipt["error"]
+    assert app.agent_tasks.get("sdk-route-task").verification_receipts == {}
 
 
 def test_continue_conversation_uses_real_http_handler_and_store(live_client, http_post_paths):

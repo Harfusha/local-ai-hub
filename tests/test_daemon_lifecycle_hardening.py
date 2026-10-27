@@ -1984,7 +1984,7 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
 def test_live_daemon_is_reconciled_after_broker_restart(tmp_path: Path) -> None:
     first = _broker(tmp_path, allow_unknown=True)
     daemon = first.spawn_daemon(
-        f'"{sys.executable}" -c "import time; time.sleep(5)"',
+        f'"{sys.executable}" -c "import time; time.sleep(30)"',
         str(tmp_path),
         name="restart-reconcile-test",
         task_id="daemon-test",
@@ -2003,8 +2003,8 @@ def test_live_daemon_is_reconciled_after_broker_restart(tmp_path: Path) -> None:
             assert stopped["success"] is True
             assert stopped["process_tree_stopped"] is True
             assert second._daemons[daemon["daemon_id"]]["process"].poll() is not None
-            registry = json.loads(second._daemon_registry_path.read_text(encoding="utf-8"))
-            assert all(row.get("daemon_id") != daemon["daemon_id"] for row in registry["daemons"])
+            third = _broker(tmp_path)
+            assert third.daemon_status(daemon["daemon_id"])["success"] is False
         else:
             assert stopped["success"] is False
             assert stopped["status"] == "running"

@@ -319,6 +319,8 @@ class _RecoveredDaemonProcess:
                     process_group=self.process_group_id,
                     grace_seconds=0.1,
                 ))
+        if os.name != "nt" and self.poll() is not None:
+            return False
         raise OSError("no stable process-tree ownership handle")
 
 _SECRET_PATTERNS = [

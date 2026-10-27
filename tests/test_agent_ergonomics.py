@@ -206,7 +206,7 @@ def test_schema_polymorphism_and_validation():
     rcpt_err = validate_operation_arguments(
         "local_ai_coord",
         "record_native_receipt",
-        {"task_id": "t-1", "criterion": "crit-1", "command": "pytest -q", "passed": True},
+        {"task_id": "t-1", "criterion": "crit-1", "command_id": "a" * 32, "root": "."},
     )
     assert rcpt_err is None
 
@@ -453,13 +453,23 @@ def test_task_compress_and_review_flexibility():
 
         # Compress with prompt instead of context
         local_ai_task(action="compress", prompt="test failure log output")
-        payload = mock_client.post.call_args[0][1]
+        compress_calls = [
+            call for call in mock_client.post.call_args_list
+            if call.args[0] == "/api/compress"
+        ]
+        assert compress_calls
+        payload = compress_calls[-1].args[1]
         assert payload["text"] == "test failure log output"
 
         # Review with candidate instead of context
         mock_client.reset_mock()
         local_ai_task(action="review", candidate="def buggy(): return 1/0")
-        payload_rev = mock_client.post.call_args[0][1]
+        review_calls = [
+            call for call in mock_client.post.call_args_list
+            if call.args[0] == "/api/review"
+        ]
+        assert review_calls
+        payload_rev = review_calls[-1].args[1]
         assert payload_rev["code"] == "def buggy(): return 1/0"
 
 
@@ -1444,7 +1454,7 @@ def test_task_accepts_chat_and_ask_aliases():
 # 12. local_ai_coord record_native_receipt accepts summary=
 # ---------------------------------------------------------------------------
 
-def test_coord_record_native_receipt_accepts_summary():
+def test_coord_record_native_receipt_rejects_untrusted_summary():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
         mc.post.return_value = {"success": True, "verified": True}
         res = local_ai_coord(
@@ -1455,10 +1465,9 @@ def test_coord_record_native_receipt_accepts_summary():
             command="pytest",
             summary="All 10 passed",
         )
-        assert res.get("success") is True, f"record_native_receipt with summary failed: {res}"
-        calls = [c for c in mc.post.call_args_list if "/api/agent-state/verification" in str(c)]
-        assert len(calls) >= 1
-        assert calls[0][0][1].get("output_summary") == "All 10 passed"
+        assert res.get("success") is False, res
+        assert "command_id" in str(res)
+        mc.post.assert_not_called()
 
 
 # ===========================================================================
