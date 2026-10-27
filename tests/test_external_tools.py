@@ -511,10 +511,13 @@ def test_code_intelligence_timeouts_and_session_pool_defaults(tmp_path: Path):
         validate_config({"code_intelligence": {"soft_timeout_seconds": -1}})
 
 
-def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path):
+def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path, monkeypatch):
     import time
     from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPSoftTimeoutError
 
+    # This test controls the backend; an asynchronous real preflight must not
+    # replace its fake executable or circuit state while the query runs.
+    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda self: None)
     root = tmp_path / "repo"
     root.mkdir()
 
