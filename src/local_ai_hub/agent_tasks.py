@@ -3321,6 +3321,47 @@ class TaskStore:
         )
         return self._commit_update(current, updated, event)
 
+    def repair_missing_session(
+        self, task_id: str, *, session_id: str, repo_root: str, actor: str, reason: str = "session recovery",
+        authorization_actor: str = "", response_budget_tokens: int | None = None,
+    ) -> TaskState:
+        """Bind a sessionless task once, preserving its identity and audit history."""
+        if not isinstance(session_id, str) or not session_id or session_id != session_id.strip() or "\x00" in session_id:
+            raise ValueError("session_id must be a nonempty canonical string")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason is required")
+        current = self.get(task_id)
+        if current is None:
+            raise KeyError(f"Task {task_id} not found")
+        if not isinstance(actor, str) or not actor or actor != current.owner:
+            raise ValueError("task owner mismatch")
+        if not repo_root or _canonical_repository_root(repo_root) != _task_scope_root(current):
+            raise ValueError("repository root mismatch")
+        if current.context.session_id:
+            raise ValueError("task already has a session")
+        if current.status not in (TaskStatus.PLANNED, TaskStatus.ACTIVE) or current.verification_receipts:
+            raise ValueError("task status or verification receipts prevent session repair")
+        context = replace(current.context, session_id=session_id)
+        state_data = dict(current.checkpoint.state_data)
+        previous_audit = state_data.get("memory_audit")
+        if isinstance(previous_audit, Mapping):
+            history = list(state_data.get("memory_audit_history", ()))
+            history.append(dict(previous_audit))
+            state_data["memory_audit_history"] = history[-20:]
+        state_data["memory_context"] = self._task_memory_context(
+            task_id, current.contract, context, root_override=_task_scope_root(current), previous=None
+        )
+        state_data["memory_audit"] = None
+        checkpoint = replace(current.checkpoint, state_data=state_data)
+        updated = replace(current, context=context, checkpoint=checkpoint, updated_at=time.time())
+        self._preflight_response_budget(updated, response_budget_tokens)
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}", kind="task.session_repaired",
+            payload={"session_id": session_id, "reason": reason, "authorization_actor": authorization_actor},
+            idempotency_key=f"session_repair:{task_id}:{session_id}", actor=actor,
+        )
+        return self._commit_update(current, updated, event, allow_server_memory_refresh=True)
+
     def resume(
         self,
         task_id: str,

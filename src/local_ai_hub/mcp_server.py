@@ -5015,9 +5015,12 @@ def local_ai_coord(
         if action == "task_budget_increase":
             task_kwargs = {"action": action, "root": root, "task_id": task_id,
                            "reason": reason, "budget": budget}
+        if action == "task_repair_session":
+            task_kwargs = {"action": action, "root": root, "task_id": task_id,
+                           "session_id": session_id, "reason": reason}
         if action in {
             "task_create", "task_checkpoint", "task_fail", "task_transition", "task_complete",
-            "task_rollback", "task_resume", "task_heartbeat", "task_budget_increase",
+            "task_rollback", "task_resume", "task_heartbeat", "task_budget_increase", "task_repair_session",
         }:
             budget_options = {
                 "max_response_tokens": max_response_tokens,

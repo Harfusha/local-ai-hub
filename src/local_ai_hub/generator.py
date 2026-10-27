@@ -759,6 +759,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         f"{prioritization_directive}\n\n"
         "Detailed diagnostics require the dashboard agent-response-detail toggle; requests cannot enable it. The policy applies to nested, asynchronous, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.\n\n"
         "Keep the existing Agent OS task and usage counters. With explicit operator authorization, `task_budget_increase` raises limits only through the ordinary write-authorized broker, including canonical loopback access without a token, with an explicit absolute root and audit reason. No special owner/admin token is required. Failed-task increases preserve status and owner; resume is separate. Never edit task storage directly. `curate_dataset` also requires an explicit absolute root.\n\n"
+        "With explicit operator authorization, `task_repair_session` repairs only a task with no session through the write-authorized broker, using an explicit root, task ID, session ID, and audit reason. Rebind the same task and session to its plan afterward.\n\n"
         f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
