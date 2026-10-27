@@ -1001,7 +1001,7 @@ function dashboardHealth(snapshot={}){
   const terminalStatuses=['down','offline','unavailable','crashed','stopped'];
   const processLiveness=hubOnline===false||terminalStatuses.includes(status)?'offline':heartbeatStale||status==='stale'?'stale':hubOnline===true||['running','healthy','ok','online'].includes(status)?'live':'unknown';
   const signals=[];
-  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
+  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&name!=='telemetry.summary'&&!name.endsWith('.telemetry.summary')&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
   const features=snapshot.features||current.features||{};

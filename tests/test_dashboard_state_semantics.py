@@ -10,6 +10,12 @@ for(const scope of ['process','window']){
     sessions:[{status:'crashed'}]}};
   assert.equal(dashboardHealth(snapshot).level,'healthy');
   assert.doesNotMatch(dashboardHealth(snapshot).reason,/2404|restart|dropped|rejection/);
+  const detailedTelemetryTimeout=dashboardHealth({...snapshot,dependency_status:{'detail.agent_state.telemetry.summary':{degraded:true}}});
+  assert.equal(detailedTelemetryTimeout.level,'healthy');
+  assert.equal(detailedTelemetryTimeout.functional_health,'healthy');
+  const detailedRuntimeFailure=dashboardHealth({...snapshot,dependency_status:{'detail.agent_state.runtime.online':{degraded:true}}});
+  assert.equal(detailedRuntimeFailure.level,'attention');
+  assert.equal(detailedRuntimeFailure.functional_health,'degraded');
 }
 const incomplete=dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:30,writer_errors:2}}});
 assert.equal(incomplete.level,'attention');

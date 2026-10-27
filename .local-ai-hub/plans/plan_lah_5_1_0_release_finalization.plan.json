@@ -11,17 +11,18 @@
         "CI matrix passes for exact HEAD",
         "Clean strict release check and isolated wheel smoke pass for exact HEAD",
         "Live Hub process is proven to load exact pushed source after safe restart",
+        "Dashboard health ignores telemetry.summary diagnostic timeouts including detail.agent_state.telemetry.summary while retaining real runtime dependency failures",
         "Dashboard health and project plan creation/list/task editing verified",
         "No unrelated user work is modified or committed",
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "Telemetry health classification fix committed and pushed as 47fc9706bda9a24c9ef2717a7ba7958340c10a0c. Installed with setup expected-revision and service restarted; hubctl status reports PID 61100, /health HTTP 200 v5.1.0, and local_ai_status reports success=true/degraded=false. CI #255 (run 40582352409) is in progress, 3/12 matrix jobs complete. Dashboard plan UI lifecycle and authentic Agent OS receipts remain open.",
+      "blocker": "Telemetry summary timeout is now isolated: dashboard detail diagnostics prefix dependency keys with detail.agent_state., and dashboardHealth previously treated detail.agent_state.telemetry.summary as a failed check. Fix and regression coverage are in the working tree; targeted dashboard/status tests pass 15/15. Release CI, current-runtime integration, project-plan UI lifecycle, and authentic receipts remain open.",
       "clarifications": [],
       "depends_on": [],
       "description": "Finish CI and candidate-bound release checks, confirm the installed runtime reflects the pushed source, resolve the dashboard plan-creation defect, and verify the repo-specific Kanban. Preserve unrelated operator files and do not restart the shared Hub while other chats are active.",
       "kind": "code",
-      "next_action": "Reconcile CI #255 for exact commit 47fc9706. Update release status/evidence to current source and live runtime, then finish dashboard plan lifecycle and obtain authentic Agent OS receipts before closure.",
+      "next_action": "Commit and push the dashboard telemetry-summary timeout fix, then continue exact-HEAD CI and remaining release gates without restarting the shared Hub while other chats are active.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_status": "in_progress"
     }
