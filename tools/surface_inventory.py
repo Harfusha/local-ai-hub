@@ -409,52 +409,6 @@ def _extract_mcp(
     return sorted(tools, key=lambda item: item["name"]), action_aliases, conditional_actions
 
 
-def _conditional_list_action_gates(
-    tree: ast.Module, class_name: str, method_name: str
-) -> dict[str, str]:
-    """Return literal actions appended under feature-guarded branches."""
-    target = next(
-        (
-            member
-            for cls in tree.body
-            if isinstance(cls, ast.ClassDef) and cls.name == class_name
-            for member in cls.body
-            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and member.name == method_name
-        ),
-        None,
-    )
-    if target is None:
-        return {}
-
-    gates: dict[str, str] = {}
-    for branch in (node for node in ast.walk(target) if isinstance(node, ast.If)):
-        gate = next(
-            (
-                item.attr
-                for item in ast.walk(branch.test)
-                if isinstance(item, ast.Attribute)
-                and isinstance(item.value, ast.Name)
-                and item.value.id == "self"
-            ),
-            None,
-        )
-        if not gate:
-            continue
-        actions = {
-            value
-            for statement in branch.body
-            for call in ast.walk(statement)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "append"
-            for argument in call.args
-            for value in _literal_strings(argument)
-        }
-        gates.update({action: gate for action in actions})
-    return gates
-
-
 def _generated_mcp_schemas(
     root: Path,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str], set[str]]:
@@ -2364,13 +2318,6 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
     source_mcp_tools, mcp_action_aliases, conditional_mcp_actions = _extract_mcp(
         modules["mcp"][1], SOURCE_FILES["mcp"], contract_aliases
     )
-    conditional_command_actions = _conditional_list_action_gates(
-        modules["features"][1], "FeatureSet", "supported_command_actions"
-    )
-    if conditional_command_actions:
-        conditional_mcp_actions.setdefault("local_ai_command", {}).update(
-            conditional_command_actions
-        )
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
     mcp_schemas, mcp_schema_evidence, schema_errors, disabled_mcp_tools = _generated_mcp_schemas(root)
     mcp_tools = []
@@ -2632,7 +2579,6 @@ _MCP_TOOL_OWNER_TASK = {
     "local_ai_status": "T18",
     "local_ai_repo": "T10",
     "local_ai_task": "T12",
-    "local_ai_command": "T15",
     "local_ai_coord": "T08",
     "local_ai_rag": "T11",
     "local_ai_artifact": "T14",
@@ -2844,12 +2790,6 @@ def _mcp_action_owner_task(tool_name: str, action: str) -> str:
         if any(word in canonical for word in ("benchmark", "evaluation", "candidate")):
             return "T02"
         return "T12"
-    if tool_name == "local_ai_command":
-        if canonical in {"run", "repair", "auto_fix", "format", "stage", "stash", "daemon", "network", "bundle"}:
-            return "T06"
-        if canonical in {"cancel", "retry", "replay"}:
-            return "T07"
-        return "T15"
     if tool_name == "local_ai_coord":
         if any(word in canonical for word in ("verify", "receipt", "evidence", "worktree", "completion")):
             return "T09"

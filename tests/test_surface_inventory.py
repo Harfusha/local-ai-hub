@@ -222,8 +222,6 @@ def test_operation_owner_tasks_follow_surface_families():
         ({"surface": "HTTP POST", "name": "/api/memory"}, "T05"),
         ({"surface": "HTTP POST", "name": "/api/search"}, "T21"),
         ({"surface": "HTTP POST", "name": "/api/command/run"}, "T15"),
-        ({"surface": "MCP action local_ai_command", "name": "run"}, "T06"),
-        ({"surface": "MCP action local_ai_command", "name": "retry"}, "T07"),
         ({"surface": "MCP action local_ai_coord", "name": "task_list"}, "T08"),
         ({"surface": "HTTP POST", "name": "/api/evidence/verify"}, "T09"),
         ({"surface": "MCP action local_ai_repo", "name": "context"}, "T10"),
@@ -397,9 +395,7 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     assert inventory["conditional_mcp_actions"]["local_ai_repo"]["batch_replace"] == (
         "batch_replacement"
     )
-    assert inventory["conditional_mcp_actions"]["local_ai_command"]["speculative_lint"] == (
-        "speculative_lint"
-    )
+    assert "local_ai_command" not in inventory["conditional_mcp_actions"]
     assert inventory["mcp_action_aliases"] == {"local_ai_repo": {"ctx": "context"}}
     assert {"agent-state", "clean"} <= set(inventory["cli_operations"])
     assert set(inventory["generated_manifests"]) == {
