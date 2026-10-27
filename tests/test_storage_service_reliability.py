@@ -180,9 +180,9 @@ def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
     payload = json.loads(payload_json)
     assert payload["attempts"] == 2
 
-    # Test retry_decision: syntax error produces verified_fix with high confidence
+    # Heuristic guidance is not a verified fix and cannot authorize a retry.
     dec = istore.retry_decision(rec1.fingerprint, "rev_1", root=str(tmp_path.resolve()))
-    assert dec.action == "apply_verified_fix"
+    assert dec.action == "stop"
 
     # Test retry_decision on unknown error without verified fix
     unclassified = ToolOutcome(

@@ -319,3 +319,80 @@ def test_mcp_compact_rejects_subminimum_budget_without_exceeding_request() -> No
     assert result["success"] is False
     assert result["response_budget"]["requested_tokens"] == 64
     assert json_tokens(result) <= 64
+
+
+def test_task_memory_delta_marks_unchanged_without_dropping_adoption_context(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    memory = {
+        "schema_version": 2,
+        "context": {"root": "C:/fixture", "coordination_id": "repo-1", "task_id": "task-1"},
+        "instruction": "Use scoped memory.",
+        "items": [{"id": "mem-1", "content": "fixture fact"}],
+        "warnings": [],
+        "estimated_tokens": 8,
+    }
+    response = {
+        "success": True,
+        "request_id": "request-1",
+        "task_id": "task-1",
+        "task": {"task_id": "task-1", "status": "active", "checkpoint": {"state_data": {"memory_context": memory}}},
+    }
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(
+        tool="local_ai_coord", action="task_get", response_profile="delta",
+        reuse_key="task-get-unchanged", max_response_tokens=2000,
+    ))
+    try:
+        first = mcp_server._compact(response, "task_memory")
+        second = mcp_server._compact({**response, "request_id": "request-2"}, "task_memory")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert first.get("unchanged") is not True
+    assert second["unchanged"] is True
+    assert second["request_id"] == "request-2"
+    assert second["task_id"] == "task-1"
+    assert second["task"]["checkpoint"]["state_data"]["memory_context"] == memory
+
+
+def test_coord_delta_marks_unchanged_and_retains_request_identity(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(
+        tool="local_ai_coord", action="task_get", response_profile="delta",
+        reuse_key="coord-get-unchanged", max_response_tokens=2000,
+    ))
+    try:
+        first = mcp_server._compact({"success": True, "task_id": "task-1", "status": "active", "request_id": "r1"}, "coord")
+        second = mcp_server._compact({"success": True, "task_id": "task-1", "status": "active", "request_id": "r2"}, "coord")
+        changed = mcp_server._compact({"success": True, "task_id": "task-1", "status": "done", "request_id": "r3"}, "coord")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert first.get("unchanged") is not True
+    assert second["unchanged"] is True
+    assert second["request_id"] == "r2"
+    assert second["task_id"] == "task-1"
+    assert changed.get("unchanged") is not True
+    assert changed["status"] == "done"
+
+
+def test_delta_pointer_keeps_unchanged_marker_with_tight_budget(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    value = {"success": True, "artifact_id": "artifact-1", "results": [
+        {"path": f"src/{i}.py", "text": "x" * 500} for i in range(30)
+    ]}
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(response_profile="delta"))
+    try:
+        mcp_server._compact(value, "search")
+        repeated = mcp_server._compact(value, "search")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert repeated["unchanged"] is True
+    assert repeated["artifact_id"] == "artifact-1"
+    public = {key: value for key, value in repeated.items() if key != "_token_accounting"}
+    assert json_tokens(public) <= 260

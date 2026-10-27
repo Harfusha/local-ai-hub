@@ -6830,9 +6830,11 @@ class LocalAIServices:
 
         regressions: list[dict[str, Any]] = []
         incident_store = getattr(self, "incident_store", None)
-        if incident_store is not None and diff.get("changed_files"):
+        from .process_utils import is_rooted_path
+        regression_root = args.get("root")
+        if incident_store is not None and diff.get("changed_files") and isinstance(regression_root, str) and is_rooted_path(regression_root):
             try:
-                found = incident_store.find_regressions(diff["changed_files"])
+                found = incident_store.find_regressions(diff["changed_files"], root=regression_root)
                 if isinstance(found, list):
                     regressions = [r for r in found if isinstance(r, dict)]
             except Exception:

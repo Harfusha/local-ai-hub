@@ -4262,7 +4262,7 @@ class Handler(BaseHTTPRequestHandler):
                         "candidates_count": 0,
                     }); return
                 scope = str((query.get("scope") or ["process"])[0])
-                if not detail_enabled or detail in {"summary", "light"}:
+                if not detail_enabled or detail in {"brief", "summary", "light"}:
                     status = APP.realtime_status(light=True, scope=scope)
                     status["detail_level"] = "summary"
                 else:
@@ -7032,8 +7032,8 @@ class Handler(BaseHTTPRequestHandler):
                         repository_root=str(payload.get("root", "")),
                     )
                     inc = APP.agent_incidents.capture(outcome)
-                    if inc and (verified_fix or root_cause):
-                        inc = APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
+                    if inc and verified_fix:
+                        inc = APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix, root_cause=root_cause or None)
                     self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
                 if action == "find":
                     query = payload["query"]

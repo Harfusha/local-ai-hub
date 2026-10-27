@@ -197,7 +197,7 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve scoped incident identity, lifecycle and evidence. Heuristic suggested_fix is advisory; only resolved non-placeholder fixes project as verified_fix. Legacy resolved placeholders remain unverified without rewriting stored records.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
@@ -6321,7 +6321,7 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve scoped incident identity, lifecycle and evidence. Heuristic suggested_fix is advisory; root_cause alone must not resolve an incident or manufacture verified_fix. Explicit verified_fix retains its separate resolution path.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_incidents_1",

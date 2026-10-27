@@ -210,22 +210,30 @@ class IncidentRecord:
         object.__setattr__(self, "repository_key", rk)
 
     def is_resolved(self) -> bool:
-        return self.resolved
+        # Older record requests fabricated this placeholder from a root cause.
+        return self.resolved and str(self.verified_fix or "").strip().casefold() != "resolved"
 
     def is_ignored(self) -> bool:
         return self.ignored
 
     def is_active(self) -> bool:
-        return not self.resolved and not self.ignored
+        return not self.is_resolved() and not self.ignored
 
     def has_verified_fix(self) -> bool:
-        return bool(self.verified_fix)
+        return self.is_resolved() and bool(self.verified_fix)
+
+    @property
+    def suggested_fix(self) -> str | None:
+        _, suggestion, _ = _extract_root_cause_and_fix(
+            self.redacted_message, self.operation_class, self.error_class == "TimeoutError"
+        )
+        return suggestion or None
 
     @property
     def status(self) -> str:
         if self.ignored:
             return "ignored"
-        return "resolved" if self.resolved else "unresolved"
+        return "resolved" if self.is_resolved() else "unresolved"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -238,9 +246,10 @@ class IncidentRecord:
             "attempts": self.attempts,
             "evidence_ids": list(self.evidence_ids),
             "root_cause": self.root_cause,
-            "verified_fix": self.verified_fix,
+            "verified_fix": self.verified_fix if self.has_verified_fix() else None,
+            "suggested_fix": self.suggested_fix,
             "confidence": self.confidence,
-            "resolved": self.resolved,
+            "resolved": self.is_resolved(),
             "ignored": self.ignored,
             "status": self.status,
             "created_at": self.created_at,
@@ -679,9 +688,9 @@ class IncidentStore:
         repository_key = _incident_scope_key(
             "repository", outcome.repository_root or meta.get("repository_root")
         )
-        auto_rc, auto_fix, auto_conf = _extract_root_cause_and_fix(outcome.error, outcome.tool_name, outcome.timed_out)
+        auto_rc, _auto_fix, auto_conf = _extract_root_cause_and_fix(outcome.error, outcome.tool_name, outcome.timed_out)
         eff_rc = meta_rc or auto_rc or None
-        eff_fix = meta_fix or auto_fix or None
+        eff_fix = meta_fix or None
         eff_conf = max(meta_conf, auto_conf)
 
         # Extract affected paths from outcome or heuristically from error/command
@@ -974,14 +983,15 @@ class IncidentStore:
         rev, fix, confidence, resolved, ignored = rows
         if ignored:
             return RetryDecision(action="proceed", reason="matching incident is ignored")
-        if fix and confidence >= 0.8:
+        legacy_placeholder = isinstance(fix, str) and fix.strip().casefold() == "resolved"
+        if resolved and fix and not legacy_placeholder and confidence >= 0.8:
             return RetryDecision(
                 action="apply_verified_fix",
                 reason="verified fix exists with high confidence",
                 verified_fix=fix,
                 confidence=confidence,
             )
-        if not resolved:
+        if not resolved or legacy_placeholder:
             if rev == state_revision:
                 return RetryDecision(
                     action="stop",
@@ -1072,7 +1082,7 @@ class IncidentStore:
                     filters.append("repository_key = ?")
                     params.append(repository_key)
                 if resolved is not None:
-                    filters.append("resolved = ?")
+                    filters.append("(resolved = 1 AND lower(trim(coalesce(verified_fix, ''))) <> 'resolved') = ?")
                     params.append(1 if resolved else 0)
                 status_norm = str(status or "").strip().lower()
                 if status_norm not in {"", "ignored", "resolved", "unresolved"}:
@@ -1080,9 +1090,9 @@ class IncidentStore:
                 if status_norm == "ignored":
                     filters.append("ignored = 1")
                 elif status_norm == "resolved":
-                    filters.extend(("ignored = 0", "resolved = 1"))
+                    filters.extend(("ignored = 0", "resolved = 1", "lower(trim(coalesce(verified_fix, ''))) <> 'resolved'"))
                 elif status_norm == "unresolved":
-                    filters.extend(("ignored = 0", "resolved = 0"))
+                    filters.extend(("ignored = 0", "(resolved = 0 OR lower(trim(coalesce(verified_fix, ''))) = 'resolved')"))
                 if filters:
                     query += " AND " + " AND ".join(filters)
                 query += " ORDER BY updated_at DESC LIMIT ?"
@@ -1116,7 +1126,10 @@ class IncidentStore:
                     row = con.execute("SELECT COUNT(*) FROM agent_incidents").fetchone()
                 else:
                     val = 1 if resolved else 0
-                    row = con.execute("SELECT COUNT(*) FROM agent_incidents WHERE resolved = ?", (val,)).fetchone()
+                    row = con.execute(
+                        "SELECT COUNT(*) FROM agent_incidents WHERE "
+                        "(resolved = 1 AND lower(trim(coalesce(verified_fix, ''))) <> 'resolved') = ?", (val,)
+                    ).fetchone()
                 return int(row[0]) if row else 0
 
         return retry_busy(_count, retries=5, base_delay_seconds=0.02)
@@ -1233,7 +1246,7 @@ class IncidentStore:
             root_cause=root_cause,
             verified_fix=verified_fix,
             confidence=confidence,
-            resolved=bool(resolved_val),
+            resolved=bool(resolved_val) and str(verified_fix or "").strip().casefold() != "resolved",
             ignored=bool(ignored_val),
             created_at=created_at,
             updated_at=updated_at,
@@ -1242,7 +1255,13 @@ class IncidentStore:
             repository_key=repository_key,
         )
 
-    def find_regressions(self, paths: Collection[str], *, state_revision: str | None = None) -> list[dict[str, Any]]:
+    def find_regressions(self, paths: Collection[str], *, root: str, state_revision: str | None = None) -> list[dict[str, Any]]:
+        from .process_utils import is_rooted_path
+        if not isinstance(root, str) or not root or root != root.strip() or "\x00" in root or not is_rooted_path(root):
+            raise ValueError("root must be an explicit absolute repository root")
+        repository_key = _incident_scope_key("repository", root)
+        if not repository_key:
+            return []
         if not self.state_store.enabled or not self.state_store.db_path.exists() or not paths:
             return []
         self._init_table()
@@ -1259,19 +1278,21 @@ class IncidentStore:
                            SUM(attempts) OVER (
                                PARTITION BY operation_class, error_class, signature_hash, repository_key
                            ) AS attempts,
-                           affected_paths, updated_at, ignored,
+                           affected_paths, updated_at, ignored, resolved,
                            ROW_NUMBER() OVER (
-                               PARTITION BY operation_class, error_class, signature_hash
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key
                                ORDER BY updated_at DESC, incident_id DESC
                            ) AS row_num
-                    FROM agent_incidents
+                    FROM agent_incidents WHERE repository_key = ?
                 )
                 SELECT incident_id, operation_class, error_class, redacted_message,
                        state_revision, root_cause, verified_fix, confidence, attempts, affected_paths, updated_at
                 FROM ranked
-                WHERE row_num = 1 AND verified_fix IS NOT NULL AND confidence >= 0.6 AND ignored = 0
+                WHERE row_num = 1 AND resolved = 1 AND verified_fix IS NOT NULL
+                  AND trim(verified_fix) <> '' AND lower(trim(verified_fix)) <> 'resolved'
+                  AND confidence >= 0.6 AND ignored = 0
                 ORDER BY updated_at DESC
-                """
+                """, (repository_key,)
             )
             regressions: list[dict[str, Any]] = []
             for row in cur.fetchall():
@@ -1340,7 +1361,7 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
                            SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                           updated_at, affected_paths, ignored, expires_at, repository_key,
+                           updated_at, affected_paths, ignored, expires_at, repository_key, resolved,
                            ROW_NUMBER() OVER (
                                PARTITION BY operation_class, error_class, signature_hash, repository_key
                                ORDER BY updated_at DESC, incident_id DESC
@@ -1350,7 +1371,7 @@ class IncidentStore:
                 )
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
                        root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
-                       repository_key
+                       repository_key, resolved
                 FROM ranked
                 WHERE ignored = 0 AND row_num = 1
                   AND (expires_at IS NULL OR expires_at > ?)
@@ -1362,16 +1383,19 @@ class IncidentStore:
             results: list[dict[str, Any]] = []
             for r in cur.fetchall():
                 rc = str(r[5] or "")
-                fix = str(r[6] or "")
+                raw_fix = str(r[6] or "")
+                resolved = bool(r[12]) and raw_fix.strip().casefold() != "resolved"
+                fix = raw_fix if resolved else ""
                 msg = str(r[3] or "")
                 err_cls = str(r[2] or "")
+                _, suggested_fix, _ = _extract_root_cause_and_fix(msg, str(r[1]), err_cls == "TimeoutError")
                 aff = str(r[10] or "") if len(r) > 10 else ""
                 if q_norm:
                     _STOPWORDS = {"python", "python3", "pytest", "tests", "test", "pip", "node", "npm", "pnpm", "yarn", "cargo", "bash", "sh", "run", "exec", "status", "list", "true", "false", "none"}
                     q_words = [w for w in q_norm.replace("/", " ").replace("\\", " ").replace(".", " ").split() if len(w) >= 3 and w not in _STOPWORDS]
                     matched = (
-                        q_norm in rc.lower() or q_norm in fix.lower() or q_norm in msg.lower() or q_norm in err_cls.lower() or
-                        (bool(q_words) and any(w in rc.lower() or w in fix.lower() or w in msg.lower() or w in aff.lower() for w in q_words))
+                        q_norm in rc.lower() or q_norm in fix.lower() or q_norm in suggested_fix.lower() or q_norm in msg.lower() or q_norm in err_cls.lower() or
+                        (bool(q_words) and any(w in rc.lower() or w in fix.lower() or w in suggested_fix.lower() or w in msg.lower() or w in aff.lower() for w in q_words))
                     )
                     if not matched:
                         continue
@@ -1383,6 +1407,8 @@ class IncidentStore:
                     "state_revision": r[4],
                     "root_cause": rc,
                     "verified_fix": fix,
+                    "suggested_fix": suggested_fix,
+                    "resolved": resolved,
                     "confidence": float(r[7] or 0.0),
                     "attempts": int(r[8] or 1),
                     "updated_at": float(r[9] or 0.0),

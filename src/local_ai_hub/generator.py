@@ -157,7 +157,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
-- Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
+- Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
 {batch_line}
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
@@ -309,7 +309,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         public_contract_lines.append(
             '- For `local_ai_rag` project search/index and document/diagram ingestion, an explicit absolute authorized `root` is required; the workspace must bind to that root. '
             'For `action="ingest_document"`, non-empty `content` is required; `title` and `metadata` are optional. '
-            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. '
+            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Search that document with `action="search"` in the same root-bound workspace; `docset_index` and `docset_search` use a separate owner-global namespace. '
             'Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing '
             '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file within that root, without symlink/junction escapes; `caption` and `metadata` are optional. '
             'Success also returns `diagram_indexed` and the resolved image path.'
@@ -331,7 +331,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     if fs.coord:
         contract_notes.append(
             '`local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1; '
-            '`local_ai_coord` bounds `max_tokens` to 0 through 100000.'
+            '`local_ai_coord` bounds `max_tokens` to 0 through 100000. '
+            'A heuristic `suggested_fix` is advice, not a verified repair; an unresolved incident cannot authorize `apply_verified_fix`.'
         )
     if fs.repo:
         contract_notes.append(

@@ -320,6 +320,9 @@ def test_create_and_resume_attach_only_scoped_negative_knowledge(tmp_path: Path)
     same_root_incidents = {matching.incident_id, same_root_other_agent.incident_id}
     assert {item["id"] for item in initial} == same_root_incidents
     assert {item["id"] for item in current} == same_root_incidents
+    unresolved = next(item for item in current if item["id"] == same_root_other_agent.incident_id)
+    assert "other agent failure" in unresolved["content"]
+    assert "other agent only" not in unresolved["content"]
     assert repeated_resume.checkpoint.state_data["memory_context"] == resumed.checkpoint.state_data["memory_context"]
     assert str(root_a) not in str(current[0])
     assert "agent-a" not in str(current[0])
