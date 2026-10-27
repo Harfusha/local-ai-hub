@@ -12,15 +12,16 @@
         "Clean strict release check and isolated wheel smoke pass for exact HEAD",
         "Live Hub process is proven to load exact pushed source after safe restart",
         "Dashboard health and project plan creation/list/task editing verified",
-        "No unrelated user work is modified or committed"
+        "No unrelated user work is modified or committed",
+        "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": null,
+      "blocker": "CI pending; plan completion backend and native receipt producer are not yet verified; existing plan task has no Agent OS binding; shared Hub is in use.",
       "clarifications": [],
       "depends_on": [],
       "description": "Finish CI and candidate-bound release checks, confirm the installed runtime reflects the pushed source, resolve the dashboard plan-creation defect, and verify the repo-specific Kanban. Preserve unrelated operator files and do not restart the shared Hub while other chats are active.",
       "kind": "code",
-      "next_action": "Wait for CI #198. Fix and test dashboard plan ID generation. After active shared sessions release the Hub, restart from exact pushed source and run doctor, runtime, and dashboard acceptance.",
+      "next_action": "Implement authentic plan completion and integration verification; resolve exact-candidate CI; after other active chats release the Hub, restart and validate current runtime and dashboard.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_status": "in_progress"
     }
