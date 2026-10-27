@@ -1,3 +1,5 @@
+import json
+from datetime import datetime
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -6,6 +8,74 @@ import pytest
 
 from local_ai_hub import token_accounting
 from tools import benchmark_native_candidates as benchmark
+from tools import benchmark_surfaces
+
+
+@pytest.mark.parametrize("value", [
+    4.312797543837288e-05, 1e-7, 1e20, float("nan"),
+    {1e20: "value"}, datetime(2026, 1, 2, 3, 4, 5),
+])
+def test_json_tokens_matches_canonical_stdlib_bytes_with_orjson(monkeypatch, value):
+    orjson = pytest.importorskip("orjson")
+    monkeypatch.setattr(token_accounting, "_orjson", orjson)
+    for length in range(40):
+        payload = {"x": value, "pad": "p" * length}
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+        expected = max(1, (len(raw) * 10 + 33) // 34)
+        assert token_accounting.json_tokens(payload) == expected
+
+
+@pytest.mark.parametrize("result,exit_code", [
+    ({"success": False, "failed_stages": ["queue_admission"]}, 1),
+    ({"success": True, "comparison": {"status": "incomparable"}}, 1),
+    ({"success": True, "comparison": {"status": "inconclusive"}}, 2),
+    ({"success": True, "failed_stages": []}, 0),
+])
+def test_surface_worker_exit_preserves_failed_or_unavailable_result(tmp_path, monkeypatch, capsys, result, exit_code):
+    monkeypatch.setattr(benchmark_surfaces, "run_benchmark", lambda **kwargs: result)
+    assert benchmark_surfaces.main(["--state-dir", str(tmp_path), "--_benchmark-worker"]) == exit_code
+    assert json.loads(capsys.readouterr().out) == result
+
+
+def test_candidate_benchmark_refuses_state_dir_inside_repo(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    exit_code = benchmark.main([
+        "--case", "simhash", "--root", str(repo), "--state-dir", str(repo / "state"),
+    ])
+    assert exit_code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["success"] is False
+    assert output["error_type"] == "ValueError"
+    assert "outside" in output["error"]
+
+
+def test_candidate_benchmark_runs_case_and_records_schema(tmp_path, capsys):
+    output_file = tmp_path / "result.json"
+    exit_code = benchmark.main([
+        "--case", "simhash", "--root", str(Path.cwd()), "--state-dir", str(tmp_path / "ext_state"),
+        "--repetitions", "10", "--output", str(output_file),
+    ])
+    assert exit_code == 0
+    assert output_file.exists()
+    data = json.loads(output_file.read_text(encoding="utf-8"))
+    assert data["schema_version"] == "perf_candidate.v1"
+    assert data["success"] is True
+    assert data["case"] == "simhash"
+    assert data["measurement"]["sample_count"] == 10
+    assert data["measurement"]["tail_sample_gate_met"] is False
+    assert "p95_ms" in data["measurement"]["candidate_stats"]
+
+
+def test_candidate_benchmark_distinguishes_tail_acceptance_gate(tmp_path):
+    result = benchmark.run_benchmark_case(
+        case="json-budget", root=Path.cwd(), state_dir=tmp_path / "ext_state_tail", repetitions=1000,
+    )
+    assert result["success"] is True
+    assert result["measurement"]["sample_count"] == 1000
+    assert result["measurement"]["tail_sample_gate_met"] is True
+    assert result["measurement"]["baseline_provenance"] == "measured_reference"
+    assert len(result["samples_summary"]) == 1000
 
 
 def test_source_identity_detects_a_dirty_repository(tmp_path: Path):

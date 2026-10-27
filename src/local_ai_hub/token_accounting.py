@@ -174,6 +174,40 @@ def _has_nonfinite_float(value: Any, *, max_depth: int = 128) -> bool:
     return _walk(value, 0)
 
 
+def _orjson_matches_canonical(value: Any, *, max_depth: int = 128) -> bool:
+    """Admit only built-in JSON values whose float spelling matches stdlib."""
+    seen: set[int] = set()
+
+    def _walk(current: Any, depth: int) -> bool:
+        if depth >= max_depth:
+            return False
+        kind = type(current)
+        if current is None or kind in (bool, int, str):
+            return True
+        if kind is float:
+            try:
+                return _orjson.dumps(current) == repr(current).encode("ascii")
+            except (TypeError, ValueError, OverflowError):
+                return False
+        if kind not in (dict, list, tuple):
+            return False
+        identity = id(current)
+        if identity in seen:
+            return False
+        seen.add(identity)
+        try:
+            if kind is dict:
+                return all(type(key) is str and _walk(item, depth + 1) for key, item in current.items())
+            return all(_walk(item, depth + 1) for item in current)
+        finally:
+            seen.remove(identity)
+
+    try:
+        return _walk(value, 0)
+    except (RecursionError, TypeError, ValueError):
+        return False
+
+
 def _streaming_json_tokens(value: Any) -> int:
     try:
         encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), default=str)
@@ -192,15 +226,13 @@ def _streaming_json_tokens(value: Any) -> int:
 def json_tokens(value: Any) -> int:
     """Estimate tokens for the exact compact JSON representation of ``value``.
 
-    Fast path uses orjson directly to UTF-8 bytes for proven compatibility and
-    ~40x lower CPU overhead. Falls back to streaming iterencode for non-finite
-    floats (NaN/Inf), large integers exceeding 64-bit range, surrogates, or
-    unsupported inputs to preserve exact canonical estimates.
+    Fast path uses orjson only for built-in values with compatible float spelling.
+    Other inputs fall back to streaming iterencode to preserve canonical estimates.
     """
     if _orjson is not None:
         try:
             raw = _orjson.dumps(value, option=_orjson.OPT_NON_STR_KEYS, default=str)
-            if b"null" in raw and _has_nonfinite_float(value):
+            if (b"null" in raw and _has_nonfinite_float(value)) or not _orjson_matches_canonical(value):
                 return _streaming_json_tokens(value)
             byte_count = len(raw)
             if byte_count <= 0:
