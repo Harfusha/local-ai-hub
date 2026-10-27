@@ -1,15 +1,16 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
 **State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
-**Candidate revision:** `ff0ef061b72418d71ff9422757432d7057534ec1` (evidence below refers to that source commit or explicitly identified earlier commits).
+**Candidate revision:** `354e73e16f05821280fc0753bf5fbdee1025e9d3` (evidence below refers to that source commit or explicitly identified earlier commits).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
-- [CI for `ff0ef061`](https://github.com/Harfusha/local-ai-hub/actions/runs/40531160997) is queued. The earlier runs for [`f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) and [`e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) failed on Ubuntu 3.14.
-- Surface audit and inventory passed **774 tests** on `37a6d9c9`; the plan binding/Agent OS/MCP cohort passed **24 tests** on `ff0ef061`. The earlier dashboard, loading-state and plan verification checks passed **25 tests** on `e4cc6a52`. These checks do not prove the complete backend plan lifecycle.
-- A clean archive of `37a6d9c9` passed `python tools/release_check.py --strict-tree` and selftest **6/6**. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved. Exact `ff0ef061` release verification remains open.
-- Wheel built from the clean `37a6d9c9` archive: SHA256 `643592a7d3a0099604e9e8c992267bcfe5f091349da3fe67d5ff8f970cc0a5ae`. An isolated Python 3.13 environment and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. This is not live acceptance and predates `ff0ef061`.
+- [CI for `354e73e1`](https://github.com/Harfusha/local-ai-hub/actions/runs/40532239885) is running. The earlier runs for [`f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) and [`e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) failed on Ubuntu 3.14.
+- Surface audit and inventory passed **774 tests** on `37a6d9c9`; the plan binding/Agent OS/MCP cohort passed **25 tests** on `354e73e1`. The earlier dashboard, loading-state and plan verification checks passed **25 tests** on `e4cc6a52`. These checks do not prove the complete backend plan lifecycle.
+- A clean archive of `354e73e1` passed `python tools/release_check.py --strict-tree` and selftest **6/6**; compilation passed on its working checkout. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved.
+- Wheel built from the clean `354e73e1` archive: SHA256 `6975420e50a4619da045277230406884ff24657adf99c6c0e51b1e2de675aead`. A fresh isolated Python 3.13 environment passed `pip check`; `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. This is not live acceptance.
+- An isolated supervisor and browser session using that wheel and a synthetic Git repository displayed two separate plans named `Release`, identified by their plan IDs. A task declared done without proof appeared as `Done · Unverified`, and the plan progress showed `0% verified complete` and `1 awaiting verification`. The isolated supervisor and Hub were terminated using their own verified owner records. This visual check is not a screenshot or acceptance of the shared live installation.
 - `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs, parity, p95 1.72x and p99 1.95x. It applies to source `94a485ffecf6bc3c9810718b2f658b6df0120b64` and closes only the JSON-budget tail gate.
 - Pre-restart `/health` returned success/version `5.1.0`; `hubctl status` reported PID `18096`, and its command points to this repository's `.venv` and source tree. The running process has not loaded candidate code yet.
 - Pre-restart MCP `plan_list` on this root failed with `acceptance_criteria is not valid for action='plan_list'` (request on 2026-10-27). Candidate source includes the transport metadata fix; live MCP verification remains open.
