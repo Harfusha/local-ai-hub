@@ -6,6 +6,12 @@ import pytest
 from local_ai_hub import app as app_module
 
 
+def test_telemetry_summary_timeout_does_not_degrade_core_hub_health():
+    assert not app_module._status_probe_affects_core_health("telemetry.summary", healthy=False)
+    assert app_module._status_probe_affects_core_health("runtime.online", healthy=False)
+    assert not app_module._status_probe_affects_core_health("telemetry.summary", healthy=True)
+
+
 def test_metadata_refreshes_before_expiry_without_blocking_cached_dashboard():
     lock, release, started = threading.Lock(), threading.Event(), threading.Event()
     key = app_module._status_probe_key("live", "window", "telemetry.summary")

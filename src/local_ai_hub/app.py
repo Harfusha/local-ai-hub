@@ -126,6 +126,11 @@ def _status_probe_key(view: str, scope: str, key: str) -> str:
     return f"{view}:{scope}:{key}" if key in {"telemetry.summary", "preprocessing.status"} else key
 
 
+def _status_probe_affects_core_health(key: str, *, healthy: bool) -> bool:
+    """Keep optional reporting timeouts out of the Hub's core availability state."""
+    return not healthy and key != "telemetry.summary"
+
+
 def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None, completed_cache=None):
     """Start or reuse bounded status work without waiting for its result."""
     def mark_degraded(reason, error=None):
@@ -1001,7 +1006,7 @@ class LocalAIApp:
             }
             result["agent_state"] = agent_state
             for key, healthy in (("headless", headless_healthy), ("runtime.online", runtime_healthy), ("ollama_profile", profile_healthy), ("scheduler", scheduler_healthy), ("preprocessing.stats", prep_stats_healthy), ("preprocessing.status", prep_status_healthy), ("telemetry.summary", telemetry_healthy), ("accelerators", accelerator_healthy), ("background_gpu", background_gpu_healthy), ("model_execution", model_execution_healthy), ("vram_balancer", vram_balancer_healthy), ("benchmark", benchmark_healthy), ("debug_traces", traces_healthy)):
-                if not healthy:
+                if _status_probe_affects_core_health(key, healthy=healthy):
                     result["success"] = False
             self._live_status_cache[cache_key] = (now, result)
             return dict(result)
@@ -1076,7 +1081,7 @@ class LocalAIApp:
                 else:
                     handle, fallback, diagnostic = pending
                     value, healthy = _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
-                degraded = degraded or not healthy
+                degraded = degraded or _status_probe_affects_core_health(key, healthy=healthy)
                 dependency_status[key] = {
                     "degraded": not healthy,
                     "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
