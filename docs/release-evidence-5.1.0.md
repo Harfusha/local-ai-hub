@@ -1,17 +1,18 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** candidate `7a60788102b35001f9cccc3a5520d56be837080a` pushed; local gates pass; hosted CI and live activation remain open.
-**Candidate revision:** `7a60788102b35001f9cccc3a5520d56be837080a`.
+**State:** evaluation fixes integrated at candidate `252001f52bd7f8ff5daff117e2395bf3210d9bd9`; hosted CI and live activation remain open.
+**Candidate revision:** `252001f52bd7f8ff5daff117e2395bf3210d9bd9`.
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
-- [CI run #199](https://github.com/Harfusha/local-ai-hub/actions/runs/40506126169) validates this exact candidate. Latest check: critical coverage and 11 matrix jobs passed; Ubuntu 3.14 full suite is still running.
-- Candidate regressions: **90 passed** (`test_mcp_coord_operation_acceptance.py`, `test_dashboard_repository_plans.py`). Surface audit and inventory: **774 passed**; `tools/audit_agent_surface.py` returned `success=true`, `errors=[]`.
-- Candidate `pyflakes src tools` and changed-test lint passed; `python -m compileall -q src tools tests` passed. Clean candidate worktree `python tools/release_check.py --strict-tree` returned `release-check: OK`; `python tools/selftest.py` returned **6/6 checks passed**.
-- Wheel built from this commit: SHA256 `26b5adbde93343404c2836926cae4314712d625ac45298db63b39a79943ea74e`. Fresh Python 3.13 virtual-environment install and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. Wheel and environment retained under `%TEMP%/lah-release-7a607881-a6b8a3f0/`.
+- [CI run #199](https://github.com/Harfusha/local-ai-hub/actions/runs/40506126169) for `7a607881` failed on Ubuntu 3.14. [CI for `93b253f6`](https://github.com/Harfusha/local-ai-hub/actions/runs/40513292516) remains in progress, with 12 of 13 jobs passed at the last check; it does not cover `252001f5`.
+- The combined checkout passed **273 targeted tests**, with one private Docker transaction skipped because its engine was unavailable. Dashboard and MCP tests passed **96**, and surface audit and inventory passed **774**. `audit_agent_surface.py`, `sync_prompt_policies.py --check` and `pyflakes src tools` passed. Previous process and startup tests covered `93b253f6`.
+- An untouched archive of `252001f5` passed `python tools/release_check.py --strict-tree`; `python tools/selftest.py` passed **6/6 checks**. Broader compile and dashboard results from earlier candidates are historical.
+- Wheel built from `252001f5`: SHA256 `2b2753d0cee75628d520d31bfd38e9f39208c05a8a0b0e6d30f78c04f0a3f6be`. Fresh Python 3.13 virtual-environment install and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. Artifacts retained under `%TEMP%/lah-candidate-35af133b12a74301b63d9e6cbdfe650b/`.
 - `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs, parity, p95 1.72x and p99 1.95x. It applies to source `94a485ffecf6bc3c9810718b2f658b6df0120b64` and closes only the JSON-budget tail gate.
 - Pre-restart `/health` returned success/version `5.1.0`; `hubctl status` reported PID `18096`, and its command points to this repository's `.venv` and source tree. The running process has not loaded candidate code yet.
+- Pre-restart MCP `plan_list` on this root failed with `acceptance_criteria is not valid for action='plan_list'` (request on 2026-10-27). Candidate source includes the transport metadata fix; live MCP verification remains open.
 - Current screenshot, config/state baseline, safe restart, post-restart process/source proof, dashboard plan create/list/edit check, and receipt-gated Agent OS completion remain open. Several active chats are using the shared Hub, so restart is deferred until they finish.
 
 ## Historical verification receipts
