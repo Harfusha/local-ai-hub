@@ -1,19 +1,20 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** evaluation fixes integrated at candidate `252001f52bd7f8ff5daff117e2395bf3210d9bd9`; hosted CI and live activation remain open.
-**Candidate revision:** `252001f52bd7f8ff5daff117e2395bf3210d9bd9`.
+**State:** source candidate tested; hosted CI, verified plan completion and live activation remain open.
+**Candidate revision:** `e4cc6a52051e1db0aad5e0c7a9c4a6374fb751c8` (evidence below refers to that source commit or explicitly identified earlier commits).
 **Target:** `5.1.0`.
 
 ## Current candidate evidence — 2026-10-27
 
-- [CI run #199](https://github.com/Harfusha/local-ai-hub/actions/runs/40506126169) for `7a607881` failed on Ubuntu 3.14. [CI for `93b253f6`](https://github.com/Harfusha/local-ai-hub/actions/runs/40513292516) remains in progress, with 12 of 13 jobs passed at the last check; it does not cover `252001f5`.
-- The combined checkout passed **273 targeted tests**, with one private Docker transaction skipped because its engine was unavailable. Dashboard and MCP tests passed **96**, and surface audit and inventory passed **774**. `audit_agent_surface.py`, `sync_prompt_policies.py --check` and `pyflakes src tools` passed. Previous process and startup tests covered `93b253f6`.
-- An untouched archive of `252001f5` passed `python tools/release_check.py --strict-tree`; `python tools/selftest.py` passed **6/6 checks**. Broader compile and dashboard results from earlier candidates are historical.
-- Wheel built from `252001f5`: SHA256 `2b2753d0cee75628d520d31bfd38e9f39208c05a8a0b0e6d30f78c04f0a3f6be`. Fresh Python 3.13 virtual-environment install and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. Artifacts retained under `%TEMP%/lah-candidate-35af133b12a74301b63d9e6cbdfe650b/`.
+- [CI for `e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) is pending. [CI for `f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) was still running Ubuntu 3.14 at the last check; previous runs for `93b253f6` and `341d44f7` failed.
+- Surface audit and inventory passed **774 tests** on `f3098253`. The dashboard, loading-state and plan verification tests passed **25 tests** on `e4cc6a52`, and `tools/check_dashboard.py` passed. These checks do not prove the complete backend plan lifecycle.
+- An untouched archive of `e4cc6a52` passed `python tools/release_check.py --strict-tree`; selftest passed **6/6** on that candidate. The working-checkout release check reported existing `build/` and `dist/` directories, which were preserved.
+- Wheel built from the clean `e4cc6a52` archive: SHA256 `1a05c73d1fd7df151d6888f10adb3a19bab53dd9cc6e699c037f99ba0a3d7c2c`. An isolated Python 3.13 environment and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. MCP status was degraded in that smoke run; it is not live acceptance.
 - `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs, parity, p95 1.72x and p99 1.95x. It applies to source `94a485ffecf6bc3c9810718b2f658b6df0120b64` and closes only the JSON-budget tail gate.
 - Pre-restart `/health` returned success/version `5.1.0`; `hubctl status` reported PID `18096`, and its command points to this repository's `.venv` and source tree. The running process has not loaded candidate code yet.
 - Pre-restart MCP `plan_list` on this root failed with `acceptance_criteria is not valid for action='plan_list'` (request on 2026-10-27). Candidate source includes the transport metadata fix; live MCP verification remains open.
 - Current screenshot, config/state baseline, safe restart, post-restart process/source proof, dashboard plan create/list/edit check, and receipt-gated Agent OS completion remain open. Several active chats are using the shared Hub, so restart is deferred until they finish.
+- Plan file status is a declaration: direct edits and checkpoint synchronization do not yet enforce authentic source verification and target integration. The dashboard labels unverified completion accordingly; it does not repair the missing backend gate.
 
 ## Historical verification receipts
 

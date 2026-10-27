@@ -1,14 +1,15 @@
 # Local AI Hub: current acceptance state
 
 Updated: 2026-10-27. Repository branch: `master`.
-Status: evaluation fixes integrated in candidate `252001f52bd7f8ff5daff117e2395bf3210d9bd9`; CI and live activation pending.
-- [CI run #199](https://github.com/Harfusha/local-ai-hub/actions/runs/40506126169) for `7a607881` failed on Ubuntu 3.14. [CI for `93b253f6`](https://github.com/Harfusha/local-ai-hub/actions/runs/40513292516) is in progress, with 12 of 13 jobs passed at the last check; it does not cover `252001f5`.
-- The combined checkout passed **273 targeted tests**, with one private Docker transaction skipped because its engine was unavailable; dashboard and MCP tests passed **96**, and surface audit and inventory passed **774**. `audit_agent_surface.py`, `sync_prompt_policies.py --check` and `pyflakes src tools` passed.
-- Untouched candidate archive: `python tools/release_check.py --strict-tree` returned `release-check: OK`; `python tools/selftest.py` returned **6/6 checks passed**. Previous process, compile and dashboard test results apply to prior revisions.
-- Wheel built from `252001f5`: SHA256 `2b2753d0cee75628d520d31bfd38e9f39208c05a8a0b0e6d30f78c04f0a3f6be`. Fresh Python 3.13 virtual-environment install and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, five MCP tools.
+Status: source candidate `e4cc6a52051e1db0aad5e0c7a9c4a6374fb751c8`; CI, verified completion and live activation pending.
+- [CI for `e4cc6a52`](https://github.com/Harfusha/local-ai-hub/actions/runs/40525847943) is pending. [CI for `f3098253`](https://github.com/Harfusha/local-ai-hub/actions/runs/40523028067) was still running Ubuntu 3.14 at the last check; previous runs for `93b253f6` and `341d44f7` failed.
+- Surface audit and inventory passed **774 tests** on `f3098253`; dashboard and plan verification checks passed **25 tests** on `e4cc6a52`.
+- An untouched `e4cc6a52` archive passed `python tools/release_check.py --strict-tree`; its selftest passed **6/6**. Working-checkout release validation found existing `build/` and `dist/`, which were preserved.
+- Wheel built from the clean `e4cc6a52` archive: SHA256 `1a05c73d1fd7df151d6888f10adb3a19bab53dd9cc6e699c037f99ba0a3d7c2c`. An isolated Python 3.13 environment returned `success=true`, `smoke=passed`, planner schema passed and five MCP tools. MCP status was degraded in the smoke run; live acceptance remains open.
 - `docs/perf_candidate_json_budget.json` records 1,000 independently measured pairs with parity, p95 1.72x and p99 1.95x. Evidence applies to source `94a485ffecf6bc3c9810718b2f658b6df0120b64` and closes only the JSON-budget tail gate.
 - Live Hub remains PID `18096`, version `5.1.0`, using this repository's source tree. Dashboard plan-ID fix is in the candidate but not loaded by the running process. Several active chats currently use the shared Hub; baseline, restart, live dashboard screenshot and Agent OS completion remain open. See [release evidence](../../release-evidence-5.1.0.md).
 - The pre-restart MCP `plan_list` returned `acceptance_criteria is not valid for action='plan_list'`; the candidate includes a transport fix but the live MCP process still needs verification after activation.
+- Plan status is currently a declaration without an enforced source-verification and target-integration gate. The dashboard labels unverified completion; backend enforcement and a supported native verification producer remain open.
 
 ## Combined integration continuation — 2026-10-25
 
