@@ -4,6 +4,7 @@ import pytest
 
 from local_ai_hub.repo_plan import (
     RepoPlanConflictError,
+    RepoPlanNotFoundError,
     RepoPlanValidationError,
     RepoPlanWorkspace,
 )
@@ -24,6 +25,34 @@ def test_init_workspace(tmp_path):
     assert (tmp_path / ".local-ai-hub" / "README.md").exists()
     assert (tmp_path / ".local-ai-hub" / ".gitignore").exists()
     assert (tmp_path / ".local-ai-hub" / "plans").is_dir()
+
+
+@pytest.mark.parametrize("selected_plan", ["", "plan_bad"])
+def test_board_reports_unreadable_plan_instead_of_silent_empty_result(workspace, selected_plan):
+    _root, ws = workspace
+    ws.create_plan("plan_good", "Existing work")
+    ws.edit_task("plan_good", "task_existing", title="Do not duplicate")
+    (ws.plans_dir / "plan_bad.plan.json").write_text("{invalid", encoding="utf-8")
+
+    with pytest.raises(RepoPlanValidationError, match="plan_bad"):
+        ws.get_board_view(plan_id=selected_plan)
+
+
+def test_board_can_show_selected_healthy_plan_when_another_plan_is_invalid(workspace):
+    _root, ws = workspace
+    ws.create_plan("plan_good", "Existing work")
+    ws.edit_task("plan_good", "task_existing", title="Do not duplicate")
+    (ws.plans_dir / "plan_bad.plan.json").write_text("{invalid", encoding="utf-8")
+
+    board = ws.get_board_view(plan_id="plan_good")
+    assert board["success"] is True
+    assert board["columns"]["planned"][0]["task_id"] == "task_existing"
+
+
+def test_board_reports_missing_selected_plan(workspace):
+    _root, ws = workspace
+    with pytest.raises(RepoPlanNotFoundError):
+        ws.get_board_view(plan_id="plan_absent")
 
 
 def test_workspace_rejects_symlinked_plan_directory_outside_repo(tmp_path):

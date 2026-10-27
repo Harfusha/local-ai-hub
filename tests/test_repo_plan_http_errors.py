@@ -26,6 +26,23 @@ def test_invalid_plan_id_returns_actionable_client_error(tmp_path):
     assert "Invalid plan ID" in payload["error"]
 
 
+def test_board_http_reports_invalid_plan_instead_of_empty_success(tmp_path):
+    responses = []
+    handler = SimpleNamespace(_send=lambda status, payload: responses.append((status, payload)))
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    (workspace.plans_dir / "plan_bad.plan.json").write_text("{invalid", encoding="utf-8")
+    app = SimpleNamespace(services=SimpleNamespace(
+        plan_board_view=lambda root: workspace.get_board_view()
+    ))
+
+    assert handle_post_plan(handler, {"root": str(tmp_path)}, "/api/coord/plan_board_view", app)
+    status, payload = responses[0]
+    assert status == 400
+    assert payload["success"] is False
+    assert "plan_bad" in payload["error"]
+
+
 @pytest.mark.parametrize(("error", "expected_status"), [
     (RepoPlanConflictError("stale revision"), 409),
     (RepoPlanNotFoundError("plan missing"), 404),

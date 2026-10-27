@@ -526,8 +526,10 @@ class RepoPlanWorkspace:
                 rel_path = self._plan_rel_path(plan_id)
                 data, rev = self.storage.read_plan_file(rel_path)
                 plans_to_inspect.append((plan_id, rel_path, data, rev))
-            except Exception as exc:
-                logger.warning("Failed to load plan %s for board: %s", plan_id, exc)
+            except FileNotFoundError as exc:
+                raise RepoPlanNotFoundError(f"Plan {plan_id!r} not found") from exc
+            except RepoPlanValidationError as exc:
+                raise RepoPlanValidationError(f"Cannot load plan {plan_id!r} for board: {exc}") from exc
         else:
             if self.plans_dir.exists():
                 for ppath in sorted(self.plans_dir.glob("*.plan.json")):
@@ -536,8 +538,8 @@ class RepoPlanWorkspace:
                         pdata, prev = self.storage.read_plan_file(rel)
                         if pdata.get("lifecycle") not in {"archived", "cancelled"}:
                             plans_to_inspect.append((pdata.get("id", ""), rel, pdata, prev))
-                    except Exception as exc:
-                        logger.warning("Skipping invalid plan %s: %s", ppath, exc)
+                    except RepoPlanValidationError as exc:
+                        raise RepoPlanValidationError(f"Cannot load plan {rel!r} for board: {exc}") from exc
 
         query_clean = (query or "").strip().lower()
         counts: dict[str, int] = {k: 0 for k in columns}
