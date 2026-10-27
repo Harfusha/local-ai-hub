@@ -365,6 +365,32 @@ def test_telemetry_summary_within_diagnostic_budget_does_not_time_out(monkeypatc
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def test_full_status_telemetry_summary_uses_diagnostic_budget(monkeypatch):
+    app = make_app()
+    monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {})
+    executor = app_module._new_status_dependency_executor()
+    app._status_dependency_executor = executor
+    finished = threading.Event()
+
+    def slow_summary(*args, **kwargs):
+        try:
+            time.sleep(app_module._STATUS_DEPENDENCY_TIMEOUT_SECONDS + 0.05)
+            return {"events": 1}
+        finally:
+            finished.set()
+
+    app.telemetry.responses["summary"] = slow_summary
+
+    try:
+        result = app.status()
+        telemetry = result["dependency_status"]["telemetry.summary"]
+        assert finished.wait(timeout=1), telemetry
+        assert telemetry["degraded"] is False
+        assert telemetry["deadline_ms"] == 1000
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def test_local_ai_status_keeps_telemetry_timeout_visible_without_global_degraded(monkeypatch):
     telemetry_diagnostic = {"degraded": True, "reason": "probe_timeout", "deadline_ms": 250}
     status = {
