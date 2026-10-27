@@ -153,6 +153,18 @@ def test_rebinding_preserves_lineage_and_rejects_a_different_session(environment
                           ".local-ai-hub/plans/plan_work.plan.json", session_id="other")
 
 
+def test_stale_or_divergent_lineage_cannot_erase_history(environment):
+    root, _, _, _, _, manager, _, _ = environment
+    path = ".local-ai-hub/plans/plan_work.plan.json"
+    manager.bind_task("execution_a", "plan_work", "task_work", path, lineage=["first", "second"])
+    stale = agent_bridge.TaskBindingManager(root)
+    result = stale.bind_task("execution_a", "plan_work", "task_work", path, lineage=["first"])
+    assert result.lineage == ["first", "second"]
+    with pytest.raises(ValueError, match="lineage"):
+        stale.bind_task("execution_a", "plan_work", "task_work", path, lineage=["different"])
+    assert agent_bridge.TaskBindingManager(root).get_binding("execution_a").lineage == ["first", "second"]
+
+
 def test_terminal_history_does_not_hide_an_active_plan_binding(environment):
     root, tasks, _, _, _, _, _, revision = environment
     tasks.transition("execution_a", TaskStatus.CANCELLED, reason="superseded", actor="agent_a", idempotency_key="dispose-a")

@@ -110,7 +110,12 @@ class TaskBindingManager:
                     raise ValueError("execution binding session cannot be replaced")
                 binding.session_id = binding.session_id or previous_self.session_id
                 binding.branch_at_bind = previous_self.branch_at_bind or binding.branch_at_bind
-                binding.lineage = binding.lineage or list(previous_self.lineage)
+                prior_lineage = previous_self.lineage
+                proposed_lineage = binding.lineage
+                if prior_lineage[:len(proposed_lineage)] == proposed_lineage:
+                    binding.lineage = list(prior_lineage)
+                elif proposed_lineage[:len(prior_lineage)] != prior_lineage:
+                    raise ValueError("execution binding lineage conflicts with recorded history")
                 binding.bound_at = previous_self.bound_at
             for existing in current.values():
                 if existing.task_id == binding.task_id:
