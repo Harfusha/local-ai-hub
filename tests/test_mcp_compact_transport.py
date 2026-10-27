@@ -266,6 +266,20 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     client = local_ai_mcp.HubClient(config_path=str(config_path), auto_start=True)
     transport_failures: list[str] = []
     connection_closures: list[str] = []
+    startup_attempts: list[tuple[float | None, bool | str, float]] = []
+    original_ensure_server = client.ensure_server
+
+    def capture_startup(timeout=None):
+        started = time.monotonic()
+        try:
+            outcome = original_ensure_server(timeout=timeout)
+        except Exception as exc:
+            startup_attempts.append((timeout, f"{type(exc).__name__}: {exc}", time.monotonic() - started))
+            raise
+        startup_attempts.append((timeout, outcome, time.monotonic() - started))
+        return outcome
+
+    monkeypatch.setattr(client, "ensure_server", capture_startup)
     original_connection = client._connection
 
     def capture_connection(timeout):
@@ -367,7 +381,11 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         content = result[0][0] if isinstance(result, tuple) else result[0]
         assert isinstance(content, t.TextContent)
         payload = json.loads(content.text)
-        assert payload["success"] is True, f"payload={payload!r}; transport_failures={transport_failures!r}; connection_closures={connection_closures[-6:]!r}"
+        assert payload["success"] is True, (
+            f"payload={payload!r}; transport_failures={transport_failures!r}; "
+            f"startup_attempts={startup_attempts!r}; start_events={start_events!r}; "
+            f"connection_closures={connection_closures[-6:]!r}"
+        )
         assert payload["text"].startswith("HTTP result ")
     assert sorted(received, key=lambda item: item["task"]) == [
         {
