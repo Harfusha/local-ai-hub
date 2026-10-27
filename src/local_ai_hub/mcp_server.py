@@ -2313,7 +2313,7 @@ def local_ai_status(
         result["vram_pressure"] = vram.get("pressure_level", "nominal")
         result["context_budget_factor"] = vram.get("context_budget_factor", 1.0)
     dependencies = status.get("dependency_status")
-    if result["degraded"] and isinstance(dependencies, dict):
+    if isinstance(dependencies, dict):
         failed = {
             name: diagnostic for name, diagnostic in dependencies.items()
             if isinstance(name, str) and isinstance(diagnostic, dict) and diagnostic.get("degraded") is True

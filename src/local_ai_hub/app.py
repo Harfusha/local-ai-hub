@@ -73,6 +73,7 @@ from .status_executor import StatusDependencyExecutor
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
@@ -874,7 +875,10 @@ class LocalAIApp:
 
             def read(key: str, callback, fallback):
                 diagnostic: dict[str, Any] = {}
-                dep_deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+                timeout_seconds = _STATUS_DEPENDENCY_TIMEOUT_SECONDS
+                if key == "telemetry.summary":
+                    timeout_seconds = max(timeout_seconds, _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS)
+                dep_deadline = time.monotonic() + max(0.0, float(timeout_seconds))
                 value, healthy = _status_dependency(
                     callback,
                     fallback,
@@ -955,9 +959,15 @@ class LocalAIApp:
                 runtime_stats["deterministic"], _ = read("runtime_stats.deterministic", self.deterministic.status, {})
             if not light and self.code_index is not None:
                 runtime_stats["code_index"], _ = read("runtime_stats.code_index", self.code_index.status, {})
+            # Telemetry is diagnostic; a slow summary must not imply a Hub outage.
+            core_dependencies = (
+                item for name, item in dependency_status.items()
+                if name != "telemetry.summary"
+            )
+            core_degraded = any(item["degraded"] for item in core_dependencies)
             result = {
-                "success": not any(item["degraded"] for item in dependency_status.values()), "hub_online": True, "version": __version__,
-                "snapshot_cached": False, "degraded": any(item["degraded"] for item in dependency_status.values()),
+                "success": not core_degraded, "hub_online": True, "version": __version__,
+                "snapshot_cached": False, "degraded": core_degraded,
                 "dependency_status": dependency_status,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
@@ -1022,6 +1032,12 @@ class LocalAIApp:
         import os
 
         def dependency(key, callback, fallback, diagnostic=None):
+            dependency_deadline = deadline
+            if key == "telemetry.summary":
+                dependency_deadline = time.monotonic() + max(
+                    0.0,
+                    float(max(_STATUS_DEPENDENCY_TIMEOUT_SECONDS, _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS)),
+                )
             return _status_dependency(
                 callback,
                 fallback,
@@ -1031,7 +1047,7 @@ class LocalAIApp:
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
                 executor=self._status_dependency_executor,
-                deadline=deadline,
+                deadline=dependency_deadline,
                 diagnostic=diagnostic,
             )
 
