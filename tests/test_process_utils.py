@@ -50,6 +50,30 @@ def test_process_identity_rejects_invalid_pid(pid):
     assert process_utils.process_identity(pid) is None
 
 
+@pytest.mark.parametrize("stat, expected", [
+    ("4321 (worker ) with spaces) S 123 0", 123),
+    ("9999 (wrong pid) S 123 0", None),
+    ("4321 (worker) S nope 0", None),
+    ("4321 (worker) S", None),
+    ("4321 (worker) S 0", None),
+])
+def test_process_parent_pid_linux_reads_other_process(monkeypatch, stat, expected):
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.sys, "platform", "linux")
+    monkeypatch.setattr(process_utils.Path, "read_text", lambda *args, **kwargs: stat)
+    assert process_utils.process_parent_pid(4321) == expected
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux procfs")
+def test_process_parent_pid_linux_real_child():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+    try:
+        assert process_utils.process_parent_pid(child.pid) == os.getpid()
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
 def test_process_identity_linux_returns_normalized_path_and_starttime(monkeypatch):
     stat_reads = iter(
         [

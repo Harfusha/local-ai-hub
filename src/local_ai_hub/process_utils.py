@@ -314,7 +314,7 @@ def process_identity(pid: int) -> dict[str, Any] | None:
 
 
 def process_parent_pid(pid: int | None = None) -> int | None:
-    """Return the direct parent PID, using the Windows process table on Windows.
+    """Return the direct parent PID from the OS process table when available.
 
     CPython's os.getppid() can report the console ancestor for a hidden
     process launched in a new process group, rather than its direct creator.
@@ -323,7 +323,20 @@ def process_parent_pid(pid: int | None = None) -> int | None:
     if isinstance(target_pid, bool) or not isinstance(target_pid, int) or target_pid <= 0:
         return None
     if os.name != "nt":
-        return os.getppid() if target_pid == os.getpid() else None
+        if target_pid == os.getpid():
+            return os.getppid()
+        if sys.platform.startswith("linux"):
+            try:
+                stat = Path(f"/proc/{target_pid}/stat").read_text(encoding="ascii")
+                end_comm = stat.rfind(")")
+                if end_comm < 0 or int(stat[:stat.find(" ")]) != target_pid:
+                    return None
+                fields = stat[end_comm + 1:].split()
+                parent = int(fields[1])
+                return parent if parent > 0 else None
+            except (OSError, ValueError, IndexError, UnicodeError):
+                return None
+        return None
 
     try:
         from ctypes import wintypes
