@@ -1,10 +1,18 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** candidate validation; local checks and isolated wheel smoke pass; hosted CI for the corrected candidate is pending.
-**Base revision:** `524bf9d50200432b235382d9595d599902a0ff44` (`master`).
+**State:** candidate validation in progress; CI and runtime acceptance remain open.
+**Latest verified source revision:** `50ce188493b9d000b21599fb572d47aad23f4d7f` (`master`).
 **Target:** `5.1.0`.
 
-## Current verification receipts
+## Current candidate evidence — 2026-10-27
+
+- `tests/test_surface_audit_policy.py tests/test_surface_inventory.py`: **774 passed**.
+- Clean `git archive` snapshot: `python tools/release_check.py --strict-tree` passed. The checkout retains its existing ignored `build/` and `dist/`.
+- Wheel built from the source revision above: SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`. Isolated-venv `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. The wheel is retained under `%TEMP%/lah-release-f14c726ef5c04476b213966b02d324e5/wheel/`.
+- [CI run #178](https://github.com/Harfusha/local-ai-hub/actions/runs/40479922045) failed the Ubuntu 3.14 full suite; twelve other matrix and coverage jobs passed. Its annotations identify generated-policy/status expectations, Serena fixture timing, command cleanup and async child cleanup. Subsequent fixes require a fresh run and wheel.
+- Runtime restart, current dashboard screenshot, Agent OS completion, and preserved-data comparison are not yet established for this candidate.
+
+## Historical verification receipts
 
 | Check | Result | Evidence |
 |---|---:|---|
@@ -23,8 +31,8 @@
 
 The smoke wheel is retained outside the checkout at `%TEMP%\lah-5.1.0-candidate-20261027-codex\wheelhouse`. The old `dist/` wheel and its historical SHA are not evidence for this candidate.
 
-## Open release gate
+## Historical release gate observations
 
 GitHub Actions run [#170](https://github.com/Harfusha/local-ai-hub/actions/runs/40410655500) failed on the pre-fix revision `cb3c25d9a3021a08f474e40a2047c2f9945314bf`. Run [#173](https://github.com/Harfusha/local-ai-hub/actions/runs/40419902289) failed on the first pushed candidate. Run [#174](https://github.com/Harfusha/local-ai-hub/actions/runs/40421458008) had one stale test failure: it expected caller-provided summary text to mint a native verification receipt without broker provenance. The test now asserts fail-closed rejection and verifies no receipt mapping is written. A fresh CI run is required for this corrected candidate.
 
-The live model check and a dashboard screenshot were not used as release claims.
+The historical live model check and dashboard screenshot were not used as current release claims.

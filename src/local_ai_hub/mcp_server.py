@@ -719,6 +719,9 @@ def _release_root_family_on_exit(fn: Any) -> Any:
 
 _CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("_CURRENT_EXTRA_FIELDS", default=None)
 _CURRENT_RESPONSE_OPTIONS: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("_CURRENT_RESPONSE_OPTIONS", default={})
+_CURRENT_MCP_CALL_ARGUMENTS: contextvars.ContextVar[tuple[str, dict[str, Any]] | None] = contextvars.ContextVar(
+    "_CURRENT_MCP_CALL_ARGUMENTS", default=None
+)
 _PENDING_MCP_ACCOUNTING: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar("_PENDING_MCP_ACCOUNTING", default=None)
 _CURRENT_ROOT_FAMILY_RESERVATION: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "_CURRENT_ROOT_FAMILY_RESERVATION", default=None
@@ -4551,7 +4554,11 @@ def local_ai_coord(
     if isinstance(action, str) and action.startswith("plan_"):
         # Preserve omission versus explicit null; do not inject other actions' defaults.
         options = _CURRENT_RESPONSE_OPTIONS.get() or {}
-        supplied = options.get("arguments") if options.get("tool") == "local_ai_coord" else None
+        raw_call = _CURRENT_MCP_CALL_ARGUMENTS.get()
+        supplied = (
+            raw_call[1] if raw_call is not None and raw_call[0] == "local_ai_coord"
+            else options.get("arguments") if options.get("tool") == "local_ai_coord" else None
+        )
         if not isinstance(supplied, dict):
             current = locals().copy()
             signature = inspect.signature(local_ai_coord)
@@ -6162,6 +6169,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
         pending_accounting: list[dict[str, Any]] = []
         pending_token = _PENDING_MCP_ACCOUNTING.set(pending_accounting)
+        call_token = _CURRENT_MCP_CALL_ARGUMENTS.set((name, dict(arguments)))
 
         def finalize(result: Any, *, account_unwrapped_error: bool = False) -> Any:
             if not isinstance(result, tuple) or len(result) != 2:
@@ -6277,6 +6285,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 "retryable": False, "error": "MCP tool returned unsupported result type",
             }), account_unwrapped_error=True)
         finally:
+            _CURRENT_MCP_CALL_ARGUMENTS.reset(call_token)
             _PENDING_MCP_ACCOUNTING.reset(pending_token)
 
     mcp.call_tool = _compact_mcp_call_tool

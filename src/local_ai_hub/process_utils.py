@@ -1002,10 +1002,25 @@ def _terminate_tree_unlocked(
             break
         time.sleep(min(0.05, remaining))
 
+    # Reap only the owned leader, so a terminated zombie does not keep its
+    # otherwise empty process group visible. This does not prove descendants
+    # stopped: when a group remains after losing the leader identity, fail closed.
+    if process_handle is not None and getattr(process_handle, "pid", None) == pid:
+        try:
+            process_handle.poll()
+        except Exception:
+            return False
+
     # Presence alone does not prove this is still the original group: a PGID
     # can be reused while waiting. Escalate only while its original leader
     # still has the identity captured immediately after spawn.
     if not leader_still_owned():
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
         return False
     try:
         os.killpg(group_id, 0)

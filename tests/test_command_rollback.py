@@ -2274,7 +2274,10 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
         clock["now"] += 2.0
         return clock["now"]
 
-    def missing_process_group(*_args, **_kwargs) -> None:
+    group_signals = []
+
+    def missing_process_group(*args, **_kwargs) -> None:
+        group_signals.append(args)
         raise ProcessLookupError
 
     monkeypatch.setattr(commands_module.os, "killpg", missing_process_group)
@@ -2291,6 +2294,7 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
     assert cleanup_calls == [(process.pid, 2.0)]
     assert process.kill_calls == 0
     assert process.wait_calls == 0
+    assert group_signals == []
     assert result["cleanup_unconfirmed"] is True
     assert result["outcome_unknown"] is True
     assert result["fail_closed"] is True

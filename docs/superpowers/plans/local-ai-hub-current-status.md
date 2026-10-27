@@ -1,12 +1,11 @@
 # Local AI Hub: current acceptance state
 
-Updated: 2026-10-26. Sole owner: main chat, canonical `C:/Users/Adam/.local-ai-hub`, branch `master`.
-Status: 5.1.0 RELEASE CANDIDATE FINALIZED.
-- Local verification complete: 100% green `tools/selftest.py`, `tools/doctor.py`, `tests/test_surface_audit_policy.py tests/test_surface_inventory.py` (748 passed), and `tools/release_check.py --allow-installed --json`.
-- 1,000-independent-pair tail gate benchmark met (`docs/perf_candidate_json_budget.json`: median 1.38x, p95 1.44x, p99 1.50x, `tail_gate_met: true`).
-- Isolated wheel smoke verified: `dist/local_ai_hub-5.1.0-py3-none-any.whl` (SHA256 `04bd322436b8e1b61c800ff922a92ab2d41c7d98b0c8e7b083c72773fa8ecb39`) installed in isolated venv, `wheel_smoke.py` PASSED (`{"smoke": "passed", "success": true}`).
-- Service activated at PID 46708 on port 11435, all 7 canonical MCP tools operational.
-- Hosted CI verification on GitHub Actions: Run #169 (12/13 jobs completed GREEN, full suite in progress).
+Updated: 2026-10-27. Canonical checkout: `C:/Users/Adam/.local-ai-hub`, branch `master`.
+Status: RELEASE VALIDATION IN PROGRESS; current candidate is not yet accepted or installed.
+- Revision `50ce188493b9d000b21599fb572d47aad23f4d7f`: isolated wheel smoke passed with SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`; a clean snapshot passed `release_check.py --strict-tree`; surface audit passed 774 tests. Subsequent MCP and process-cleanup fixes require a new wheel and fresh checks.
+- [CI run #178](https://github.com/Harfusha/local-ai-hub/actions/runs/40479922045) failed the Ubuntu 3.14 full suite; twelve other matrix and coverage jobs passed. A fresh CI run is required after the corrections.
+- The 1,000-pair benchmark in `docs/perf_candidate_json_budget.json` records `tail_gate_met: true` for its recorded source identity; it is not a fresh measurement of this candidate.
+- Current runtime activation, dashboard screenshot, full-suite result, receipt-gated Agent OS completion, and current data/config preservation remain open. See [release evidence](../../release-evidence-5.1.0.md).
 
 ## Combined integration continuation — 2026-10-25
 

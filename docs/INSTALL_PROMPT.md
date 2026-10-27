@@ -352,7 +352,7 @@ Recipes (guidance, not gates):
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.
 
-- Optionally use `local_ai_task` for bounded generation, review, second opinions, compression, or drafting after indexed evidence. Never block cloud planning on local inference; deterministic Hub evidence remains authoritative.
+- Semantic delegation is on-demand: use `local_ai_task` for bounded generation, review, second opinions, compression or drafting after indexed evidence. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
 - Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
 - Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
@@ -368,7 +368,7 @@ READ-ONLY AUDIT CONTRACT:
 
 Background preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.
 
-Reuse fresh repository evidence. Use indexed/source actions for exact files or symbols, skipping preprocessing. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates. For substantial work without fresh evidence, use adaptive `context` once with a stable root. Preprocess only when that root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait, poll, or force-refresh it.
+Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates. For substantial work without fresh evidence, use adaptive `context` once with a stable root. Preprocess only when that root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait, poll, or force-refresh it.
 
 Adoption gate: Use bounded host-native validation commands after fresh repository evidence exists. For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`). For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 

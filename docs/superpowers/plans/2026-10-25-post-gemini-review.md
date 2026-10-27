@@ -31,17 +31,19 @@
 
 ## Work sequence
 
+Completed entries record work and evidence for their original revisions. Current release acceptance is tracked in [current status](local-ai-hub-current-status.md); historical checks and captures do not establish acceptance of a later candidate.
+
 - [x] Audit every Gemini production/test change: Completed. Restored early 404 without reading untrusted body, verified task-worker shutdown and parser circuit-breaker isolation (commits `a9490cd6`, `6b6125a5`, `1ea45f80`).
 - [x] Independently adopt full-suite manifests/XML: Completed. 7efc16bf adopted, AST positive fixture corrected with exact diff-count assertions.
 - [x] Inventory local/remote/archive refs and untracked/ignored deliverables: Completed. Attached `docs/perf_candidate_json_budget.json`, working tree verified clean.
 - [x] Correct overstated acceptance documentation: Completed. Succeeded `CHANGELOG.md`, `local-ai-hub-current-status.md`, `2026-10-23-main-chat-takeover.md`, and marked historical claims explicitly.
 - [x] Resolve test weakening and actual defects: Completed. `pyflakes` unused variable removed, FastMCP schema parameters aligned without `*args/**kwargs`, 830-test cohort passing.
 - [x] Reconcile every F01–F24, R01–R16 and enhancement 1–100: Completed. All 24 findings mapped to code or evidence-bound decisions in `2026-10-25-performance-implementation-progress.md`; internal items #7/#43–45 kept retired per operator decision.
-- [x] Freeze final source and validate matching gates: Completed. `compileall` exit 0, `selftest.py` exit 0, `doctor.py` exit 0, `release_check.py --allow-installed --live-smoke` passed 16/16.
+- [ ] Freeze final source and validate matching gates. The listed compile, selftest, doctor and live-smoke results are historical; current CI and full-suite acceptance remain open.
 - [x] Verify isolated wheel install and smoke: Completed. Built `dist/local_ai_hub-5.1.0-py3-none-any.whl`, installed in clean temporary venv, `tools/wheel_smoke.py` passed (`{"smoke": "passed", "success": true}`).
-- [x] Capture fresh post-reset data/config baseline and activate candidate: Completed. Service active on port 11435, PID 37268, all 7 MCP tools operational.
-- [x] Verify actual Chrome eleven-panel desktop/mobile behavior & R15/R16: Completed. Live browser verified on port 11435 with 0 console errors, R15 transfer metrics verified, R16 non-mutating workspace proposal verified.
-- [x] Commit final truthful acceptance records and close goal: Completed. Unified evidence dossier compiled in `docs/release-evidence-5.1.0.md`.
+- [ ] Capture a current data/config baseline and activate the final candidate. PID 37268 and the prior activation are historical.
+- [ ] Verify the current live dashboard and required browser behavior. The earlier Chrome captures and R15/R16 measurements are historical.
+- [ ] Commit final evidence and close the goal after the current candidate satisfies the open gates in `docs/release-evidence-5.1.0.md`.
 
 ## Initial evidence pointers
 

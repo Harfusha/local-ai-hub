@@ -1,7 +1,39 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from local_ai_hub.client import HubClient
 from local_ai_hub import mcp_server
+
+
+def test_mcp_plan_list_accepts_omitted_unrelated_fields(monkeypatch, tmp_path):
+    class FakeClient:
+        def coord(self, **kwargs):
+            return {"success": True, "plans": []}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, *_args: value)
+
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_list", "root": str(tmp_path), "extra_fields": ["plans"],
+    }))
+
+    assert result["success"] is True, result
+    assert result["plans"] == []
+
+
+@pytest.mark.parametrize("value", [None, []])
+def test_mcp_plan_list_rejects_explicit_unrelated_field(monkeypatch, tmp_path, value):
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_list", "root": str(tmp_path), "acceptance_criteria": value,
+    }))
+
+    assert result["success"] is False
+    assert result["status_code"] == 400
 
 
 def test_plan_action_ignores_shared_changed_paths_transport_metadata(monkeypatch, tmp_path):

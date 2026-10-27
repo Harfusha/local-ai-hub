@@ -678,7 +678,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Optionally use `local_ai_task` for bounded generation, review, second opinions, compression, or drafting after indexed evidence. Never block cloud planning on local inference; deterministic Hub evidence remains authoritative."
+            "\n- Semantic delegation is on-demand: use `local_ai_task` for bounded generation, review, second opinions, compression or drafting after indexed evidence. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests."
         )
 
     model_default = ""
@@ -699,7 +699,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
         task_review_hint = ' Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing.' if (fs.tasks and fs.has_any_model()) else ""
         repo_task_first = (
-            "\nReuse fresh repository evidence. Use indexed/source actions for exact files or symbols, skipping preprocessing. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates."
+            "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates."
             " For substantial work without fresh evidence, use adaptive `context` once with a stable root."
             + (' Preprocess only when that root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait, poll, or force-refresh it.' if fs.preprocessing else "")
             + "\n"

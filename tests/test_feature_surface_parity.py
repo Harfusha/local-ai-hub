@@ -96,7 +96,7 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     )
     assert slice_rule["then"]["required"] == ["artifact_id"]
     assert "id" not in artifact_parameters["properties"]
-    assert schemas["local_ai_status"]["parameters"]["properties"]["detail"]["enum"] == ["brief", "models"]
+    assert schemas["local_ai_status"]["parameters"]["properties"]["detail"]["enum"] == ["brief"]
     assert "local_ai_work" not in schemas
 
 

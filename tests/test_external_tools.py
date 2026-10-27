@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 import textwrap
 from pathlib import Path
@@ -313,8 +312,6 @@ def test_serena_structured_tool_error_is_counted_as_backend_failure(monkeypatch,
 
 
 def test_serena_index_supplies_noninteractive_dominant_language(monkeypatch, tmp_path: Path):
-    import local_ai_hub.external_tools as mod
-
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".gitignore").write_text("Woodbound/Library/\nWoodbound/Temp/\n", encoding="utf-8")
@@ -511,6 +508,7 @@ def test_code_intelligence_timeouts_and_session_pool_defaults(tmp_path: Path):
 
 
 def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path):
+    import time
     from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPSoftTimeoutError
 
     root = tmp_path / "repo"
@@ -533,7 +531,7 @@ def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path):
             raise MCPSoftTimeoutError("soft timeout")
 
     ext._serena_sessions[str(root.resolve())] = HangingClient()
-    ext._session_access["serena"][str(root.resolve())] = 1000.0
+    ext._session_access["serena"][str(root.resolve())] = time.monotonic()
     ext._serena = "serena"
 
     res = ext.query(str(root), "my_function", backend="serena", action="find_symbol")

@@ -5883,34 +5883,9 @@ class CommandBroker:
                         return True
                     if process.poll() is not None and _process_group_liveness(process.pid) is False:
                         return True
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-                    deadline = time.monotonic() + max(0.5, float(self.terminate_grace_seconds))
-                    while time.monotonic() < deadline:
-                        if (
-                            process.poll() is not None
-                            and _process_group_liveness(process.pid) is False
-                        ):
-                            return True
-                        time.sleep(0.05)
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-                    kill_deadline = time.monotonic() + 0.5
-                    while time.monotonic() < kill_deadline:
-                        if (
-                            process.poll() is not None
-                            and _process_group_liveness(process.pid) is False
-                        ):
-                            return True
-                        time.sleep(0.02)
-                    return (
-                        process.poll() is not None
-                        and _process_group_liveness(process.pid) is False
-                    )
+                    # A failed ownership check cannot authorize another signal
+                    # to a numeric process group that may already be reused.
+                    return False
                 except Exception:
                     return False
             return True if not job_handle and os.name != "nt" else False
@@ -6240,10 +6215,11 @@ class CommandBroker:
                     stream.close()
             except Exception:
                 pass
-        try:
-            process.wait(timeout=1.0)
-        except Exception:
-            pass
+        if not cleanup_unconfirmed:
+            try:
+                process.wait(timeout=1.0)
+            except Exception:
+                pass
 
         callback_delivery_unconfirmed = callback_start_failed
         if callback_queue is not None and callback_thread is not None:

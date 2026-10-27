@@ -72,6 +72,6 @@ Fresh full validation and runtime acceptance remain required. The interrupted fu
 ## Required next work
 
 - [x] [N/A — superseded by operator disposition]: Identify recovery copy, quiesce writers, and recover historical state. Operator confirmed: "Ja jsem to smazal - chci cisty stav" (deletion was intentional; clean state required; historical recovery waived).
-- [x] Establish whether the test execution could reach non-test data: Verified. All test cohorts, fixtures, and selftest executions use isolated disposable temporary directories (`tmp_path`, `TemporaryDirectory`); no production state or non-test data is reached or modified by test suites.
+- [ ] Establish whether the incident's test execution could reach non-test data. Isolation of selected fixtures is not evidence that every executed path was isolated; retain this investigation until the original execution and its configured paths are verified.
 - [x] Put future immutable validation/release evidence outside a mutable runtime-state tree: Done. Benchmark records and release evidence artifacts are committed directly to version-controlled `docs/` paths.
-- [x] Resume and complete final 5.1.0 release verification: Active on current `master` candidate.
+- [ ] Complete final 5.1.0 release verification on the current `master` candidate.

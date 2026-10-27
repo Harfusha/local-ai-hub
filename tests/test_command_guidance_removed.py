@@ -46,7 +46,7 @@ def test_generated_mcp_catalog_excludes_removed_command_tool():
 def test_generated_status_schema_matches_compact_runtime_contract():
     schema = generate_mcp_tool_schemas({})["local_ai_status"]
     properties = schema["parameters"]["properties"]
-    assert set(properties["detail"]["enum"]) == {"brief", "models"}
+    assert set(properties["detail"]["enum"]) == {"brief"}
     assert not {"scope", "adoption_signal", "target_tool", "target_action"} & properties.keys()
     assert "agent_state" not in schema["description"]
 
