@@ -2875,6 +2875,28 @@
         ]
       }
     },
+    "MCP local_ai_coord.task_repair_session": {
+      "decision": "retain",
+      "role": "operator_control",
+      "reason": "Explicitly authorized recovery for an existing task with no session; the broker preserves task identity and rejects replacement of an existing session.",
+      "response_policy": "Preserve task/session identity, repository scope, mutation status and audit evidence; never accept caller-supplied owner authority or replace an existing session.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_coord.task_resume": {
       "decision": "retain",
       "role": "agent",
@@ -6514,6 +6536,7 @@
           "heartbeat",
           "list",
           "reap_expired",
+          "repair_session",
           "resume",
           "rollback",
           "transition"

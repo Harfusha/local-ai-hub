@@ -482,8 +482,8 @@ tests, durable conversion or running-instance activation have occurred.
 
 **Historical implementation ledger — not current acceptance evidence:**
 
-The SU1–SU7 checkboxes below were previously presented as completed, but the
-chronological source checkpoints in this file explicitly leave fixtures,
+The SU1–SU7 section is [SUPERSEDED as a completion tracker]. Its checkboxes
+were previously presented as complete, but chronological source checkpoints explicitly leave fixtures,
 conversion, integration and runtime acceptance unverified. This historical
 ledger is superseded as a completion tracker by [current status](local-ai-hub-current-status.md)
 and [release evidence](../../release-evidence-5.1.0.md); no SU requirement is
