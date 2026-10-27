@@ -16,12 +16,12 @@
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "Reproduced local_ai_status failure: only telemetry.summary is degraded (250ms probe_timeout); Hub/Ollama are online. In source, any optional dependency timeout sets top-level success/degraded false. Fix keeps the telemetry warning in dependency_status but excludes it from core availability. CI #254 for 6bad6f4 remains in progress. Dashboard project-plan UI and authentic Agent OS receipts remain open.",
+      "blocker": "Telemetry health classification fix committed and pushed as 47fc9706bda9a24c9ef2717a7ba7958340c10a0c. Installed with setup expected-revision and service restarted; hubctl status reports PID 61100, /health HTTP 200 v5.1.0, and local_ai_status reports success=true/degraded=false. CI #255 (run 40582352409) is in progress, 3/12 matrix jobs complete. Dashboard plan UI lifecycle and authentic Agent OS receipts remain open.",
       "clarifications": [],
       "depends_on": [],
       "description": "Finish CI and candidate-bound release checks, confirm the installed runtime reflects the pushed source, resolve the dashboard plan-creation defect, and verify the repo-specific Kanban. Preserve unrelated operator files and do not restart the shared Hub while other chats are active.",
       "kind": "code",
-      "next_action": "Finish targeted status health regression checks; commit and push the telemetry status classification fix, install exact pushed source, restart Hub once, then verify live status no longer reports overall degraded solely because telemetry.summary timed out. Reconcile CI for exact revision and retain remaining UI/receipt blockers.",
+      "next_action": "Reconcile CI #255 for exact commit 47fc9706. Update release status/evidence to current source and live runtime, then finish dashboard plan lifecycle and obtain authentic Agent OS receipts before closure.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_status": "in_progress"
     }
