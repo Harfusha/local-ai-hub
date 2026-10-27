@@ -1036,6 +1036,8 @@ def test_bounded_inventory_is_stable_when_filesystem_order_varies(tmp_path: Path
     monkeypatch.setattr(os, "walk", reversed_walk)
     result = tools.file_inventory(str(root), include_hashes=False)
     assert [item["path"] for item in result["files"]] == ["a.py"]
+    search = tools.search(str(root), "needle", limit=1)
+    assert [item["path"] for item in search["results"]] == ["a.py"]
 
 
 def test_file_inventory_refreshes_stale_stat_before_snapshot_cache_hit(
