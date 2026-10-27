@@ -1,8 +1,22 @@
 from test_dashboard_polish import extract, run_javascript
 
 
+def test_health_badge_ignores_namespaced_telemetry_summary_timeout_only():
+    run_javascript(extract('function isTelemetrySummaryDependency(', 'function dashboardTelemetryState('), """
+for(const name of ['telemetry.summary','detail.agent_state.telemetry.summary']){
+  const badge=dashboardHealthBadge({hub_online:true,ollama_online:true,success:false,dependency_status:{[name]:{degraded:true}}});
+  assert.equal(badge.className,'ok');
+  assert.equal(badge.degradedCount,0);
+  assert.equal(badge.degradedLabel,'');
+}
+const realFailure=dashboardHealthBadge({hub_online:true,ollama_online:true,success:false,dependency_status:{'detail.agent_state.runtime.online':{degraded:true}}});
+assert.equal(realFailure.className,'warn-t');
+assert.equal(realFailure.degradedCount,1);
+""")
+
+
 def test_current_health_does_not_reclassify_history_as_active_failures():
-    run_javascript(extract('function dashboardTelemetryState(', 'function dashboardFreshness('), """
+    run_javascript(extract('function isTelemetrySummaryDependency(', 'function dashboardFreshness('), """
 const base={hub_online:true,ollama_online:true,headless:{state:'running',restarts:12}};
 for(const scope of ['process','window']){
   const snapshot={...base,observability:{scope,data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0,pending:0,accepted:2404,written:2404},
