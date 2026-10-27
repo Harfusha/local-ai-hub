@@ -175,7 +175,7 @@ def test_http_task_completion_uses_persisted_project_receipts(
     project_root = tmp_path / "repo"
     project_root.mkdir()
     (project_root / ".local-ai.toml").write_text(
-        '[commands]\ntest = "python -m pytest -q"\n'
+        '[commands]\ntest = "python -m pytest -q"\nrequired_commands = "python -m pyflakes review"\n'
         '[verification_rules]\nrequired_commands = ["test"]\n',
         encoding="utf-8",
     )
@@ -198,6 +198,9 @@ def test_http_task_completion_uses_persisted_project_receipts(
         "def test_project_rule():\n    assert 2 + 2 == 4\n",
         encoding="utf-8",
     )
+    review_dir = project_root / "review"
+    review_dir.mkdir()
+    (review_dir / "reviewed.py").write_text("value = 1\n", encoding="utf-8")
     app.agent_tasks.create(
         GoalContract(
             goal="verify configured project rules",
@@ -222,27 +225,14 @@ def test_http_task_completion_uses_persisted_project_receipts(
     assert isinstance(command_receipt, dict)
     repository_revision = str(command_receipt.get("repository_revision") or "")
     assert repository_revision
-    source_evidence = app.artifacts.put_json(
-        {
-            "kind": "work_source_review",
-            "passed": True,
-            "task_id": task_id,
-            "owner": "agent",
-            "repository_revision": repository_revision,
-            "mutation_generation": 0,
-            "criteria": ["required_commands"],
-        },
-        kind="source_review",
+    acceptance_result = app.commands.run_project_command(
+        "required_commands", str(project_root), task_id=task_id,
+        criterion="required_commands", timeout=60, force=True,
     )
-    app.agent_verification.record(
-        VerificationReceipt.create(
-            task_id,
-            "required_commands",
-            evidence_id=source_evidence,
-            owner="agent",
-            repository_revision=repository_revision,
-        )
-    )
+    assert acceptance_result.get("success") is True, acceptance_result
+    review_receipt = acceptance_result.get("verification_receipt")
+    assert isinstance(review_receipt, dict), acceptance_result
+    assert review_receipt["repository_revision"] == repository_revision
     task = app.agent_tasks.get(task_id)
     assert task is not None
     state_data = dict(task.checkpoint.state_data)
@@ -316,6 +306,6 @@ def test_http_task_completion_uses_persisted_project_receipts(
     )
     assert result.complete is True
     assert {receipt.evidence_id for receipt in result.receipts} == {
-        source_evidence,
+        review_receipt["evidence_id"],
         command_receipt["evidence_id"],
     }

@@ -14,7 +14,6 @@ from local_ai_hub.agent_tasks import (
     TaskState,
     TaskStatus,
 )
-from local_ai_hub.agent_verification import VerificationReceipt
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub import process_utils
 from local_ai_hub.verification_rules import (
@@ -199,6 +198,7 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
         '[verification_rules]\ntest = ["test"]\n',
         encoding="utf-8",
     )
+    (trusted_root / "test_project.py").write_text("def test_ok():\n    assert 2 + 2 == 4\n", encoding="utf-8")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     config_path = tmp_path / "hub.toml"
@@ -221,38 +221,18 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
             actor="agent",
             repo_root=str(trusted_root),
         )
-        attacker_proof = app.artifacts.put_json(
-            {
-                "kind": "work_command_verification",
-                "passed": True,
-                "task_id": task_id,
-                "owner": "agent",
-                "repository_revision": "rev-root-binding",
-                "mutation_generation": 0,
-                "criterion": "test",
-                "command_id": "cmd-root-binding-test",
-                "command_classification": "test",
-                "exit_code": 0,
-                "result": {"success": True, "exit_code": 0},
-            },
-            kind="command_verification",
+        command_result = app.commands.run_project_command(
+            "test", str(trusted_root), task_id=task_id, criterion="test", timeout=60, force=True,
         )
-        app.agent_verification.record(
-            VerificationReceipt.create(
-                task_id,
-                "test",
-                evidence_id=attacker_proof,
-                command_id="cmd-root-binding-test",
-                owner="agent",
-                repository_revision="rev-root-binding",
-                evidence_type="test",
-            )
-        )
+        assert command_result.get("success") is True, command_result
+        command_receipt = command_result.get("verification_receipt")
+        assert isinstance(command_receipt, dict), command_result
+        repository_revision = command_receipt["repository_revision"]
         task = app.agent_tasks.get(task_id)
         assert task is not None
         state_data = dict(task.checkpoint.state_data)
         state_data["repo_root"] = str(attacker_root)
-        state_data["repository_revision"] = "rev-root-binding"
+        state_data["repository_revision"] = repository_revision
         with pytest.raises(ValueError, match="repo_root is server-managed"):
             app.agent_tasks.checkpoint(
                 task_id,
@@ -265,7 +245,7 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
             task_id,
             TaskCheckpoint(
                 phase="verification",
-                state_data={"repository_revision": "rev-root-binding"},
+                state_data={"repository_revision": repository_revision},
             ),
             actor="agent",
         )
