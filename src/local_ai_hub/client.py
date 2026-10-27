@@ -269,6 +269,7 @@ class HubClient:
         deadline_expired = threading.Event()
         request_cancelled = threading.Event()
         watchdog_stopped = threading.Event()
+        watchdog_lock = threading.Lock()
         response = None
         try:
             conn = self._connection(timeout)
@@ -300,12 +301,16 @@ class HubClient:
                 while not watchdog_stopped.is_set():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        deadline_expired.set()
-                        interrupt_connection()
+                        with watchdog_lock:
+                            if not watchdog_stopped.is_set():
+                                deadline_expired.set()
+                                interrupt_connection()
                         return
                     if cancel_event is not None and cancel_event.wait(min(0.05, remaining)):
-                        request_cancelled.set()
-                        interrupt_connection()
+                        with watchdog_lock:
+                            if not watchdog_stopped.is_set():
+                                request_cancelled.set()
+                                interrupt_connection()
                         return
                     watchdog_stopped.wait(min(0.05, remaining))
 
@@ -360,7 +365,8 @@ class HubClient:
                 cancelled=request_cancelled.is_set(),
             ) from exc
         finally:
-            watchdog_stopped.set()
+            with watchdog_lock:
+                watchdog_stopped.set()
             if conn is not None and original_send is not None:
                 conn.send = original_send  # type: ignore[method-assign]
         if bool(getattr(response, "will_close", False)):
