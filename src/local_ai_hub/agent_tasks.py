@@ -3866,24 +3866,173 @@ class TaskStore:
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
 
-    def _sync_project_plan_checkpoint(self, state: TaskState, *, only_if_pending: bool = False) -> str:
-        """Serialize projection writes and project the latest persisted checkpoint."""
+    def _plan_sync_paths(self, task_id: str) -> tuple[Path, Path]:
         import hashlib
+
+        digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+        db_path = Path(self.state_store.db_path)
+        return (db_path.parent / f".{db_path.name}.plan-sync-{int(digest[:8], 16) % 64}",
+                db_path.parent / f".{db_path.name}.plan-sync-pending-{digest}.json")
+
+    @staticmethod
+    def _plan_commit_lock(lock_target: Path) -> Path:
+        return lock_target.with_name(lock_target.name + "-commit")
+
+    def _read_plan_sync_intent(self, pending: Path) -> dict[str, Any]:
+        if pending.is_symlink() or getattr(pending, "is_junction", lambda: False)():
+            raise ValueError("checkpoint recovery record is a link")
+        if pending.stat().st_size > 65536:
+            raise ValueError("checkpoint recovery record is too large")
+        record = json.loads(pending.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise ValueError("checkpoint recovery record is invalid")
+        return record
+
+    def _committed_plan_intents(self, record: dict[str, Any]) -> list[dict[str, Any]]:
+        entries = record.get("entries")
+        if not isinstance(entries, list) or not entries or len(entries) > 64:
+            raise ValueError("checkpoint recovery entries are invalid")
+        committed = []
+        seen = set()
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            for index, entry in enumerate(entries):
+                if (not isinstance(entry, dict) or not isinstance(entry.get("event_id"), str)
+                        or not isinstance(entry.get("stream_id"), str)
+                        or not isinstance(entry.get("previous_task_digest"), str)
+                        or not isinstance(entry.get("next_task_digest"), str)
+                        or not isinstance(entry.get("after"), dict)):
+                    raise ValueError("checkpoint recovery entry is invalid")
+                if (entry["event_id"] in seen or (index and
+                        entry["previous_task_digest"] != entries[index - 1]["next_task_digest"])):
+                    raise ValueError("checkpoint recovery chain is invalid")
+                seen.add(entry["event_id"])
+                found = con.execute(
+                    "SELECT 1 FROM agent_events WHERE stream_id = ? AND event_id = ?",
+                    (entry["stream_id"], entry["event_id"]),
+                ).fetchone() is not None
+                if found:
+                    if len(committed) != index:
+                        raise ValueError("checkpoint recovery events are out of order")
+                    committed.append(entry)
+                elif index != len(entries) - 1:
+                    raise ValueError("checkpoint recovery has a missing event")
+        return committed
+
+    @staticmethod
+    def _plan_sync_task_digest(state: TaskState) -> str:
+        import hashlib
+
+        data = state.to_dict()
+        data.pop("stale", None)
+        data.pop("stale_reason", None)
+        return hashlib.sha256(json_dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _write_plan_sync_intent(path: Path, record: dict[str, Any]) -> None:
+        payload = json.dumps(record, sort_keys=True).encode("utf-8")
+        if len(payload) > 65536:
+            raise ValueError("checkpoint recovery record is too large")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            if os.name != "nt":
+                descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _sync_plan_intents(self, state: TaskState, lock_target: Path, pending: Path) -> str:
+        from .file_locks import exclusive_file_update
+        from .repo_plan.agent_bridge import TaskBindingManager, project_checkpoint_fields, sync_checkpoint_to_plan
+        from .repo_plan.schema_validation import RepoPlanConflictError
+        from .repo_plan.storage import RepoPlanStorage
+
+        root = _task_scope_root(state)
+        commit_lock = self._plan_commit_lock(lock_target)
+        with exclusive_file_update(commit_lock):
+            record = self._read_plan_sync_intent(pending)
+            latest = self.get(state.task_id)
+            binding = TaskBindingManager(root).get_binding(state.task_id)
+            if (record.get("version") != 3 or latest is None or binding is None
+                    or _task_scope_root(latest) != root or record.get("task_id") != state.task_id
+                    or record.get("root") != root or record.get("plan_id") != binding.plan_id
+                    or record.get("plan_task_id") != binding.plan_task_id):
+                raise ValueError("checkpoint recovery record identity is invalid")
+            entries = record["entries"]
+            committed = self._committed_plan_intents(record)
+            digest = self._plan_sync_task_digest(latest)
+            if not committed:
+                if digest != entries[0]["previous_task_digest"]:
+                    raise RepoPlanConflictError("task changed since checkpoint intent; reconcile the conflict")
+                pending.unlink()
+                return "not_pending"
+            if digest != committed[-1]["next_task_digest"]:
+                raise RepoPlanConflictError("task changed since checkpoint intent; reconcile the conflict")
+            storage = RepoPlanStorage(root)
+            plan, revision = storage.read_plan_file(binding.plan_rel_path)
+            task = plan.get("tasks", {}).get(binding.plan_task_id)
+            if not isinstance(task, dict) or not isinstance(record.get("baseline"), dict):
+                raise ValueError("bound plan task or checkpoint baseline is unavailable")
+            fields = ("work_status", "work_phase", "next_action", "blocker")
+            before = {name: task.get(name) for name in fields}
+            if before != record["baseline"] and not any(before == item["after"] for item in committed):
+                raise RepoPlanConflictError("plan changed since checkpoint intent; reconcile the conflict")
+            projected = dict(task)
+            project_checkpoint_fields(
+                projected, latest.status.value, latest.checkpoint.phase, latest.checkpoint.next_action,
+                latest.checkpoint.blockers[0] if latest.checkpoint.blockers else "",
+            )
+            after = {name: projected.get(name) for name in fields}
+            committed[-1]["after"] = after
+            record["entries"] = committed
+            self._write_plan_sync_intent(pending, record)
+            selected = [entry["event_id"] for entry in committed]
+
+        if before != after:
+            sync_checkpoint_to_plan(
+                storage=storage, binding=binding, agent_status=latest.status.value,
+                phase=latest.checkpoint.phase, next_action=latest.checkpoint.next_action,
+                blocker=latest.checkpoint.blockers[0] if latest.checkpoint.blockers else "",
+                owner=latest.owner or "agent", expected_plan_revision=revision,
+            )
+        with exclusive_file_update(commit_lock):
+            record = self._read_plan_sync_intent(pending)
+            entries = record.get("entries")
+            if (record.get("version") != 3 or not isinstance(entries, list)
+                    or [entry.get("event_id") for entry in entries[:len(selected)]] != selected):
+                raise RepoPlanConflictError("checkpoint intents changed during projection")
+            remaining = entries[len(selected):]
+            if remaining:
+                record["baseline"] = after
+                record["entries"] = remaining
+                self._write_plan_sync_intent(pending, record)
+            else:
+                pending.unlink()
+        return "reconciled"
+
+    def _sync_project_plan_checkpoint(self, state: TaskState, *, only_if_pending: bool = False,
+                                      _lock_held: bool = False) -> str:
+        """Serialize projection writes and project the latest persisted checkpoint."""
         from .file_locks import exclusive_file_update
 
         root = _task_scope_root(state)
         if not root:
             return "not_bound"
-        task_digest = hashlib.sha256(state.task_id.encode("utf-8")).hexdigest()
-        stripe = int(task_digest[:8], 16) % 64
-        db_path = Path(self.state_store.db_path)
-        lock_target = db_path.parent / f".{db_path.name}.plan-sync-{stripe}"
-        pending = db_path.parent / f".{db_path.name}.plan-sync-pending-{task_digest}.json"
-        with exclusive_file_update(lock_target):
+        lock_target, pending = self._plan_sync_paths(state.task_id)
+        with nullcontext() if _lock_held else exclusive_file_update(lock_target):
             if pending.is_symlink() or getattr(pending, "is_junction", lambda: False)():
                 raise ValueError("checkpoint recovery record is a link")
             if only_if_pending and not pending.exists():
                 return "not_pending"
+            if pending.exists() and self._read_plan_sync_intent(pending).get("version") == 3:
+                return self._sync_plan_intents(state, lock_target, pending)
             latest = self.get(state.task_id)
             if latest is None or _task_scope_root(latest) != root:
                 raise RuntimeError("persisted task or repository scope changed during plan sync")
@@ -3911,6 +4060,23 @@ class TaskStore:
                                 or record.get("root") != root or record.get("plan_id") != binding.plan_id
                                 or record.get("plan_task_id") != binding.plan_task_id):
                             raise ValueError("checkpoint recovery record identity is invalid")
+                        if record.get("version") == 2:
+                            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                                committed = con.execute(
+                                    "SELECT 1 FROM agent_events WHERE stream_id = ? AND event_id = ?",
+                                    (record.get("stream_id"), record.get("event_id")),
+                                ).fetchone() is not None
+                            digest = self._plan_sync_task_digest(latest)
+                            if not committed:
+                                if digest != record.get("previous_task_digest"):
+                                    raise RepoPlanConflictError("task changed since checkpoint intent; reconcile the conflict")
+                                pending.unlink()
+                                return "not_pending"
+                            if digest != record.get("next_task_digest"):
+                                raise RepoPlanConflictError("task changed since checkpoint intent; reconcile the conflict")
+                            if record.get("after") == before:
+                                pending.unlink()
+                                return "reconciled"
                         if record.get("before") != before:
                             raise RepoPlanConflictError("plan changed since failed checkpoint sync; reconcile the conflict")
                     sync_checkpoint_to_plan(
@@ -3923,15 +4089,7 @@ class TaskStore:
                     if not pending.exists():
                         record = {"task_id": latest.task_id, "root": root, "plan_id": binding.plan_id,
                                   "plan_task_id": binding.plan_task_id, "before": before}
-                        temporary = pending.with_name(f".{pending.name}.{uuid.uuid4().hex}.tmp")
-                        try:
-                            with temporary.open("x", encoding="utf-8") as stream:
-                                json.dump(record, stream, sort_keys=True)
-                                stream.flush()
-                                os.fsync(stream.fileno())
-                            os.replace(temporary, pending)
-                        finally:
-                            temporary.unlink(missing_ok=True)
+                        self._write_plan_sync_intent(pending, record)
                     raise
                 if pending.exists():
                     pending.unlink()
@@ -4157,9 +4315,64 @@ class TaskStore:
                 except Exception:
                     pass
                 raise
-        res = self._run_ordered_task_write(
-            _do_commit, timeout_seconds=0.25
-        )
+        root = _task_scope_root(current)
+        if not root:
+            return self._run_ordered_task_write(_do_commit, timeout_seconds=0.25)
+
+        from .file_locks import exclusive_file_update
+        from .repo_plan.agent_bridge import TaskBindingManager, project_checkpoint_fields
+        from .repo_plan.storage import RepoPlanStorage
+
+        lock_target, pending = self._plan_sync_paths(current.task_id)
+        with exclusive_file_update(self._plan_commit_lock(lock_target)):
+            if pending.is_symlink() or getattr(pending, "is_junction", lambda: False)():
+                raise ValueError("checkpoint recovery record is a link")
+            latest = self.get(current.task_id)
+            if latest is None or self._plan_sync_task_digest(latest) != self._plan_sync_task_digest(current):
+                raise ConcurrentTaskUpdateError(f"Task {current.task_id} changed during transition; reload and retry")
+            binding = TaskBindingManager(root).get_binding(current.task_id)
+            if binding is None and pending.exists():
+                raise ValueError("checkpoint recovery binding is unavailable")
+            if binding is not None:
+                storage = RepoPlanStorage(root)
+                plan, _revision = storage.read_plan_file(binding.plan_rel_path)
+                task = plan.get("tasks", {}).get(binding.plan_task_id)
+                if not isinstance(task, dict):
+                    raise ValueError("bound plan task is unavailable")
+                fields = ("work_status", "work_phase", "next_action", "blocker")
+                before = {name: task.get(name) for name in fields}
+                projected = dict(task)
+                project_checkpoint_fields(
+                    projected, updated.status.value, updated.checkpoint.phase,
+                    updated.checkpoint.next_action,
+                    updated.checkpoint.blockers[0] if updated.checkpoint.blockers else "",
+                )
+                if pending.exists():
+                    record = self._read_plan_sync_intent(pending)
+                    if (record.get("version") != 3 or record.get("task_id") != current.task_id
+                            or record.get("root") != root or record.get("plan_id") != binding.plan_id
+                            or record.get("plan_task_id") != binding.plan_task_id):
+                        raise ValueError("checkpoint recovery requires reconciliation before another update")
+                    committed = self._committed_plan_intents(record)
+                    entries = record["entries"]
+                    expected = committed[-1]["next_task_digest"] if committed else entries[0]["previous_task_digest"]
+                    if expected != self._plan_sync_task_digest(current):
+                        raise ConcurrentTaskUpdateError("checkpoint recovery task state changed")
+                    record["entries"] = committed
+                else:
+                    record = {"version": 3, "task_id": current.task_id, "root": root,
+                              "plan_id": binding.plan_id, "plan_task_id": binding.plan_task_id,
+                              "baseline": before, "entries": []}
+                record["entries"].append({
+                    "stream_id": event.stream_id, "event_id": event.event_id,
+                    "previous_task_digest": self._plan_sync_task_digest(current),
+                    "next_task_digest": self._plan_sync_task_digest(updated),
+                    "after": {name: projected.get(name) for name in fields},
+                })
+                if len(record["entries"]) > 64:
+                    raise ValueError("too many pending checkpoint updates")
+                self._write_plan_sync_intent(pending, record)
+            res = self._run_ordered_task_write(_do_commit, timeout_seconds=0.25)
         try:
             self._sync_project_plan_checkpoint(res)
         except Exception as exc:

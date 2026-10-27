@@ -339,27 +339,14 @@ def map_agent_status_to_plan_status(
     return TaskWorkStatus.PLANNED.value
 
 
-def sync_checkpoint_to_plan(
-    storage: RepoPlanStorage,
-    binding: TaskBinding,
+def project_checkpoint_fields(
+    task_data: dict[str, Any],
     agent_status: str,
     phase: str = "",
     next_action: str = "",
     blocker: str | None = None,
-    owner: str = "agent",
-    expected_plan_revision: str | None = None,
-) -> dict[str, Any]:
-    """Update bound repo plan file task from an Agent OS checkpoint."""
-    plan_dict, current_rev = storage.read_plan_file(binding.plan_rel_path)
-    if expected_plan_revision is not None and expected_plan_revision != current_rev:
-        raise RepoPlanConflictError("plan changed before checkpoint synchronization")
-    tasks = plan_dict.get("tasks", {})
-    if binding.plan_task_id not in tasks:
-        raise RepoPlanNotFoundError(
-            f"Bound task '{binding.plan_task_id}' not found in plan '{binding.plan_id}'"
-        )
-
-    task_data = tasks[binding.plan_task_id]
+) -> None:
+    """Project checkpoint fields onto an already-loaded plan task."""
     deliveries = task_data.get("deliveries", {})
     has_open_deliveries = any(
         isinstance(d, dict) and d.get("disposition") == "pending"
@@ -386,6 +373,27 @@ def sync_checkpoint_to_plan(
     if blocker is not None:
         task_data["blocker"] = str(blocker) if blocker else None
 
+
+def sync_checkpoint_to_plan(
+    storage: RepoPlanStorage,
+    binding: TaskBinding,
+    agent_status: str,
+    phase: str = "",
+    next_action: str = "",
+    blocker: str | None = None,
+    owner: str = "agent",
+    expected_plan_revision: str | None = None,
+) -> dict[str, Any]:
+    """Update bound repo plan file task from an Agent OS checkpoint."""
+    plan_dict, current_rev = storage.read_plan_file(binding.plan_rel_path)
+    if expected_plan_revision is not None and expected_plan_revision != current_rev:
+        raise RepoPlanConflictError("plan changed before checkpoint synchronization")
+    tasks = plan_dict.get("tasks", {})
+    if binding.plan_task_id not in tasks:
+        raise RepoPlanNotFoundError(
+            f"Bound task '{binding.plan_task_id}' not found in plan '{binding.plan_id}'"
+        )
+    project_checkpoint_fields(tasks[binding.plan_task_id], agent_status, phase, next_action, blocker)
     return storage.save_plan_file(
         binding.plan_rel_path,
         plan_dict,

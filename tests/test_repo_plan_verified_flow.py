@@ -4,6 +4,8 @@ from pathlib import Path
 import hashlib
 import json
 import multiprocessing
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 
@@ -67,6 +69,28 @@ def _checkpoint_from_process(state_path, committed, outcomes):
         outcomes.put("success")
     except Exception as exc:
         outcomes.put(f"error: {exc}")
+
+
+def _crash_during_checkpoint(state_path, point):
+    """Terminate a real child at the selected durable-write boundary."""
+    store = TaskStore(AgentStateStore(state_path))
+    if point == "before_commit":
+        store._run_ordered_task_write = lambda *args, **kwargs: os._exit(73)
+    elif point == "after_commit":
+        store._sync_project_plan_checkpoint = lambda *args, **kwargs: os._exit(73)
+    elif point == "after_plan_write":
+        real_sync = agent_bridge.sync_checkpoint_to_plan
+
+        def write_then_crash(*args, **kwargs):
+            real_sync(*args, **kwargs)
+            os._exit(73)
+
+        agent_bridge.sync_checkpoint_to_plan = write_then_crash
+    store.checkpoint(
+        "execution_a", TaskCheckpoint(phase="implementation", next_action="durable new checkpoint"),
+        actor="agent_a",
+    )
+    os._exit(74)
 
 
 @pytest.fixture
@@ -145,6 +169,79 @@ def test_rebinding_repairs_a_missed_checkpoint_sync(environment, monkeypatch):
     assert repaired["tasks"]["task_work"]["next_action"] == "continue work"
     assert result["file_revision"] == current_revision
     assert result["checkpoint_sync"] == "reconciled"
+
+
+@pytest.mark.parametrize("point,concurrent_edit", [
+    ("before_commit", False),
+    ("after_commit", False),
+    ("after_commit", True),
+    ("after_plan_write", False),
+])
+def test_rebinding_after_process_crash_preserves_checkpoint_and_plan(environment, point, concurrent_edit):
+    root, tasks, _, _, storage, _, binding, _ = environment
+    for args in (
+        ("init", "-q"),
+        ("add", binding.plan_rel_path),
+        ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "fixture plan"),
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=15)
+    agent_bridge.bind_plan_execution(
+        tasks, root=str(root), task_id="execution_a", plan_id="plan_work",
+        plan_task_id="task_work", session_id="session_a",
+    )
+    baseline_task = tasks.get("execution_a").checkpoint.next_action
+    baseline_plan, _ = storage.read_plan_file(binding.plan_rel_path)
+    baseline_action = baseline_plan["tasks"]["task_work"]["next_action"]
+
+    process = multiprocessing.get_context("spawn").Process(
+        target=_crash_during_checkpoint, args=(str(tasks.state_store.db_path), point),
+    )
+    process.start()
+    process.join(20)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        pytest.fail("checkpoint child did not reach the crash boundary")
+    assert process.exitcode == 73
+
+    restarted = TaskStore(AgentStateStore(tasks.state_store.db_path))
+    persisted = restarted.get("execution_a")
+    plan, revision = storage.read_plan_file(binding.plan_rel_path)
+    if point == "before_commit":
+        assert persisted.checkpoint.next_action == baseline_task
+        assert plan["tasks"]["task_work"]["next_action"] == baseline_action
+    else:
+        assert persisted.checkpoint.next_action == "durable new checkpoint"
+        expected_before_recovery = "durable new checkpoint" if point == "after_plan_write" else baseline_action
+        assert plan["tasks"]["task_work"]["next_action"] == expected_before_recovery
+
+    if concurrent_edit:
+        plan["tasks"]["task_work"]["next_action"] = "new operator edit"
+        revision = storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)["file_revision"]
+
+    def rebind():
+        return agent_bridge.bind_plan_execution(
+            restarted, root=str(root), task_id="execution_a", plan_id="plan_work",
+            plan_task_id="task_work", session_id="session_a", expected_revision=revision,
+        )
+
+    if concurrent_edit:
+        with pytest.raises(RepoPlanConflictError, match="conflict|changed"):
+            rebind()
+        assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "new operator edit"
+        assert restarted.get("execution_a").checkpoint.next_action == "durable new checkpoint"
+    else:
+        rebind()
+        recovered, _ = storage.read_plan_file(binding.plan_rel_path)
+        expected = baseline_action if point == "before_commit" else "durable new checkpoint"
+        assert recovered["tasks"]["task_work"]["next_action"] == expected
+        rebind_revision = storage.read_plan_file(binding.plan_rel_path)[1]
+        agent_bridge.bind_plan_execution(
+            restarted, root=str(root), task_id="execution_a", plan_id="plan_work",
+            plan_task_id="task_work", session_id="session_a", expected_revision=rebind_revision,
+        )
+        assert storage.read_plan_file(binding.plan_rel_path)[1] == rebind_revision
 
 
 def test_rebinding_preserves_newer_operator_plan_edit(environment):
