@@ -71,6 +71,7 @@ def test_group_cleanup_revalidates_identity_before_escalation(monkeypatch):
 
 def test_group_signal_holds_popen_wait_lock(monkeypatch):
     calls = _posix(monkeypatch)
+    monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
     expected = {"pid": 4321, "creation_identity": 1}
     process_handle = _process_handle()
     lock_states = []

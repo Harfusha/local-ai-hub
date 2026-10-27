@@ -1022,6 +1022,16 @@ def _terminate_tree_unlocked(
     if not leader_still_owned():
         return False
 
+    # The unreaped leader still pins the group identity. Escalate before
+    # reaping it, so descendants that ignored SIGTERM cannot survive merely
+    # because the leader has already exited.
+    try:
+        os.killpg(group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
     # The caller holds Popen's wait lock. Reap the still-owned leader only
     # after proving its identity, then check for an empty group without sending
     # another signal. A surviving or reused group remains unconfirmed.
@@ -1050,19 +1060,6 @@ def _terminate_tree_unlocked(
     except OSError:
         return False
 
-    try:
-        os.killpg(group_id, signal.SIGKILL)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-
-    try:
-        os.killpg(group_id, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
     return False
 
 
