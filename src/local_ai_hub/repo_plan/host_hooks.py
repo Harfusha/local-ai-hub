@@ -455,6 +455,7 @@ def install_superpowers(
                 "partial_install_review_required": package.exists() and any(package.iterdir()),
                 "error": "Superpowers install timed out; inspect native extension state before any retry"}
     dependency = inspect_superpowers(host, package_root)
+    dependency["install_executed"] = True
     success = completed.returncode == 0 and dependency["compatible"]
     partial = completed.returncode != 0 and package.exists() and (not package_existed or any(package.iterdir()))
     return {"success": success,

@@ -74,6 +74,7 @@ def test_missing_extension_installs_pinned_ref_and_checks_files(tmp_path, monkey
     monkeypatch.setattr(process_utils, "run_hidden", install)
     result = host_hooks.ensure_gemini_superpowers(executable, repo_root=tmp_path)
     assert result["success"] and result["changed"]
+    assert result["dependency"]["install_executed"] is True
     assert calls == [[str(executable), "extensions", "install", "https://github.com/obra/superpowers",
                       "--ref", "v7.0.1", "--consent"]]
     assert result["host_activation"] == "not_verified"
