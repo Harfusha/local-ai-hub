@@ -6141,7 +6141,7 @@ function openCreatePlanModal(){
   if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap"><form class="modal-form" onsubmit="submitCreatePlan(event)">
       <div class="form-group"><label for="newPlanTitle">Plan name *</label><input id="newPlanTitle" required maxlength="160" autofocus placeholder="e.g. Project planning and delivery"></div>
-      <div class="form-group"><label for="newPlanId">Stable plan ID *</label><input id="newPlanId" required pattern="plan_[A-Za-z0-9][A-Za-z0-9_-]{0,79}" maxlength="85" placeholder="plan_project-planning"><span class="form-hint">Stored as a repository file; keep this ID stable.</span></div>
+      <div class="form-group"><label for="newPlanId">Stable plan ID *</label><input id="newPlanId" required pattern="plan_[A-Za-z0-9][A-Za-z0-9_\\-]{0,79}" maxlength="85" placeholder="plan_project-planning"><span class="form-hint">Start with plan_, followed by letters, digits, underscores or hyphens. Keep this ID stable.</span></div>
       <div class="form-group"><label for="newPlanDescription">Description</label><textarea id="newPlanDescription" rows="4" maxlength="12000"></textarea></div>
       <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button><button type="submit" class="btn ok">Create Plan</button></div>
     </form></div>`;

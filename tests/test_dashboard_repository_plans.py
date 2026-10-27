@@ -223,7 +223,10 @@ elements.newPlanId.value='plan_operator_choice';
 elements.newPlanId.dataset.edited='true';
 elements.newPlanTitle.value='Changed title';
 elements.newPlanTitle.listener();
-console.log(JSON.stringify({normal,empty,manual:elements.newPlanId.value}));
+const pattern=elements.modalBody.innerHTML.match(/pattern="([^"]+)"/)[1];
+const validator=new RegExp('^(?:'+pattern+')$', 'v');
+console.log(JSON.stringify({normal,empty,manual:elements.newPlanId.value,
+    validId:validator.test('plan_valid-123_test'),invalidId:validator.test('wrong_prefix')}));
 """
     result = subprocess.run([node], input=harness, check=True, capture_output=True, text=True)
     generated = json.loads(result.stdout)
@@ -231,7 +234,9 @@ console.log(JSON.stringify({normal,empty,manual:elements.newPlanId.value}));
     assert generated["normal"] == "plan_local-ai-hub-5-1-0-finalization"
     assert generated["empty"] == "plan_new"
     assert generated["manual"] == "plan_operator_choice"
+    assert generated["validId"] is True
+    assert generated["invalidId"] is False
     assert PLAN_ID_REGEX.fullmatch(generated["normal"])
     assert PLAN_ID_REGEX.fullmatch(generated["empty"])
-    assert 'pattern="plan_[A-Za-z0-9][A-Za-z0-9_-]{0,79}"' in DASHBOARD_HTML
+    assert r'pattern="plan_[A-Za-z0-9][A-Za-z0-9_\\-]{0,79}"' in DASHBOARD_HTML
     assert 'maxlength="85"' in DASHBOARD_HTML

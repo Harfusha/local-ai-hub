@@ -16,7 +16,7 @@ def handle_post_plan(handler: Any, payload: dict[str, Any], path: str, app: Any)
     if not path.startswith("/api/coord/plan_"):
         return False
     from .operation_contracts import operation_contract, validate_operation_arguments
-    from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanNotFoundError
+    from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanNotFoundError, RepoPlanValidationError
 
     action = path.removeprefix("/api/coord/")
     actions = operation_contract("local_ai_coord")["actions"]
@@ -40,7 +40,7 @@ def handle_post_plan(handler: Any, payload: dict[str, Any], path: str, app: Any)
         handler._send(409, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
     except RepoPlanNotFoundError as exc:
         handler._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
-    except ValueError as exc:
+    except (ValueError, RepoPlanValidationError) as exc:
         handler._send(getattr(exc, "status_code", 400), {
             "success": False, "error": str(exc), "terminal": True, "retryable": False})
     else:
