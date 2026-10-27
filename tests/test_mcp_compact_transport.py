@@ -265,6 +265,26 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
 
     client = local_ai_mcp.HubClient(config_path=str(config_path), auto_start=True)
     transport_failures: list[str] = []
+    connection_closures: list[str] = []
+    original_connection = client._connection
+
+    def capture_connection(timeout):
+        conn = original_connection(timeout)
+        if not getattr(conn, "_test_close_traced", False):
+            original_close = conn.close
+
+            def traced_close():
+                connection_closures.append(
+                    f"thread={threading.get_ident()} conn={id(conn)} "
+                    + " > ".join(f"{frame.name}:{frame.lineno}" for frame in traceback.extract_stack(limit=5)[:-1])
+                )
+                return original_close()
+
+            conn.close = traced_close
+            conn._test_close_traced = True
+        return conn
+
+    monkeypatch.setattr(client, "_connection", capture_connection)
     original_transport_failure = client._transport_failure_response
 
     def capture_transport_failure(request_id, *errors, **kwargs):
@@ -347,7 +367,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         content = result[0][0] if isinstance(result, tuple) else result[0]
         assert isinstance(content, t.TextContent)
         payload = json.loads(content.text)
-        assert payload["success"] is True, f"payload={payload!r}; transport_failures={transport_failures!r}"
+        assert payload["success"] is True, f"payload={payload!r}; transport_failures={transport_failures!r}; connection_closures={connection_closures[-6:]!r}"
         assert payload["text"].startswith("HTTP result ")
     assert sorted(received, key=lambda item: item["task"]) == [
         {
