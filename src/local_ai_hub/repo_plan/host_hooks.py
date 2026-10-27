@@ -289,6 +289,85 @@ def inspect_superpowers(host: str, source_root: str | Path | None = None) -> dic
     return result
 
 
+def ensure_codex_superpowers(executable: str | Path, *, repo_root: str | Path) -> dict[str, Any]:
+    """Ensure the supported Codex plugin is present without replacing existing plugins.
+
+    The CLI has no version pin. Check the marketplace before installation and
+    independently verify the installed version, bytes and enablement afterwards.
+    An indeterminate or incompatible result is left for operator inspection.
+    """
+    import subprocess
+    from local_ai_hub.process_utils import run_hidden
+
+    root = checked_root(repo_root)
+    binary = Path(executable)
+    if not binary.is_absolute() or not binary.is_file() or binary.suffix.lower() in {".cmd", ".bat"}:
+        raise ValueError("absolute native Codex executable required")
+    plugin_id = "superpowers@openai-curated-remote"
+
+    def command(*args: str) -> dict[str, Any]:
+        result = run_hidden([str(binary), "plugin", *args], cwd=str(root), stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=60, max_output_bytes=8 * 1024 * 1024,
+                            shell=False)
+        if result.returncode != 0:
+            raise ValueError(f"Codex plugin command failed with exit code {result.returncode}")
+        data = json.loads(result.stdout)
+        if not isinstance(data, dict):
+            raise ValueError("invalid Codex plugin response")
+        return data
+
+    def installed_status(data: dict[str, Any]) -> tuple[bool, bool]:
+        entries = data.get("installed")
+        if not isinstance(entries, list) or any(not isinstance(x, dict) for x in entries):
+            raise ValueError("invalid Codex installed plugin inventory")
+        found = [x for x in entries if x.get("name") == "superpowers" and x.get("installed") is True]
+        for item in found:
+            source = item.get("source")
+            if item.get("version") == SUPERPOWERS_VERSION and item.get("enabled") is True and isinstance(source, dict):
+                package_path = source.get("path") if source.get("source") == "local" else None
+                if source.get("source") == "remote" and item.get("pluginId") == plugin_id:
+                    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+                    package_path = codex_home / "plugins/cache/openai-curated-remote/superpowers" / SUPERPOWERS_VERSION
+                try:
+                    if package_path and inspect_superpowers("codex", package_path)["compatible"]:
+                        return True, True
+                except (OSError, ValueError):
+                    pass
+        return bool(found), False
+
+    try:
+        exists, compatible = installed_status(command("list", "--json"))
+        if compatible:
+            return {"success": True, "changed": False, "host_enablement": "enabled"}
+        if exists:
+            return {"success": False, "changed": False, "error": "existing Superpowers plugin requires review"}
+        inventory = command("list", "--available", "--json")
+        exists, compatible = installed_status(inventory)
+        if compatible:
+            return {"success": True, "changed": False, "host_enablement": "enabled"}
+        if exists:
+            return {"success": False, "changed": False, "error": "existing Superpowers plugin requires review"}
+        available = inventory.get("available")
+        if not isinstance(available, list) or any(not isinstance(x, dict) for x in available):
+            raise ValueError("invalid Codex marketplace inventory")
+        candidates = [x for x in available if x.get("pluginId") == plugin_id]
+        if len(candidates) != 1 or candidates[0].get("version") != SUPERPOWERS_VERSION:
+            return {"success": False, "changed": False, "error": "supported Superpowers version unavailable"}
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return {"success": False, "changed": False, "error": f"Codex plugin inspection failed: {exc}"}
+
+    try:
+        command("add", plugin_id, "--json")
+        _, compatible = installed_status(command("list", "--json"))
+        if compatible:
+            return {"success": True, "changed": True, "host_enablement": "enabled"}
+        error = "installed Superpowers version, bytes or enablement did not match"
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        error = f"Codex plugin installation or verification failed: {exc}"
+    return {"success": False, "changed": None, "outcome_unknown": True,
+            "partial_install_review_required": True, "error": error}
+
+
 def install_superpowers(
     host: str, *, repo_root: str | Path, package_root: str | Path,
     executable: str | Path, entrypoint: str | Path | None = None,

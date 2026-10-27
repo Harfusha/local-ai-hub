@@ -1005,7 +1005,7 @@ def main() -> int:
     parser.add_argument("--host-action", choices=["preview", "apply", "rollback"], default="preview")
     parser.add_argument("--host-preview-revision", help="Fresh preview revision required by host apply.")
     parser.add_argument("--superpowers-root", type=Path, help="Explicit installed Superpowers package to check against supported 7.0.1; never installs or overwrites it.")
-    parser.add_argument("--install-superpowers", action="store_true", help="Explicitly install missing pinned Gemini extension during --host-action apply. Codex uses native Plugins UI.")
+    parser.add_argument("--install-superpowers", action="store_true", help="Explicitly install missing pinned Gemini extension during --host-action apply; normal setup separately checks the Codex plugin.")
     parser.add_argument("--superpowers-executable", type=Path, help="Absolute native Gemini executable, or node.exe with --superpowers-entrypoint; no .cmd/.bat wrappers.")
     parser.add_argument("--superpowers-entrypoint", type=Path, help="Absolute Gemini CLI JavaScript entrypoint for a native Node launcher.")
     parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
@@ -1164,6 +1164,21 @@ def main() -> int:
         # was explicitly disabled, auto-install was disabled, or the optional
         # OpenVINO install failed. Users can still disable both dependency installers.
         install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
+
+    if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)) and include_companion:
+        codex = shutil.which("codex")
+        if codex:
+            from local_ai_hub.repo_plan.host_hooks import ensure_codex_superpowers
+            try:
+                dependency = ensure_codex_superpowers(Path(codex).absolute(), repo_root=install_dir)
+            except (OSError, ValueError) as exc:
+                dependency = {"success": False, "error": str(exc)}
+            if not dependency.get("success"):
+                log(f"Setup incomplete: Codex Superpowers dependency: {json.dumps(dependency)}")
+                return 1
+            log("Codex Superpowers dependency is installed and enabled.")
+        else:
+            log("Codex was not found on PATH; its Superpowers dependency was not checked.")
 
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
         configure_agents(install_dir, hub_python, serena, cfg, include_companion=include_companion)
