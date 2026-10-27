@@ -60,7 +60,7 @@ Native command records are not broker receipts.
 
 ## Historical intermediate gates (superseded by subsequent implementation)
 
-> **Note:** The intermediate gates recorded below reflect the state prior to the completion of T0–T12. All T0–T12 tasks and the 1,000-sample tail gate benchmark have since been implemented, verified, and officially closed (see final sections below and `docs/perf_candidate_json_budget.json`).
+> **Correction (2026-10-27):** The historical JSON-budget artifact used a synthetic baseline. Its reported tail gate does not establish a measured speedup. The current performance gate remains open pending genuine paired measurements and parity.
 
 Final first-block native cohort passed at
 `owned-check-perf-first-block-final-contracts-20261025T192101Z`, source/config stable,
@@ -76,10 +76,8 @@ Targeted existing queue/CLI contracts subsequently passed: 10 tests, 35.709s,
 
 Historical next gates at this checkpoint: finish T0a sample timing/diagnostics,
 current-source owned matrix and measurement contracts; execute Windows native
-experiment, then whole indexing A/B before any native adoption. Later sections below
-close these performance gates with the current-source receipts and the committed
-1,000-pair JSON-budget artifact. This historical checkpoint does not establish the
-current 5.1.0 release or hosted CI state.
+experiment, then whole indexing A/B before any native adoption. Later historical
+claims do not establish current 5.1.0 release or hosted CI acceptance.
 
 ## Takeover, CI diagnosis, T0a producer sample timing and T7a whole-workflow measurement (2026-10-25T19:43:00Z)
 
@@ -378,21 +376,14 @@ ative_kernels.simhash_text(text) when native acceleration is available and enabl
   - `pyflakes src tools`: 0 errors.
 
 
-## Final Performance Gate Acceptance & 1,000-Sample Tail Benchmark (2026-10-26T19:30:00Z)
+## Historical performance claim — invalidated 2026-10-27
 
-- **Official 1,000-Independent-Pair Benchmark Artifact:**
+- **Previously reported 1,000-pair artifact:**
   - Ran `python tools/benchmark_native_candidates.py --case json-budget --root . --state-dir "<temp_dir>" --repetitions 1000 --output docs/perf_candidate_json_budget.json`.
-  - Emitted canonical `perf_candidate.v1` record with full statistical distribution:
-    - 1,000 independent pairs (n=1000), satisfying the sample gate requirement (`tail_sample_gate_met: true`).
-    - Median (p50) speedup: **1.38x**
-    - 95th percentile (p95) speedup: **1.44x**
-    - 99th percentile (p99) speedup: **1.50x**
-    - Tail gate verified: `tail_gate_met: true` (p95 > 1.25x and p99 > 1.25x threshold).
-  - Persisted in version control as `docs/perf_candidate_json_budget.json`.
-- **Closure of Performance Scope (F01–F24 / T0–T12):**
-  - All 24 performance findings (F01–F24) and all 13 optimization blocks (T0–T12) are fully implemented, verified with authentic evidence, and closed with zero pending gates.
+  - The retained record claimed 1,000 pairs and p95/p99 speedups of 1.44x/1.50x. Its producer at `01a72dec90252019060fb40a08a8c4a10f520228` set baseline time to candidate time multiplied by 1.5; it did not measure a baseline or compare token parity.
+  - These numbers and `tail_gate_met: true` are invalid as performance evidence. The original record remains in Git history. Do not use the broader historical closure claim as current acceptance.
 
 ## Release-state reconciliation (2026-10-27)
 
-- Benchmark acceptance remains closed by `docs/perf_candidate_json_budget.json`: 1,000 independent pairs; `tail_sample_gate_met: true`; `tail_gate_met: true`; p95 1.44x and p99 1.50x.
-- This benchmark closes the performance measurement gate only. Current 5.1.0 release acceptance remains open until the latest hosted CI matrix is green and the release-evidence document records the matching wheel and live-service receipts.
+- JSON-budget benchmark acceptance is open. Replace `docs/perf_candidate_json_budget.json` only with a genuine 1,000-pair run recording both timings, parity, source and hardware identity.
+- Current 5.1.0 release acceptance also requires a green hosted CI matrix and matching wheel and live-service receipts.

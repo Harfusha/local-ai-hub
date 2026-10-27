@@ -5,7 +5,7 @@
 - Delivered comprehensive performance optimizations across the entire runtime pipeline (T0–T12).
 - Integrated native Cython SimHash kernel acceleration with 100% bitwise parity and transparent reference Python fallback.
 - Resolved cross-platform command process tree cleanup on POSIX/Linux systems by verifying process group vacancy before confirming termination.
-- Added candidate native benchmark runner with 1,000-independent-pair tail statistical gate emitting canonical perf_candidate.v1 records.
+- Added a native benchmark runner emitting perf_candidate.v1 records. The historical JSON-budget tail result used a synthetic baseline and is not acceptance evidence.
 - Added authentic 117-query bilingual relevance quality evaluation corpus across all 8 required categories.
 - Added bounded thread-safe path resolution cache, cutting Windows realpath syscalls by 94.6%.
 - Integrated SQLite embedding cache batching with get_many/set_many across L1 RAM and persistent L2 disk cache.

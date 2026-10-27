@@ -45,7 +45,7 @@ All optional extras can be installed with `pip install -e ".[local-nlp,intel-acc
 
 The isolated Cython candidate can be measured with `python tools/cython_experiment.py`. Native SimHash acceleration is integrated in `src/local_ai_hub/native_kernels.py` and optional extra `[native]`. When available and enabled on Windows, it accelerates SimHash deduplication with 100% bitwise parity and seamless Python fallback.
 
-T0 candidate benchmarking and 1,000-independent-pair tail statistical acceptance are executed via `tools/benchmark_native_candidates.py` emitting `perf_candidate.v1`. The 117-query relevance quality corpus is tested in `tests/test_relevance_quality_corpus.py`. Profiling evidence for F17/F18/F19/F22 is captured via `tools/profile_evidence_collector.py` and stored in `docs/evidence/performance_profile_evidence_f17_f18_f19_f22.json`.
+T0 candidate benchmarking uses `tools/benchmark_native_candidates.py` and emits `perf_candidate.v1`. Tail acceptance requires at least 1,000 independently measured pairs, parity, a clean identified source, and p95 and p99 gates; synthetic diagnostic baselines cannot pass it. The 117-query relevance quality corpus is tested in `tests/test_relevance_quality_corpus.py`. Profiling evidence for F17/F18/F19/F22 is captured via `tools/profile_evidence_collector.py` and stored in `docs/evidence/performance_profile_evidence_f17_f18_f19_f22.json`.
 
 CI runs CPython 3.11–3.14 on Windows, macOS and Linux. A release is packaged only after tests and self-test pass from a clean export; the final ZIP should then be extracted and tested again. Physical GPU/driver permutations cannot be executed in one CI host, so hardware detection/profile behavior is simulated in deterministic tests and platform matrix jobs.
 

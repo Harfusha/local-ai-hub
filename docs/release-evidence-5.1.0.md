@@ -10,6 +10,7 @@
 - Clean `git archive` snapshot: `python tools/release_check.py --strict-tree` passed. The checkout retains its existing ignored `build/` and `dist/`.
 - Wheel built from the source revision above: SHA256 `1be43ab48fcf40a2d98695d7019a5b735a26cd9319cb6d088bbdabe8a277b1e1`. Isolated-venv `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, and five MCP tools. The wheel is retained under `%TEMP%/lah-release-f14c726ef5c04476b213966b02d324e5/wheel/`.
 - [CI run #178](https://github.com/Harfusha/local-ai-hub/actions/runs/40479922045) failed the Ubuntu 3.14 full suite; twelve other matrix and coverage jobs passed. Its annotations identify generated-policy/status expectations, Serena fixture timing, command cleanup and async child cleanup. Subsequent fixes require a fresh run and wheel.
+- Historical `docs/perf_candidate_json_budget.json` is not benchmark acceptance evidence: its recorded source `01a72dec90252019060fb40a08a8c4a10f520228` calculated the baseline from candidate time instead of measuring it. Fresh independent paired measurements are required.
 - Runtime restart, current dashboard screenshot, Agent OS completion, and preserved-data comparison are not yet established for this candidate.
 
 ## Historical verification receipts
