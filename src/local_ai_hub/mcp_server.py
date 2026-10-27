@@ -759,7 +759,7 @@ _COORD_PROTECTED_KEYS = (
     "tasks", "task", "records", "matches", "items", "negative_knowledge",
     "receipts", "missing_criteria", "unverified_criteria", "total_count",
     "active_count", "offset", "limit", "has_more", "next_offset",
-    "board", "columns", "summary",
+    "board", "columns", "summary", "checkpoint_sync",
 )
 _REPO_PROTECTED_KEYS = (
     "symbols", "files", "results", "evidence", "findings", "issues", "diff",
@@ -1390,6 +1390,9 @@ def _compact(
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if task_kind == "coord" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+        if "checkpoint_sync" in raw_value:
+            compacted["checkpoint_sync"] = raw_value["checkpoint_sync"]
     if isinstance(raw_value, dict) and isinstance(compacted, dict):
         compacted.update({
             key: raw_value[key] for key in ("request_id", "context_id") if key in raw_value
@@ -1426,6 +1429,9 @@ def _compact(
                 compacted["unchanged"] = True
             elif not repeated:
                 compacted = delta_response(previous, compacted, result_id=result_id(compacted))
+        if task_kind == "coord" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+            if "checkpoint_sync" in raw_value:
+                compacted["checkpoint_sync"] = raw_value["checkpoint_sync"]
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
             *(_COORD_PROTECTED_KEYS if task_kind in {"task_memory", "coord", "verify"} else ()),
@@ -4580,7 +4586,7 @@ def local_ai_coord(
             return contract_error(error, status_code=400)
         metadata = operation_contract("local_ai_coord")["actions"][action]
         arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
-        return _compact(CLIENT.coord(action=action, **arguments), "status")
+        return _compact(CLIENT.coord(action=action, **arguments), "coord" if action == "plan_bind_task" else "status")
     if changed_paths is not None and not paths:
         paths = changed_paths
     if (path or file) and not paths:

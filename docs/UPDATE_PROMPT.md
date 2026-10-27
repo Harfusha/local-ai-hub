@@ -1,6 +1,6 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
-If a task checkpoint persisted but its plan sync failed, do not repeat the task mutation. Resolve the error, reread the plan revision, and rebind the same task and session with `plan_bind_task` to reconcile the durable checkpoint.
+If a task checkpoint persisted but its plan sync failed, do not repeat the task mutation. Resolve the error, reread the plan revision, and rebind the same task and session with `plan_bind_task`. `checkpoint_sync="reconciled"` confirms the pending projection was applied; `not_pending` does not prove the task and plan agree. Preserve conflicting plan edits.
 
 Normal setup checks Superpowers when Codex or Gemini CLI is on PATH and agent configuration and companion skills are enabled. Codex reuses an enabled compatible plugin, or attempts installation only when the supported marketplace version is available, then verifies the result. Gemini reuses compatible extension files or installs the pinned ref through its native manager and verifies the files; enablement is not verified. A changed version, incompatible existing package, unsupported CLI, or indeterminate installation requires review; do not overwrite or retry an indeterminate installation. A missing host CLI is reported as not checked. `--generate-only` and skipped agent configuration do not install it. Plugin installation or enablement does not prove hook execution.
 

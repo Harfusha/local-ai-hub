@@ -24,7 +24,7 @@ from .models import (
     TaskWorkPhase,
     TaskWorkStatus,
 )
-from .schema_validation import RepoPlanNotFoundError, validate_repo_path
+from .schema_validation import RepoPlanConflictError, RepoPlanNotFoundError, validate_repo_path
 from .storage import RepoPlanStorage, compute_file_sha256, get_git_context
 
 logger = logging.getLogger(__name__)
@@ -290,8 +290,12 @@ def bind_plan_execution(
         task_store=task_store,
     )
     try:
-        task_store._sync_project_plan_checkpoint(execution)
+        sync_state = task_store._sync_project_plan_checkpoint(execution, only_if_pending=existing_task is not None)
         current_revision = workspace.get_plan(plan_id)["file_revision"]
+    except RepoPlanConflictError as exc:
+        raise RepoPlanConflictError(
+            "Plan binding was persisted; checkpoint sync conflict preserved newer plan edits"
+        ) from exc
     except Exception as exc:
         raise RuntimeError(
             "Plan binding was persisted, but checkpoint synchronization failed; "
@@ -300,7 +304,7 @@ def bind_plan_execution(
     return {"success": True, "root": canonical, "task_id": task_id,
             "plan_id": plan_id, "plan_task_id": plan_task_id,
             "session_id": actual_session, "file_revision": current_revision,
-            "binding": binding.to_dict()}
+            "binding": binding.to_dict(), "checkpoint_sync": sync_state}
 
 
 def map_agent_status_to_plan_status(
@@ -343,9 +347,12 @@ def sync_checkpoint_to_plan(
     next_action: str = "",
     blocker: str | None = None,
     owner: str = "agent",
+    expected_plan_revision: str | None = None,
 ) -> dict[str, Any]:
     """Update bound repo plan file task from an Agent OS checkpoint."""
     plan_dict, current_rev = storage.read_plan_file(binding.plan_rel_path)
+    if expected_plan_revision is not None and expected_plan_revision != current_rev:
+        raise RepoPlanConflictError("plan changed before checkpoint synchronization")
     tasks = plan_dict.get("tasks", {})
     if binding.plan_task_id not in tasks:
         raise RepoPlanNotFoundError(

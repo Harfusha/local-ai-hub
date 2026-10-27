@@ -15,6 +15,7 @@ from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.repo_plan import agent_bridge
 from local_ai_hub.repo_plan.storage import RepoPlanStorage
+from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
 
 
@@ -127,12 +128,15 @@ def test_checkpoint_clearing_blockers_clears_plan_blocker(environment):
     assert plan["tasks"]["task_work"]["blocker"] is None
 
 
-def test_rebinding_repairs_a_missed_checkpoint_sync(environment):
+def test_rebinding_repairs_a_missed_checkpoint_sync(environment, monkeypatch):
     root, tasks, _, _, storage, _, binding, _ = environment
-    tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="continue work"), actor="agent_a")
-    plan, revision = storage.read_plan_file(binding.plan_rel_path)
-    plan["tasks"]["task_work"]["next_action"] = "stale action"
-    stale_revision = storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)["file_revision"]
+    real_sync = agent_bridge.sync_checkpoint_to_plan
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", lambda **kwargs: (_ for _ in ()).throw(OSError("failed")))
+    with pytest.raises(RuntimeError, match="persisted"):
+        tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="continue work"), actor="agent_a")
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
+    tasks = TaskStore(AgentStateStore(tasks.state_store.db_path))
+    stale_revision = storage.read_plan_file(binding.plan_rel_path)[1]
     result = agent_bridge.bind_plan_execution(
         tasks, root=str(root), task_id="execution_a", plan_id="plan_work", plan_task_id="task_work",
         expected_revision=stale_revision, session_id="session_a",
@@ -140,42 +144,107 @@ def test_rebinding_repairs_a_missed_checkpoint_sync(environment):
     repaired, current_revision = storage.read_plan_file(binding.plan_rel_path)
     assert repaired["tasks"]["task_work"]["next_action"] == "continue work"
     assert result["file_revision"] == current_revision
+    assert result["checkpoint_sync"] == "reconciled"
+
+
+def test_rebinding_preserves_newer_operator_plan_edit(environment):
+    root, tasks, _, _, storage, _, binding, _ = environment
+    agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a", plan_id="plan_work",
+                                     plan_task_id="task_work", session_id="session_a")
+    tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="agent action"), actor="agent_a")
+    plan, revision = storage.read_plan_file(binding.plan_rel_path)
+    plan["tasks"]["task_work"]["next_action"] = "new operator clarification"
+    revision = storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)["file_revision"]
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a", plan_id="plan_work",
+                                             plan_task_id="task_work", expected_revision=revision, session_id="session_a")
+    assert result["success"]
+    assert result["checkpoint_sync"] == "not_pending"
+    assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "new operator clarification"
 
 
 def test_binding_sync_failure_is_explicit_and_rebinding_recovers(environment, monkeypatch):
-    root, tasks, _, _, storage, manager, binding, _ = environment
-    real_sync = tasks._sync_project_plan_checkpoint
+    root, tasks, _, _, storage, _, binding, _ = environment
+    ws = RepoPlanWorkspace(root)
+    ws.edit_task("plan_work", "task_other", title="Other", acceptance_criteria=["tests pass"])
+    tasks.create(GoalContract(goal="Other", acceptance_criteria=["tests pass"]),
+                 context=ScopeContext(repository_id=str(root), session_id="session_b"),
+                 actor="agent_b", repo_root=str(root), task_id="execution_b")
+    real_sync = agent_bridge.sync_checkpoint_to_plan
 
-    def fail(_state):
+    def fail(**_kwargs):
         raise OSError("simulated plan write failure")
 
-    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", fail)
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", fail)
     with pytest.raises(RuntimeError, match="binding was persisted.*synchronization failed"):
-        agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a",
-                                         plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
-    assert manager.get_binding("execution_a").task_id == "execution_a"
-    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", real_sync)
-    result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a",
-                                             plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
+        agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_b",
+                                         plan_id="plan_work", plan_task_id="task_other", session_id="session_b")
+    assert agent_bridge.TaskBindingManager(root).get_binding("execution_b").task_id == "execution_b"
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_b",
+                                             plan_id="plan_work", plan_task_id="task_other", session_id="session_b")
     assert result["success"] and result["file_revision"] == storage.read_plan_file(binding.plan_rel_path)[1]
 
 
 def test_persisted_checkpoint_sync_failure_can_recover_without_repeating_update(environment, monkeypatch):
     root, tasks, _, _, storage, _, binding, _ = environment
-    real_sync = tasks._sync_project_plan_checkpoint
+    real_sync = agent_bridge.sync_checkpoint_to_plan
 
-    def fail(_state):
+    def fail(**_kwargs):
         raise OSError("simulated plan write failure")
 
-    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", fail)
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", fail)
     with pytest.raises(RuntimeError, match="persisted.*plan_bind_task"):
         tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="persisted action"), actor="agent_a")
     assert tasks.get("execution_a").checkpoint.next_action == "persisted action"
-    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", real_sync)
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
     result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a",
                                              plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
     assert result["success"]
     assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "persisted action"
+
+
+def test_recovery_refuses_to_overwrite_operator_edit_after_sync_failure(environment, monkeypatch):
+    root, tasks, _, _, storage, _, binding, _ = environment
+    real_sync = agent_bridge.sync_checkpoint_to_plan
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", lambda **kwargs: (_ for _ in ()).throw(OSError("failed")))
+    with pytest.raises(RuntimeError, match="persisted"):
+        tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="agent action"), actor="agent_a")
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
+    plan, revision = storage.read_plan_file(binding.plan_rel_path)
+    plan["tasks"]["task_work"]["next_action"] = "new operator clarification"
+    storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)
+    with pytest.raises(RepoPlanConflictError, match="conflict preserved newer plan edits") as error:
+        agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a", plan_id="plan_work",
+                                         plan_task_id="task_work", session_id="session_a")
+    assert "plan changed" in str(error.value.__cause__)
+    assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "new operator clarification"
+    from types import SimpleNamespace
+    from local_ai_hub.http_post_repository_analysis import handle_post_plan
+    responses = []
+    handler = SimpleNamespace(_send=lambda code, body: responses.append((code, body)))
+    services = SimpleNamespace(plan_bind_task=lambda **kwargs: agent_bridge.bind_plan_execution(tasks, **kwargs))
+    assert handle_post_plan(handler, {"root": str(root), "task_id": "execution_a", "plan_id": "plan_work",
+                                     "plan_task_id": "task_work", "session_id": "session_a"},
+                            "/api/coord/plan_bind_task", SimpleNamespace(services=services))
+    assert responses[0][0] == 409 and "conflict" in responses[0][1]["error"]
+
+
+def test_recovery_allows_unrelated_plan_edits(environment, monkeypatch):
+    root, tasks, _, _, storage, _, binding, _ = environment
+    real_sync = agent_bridge.sync_checkpoint_to_plan
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", lambda **kwargs: (_ for _ in ()).throw(OSError("failed")))
+    with pytest.raises(RuntimeError, match="persisted"):
+        tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="continue"), actor="agent_a")
+    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
+    plan, revision = storage.read_plan_file(binding.plan_rel_path)
+    plan["description"] = "An unrelated operator edit"
+    storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root), task_id="execution_a", plan_id="plan_work",
+                                             plan_task_id="task_work", session_id="session_a")
+    plan, _ = storage.read_plan_file(binding.plan_rel_path)
+    assert result["checkpoint_sync"] == "reconciled"
+    assert plan["description"] == "An unrelated operator edit"
+    assert plan["tasks"]["task_work"]["next_action"] == "continue"
 
 
 def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment, monkeypatch):

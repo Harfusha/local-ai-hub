@@ -14,6 +14,64 @@ import mcp.types as t
 from local_ai_hub.token_accounting import json_tokens
 
 
+def test_plan_binding_recovery_state_survives_small_response_budget():
+    token = local_ai_mcp._CURRENT_RESPONSE_OPTIONS.set({
+        "max_response_tokens": 128, "response_profile": "minimal", "action": "plan_bind_task",
+    })
+    try:
+        response = local_ai_mcp._compact({
+            "success": True, "root": "C:/repo", "task_id": "t", "plan_id": "p",
+            "plan_task_id": "x", "checkpoint_sync": "not_pending",
+            "binding": {"session_id": "s" * 200, "lineage": ["x" * 80] * 30},
+        }, "coord")
+    finally:
+        local_ai_mcp._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert response.get("success") is False or response.get("checkpoint_sync") == "not_pending"
+
+
+def test_plan_binding_recovery_state_survives_mcp_action(monkeypatch):
+    from types import SimpleNamespace
+
+    result = {"success": True, "root": "C:/repo", "task_id": "t", "plan_id": "p",
+              "plan_task_id": "x", "checkpoint_sync": "not_pending",
+              "binding": {"session_id": "s" * 200, "lineage": ["x" * 80] * 30}}
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "coord", True)
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", SimpleNamespace(coord=lambda **kwargs: result))
+    response = local_ai_mcp.local_ai_coord(action="plan_bind_task", root="C:/repo", task_id="t",
+                                          plan_id="p", plan_task_id="x", max_response_tokens=128,
+                                          response_profile="minimal")
+    assert response.get("success") is False or response.get("checkpoint_sync") == "not_pending"
+
+
+def test_plan_binding_recovery_state_survives_mcp_wire(monkeypatch):
+    from types import SimpleNamespace
+
+    result = {"success": True, "root": "C:/repo", "task_id": "t", "plan_id": "p",
+              "plan_task_id": "x", "checkpoint_sync": "not_pending",
+              "binding": {"session_id": "s" * 200, "lineage": ["x" * 80] * 30}}
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "coord", True)
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", SimpleNamespace(coord=lambda **kwargs: result))
+    raw = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "plan_bind_task", "root": "C:/repo", "task_id": "t", "plan_id": "p",
+        "plan_task_id": "x", "max_response_tokens": 128, "response_profile": "minimal",
+    }))
+    content = raw[0][0] if isinstance(raw, tuple) else raw[0]
+    response = json.loads(content.text)
+    assert response.get("success") is False or response.get("checkpoint_sync") == "not_pending"
+
+
+def test_plan_binding_recovery_state_remains_visible_in_delta(monkeypatch):
+    monkeypatch.setattr(local_ai_mcp, "_reuse_state", lambda *_args: (False, {"success": True, "checkpoint_sync": "reconciled"}))
+    token = local_ai_mcp._CURRENT_RESPONSE_OPTIONS.set({
+        "max_response_tokens": 128, "response_profile": "delta", "reuse_key": "binding", "action": "plan_bind_task",
+    })
+    try:
+        response = local_ai_mcp._compact({"success": True, "checkpoint_sync": "not_pending"}, "coord")
+    finally:
+        local_ai_mcp._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert response.get("success") is False or response.get("checkpoint_sync") == "not_pending"
+
+
 def _assert_json_schema(value, schema: dict[str, object]) -> None:
     if "const" in schema:
         assert value == schema["const"]

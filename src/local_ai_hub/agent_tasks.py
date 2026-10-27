@@ -3866,31 +3866,77 @@ class TaskStore:
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
 
-    def _sync_project_plan_checkpoint(self, state: TaskState) -> None:
+    def _sync_project_plan_checkpoint(self, state: TaskState, *, only_if_pending: bool = False) -> str:
         """Serialize projection writes and project the latest persisted checkpoint."""
         import hashlib
         from .file_locks import exclusive_file_update
 
         root = _task_scope_root(state)
         if not root:
-            return
-        stripe = int(hashlib.sha256(state.task_id.encode("utf-8")).hexdigest()[:8], 16) % 64
+            return "not_bound"
+        task_digest = hashlib.sha256(state.task_id.encode("utf-8")).hexdigest()
+        stripe = int(task_digest[:8], 16) % 64
         db_path = Path(self.state_store.db_path)
         lock_target = db_path.parent / f".{db_path.name}.plan-sync-{stripe}"
+        pending = db_path.parent / f".{db_path.name}.plan-sync-pending-{task_digest}.json"
         with exclusive_file_update(lock_target):
+            if pending.is_symlink() or getattr(pending, "is_junction", lambda: False)():
+                raise ValueError("checkpoint recovery record is a link")
+            if only_if_pending and not pending.exists():
+                return "not_pending"
             latest = self.get(state.task_id)
             if latest is None or _task_scope_root(latest) != root:
                 raise RuntimeError("persisted task or repository scope changed during plan sync")
             from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager, sync_checkpoint_to_plan
+            from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
             from local_ai_hub.repo_plan.storage import RepoPlanStorage
             binding = TaskBindingManager(root).get_binding(latest.task_id)
+            if binding is None and pending.exists():
+                raise ValueError("checkpoint recovery record has no matching plan binding")
             if binding:
-                sync_checkpoint_to_plan(
-                    storage=RepoPlanStorage(root), binding=binding, agent_status=latest.status.value,
-                    phase=latest.checkpoint.phase, next_action=latest.checkpoint.next_action,
-                    blocker=latest.checkpoint.blockers[0] if latest.checkpoint.blockers else "",
-                    owner=latest.owner or "agent",
-                )
+                storage = RepoPlanStorage(root)
+                before = None
+                try:
+                    plan, revision = storage.read_plan_file(binding.plan_rel_path)
+                    task = plan.get("tasks", {}).get(binding.plan_task_id)
+                    if not isinstance(task, dict):
+                        raise ValueError("bound plan task is unavailable")
+                    fields = ("work_status", "work_phase", "next_action", "blocker")
+                    before = {field: task.get(field) for field in fields}
+                    if pending.exists():
+                        if pending.stat().st_size > 65536:
+                            raise ValueError("checkpoint recovery record is too large")
+                        record = json.loads(pending.read_text(encoding="utf-8"))
+                        if (not isinstance(record, dict) or record.get("task_id") != latest.task_id
+                                or record.get("root") != root or record.get("plan_id") != binding.plan_id
+                                or record.get("plan_task_id") != binding.plan_task_id):
+                            raise ValueError("checkpoint recovery record identity is invalid")
+                        if record.get("before") != before:
+                            raise RepoPlanConflictError("plan changed since failed checkpoint sync; reconcile the conflict")
+                    sync_checkpoint_to_plan(
+                        storage=storage, binding=binding, agent_status=latest.status.value,
+                        phase=latest.checkpoint.phase, next_action=latest.checkpoint.next_action,
+                        blocker=latest.checkpoint.blockers[0] if latest.checkpoint.blockers else "",
+                        owner=latest.owner or "agent", expected_plan_revision=revision,
+                    )
+                except Exception:
+                    if not pending.exists():
+                        record = {"task_id": latest.task_id, "root": root, "plan_id": binding.plan_id,
+                                  "plan_task_id": binding.plan_task_id, "before": before}
+                        temporary = pending.with_name(f".{pending.name}.{uuid.uuid4().hex}.tmp")
+                        try:
+                            with temporary.open("x", encoding="utf-8") as stream:
+                                json.dump(record, stream, sort_keys=True)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                            os.replace(temporary, pending)
+                        finally:
+                            temporary.unlink(missing_ok=True)
+                    raise
+                if pending.exists():
+                    pending.unlink()
+                return "reconciled"
+            return "not_bound"
 
     def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
         """Atomically create initial projection, sequence cursor, and task event."""
