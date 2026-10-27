@@ -54,3 +54,50 @@ def test_reaped_leader_only_confirms_cleanup_when_group_is_empty(monkeypatch, de
     assert state["wait_lock_held"]
     assert handle.returncode == -15
     assert state["signals"] == [15, 0]
+
+
+@pytest.mark.parametrize("observed_start, owned", [("123", True), ("different", False)])
+def test_linux_zombie_leader_keeps_owned_identity_until_reaped(monkeypatch, observed_start, owned):
+    pid = 4242
+    identity = {"pid": pid, "creation_identity": "123", "creation_identity_type": "linux_proc_starttime_ticks"}
+    state = {"zombie": False, "reaped": False, "clock": 0.0}
+
+    class Handle:
+        returncode = None
+        _waitpid_lock = Lock()
+
+        def _handle_exitstatus(self, _status):
+            self.returncode = -15
+
+    handle = Handle()
+    handle.pid = pid
+
+    def killpg(_group, sig):
+        if sig == 15:
+            state["zombie"] = True
+        elif sig == 0 and state["reaped"]:
+            raise ProcessLookupError()
+
+    def waitpid(_pid, _flags):
+        assert handle._waitpid_lock.locked()
+        state["reaped"] = True
+        return pid, 15
+
+    def monotonic():
+        state["clock"] += 1
+        return state["clock"]
+
+    fake_os = SimpleNamespace(name="posix", getpgid=lambda _pid: pid, killpg=killpg,
+        waitpid=waitpid, WNOHANG=1, waitid=lambda *_args: SimpleNamespace(si_pid=pid),
+        P_PID=1, WEXITED=2, WNOWAIT=4)
+    monkeypatch.setattr(process_utils, "os", fake_os)
+    monkeypatch.setattr(process_utils, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(process_utils, "time", SimpleNamespace(monotonic=monotonic, sleep=lambda _: None))
+    monkeypatch.setattr(process_utils, "signal", SimpleNamespace(SIGTERM=15, SIGKILL=9))
+    monkeypatch.setattr(process_utils, "process_identity", lambda _pid: None if state["zombie"] else identity)
+    monkeypatch.setattr(process_utils, "_linux_process_starttime", lambda _pid: observed_start)
+
+    assert process_utils.terminate_tree(pid, process_group=pid, expected_identity=identity,
+                                        process_handle=handle, grace_seconds=0.5) is owned
+    assert state["reaped"] is owned
+    assert handle.returncode == (-15 if owned else None)

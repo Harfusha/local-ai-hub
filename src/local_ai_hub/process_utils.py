@@ -978,10 +978,24 @@ def _terminate_tree_unlocked(
 
     def leader_still_owned() -> bool:
         try:
-            return (
-                process_identity(pid) == expected_identity
-                and os.getpgid(pid) == group_id
-            )
+            current = process_identity(pid)
+            if current == expected_identity:
+                return os.getpgid(pid) == group_id
+            # Linux removes /proc/<pid>/exe as soon as a child becomes a
+            # zombie. A retained, unreaped Popen under its wait lock still
+            # pins the PID; WNOWAIT and the original start time prove that
+            # this is that exited child without consuming its wait status.
+            lock = getattr(process_handle, "_waitpid_lock", None)
+            if (sys.platform != "linux" or current is not None or
+                    getattr(process_handle, "pid", None) != pid or
+                    getattr(process_handle, "returncode", None) is not None or
+                    lock is None or not lock.locked() or
+                    expected_identity.get("creation_identity_type") != "linux_proc_starttime_ticks"):
+                return False
+            info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            return (info is not None and info.si_pid == pid and
+                    _linux_process_starttime(pid) == expected_identity["creation_identity"] and
+                    os.getpgid(pid) == group_id)
         except (AttributeError, OSError, TypeError, ValueError):
             return False
 
