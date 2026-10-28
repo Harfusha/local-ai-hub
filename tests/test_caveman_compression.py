@@ -225,6 +225,9 @@ def test_local_prompt_compaction_is_defaultable_and_preserves_structured_payload
     assert prompt == "Summarize this.\n\nMore context."
     assert "Caveman style" in system
     assert "uncertainty" in system
+    assert "answer directly" in system
+    assert "prefer fragments over prose" in system
+    assert "generic caveats" in system
     code = "```python\nx = 1\n\n\ny = 2\n```"
     assert compact_local_prompt(code, "system", input_enabled=True, output_enabled=True, structured=False)[0] == code
     assert compact_local_prompt(text, "system", input_enabled=True, output_enabled=True, structured=True) == (text, "system")

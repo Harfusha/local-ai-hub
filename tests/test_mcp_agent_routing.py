@@ -63,7 +63,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
         "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
         "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
         "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task",
-        "plan_reconcile_steering", "task_claim", "record_native_receipt",
+        "plan_reconcile_steering", "task_claim", "task_repair_session", "record_native_receipt",
     })
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
         expected["local_ai_task"].discard("vision")

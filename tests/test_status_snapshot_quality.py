@@ -297,6 +297,7 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
 
     assert elapsed < 0.10
     assert result["success"] is False
+    assert result["degraded"] is True
     assert result["ollama_online"] is False
     assert result["ollama_status"] == "unknown"
     assert result["scheduler"] == {"state": "ready"}
@@ -558,18 +559,21 @@ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
     app.services.semantic_cache.responses["stats"] = slow
     app.commands.responses["stats"] = slow
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(app_module, "_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS", 0.02)
 
     started = time.monotonic()
     result = app.status()
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.10
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["degraded"] is False
     assert result["observability"] == {}
     assert result["model_execution"] == {}
     assert result["background_gpu"] == {}
     assert result["scheduler"] == {"state": "ready"}
-    assert result["dependency_status"]["reranker"]["degraded"] is False
+    assert result["dependency_status"]["reranker"]["deadline_ms"] == 20
+    assert result["dependency_status"]["accelerators"]["degraded"] is True
 
 
 def test_slow_accelerator_probe_degrades_within_deadline_and_keeps_shape(monkeypatch):
@@ -586,9 +590,11 @@ def test_slow_accelerator_probe_degrades_within_deadline_and_keeps_shape(monkeyp
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.10
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["degraded"] is False
     assert result["accelerators"] == app_module._accelerator_status_fallback(app.config)
     assert set(result["accelerators"]) == {"openvino", "embedding", "reranker"}
+    assert result["dependency_status"]["accelerators"]["degraded"] is True
 
 
 @pytest.mark.parametrize("slow_probe", ("is_online", "managed_profile_status"))
@@ -634,8 +640,10 @@ def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.10, {"elapsed": elapsed, "dependency_status": result.get("dependency_status")}
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["degraded"] is False
     assert result["agent_state"] == {"enabled": False}
+    assert result["dependency_status"]["agent_state"]["degraded"] is True
 
 
 def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):

@@ -7,22 +7,16 @@
   "spec_refs": [],
   "tasks": {
     "task_caveman_cli": {
-      "acceptance_criteria": [
-        "Every changed instruction file has byte-identical verified backup and reversible restore path",
-        "Meaning checks reject omissions and protect code, commands, URLs, headings, and policy requirements; only reviewed candidates apply",
-        "Input and generated-output compression works for local models without changing structured/code payloads",
-        "Paired baseline and candidate measurements show latency, tokens, and semantic results separately, with no claim on regressions",
-        "Existing Agent OS task retains ID and gets canonical session binding after safe Hub activation; no direct task-store editing",
-        "Focused tests and exact integrated source validation pass; plan task and durable receipts match"
-      ],
+      "acceptance_criteria": [],
       "accountable_role": "Codex",
-      "blocker": "58/58 backups hash-match; no file candidate passed upstream validation. Input compaction currently normalizes whitespace only; paired inference speed/savings unproven. Live local_ai_coord lacks task_repair_session, so binding remains empty. Shared release chat active.",
+      "blocker": "No reviewed compression candidate; instruction sources unchanged.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Implement backup-first Caveman compression for discovered agent instructions and supported MCP/skill prompts, validate meaning before apply, compress local model inputs and outputs, measure paired latency/token savings, then activate safe existing task session repair and rebind the existing task.",
+      "description": "Implement backup-first Caveman compression for discovered agent instructions and supported MCP/skill prompts; validate meaning before apply; compress local model inputs and outputs; measure paired latency/token savings; repair and rebind the existing task. Acceptance gates preserved here because the existing Agent OS contract has an empty acceptance_criteria list: (1) every changed instruction has a byte-identical verified backup and reversible restore; (2) meaning checks protect omissions, code, commands, URLs, headings, and policy requirements; (3) local input/output compression leaves structured/code payloads unchanged; (4) paired baseline/candidate measurements separate latency, tokens, and semantic results, with no regression claim; (5) existing task ID retained and canonical session binding verified, without direct task-store edits; (6) focused tests and integrated source validation pass, with plan and receipts aligned.",
       "kind": "code",
-      "next_action": "Retain 58 verified backups; select a local compressor that yields reviewable candidates; measure paired inference latency/tokens; activate task_repair_session, then bind this existing task to session 01a17efe-13ba-7473-95aa-25137873da2f. Do not apply unreviewed files or restart Hub while release owner active.",
+      "next_action": "Merge current master into branch; run full validation; continue compression only for smaller candidates passing independent semantic review.",
       "title": "Complete Caveman compression and repair task binding",
+      "work_phase": "verification",
       "work_status": "in_progress"
     }
   },

@@ -50,7 +50,11 @@ def compact_local_prompt(
         prompt = re.sub(r"\n{3,}", "\n\n", prompt)
         prompt = re.sub(r" {2,}", " ", prompt)
     if output_enabled is True:
-        system = system.rstrip() + "\nAnswer in concise Caveman style. Preserve every relevant fact, requirement, constraint, exception, uncertainty, and requested structure. Never omit technical detail."
+        system = system.rstrip() + (
+            "\nCaveman style: answer directly; prefer fragments over prose. Omit filler, repetition and generic caveats. "
+            "Preserve every relevant fact, technical detail, requirement, constraint, exception, uncertainty and requested structure. "
+            "Never invent details."
+        )
     return prompt, system
 
 
@@ -188,7 +192,9 @@ def backup_instruction(source: Path, stage_root: Path) -> StagedInstruction:
     if backup_sha256 != original_sha256:
         raise OSError("backup verification failed")
     manifest = {"source": str(source), "original_sha256": original_sha256, "backup_sha256": backup_sha256}
-    (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    (folder / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, separators=(",", ": ")), encoding="utf-8"
+    )
     return StagedInstruction(
         source=source, backup=backup, candidate=None, original_sha256=original_sha256,
         backup_sha256=backup_sha256, candidate_sha256=None, semantic_review=None,
@@ -245,7 +251,7 @@ def compress_backed_up_instruction(
         "original_sha256": result.original_sha256,
         "backup_sha256": result.backup_sha256, "candidate_sha256": result.candidate_sha256,
         "semantic_review": review,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    }, ensure_ascii=False, indent=2, separators=(",", ": ")), encoding="utf-8")
     return result
 
 
@@ -353,7 +359,12 @@ def review_instruction_semantics(original: str, candidate: str, *, model: str, e
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             raise HTTPError(req.full_url, code, "redirect refused for local model endpoint", headers, fp)
 
-    request = Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+    request = Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
         with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=180) as response:
             result = json.loads(response.read(2_000_001))
