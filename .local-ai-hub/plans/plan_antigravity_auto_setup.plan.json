@@ -14,7 +14,7 @@
         "Upřesnění z chatu se promítne do globálního i projektového AGENTS.md: explicitní Local AI Hub, Superpowers a Caveman ultra; respektovat příkazy normal mode a stop caveman."
       ],
       "accountable_role": "Codex",
-      "blocker": "Antigravity desktop is not open or exposed among current app surfaces; actual skill loading and real Hub MCP use remain unverified. The requested Agent OS task task_f8d00ca6fd25 is bound to the now-unavailable source worktree root; Hub rejected reconciliation at the main root, so no root substitution or duplicate task was used.",
+      "blocker": "Antigravity UI shows baseline model quota reached until 2026-10-30 22:59:42; do not enable paid overages. Therefore real-agent instruction loading/Hub MCP behavior is unverified. Original task_f8d00ca6fd25 is not found by Hub (terminal 404) and its source worktree is absent; do not create duplicate or rebind to another root.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -33,9 +33,9 @@
         }
       ],
       "depends_on": [],
-      "description": "Automatic setup changes are integrated in master commit 3802e55e and pushed. Global and project AGENTS.md contain the explicit activation policy; required Gemini skills are present. Fresh focused tests on clean candidate: 46 passed. Live Antigravity behavior remains unverified because the desktop app is not exposed.",
+      "description": "Integrated in master at 3802e55e (ancestor of current HEAD). Global and project activation rules and required Gemini skill directories are present. Fresh targeted acceptance suite: 46 passed. Antigravity launched and opened .local-ai-hub, but model use is blocked by the visible baseline quota notice; neither instructions being loaded nor a real Hub MCP call was demonstrated.",
       "kind": "code",
-      "next_action": "If the original task root is recovered, reconcile the persisted steering there without creating a duplicate. Separately open Antigravity and verify global policy loading, Superpowers and Caveman ultra use, normal mode and stop caveman handling, and a real Hub MCP call.",
+      "next_action": "After quota refresh, or with operator-authorized available model access, test a no-file/no-edit Antigravity prompt in the .local-ai-hub project: confirm global/project rules, Superpowers and Caveman ultra activation, normal mode/stop caveman behavior, and one real Hub MCP status call. Then update this existing plan/task with authentic evidence.",
       "title": "Automatic Antigravity setup",
       "work_phase": "verification",
       "work_status": "in_progress"
