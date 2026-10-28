@@ -1,0 +1,28 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Safely install and connect Hub, Superpowers and Caveman ultra; verify preservation and actual loading.",
+  "id": "plan_antigravity_auto_setup",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_antigravity_install": {
+      "acceptance_criteria": [
+        "Instalace a aktualizace zachovají uživatelské instrukce a existující skilly",
+        "Globální pravidla explicitně aktivují dostupné skilly a Hub",
+        "Testy ověří čistou instalaci a opakování"
+      ],
+      "accountable_role": "Codex",
+      "blocker": "The running Hub returned internal server error for stored plan_reconcile_steering; replay remains pending until updated code is safely active. Master contains unrelated dirty files, including raw-byte differences in file_locks.py.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Configure and verify installation and instruction activation",
+      "kind": "code",
+      "next_action": "Integrate the verified reconciliation and installer changes into master while preserving its dirty work; then apply the pinned Superpowers install and AGENTS rules, activate the updated Hub safely, replay the existing steering, and verify Antigravity behavior.",
+      "title": "Automatic Antigravity setup",
+      "work_phase": "integration",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Antigravity automatic setup"
+}

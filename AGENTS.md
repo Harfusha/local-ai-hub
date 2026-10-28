@@ -1,3 +1,10 @@
+<!-- BEGIN LOCAL AI HUB ANTIGRAVITY SKILLS -->
+## Antigravity automatic skill activation
+
+At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
+If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.
+<!-- END LOCAL AI HUB ANTIGRAVITY SKILLS -->
+
 # Local AI Hub — contributor and agent guide
 
 ## Simplified development and integration process

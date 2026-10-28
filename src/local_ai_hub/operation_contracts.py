@@ -352,7 +352,7 @@ _ACTION_SCOPED_FIELDS = {
         "next_action": frozenset({"task_checkpoint", "task_update"}),
         "blockers": frozenset({"task_checkpoint", "task_update"}),
         "evidence_ids": frozenset({"task_checkpoint", "task_update"}),
-        "summary": frozenset({"task_complete", "task_fail", "record_native_receipt"}),
+        "summary": frozenset({"task_complete", "task_fail", "record_native_receipt", "plan_reconcile_steering"}),
         "result": frozenset({"task_complete", "task_fail", "record_native_receipt"}),
         "timeout_seconds": frozenset({"wait_for_event", "semaphore_acquire"}),
         "id": frozenset({"task_get", "task_resume", "task_cleanup_worktree", "task_zombie_reap", "board_item_get", "board_item_delete", "board_item_update"}),

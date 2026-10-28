@@ -339,7 +339,7 @@ class RepoPlanStorage:
         self._ensure_intents_dir()
         # One physical-worktree lock covers revision checks, request keys, both targets,
         # and recovery. A custom intents directory must not create another lock domain.
-        with exclusive_file_update(self._lock_path):
+        with exclusive_file_update(self._lock_path, reentrant=True):
             context = self._context()
             self._check_fence(context, lease_check_fn)
             fingerprint = {"operation": operation, "owner": owner, "context": context,

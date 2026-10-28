@@ -1,0 +1,5 @@
+# Antigravity automatic activation
+
+Antigravity setup must install or preserve the Local AI Hub, Superpowers and Caveman skills and provide explicit always-active instructions to use them. Install pinned Superpowers into the standard `~/.gemini/skills/` directory. Install the short activation block at the start of global `~/.gemini/AGENTS.md` and the current project's `AGENTS.md`; keep existing user instructions intact outside the managed block. Preserve `~/.gemini/GEMINI.md` except for its existing managed policies. Antigravity discovers both rule files, and its per-file rule limit means a block appended to a long file cannot be relied upon.
+
+Superpowers and Caveman ultra must not be claimed active merely because files exist. Preserve existing unmanaged skills and instructions; reject a mismatched cached upstream archive and report network or integrity failures. Honor explicit setup opt-outs and the user's `normal mode` or `stop caveman` instruction. Verify clean and repeated setup, preservation of existing content, global rule discovery, and actual agent use separately. Repository tests, a visible skill listing, and live agent behavior are distinct evidence.

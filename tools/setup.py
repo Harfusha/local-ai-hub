@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import importlib.util
+import hashlib
+import io
 import json
 import os
 import re
@@ -10,7 +12,11 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable
 
 _skill_ownership_spec = importlib.util.spec_from_file_location(
@@ -227,6 +233,118 @@ COMPANION_SKILLS: list[str] = [
     "tool-orchestration",
     "ollama-quality-routing",
 ]
+
+SUPERPOWERS_COMMIT = "cfd50a286baea35041505ed068c878d389ca9f7f"
+SUPERPOWERS_ARCHIVE_SHA256 = "ef738adf14198b81739fea16ae37d0ee85bd67ceb47274f2dd691276df3b1656"
+ANTIGRAVITY_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB ANTIGRAVITY SKILLS -->"
+ANTIGRAVITY_POLICY_END = "<!-- END LOCAL AI HUB ANTIGRAVITY SKILLS -->"
+
+
+def download_superpowers_archive() -> bytes:
+    url = f"https://codeload.github.com/obra/superpowers/zip/{SUPERPOWERS_COMMIT}"
+    deadline = monotonic() + 30
+    payload = bytearray()
+    with urllib.request.urlopen(url, timeout=10) as response:
+        while True:
+            if monotonic() >= deadline:
+                raise TimeoutError("Superpowers archive download exceeded deadline")
+            chunk = response.read1(min(65536, 10_000_001 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > 10_000_000:
+                raise ValueError("Superpowers archive exceeds size limit")
+    return bytes(payload)
+
+
+def install_superpowers_skills(target: Path, manifest: Path | None = None) -> None:
+    """Install pinned Superpowers skills without replacing existing skill folders."""
+    payload = download_superpowers_archive()
+    if hashlib.sha256(payload).hexdigest() != SUPERPOWERS_ARCHIVE_SHA256:
+        raise ValueError("Superpowers archive checksum mismatch")
+    if manifest is None:
+        manifest = target.parent / ".local-ai-hub-superpowers" / ".local-ai-hub-skill-ownership.json"
+    source_root = manifest.parent
+    for component in (source_root, *source_root.parents):
+        if component.is_symlink() or getattr(component, "is_junction", lambda: False)():
+            raise ValueError("Superpowers source path contains a link")
+    source_root.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive, tempfile.TemporaryDirectory(prefix="hub-superpowers-", dir=source_root.parent) as temp:
+        candidate = Path(temp) / "source"
+        candidate.mkdir()
+        stage = candidate / "skills"
+        stage.mkdir()
+        skills: set[str] = set()
+        total = 0
+        entries = archive.infolist()
+        if len(entries) > 5000:
+            raise ValueError("Superpowers archive has too many entries")
+        for entry in entries:
+            parts = entry.filename.split("/")
+            if len(parts) < 4 or parts[1] != "skills" or entry.is_dir():
+                continue
+            relative = parts[2:]
+            if any(not p or p in {".", ".."} or "\\" in p or ":" in p for p in relative):
+                raise ValueError("Unsafe Superpowers archive path")
+            if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                raise ValueError("Superpowers archive contains a link")
+            total += entry.file_size
+            if total > 20_000_000:
+                raise ValueError("Superpowers skills exceed size limit")
+            destination = stage.joinpath(*relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(entry) as source, destination.open("xb") as output:
+                shutil.copyfileobj(source, output)
+            skills.add(relative[0])
+        if not (stage / "using-superpowers" / "SKILL.md").is_file():
+            raise ValueError("Superpowers bootstrap skill missing")
+        if source_root.is_symlink() or getattr(source_root, "is_junction", lambda: False)():
+            raise ValueError("Superpowers source root is a link")
+        if source_root.exists():
+            existing = source_root / "skills"
+            def inventory(directory: Path) -> dict[str, str]:
+                result = {}
+                total_bytes = 0
+                for count, path in enumerate(directory.rglob("*"), start=1):
+                    if count > 5000:
+                        raise ValueError("Superpowers source has too many files")
+                    if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                        raise ValueError("Superpowers source contains a link")
+                    if path.is_file():
+                        total_bytes += path.stat().st_size
+                        if total_bytes > 20_000_000:
+                            raise ValueError("Superpowers source exceeds size limit")
+                        with path.open("rb") as stream:
+                            result[path.relative_to(directory).as_posix()] = hashlib.file_digest(stream, "sha256").hexdigest()
+                return result
+            if not existing.is_dir() or inventory(existing) != inventory(stage):
+                raise ValueError("Existing Superpowers source differs from pinned archive; review required")
+        else:
+            candidate.rename(source_root)
+        stage = source_root / "skills"
+        for name in sorted(skills):
+            source = stage / name
+            if not (source / "SKILL.md").is_file():
+                continue
+            log(install_owned_skill(source, target / name, target, manifest, name))
+
+
+def merge_antigravity_skill_policy(path: Path, backup_enabled: bool) -> None:
+    policy = f"""{ANTIGRAVITY_POLICY_BEGIN}
+## Antigravity automatic skill activation
+
+At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
+If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.
+{ANTIGRAVITY_POLICY_END}"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_bytes().decode("utf-8") if path.exists() else ""
+    pattern = re.compile(re.escape(ANTIGRAVITY_POLICY_BEGIN) + r".*?" + re.escape(ANTIGRAVITY_POLICY_END) + r"(?:\r?\n)*", re.DOTALL)
+    unmanaged = pattern.sub("", text)
+    separator = "" if not unmanaged else "\n" if unmanaged.startswith("\n") else "\n\n"
+    updated = policy + separator + unmanaged
+    if updated != text:
+        backup(path, backup_enabled)
+        path.write_bytes(updated.encode("utf-8"))
 
 
 def get_user_homes() -> list[Path]:
@@ -462,16 +580,28 @@ def configure_gemini_instance(
     cfg: dict[str, Any],
     backup_enabled: bool,
     include_companion: bool,
+    *,
+    project_root: Path | None = None,
 ) -> None:
     """Configure a single .gemini root (skills, instructions, MCP configs, permissions, schemas)."""
     gemini_dir.mkdir(parents=True, exist_ok=True)
     install_agent_skills(install_dir, gemini_dir / "skills", include_companion=include_companion)
     install_agent_skills(install_dir, gemini_dir / "config" / "skills", include_companion=include_companion)
 
+    if include_companion:
+        try:
+            install_superpowers_skills(gemini_dir / "skills", install_dir / ".local-ai-hub-superpowers" / ".local-ai-hub-skill-ownership.json")
+        except (OSError, TimeoutError, ValueError, urllib.error.URLError) as exc:
+            log(f"ERROR: Antigravity Superpowers installation failed: {exc}")
+            raise RuntimeError(f"Antigravity Superpowers installation failed: {exc}") from exc
+
     if cfg.get("tool_policy", {}).get("install_global_instructions", True):
         doc = gemini_dir / "GEMINI.md"
         merge_global_policy(doc, backup_enabled, cfg=cfg)
         merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+        if include_companion:
+            merge_antigravity_skill_policy(gemini_dir / "AGENTS.md", backup_enabled)
+            merge_antigravity_skill_policy((project_root or Path.cwd()) / "AGENTS.md", backup_enabled)
 
     json_mcp_merge(gemini_dir / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
     sync_antigravity_mcp_config(
@@ -534,24 +664,24 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
 def merge_global_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
     policy = build_global_policy(cfg or {})
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    text = path.read_bytes().decode("utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(GLOBAL_POLICY_BEGIN) + r".*?" + re.escape(GLOBAL_POLICY_END), re.DOTALL)
-    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
     if updated != text:
         backup(path, backup_enabled)
-        path.write_text(updated, encoding="utf-8")
+        path.write_bytes(updated.encode("utf-8"))
         log(f"Tool-first policy installed: {path}")
 
 
 def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
     policy = generate_token_economy_policy(cfg or {})
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    text = path.read_bytes().decode("utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(TOKEN_ECONOMY_POLICY_BEGIN) + r".*?" + re.escape(TOKEN_ECONOMY_POLICY_END), re.DOTALL)
-    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
     if updated != text:
         backup(path, backup_enabled)
-        path.write_text(updated, encoding="utf-8")
+        path.write_bytes(updated.encode("utf-8"))
         log(f"Token economy policy installed: {path}")
 
 
@@ -997,7 +1127,7 @@ def main() -> int:
     parser.add_argument("--skip-service", action="store_true")
     parser.add_argument("--skip-ollama-install", action="store_true")
     parser.add_argument("--skip-token-economy", action="store_true", help="Do not install token economy packages or probe external CLI tools")
-    parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills (token-economizer, caveman, tool-orchestration, ollama-quality-routing)")
+    parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
     parser.add_argument("--expected-revision", help="Exact verified 40-character source commit required for install/update.")
     parser.add_argument("--host-project-root", type=Path, help="Explicit project root for isolated host-hook maintenance; skips Hub install/service/model actions.")

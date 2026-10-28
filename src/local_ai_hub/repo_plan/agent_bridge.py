@@ -413,6 +413,9 @@ def reconcile_contract_revision(
     spec_content: str | None = None,
     owner: str = "agent",
     idempotency_key: str = "",
+    expected_plan_revision: str | None = None,
+    expected_spec_revision: str | None = None,
+    clarification_id: str | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Persist an operator clarification into both the Git plan and real task contract."""
     if task_store is None:
@@ -425,6 +428,8 @@ def reconcile_contract_revision(
     if not isinstance(reason, str) or not reason.strip() or "\x00" in reason:
         raise ValueError("reason must be a nonempty string")
     plan_dict, current_rev = storage.read_plan_file(binding.plan_rel_path)
+    if expected_plan_revision is not None and current_rev != expected_plan_revision:
+        raise RepoPlanConflictError("plan revision changed before reconciliation")
     tasks = plan_dict.get("tasks", {})
     if binding.plan_task_id not in tasks:
         raise RepoPlanNotFoundError(
@@ -448,9 +453,10 @@ def reconcile_contract_revision(
         raise ValueError("binding contract revision is stale; reload before reconciling")
 
     # Create Clarification
-    change_id = f"change_{uuid.uuid4().hex[:10]}"
+    change_id = clarification_id or f"change_{uuid.uuid4().hex[:10]}"
     spec_refs = []
     if spec_rel_path:
+        validate_repo_path(spec_rel_path, repo_root=storage.repo_root)
         full_spec = storage.repo_root / spec_rel_path
         if spec_content is None:
             raise ValueError("spec_content is required when spec_rel_path is supplied")
@@ -476,7 +482,8 @@ def reconcile_contract_revision(
     # Plan/spec become the durable user clarification before execution resumes.
     if spec_rel_path and spec_content is not None:
         spec_path = storage.repo_root / spec_rel_path
-        expected_spec_rev = compute_file_sha256(spec_path) if spec_path.exists() else ""
+        expected_spec_rev = (expected_spec_revision if expected_spec_revision is not None
+                             else compute_file_sha256(spec_path) if spec_path.exists() else "")
         save_res = storage.save_spec_and_plan(
             spec_rel_path,
             spec_content,
@@ -508,7 +515,7 @@ def reconcile_contract_revision(
                    "plan_task_id": binding.plan_task_id,
                    "contract_revision": current_contract_revision + 1,
                    "acceptance_criteria": new_acceptance_criteria,
-                   "reason": reason, "plan_revision": save_res.get("file_revision", ""),
+                   "reason": reason, "plan_revision": save_res.get("plan_revision", save_res.get("file_revision", "")),
                    "error": str(exc)}
         try:
             _persist_pending_contract_reconciliation(storage, binding, payload)
@@ -521,10 +528,237 @@ def reconcile_contract_revision(
             "clarification is saved to the Git plan/spec, but Agent OS contract reconciliation is pending"
         ) from exc
     binding.contract_revision = revised.checkpoint.state_data["contract_revision"]
-    binding.adopted_plan_revision = save_res.get("file_revision", "")
+    binding.adopted_plan_revision = save_res.get("plan_revision", save_res.get("file_revision", ""))
     binding_manager = TaskBindingManager(storage.repo_root)
-    binding_manager._save(binding, task_store=task_store, check_plan_ownership=False)
+    try:
+        binding_manager._save(binding, task_store=task_store, check_plan_ownership=False)
+    except Exception as exc:
+        payload = {"task_id": binding.task_id, "plan_id": binding.plan_id,
+                   "plan_task_id": binding.plan_task_id,
+                   "contract_revision": binding.contract_revision,
+                   "acceptance_criteria": new_acceptance_criteria,
+                   "reason": reason, "plan_revision": binding.adopted_plan_revision,
+                   "error": str(exc)}
+        try:
+            _persist_pending_contract_reconciliation(storage, binding, payload)
+        except Exception as persist_exc:
+            raise RuntimeError("contract was revised but binding and retry-record persistence failed") from persist_exc
+        raise RuntimeError("contract was revised, but binding reconciliation is pending") from exc
     return save_res, binding.contract_revision
+
+
+def reconcile_task_steering(
+    task_store: Any, *, root: str, task_id: str, steering_id: str,
+    spec_rel_path: str, spec_content: str, acceptance_criteria: list[str],
+    expected_revision: str, expected_spec_revision: str, summary: str = "",
+) -> dict[str, Any]:
+    """Reconcile an explicitly revision-bound operator clarification."""
+    from local_ai_hub.agent_tasks import _task_scope_root
+    from local_ai_hub.repository_scope import canonical_repository_root
+    from .workspace import RepoPlanWorkspace
+
+    if type(root) is not str or not root:
+        raise ValueError("root must be an explicit absolute path")
+    canonical = str(canonical_repository_root(root))
+    if type(task_id) is not str or not task_id or task_id != task_id.strip() or "\x00" in task_id:
+        raise ValueError("task_id must be a canonical nonempty string")
+    if type(steering_id) is not str or not steering_id or steering_id != steering_id.strip() or len(steering_id) > 256 or "\x00" in steering_id:
+        raise ValueError("steering_id must be a canonical nonempty string")
+    if type(expected_revision) is not str or not re.fullmatch(r"[0-9a-f]{64}", expected_revision):
+        raise ValueError("expected_revision must be a SHA-256 revision")
+    if type(expected_spec_revision) is not str or (expected_spec_revision != "" and not re.fullmatch(r"[0-9a-f]{64}", expected_spec_revision)):
+        raise ValueError("expected_spec_revision must be empty or a SHA-256 revision")
+    if type(spec_content) is not str or type(acceptance_criteria) is not list or type(summary) is not str:
+        raise ValueError("invalid steering content or criteria")
+    validate_repo_path(spec_rel_path, repo_root=Path(canonical))
+    requested_spec = Path(canonical) / spec_rel_path
+    for component in (requested_spec, *requested_spec.parents):
+        if component == Path(canonical).parent:
+            break
+        if component.is_symlink() or getattr(component, "is_junction", lambda: False)():
+            raise ValueError("steering spec path contains a link")
+    execution = task_store.get(task_id)
+    if execution is None:
+        raise KeyError(f"Task '{task_id}' not found in task store")
+    if _task_scope_root(execution) != canonical:
+        raise ValueError("root does not match the server-managed task scope")
+    manager = TaskBindingManager(canonical)
+    binding = manager.get_binding(task_id)
+    if binding is None or not execution.context.session_id or binding.session_id != execution.context.session_id:
+        raise ValueError("task must have a matching bound session")
+
+    payload = {"root": canonical, "task_id": task_id, "session_id": binding.session_id,
+               "steering_id": steering_id, "spec_rel_path": spec_rel_path,
+               "spec_sha256": hashlib.sha256(spec_content.encode("utf-8")).hexdigest(),
+               "acceptance_criteria": acceptance_criteria, "expected_revision": expected_revision,
+               "expected_spec_revision": expected_spec_revision, "summary": summary}
+    fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                                             separators=(",", ":")).encode("utf-8")).hexdigest()
+    prefix = "change_" + hashlib.sha256(steering_id.encode("utf-8")).hexdigest()[:20] + "_"
+    change_base = prefix + fingerprint[:32] + "_r"
+    storage = RepoPlanWorkspace(canonical).storage
+    plan, current_revision = storage.read_plan_file(binding.plan_rel_path)
+    task_data = plan.get("tasks", {}).get(binding.plan_task_id)
+    if not isinstance(task_data, dict):
+        raise RepoPlanNotFoundError("bound plan task no longer exists")
+    matches = [item for item in task_data.get("clarifications", [])
+               if isinstance(item, dict) and str(item.get("id", "")).startswith(prefix)]
+    if matches:
+        change_id = matches[0].get("id") if len(matches) == 1 else None
+        if type(change_id) is not str or not re.fullmatch(re.escape(change_base) + r"[1-9][0-9]*", change_id):
+            raise RepoPlanConflictError("steering_id was already used for another request")
+        expected_clarification = {
+            "id": change_id,
+            "summary": summary.strip() or f"Operator steering {steering_id}",
+            "adoption": ClarificationAdoption.ADOPTED.value,
+            "spec_refs": [{"path": spec_rel_path, "revision": {
+                "kind": "working", "content_sha256": payload["spec_sha256"]}}],
+            "supersedes": [],
+        }
+        if matches[0] != expected_clarification:
+            raise RepoPlanConflictError("persisted steering clarification no longer matches the request")
+        intended_revision = int(change_id[len(change_base):])
+        spec_path = Path(canonical) / spec_rel_path
+        if (not spec_path.is_file() or spec_path.is_symlink()
+                or compute_file_sha256(spec_path) != payload["spec_sha256"]
+                or task_data.get("acceptance_criteria") != acceptance_criteria):
+            raise RepoPlanConflictError("persisted steering no longer matches the request")
+        revision = execution.checkpoint.state_data.get("contract_revision", 1)
+        pending_name = hashlib.sha256(task_id.encode("utf-8")).hexdigest() + ".json"
+        pending_rel = f".local-ai-hub/local/pending-contract-reconciliation/{pending_name}"
+        validate_repo_path(pending_rel, repo_root=Path(canonical))
+        pending_path = Path(canonical) / pending_rel
+        for directory in (pending_path, *pending_path.parents):
+            if directory == Path(canonical).parent:
+                break
+            if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)():
+                raise ValueError("pending reconciliation path contains a link")
+        if (pending_path.exists() or tuple(execution.contract.acceptance_criteria) != tuple(acceptance_criteria)
+                or revision != binding.contract_revision or revision != intended_revision):
+            if not pending_path.is_file() or pending_path.stat().st_size > 1024 * 1024:
+                raise RuntimeError("persisted steering reconciliation is pending without a safe retry record")
+            with exclusive_file_update(pending_path):
+                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+                if not isinstance(pending, dict):
+                    raise ValueError("pending reconciliation record must be an object")
+                target_revision = pending.get("contract_revision")
+                reason = summary.strip() or f"Operator steering {steering_id}"
+                if (pending.get("task_id") != task_id or pending.get("plan_id") != binding.plan_id
+                        or pending.get("plan_task_id") != binding.plan_task_id
+                        or pending.get("acceptance_criteria") != acceptance_criteria
+                        or pending.get("reason") != reason
+                        or type(target_revision) is not int or target_revision != intended_revision):
+                    raise RepoPlanConflictError("pending reconciliation record does not match steering")
+                execution = task_store.get(task_id)
+                projected_revision = pending.get("projected_plan_revision")
+                if projected_revision is not None:
+                    from .schema_validation import serialize_plan_json
+
+                    baseline = pending.get("projection_base_plan")
+                    if (not isinstance(baseline, dict)
+                            or hashlib.sha256(serialize_plan_json(baseline).encode("utf-8")).hexdigest() != pending.get("plan_revision")):
+                        raise RepoPlanConflictError("pending projection baseline does not match plan revision")
+                    projected = json.loads(json.dumps(baseline))
+                    projected_task = projected.get("tasks", {}).get(binding.plan_task_id)
+                    if not isinstance(projected_task, dict):
+                        raise RepoPlanConflictError("pending projection has no bound plan task")
+                    project_checkpoint_fields(
+                        projected_task, execution.status.value, execution.checkpoint.phase,
+                        execution.checkpoint.next_action,
+                        execution.checkpoint.blockers[0] if execution.checkpoint.blockers else "",
+                    )
+                    if hashlib.sha256(serialize_plan_json(projected).encode("utf-8")).hexdigest() != projected_revision:
+                        raise RepoPlanConflictError("pending projected plan revision is invalid")
+                if (pending.get("plan_revision") != current_revision
+                        and not (projected_revision == current_revision
+                                 and execution.checkpoint.state_data.get("contract_revision") == target_revision
+                                 and tuple(execution.contract.acceptance_criteria) == tuple(acceptance_criteria))):
+                    raise RepoPlanConflictError("pending reconciliation record does not match steering")
+
+                def save_pending() -> None:
+                    encoded = json.dumps(pending, sort_keys=True, indent=2).encode("utf-8")
+                    if len(encoded) > 1024 * 1024:
+                        raise ValueError("pending reconciliation record exceeds size limit")
+                    temporary = pending_path.parent / f".{pending_path.name}.{uuid.uuid4().hex}.tmp"
+                    try:
+                        with temporary.open("xb") as stream:
+                            stream.write(encoded)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        os.replace(temporary, pending_path)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+
+                # Serialize the fresh check and contract update with plan writers.
+                with exclusive_file_update(storage._lock_path, reentrant=True):
+                    latest_plan, latest_revision = storage.read_plan_file(binding.plan_rel_path)
+                    latest_task = latest_plan.get("tasks", {}).get(binding.plan_task_id, {})
+                    if (latest_revision != current_revision
+                            or latest_task.get("acceptance_criteria") != acceptance_criteria
+                            or not any(item == expected_clarification
+                                       for item in latest_task.get("clarifications", []))
+                            or not spec_path.is_file() or spec_path.is_symlink()
+                            or compute_file_sha256(spec_path) != payload["spec_sha256"]):
+                        raise RepoPlanConflictError("plan or spec changed during pending reconciliation")
+                    revision = execution.checkpoint.state_data.get("contract_revision", 1)
+                    if revision == target_revision - 1 and binding.contract_revision == revision:
+                        from .schema_validation import serialize_plan_json
+
+                        projected_plan = json.loads(json.dumps(latest_plan))
+                        project_checkpoint_fields(
+                            projected_plan["tasks"][binding.plan_task_id], execution.status.value,
+                            execution.checkpoint.phase, execution.checkpoint.next_action,
+                            execution.checkpoint.blockers[0] if execution.checkpoint.blockers else "",
+                        )
+                        projected_revision = hashlib.sha256(serialize_plan_json(projected_plan).encode("utf-8")).hexdigest()
+                        if pending.get("projected_plan_revision") not in (None, projected_revision):
+                            raise RepoPlanConflictError("pending projected plan revision changed")
+                        if pending.get("projected_plan_revision") is None:
+                            pending["projected_plan_revision"] = projected_revision
+                            pending["projection_base_plan"] = latest_plan
+                            save_pending()
+                        execution = task_store.revise_contract(
+                            task_id, acceptance_criteria, actor=execution.owner,
+                            reason=reason, expected_revision=revision,
+                        )
+                        revision = execution.checkpoint.state_data.get("contract_revision")
+                    if (revision != target_revision
+                            or tuple(execution.contract.acceptance_criteria) != tuple(acceptance_criteria)
+                            or binding.contract_revision not in {target_revision - 1, target_revision}):
+                        raise RepoPlanConflictError("task contract does not match pending reconciliation")
+                    latest_plan, latest_revision = storage.read_plan_file(binding.plan_rel_path)
+                    latest_task = latest_plan.get("tasks", {}).get(binding.plan_task_id, {})
+                    if (latest_task.get("acceptance_criteria") != acceptance_criteria
+                            or not any(item == expected_clarification
+                                       for item in latest_task.get("clarifications", []))
+                            or not spec_path.is_file() or spec_path.is_symlink()
+                            or compute_file_sha256(spec_path) != payload["spec_sha256"]):
+                        raise RepoPlanConflictError("plan or spec changed during pending reconciliation")
+                    if pending.get("plan_revision") != latest_revision:
+                        pending["plan_revision"] = latest_revision
+                        pending.pop("projected_plan_revision", None)
+                        pending.pop("projection_base_plan", None)
+                        save_pending()
+                    binding.contract_revision = target_revision
+                    binding.adopted_plan_revision = latest_revision
+                    manager._save(binding, task_store=task_store, check_plan_ownership=False)
+                    pending_path.unlink()
+                return {"success": True, "reused": True, "recovered": True,
+                        "file_revision": latest_revision, "task_id": task_id,
+                        "contract_revision": target_revision}
+        return {"success": True, "reused": True, "file_revision": current_revision,
+                "task_id": task_id, "contract_revision": revision}
+
+    change_id = change_base + str(binding.contract_revision + 1)
+    result, revision = reconcile_contract_revision(
+        storage, binding, acceptance_criteria, summary.strip() or f"Operator steering {steering_id}",
+        task_store=task_store, spec_rel_path=spec_rel_path, spec_content=spec_content,
+        owner=execution.owner, idempotency_key="steering_" + fingerprint,
+        expected_plan_revision=expected_revision, expected_spec_revision=expected_spec_revision,
+        clarification_id=change_id,
+    )
+    return {"success": True, "reused": False, "file_revision": result.get("plan_revision", result.get("file_revision", "")),
+            "task_id": task_id, "contract_revision": revision}
 
 
 def record_authentic_native_receipt(

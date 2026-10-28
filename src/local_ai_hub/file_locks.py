@@ -10,18 +10,27 @@ from typing import Iterator
 
 
 _LOCKS = tuple(threading.RLock() for _ in range(64))
+_HELD = threading.local()
 
 
 @contextmanager
-def exclusive_file_update(path: Path, *, timeout: float = 5.0) -> Iterator[None]:
+def exclusive_file_update(path: Path, *, timeout: float = 5.0, reentrant: bool = False) -> Iterator[None]:
     """Keep a stable lock file: unlinking it could split concurrent owners."""
     deadline = time.monotonic() + timeout
-    guard = _LOCKS[hash(os.path.normcase(str(path.resolve()))) % len(_LOCKS)]
+    key = (os.getpid(), os.path.normcase(str(path.resolve())))
+    guard = _LOCKS[hash(key[1]) % len(_LOCKS)]
     if not guard.acquire(timeout=max(0.0, timeout)):
         raise TimeoutError("file update lock timed out")
     descriptor = None
     acquired = False
+    registered = False
     try:
+        held = getattr(_HELD, "paths", None)
+        if held is None:
+            held = _HELD.paths = set()
+        if reentrant and key in held:
+            yield
+            return
         lock_path = path.with_name(path.name + ".lock")
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         if os.fstat(descriptor).st_size == 0:
@@ -42,9 +51,14 @@ def exclusive_file_update(path: Path, *, timeout: float = 5.0) -> Iterator[None]
                 if remaining <= 0:
                     raise TimeoutError("file update lock timed out") from None
                 time.sleep(min(0.02, remaining))
+        if reentrant:
+            held.add(key)
+            registered = True
         yield
     finally:
         try:
+            if registered:
+                held.remove(key)
             if descriptor is not None:
                 try:
                     if acquired:
