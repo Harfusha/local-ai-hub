@@ -372,7 +372,13 @@ def test_mcp_budget_roundtrip_retains_audit_and_counters(monkeypatch, tmp_path):
     expected = {"success": True, "task_id": "existing", "audit_event_id": "evt-real",
                 "before": {"max_compute_seconds": 10, "used_compute_seconds": 11},
                 "budget": {"max_compute_seconds": 20, "used_compute_seconds": 11}}
-    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda path, payload, **kw: calls.append((path, payload)) or expected)
+    # local_ai_coord uses the adapter's delegated HubClient.coord method, whose
+    # request is made through the wrapped client's post method.
+    def post(path, payload, **_kwargs):
+        calls.append((path, payload))
+        return expected
+
+    monkeypatch.setattr(mcp_server.CLIENT._client, "post", post)
     result = mcp_server.local_ai_coord(action="task_budget_increase", root=str(tmp_path),
                                       task_id="existing", reason="finish",
                                       budget={"max_compute_seconds": 20}, max_response_tokens=3200)

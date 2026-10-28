@@ -1,11 +1,26 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-**State:** source candidate `f2354144` passes hosted CI and isolated wheel smoke. Documentation-only master snapshot `6926126ce550f1b19c3d10c77ca006dd54ad41cd` is installed and the live Hub was restarted; its CI run is still in progress (0/12 jobs at the latest check). Post-activation `/health` is verified. An earlier dashboard capture showed Healthy, but the latest browser navigation showed “Loading runtime health”; its follow-up was interrupted, so current dashboard readiness and plan lifecycle remain unverified. Agent OS completion remains open because four canonical broker receipts are missing.
-**Candidate revision:** `f2354144357c62f8fa629132589963882496a0a8` (`master`; current run and test receipts below bind to this revision).
-**Installed master snapshot:** `6926126ce550f1b19c3d10c77ca006dd54ad41cd`, a documentation-only successor to the source candidate; the source/package code remains identical to `f2354144`. [CI run 40574299038](https://github.com/Harfusha/local-ai-hub/actions/runs/40574299038) for this docs-only snapshot remained **in progress (0/12 jobs)** at the 2026-10-27 check. The package and wheel receipt below remain bound to the exact source candidate.
+**State: IN PROGRESS.** Package source commit `fcb55103` fixes MCP client adapter monkeypatch restoration. Test-only commit `8a80f66` aligns the budget-increase test stub with delegated `HubClient.coord`; it does not change package bytes. The `fcb55103` wheel is installed in the managed Hub runtime, which was restarted and verified healthy. Hosted CI and authentic Agent OS completion receipts remain open.
 **Target:** `5.1.0`.
 
-## Current candidate evidence — 2026-10-27
+## Current release snapshot — 2026-10-28
+
+| Item | Current evidence |
+|---|---|
+| Source fixes | `6b7f275b` isolates dashboard health from namespaced telemetry-summary diagnostics; `fcb55103` adds explicit MCP `post` forwarding so pytest monkeypatch restoration stays on the adapter. |
+| Candidate | `8a80f66` is current `master`; its only change after `fcb55103` updates a test stub. |
+| Hosted CI | [#266](https://github.com/Harfusha/local-ai-hub/actions/runs/40601598479) completed with 1 failure in the critical cohort (`test_mcp_budget_roundtrip_retains_audit_and_counters`); 649 tests passed. The failure was the test patching the adapter while delegated `HubClient.coord` calls the wrapped client. Test-only commit `8a80f66d` corrects that stub. [#267](https://github.com/Harfusha/local-ai-hub/actions/runs/40602695798) targets the corrected head and was still in progress at 9/12 completed jobs on the 2026-10-28 check. |
+| Release check | `python tools/release_check.py --allow-installed`: passed after preserving prior generated `build/` and `dist/` artifacts outside the repository. |
+| Compile and selftest | `python -m compileall -q src tools tests` passed; `tools/selftest.py` passed 6/6. |
+| Wheel | SHA-256 `80324ce06db618fa751e978d2424a35179962d4a5013aa2c37ea9cbb448ba3b5`; fresh isolated install and `pip check` passed. Smoke returned `success=true`, `smoke=passed`, version `5.1.0`, planner schema passed, five tools, `degraded=false`; optional Ollama was offline in that isolated environment. |
+| Surface audit | `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py`: 775 passed in 97.69s on the current worktree. |
+| MCP/coord regression modules | `tests/test_agent_task_budget_increase.py tests/test_mcp_contract_dispatch.py`: 69 passed in 15.86s after the fixture correction. |
+| Benchmark | [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json): 1,000 independent pairs with parity; p95 1.72x and p99 1.95x. Closes only the JSON-budget tail gate. |
+| Live Hub | Restarted from the candidate wheel. Supervisor PID `39112`, Hub PID `59572`, managed `.venv` Python, ready on port `11435`; doctor passed, `/health` returned version `5.1.0`, `local_ai_status` returned `degraded=false`. The live dashboard separately showed incomplete telemetry coverage and six pending writer records; this is retained as a dashboard data-completeness caveat, not overridden by the status tool. |
+| Agent OS completion | `verify_completion` returned `complete=false`, zero receipts, and unsatisfied criteria `selftest passed`, `release check passed`, `wheel smoke passed`, and `1000 benchmark passed`. Native test output is not substituted for broker-backed receipts. |
+| Remaining gates | Hosted CI completion; dashboard project-plan create/list/edit lifecycle; dashboard screenshot artifact (the approved capture helper failed twice with `IGraphicsCaptureItemInterop.CreateForMonitor 0x80070057`); and authentic Agent OS receipts remain open. Do not claim release completion until resolved. |
+
+## Historical candidate evidence — f235414 (2026-10-27)
 
 - [Current hosted CI run](https://github.com/Harfusha/local-ai-hub/actions/runs/40563606871) targets exact commit `f2354144357c62f8fa629132589963882496a0a8`; run conclusion **success**. All **14 applicable jobs succeeded**, including Ubuntu 3.14 primary full suite; the separate “Publish verified release” job was skipped because this is not a release-tag run.
 - The later documentation-only master snapshot `8a998f06a8963bc53e78d1545a49b2c47e15fcd7` also passed [CI run 40568498434](https://github.com/Harfusha/local-ai-hub/actions/runs/40568498434) (**success**, 29m 10s). No package source changed after `f2354144`; wheel SHA and smoke receipt remain tied to the package job on that exact source candidate.

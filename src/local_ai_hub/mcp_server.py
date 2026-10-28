@@ -169,6 +169,9 @@ class _MCPHubClientAdapter:
             pass
         return self._client.get(path, **kwargs)
 
+    def post(self, *args: Any, **kwargs: Any) -> Any:
+        return self._client.post(*args, **kwargs)
+
     def status(
         self, detail: str = "brief", scope: str = "process", *,
         min_duration_ms: int = 0, trace_action: str = "",

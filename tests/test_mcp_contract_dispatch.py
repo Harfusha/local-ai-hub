@@ -4,6 +4,26 @@ import asyncio
 
 import pytest
 
+
+def test_mcp_client_adapter_keeps_missing_post_monkeypatch_on_adapter(monkeypatch) -> None:
+    from local_ai_hub import mcp_server
+
+    class ClientWithoutPost:
+        def request(self, path, payload=None, **kwargs):
+            return {"path": path, "payload": payload, "kwargs": kwargs}
+
+    client = ClientWithoutPost()
+    adapter = mcp_server._MCPHubClientAdapter(client)
+
+    def fake_post(*_args, **_kwargs):
+        return {"success": True}
+
+    monkeypatch.setattr(adapter, "post", fake_post, raising=False)
+
+    assert adapter.post is fake_post
+    assert not hasattr(client, "post")
+
+
 def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatch) -> None:
     from local_ai_hub import mcp_server
 
