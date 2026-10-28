@@ -1,9 +1,9 @@
 # Local AI Hub: current acceptance state
 
-Updated: 2026-10-28. Repository branch: `master`; test-only commit `8a80f66` is current.
-Status: **IN PROGRESS**. Package commit `fcb55103` fixes MCP adapter monkeypatch restoration. Follow-up test-only commit `8a80f66` updates the task-budget fixture to patch the wrapped HubClient used by delegated `coord`; package bytes are unchanged. The `fcb55103` wheel is installed in the managed runtime and Hub was restarted: supervisor PID `39112`, Hub PID `59572`, port `11435`. Doctor and `local_ai_status` passed; corrected hosted CI #267 and authentic Agent OS completion receipts remain open.
+Updated: 2026-10-28. Repository branch: `master`; current source `eccca081282f05ad9f8655f24ba1e4d8ae1a82f7`.
+Status: **IN PROGRESS**. CI #271 for `eccca081` is running (12/13 jobs complete, no failures at latest check); Ubuntu 3.14 full suite remains in progress. Clean isolated wheel smoke passed with SHA-256 `14297c21bead07ea7569570074fc93a74acfa0b2eebb09e173fe04bdcc05c379`; release check, compileall, and selftest 6/6 passed. Surface audit is 775 passed. Live service reports ready at port 11435 with Ollama online. Remaining gates: terminal full-suite/CI result, browser plan create/list/edit lifecycle, authentic Agent OS receipts, and release integration. A persisted dashboard capture exists at [`docs/dashboard-live-2026-10-27-post-activation.jpg`](../../dashboard-live-2026-10-27-post-activation.jpg); it is a 2026-10-27 snapshot, not a fresh post-2026-10-28 restart capture.
 
-## Current verified evidence — 2026-10-28
+## Earlier candidate evidence — `8a80f66` (2026-10-28 checkpoint)
 
 - Targeted MCP/automation/artifact regression cohort: **45 passed, 1 skipped** (host does not permit test symlinks). The new regression first reproduced both the failing assertion and teardown `AttributeError`, then passed after adding explicit adapter `post` forwarding.
 - `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py`: **775 passed** in 97.69s.
@@ -15,12 +15,19 @@ Status: **IN PROGRESS**. Package commit `fcb55103` fixes MCP adapter monkeypatch
 - Dashboard counters are since-restart. Current details show 387 baseline tokens versus 4,375 protocol and 26,010 schema-exposure tokens, so the estimated delta is negative; local reuse is 0 for the new period. Dashboard health briefly showed unavailable `debug_traces`/`agent_state` diagnostics while `local_ai_status` remained healthy; this is recorded separately from functional Hub health.
 - JSON-budget benchmark [`docs/perf_candidate_json_budget.json`](../../perf_candidate_json_budget.json) remains the tracked 1,000-pair result; commit `316566fe` records the benchmark. It closes only that benchmark gate.
 - `verify_completion` currently returns `complete=false`, zero receipts, and unsatisfied criteria `selftest passed`, `release check passed`, `wheel smoke passed`, and `1000 benchmark passed`. Native command output is not a broker-backed receipt.
-- The live dashboard currently shows incomplete telemetry coverage and six pending writer records although `local_ai_status` is healthy; keep those two health dimensions distinct. Screenshot capture failed twice with `IGraphicsCaptureItemInterop.CreateForMonitor 0x80070057`, so no screenshot artifact is claimed.
-- Release remains open: hosted CI completion, dashboard plan create/list/edit lifecycle, dashboard screenshot evidence and authentic Agent OS receipts are not yet verified. Do not fabricate receipts or claim `verify_completion` success.
+- At that earlier observation the live dashboard showed incomplete telemetry coverage and six pending writer records although `local_ai_status` was healthy; keep those health dimensions distinct. Fresh screenshot capture failed twice with `IGraphicsCaptureItemInterop.CreateForMonitor 0x80070057`; the persisted 2026-10-27 screenshot referenced above exists, but does not show that later observation or the current restart.
+- At that checkpoint release remained open: hosted CI was not terminal, dashboard plan create/list/edit lifecycle was unverified, and authentic Agent OS receipts were absent. Do not fabricate receipts or claim `verify_completion` success.
 
-## Historical verified evidence — 2026-10-27
+## Latest verified evidence — 2026-10-28 (HEAD `eccca081282f05ad9f8655f24ba1e4d8ae1a82f7`)
 
-## Current verified evidence — 2026-10-27
+- Hosted CI [#271](https://github.com/Harfusha/local-ai-hub/actions/runs/40647282465) targets this HEAD. Twelve of thirteen jobs succeeded; Ubuntu 3.14 full suite remains `in_progress` ([job](https://github.com/Harfusha/local-ai-hub/actions/runs/40647282465/job/122678939468)); no failed jobs at the latest API observation.
+- Exact-head isolated wheel smoke passed: SHA-256 `14297c21bead07ea7569570074fc93a74acfa0b2eebb09e173fe04bdcc05c379`, `success=true`, `smoke=passed`, version `5.1.0`, five MCP tools. `release_check.py --allow-installed`, `compileall`, and selftest **6/6** also passed; the current surface-audit pair passed **775/775**.
+- The candidate wheel is installed in the managed `.venv`. Current service-status reports supervisor PID `2120`, Hub PID `28896`, ready, no error, Ollama online; `/health` returns `success=true`, version `5.1.0`. Port `11435` has a listener in the Hub process tree (PID `39536`, parent `28896`).
+- JSON-budget benchmark [`docs/perf_candidate_json_budget.json`](../../perf_candidate_json_budget.json) is committed by `316566fe745bb4aacb42b08bc5bd21a3245cc4ce`: 1,000 independent pairs, parity, p95 **1.72x**, p99 **1.95x**; this closes that gate only.
+- Persisted dashboard capture [`dashboard-live-2026-10-27-post-activation.jpg`](../../dashboard-live-2026-10-27-post-activation.jpg) shows Healthy, Hub/Ollama running, and Agent OS enabled. It predates the latest restart. Fresh capture is unavailable: Windows Computer Use could not verify Chrome's current URL, and the bounded Hub browser request returned `browser_unavailable` (Chrome or Chromium not found). No fresh capture is claimed.
+- Fresh `verify_completion` for `task_release_5.1.0` still returns `complete=false`, zero receipts, and four unsatisfied criteria: selftest, release check, wheel smoke, and 1,000-sample benchmark. The dashboard plan create/list/edit browser lifecycle also remains unverified.
+
+## Historical candidate evidence — 2026-10-27
 
 - Strict-tree `release_check.py` passed on a clean archive of source commit `6b7f275b`; `compileall` passed; `tools/selftest.py` passed **6/6**.
 - The isolated wheel built from `6b7f275b` has SHA-256 `57f76d7a807fbbd71fe39a1eacb4f369cbd1df350c6fce35bc83e50167673dc8`. `pip check` passed; `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, five tools. The smoke's optional Ollama status was offline in the isolated environment (`degraded=true`); live Hub health is separately healthy.

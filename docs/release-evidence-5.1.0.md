@@ -2,17 +2,23 @@
 
 ## Latest activation — 2026-10-28
 
-- Source `b05d4c3d2d0fad76167938d8b3476df572dd9540` is on `origin/master`; [CI #269](https://github.com/Harfusha/local-ai-hub/actions/runs/40608305726) was in progress at last observation. The full local suite stopped when its owning Codex session hit the usage limit; its final result is unavailable.
-- Wheel SHA-256 `571526d90e7db1cd51464166e9dcf64d317399803784c65341b6c4c1b0aa0102` was installed in the managed environment. Wheel smoke passed there, as did `pip check`, `release_check --allow-installed`, compileall, selftest (6/6), and doctor. This smoke was not performed in a fresh isolated environment.
-- Service was restarted and `/health` reported version `5.1.0`. The original processes later exited; a subsequent start brought up listener PID `28712` on port `11435` and Ollama PID `28656` on port `11434`. The service-status file still reported the former process IDs, so status provenance and sustained health remain unverified. Dashboard reported healthy at one observation and degraded later.
-- Agent OS completion receipts, a persisted dashboard screenshot, clean isolated wheel smoke, and completed CI remain open. Earlier snapshots below are historical.
+- Source `eccca081282f05ad9f8655f24ba1e4d8ae1a82f7` is on `origin/master`; [CI #271](https://github.com/Harfusha/local-ai-hub/actions/runs/40647282465) is in progress (12/13 jobs complete, no failures at latest check); Ubuntu 3.14 full suite is still running.
+- Clean isolated wheel smoke passed: SHA-256 `14297c21bead07ea7569570074fc93a74acfa0b2eebb09e173fe04bdcc05c379`, `success=true`, `smoke=passed`, version `5.1.0`, five MCP tools.
+- `release_check --allow-installed`, compileall, and selftest (6/6) passed for this source. Surface audit: 775 passed.
+- Benchmark: commit [`316566fe`](https://github.com/Harfusha/local-ai-hub/commit/316566fe745bb4aacb42b08bc5bd21a3245cc4ce) records 1,000 independently measured JSON-budget pairs with matching output parity; p95 speedup 1.72x and p99 speedup 1.95x. This closes only the JSON-budget tail gate; the artifact's candidate source was `94a485ff`.
+- Latest wheel is installed in the managed `.venv`. `service.py restart` could not verify the old Hub stop; process and listener inspection showed no Hub processes, so the service was started once. It is now ready: supervisor PID `2120`, Hub PID `28896`, port `11435`; `/health` reports version `5.1.0`, Ollama online.
+- Persisted dashboard screenshot: [2026-10-27 post-activation capture](dashboard-live-2026-10-27-post-activation.jpg). It shows the local dashboard reporting Healthy, Hub/Ollama running, and Agent OS enabled. It predates the 2026-10-28 restart and is not claimed as a fresh capture of that process.
 
-**State: IN PROGRESS.** Package source commit `fcb55103` fixes MCP client adapter monkeypatch restoration. Test-only commit `8a80f66` aligns the budget-increase test stub with delegated `HubClient.coord`; it does not change package bytes. The `fcb55103` wheel is installed in the managed Hub runtime, which was restarted and verified healthy. Hosted CI and authentic Agent OS completion receipts remain open.
+![Local AI Hub dashboard, captured 2026-10-27](dashboard-live-2026-10-27-post-activation.jpg)
+
+Browser plan create/list/edit lifecycle and authentic Agent OS receipts remain open; full suite and hosted CI are still running. Fresh capture attempts stopped because Windows Computer Use could not verify Chrome's current URL and the Hub browser endpoint returned `browser_unavailable` (Chrome or Chromium not found).
+
+**State: IN PROGRESS.** Latest source is `eccca081`; candidate verification and hosted CI remain open.
 **Target:** `5.1.0`.
 
-## Current release snapshot — 2026-10-28
+## Historical acceptance snapshot — 2026-10-28 (HEAD `8a80f66`)
 
-| Item | Current evidence |
+| Item | Historical evidence at HEAD `8a80f66` |
 |---|---|
 | Source fixes | `6b7f275b` isolates dashboard health from namespaced telemetry-summary diagnostics; `fcb55103` adds explicit MCP `post` forwarding so pytest monkeypatch restoration stays on the adapter. |
 | Candidate | `8a80f66` is current `master`; its only change after `fcb55103` updates a test stub. |
