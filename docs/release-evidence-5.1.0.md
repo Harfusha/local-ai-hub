@@ -1,5 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Latest activation — 2026-10-28
+
+- Source `b05d4c3d2d0fad76167938d8b3476df572dd9540` is on `origin/master`; [CI #269](https://github.com/Harfusha/local-ai-hub/actions/runs/40608305726) was in progress at last observation. The full local suite stopped when its owning Codex session hit the usage limit; its final result is unavailable.
+- Wheel SHA-256 `571526d90e7db1cd51464166e9dcf64d317399803784c65341b6c4c1b0aa0102` was installed in the managed environment. Wheel smoke passed there, as did `pip check`, `release_check --allow-installed`, compileall, selftest (6/6), and doctor. This smoke was not performed in a fresh isolated environment.
+- Service was restarted and `/health` reported version `5.1.0`. The original processes later exited; a subsequent start brought up listener PID `28712` on port `11435` and Ollama PID `28656` on port `11434`. The service-status file still reported the former process IDs, so status provenance and sustained health remain unverified. Dashboard reported healthy at one observation and degraded later.
+- Agent OS completion receipts, a persisted dashboard screenshot, clean isolated wheel smoke, and completed CI remain open. Earlier snapshots below are historical.
+
 **State: IN PROGRESS.** Package source commit `fcb55103` fixes MCP client adapter monkeypatch restoration. Test-only commit `8a80f66` aligns the budget-increase test stub with delegated `HubClient.coord`; it does not change package bytes. The `fcb55103` wheel is installed in the managed Hub runtime, which was restarted and verified healthy. Hosted CI and authentic Agent OS completion receipts remain open.
 **Target:** `5.1.0`.
 

@@ -170,6 +170,8 @@ class _MCPHubClientAdapter:
             client.request = request_with_policy  # type: ignore[method-assign]
 
     def get(self, path: str, **kwargs: Any) -> Any:
+        if self._client.auto_start:
+            self.ensure_server(timeout=self._client.startup_wait)
         if self._supports_operational_metadata:
             action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
             kwargs.setdefault("operational_action", action or None)

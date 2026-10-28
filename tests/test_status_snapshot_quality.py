@@ -558,6 +558,7 @@ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
     app.background_gpu.responses["status"] = slow
     app.services.semantic_cache.responses["stats"] = slow
     app.commands.responses["stats"] = slow
+    monkeypatch.setattr(app_module, "accelerator_status", slow)
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
     monkeypatch.setattr(app_module, "_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS", 0.02)
 

@@ -1128,9 +1128,8 @@ class LocalAIApp:
             installed: list[str] = read("runtime.installed_models", self.runtime.installed_models, []) if online else []
             loaded_details: list[dict[str, Any]] = read("runtime.loaded_model_details", self.runtime.loaded_model_details, []) if online else []
             loaded = [str(row.get("name", "")) for row in loaded_details if row.get("name")]
-            # Runtime availability is a separate probe phase. A slow runtime must
-            # not consume the status snapshot's budget for independent Hub state.
-            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            # Every full-snapshot probe shares the deadline created at entry.
+            # Runtime availability cannot silently grant later probes a fresh budget.
             status_probes = {
                 "scheduler": (self.scheduler.status, {}),
                 "accelerators": (lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
