@@ -2,8 +2,8 @@
 
 ## Latest verified candidate — 2026-10-28 (`5bbf3499`, installed)
 
-- **Source:** HEAD and `origin/master` are `5bbf349942f24b2fe41ccecfd6d7856c1f3d28e8`.
-- **Hosted CI:** [run #40670252361](https://github.com/Harfusha/local-ai-hub/actions/runs/40670252361) completed successfully for this exact HEAD. All 12 OS/Python matrix jobs, critical coverage, and package build passed; release publication was skipped because this run did not publish a tag.
+- **Source candidate:** `5bbf349942f24b2fe41ccecfd6d7856c1f3d28e8`; CI run #40670252361 tested this exact code. Later master updates contain documentation only; the tested source remains unchanged.
+- **Hosted CI:** [run #40670252361](https://github.com/Harfusha/local-ai-hub/actions/runs/40670252361) completed successfully for this exact source candidate. All 12 OS/Python matrix jobs, critical coverage, and package build passed; release publication was skipped because this run did not publish a tag.
 - **Wheel:** `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `c9e6251bdd649fd2bf2dc7cff1ea0322ad91e397ba0b7be30dbef2cc6ada4174`. Isolated `tools/wheel_smoke.py` passed (`success=true`, `smoke=passed`, `tool_count=5`). The managed `.venv` records this exact wheel hash in `direct_url.json`.
 - **Validation:** surface audit **775 passed**; MCP contract dispatch **19 passed**; `compileall`, `pyflakes src tools`, and selftest **6/6** passed on this candidate.
 - **Benchmark:** [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json) records 1,000 independent pairs, parity, p95 speedup 1.72x, and p99 1.95x. The tail gate is met for this benchmark only.
