@@ -760,7 +760,7 @@ def test_benevolent_command_execution(temp_dir: Path):
     assert res_wt["exit_code"] == 0
 
     # 2. Compound command execution
-    res_compound = broker.run("git status --short; git branch --show-current", cwd=str(Path.cwd()))
+    res_compound = broker.run("git status --short --branch; git rev-parse --show-toplevel", cwd=str(Path.cwd()))
     assert res_compound["success"] is True
     assert res_compound["exit_code"] == 0
     assert len(res_compound["stdout"]) > 0
