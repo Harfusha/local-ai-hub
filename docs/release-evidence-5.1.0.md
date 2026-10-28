@@ -1,6 +1,19 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-## Current candidate — 2026-10-28 (`903949d1`, installed)
+## Latest verified candidate — 2026-10-28 (`5bbf3499`, installed)
+
+- **Source:** HEAD and `origin/master` are `5bbf349942f24b2fe41ccecfd6d7856c1f3d28e8`.
+- **Hosted CI:** [run #40670252361](https://github.com/Harfusha/local-ai-hub/actions/runs/40670252361) completed successfully for this exact HEAD. All 12 OS/Python matrix jobs, critical coverage, and package build passed; release publication was skipped because this run did not publish a tag.
+- **Wheel:** `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `c9e6251bdd649fd2bf2dc7cff1ea0322ad91e397ba0b7be30dbef2cc6ada4174`. Isolated `tools/wheel_smoke.py` passed (`success=true`, `smoke=passed`, `tool_count=5`). The managed `.venv` records this exact wheel hash in `direct_url.json`.
+- **Validation:** surface audit **775 passed**; MCP contract dispatch **19 passed**; `compileall`, `pyflakes src tools`, and selftest **6/6** passed on this candidate.
+- **Benchmark:** [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json) records 1,000 independent pairs, parity, p95 speedup 1.72x, and p99 1.95x. The tail gate is met for this benchmark only.
+- **Live service:** restart completed. Supervisor PID `19276`, managed Hub PID `580`, HTTP listener PID `596`; port `11435` returned `/health success=true, version=5.1.0`. `local_ai_status` reported Hub and Ollama online, `degraded=false`, active model `qwen2.5-coder:3b`.
+- **Live dashboard:** the persisted [2026-10-27 capture](dashboard-live-2026-10-27-post-activation.jpg) (SHA-256 `3b869c462ef33e082b326b4bd1a17eb307a57ab09eea8d088aac532995c3b32a`) shows Overview/Health, not plan CRUD. A fresh 2026-10-28 view briefly showed incomplete telemetry and estimated savings `−$0.04` with net token delta `unknown`; the subsequent Service Health view reported Healthy, one retained `/api/review/diff` failure, zero supervisor restarts, and 70 retained unclean exits. The current view also showed 2 generations and 685 local tokens avoided; these are short-window dashboard estimates, not quality or cost-savings proof. The later `hubctl status` selected `qwen2.5-coder:7b` and reported model inventory unreported; active model selection varied during this session.
+- **Open gates:** Agent OS `verify_completion` request `req_774d82a73948` returned `complete=false`, zero receipts, and unmet criteria `selftest passed`, `release check passed`, `wheel smoke passed`, and `1000 benchmark passed`; native outputs are not broker receipts. Local `release_check.py --allow-installed` remains blocked by the pre-existing `build/` directory, which was preserved. Dashboard plan create/list/edit/reload persistence remains unverified. The fresh dashboard view was inspected in this task but not saved as a repository image; the persisted capture above remains historical.
+
+**State: IN PROGRESS.** Source, hosted CI, wheel, and live restart gates pass; verifier receipts and dashboard plan lifecycle remain open.
+
+## Historical candidate — 2026-10-28 (`903949d1`)
 
 - Source commit `903949d187d44e494cd03bbff784c39d6a01e8a2` fixes the startup timeout failure from CI #273, where `test_first_mcp_status_starts_and_reaps_real_hub_entrypoint` observed no startup preflight. Documentation commit `8ac9e7e0a71676f72eda9cbcaedd7009b9af782f` is pushed to `origin/master`. CI #40669323891 for that HEAD failed in macOS/Python 3.11 compatibility cohort at `test_mcp_solve_is_gated_as_heavy_and_repo_map_read_stays_lightweight`; release-check, compileall and pyflakes passed in that job. The candidate test-only isolation fix passes the full file 19/19; hosted verification remains pending.
 - The fix gives MCP one shared startup budget instead of repeating `ensure_server` after a timed-out preflight. Relevant modules pass **42/42**; compileall and pyflakes pass. Exact candidate wheel smoke passed, `success=true`, version `5.1.0`, SHA-256 `3c9ec4437bd30e06c8a779bbe45a5caef5bc69e995cfb3f4b2a85cd23d464ad7`; the same wheel is installed in the managed `.venv`.

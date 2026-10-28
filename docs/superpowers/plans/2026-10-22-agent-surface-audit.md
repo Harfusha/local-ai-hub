@@ -29,7 +29,7 @@
 - [x] Refine output projection with explicit field policies; preserve useful domain data and accurate final wire accounting. Do not silently mutate stored records.
 - [x] Save the exhaustive disposition inventory and add a deterministic coverage check against current registries/response fields. New unreviewed surfaces must fail the check.
 - [x] Synchronize install/update prompts and affected existing tests. (Verified via `python tools/sync_prompt_policies.py --check`; fresh 2026-10-27 surface audit suite passed 774/774 after removing ten obsolete MCP dispositions and updating the status selector to the brief-only contract).
-- [x] Review final changes, checkpoint actual evidence, release owned leases and mark the goal complete. On source commit `6b7f275b`, the historical run `python -m pytest -q --tb=short tests/test_surface_audit_policy.py tests/test_surface_inventory.py` passed **774/774** in 143.02s on 2026-10-27. Fresh 2026-10-28 runs passed **775/775** on `eccca081` and **775/775** on release candidate `3259b632`; latest run took 123.79s. Earlier 744- and 793-test expectations are historical and do not match the current collected suite. See [current release status](local-ai-hub-current-status.md).
+- [x] Review final changes, checkpoint actual evidence, release owned leases and close this surface-audit checklist. Historical evidence: 774/774 on `6b7f275b`; later 775/775 on `eccca081` and `3259b632`. The latest candidate-specific run on `5bbf3499` also passed 775/775 in 136.67s. This closes the surface-audit checklist only; overall 5.1.0 release status remains open in [current release status](local-ai-hub-current-status.md).
 
 ## Findings established before implementation
 
