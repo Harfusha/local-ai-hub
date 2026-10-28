@@ -878,16 +878,17 @@ function isTelemetrySummaryDependency(name){
 }
 
 function dashboardHealthBadge(status={}){
-  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>!isTelemetrySummaryDependency(name)).map(([,value])=>value):[];
+  const coreProbeNames=new Set(['headless','runtime.online','scheduler']);
+  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>coreProbeNames.has(name)).map(([,value])=>value):[];
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
   const preprocessingDeps=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?status.dependency_status:{};
   const preprocessingAdvertised=Object.hasOwn(status,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
   const preprocessing=preprocessingAdvertised?dashboardPreprocessingHealth(status.preprocessing||{},status.dependency_status||{},status.features||{}):{available:true,statsAvailable:true,errorCount:0,disabled:false};
   const preprocessingWarning=preprocessingAdvertised&&(!preprocessing.available||!preprocessing.statsAvailable||preprocessing.errorCount>0);
-  const telemetryOnlyFailure=Object.entries(status.dependency_status||{}).some(([name,value])=>isTelemetrySummaryDependency(name)&&value?.degraded===true)&&degradedCount===0;
-  const degraded=(status.success===false&&!telemetryOnlyFailure)||degradedCount>0;
+  const health=dashboardHealth(status);
+  const degraded=health.level==='degraded';
   const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
-  const className=status.hub_online?(degraded||ollamaState!=='online'||preprocessingWarning?'warn-t':'ok'):'bad-t';
+  const className=status.hub_online?(degraded||health.level==='attention'||ollamaState!=='online'||preprocessingWarning?'warn-t':'ok'):'bad-t';
   const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
   const preprocessingLabel=!preprocessingAdvertised?'':preprocessing.disabled?' / preprocessing disabled':!preprocessing.available?' / preprocessing status unknown':(!preprocessing.statsAvailable?' / preprocessing stats unknown':'')+(preprocessing.errorCount?` / ${n(preprocessing.errorCount)} preprocessing project error${preprocessing.errorCount===1?'':'s'}`:'');
   return {className,degradedCount,degradedLabel:degradedLabel+preprocessingLabel};

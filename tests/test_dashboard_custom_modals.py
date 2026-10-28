@@ -561,6 +561,11 @@ def test_dashboard_health_treats_optional_probe_failure_as_attention() -> None:
             "function dashboardHealthBadge("
         )
     ]
+    badge_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function isTelemetrySummaryDependency(") : DASHBOARD_HTML.index(
+            "function dashboardTelemetryState("
+        )
+    ]
     health_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
             "function dashboardFreshness("
@@ -578,8 +583,10 @@ def test_dashboard_health_treats_optional_probe_failure_as_attention() -> None:
         }
         script = (
             preprocessing_source
+            + badge_source
             + health_source
-            + f"console.log(JSON.stringify(dashboardHealth({json.dumps(snapshot)})));"
+            + f"const snapshot={json.dumps(snapshot)};"
+            + "console.log(JSON.stringify({health:dashboardHealth(snapshot),badge:dashboardHealthBadge(snapshot)}));"
         )
         result = subprocess.run(
             ["node"], input=script, text=True, capture_output=True, timeout=20, check=True
@@ -587,19 +594,25 @@ def test_dashboard_health_treats_optional_probe_failure_as_attention() -> None:
         return json.loads(result.stdout)
 
     optional_failure = run_health({"preprocessing.stats": {"degraded": True}})
-    assert optional_failure["level"] == "attention"
-    assert optional_failure["functional_health"] == "attention"
-    assert "preprocessing.stats" in optional_failure["reason"]
+    assert optional_failure["health"]["level"] == "attention"
+    assert optional_failure["health"]["functional_health"] == "attention"
+    assert "preprocessing.stats" in optional_failure["health"]["reason"]
+    assert optional_failure["badge"]["degradedCount"] == 0
+    assert "degraded" not in optional_failure["badge"]["degradedLabel"]
 
     telemetry_failure = run_health(
         {"detail.agent_state.telemetry.summary": {"degraded": True}}
     )
-    assert telemetry_failure["level"] == "attention"
-    assert telemetry_failure["functional_health"] != "degraded"
+    assert telemetry_failure["health"]["level"] == "attention"
+    assert telemetry_failure["health"]["functional_health"] != "degraded"
+    assert telemetry_failure["badge"]["degradedCount"] == 0
+    assert "degraded" not in telemetry_failure["badge"]["degradedLabel"]
 
     runtime_failure = run_health({"scheduler": {"degraded": True}})
-    assert runtime_failure["level"] == "degraded"
-    assert runtime_failure["functional_health"] == "degraded"
+    assert runtime_failure["health"]["level"] == "degraded"
+    assert runtime_failure["health"]["functional_health"] == "degraded"
+    assert runtime_failure["badge"]["degradedCount"] == 1
+    assert "degraded check" in runtime_failure["badge"]["degradedLabel"]
 
 
 def test_dashboard_freshness_normalizes_timestamp_inputs_with_explicit_now() -> None:
