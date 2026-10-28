@@ -175,11 +175,11 @@ class _MCPHubClientAdapter:
                 max(0.2, float(kwargs.get("timeout", 15.0))),
                 max(0.2, float(getattr(self._client, "max_request_timeout", 15.0))),
             )
-            request_budget = max(0.2, request_timeout - 1.0)
-            deadline = time.monotonic() + request_budget
             startup_wait = float(getattr(self._client, "startup_wait", request_timeout))
+            request_budget = max(0.2, request_timeout + max(0.0, startup_wait) - 1.0)
+            deadline = time.monotonic() + request_budget
             self.ensure_server(timeout=min(request_budget, startup_wait))
-            kwargs["timeout"] = max(0.2, deadline - time.monotonic())
+            kwargs["timeout"] = min(request_timeout, max(0.2, deadline - time.monotonic()))
             # Do not repeat the startup wait inside HubClient.get when the
             # preflight timed out. The preflight owns the startup budget; the
             # remaining request budget is reserved for the bounded HTTP probe.
