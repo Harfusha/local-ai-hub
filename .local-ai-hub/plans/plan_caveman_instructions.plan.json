@@ -9,12 +9,12 @@
     "task_caveman_cli": {
       "acceptance_criteria": [],
       "accountable_role": "Codex",
-      "blocker": "No reviewed instruction-compression candidate; all original instructions unchanged.",
+      "blocker": "Full pytest was interrupted by operator request; no final result.",
       "clarifications": [],
       "depends_on": [],
       "description": "Implement backup-first Caveman compression for discovered agent instructions and supported MCP/skill prompts; validate meaning before apply; compress local model inputs and outputs; measure paired latency/token savings; repair and rebind the existing task. Acceptance gates preserved here because the existing Agent OS contract has an empty acceptance_criteria list: (1) every changed instruction has a byte-identical verified backup and reversible restore; (2) meaning checks protect omissions, code, commands, URLs, headings, and policy requirements; (3) local input/output compression leaves structured/code payloads unchanged; (4) paired baseline/candidate measurements separate latency, tokens, and semantic results, with no regression claim; (5) existing task ID retained and canonical session binding verified, without direct task-store edits; (6) focused tests and integrated source validation pass, with plan and receipts aligned.",
       "kind": "code",
-      "next_action": "Read full pytest result; fix any regression. Then verify merge state and retain explicit blockers if no reviewed compression candidates or valid speedup evidence.",
+      "next_action": "Commit the narrow diagnostic fix and merge it into master. Do not run further tests per operator. Then checkpoint the remaining compression and benchmark blockers.",
       "title": "Complete Caveman compression and repair task binding",
       "work_phase": "integration",
       "work_status": "in_progress"
