@@ -878,15 +878,17 @@ function isTelemetrySummaryDependency(name){
 }
 
 function dashboardHealthBadge(status={}){
-  const coreProbeNames=new Set(['headless','runtime.online','scheduler']);
-  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>coreProbeNames.has(name)).map(([,value])=>value):[];
+  const dependencyEntries=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status):[];
+  const failedDependencies=dependencyEntries.filter(([name,value])=>!name.startsWith('runtime_stats.')&&!isTelemetrySummaryDependency(name)&&value?.degraded===true);
+  const telemetrySummaryOnlyFailure=dependencyEntries.some(([name,value])=>isTelemetrySummaryDependency(name)&&value?.degraded===true)&&failedDependencies.length===0;
+  const dependencies=failedDependencies.map(([,value])=>value);
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
   const preprocessingDeps=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?status.dependency_status:{};
   const preprocessingAdvertised=Object.hasOwn(status,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
   const preprocessing=preprocessingAdvertised?dashboardPreprocessingHealth(status.preprocessing||{},status.dependency_status||{},status.features||{}):{available:true,statsAvailable:true,errorCount:0,disabled:false};
   const preprocessingWarning=preprocessingAdvertised&&(!preprocessing.available||!preprocessing.statsAvailable||preprocessing.errorCount>0);
   const health=dashboardHealth(status);
-  const degraded=health.level==='degraded';
+  const degraded=health.level==='degraded'||(status.success===false&&!telemetrySummaryOnlyFailure);
   const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
   const className=status.hub_online?(degraded||health.level==='attention'||ollamaState!=='online'||preprocessingWarning?'warn-t':'ok'):'bad-t';
   const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
@@ -1008,7 +1010,9 @@ function dashboardHealth(snapshot={}){
   const signals=[];
   const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&!isTelemetrySummaryDependency(name)&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
-  const coreCheckFailed=failedChecks.some(name=>['headless','runtime.online','scheduler'].includes(name));
+  const coreCheckNames=['headless','runtime.online','scheduler'];
+  const coreCheckFailed=failedChecks.some(name=>coreCheckNames.includes(name));
+  const functionalCoreCheckFailed=failedChecks.some(name=>coreCheckNames.some(coreName=>name===coreName||name.endsWith(`.${coreName}`)));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
   const features=snapshot.features||current.features||{};
   const preprocessingAdvertised=Object.hasOwn(snapshot,'preprocessing')||Object.hasOwn(current,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
@@ -1022,8 +1026,9 @@ function dashboardHealth(snapshot={}){
     }
   }
   const telemetry=snapshot.observability&&typeof snapshot.observability==='object'?dashboardTelemetryState(snapshot.observability):null;
+  const telemetrySummaryFailed=Object.entries(snapshot.dependency_status||{}).some(([name,value])=>isTelemetrySummaryDependency(name)&&value?.degraded===true);
   if(!telemetry){
-    signals.push('telemetry data is unavailable or stale');
+    if(!telemetrySummaryFailed&&snapshot.success!==true)signals.push('telemetry data is unavailable or stale');
   }else{
     if(!telemetry.available)signals.push('telemetry data is unavailable or stale');
     else if(!telemetry.activityObserved)signals.push('telemetry writer activity is unobserved');
@@ -1033,7 +1038,7 @@ function dashboardHealth(snapshot={}){
     else if(!telemetry.complete)signals.push('telemetry coverage is incomplete');
   }
   const dataCompleteness=!telemetry?'unknown':!telemetry.available?'unavailable':telemetry.complete?'complete':'incomplete';
-  const functionalFailure=hubOnline===false||heartbeatStale||terminalStatuses.includes(status)||['degraded','stale'].includes(status)||current.degraded===true||coreCheckFailed||Boolean(!preprocessing.disabled&&preprocessing.errorCount>0);
+  const functionalFailure=hubOnline===false||heartbeatStale||terminalStatuses.includes(status)||['degraded','stale'].includes(status)||current.degraded===true||functionalCoreCheckFailed||Boolean(!preprocessing.disabled&&preprocessing.errorCount>0);
   const functionalUncertainty=preprocessingAdvertised&&(!preprocessing.available||!preprocessing.statsAvailable);
   const functionalHealth=functionalFailure?'degraded':functionalUncertainty||ollamaStatus!=='online'||['attention','warning','warn','partial'].includes(status)?'attention':'healthy';
   const finish=health=>({...health,process_liveness:processLiveness,data_completeness:dataCompleteness,functional_health:functionalHealth,reason:`${health.reason} Process liveness: ${processLiveness}; data completeness: ${dataCompleteness}; functional health: ${functionalHealth}.`});

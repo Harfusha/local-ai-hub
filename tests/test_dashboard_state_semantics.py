@@ -2,7 +2,7 @@ from test_dashboard_polish import extract, run_javascript
 
 
 def test_health_badge_ignores_namespaced_telemetry_summary_timeout_only():
-    run_javascript(extract('function isTelemetrySummaryDependency(', 'function dashboardTelemetryState('), """
+    run_javascript(extract('function isTelemetrySummaryDependency(', 'function dashboardFreshness('), """
 for(const name of ['telemetry.summary','detail.agent_state.telemetry.summary']){
   const badge=dashboardHealthBadge({hub_online:true,ollama_online:true,success:false,dependency_status:{[name]:{degraded:true}}});
   assert.equal(badge.className,'ok');
