@@ -1,9 +1,9 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-## Current candidate — 2026-10-28 (startup-timeout fix in working tree)
+## Current candidate — 2026-10-28 (`903949d1`)
 
-- Base source commit `3259b632e704e6f710927defdc971ab6c889d403` is on `master` and `origin/master`. [CI #273](https://github.com/Harfusha/local-ai-hub/actions/runs/40661569334) finished with a failure in the Ubuntu 3.14 full suite: `test_first_mcp_status_starts_and_reaps_real_hub_entrypoint` observed no startup preflight. Its release-check, compileall and pyflakes steps passed.
-- Working-tree fix gives MCP one shared startup budget instead of repeating `ensure_server` after a timed-out preflight. Relevant modules pass **42/42**; compileall and pyflakes pass. This source change is not yet committed, packaged or installed.
+- Source commit `903949d187d44e494cd03bbff784c39d6a01e8a2` fixes the startup timeout failure from CI #273, where `test_first_mcp_status_starts_and_reaps_real_hub_entrypoint` observed no startup preflight. CI #273 targeted parent `3259b632`; its release-check, compileall and pyflakes steps passed. The new commit is local and awaits push/CI.
+- The fix gives MCP one shared startup budget instead of repeating `ensure_server` after a timed-out preflight. Relevant modules pass **42/42**; compileall and pyflakes pass. This commit is not yet wheel-smoked, installed or running.
 - The previously installed base wheel smoke passed with SHA-256 `b914e6c3fc2198fe590404afa755f949b34098a23d26baa129954188d1086841`, `success=true`, version `5.1.0`. It does not contain the working-tree fix.
 - Base-source evidence: surface audit **775/775** in 123.79s, selftest **6/6**, doctor no warnings. These results predate the working-tree fix.
 - Benchmark commit [`316566fe`](https://github.com/Harfusha/local-ai-hub/commit/316566fe745bb4aacb42b08bc5bd21a3245cc4ce) records 1,000 independent JSON-budget pairs with parity, p95 speedup 1.72x and p99 1.95x. Tail gate met; artifact source identity is `94a485ff`, so this closes that benchmark gate only.
@@ -11,7 +11,7 @@
 - Dashboard evidence: [2026-10-27 capture](dashboard-live-2026-10-27-post-activation.jpg), SHA-256 `3b869c462ef33e082b326b4bd1a17eb307a57ab09eea8d088aac532995c3b32a`. It shows Overview/Health, predates the current restart, and does not prove plan UI CRUD.
 - Agent OS `verify_completion` remains `complete=false`, zero receipts; four criteria remain unsatisfied: selftest, release check, wheel smoke and 1,000-sample benchmark. Dashboard plan create/list/edit persistence also remains unverified.
 
-**State: IN PROGRESS.** Commit/push, candidate wheel smoke/install, hosted CI, authentic broker receipts and dashboard plan UI evidence remain open. Local `release_check.py --allow-installed` is blocked by pre-existing `build/`; no cleanup was attempted.
+**State: IN PROGRESS.** Push/hosted CI, candidate wheel smoke/install, authentic broker receipts and dashboard plan UI evidence remain open. Local `release_check.py --allow-installed` is blocked by pre-existing `build/`; no cleanup was attempted.
 **Target:** `5.1.0`.
 
 ## Historical activation — 2026-10-28 (`eccca081`)
