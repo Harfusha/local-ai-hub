@@ -1,6 +1,20 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-## Current verified source candidate — 2026-10-28 (`2ec72c3e`, installed)
+## Current source candidate — 2026-10-28 (`ed34d7e`, CI succeeded)
+
+- **Source candidate:** `ed34d7e783409fe21298d2788d1aa85538de26e2`, pushed to `origin/master`.
+- **Hosted CI:** [run #282](https://github.com/Harfusha/local-ai-hub/actions/runs/40747360437) targets this exact commit. All 12 OS/Python matrix jobs, critical coverage, and package validation succeeded, including Ubuntu 3.14 full suite. The publish job was skipped because this was not a release-tag run. The earlier run #167 failed on an older source SHA and is superseded by this exact-candidate result.
+- **Wheel:** clean-archive build produced `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `78c004ea6e9c6514f1af2e08cbfc6a31cecf126ae2c27c2fa0d4cc7bc8668a77`. A fresh isolated venv installed the exact wheel. `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, five tools, and planner schema passed; Ollama was offline in the isolated environment.
+- **Candidate checks:** `python tools/release_check.py --strict-tree` passed on the clean export; `python -m compileall -q src tools tests` and `python -m pyflakes src tools` passed; `python tools/selftest.py` passed 6/6; `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py` passed 775 tests in 97.39s.
+- **FastMCP status schema:** `local_ai_status` uses explicit brief-status fields and no variadic arguments. `action` and repository `root` belong to other tool contracts, not this status tool; the run #167 root/workspace expectation was superseded by the brief-only surface contract and must not be reintroduced as an alias.
+- **Benchmark:** [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json), SHA-256 `DAE952D917827902167C159A64E2B1AACD2CBC8E49366EC8B1CF1EC82F779EA1`, records 1,000 independently measured pairs with parity, p95 speedup 1.72x and p99 speedup 1.95x. This closes only the JSON-budget tail gate.
+- **Live service:** the exact candidate wheel SHA-256 `78c004ea6e9c6514f1af2e08cbfc6a31cecf126ae2c27c2fa0d4cc7bc8668a77` is installed in the managed `.venv` and recorded in its `direct_url.json`. After managed service start, supervisor PID `37288` and Hub PID `46456` were reported with `hub_ready=true`; `/health` returned HTTP 200 and version `5.1.0` on port `11435`. A prior `service-status` JSON after stop was stale; the live HTTP check is the activation evidence.
+- **Dashboard:** persisted [Coordination screenshot](dashboard-live-2026-10-28-coordination.jpg), SHA-256 `9E4DA1C1F3461AA043129D1A66E06B9CF5C213C76B6825A6AD7D5B1BAD79ECEE`, proves plan/task create-edit-list-reload on the release worktree. It predates installation of `ed34d7e` and is not represented as a current-candidate rendering capture.
+- **Open gates:** Agent OS authentic `command_execution_record.v2` receipts for selftest, release check, wheel smoke, and benchmark; and the incident test-isolation investigation. `verify_completion` still reports zero receipts and four unmet receipt criteria. The available tool surface has no command broker. Do not convert local/CI outputs into broker receipts. Release publication remains skipped until a release-tag run.
+
+**State: SOURCE LOCALLY AND HOSTED VALIDATED; RELEASE ACCEPTANCE OPEN.**
+
+## Previous verified source candidate — 2026-10-28 (`2ec72c3e`, installed)
 
 - **Source candidate:** `2ec72c3e6576089357516848f32ea27a220b5a63`, exact source commit tested by CI #280. This release-evidence update changes documentation and adds dashboard captures only.
 - **Hosted CI:** [run #280](https://github.com/Harfusha/local-ai-hub/actions/runs/40704168335) succeeded for the exact source candidate: all 12 OS/Python matrix jobs, critical coverage, and package job passed. Ubuntu 3.14 full suite, release check, compileall, pyflakes, selftest, and clean-venv wheel smoke passed. Publish was skipped because this was not a release tag.
