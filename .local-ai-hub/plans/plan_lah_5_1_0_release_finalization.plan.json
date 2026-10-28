@@ -17,12 +17,12 @@
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "Source candidate ed34d7e CI #282 passed all 12 matrix jobs, critical coverage and package smoke. Exact wheel is installed and /health returned 200/version 5.1.0 (supervisor 37288, Hub 46456). Evidence docs commit a579d1af and plan commit 6770ebee are pushed; CI #283 is running and #284 queued. Agent OS verify_completion still has zero receipts and four unmet receipt criteria; no command broker is exposed. Incident test-isolation investigation remains unresolved.",
+      "blocker": "Current-candidate dashboard screenshot has not been persisted. Authentic command_execution_record.v2 receipts for selftest, release check, wheel smoke and benchmark remain absent; available tool surface exposes no command broker, so native/CI output cannot substitute. Incident test-isolation investigation remains unverified because historical shard manifests are unavailable and shard 5 ended session_finished=false. Keep release acceptance open.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Finalize exact source candidate evidence, document dashboard plan persistence, preserve unrelated operator files, and close only after authentic Agent OS verification receipts.",
+      "description": "Pushed candidate d406e598f66c4780c8aa80a8c0fc887269ff0ddb matches origin/master. Exact hosted CI run #287 completed successfully for that SHA: 14 matrix, critical-coverage and package jobs succeeded; the non-tag publish job was skipped. Clean isolated release_check and exact wheel smoke passed. Installed 5.1.0 wheel SHA-256 401a743a8845d494ac29e6c7986ccf4ab58a43fcb7fdaeec2096c0a1bbded223 was restarted via hubctl; current PID 40568 listens on 127.0.0.1:11435. /health returns success/version 5.1.0; local_ai_status and doctor report healthy. Release acceptance remains open.",
       "kind": "code",
-      "next_action": "Wait for documentation and plan CI runs #283/#284 to finish. Obtain authentic command_execution_record.v2 receipts through an available broker, resolve or explicitly adjudicate incident test-isolation, then rerun verify_completion. Keep task open while receipts are missing.",
+      "next_action": "Persist a current-candidate dashboard screenshot if the available UI tooling supports saving it. Resolve the incident test-isolation investigation from original execution evidence if available. Obtain authentic broker receipts through the authorized broker or retain the explicit blocker; do not synthesize receipts. Then update evidence and run verify_completion only on the existing task identity.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_phase": "verification",
       "work_status": "in_progress"

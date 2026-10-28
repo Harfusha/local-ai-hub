@@ -1,5 +1,13 @@
 # Post-Gemini Review and Deployment Plan
 
+## Current release checkpoint — 2026-10-28
+
+- Current pushed candidate is `d406e598f66c4780c8aa80a8c0fc887269ff0ddb`. Its fresh strict-tree release check, compileall, selftest 6/6, Caveman regression (19 passed), surface suite (775 passed), isolated wheel smoke, doctor, and pip dependency check passed.
+- The candidate wheel SHA-256 `401a743a8845d494ac29e6c7986ccf4ab58a43fcb7fdaeec2096c0a1bbded223` is installed in the managed `.venv`; the restarted service PID `40568` answered `/health` on port 11435 with version 5.1.0. Dashboard current health was Healthy after startup settled.
+- CI #287 for exact commit `d406e598` completed successfully in run #287 for the exact commit: all 14 matrix, critical-coverage, and package jobs succeeded; only the non-tag `Publish verified release` job was skipped. Release acceptance stays open until all remaining gates have evidence.
+- Open: persist a current-candidate dashboard screenshot, complete authentic Agent OS receipt-gated verification (never infer receipts from native tests), and close the incident test-isolation investigation.
+
+
 > **For agentic workers:** Use superpowers:executing-plans for sequential implementation and acceptance. The main chat owns Git, validation and deployment.
 
 **Goal:** Independently verify and finish the original Local AI Hub scope after Gemini, integrate all needed work on master, and deploy the verified candidate.

@@ -2,6 +2,8 @@
 
 ## 5.1.0 — 2026-10-26
 
+- Follow-up candidate fix: treat upstream Caveman compression output that is not smaller than the input as no useful reduction, and cover that response with a regression test.
+
 - Delivered comprehensive performance optimizations across the entire runtime pipeline (T0–T12).
 - Added opt-in native Cython SimHash acceleration through the `[native]` extra with 100% bitwise parity; the default and production wheel remain pure Python.
 - Resolved cross-platform command process tree cleanup on POSIX/Linux systems by verifying process group vacancy before confirming termination.
