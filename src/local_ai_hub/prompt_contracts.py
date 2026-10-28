@@ -169,6 +169,12 @@ def build_prompt(
         'A pass verdict is advisory, never proof of semantic correctness. '
         'An explicit response format in TASK takes precedence.\n'
         if operation_name == "review" else
+        "Return only the compressed CONTEXT. Use concise Caveman wording: remove filler, keep every material fact. "
+        "Do not summarize TASK; use it only as compression instructions, never as source text. Preserve exact paths, symbols, identifiers, "
+        "commands, flags, numbers, negations, conditions, exceptions, ordering, and uncertainty. Do not infer or "
+        "add facts. If safe compression is not possible, return CONTEXT unchanged. Do not add headings, analysis, "
+        "citations, a summary of TASK, or code fences.\n"
+        if operation_name == "compress" else
         "1. SUMMARY: one concrete conclusion for this task / Konkrétní závěr.\n"
         "2. EVIDENCE: cite supplied evidence IDs and paths.\n"
         "3. ANALYSIS: explain the project-specific reasoning, not generic best practices.\n"
@@ -186,8 +192,11 @@ def build_prompt(
         "STATIC FACTS:\n" + _clip(static_facts, 1800) + "\n\n"
         "CONTEXT:\n" + _clip(context, 12500) + "\n\n"
         "REQUIRED RESPONSE:\n" + required_response +
-        "Nevymýšlej soubory, API, symboly, řádky ani výsledky testů. Každý řádek musí odkazovat na dodaný důkaz; "
-        "holé 'line N' nepoužívej. Obecné rady bez vazby na dodaný context označ jako nedostatečné."
+        (
+            "Nevymýšlej soubory, API, symboly, řádky ani výsledky testů. Každý řádek musí odkazovat na dodaný důkaz; "
+            "holé 'line N' nepoužívej. Obecné rady bez vazby na dodaný context označ jako nedostatečné."
+            if operation_name != "compress" else ""
+        )
     )
     return PromptPackage(system=system, user=user, capability=capability, operation=operation_name)
 
