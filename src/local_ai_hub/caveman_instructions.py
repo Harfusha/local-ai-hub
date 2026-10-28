@@ -419,7 +419,7 @@ def compress_with_caveman(text: str, *, skill_dir: Path, model: str, endpoint: s
             raise RuntimeError("caveman compression timed out") from exc
         if result.returncode != 0:
             diagnostics = f"{result.stdout}\n{result.stderr}"
-            if "output is identical to input" in diagnostics:
+            if "output is identical to input" in diagnostics or "output is not smaller than input" in diagnostics:
                 reason = "upstream found no useful reduction"
             elif "returned an empty response" in diagnostics:
                 reason = "local model returned an empty response"

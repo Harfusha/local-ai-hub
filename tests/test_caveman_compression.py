@@ -118,7 +118,11 @@ def test_local_openai_endpoint_adds_v1_and_rejects_remote_hosts():
         _local_openai_endpoint("https://example.com/v1")
 
 
-def test_compressor_failure_reports_safe_reason_without_model_output(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    "upstream_reason",
+    ["output is identical to input", "output is not smaller than input"],
+)
+def test_compressor_failure_reports_safe_reason_without_model_output(tmp_path: Path, monkeypatch, upstream_reason: str):
     skill = tmp_path / "skill"
     (skill / "scripts").mkdir(parents=True)
     (skill / "scripts" / "__main__.py").write_text("", encoding="utf-8")
@@ -127,7 +131,7 @@ def test_compressor_failure_reports_safe_reason_without_model_output(tmp_path: P
         "run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=2,
-            stdout="Compression aborted: output is identical to input.\nsecret instruction text",
+            stdout=f"Compression aborted: {upstream_reason}.\nsecret instruction text",
             stderr="",
         ),
     )
