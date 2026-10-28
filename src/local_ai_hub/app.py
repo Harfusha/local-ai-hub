@@ -1113,6 +1113,26 @@ class LocalAIApp:
                 }
                 return value
 
+            # Start the scheduler before the runtime probe. Both are core
+            # health dependencies and share the request deadline; a slow
+            # runtime must not prevent the scheduler result from being ready.
+            scheduler_diagnostic: dict[str, Any] = {}
+            scheduler_handle = _schedule_status_dependency(
+                self.scheduler.status,
+                {},
+                key=_status_probe_key("full", scope, "scheduler"),
+                completed_cache=getattr(self, "_status_metadata_cache", None),
+                lock=self._status_dependency_lock,
+                inflight=self._status_dependency_inflight,
+                slots=self._status_dependency_slots,
+                executor=self._status_dependency_executor,
+                deadline=deadline,
+                diagnostic=scheduler_diagnostic,
+            )
+            pending_dependencies["scheduler"] = (
+                scheduler_handle, {}, scheduler_diagnostic, deadline
+            )
+
             runtime_diagnostic: dict[str, Any] = {}
             runtime_probe_started = time.monotonic()
             online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
@@ -1131,7 +1151,6 @@ class LocalAIApp:
             # Every full-snapshot probe shares the deadline created at entry.
             # Runtime availability cannot silently grant later probes a fresh budget.
             status_probes = {
-                "scheduler": (self.scheduler.status, {}),
                 "accelerators": (lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
                 "telemetry.summary": (lambda: self.telemetry.summary(scope=scope, _flush=False), {}),
                 "model_execution": (self.services.model_policy.summary, {}),
