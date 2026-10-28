@@ -1,8 +1,11 @@
 # Performance implementation progress
 
 Execution of the approved external `implementation-plan.md` and `performance-audit.md`
-under `01a17395-e061-79e0-b14b-edf0f1efb058`. All 24 findings and T0–T12 remain
-tracked by that plan. Existing integration task: `post-gemini-audit-20261025`;
+under `01a17395-e061-79e0-b14b-edf0f1efb058`. All 24 findings have disposition
+coverage; T0–T12 implementation and acceptance remain tracked separately. The
+JSON-budget tail gate alone is closed by the linked 1,000-pair artifact below.
+Disposition coverage does not mean every implementation or release gate passed.
+Existing integration task: `post-gemini-audit-20261025`;
 existing Codex goal retained. Sole checkout writer: chat
 `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff`. Starting master: `b5a80b16`, clean.
 

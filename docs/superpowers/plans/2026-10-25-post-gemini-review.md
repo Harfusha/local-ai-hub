@@ -2,10 +2,10 @@
 
 ## Current release checkpoint — 2026-10-28
 
-- Current pushed candidate is `d406e598f66c4780c8aa80a8c0fc887269ff0ddb`. Its fresh strict-tree release check, compileall, selftest 6/6, Caveman regression (19 passed), surface suite (775 passed), isolated wheel smoke, doctor, and pip dependency check passed.
-- The candidate wheel SHA-256 `401a743a8845d494ac29e6c7986ccf4ab58a43fcb7fdaeec2096c0a1bbded223` is installed in the managed `.venv`; the restarted service PID `40568` answered `/health` on port 11435 with version 5.1.0. Dashboard current health was Healthy after startup settled.
-- CI #287 for exact commit `d406e598` completed successfully in run #287 for the exact commit: all 14 matrix, critical-coverage, and package jobs succeeded; only the non-tag `Publish verified release` job was skipped. Release acceptance stays open until all remaining gates have evidence.
-- Open: persist a current-candidate dashboard screenshot, complete authentic Agent OS receipt-gated verification (never infer receipts from native tests), and close the incident test-isolation investigation.
+- Current pushed candidate is `890acda3ce44c8fb68b29319e48026bb5dc8729e`. Its clean-archive strict release check, compileall, pyflakes, selftest 6/6, surface suite (775 passed), prompt sync check, and isolated wheel smoke passed.
+- The exact rebuilt wheel SHA-256 `cb7543a3ede8720d04e4953e2489d7953604db08d1366b6edd5bde7b75ec8dfb` is installed in the managed `.venv`; the restarted service PID `1796` answers `/health` on port 11435 with version 5.1.0. `local_ai_status` reports `degraded=false` and Ollama online; post-restart `doctor.py` passed all checks. After startup records settled, dashboard was Healthy with complete data and 0 failures; persisted capture: [current dashboard](../../dashboard-live-2026-10-28-890acda3.jpg), SHA-256 `2e13ac8e081b3723389e74e7fe9efea15a6ff39b15ee2d2adfc9ce886804ff62`.
+- CI [run #40777823756](https://github.com/Harfusha/local-ai-hub/actions/runs/40777823756) targets exact commit `890acda3`; latest API result is 12/13 jobs complete, no failures, with Ubuntu 3.14 still running. Do not call CI green until terminal success.
+- [ ] **OPEN — final release evidence and closure:** current source, runtime, and dashboard evidence are recorded in [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md). Exact-head hosted CI is still running. Authentic Agent OS receipts and incident test-isolation adjudication remain outstanding. Native output is not a broker receipt. Keep release acceptance open.
 
 
 > **For agentic workers:** Use superpowers:executing-plans for sequential implementation and acceptance. The main chat owns Git, validation and deployment.
