@@ -71,3 +71,19 @@ def test_default_review_prompt_matches_consistency_validator_contract():
     assert "SUMMARY:" not in response
     assert len(package.system) < 2200
 
+
+def test_compress_prompt_returns_only_compressed_context():
+    package = build_prompt(
+        operation="compress",
+        model="qwen2.5-coder:7b",
+        task="Compress supplied instruction text.",
+        context="Source instruction: preserve all exact CLI flags and failure conditions.",
+    )
+    response = package.user.split("REQUIRED RESPONSE:\n", 1)[1]
+
+    assert "Return only the compressed CONTEXT" in response
+    assert "Do not summarize TASK" in response
+    assert "1. SUMMARY:" not in response
+    assert "EVIDENCE:" not in response
+    assert "Každý řádek" not in package.user
+
