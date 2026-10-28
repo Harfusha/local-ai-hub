@@ -10,17 +10,34 @@
       "acceptance_criteria": [
         "Instalace a aktualizace zachovají uživatelské instrukce a existující skilly",
         "Globální pravidla explicitně aktivují dostupné skilly a Hub",
-        "Testy ověří čistou instalaci a opakování"
+        "Testy ověří čistou instalaci a opakování",
+        "Upřesnění z chatu se promítne do globálního i projektového AGENTS.md: explicitní Local AI Hub, Superpowers a Caveman ultra; respektovat příkazy normal mode a stop caveman."
       ],
       "accountable_role": "Codex",
-      "blocker": "The running Hub returned internal server error for stored plan_reconcile_steering; replay remains pending until updated code is safely active. Master contains unrelated dirty files, including raw-byte differences in file_locks.py.",
-      "clarifications": [],
+      "blocker": "Antigravity desktop is not open or exposed among current app surfaces; actual skill loading and agent behavior remain unverified. Hub is online; optional preprocessing.stats and preprocessing.status are degraded.",
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_dc766e6488a241907c83_9de834fe7915c51c2d639fadebefeef9_r2",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-10-28-antigravity-auto-activation.md",
+              "revision": {
+                "content_sha256": "1f0625bad79e3370ee3a9354c4790cb1b554f402c131166436123d3955082624",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "Operator steering steering_antigravity_agents_20261028",
+          "supersedes": []
+        }
+      ],
       "depends_on": [],
       "description": "Configure and verify installation and instruction activation",
       "kind": "code",
-      "next_action": "Integrate the verified reconciliation and installer changes into master while preserving its dirty work; then apply the pinned Superpowers install and AGENTS rules, activate the updated Hub safely, replay the existing steering, and verify Antigravity behavior.",
+      "next_action": "Open an Antigravity session and verify global rule loading, Superpowers/Caveman ultra use, and a real Hub MCP call. Close only after actual use and broker-backed verification are available.",
       "title": "Automatic Antigravity setup",
-      "work_phase": "integration",
+      "work_phase": "verification",
       "work_status": "in_progress"
     }
   },
