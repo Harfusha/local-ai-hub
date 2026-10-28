@@ -193,7 +193,11 @@ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
         assert wire_tools[name].inputSchema == expected_input, name
         assert registered[name].output_schema == expected_output, name
         assert wire_tools[name].outputSchema == expected_output, name
+
+
 def test_mcp_solve_is_gated_as_heavy_and_repo_map_read_stays_lightweight(monkeypatch) -> None:
+    from types import SimpleNamespace
+
     from local_ai_hub import mcp_server
 
     gate_calls = []
@@ -223,7 +227,9 @@ def test_mcp_solve_is_gated_as_heavy_and_repo_map_read_stays_lightweight(monkeyp
     monkeypatch.setattr(mcp_server, "operational_mode_gate_error", gate)
     monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
     monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
-    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    # Replace the module reference instead of mutating the shared client object:
+    # an already in-flight background accounting event may still use that object.
+    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
     # This test covers action gating and dispatch; isolate background accounting.
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "_send", lambda *_args, **_kwargs: None)
 
