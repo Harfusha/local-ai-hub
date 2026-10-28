@@ -1007,6 +1007,7 @@ function dashboardHealth(snapshot={}){
   const signals=[];
   const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>!name.startsWith('runtime_stats.')&&!isTelemetrySummaryDependency(name)&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
+  const coreCheckFailed=failedChecks.some(name=>['headless','runtime.online','scheduler'].includes(name));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
   const features=snapshot.features||current.features||{};
   const preprocessingAdvertised=Object.hasOwn(snapshot,'preprocessing')||Object.hasOwn(current,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
@@ -1031,13 +1032,13 @@ function dashboardHealth(snapshot={}){
     else if(!telemetry.complete)signals.push('telemetry coverage is incomplete');
   }
   const dataCompleteness=!telemetry?'unknown':!telemetry.available?'unavailable':telemetry.complete?'complete':'incomplete';
-  const functionalFailure=hubOnline===false||heartbeatStale||terminalStatuses.includes(status)||['degraded','stale'].includes(status)||current.degraded===true||failedChecks.length>0||Boolean(!preprocessing.disabled&&preprocessing.errorCount>0);
+  const functionalFailure=hubOnline===false||heartbeatStale||terminalStatuses.includes(status)||['degraded','stale'].includes(status)||current.degraded===true||coreCheckFailed||Boolean(!preprocessing.disabled&&preprocessing.errorCount>0);
   const functionalUncertainty=preprocessingAdvertised&&(!preprocessing.available||!preprocessing.statsAvailable);
   const functionalHealth=functionalFailure?'degraded':functionalUncertainty||ollamaStatus!=='online'||['attention','warning','warn','partial'].includes(status)?'attention':'healthy';
   const finish=health=>({...health,process_liveness:processLiveness,data_completeness:dataCompleteness,functional_health:functionalHealth,reason:`${health.reason} Process liveness: ${processLiveness}; data completeness: ${dataCompleteness}; functional health: ${functionalHealth}.`});
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
-  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
+  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true||coreCheckFailed){
     const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
     return finish({level:'degraded',label:'Degraded',reason,actionTab,actionLabel});
   }

@@ -555,6 +555,53 @@ def test_dashboard_health_prioritizes_current_degradation() -> None:
     )
 
 
+def test_dashboard_health_treats_optional_probe_failure_as_attention() -> None:
+    preprocessing_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardPreprocessingHealth(") : DASHBOARD_HTML.index(
+            "function dashboardHealthBadge("
+        )
+    ]
+    health_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+
+    def run_health(dependency_status):
+        snapshot = {
+            "health": "healthy",
+            "hub_online": True,
+            "ollama_online": True,
+            "dependency_status": dependency_status,
+            "preprocessing": {"success": True, "projects": []},
+            "features": {"preprocessing": True},
+        }
+        script = (
+            preprocessing_source
+            + health_source
+            + f"console.log(JSON.stringify(dashboardHealth({json.dumps(snapshot)})));"
+        )
+        result = subprocess.run(
+            ["node"], input=script, text=True, capture_output=True, timeout=20, check=True
+        )
+        return json.loads(result.stdout)
+
+    optional_failure = run_health({"preprocessing.stats": {"degraded": True}})
+    assert optional_failure["level"] == "attention"
+    assert optional_failure["functional_health"] == "attention"
+    assert "preprocessing.stats" in optional_failure["reason"]
+
+    telemetry_failure = run_health(
+        {"detail.agent_state.telemetry.summary": {"degraded": True}}
+    )
+    assert telemetry_failure["level"] == "attention"
+    assert telemetry_failure["functional_health"] != "degraded"
+
+    runtime_failure = run_health({"scheduler": {"degraded": True}})
+    assert runtime_failure["level"] == "degraded"
+    assert runtime_failure["functional_health"] == "degraded"
+
+
 def test_dashboard_freshness_normalizes_timestamp_inputs_with_explicit_now() -> None:
     freshness_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function dashboardFreshness(") : DASHBOARD_HTML.index(
