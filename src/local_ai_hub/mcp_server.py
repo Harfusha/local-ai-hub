@@ -19,7 +19,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal, TypeAlias
+from typing import Any, Callable, Literal, TypeAlias
 from urllib.parse import quote
 
 from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
@@ -128,6 +128,20 @@ _CURRENT_OPERATIONAL_CONTEXT: contextvars.ContextVar[tuple[str, bool]] = context
 )
 
 
+class _MCPHubClientPostProxy:
+    """Expose HubClient state while routing its post calls through the adapter."""
+
+    def __init__(self, client: HubClient, post: Callable[..., Any]) -> None:
+        self._client = client
+        self._post = post
+
+    def post(self, *args: Any, **kwargs: Any) -> Any:
+        return self._post(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
 class _MCPHubClientAdapter:
     """Pass MCP action policy metadata through HubClient without changing wire payloads."""
 
@@ -171,6 +185,13 @@ class _MCPHubClientAdapter:
 
     def post(self, *args: Any, **kwargs: Any) -> Any:
         return self._client.post(*args, **kwargs)
+
+    def coord(self, action: str, **kwargs: Any) -> dict[str, Any]:
+        proxy = _MCPHubClientPostProxy(self._client, self.post)
+        return type(self._client).coord(proxy, action, **kwargs)
+
+    def ensure_server(self, *args: Any, **kwargs: Any) -> Any:
+        return self._client.ensure_server(*args, **kwargs)
 
     def status(
         self, detail: str = "brief", scope: str = "process", *,
