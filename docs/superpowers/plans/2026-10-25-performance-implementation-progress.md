@@ -60,7 +60,7 @@ Native command records are not broker receipts.
 
 ## Historical intermediate gates (superseded by subsequent implementation)
 
-> **Correction (2026-10-27):** The historical JSON-budget artifact used a synthetic baseline and is invalid. Its replacement records 1,000 independent pairs with parity at clean source `94a485ffecf6bc3c9810718b2f658b6df0120b64`: p95 1.72x and p99 1.95x on the recorded Windows host. This is candidate-specific performance evidence; full release acceptance remains open.
+> **Correction (2026-10-28):** The historical JSON-budget artifact used a synthetic baseline and is invalid. The replacement [`docs/perf_candidate_json_budget.json`](../../perf_candidate_json_budget.json) records 1,000 independent pairs with parity at clean source `94a485ffecf6bc3c9810718b2f658b6df0120b64`: p95 1.72x and p99 1.95x on the recorded Windows host. The JSON-budget tail gate is **met and closed**. This candidate-specific result does not close the remaining T0–T12 implementation and acceptance gates, establish native adoption, or prove prompt-performance gains; full release acceptance remains open.
 
 Final first-block native cohort passed at
 `owned-check-perf-first-block-final-contracts-20261025T192101Z`, source/config stable,

@@ -17,12 +17,12 @@
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "Commit 6b7f275b is pushed and installed. PID 40712 is online, /health returned success=true and version=5.1.0, dashboard returned HTTP 200 with the fix in served JS, and local_ai_status returned degraded=false. Targeted tests: 44 passed. Hosted CI for 6b7f275b, dashboard plan UI lifecycle, and authentic Agent OS receipts remain open.",
+      "blocker": "CI #280 passes for source candidate 2ec72c3e6576089357516848f32ea27a220b5a63; exact wheel, live service, surface audit, selftest, benchmark and dashboard CRUD are verified. Authentic command_execution_record.v2 receipts for selftest, release check, wheel smoke and benchmark remain required. Available tools expose no command broker.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Finish exact-candidate CI and release evidence, verify the installed runtime and dashboard plan lifecycle, and preserve unrelated operator files. Shared Hub restart is authorized only when needed for the requested release and must be verified afterward.",
+      "description": "Finalize exact source candidate evidence, document dashboard plan persistence, preserve unrelated operator files, and close only after authentic Agent OS verification receipts.",
       "kind": "code",
-      "next_action": "Verify hosted CI for exact commit 6b7f275b, then continue dashboard plan lifecycle and authentic receipt gates.",
+      "next_action": "Commit and push the documentation and fresh dashboard screenshot; verify CI for the integrated docs-only HEAD, then run verify_completion and preserve the open gate if authentic broker receipts remain unavailable.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_status": "in_progress"
     }
