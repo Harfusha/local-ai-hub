@@ -189,6 +189,33 @@ def _mcp_env(root: Path, config_path: Path, extra_pythonpath: Path | None = None
     return env
 
 
+def test_mcp_adapter_reserves_configured_cold_start_budget_before_read() -> None:
+    from local_ai_hub.mcp_server import _MCPHubClientAdapter
+
+    class Client:
+        auto_start = True
+        startup_wait = 20.0
+        max_request_timeout = 40.0
+
+        def request(self, path: str, payload: dict[str, object] | None = None) -> None:
+            return None
+
+        def ensure_server(self, timeout: float | None = None) -> bool:
+            self.startup_timeout = timeout
+            return True
+
+        def get(self, path: str, **kwargs: object) -> dict[str, bool]:
+            self.request_kwargs = kwargs
+            return {"success": True}
+
+    client = Client()
+    result = _MCPHubClientAdapter(client).get("/api/live/status")
+
+    assert result == {"success": True}
+    assert client.startup_timeout == 20.0
+    assert 14.0 <= client.request_kwargs["timeout"] <= 15.0
+
+
 def test_mcp_sdk_absence_keeps_importable_fallback(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     config_path, _state_dir, _port = _isolated_config(tmp_path)
