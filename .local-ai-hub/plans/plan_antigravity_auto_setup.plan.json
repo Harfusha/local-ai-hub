@@ -14,7 +14,7 @@
         "Upřesnění z chatu se promítne do globálního i projektového AGENTS.md: explicitní Local AI Hub, Superpowers a Caveman ultra; respektovat příkazy normal mode a stop caveman."
       ],
       "accountable_role": "Codex",
-      "blocker": "Antigravity UI shows baseline model quota reached until 2026-10-30 22:59:42; do not enable paid overages. Therefore real-agent instruction loading/Hub MCP behavior is unverified. Original task_f8d00ca6fd25 is not found by Hub (terminal 404) and its source worktree is absent; do not create duplicate or rebind to another root.",
+      "blocker": "Antigravity shows baseline model quota reached until 2026-10-30 22:59:42; do not enable paid overages. The app is on Home, not the .local-ai-hub project, and no agent request can currently prove rule loading or a real Hub MCP call. Hub status is online but degraded (Ollama/preprocessing/telemetry probes timed out). Original task_f8d00ca6fd25 returns terminal 404 and its source worktree is absent; no duplicate or root substitution.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -33,9 +33,9 @@
         }
       ],
       "depends_on": [],
-      "description": "Integrated in master at 3802e55e (ancestor of current HEAD). Global and project activation rules and required Gemini skill directories are present. Fresh targeted acceptance suite: 46 passed. Antigravity launched and opened .local-ai-hub, but model use is blocked by the visible baseline quota notice; neither instructions being loaded nor a real Hub MCP call was demonstrated.",
+      "description": "Source commit 3802e55e is integrated into master; current master record commit 432fd061. Fresh clean-snapshot acceptance from git archive 432fd061: 46 passed in 31.49s; the Antigravity file has 11 tests covering clean/repeat install, user text and unmanaged skill preservation, checksum/download failures, timeout and opt-out. Global and project AGENTS activation rules, installed skill directories, and ~/.gemini/settings.json local-ai MCP entry were verified on disk. Antigravity opens, but Home is selected and the account reports baseline model quota exhausted; real instruction loading and an actual Hub MCP call remain unverified.",
       "kind": "code",
-      "next_action": "After quota refresh, or with operator-authorized available model access, test a no-file/no-edit Antigravity prompt in the .local-ai-hub project: confirm global/project rules, Superpowers and Caveman ultra activation, normal mode/stop caveman behavior, and one real Hub MCP status call. Then update this existing plan/task with authentic evidence.",
+      "next_action": "After quota refresh or with operator-authorized non-paid model access, select the .local-ai-hub project in Antigravity and run a no-file/no-edit prompt. Verify global and project rule loading, Superpowers and Caveman ultra use, normal mode/stop caveman handling, and one authentic local-ai MCP status call; then update this existing task with evidence.",
       "title": "Automatic Antigravity setup",
       "work_phase": "verification",
       "work_status": "in_progress"
