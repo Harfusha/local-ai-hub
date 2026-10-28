@@ -14,7 +14,7 @@
         "Upřesnění z chatu se promítne do globálního i projektového AGENTS.md: explicitní Local AI Hub, Superpowers a Caveman ultra; respektovat příkazy normal mode a stop caveman."
       ],
       "accountable_role": "Codex",
-      "blocker": "Antigravity desktop is not open or exposed among current app surfaces; actual skill loading and agent behavior remain unverified. Hub is online; optional preprocessing.stats and preprocessing.status are degraded.",
+      "blocker": "Antigravity desktop is not open or exposed among current app surfaces; actual skill loading and real Hub MCP use remain unverified. The requested Agent OS task task_f8d00ca6fd25 is bound to the now-unavailable source worktree root; Hub rejected reconciliation at the main root, so no root substitution or duplicate task was used.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -33,9 +33,9 @@
         }
       ],
       "depends_on": [],
-      "description": "Configure and verify installation and instruction activation",
+      "description": "Automatic setup changes are integrated in master commit 3802e55e and pushed. Global and project AGENTS.md contain the explicit activation policy; required Gemini skills are present. Fresh focused tests on clean candidate: 46 passed. Live Antigravity behavior remains unverified because the desktop app is not exposed.",
       "kind": "code",
-      "next_action": "Open an Antigravity session and verify global rule loading, Superpowers/Caveman ultra use, and a real Hub MCP call. Close only after actual use and broker-backed verification are available.",
+      "next_action": "If the original task root is recovered, reconcile the persisted steering there without creating a duplicate. Separately open Antigravity and verify global policy loading, Superpowers and Caveman ultra use, normal mode and stop caveman handling, and a real Hub MCP call.",
       "title": "Automatic Antigravity setup",
       "work_phase": "verification",
       "work_status": "in_progress"
