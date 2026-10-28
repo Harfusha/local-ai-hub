@@ -45,7 +45,9 @@ def compact_local_prompt(
     """Compact safe plain-text input and request concise natural-language output."""
     if structured:
         return prompt, system
-    if input_enabled is True and not re.search(r"```|`|\t|(?m:^ {4})|(?m:^\s*[-*#>|+*-])|[{}\[\]]|^\s*\|", prompt):
+    if input_enabled is True and not re.search(
+        r"```|`|\t|(?m:^ {4})|(?m:^\s*[-*#>|+*-])|(?m:\S[ \t]{2,}\r?\n\S)|[{}\[\]]|^\s*\|", prompt
+    ):
         prompt = re.sub(r"[ \t]+$", "", prompt, flags=re.MULTILINE)
         prompt = re.sub(r"\n{3,}", "\n\n", prompt)
         prompt = re.sub(r" {2,}", " ", prompt)

@@ -230,6 +230,10 @@ def test_local_prompt_compaction_is_defaultable_and_preserves_structured_payload
     assert "generic caveats" in system
     code = "```python\nx = 1\n\n\ny = 2\n```"
     assert compact_local_prompt(code, "system", input_enabled=True, output_enabled=True, structured=False)[0] == code
+    hard_break = "Keep this line.  \nKeep next line separate."
+    assert compact_local_prompt(
+        hard_break, "system", input_enabled=True, output_enabled=False, structured=False
+    )[0] == hard_break
     assert compact_local_prompt(text, "system", input_enabled=True, output_enabled=True, structured=True) == (text, "system")
     assert compact_local_prompt(text, "system", input_enabled=False, output_enabled=False, structured=False) == (text, "system")
 

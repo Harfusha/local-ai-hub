@@ -566,7 +566,7 @@ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.10
-    assert result["success"] is True
+    assert result["success"] is True, result.get("dependency_status")
     assert result["degraded"] is False
     assert result["observability"] == {}
     assert result["model_execution"] == {}
