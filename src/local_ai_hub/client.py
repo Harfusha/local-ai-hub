@@ -1120,12 +1120,14 @@ class HubClient:
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
         cancel_event: threading.Event | None = None,
+        startup_preflight_complete: bool = False,
     ) -> dict[str, Any]:
         query = parse_qs(urlsplit(path).query, keep_blank_values=True)
         identity_error = self._request_scope(path, None, query=query)
         if identity_error is not None:
             return identity_error
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
+        should_autostart = self.auto_start and not startup_preflight_complete
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         if cancel_event is not None and cancel_event.is_set():
             return self._cancelled_response(request_id, request_not_sent=True)
@@ -1209,7 +1211,11 @@ class HubClient:
                 if self._inprocess_transport is not None:
                     server_ready = remaining > 0
                 else:
-                    server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                    server_ready = (
+                        self.ensure_server(timeout=remaining)
+                        if should_autostart and remaining > 0
+                        else startup_preflight_complete or not self.auto_start
+                    )
                 if server_ready:
                     for attempt in range(4):
                         if cancel_event is not None and cancel_event.is_set():
@@ -1231,7 +1237,7 @@ class HubClient:
                                     request_id,
                                     request_not_sent=bool(getattr(transient_exc, "request_not_sent", False)),
                                 )
-                            if attempt < 3 and self.auto_start:
+                            if attempt < 3 and should_autostart:
                                 remaining = deadline - time.monotonic()
                                 if remaining > 0:
                                     try:

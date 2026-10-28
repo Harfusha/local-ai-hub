@@ -170,6 +170,20 @@ class _MCPHubClientAdapter:
             client.request = request_with_policy  # type: ignore[method-assign]
 
     def get(self, path: str, **kwargs: Any) -> Any:
+        if getattr(self._client, "auto_start", False):
+            request_timeout = min(
+                max(0.2, float(kwargs.get("timeout", 15.0))),
+                max(0.2, float(getattr(self._client, "max_request_timeout", 15.0))),
+            )
+            request_budget = max(0.2, request_timeout - 1.0)
+            deadline = time.monotonic() + request_budget
+            startup_wait = float(getattr(self._client, "startup_wait", request_timeout))
+            self.ensure_server(timeout=min(request_budget, startup_wait))
+            kwargs["timeout"] = max(0.2, deadline - time.monotonic())
+            # Do not repeat the startup wait inside HubClient.get when the
+            # preflight timed out. The preflight owns the startup budget; the
+            # remaining request budget is reserved for the bounded HTTP probe.
+            kwargs["startup_preflight_complete"] = True
         if self._supports_operational_metadata:
             action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
             kwargs.setdefault("operational_action", action or None)

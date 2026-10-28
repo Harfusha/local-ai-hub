@@ -1,20 +1,23 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-## Latest activation — 2026-10-28
+## Current candidate — 2026-10-28 (startup-timeout fix in working tree)
 
-- Source `eccca081282f05ad9f8655f24ba1e4d8ae1a82f7` is on `origin/master`; [CI #271](https://github.com/Harfusha/local-ai-hub/actions/runs/40647282465) is in progress (12/13 jobs complete, no failures at latest check); Ubuntu 3.14 full suite is still running.
-- Clean isolated wheel smoke passed: SHA-256 `14297c21bead07ea7569570074fc93a74acfa0b2eebb09e173fe04bdcc05c379`, `success=true`, `smoke=passed`, version `5.1.0`, five MCP tools.
-- `release_check --allow-installed`, compileall, and selftest (6/6) passed for this source. Surface audit: 775 passed.
-- Benchmark: commit [`316566fe`](https://github.com/Harfusha/local-ai-hub/commit/316566fe745bb4aacb42b08bc5bd21a3245cc4ce) records 1,000 independently measured JSON-budget pairs with matching output parity; p95 speedup 1.72x and p99 speedup 1.95x. This closes only the JSON-budget tail gate; the artifact's candidate source was `94a485ff`.
-- Latest wheel is installed in the managed `.venv`. `service.py restart` could not verify the old Hub stop; process and listener inspection showed no Hub processes, so the service was started once. It is now ready: supervisor PID `2120`, Hub PID `28896`, port `11435`; `/health` reports version `5.1.0`, Ollama online.
-- Persisted dashboard screenshot: [2026-10-27 post-activation capture](dashboard-live-2026-10-27-post-activation.jpg). It shows the local dashboard reporting Healthy, Hub/Ollama running, and Agent OS enabled. It predates the 2026-10-28 restart and is not claimed as a fresh capture of that process.
+- Base source commit `3259b632e704e6f710927defdc971ab6c889d403` is on `master` and `origin/master`. [CI #273](https://github.com/Harfusha/local-ai-hub/actions/runs/40661569334) finished with a failure in the Ubuntu 3.14 full suite: `test_first_mcp_status_starts_and_reaps_real_hub_entrypoint` observed no startup preflight. Its release-check, compileall and pyflakes steps passed.
+- Working-tree fix gives MCP one shared startup budget instead of repeating `ensure_server` after a timed-out preflight. Relevant modules pass **42/42**; compileall and pyflakes pass. This source change is not yet committed, packaged or installed.
+- The previously installed base wheel smoke passed with SHA-256 `b914e6c3fc2198fe590404afa755f949b34098a23d26baa129954188d1086841`, `success=true`, version `5.1.0`. It does not contain the working-tree fix.
+- Base-source evidence: surface audit **775/775** in 123.79s, selftest **6/6**, doctor no warnings. These results predate the working-tree fix.
+- Benchmark commit [`316566fe`](https://github.com/Harfusha/local-ai-hub/commit/316566fe745bb4aacb42b08bc5bd21a3245cc4ce) records 1,000 independent JSON-budget pairs with parity, p95 speedup 1.72x and p99 1.95x. Tail gate met; artifact source identity is `94a485ff`, so this closes that benchmark gate only.
+- Installed base service process PID `51748` listens on `127.0.0.1:11435`; `/health` returns `success=true`, version `5.1.0`. `local_ai_status` is online and reports overall `degraded=false`, with `telemetry.summary` degraded. The working-tree fix is not active in this process.
+- Dashboard evidence: [2026-10-27 capture](dashboard-live-2026-10-27-post-activation.jpg), SHA-256 `3b869c462ef33e082b326b4bd1a17eb307a57ab09eea8d088aac532995c3b32a`. It shows Overview/Health, predates the current restart, and does not prove plan UI CRUD.
+- Agent OS `verify_completion` remains `complete=false`, zero receipts; four criteria remain unsatisfied: selftest, release check, wheel smoke and 1,000-sample benchmark. Dashboard plan create/list/edit persistence also remains unverified.
 
-![Local AI Hub dashboard, captured 2026-10-27](dashboard-live-2026-10-27-post-activation.jpg)
-
-Browser plan create/list/edit lifecycle and authentic Agent OS receipts remain open; full suite and hosted CI are still running. Fresh capture attempts stopped because Windows Computer Use could not verify Chrome's current URL and the Hub browser endpoint returned `browser_unavailable` (Chrome or Chromium not found).
-
-**State: IN PROGRESS.** Latest source is `eccca081`; candidate verification and hosted CI remain open.
+**State: IN PROGRESS.** Commit/push, candidate wheel smoke/install, hosted CI, authentic broker receipts and dashboard plan UI evidence remain open. Local `release_check.py --allow-installed` is blocked by pre-existing `build/`; no cleanup was attempted.
 **Target:** `5.1.0`.
+
+## Historical activation — 2026-10-28 (`eccca081`)
+
+- Source candidate `eccca081282f05ad9f8655f24ba1e4d8ae1a82f7` targeted CI #271; it is superseded by the current candidate above.
+- Its wheel, service PIDs and runtime observations below are historical and do not describe the currently installed process.
 
 ## Historical acceptance snapshot — 2026-10-28 (HEAD `8a80f66`)
 
