@@ -1,8 +1,21 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-## Latest verified candidate — 2026-10-28 (`5bbf3499`, installed)
+## Current verified candidate — 2026-10-28 (`8db84a21`, installed)
 
-- **Source candidate:** `5bbf349942f24b2fe41ccecfd6d7856c1f3d28e8`; CI run #40670252361 tested this exact code. Later master updates contain documentation only; the tested source remains unchanged.
+- **Source candidate:** `8db84a21bc94a664fc15d288bab946470cfba906`, pushed to `origin/master`; it specializes the `compress` prompt to return only compressed CONTEXT and excludes generic evidence/citation instructions.
+- **Hosted CI:** [run #40696544480](https://github.com/Harfusha/local-ai-hub/actions/runs/40696544480) completed successfully on this exact commit. All 12 OS/Python matrix jobs, critical coverage, and package job passed; publish was skipped because this was not a release tag. Ubuntu 3.14 full suite, release check, compileall, pyflakes, and selftest passed.
+- **Wheel:** isolated build from a clean archive of this commit produced `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `c47d9f4cf9762ed89d3674f07e9331246172519db84c0a297462178b0104e90a`. A separate venv installed that exact wheel; `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, `tool_count=5`. The managed `.venv` `direct_url.json` records the same SHA.
+- **Focused regression:** `tests/test_prompt_contracts.py` passed 5/5. The Hub semantic review returned invalid citations and was unusable; manual diff review and the focused test are the usable evidence.
+- **Benchmark:** [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json) records the 1,000-pair result, parity, p95 1.72x, p99 1.95x. It verifies only the JSON-budget benchmark gate, not performance of this prompt change.
+- **Live service:** restarted using the exact wheel above. Listener PID `23676`, managed Hub PID `55692`, supervisor PID `58464`; port `11435` returned `/health success=true, version=5.1.0`. `local_ai_status` reported Hub/Ollama online, `degraded=false`, active model `qwen2.5-coder:3b`.
+- **Dashboard:** the persisted [2026-10-27 capture](dashboard-live-2026-10-27-post-activation.jpg) (SHA-256 `3b869c462ef33e082b326b4bd1a17eb307a57ab09eea8d088aac532995c3b32a`) is historical. A live 2026-10-28 view was observed but not saved; plan create/list/edit/reload persistence remains unverified.
+- **Open gates:** latest Agent OS `verify_completion` request `req_1c59d7d11b39` returned `complete=false`, zero receipts, and unmet criteria `selftest passed`, `release check passed`, `wheel smoke passed`, `1000 benchmark passed`. Available MCP tools do not expose the command broker needed for authentic `command_execution_record.v2` receipts; native outputs are not substitutes.
+
+**State: IN PROGRESS.** Source, exact wheel smoke, hosted CI and live restart gates pass; Agent OS receipts and dashboard plan lifecycle remain open.
+
+## Previous verified source candidate — 2026-10-28 (`5bbf3499`, installed)
+
+- **Source candidate:** `5bbf349942f24b2fe41ccecfd6d7856c1f3d28e8`; CI run #40670252361 tested this previous code candidate; later source commit `8db84a21` supersedes it.
 - **Hosted CI:** [run #40670252361](https://github.com/Harfusha/local-ai-hub/actions/runs/40670252361) completed successfully for this exact source candidate. All 12 OS/Python matrix jobs, critical coverage, and package build passed; release publication was skipped because this run did not publish a tag.
 - **Wheel:** `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `c9e6251bdd649fd2bf2dc7cff1ea0322ad91e397ba0b7be30dbef2cc6ada4174`. Isolated `tools/wheel_smoke.py` passed (`success=true`, `smoke=passed`, `tool_count=5`). The managed `.venv` records this exact wheel hash in `direct_url.json`.
 - **Validation:** surface audit **775 passed**; MCP contract dispatch **19 passed**; `compileall`, `pyflakes src tools`, and selftest **6/6** passed on this candidate.
