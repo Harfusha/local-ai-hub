@@ -1,6 +1,22 @@
 # Local AI Hub: current acceptance state
 
-## Active checkpoint — 2026-10-29 (`c6ddaeda`)
+## Active checkpoint — 2026-10-29 (`c513adf`)
+
+Exact candidate commit `c513adf60c9a61e102b41bf1bbd5074c2b10ff81` is pushed on `codex/ci-context-timeout-20261029`. Its exact-head [CI run #40846602356](https://github.com/Harfusha/local-ai-hub/actions/runs/40846602356) completed successfully: 15 jobs, 14 success, one skipped, zero failures. The candidate is two commits ahead of `origin/master` (`c039ec6364d170db7d8a7bcba3ab66ad3e5b2111`); changed paths are two context-transport tests and the release plan. Package source is unchanged. Integration remains pending.
+
+Focused surface audit passed **775 tests**; the two explicit FastMCP status schema tests passed **5 tests**. `local_ai_status` uses explicit typed parameters; current canonical tests intentionally reject an `action` parameter. Do not change this API to the stale `action`/`root` proposal in the objective.
+
+A clean archived wheel build from `c513adf`, normalized by fixed `SOURCE_DATE_EPOCH`, reproduced twice at SHA-256 `caa6fb2ccf1527b228b8ff414d7c69cdc1a285f7fb4075493b2a6df60a434b0f`. Fresh isolated Python 3.13.2 install and `tools/wheel_smoke.py` passed (`success=true`, `smoke=passed`, planner schema passed, 5 MCP tools). `tools/selftest.py` passed 6/6. The exact wheel is installed with matching PEP 610 provenance. `hubctl.py restart` succeeded; supervisor PID `47804`, Hub PID `20380`, port `11435`, `/health` version 5.1.0. `local_ai_status`: Hub and Ollama online, `degraded=false`, `qwen2.5-coder:3b`; `doctor.py` reported no warnings.
+
+Benchmark artifact [`docs/perf_candidate_json_budget.json`](../../perf_candidate_json_budget.json) is tracked in commit `316566fe`: 1,000 pairs, verified parity, p95 1.72x and p99 1.95x; tail gate met. This does not establish broad model or latency gains.
+
+Setup generated current agent policies; Gemini MCP configs parse and point to the managed venv. Global/project Antigravity instruction markers are at line 1; required Superpowers/Caveman/Ultracave skill files exist. Actual Antigravity rule loading and MCP use remain unverified. The dashboard board loaded the exact `release-install-510` root (4 plans, 4 tasks, 3 active, 0 blocked); its header recovered from a transient stale/degraded label to `live` while the API stayed healthy. Current screenshot is visible in this session, not saved; an older screenshot is for a different worktree.
+
+Release acceptance remains open: final documentation commit and exact-head CI, clean `release_check.py --strict-tree`, safe `origin/master` integration, saved current dashboard screenshot, remaining dashboard health/CRUD acceptance, actual Antigravity behavior after quota refresh, authentic `command_execution_record.v2` receipts and successful `verify_completion`. Original `task_f8d00ca6fd25` is still terminal 404 and its worktree absent. Do not synthesize receipts or close the plan.
+
+**State: CANDIDATE CI GREEN; INSTALLED 5.1.0 HEALTHY; RELEASE ACCEPTANCE OPEN.**
+
+## Superseded checkpoint — 2026-10-29 (`c6ddaeda`)
 
 The exact source commit `c6ddaedaa5bb59d59f7179fa3855837f9eff186c` is pushed to `origin/master`. CI [run #40793233167](https://github.com/Harfusha/local-ai-hub/actions/runs/40793233167) has 12/13 jobs succeeded; Ubuntu/Python 3.14 is still running. A fresh isolated Python 3.13 wheel smoke passed for SHA-256 `d71646f288a800243283cc2ab8a57fe27589e613fc2db87571689ac35857f270`; pip check is clean. The exact wheel is installed in the main managed `.venv`, Hub was restarted, `/health` succeeds on PID `31340` at `127.0.0.1:11435`, `doctor.py` has no warnings, and `headless.manage_ollama=true`.
 
