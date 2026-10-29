@@ -44,7 +44,7 @@ Durable `local_ai_task(action="submit")` accepts optional string `request_id` as
 
 The optional model-free claim validator requires explicit inputs: `python tools/validate_t02_acceptance_claims.py <manifest.json> <receipt.json>`. Evidence counts require JSON integers; booleans and floats reject. It does not load historical handoff files or establish current release acceptance; synthetic unit fixtures verify only claim-validation behavior.
 
-Use `local_ai_status` only for compact readiness (`detail="brief"` or `"models"`).
+Use `local_ai_status` only for compact readiness (`detail="brief"`).
 
 For `local_ai_repo`, omit action-inapplicable fields. A retired field rejects whenever supplied as a non-null value, including empty strings and zero; `null` has omission semantics.
 
@@ -82,7 +82,7 @@ Persistent Biome lint uses only the reviewed Windows Biome 2.5.15 foreground-ser
 
 When a security scan is requested, use the repository's supported host-native scanner and report its actual scope and coverage. The Hub MCP does not provide security-scan actions.
 
-Use only actions and fields advertised by the active MCP schema. Status readiness uses only `detail="brief"` or `detail="models"`; do not infer support from internal APIs or another release.
+Use only actions and fields advertised by the active MCP schema. Status readiness uses only `detail="brief"`; do not infer support from internal APIs or another release.
 
 Repository MCP operations are limited to the supported actions listed in the current MCP tool contract; use only action-specific fields in the installed generated schema.
 
@@ -102,7 +102,7 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 
 ## Current MCP tool contract
 
-The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. `local_ai_status` supports compact `brief` or `models` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
+The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. `local_ai_status` supports compact `brief` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
 
 There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable. Do not invent verification receipts or infer support from internal APIs.
 
@@ -275,11 +275,11 @@ Verify that the latest policy from `~/.local-ai-hub/generated/agent-policy.md` a
 - Keep the `TOKEN ECONOMY POLICY` block identical across canonical prompts and global agent configurations; use only tooling and setup commands that the installed skill and repository actually provide.
 - Use `local_ai_rag` for semantic retrieval only after deterministic and indexed repository evidence is insufficient.
 - For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. Success also returns `diagram_indexed` and the resolved image path.
-- Contract notes: `local_ai_status` provides compact readiness through `detail="brief"` or `detail="models"`. Do not request telemetry, traces, or Agent OS state through this tool.
+- Contract notes: `local_ai_status` provides compact readiness through `detail="brief"`. Do not request telemetry, traces, or Agent OS state through this tool.
 - For durable work, require one `local_ai_coord(action="task_create")` contract, phase changes through `local_ai_coord(action="task_checkpoint")`, and one bounded wait instead of status polling loops.
 - Use `local_ai_coord(action="ask", root=..., session_id=..., question=...)` to persist a human question. Retrieve it with the returned `question_id` and same root/session; record operator response with `action="answer"` under the authenticated root and same session. Do not include credentials.
 - Reuse fresh sufficient repository evidence. Exact file or symbol lookups may use bounded indexed/source routes directly. For non-trivial implementation or review without sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once; on first work in each stable root, inspect project config, add only evidence-backed missing settings, then idempotently register with `local_ai_repo(action="preprocess", root=ABS_ROOT)` once. Never poll or force-refresh preprocessing.
-- Use `local_ai_status` only for compact readiness (`brief` or `models`); it does not expose telemetry or Agent OS state. Use only tool names, actions, arguments, defaults, and feature-gated options present in the installed generated schema. The schema is authoritative for the installed version; do not infer support from internal APIs or another release.
+- Use `local_ai_status` only for compact readiness (`brief`); it does not expose telemetry or Agent OS state. Use only tool names, actions, arguments, defaults, and feature-gated options present in the installed generated schema. The schema is authoritative for the installed version; do not infer support from internal APIs or another release.
 - Semantic delegation is on-demand: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Treat local output as advisory only; queued work, stale context, missing evidence or weak grounding remains visible with explicit metadata and must not be silently discarded. Preserve exceptions for architecture, security, mutations, open-ended coding, exact evidence and verification. Shared specialized prompt contracts and model capability limits live in `docs/MODEL_CAPABILITIES.md`.
 - Treat workspace memos and leases as trusted-local shared coordination state. Workspace memo endpoints require an authorized operator; agents use supplied task memory or permitted Agent OS memory_find/memory_record. Workspace memos are keyed by canonical workspace and key. Use `expected_version` from a memo read when `memo_put` must reject stale overwrites; a `version_conflict` returns the current generation, so reread and reconcile before retrying. Omission retains last-writer-wins; deletion advances the generation while expiration does not.
 - Preserve native fallback gate: after a Hub outage, require `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` and native-tool authorization. Mutations never cache or single-flight.
@@ -425,7 +425,7 @@ CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as opti
 
 - Use `local_ai_repo` for bounded repository evidence. Supported actions: `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Use exact evidence slices via `local_ai_artifact`; use adaptive `context` only when indexed evidence is insufficient.
 - `local_ai_coord` supports `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. Use only actions and fields advertised by the active schema.
-- `local_ai_status` provides compact readiness (`brief` or `models`), not telemetry or Agent OS state.
+- `local_ai_status` provides compact readiness (`brief`), not telemetry or Agent OS state.
 - Use `local_ai_task` selectively for bounded semantic work when an approved backend is available. Cloud planning and reasoning are not blocked by local model availability.
 - Run tests, builds, lint and other commands through the host-native command tool with bounded output.
 - Before substantial work, create a task contract and query relevant memory. Checkpoint meaningful phase changes. After edits, use `review_diff` when applicable and run targeted validation. Never invent verification receipts.
@@ -465,13 +465,13 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 
 ## Current MCP tool contract
 
-The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. `local_ai_status` supports compact `brief` or `models` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
+The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. `local_ai_status` supports compact `brief` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
 
 There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable. Do not invent verification receipts or infer support from internal APIs.
 
 ## Repository symbol navigation
 
-Use `local_ai_status` only for compact readiness (`detail="brief"` or `"models"`).
+Use `local_ai_status` only for compact readiness (`detail="brief"`).
 
 MCP task checkpoints preflight the complete adoption response before checkpoint persistence, including the watchdog failure path. An insufficient response budget returns `mutation_applied=false` and `operation_not_started=true`; it does not mean the HTTP request was unsent. Task-memory `original_tokens` measures the canonical complete adoption payload without optional delta/reuse/debug wrappers; `returned_tokens` measures the actual emitted MCP envelope. This checkpoint guard does not establish equivalent preflight for every other mutation.
 
@@ -485,7 +485,7 @@ Managed llama.cpp preset generation carries each configured route's positive `co
 
 Ollama foreground and interruptible calls share complete-marker/partial-output handling. Interruptible calls retain one generic attempt; pre-output OOM can reserve one reduced-context retry within the original deadline even with `request_attempts=1`. Input/tool/schema/template content is retained; unknown vision cost or an oversized retained input refuses recovery. Partial output, cancellation, deadline expiry or unknown cleanup stops model/stale substitution. Recovered execution provenance is returned and excluded from caches under the original context profile. Completion-contract version 2 separates exact/semantic/stale keys from legacy records, which remain retained. No configuration edit or daemon restart is implied by these source changes.
 
-Use `local_ai_status` only for compact readiness (`detail="brief"` or `"models"`).
+Use `local_ai_status` only for compact readiness (`detail="brief"`).
 
 Migration drift compares table/column names, including generated columns, using bounded in-memory SQLite migration replay and read-only live schema inspection. ASCII identifier case follows SQLite matching; results do not establish type/default/constraint equality. Limit or replay failures must remain unknown rather than `in_sync=true`.
 
@@ -526,7 +526,7 @@ Commands and repository context never adopt the last active task implicitly. Sup
 
 ## Audit validation and recovery (2026-10-20)
 
-- After updating both MCP server and client, exact action help uses local_ai_status(detail="guide", guide_tool=..., guide_action=...). Generic guide cards remain available without those selectors. Action examples execute no commands.
+- Use the installed MCP schema for action help. `local_ai_status` accepts only `detail="brief"`; it has no `action`, `root`, `workspace`, or guide selectors.
 - Context artifact IDs must be canonical strings and agree between nested and outer envelopes. Partial nested context cannot establish successful complete delivery. Artifact retrieval is offered only for an actual valid persisted pointer.
 - Command output_recovery states availability and reason explicitly. diagnostic_artifacts=false does not authorize enabling complete logs.
 - Empty API tokens trust loopback clients only; configured tokens remain required for protected requests. security.allow_anonymous does not enable an anonymous network mode.

@@ -46,7 +46,7 @@ If Serena is unavailable, the hub degrades to built-in indexes. Treat response s
 
 ## Public operation contract notes
 
-- `local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, or `traces`; `traces` accepts `min_duration_ms` and `trace_action`. `action` also accepts the `status`, `health`, `check`, and `info` aliases.
+- `local_ai_status` provides compact readiness using `detail="brief"`; its typed schema also supports `extra_fields`, `max_response_tokens`, `response_profile`, and `reuse_key`. It has no `action`, `root`, or `workspace` selector. Operator decision 2026-10-29 retains this contract.
 - `local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; run no more than four steps in parallel.
 - `local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1.
@@ -117,9 +117,9 @@ Conversation history is process-memory only: it expires after inactivity and dis
  
 When `[agent_state].enabled` is active, the compact MCP surface projects durable agent operating system state without adding new tools:
 - `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `ask`, `answer`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_record`, `negative_knowledge_find`, `incident_decision`.
-- `local_ai_repo`: `context_compile`, `verify_receipt`, `verify_completion`.
+- `context_compile`, `verify_receipt`, and `verify_completion` belong to `local_ai_coord`; `local_ai_repo` does not expose them.
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
-- `local_ai_status`: `detail="agent_state"` for health and counts.
+- `local_ai_status`: `detail="brief"` for compact Hub and local-model readiness.
 - `ask` stores only explicitly submitted question text under the request-bound root and actual session; retrieve with the same scope and `question_id`. `answer` stores the operator response under the same root and session. Authentication uses configured credentials and route permissions. Do not put credentials in questions or answers.
 - Privacy boundary: telemetry remains metadata-only; question and answer text is durable local Agent OS state, separate from telemetry.
 ## Shared workspace memo contract
@@ -130,7 +130,7 @@ Treat workspace memos and leases as trusted-local shared coordination state. Wor
 
 Every public Hub tool now applies an aggregate agent-facing response budget after semantic projection. Default is approximately 3200 tokens. Use `max_response_tokens` for a bounded override; explicit values below 128 are rejected, never silently increased. Use `response_profile="minimal"|"compact"|"standard"|"debug"|"delta"` for intent, and a stable `reuse_key` for repeated logical queries. `delta` returns changed fields only; unchanged repeated results return a pointer envelope with IDs and summary instead of repeating payload data. Independent local-model work uses the existing `local_ai_task(action="batch")` path.
 
-Telemetry records operation category plus raw/projected/saved response estimates, budget truncation, cache outcome, and projection reason. The bounded context ledger is visible only through an explicit `local_ai_status(detail="cache")` request and stores metadata only: no prompts, source text, secrets, or full paths. Hub command execution already caps captured/inline stdout and stderr; intercepting native Codex host `exec` requires a separate host hook and is not silently emulated by MCP.
+Telemetry records operation category plus raw/projected/saved response estimates, budget truncation, cache outcome, and projection reason. The bounded context ledger stores metadata only: no prompts, source text, secrets, or full paths. Inspect it only through a supported authorized operational surface. Hub command execution already caps captured/inline stdout and stderr; intercepting native Codex host `exec` requires a separate host hook and is not silently emulated by MCP.
 
 The installed user hook at `.cursor/hooks.json` blocks broad native `cat`/`type`/`Get-Content`/`rg`/`grep`/`tree` reads without an explicit bound. It fails open on hook errors. Use `-m`, `-First`, `head`, `local_ai_repo`, or `local_ai_artifact` when exact detail is needed.
 
