@@ -130,7 +130,7 @@ Hugging Face embeddings and rerankers load cached model files offline by default
 
 Local AI Hub has no remote-access or remote-control mode. HTTP binds only to `127.0.0.1`; HubClient and supervisor probes always target `127.0.0.1`. The dashboard and stdio MCP adapter use loopback HTTP only as same-machine transport. Remote host, client-host, and origin overrides are rejected. Protected routes require credentials and route permissions. `security.api_token` uses coarse `api_token_permissions`; `security.supervisor_token` grants administrative read/write only; `security.action_tokens` map exact actions to credentials; `security.users`, `security.api_token_tenant`, and `security.api_token_principal` are removed and reject by presence. Credential values must be unique and redacted from diagnostics. `client.startup_wait_seconds` defaults to `30.0`.
 
-`local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` telemetry, agent-state, and `traces` details avoid the live-status request; `traces` accepts bounded `min_duration_ms` and `trace_action` filters.
+`local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` supports only compact `detail="brief"` readiness; `action`, `root`, `workspace`, telemetry, agent-state, trace and guide selectors are not its public inputs.
 
 
 
@@ -658,7 +658,7 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - `local_ai_artifact` accepts universal `root` and `workspace` parameters.
 - `local_ai_repo` accepts `pattern` for `structural_search`, single `path`/`target`/`replacement` directly in `batch_replace`, and filters `git_status` by `path`.
 - `local_ai_rag` accepts `text` for `search` and `ingest_document`.
-- `local_ai_status` accepts `root` and `workspace` parameters and aliases `health`, `ping`, and `check`.
+- `local_ai_status` has no `action`, `root`, or `workspace` selector; use only its advertised compact readiness inputs.
 - `local_ai_work` accepts `id` (for `work_id`), `goal`/`prompt` (for `task`), and automatically normalizes string `acceptance_criteria` and `constraints` into lists.
 - `local_ai_coord` accepts `notes` and `state_data` for `task_checkpoint`, `criterion` for `task_create`, `resource` for semaphores, `state` for `task_list`, and normalizes string criteria and collections into lists.
 - `local_ai_task` accepts `items` for `batch`; review uses the canonical `review` action.
@@ -734,7 +734,7 @@ Commands and repository context never adopt the last active task implicitly. Sup
 
 ## Audit validation and recovery (2026-10-20)
 
-- After updating both MCP server and client, exact action help uses local_ai_status(detail="guide", guide_tool=..., guide_action=...). Generic guide cards remain available without those selectors. Action examples execute no commands.
+- Use the installed generated schema for action help. `local_ai_status` accepts only `detail="brief"` and does not expose guide selectors.
 - Context artifact IDs must be canonical strings and agree between nested and outer envelopes. Partial nested context cannot establish successful complete delivery. Artifact retrieval is offered only for an actual valid persisted pointer.
 - Command output_recovery states availability and reason explicitly. diagnostic_artifacts=false does not authorize enabling complete logs.
 - Empty API tokens trust loopback clients only; configured tokens remain required for protected requests. security.allow_anonymous does not enable an anonymous network mode.

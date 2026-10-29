@@ -7,6 +7,7 @@ Purpose: preserve every audit finding, its evidence gap, requested repair, task 
 ## Decisions and guardrails
 
 - Quality is the top priority. Performance claims require reproducible measurements, not configuration values or larger batch sizes alone.
+- Operator clarification (2026-10-29), resolving finding 14: retain the current compact `local_ai_status` schema with `detail="brief"`; do not add `action` or `root`. The installed schema and tests remain authoritative, and retired status aliases reject.
 - Completely remove CodeGraphContext/KuzuDB as a managed, configured, callable, or runtime backend inside Local AI Hub. Documentation may recommend installing CodeGraphContext separately as an optional standalone external tool. Do not retain a Hub integration path.
 - Agent 2 retains exclusive ownership of `/api/context/pack`. No T-task may edit or overwrite it.
 - T01–T20 run in separate task worktrees, each with a dedicated agent and its own goal. Agents may spawn their own subagents for bounded, disjoint work; each task owner remains responsible for review and handoff. Do not create duplicate task threads.
