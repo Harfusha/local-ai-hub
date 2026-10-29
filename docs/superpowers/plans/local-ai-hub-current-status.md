@@ -1,6 +1,20 @@
 # Local AI Hub: current acceptance state
 
-## Active checkpoint — 2026-10-29 (`d98c16ed` package source)
+## Current checkpoint — 2026-10-29 (`c0efc61`)
+
+Exact candidate `c0efc61fb3d35c8054854c5af3205105efe30b54` is pushed on `codex/ci-context-timeout-20261029`; [PR #4](https://github.com/Harfusha/local-ai-hub/pull/4) targets `master`. Exact-head push CI [#40894159145](https://github.com/Harfusha/local-ai-hub/actions/runs/40894159145) passed all 13 test/coverage jobs and the package job; release publication was skipped on this non-tag branch. The Ubuntu/Python 3.14 full suite reported 13,002 passed. PR-triggered CI [#40899960200](https://github.com/Harfusha/local-ai-hub/actions/runs/40899960200) remains in progress on its Ubuntu/Python 3.14 full-suite job; other observed jobs succeeded. Do not merge until it concludes.
+
+Local `python tools/release_check.py --allow-installed --json` failed only workspace hygiene: ignored `build/` exists with creation time 2026-10-29 09:21 and was preserved. Exact-head CI's clean-archive release check passed; PR package CI must revalidate the final documentation commit.
+
+Fresh exact-worktree surface/inventory run passed **775/775** in 81.78s. Candidate wheel SHA-256 `3afe6a8f874990f95ba6a36c44289a051cfa9da95e4dd0db80431dde1123d46b` is installed in the managed `.venv` with matching PEP 610 archive provenance. Hub restart is active: supervisor PID `49008`, Hub PID `18420`, Ollama online, zero restarts; `/health` returned `success=true`, `hub_online=true`, version `5.1.0`. `hubctl status --json` reported `degraded=false` and a healthy `telemetry.summary` probe (212 ms). At 16:31 the dashboard again showed **Needs attention / incomplete telemetry**; matching status had 10 pending events and `detail.incomplete=true`, `omitted_sections=["pending_events"]`, with zero drops/errors and balanced accounting. This is a transient incomplete projection during writer drain, not a `telemetry.summary` timeout or observed data loss. Five focused regression tests passed for timeout isolation and actual dependency failures; no recurrence guarantee claimed.
+
+The 1,000-pair JSON-budget artifact is committed as `316566fe`; parity passed, p95 speedup 1.72x, p99 1.95x, candidate-specific tail gate met. Historical T0–T12/native acceptance gates remain distinct; see [performance progress](2026-10-25-performance-implementation-progress.md).
+
+The release plan remains active. Its mapped Agent OS task `task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9` and stale lookup `task_release_5.1.0` both return terminal 404 through `hubctl tasks`; Local AI MCP coordination tools are not exposed in this session. No authentic broker receipts or `verify_completion` were produced. The live dashboard view is not saved to a repository screenshot. Actual Antigravity rule loading/use and the preserved non-test-data isolation investigation remain unverified. Main checkout's unrelated dirty files remain untouched.
+
+**Status: EXACT-HEAD PUSH CI GREEN; PR CI RUNNING; INSTALLED 5.1.0; TRANSIENT INCOMPLETE TELEMETRY PROJECTION OBSERVED; RELEASE ACCEPTANCE OPEN.**
+
+## Superseded candidate checkpoint — 2026-10-29 (`d98c16ed` package source)
 
 Package source candidate `d98c16ed6538df732d023b95572ba563c9d78a07` is on `codex/ci-context-timeout-20261029`; finalization commits update only release evidence and plan state. Source candidate [run #40846602356](https://github.com/Harfusha/local-ai-hub/actions/runs/40846602356) passed (15 jobs, 14 success, one skipped, zero failures); Exact-HEAD CI [run #40885373656](https://github.com/Harfusha/local-ai-hub/actions/runs/40885373656) failed: 10 jobs passed, 3 failed, 2 skipped. Authenticated logs confirmed HTTP 429 fetching the pinned Superpowers archive on Ubuntu/macOS Python 3.12, unsupported Darwin no-replace rename during skill replacement, and Windows/Python 3.13 test `test_slow_request_head_has_one_total_deadline` exhausting a process-global monotonic mock (`StopIteration`). Bounded archive retry, Darwin `renameatx_np(RENAME_EXCL)`, and isolated clock mocking are implemented. Fresh exact-HEAD CI pending; branch not integrated into `origin/master` (`c039ec6364d170db7d8a7bcba3ab66ad3e5b2111`).
 

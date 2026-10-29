@@ -28,8 +28,8 @@
 - [x] Gate retained diagnostic operations before execution, including async submissions and alternate HTTP entry points. Keep status/cancel/control usable while detail is disabled.
 - [x] Refine output projection with explicit field policies; preserve useful domain data and accurate final wire accounting. Do not silently mutate stored records.
 - [x] Save the exhaustive disposition inventory and add a deterministic coverage check against current registries/response fields. New unreviewed surfaces must fail the check.
-- [x] Synchronize install/update prompts and affected existing tests. `python tools/sync_prompt_policies.py --check` passed on candidate `890acda3`; the current surface audit suite also passed 775/775. The two prompts retain matching opt-in Cython wording.
-- [x] Review final changes, checkpoint actual evidence, release owned leases and close this surface-audit checklist. The exact 5.1.0 candidate `c6ddaedaa5bb59d59f7179fa3855837f9eff186c` passed `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py`: 775 passed. This closes the surface-audit checklist only; overall 5.1.0 release status remains open in [current release status](local-ai-hub-current-status.md).
+- [x] Synchronize install/update prompts and affected existing tests. `python tools/sync_prompt_policies.py --check` passed on candidate `890acda3`; both prompts retain matching opt-in Cython wording. Fresh exact-worktree surface/inventory run on `c0efc61fb3d35c8054854c5af3205105efe30b54` passed 775/775 in 81.78s.
+- [x] Review final changes, checkpoint actual evidence, release owned leases and close this surface-audit checklist. Exact candidate `c0efc61fb3d35c8054854c5af3205105efe30b54` passed `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py`: 775 passed in 81.78s. This closes the surface-audit checklist only; overall 5.1.0 release status remains open in [current release status](local-ai-hub-current-status.md).
 
 ## Findings established before implementation
 
