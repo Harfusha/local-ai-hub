@@ -2,9 +2,9 @@
 
 ## Current checkpoint — 2026-10-29 (`ff3813ab`)
 
-The main checkout contains `ff3813abf28df95abaf4fcc000b35cbc7c1cd957`; later commits record release evidence. Its clean archive passed strict release validation and its wheel passed isolated smoke. The wheel's contents match the installed `72e20fd2` wheel; see [release evidence](../../release-evidence-5.1.0.md) for distinct archive hashes and runtime provenance. [CI for `72e20fd2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40942499561) completed successfully, including all 12 matrix jobs, critical coverage and package. CI for the newer master candidate is still running. The native combined suite passed 898 tests with one POSIX-specific skip; selftest passed six checks. Authentic broker receipts, actual Gemini host use, a saved dashboard screenshot and historical incident isolation remain open.
+The main checkout contains `ff3813abf28df95abaf4fcc000b35cbc7c1cd957`; later commits record release evidence. Its clean archive passed strict release validation and its wheel passed isolated smoke. The wheel's contents match the installed `72e20fd2` wheel; see [release evidence](../../release-evidence-5.1.0.md) for distinct archive hashes and runtime provenance. [CI for `72e20fd2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40942499561) completed successfully, including all 12 matrix jobs, critical coverage and package. [CI for candidate `ff3813ab`](https://github.com/Harfusha/local-ai-hub/actions/runs/40946163960) also passed all 12 matrix jobs, critical coverage and package. CI for subsequent documentation commits is separate. The historical [JSON budget benchmark](../../perf_candidate_json_budget.json) records 1,000 pairs and a passed tail gate; it is not a current performance measurement. The native combined suite passed 898 tests with one POSIX-specific skip; selftest passed six checks. Authentic broker receipts, actual Gemini host use, a saved dashboard screenshot and historical incident isolation remain open.
 
-**Status: INSTALLED; EARLIER CANDIDATE CI PASSED; CURRENT MASTER ACCEPTANCE OPEN.**
+**Status: INSTALLED; CANDIDATE CI PASSED; RELEASE ACCEPTANCE OPEN.**
 
 ## Historical checkpoint — 2026-10-29 (`cdf871f7`)
 
