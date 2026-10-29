@@ -449,7 +449,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 {delegation_task}
 {work_delegation}
 - Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
-- Native subagents require independent bounded work or explicit user request. Codex controls scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
+- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit request. Codex controls subagent permissions per task, including `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
@@ -761,9 +761,10 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
-        "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work. Use subagents only for independent bounded implementation that materially shortens the critical path, or on explicit request; see the simplified workflow spec.\n"
+        "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work; see the simplified workflow spec.\n"
         f"{task_delegation}\n"
-        "- Native subagents require independent bounded work or explicit user request. Codex controls scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.\n"
+        "- Use native Codex subagents only for independent bounded implementation or an explicit user request.\n"
+        "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit request. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.\n"
         "- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.\n"
         "- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.\n\n"
         "The main agent owns planning, implementation and integration."

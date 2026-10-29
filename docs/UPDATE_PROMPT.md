@@ -476,10 +476,11 @@ Recipes (guidance, not gates):
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
 - A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
-Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work. Use subagents only for independent bounded implementation that materially shortens the critical path, or on explicit request; see the simplified workflow spec.
+Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work; see the simplified workflow spec.
 
 - Semantic delegation is on-demand and optional. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Use it only when an approved backend is available. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Local model routes follow the active hardware profile and user overrides; verify model availability before inference.
-- Native subagents require independent bounded work or explicit user request. Codex controls scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
+- Use native Codex subagents only for independent bounded implementation or an explicit user request.
+- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit request. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
