@@ -129,3 +129,41 @@ def test_hub_client_drops_shared_changed_paths_before_plan_contract_validation(m
         "path": "/api/coord/plan_list",
         "payload": {"root": str(tmp_path)},
     }
+
+
+def test_plan_edit_small_budget_reports_applied_mutation(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeClient:
+        def coord(self, **kwargs):
+            calls.append(kwargs)
+            return {"success": True, "file_revision": "a" * 64,
+                    "plan_id": "plan-a", "task_id": "task-1",
+                    "task": {"description": "long " * 500}}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_task_edit", "root": str(tmp_path), "plan_id": "plan-a",
+        "task_id": "task-1", "task_data": {"description": "updated"},
+        "expected_revision": "b" * 64, "idempotency_key": "test-edit",
+        "max_response_tokens": 256, "response_profile": "compact",
+    }))
+    assert len(calls) == 1
+    assert result.get("mutation_applied") is True, result
+
+
+def test_plan_edit_failure_does_not_claim_mutation(monkeypatch, tmp_path):
+    class FakeClient:
+        def coord(self, **kwargs):
+            return {"success": False, "error": "revision conflict", "mutation_applied": False}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_task_edit", "root": str(tmp_path), "plan_id": "plan-a",
+        "task_id": "task-1", "task_data": {"description": "updated"},
+        "expected_revision": "b" * 64, "max_response_tokens": 256,
+    }))
+    assert result["success"] is False
+    assert result.get("mutation_applied") is not True

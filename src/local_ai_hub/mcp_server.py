@@ -4624,7 +4624,10 @@ def local_ai_coord(
             return contract_error(error, status_code=400)
         metadata = operation_contract("local_ai_coord")["actions"][action]
         arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
-        return _compact(CLIENT.coord(action=action, **arguments), "coord" if action == "plan_bind_task" else "status")
+        result = CLIENT.coord(action=action, **arguments)
+        if action == "plan_task_edit" and isinstance(result, dict) and result.get("success") is True:
+            result = {**result, "mutation_applied": True}
+        return _compact(result, "coord" if action == "plan_bind_task" else "status")
     if changed_paths is not None and not paths:
         paths = changed_paths
     if (path or file) and not paths:
