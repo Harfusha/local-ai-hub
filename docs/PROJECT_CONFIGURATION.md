@@ -12,6 +12,10 @@ The resolver finds the primary worktree through Git's common directory and bound
 
 Single-developer deployments may keep settings durably in local config sources. These files are never required for Hub startup. Config files must resolve within their project or Git common source root; escaping links are rejected. Invalid configuration rejects the complete overlay and returns built-in defaults with a safe error code.
 
+## Agent first-contact setup
+
+Before registering a repository for preprocessing, an agent should inspect its existing `.local-ai.toml` and any applicable worktree override. Add only settings supported by current repository evidence: explicit generated/vendor exclusions, uncommon text or binary extensions, key documentation in `pinned_context`, and executable/project entry points in `entry_points`. Preserve existing settings and use built-in Hub defaults when they already cover the repository. Then call `local_ai_repo(action="preprocess", root=ABSOLUTE_GIT_ROOT)` once; this idempotently registers the project. Do not force-refresh or poll asynchronous preprocessing.
+
 ## Inheritance
 
 Maps merge by key. A higher layer replaces values for keys it names while unrelated lower-layer keys remain. Lists replace as a whole; a worktree's `exclude_paths` or `force_include_paths` therefore replaces that list from lower layers. `path_overrides` keys normalize separators before merging; Windows also folds case. Equivalent keys in higher layers replace lower values. Duplicate equivalent keys in one layer reject that overlay.

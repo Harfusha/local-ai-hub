@@ -705,7 +705,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         repo_task_first = (
             "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates."
             " For substantial work without fresh evidence, use adaptive `context` once with a stable root."
-            + (' Preprocess only when that root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait, poll, or force-refresh it.' if fs.preprocessing else "")
+            + (' On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
             ' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence'

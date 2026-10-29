@@ -72,24 +72,9 @@ python tools/hubctl.py status
 
 ## Agent Operating System
 
-Local AI Hub provides durable execution and memory primitives mapped into the standard tools:
-- `local_ai_coord`:
-  - Plans: `plan_init`, `plan_list`, `plan_get`, `plan_create`, `plan_update`, `plan_task_edit`, `plan_task_delete`, `plan_validate`, `plan_archive`, `plan_board_view`, `plan_adopt_legacy_board`, `plan_bind_task`, `plan_reconcile_steering`. Authoritative plans are stored in `.local-ai-hub/plans/<plan-id>.plan.json`. Single source of truth; never create secondary markdown plans.
-  - Tasks: `task_create`, `task_get`, `task_checkpoint`, `task_complete`, `task_fail`, `task_list`, `task_resume`, `task_budget_increase`.
-  - Memory: `memory_record`, `memory_get`, `memory_find` (scoped key/value storage with substring `query` search).
-  - Context: `context_compile` (assembles bounded state, active task, memories, negative knowledge, and active leases).
-  - Verification: `verify_receipt`, `verify_completion` (receipt-gated task completion).
-  - Negative knowledge: `negative_knowledge_record`, `negative_knowledge_find` (prevents repeating failed approaches).
-  - Accepts optional `task_id` and `criterion` to auto-mint verification receipts on passing test/lint commands.
+On first work in each stable repository root, resolve the absolute Git root and inspect `.local-ai.toml` plus any applicable `.local-ai.worktree.toml`. If project settings are missing or incomplete, derive only evidence-backed repo-specific `exclude_paths` and `[preprocess].exclude_paths`, `[custom_extensions].text` and `.binary`, `pinned_context`, and `entry_points`; preserve existing settings, rely on Hub defaults when they already cover the repo, and never guess ignore patterns, extensions, or absent documentation paths. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once to idempotently register the project. Do not force-refresh an existing registration or poll asynchronous preprocessing; continue with the needed bounded repository action.
 
-### Required plan workflow
-
-- At session start, resolve the exact repository/worktree root, read its scoped briefing, and list plans. Reuse the matching active plan; create one only when none covers the requested work. Filter the project Kanban by the chosen `plan_id`.
-- Before implementation, bind the Agent OS task and current session to its plan task. Keep title, description, acceptance criteria, owner, active status, next action, blockers, and integration target current through `plan_task_edit` and task checkpoints. Re-read on revision conflicts; never create a duplicate task to bypass a conflict or lost session.
-- Persist every operator clarification from chat before continuing: update the relevant Git specification or create one if none applies, reconcile the plan and Agent OS contract revision, and retain the clarification as durable steering. A failed reconciliation must remain visible and be retried from its persisted task/retry state.
-- Mark source complete only with authentic broker-backed verification receipts. Mark delivery done only after the required branch/worktree changes are integrated and verified in the target repository. A plan status, successful file write, test output pasted by a caller, or merge claim alone is not completion evidence.
-- Before handoff or session end, checkpoint the next action and blockers, verify the plan shows the same state, and leave ownership explicit. On resume, inspect the existing binding and active plan before starting work.
-- If a checkpoint reports that the task persisted but plan synchronization failed, do not repeat the task mutation. Resolve the error, reread the plan revision, and call `plan_bind_task` again with the same task and session. Check `checkpoint_sync`: `reconciled` means the pending projection was applied; `not_pending` does not prove task and plan agree. A conflicting plan edit remains visible and must not be overwritten.
+Use only the active Local AI Hub MCP schema. The currently exposed `local_ai_coord` actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. For substantial work, create a task contract, query relevant memory, and checkpoint meaningful phase changes. Run validation with the host-native command tool; never invent verification receipts or rely on lifecycle actions absent from the active schema.
 
 ## Local model policy
 
