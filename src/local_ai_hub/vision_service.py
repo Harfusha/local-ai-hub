@@ -287,7 +287,14 @@ class VisionService:
                 return self.cancelled_result(model)
             if capability_error:
                 return capability_error
-            res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if cancel_event is not None:
+                interruptible = getattr(self.runtime, "request_interruptible", None)
+                if not callable(interruptible):
+                    return {"success": False, "unsupported": True, "terminal": True, "retryable": False,
+                            "error": "Vision runtime does not support request cancellation.", "model": model}
+                res = interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=timeout)
+            else:
+                res = self.runtime.request("/api/generate", payload, timeout=timeout)
             if is_cancelled():
                 return self.cancelled_result(model)
             generation_error = vision_generation_error(res, model)

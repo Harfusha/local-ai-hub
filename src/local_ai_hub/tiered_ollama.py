@@ -7,7 +7,11 @@ import time
 from typing import Any, cast
 
 from .model_policy import ModelExecutionPolicy
-from .ollama import OllamaRuntime
+from .ollama import ModelPreparationCancelled, OllamaRuntime
+
+
+class _HandoffCancelled(Exception):
+    pass
 
 
 class TieredOllamaRuntime:
@@ -104,33 +108,51 @@ class TieredOllamaRuntime:
             raise RuntimeError("peer runtime inventory malformed")
         return rows
 
-    def _unload_peer(self, peer: Any, *, deadline: float) -> None:
+    @staticmethod
+    def _check_handoff(should_stop: Any, deadline: float) -> None:
+        try:
+            if callable(should_stop) and should_stop():
+                raise _HandoffCancelled("request cancelled during model handoff")
+        except _HandoffCancelled:
+            raise
+        except Exception as exc:
+            raise _HandoffCancelled("request cancellation check failed") from exc
+        if time.monotonic() >= deadline:
+            raise TimeoutError("model handoff deadline expired")
+
+    def _unload_peer(self, peer: Any, *, deadline: float, should_stop: Any = None) -> None:
+        self._check_handoff(should_stop, deadline)
         rows = self._inventory(peer, deadline=deadline)
+        self._check_handoff(should_stop, deadline)
         foreign = [str(row.get("name", "")) for row in rows if str(row.get("name", "")) not in self._hub_models]
         if foreign:
             self._last_handoff_error = f"peer runtime holds externally managed model: {foreign[0]}"
             raise RuntimeError(self._last_handoff_error)
         for row in rows:
+            self._check_handoff(should_stop, deadline)
             model = str(row.get("name", "") or "")
             unload_inventory_row = getattr(peer, "unload_inventory_model", None)
             try:
                 unloaded = (
-                    unload_inventory_row(row, deadline=deadline)
+                    unload_inventory_row(row, deadline=deadline, **({"should_stop": should_stop} if should_stop is not None else {}))
                     if callable(unload_inventory_row) and row.get("backend") else peer.unload_model(model)
                 )
             except Exception as exc:
                 unloaded = False
                 self._last_handoff_error = f"cannot unload {model} from peer runtime: {type(exc).__name__}"
             if model and not unloaded:
+                self._check_handoff(should_stop, deadline)
                 self._unload_failures += 1
                 self._last_handoff_error = self._last_handoff_error or f"cannot unload {model} from peer runtime"
                 raise RuntimeError(self._last_handoff_error)
 
-    def _handoff(self, name: str, target: Any, peer: Any) -> None:
+    def _handoff(self, name: str, target: Any, peer: Any, *, should_stop: Any = None, deadline: float | None = None) -> None:
         timeout = max(0.1, float(self.config.get("smart_ollama", {}).get("handoff_timeout_seconds", 10)))
-        deadline = time.monotonic() + timeout
-        self._unload_peer(peer, deadline=deadline)
+        handoff_deadline = time.monotonic() + timeout
+        deadline = min(deadline, handoff_deadline) if deadline is not None else handoff_deadline
+        self._unload_peer(peer, deadline=deadline, should_stop=should_stop)
         while True:
+            self._check_handoff(should_stop, deadline)
             if not self._inventory(peer, deadline=deadline):
                 break
             if time.monotonic() >= deadline:
@@ -138,9 +160,7 @@ class TieredOllamaRuntime:
                 self._last_handoff_error = "peer runtime remained loaded after handoff deadline"
                 raise RuntimeError(self._last_handoff_error)
             time.sleep(0.05)
-        if time.monotonic() >= deadline:
-            self._last_handoff_error = "peer runtime handoff deadline exceeded"
-            raise RuntimeError(self._last_handoff_error)
+        self._check_handoff(should_stop, deadline)
         if not target.ensure_running():
             self._last_handoff_error = f"{name} runtime unavailable"
             raise RuntimeError(self._last_handoff_error)
@@ -148,10 +168,23 @@ class TieredOllamaRuntime:
         self._last_handoff_error = None
         self._active_endpoint = name
 
-    def _target(self, model: str) -> tuple[Any, str]:
+    def _target(self, model: str, *, should_stop: Any = None, deadline: float | None = None) -> tuple[Any, str]:
         name, target, peer = self._runtime_for_model(model)
-        self._handoff(name, target, peer)
+        self._handoff(name, target, peer, should_stop=should_stop, deadline=deadline)
         return target, name
+
+    def _acquire_request_lock(self, should_stop: Any, deadline: float | None) -> dict[str, Any] | None:
+        while True:
+            try:
+                if callable(should_stop) and should_stop():
+                    return {"success": False, "preempted": True, "error": "request cancelled while waiting for model handoff"}
+            except Exception:
+                return {"success": False, "preempted": True, "error": "request cancellation check failed"}
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return {"success": False, "timed_out": True, "error": "model handoff deadline expired"}
+            if self._lock.acquire(timeout=0.05 if remaining is None else min(0.05, remaining)):
+                return None
 
     def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
         model = str((payload or {}).get("model", ""))
@@ -160,20 +193,41 @@ class TieredOllamaRuntime:
         with self._lock:
             try:
                 target, _ = self._target(model)
+            except TimeoutError as exc:
+                return {"success": False, "timed_out": True, "error": str(exc)}
             except RuntimeError as exc:
                 return {"error": str(exc), "retryable": True}
             return target.request(endpoint, payload, timeout)
 
-    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None, *, on_thinking: Any | None = None) -> dict[str, Any]:
+    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None, *, on_thinking: Any | None = None, should_stop: Any | None = None, deadline: float | None = None) -> dict[str, Any]:
+        cancellation = {"should_stop": should_stop, "deadline": deadline} if should_stop is not None or deadline is not None else {}
         model = str((payload or {}).get("model", ""))
         if not model:
-            return self.fast.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking)
-        with self._lock:
+            return self.fast.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking, **cancellation)
+        lock_deadline = min(deadline, time.monotonic() + timeout) if deadline is not None and timeout is not None else deadline if deadline is not None else time.monotonic() + timeout if timeout is not None else None
+        failure = self._acquire_request_lock(should_stop, lock_deadline)
+        if failure is not None:
+            return failure
+        try:
+            if callable(should_stop) and should_stop():
+                return {"success": False, "preempted": True, "error": "request cancelled before model handoff"}
             try:
-                target, _ = self._target(model)
+                target, _ = self._target(model, should_stop=should_stop, deadline=lock_deadline)
+            except _HandoffCancelled as exc:
+                return {"success": False, "preempted": True, "error": str(exc)}
+            except TimeoutError as exc:
+                return {"success": False, "timed_out": True, "error": str(exc)}
             except RuntimeError as exc:
                 return {"error": str(exc), "retryable": True}
-            return target.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking)
+            if callable(should_stop) and should_stop():
+                return {"success": False, "preempted": True, "error": "request cancelled during model handoff"}
+            remaining = None if lock_deadline is None else lock_deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return {"success": False, "timed_out": True, "error": "model handoff deadline expired"}
+            target_timeout = min(timeout, remaining) if timeout is not None and remaining is not None else timeout
+            return target.request_stream(endpoint, payload, on_chunk, target_timeout, on_thinking=on_thinking, **cancellation)
+        finally:
+            self._lock.release()
 
     def request_interruptible(
         self,
@@ -185,12 +239,30 @@ class TieredOllamaRuntime:
         deadline: float | None = None,
     ) -> dict[str, Any]:
         model = str((payload or {}).get("model", ""))
-        with self._lock:
+        lock_deadline = min(deadline, time.monotonic() + timeout) if deadline is not None and timeout is not None else deadline if deadline is not None else time.monotonic() + timeout if timeout is not None else None
+        failure = self._acquire_request_lock(should_stop, lock_deadline)
+        if failure is not None:
+            return failure
+        try:
+            if callable(should_stop) and should_stop():
+                return {"success": False, "preempted": True, "error": "request cancelled before model handoff"}
             try:
-                target, _ = self._target(model)
+                target, _ = self._target(model, should_stop=should_stop, deadline=lock_deadline)
+            except _HandoffCancelled as exc:
+                return {"success": False, "preempted": True, "error": str(exc)}
+            except TimeoutError as exc:
+                return {"success": False, "timed_out": True, "error": str(exc)}
             except RuntimeError as exc:
                 return {"error": str(exc), "retryable": True}
-            return target.request_interruptible(endpoint, payload, should_stop, timeout=timeout, deadline=deadline)
+            if callable(should_stop) and should_stop():
+                return {"success": False, "preempted": True, "error": "request cancelled during model handoff"}
+            remaining = None if lock_deadline is None else lock_deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return {"success": False, "timed_out": True, "error": "model handoff deadline expired"}
+            target_timeout = min(timeout, remaining) if timeout is not None and remaining is not None else timeout
+            return target.request_interruptible(endpoint, payload, should_stop, timeout=target_timeout, deadline=deadline)
+        finally:
+            self._lock.release()
 
     def run_benchmark_scenario(
         self,
@@ -217,14 +289,24 @@ class TieredOllamaRuntime:
         should_stop: Any | None = None,
         deadline: float | None = None,
     ) -> list[str]:
-        with self._lock:
-            target, _ = self._target(model)
+        failure = self._acquire_request_lock(should_stop, deadline)
+        if failure is not None:
+            if failure.get("preempted"):
+                raise ModelPreparationCancelled(str(failure["error"]))
+            raise TimeoutError(str(failure["error"]))
+        try:
+            try:
+                target, _ = self._target(model, should_stop=should_stop, deadline=deadline)
+            except _HandoffCancelled as exc:
+                raise ModelPreparationCancelled(str(exc)) from exc
             kwargs: dict[str, Any] = {"unload_others": unload_others}
             if post_unload_admission is not None:
                 kwargs["post_unload_admission"] = post_unload_admission
             if should_stop is not None or deadline is not None:
                 kwargs.update(should_stop=should_stop, deadline=deadline)
             return target.prepare_model(model, **kwargs)
+        finally:
+            self._lock.release()
 
     def supports_post_unload_admission(self, model: str) -> bool:
         _, target, _ = self._runtime_for_model(model)

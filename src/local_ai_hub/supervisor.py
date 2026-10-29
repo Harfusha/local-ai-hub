@@ -72,6 +72,7 @@ class Supervisor:
         self.log_path = self.state_dir / "supervisor.log"
         self.runtime = OllamaRuntime(self.config)
         self.child: subprocess.Popen[Any] | None = None
+        self._mcp_http: Any = None
         self.child_owner: dict[str, Any] | None = None
         self.child_pidfd: int | None = None
         self.child_ready = False
@@ -89,6 +90,29 @@ class Supervisor:
 
     def is_supervisor_stopping(self) -> bool:
         return bool(self.stopping)
+
+    def _start_mcp_http(self) -> None:
+        settings = self.config.get("mcp_http", {})
+        if not isinstance(settings, dict) or settings.get("enabled") is not True:
+            return
+        if self._mcp_http is not None:
+            raise RuntimeError("HTTP MCP transport is already running")
+        from .mcp_http import HTTPMCPService
+        from . import mcp_server
+
+        expected_config = getattr(self, "config_path", None)
+        actual_config = mcp_server.CFG.get("_config_path")
+        if expected_config and (not actual_config or Path(expected_config).resolve() != Path(actual_config).resolve()):
+            raise RuntimeError("HTTP MCP transport configuration differs from supervisor configuration")
+
+        service = HTTPMCPService(port=settings.get("port", 11436))
+        service.start()
+        self._mcp_http = service
+
+    def _stop_mcp_http(self) -> None:
+        if self._mcp_http is not None:
+            self._mcp_http.stop()
+            self._mcp_http = None
 
     def supervisor_uptime(self) -> float:
         return max(0.0, time.time() - self.started_at)
@@ -650,6 +674,10 @@ class Supervisor:
         self.log(f"supervisor started pid={os.getpid()} parent_pid={os.getppid()} executable={sys.executable}")
         try:
             self._start_signal_wakeup()
+            try:
+                self._start_mcp_http()
+            except Exception as exc:
+                self.log(f"HTTP MCP transport unavailable: {type(exc).__name__}")
             for sig in (signal.SIGINT, signal.SIGTERM):
                 try:
                     signal.signal(sig, self._handle_signal)
@@ -744,6 +772,10 @@ class Supervisor:
             raise
         finally:
             self._stop_signal_wakeup()
+            try:
+                self._stop_mcp_http()
+            except Exception as exc:
+                self.log(f"HTTP MCP transport shutdown failed: {type(exc).__name__}")
             self.write_status("stopping", ollama_online=False)
             if not self.terminate_child():
                 self.log("shutdown left hub running; safe termination unavailable")

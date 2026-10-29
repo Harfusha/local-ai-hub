@@ -6,6 +6,7 @@ from . import __version__
 import copy
 import json
 import math
+import threading
 import time
 from typing import Any
 
@@ -403,7 +404,19 @@ class ToolAwareLocalAgent:
         system_suffix: str = "",
         bootstrap: dict[str, Any] | None = None,
         profile: OllamaSubagentProfile | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if cancel_event is None:
+            from .client import CURRENT_REQUEST_CANCEL_EVENT
+            cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        def cancelled() -> dict[str, Any]:
+            return {"success": False, "cancelled": True, "reason": "cancelled", "model": model}
+
+        def stopped() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        if stopped():
+            return cancelled()
         if not self.enabled:
             return {"success": False, "unsupported": True, "error": "local tooling disabled"}
         try:
@@ -442,6 +455,8 @@ class ToolAwareLocalAgent:
         wrapped_key = stable_hash({"tool-agent": cache_key})
 
         def compute() -> dict[str, Any]:
+            if stopped():
+                return cancelled()
             self.runs += 1
             started = time.perf_counter()
             pre = self.preprocessor.compact_context(root, task, self.pre_context_chars)
@@ -514,6 +529,8 @@ class ToolAwareLocalAgent:
             temperature = profile.temperature if profile else 0.2
 
             for step in range(1 if direct else max_steps):
+                if stopped():
+                    return cancelled()
                 payload: dict[str, Any] = {
                     "model": model, "messages": messages, "stream": False,
                     "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"),
@@ -532,9 +549,16 @@ class ToolAwareLocalAgent:
                     response = self.services.runtime.request_stream(
                         "/api/chat", request_payload, trace_observer.output_delta,
                         on_thinking=getattr(trace_observer, "thinking_delta", None),
+                        **({"should_stop": cancel_event.is_set} if cancel_event is not None else {}),
+                    )
+                elif cancel_event is not None:
+                    response = self.services.runtime.request_interruptible(
+                        "/api/chat", request_payload, should_stop=cancel_event.is_set,
                     )
                 else:
                     response = self.services.runtime.request("/api/chat", request_payload)
+                if stopped():
+                    return cancelled()
                 if "error" in response or response.get("_lah_repetition_loop_detected"):
                     self.failures += 1
                     error = str(response.get("error") or "model output repetition loop detected")
@@ -561,6 +585,8 @@ class ToolAwareLocalAgent:
                     }
                 messages.append(message)
                 for call in calls:
+                    if stopped():
+                        return cancelled()
                     call_id = str(call.get("id") or call.get("tool_call_id") or "")
                     if call_count >= max_calls:
                         messages.append({"role": "tool", "tool_name": "limit", "tool_call_id": call_id, "content": "tool call budget exhausted; finish from current evidence"})
@@ -581,6 +607,8 @@ class ToolAwareLocalAgent:
                     messages.append({"role": "tool", "tool_name": name or "unknown", "tool_call_id": call_id, "content": self._trim(result)})
 
             final_messages = messages + [{"role": "user", "content": "Tool budget ended. Finish now using only collected evidence."}]
+            if stopped():
+                return cancelled()
             request_payload, _profile = self.model_policy.apply_payload(
                 model,
                 {"model": model, "messages": final_messages, "stream": False, "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"), "options": {"num_predict": int(max_tokens), "temperature": temperature}},
@@ -592,9 +620,16 @@ class ToolAwareLocalAgent:
                 response = self.services.runtime.request_stream(
                     "/api/chat", request_payload, trace_observer.output_delta,
                     on_thinking=getattr(trace_observer, "thinking_delta", None),
+                    **({"should_stop": cancel_event.is_set} if cancel_event is not None else {}),
+                )
+            elif cancel_event is not None:
+                response = self.services.runtime.request_interruptible(
+                    "/api/chat", request_payload, should_stop=cancel_event.is_set,
                 )
             else:
                 response = self.services.runtime.request("/api/chat", request_payload)
+            if stopped():
+                return cancelled()
             if "error" in response:
                 return {"success": False, "error": response["error"], "model": model}
             content = str(response.get("message", {}).get("content", "")).strip()
@@ -610,11 +645,17 @@ class ToolAwareLocalAgent:
                 return self.services.scheduler.submit(
                     model, source=f"tool-agent:{role}", execute=compute, priority=priority,
                     wait_timeout=float(self.config.get("resilience", {}).get("scheduler_wait_timeout_seconds", 330)),
+                    **({"cancel_event": cancel_event} if cancel_event is not None else {}),
                 )
             except Exception as exc:
                 return {"success": False, "error": str(exc), "model": model}
 
-        raw, hit, coalesced = self.services.generation_cache.get_or_compute(wrapped_key, scheduled_compute)
+        if cancel_event is not None:
+            raw, hit, coalesced = scheduled_compute(), False, False
+        else:
+            raw, hit, coalesced = self.services.generation_cache.get_or_compute(wrapped_key, scheduled_compute)
+        if stopped():
+            return cancelled()
         result = copy.deepcopy(raw) if isinstance(raw, dict) else {"success": False, "error": "invalid cached local-agent result"}
         if hit:
             self.cache_hits += 1
@@ -630,6 +671,7 @@ class ToolAwareLocalAgent:
         workspace: str | None = None,
         seed_context: str = "",
         priority: int = 5,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         if not self.profile_catalog.enabled:
             return {"success": False, "unsupported": True, "error": "Ollama subagent profiles disabled"}
@@ -662,6 +704,7 @@ class ToolAwareLocalAgent:
             workspace=workspace,
             seed_context=seed_context,
             profile=profile,
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
         result.update({
             "profile": profile.name,

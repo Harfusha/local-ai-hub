@@ -293,6 +293,10 @@ class LosslessTokenRouter:
                 self.max_output_tokens, 0.0, source="lossless-route", priority=7,
                 semantic_query="", semantic_context_fingerprint="", internal=True,
             )
+            from .client import CURRENT_REQUEST_CANCEL_EVENT
+            cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+            if local.get("cancelled") is True or (cancel_event is not None and cancel_event.is_set()):
+                return {"success": False, "cancelled": True, "reason": "cancelled"}
             if local.get("success"):
                 parsed = self._parse_ranges(str(local.get("text", "")), len(lines), self.max_ranges, self.context_lines)
                 if parsed:
@@ -310,6 +314,10 @@ class LosslessTokenRouter:
             "estimated_tokens": estimate_tokens(context), "reduction_ratio": round(1.0 - min(1.0, len(context) / max(1, len(text))), 5),
             "cache_hit": False,
         }
+        from .client import CURRENT_REQUEST_CANCEL_EVENT
+        cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         self.cache.set(scope, result)
         return result
 

@@ -665,6 +665,12 @@ def preserve_isolated_hub_args(name: str, existing: Any, entry: dict[str, Any]) 
 
 
 def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool, *, startup_timeout: int = 60, tool_timeout: int = 900) -> None:
+    for entry in servers.values():
+        if "url" in entry:
+            if "command" in entry or "args" in entry or "env" in entry:
+                raise ValueError("HTTP MCP entries cannot include stdio options")
+            if not isinstance(entry["url"], str) or not entry["url"]:
+                raise ValueError("HTTP MCP URL must be a non-empty string")
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     backup(path, backup_enabled)
@@ -685,12 +691,29 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
         if re.search(rf"(?m)^\[mcp_servers\.{re.escape(name)}\]\s*$", text):
             log(f"Codex MCP '{name}' exists outside the managed block; leaving it unchanged")
             continue
-        blocks.extend([
-            f"[mcp_servers.{name}]", f"command = {toml_quote(entry['command'])}",
-            "args = [" + ", ".join(toml_quote(x) for x in entry.get("args", [])) + "]",
-            "enabled = true", "required = false", f"startup_timeout_sec = {max(10, int(startup_timeout))}", f"tool_timeout_sec = {max(60, int(tool_timeout))}",
-            'default_tools_approval_mode = "auto"',
-        ])
+        blocks.append(f"[mcp_servers.{name}]")
+        if "url" in entry:
+            blocks.append(f"url = {toml_quote(entry['url'])}")
+        else:
+            blocks.extend([f"command = {toml_quote(entry['command'])}",
+                           "args = [" + ", ".join(toml_quote(x) for x in entry.get("args", [])) + "]"])
+        settings: dict[str, Any] = {
+            "enabled": True, "required": False,
+            "startup_timeout_sec": max(10, int(startup_timeout)),
+            "tool_timeout_sec": max(60, int(tool_timeout)),
+            "default_tools_approval_mode": "auto",
+        }
+        previous = existing_servers.get(name)
+        if "url" in entry and isinstance(previous, dict):
+            for key, expected in (("enabled", bool), ("required", bool),
+                                  ("startup_timeout_sec", int), ("tool_timeout_sec", int),
+                                  ("default_tools_approval_mode", str)):
+                value = previous.get(key)
+                if type(value) is expected and (expected is not int or value > 0):
+                    settings[key] = value
+        for key, value in settings.items():
+            literal = str(value).lower() if type(value) is bool else toml_quote(value) if isinstance(value, str) else str(value)
+            blocks.append(f"{key} = {literal}")
         if entry.get("cwd"):
             blocks.append(f"cwd = {toml_quote(entry['cwd'])}")
         env = entry.get("env") or {}
@@ -1064,6 +1087,51 @@ def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena:
     log(f"Dynamic skill, manifests, and schemas generated: {install_dir / 'generated'}")
 
 
+def build_codex_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    entries = build_mcp_entries(install_dir, hub_python, serena, "codex", cfg)
+    http_cfg = cfg.get("mcp_http", {})
+    if not isinstance(http_cfg, dict) or http_cfg.get("enabled") is not True:
+        return entries
+    port = http_cfg.get("port", 11436)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("HTTP MCP port must be an integer between 1 and 65535")
+    if "local-ai" in entries:
+        entries["local-ai"] = {"url": f"http://127.0.0.1:{port}/mcp"}
+    return entries
+
+
+def _http_mcp_ready(url: str) -> bool:
+    """Perform a bounded MCP handshake before switching Codex to HTTP."""
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-03-26", "capabilities": {},
+        "clientInfo": {"name": "local-ai-setup", "version": "1"},
+    }}).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    session = None
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with opener.open(req, timeout=2) as response:
+            session = response.headers.get("Mcp-Session-Id")
+            result = json.loads(response.read(65536))
+        return (isinstance(result, dict) and result.get("id") == 1
+                and isinstance(result.get("result"), dict)
+                and isinstance(result["result"].get("protocolVersion"), str)
+                and isinstance(result["result"].get("serverInfo"), dict)
+                and result["result"]["serverInfo"].get("name") == "Local AI Hub (compact)"
+                and bool(session))
+    except (OSError, ValueError, TypeError):
+        return False
+    finally:
+        if session:
+            try:
+                req = urllib.request.Request(url, headers={"Mcp-Session-Id": session}, method="DELETE")
+                with opener.open(req, timeout=2):
+                    pass
+            except OSError:
+                pass
+
+
 def configure_agents(
     install_dir: Path,
     hub_python: Path,
@@ -1072,6 +1140,10 @@ def configure_agents(
     *,
     include_companion: bool = True,
 ) -> None:
+    codex_entries = build_codex_mcp_entries(install_dir, hub_python, serena, cfg)
+    codex_entry = codex_entries.get("local-ai", {})
+    if cfg.get("agents", {}).get("codex", True) and "url" in codex_entry and not _http_mcp_ready(codex_entry["url"]):
+        raise RuntimeError("HTTP MCP transport is not ready; Codex configuration was not changed")
     backup_enabled = bool(cfg.get("setup", {}).get("backup_existing_configs", True))
     agents_cfg = cfg.get("agents", {})
     write_all_generated(cfg, install_dir, hub_python, serena)
@@ -1095,7 +1167,7 @@ def configure_agents(
                 merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
                 merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
             codex_mcp_merge(
-                codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, "codex", cfg), backup_enabled,
+                codex_home / "config.toml", codex_entries, backup_enabled,
                 startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
                 tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
             )
