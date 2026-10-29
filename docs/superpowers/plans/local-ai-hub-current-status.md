@@ -1,6 +1,12 @@
 # Local AI Hub: current acceptance state
 
-## Current checkpoint — 2026-10-29 (`1c5155c7`)
+## Current checkpoint — 2026-10-29 (`626d8e1a`)
+
+Source candidate `626d8e1a8b391a2afc153c5606fe7fe12ef24f2b` is integrated into the main master checkout and installed from its clean archive. Its wheel SHA-256 is `4534d3f3c62383a52cfca00c0ac63b8d473f5386812e189d9ec1da149a1e2ccb`; isolated wheel smoke, the 775-test surface/inventory suite, six self-tests and strict clean-archive release check passed. [Candidate CI #40926047442](https://github.com/Harfusha/local-ai-hub/actions/runs/40926047442) is queued. Main Hub service and health are online; Codex MCP use remains blocked by the host approval policy, and actual Gemini host use remains unverified. Authentic Agent OS receipts, completion verification, a current saved dashboard screenshot and the non-test-data isolation investigation remain open. See [release evidence](../../release-evidence-5.1.0.md) for scope and provenance.
+
+**Status: SOURCE AND INSTALLATION UPDATED; CANDIDATE CI QUEUED; RELEASE ACCEPTANCE OPEN.**
+
+## Historical checkpoint — 2026-10-29 (`1c5155c7`)
 
 The main installation now runs a wheel built from clean `origin/master` archive `1c5155c7304fd0703a6fdefd9412f4823c2a515a`, SHA-256 `b2b7725f0f8aff7161117e7cdad94ab9bd3ee61878e3df1ef0d95737a30f0e93`. Isolated wheel smoke and `pip check` passed; the main service was restarted from its own checkout and `/health` succeeded. MCP configurations point to the main `.venv`. The current checkout itself remains behind because four preserved local files conflict with fast-forward. A fresh read-only Codex host call was denied by its approval policy; actual Gemini host use, Agent OS receipts and a current saved dashboard screenshot remain unverified. See [release evidence](../../release-evidence-5.1.0.md) for exact process, CI and provenance details.
 

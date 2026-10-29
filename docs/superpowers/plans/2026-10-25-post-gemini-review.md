@@ -1,6 +1,10 @@
 # Post-Gemini Review and Deployment Plan
 
-## Current release checkpoint — 2026-10-29 (`1c5155c7`)
+## Current release checkpoint — 2026-10-29 (`626d8e1a`)
+
+- [ ] **OPEN — release closure:** The main master checkout contains the integrated work and runs the installed `626d8e1a` source candidate. The matching wheel smoke, surface audit, self-test and strict clean-archive check passed. Candidate CI is queued. Codex host approval denial, actual Gemini host use, broker receipts, `verify_completion`, a current saved dashboard screenshot and non-test-data isolation investigation remain open. The former checkout merge conflict was resolved, with earlier work preserved in Git history. See [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md).
+
+## Historical release checkpoint — 2026-10-29 (`1c5155c7`)
 
 - [ ] **OPEN — release closure:** The clean `origin/master` archive `1c5155c7304fd0703a6fdefd9412f4823c2a515a` produced the installed and isolated-smoke-verified wheel SHA-256 `b2b7725f0f8aff7161117e7cdad94ab9bd3ee61878e3df1ef0d95737a30f0e93`. The main service runs from the main installation. The main checkout's fast-forward is blocked by preserved local conflicts; fresh Codex host invocation was denied by its approval policy, Gemini host behavior is unverified, and authentic receipts, `verify_completion`, current screenshot and the isolation investigation remain open. Source merge CI passed; follow-on master CI is in progress. See [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md).
 
