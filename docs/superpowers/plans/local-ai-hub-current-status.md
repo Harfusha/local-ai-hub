@@ -1,6 +1,12 @@
 # Local AI Hub: current acceptance state
 
-## Current checkpoint — 2026-10-29 (`cdf871f7`)
+## Current checkpoint — 2026-10-29 (`ff3813ab`)
+
+The main checkout contains `ff3813abf28df95abaf4fcc000b35cbc7c1cd957`; later commits record release evidence. Its clean archive passed strict release validation and its wheel passed isolated smoke. The wheel's contents match the installed `72e20fd2` wheel; see [release evidence](../../release-evidence-5.1.0.md) for distinct archive hashes and runtime provenance. [CI for `72e20fd2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40942499561) completed successfully, including all 12 matrix jobs, critical coverage and package. CI for the newer master candidate is still running. The native combined suite passed 898 tests with one POSIX-specific skip; selftest passed six checks. Authentic broker receipts, actual Gemini host use, a saved dashboard screenshot and historical incident isolation remain open.
+
+**Status: INSTALLED; EARLIER CANDIDATE CI PASSED; CURRENT MASTER ACCEPTANCE OPEN.**
+
+## Historical checkpoint — 2026-10-29 (`cdf871f7`)
 
 Source candidate `cdf871f793e23a51d082d64059baa34efec2f770` is installed in the main checkout. Its wheel SHA-256 is `d0a557bc277d103ba616eb766ad93eb77dfa44202de236ad9a004ebf7889583b`; clean-archive strict release check and isolated wheel smoke passed. Later commits update plan and evidence documentation. [Master CI for `79b12773`](https://github.com/Harfusha/local-ai-hub/actions/runs/40936376090) was running at this checkpoint. The five earlier CI failures passed locally after the fix; the current candidate's complete surface audit has not finished. At the operator's request, run the final tests after all changes are complete. Authentic broker receipts, Gemini host use, a current saved dashboard screenshot and the historical non-test-data isolation investigation remain open. See [release evidence](../../release-evidence-5.1.0.md).
 
