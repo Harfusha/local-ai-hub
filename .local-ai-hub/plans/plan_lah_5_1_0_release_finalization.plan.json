@@ -17,12 +17,12 @@
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "Final candidate CI is not yet complete; real Gemini host use is unverified. Existing Agent OS release task verification reports no receipts and four unsatisfied criteria. A current dashboard screenshot cannot be saved using the approved browser path. The non-test-data isolation investigation remains open. Other conflict-heavy branches remain preserved separately.",
+      "blocker": "Live MCP plan edit at budget 1600 returned a budget error without mutation_applied although the plan was changed; investigate whether the connected MCP process predates the installed fix or a later response layer drops the field. Candidate CI remains pending; real Gemini host use, broker receipts, current saved dashboard screenshot and the non-test-data isolation investigation remain unverified. Conflict-heavy branches remain preserved.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Source candidate 626d8e1a8b391a2afc153c5606fe7fe12ef24f2b is integrated in master and installed in the main managed environment. Exact candidate clean archive strict release check passed; wheel SHA-256 4534d3f3c62383a52cfca00c0ac63b8d473f5386812e189d9ec1da149a1e2ccb passed isolated wheel smoke, surface audit passed 775 tests, and selftest passed six checks. Live Hub health and Codex MCP status/coordination calls succeeded. Candidate CI is in progress. Detailed evidence and limitations are in docs/release-evidence-5.1.0.md; these native test outputs are not broker receipts.",
+      "description": "Source candidate 779db6c914b031f16e9d4b959b50688a37ff0821 is integrated and installed in the main environment. Its wheel SHA-256 6edc4d87b8bcaf821f26ad72555815ed3ac2d645960f548685ef107ef31d4507 passed isolated wheel smoke; 36 focused planner tests passed, including a real file write through the MCP layer with a test client. Prior candidate 626d8e1a passed clean archive strict release check, 775 surface tests and six self-tests; those earlier results are not exact-current-candidate receipts. Live Hub health and Codex MCP status/coordination calls succeeded. Current CI remains pending. Native test outputs are not broker receipts.",
       "kind": "code",
-      "next_action": "Inspect the running candidate CI to terminal result; establish authentic broker-backed receipts for the existing task; verify Gemini host behavior and outstanding dashboard and isolation gates. Keep task in progress until evidence and target integration are verified.",
+      "next_action": "Verify MCP server process provenance after the installed fix, reproduce with a fresh authorized host session, fix any remaining false error and test the complete transport. Inspect candidate CI to terminal result, obtain authentic broker receipts, and complete Gemini/dashboard/isolation gates.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_phase": "verification",
       "work_status": "in_progress"
