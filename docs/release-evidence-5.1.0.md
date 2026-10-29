@@ -1,5 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Candidate checkpoint — 2026-10-29 (`ff3813ab`)
+
+- Clean Git archive `ff3813abf28df95abaf4fcc000b35cbc7c1cd957` passed `release_check.py --strict-tree`. The wheel built from that archive has SHA-256 `c62682306a7b3a847860cd895f9bc6645d634e9386603cd55f7ad34895229ad9`; an isolated virtual environment returned `success=true`, `smoke=passed`, five tools and `planner_schema=passed`.
+- All wheel members and their contents match the installed wheel from `72e20fd22b676c6cb5bde2108a1575290ff4863b`, whose archive SHA-256 is `9a60caff2eb4d994cd995e37a570ac0276b542f8148191d7a0e1685d6e887b14`. The wheel archives have different hashes despite identical member contents. The later commit changes setup and its test. The live Hub was restarted on the installed wheel, PID 60864, with `/health` reporting success; this is not a claim that the new wheel archive itself was installed.
+- The combined targeted setup, reliability, release-contract and surface suite passed 898 tests with one POSIX-specific skip; six self-test checks passed. These are native results, not broker receipts. CI for the current candidate was in progress at this checkpoint.
+- Codex and Gemini MCP settings point to the main installation. Setup initially removed their existing Python `-I` flag; it was restored locally and `ff3813ab` adds preservation for the exact canonical isolated invocation. Real Gemini host use and authentic Agent OS receipts remain unverified. A separate chat owns an unfinished HTTP MCP prototype in untracked files; it is not included in this candidate.
+
 ## Main installation checkpoint — 2026-10-29 (`cdf871f7`)
 
 - Source candidate `cdf871f793e23a51d082d64059baa34efec2f770` is installed in the main managed environment. Master subsequently advanced to `79b12773b2fe359bb78b4f4e0466928fc0555f9f` with a plan-only change. The installed wheel SHA-256 is `d0a557bc277d103ba616eb766ad93eb77dfa44202de236ad9a004ebf7889583b`; its clean-archive strict release check and isolated wheel smoke passed. These native results are not broker receipts.
