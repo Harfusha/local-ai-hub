@@ -1,5 +1,9 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Master CI checkpoint — 2026-10-29 (`6c7200a9`)
+
+- [CI run 338](https://github.com/Harfusha/local-ai-hub/actions/runs/40950529727) passed on commit `6c7200a9c1b71554ebe368b8722a6757d94c0282`: all 12 matrix jobs, critical coverage and package succeeded. This documentation commit follows the tested `ff3813ab` code candidate; it does not verify uncommitted work or supply Agent OS broker receipts.
+
 ## Candidate checkpoint — 2026-10-29 (`ff3813ab`)
 
 - Clean Git archive `ff3813abf28df95abaf4fcc000b35cbc7c1cd957` passed `release_check.py --strict-tree`. The wheel built from that archive has SHA-256 `c62682306a7b3a847860cd895f9bc6645d634e9386603cd55f7ad34895229ad9`; an isolated virtual environment returned `success=true`, `smoke=passed`, five tools and `planner_schema=passed`.
