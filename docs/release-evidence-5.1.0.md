@@ -1,5 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Candidate checkpoint — 2026-10-30 (`5b0289af`)
+
+- Source revision `5b0289af4031e20bc9cde2fcdf292255ca50f476` includes the shared HTTP MCP transport and its reviewed response-producer inventory. Its clean Git archive passed `release_check.py --strict-tree`. A fresh wheel built from that archive had SHA-256 `eb6736b38cf17bea9e258769ff1deb866fe215b9aa1dc00ecd3989327c1cea2e`; installation and `wheel_smoke.py` passed in a new isolated virtual environment, with five compact tools and planner schema passing.
+- The preceding `704f75ff` native suite reported 868 passed, one skipped live-transport test, and one failed audit disposition test. The 16 stale response-producer entries were reviewed and corrected in `5b0289af`; the previously failing test then passed. These native results are not broker receipts.
+- The main installation's 11 transport-related module files matched the source bytes; their install time preceded service startup. Live HTTP MCP initialization and `local_ai_status` succeeded on the configured loopback endpoint. `/health` succeeded, doctor reported no warnings, and selftest passed six checks. The dashboard Service Health page reported current runtime healthy and complete; it also recorded one request failure and one queue rejection. Live Gemini host use and cancellation during real generation are not yet verified.
+- [Candidate CI](https://github.com/Harfusha/local-ai-hub/actions/runs/40976366166) was in progress at this checkpoint. The installed-checkout release check rejected an existing `build/` directory; its contents were preserved. Agent OS completion receipts remain outstanding.
+
 ## Master CI checkpoint — 2026-10-29 (`6c7200a9`)
 
 - [CI run 338](https://github.com/Harfusha/local-ai-hub/actions/runs/40950529727) passed on commit `6c7200a9c1b71554ebe368b8722a6757d94c0282`: all 12 matrix jobs, critical coverage and package succeeded. This documentation commit follows the tested `ff3813ab` code candidate; it does not verify uncommitted work or supply Agent OS broker receipts.
