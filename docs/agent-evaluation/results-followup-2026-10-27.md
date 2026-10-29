@@ -75,3 +75,36 @@ Pro 066 a 088 byla spuštěna kontrola zrušení čekající úlohy v scheduleru
 ## Zrušený nástroj a aktuální instrukce
 
 Uživatel výslovně upřesnil, že `local_ai_command` nemá existovat. Neobnovovat jej jako producenta receiptů. Opraveny aktivní globální kopie skillů `local-ai-orchestrator`, `token-economizer` a `tool-orchestration` v `.codex/skills` i `.agents/skills`, včetně referencí a metadata; cílený scan těchto dvou stromů nenašel další výskyty. Validace všech šesti entrypointů prošla. Generátory a repozitářový inventory byly předány hlavnímu chatu k integraci; jejich aktuální nasazení se tím neprokazuje.
+
+## Opakované hodnocení — 29. 10. 2026
+
+### Stav běhu
+
+Požadavek zahrnuje opakování všech 100 promptů s porovnáním proti výše uvedenému baseline. Prompt katalog obsahuje 100 případů; předchozí výsledkový log eviduje 86 různých ID a řadu pouze částečných, syntetických či blokovaných průchodů. Nelze tedy porovnávat „100/100 předtím“ s novým během.
+
+Aktuální lokální kontrola `python tools/hubctl.py status` vrátila: Hub **v5.1.0, Online**, PID 18420; Ollama online, 8 modelů, GPU NVIDIA GeForce RTX 4060 (7 GB), žádný aktivní model. Tato kontrola dokládá dosažitelnost služby a stavovou odpověď, nikoli MCP průchod promptů.
+
+V tomto Codex chatu nejsou připojeny nástroje Local AI Hub MCP (`local_ai_repo`, `local_ai_coord`, `local_ai_task` ani další). Nelze proto pozorovat skutečné volání Hubu, request/evidence ID, agentní práci přes Hub ani bezpečně ověřit koordinaci. Opakování 100 případů **NEBYLO SPUŠTĚNO**; neoznačovat je jako PASS. Tato překážka je v agentním přístupu, zatímco samotný lokální status endpoint/CLI je dostupný.
+
+### Srovnání a závěry
+
+- **Ověřitelný posun:** status dnes uvádí Hub 5.1.0 online a rozpoznaný GPU/model inventory. To je aktuální stavová kontrola, ne srovnatelný end-to-end výsledek. Předchozí status v záznamu 066 hlásil degradaci a neznámý tlak VRAM; rozdílný výstup může znamenat zlepšení readiness nebo jiné podmínky měření, bez prompt běhu jej nelze připsat upgradu.
+- **Silné stránky baseline:** agenti v zaznamenaných případech většinou poctivě přiznali blokaci; doloženy jsou průchody konfliktu revize plánu, obnovy paginovaného task contextu, odmítnutí neplatných typů, bezpečného odmítnutí čtení přes junction a zrušení syntetického běžícího jobu. To jsou konkrétní historické výsledky, ne nová potvrzení.
+- **Zbývající slabiny baseline:** chybí autentické receipt flow a budget exhaustion; zrušení skutečné inference, exkluzivní benchmark, fault-injected batch/rollback a plný MCP průchod přes vrstvy nebyly doloženy. Dřívější běhy také odhalily zbytečné pokusy s neplatným API schématem, sdílení Hub state mezi „izolovanými“ chaty a nejistý výsledek mutace při odmítnuté odpovědi.
+- **Nový výsledek:** změnu kvality agentů ani funkčnosti Hubu zatím nelze vyhodnotit. Procentní skóre, delta ani tvrzení o opravě by byly nepodložené.
+
+### Doporučené odstranění blokací
+
+1. Připojit Local AI Hub MCP server k hodnoticímu Codex chatu a ověřit jedním neinvazivním voláním `local_ai_status`, že návrat obsahuje identitu instalace a platný výsledek. Před tím žádný agentní výsledek nepřisuzovat Hubu.
+2. Připravit a ověřit disposable Hub config/state/port a testovací MCP klient; samostatný chat sám neizoluje frontu, kvóty, paměť ani lease. Uchovat předběhový stav a každý případ svázat s buildem, instrukcemi, rootem a fixture revizí.
+3. Spouštět pořadí po kontrolovaných dávkách: nejprve bezpečné/read-only a lehké případy, pak task/memory, následně modelové a fault-injection, nakonec oddělené write/runtime sandboxy. Tím se omezí vzájemné ovlivnění globálních front a GPU.
+4. Před dávkou doplnit chybějící harness pro řízené chyby, autentické broker receipts a izolované runtime/upgrade. U každého případu měřit Agent, Hub a prostředí zvlášť; logovat přesné request/evidence/receipt IDs a počet zbytečných volání. Kritické bezpečnostní porušení zastaví příslušnou dávku.
+5. Porovnat pouze stejná ID se stejným promptem, fixture a povolením. Výsledky rozdělte na plný PASS / partial / blocked; nové změny z tohoto checkoutu nepovažovat za nasazené v běžícím Hubu, dokud se nepotvrdí shoda procesu a zdroje.
+
+**Záznam pokusu:** Agent BLOCKED — MCP tools nejsou v tomto chatu dostupné; promptovací běh se nespustil. Hub status PASS — v5.1.0 online přes `hubctl status`. Prostředí PARTIAL — lokální služba dostupná, testovací MCP cesta nedostupná. Run ID / request IDs: nevznikly. Žádné Hub tasky, fixture ani produkční stav nebyly změněny.
+
+### Doplněk — oprava MCP připojení
+
+Kontrola `C:\Users\Adam\.codex\config.toml` našla aktivní `local-ai` MCP záznam mířící do dočasného `lah-ci-repro` prostředí. Záznam byl přesměrován na běžící instalaci `C:\Users\Adam\.local-ai-hub` a její Python 3.13; před změnou vznikla ověřená záloha `config.toml.backup-local-ai-20261029-182334650`.
+
+Ověřený přímý stdio MCP handshake: inicializace PASS, 7 nástrojů nalezeno, `local_ai_status` PASS; Hub v5.1.0, `hub_online=true`, `degraded=false`, request `req_f3e0abf9670f`. Aktivní Codex session následně při vlastním `list_mcp_resources` stále selhala při initialize. Konfigurace je opravena, ale nástroje se do této běžící session zatím nenačetly; po reloadu/restartu Codexu je nutné ověřit znovu přítomnost `local_ai_*`. Testovací sada 100 promptů zůstává **NOT_RUN** do této kontroly.

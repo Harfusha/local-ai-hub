@@ -1,17 +1,18 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
-## Current source candidate — 2026-10-28 (`890acda3`, CI in progress)
+## Current source candidate — 2026-10-29 (`27e08071`, CI in progress)
 
-- **Source candidate:** `890acda3ce44c8fb68b29319e48026bb5dc8729e`, pushed to `origin/master`.
-- **Hosted CI:** [run #40777823756](https://github.com/Harfusha/local-ai-hub/actions/runs/40777823756) targets this exact commit. The latest GitHub API read reports 12/13 jobs complete, no failures, and only `test (ubuntu-latest, 3.14)` still running. This is not a green terminal result.
-- **Fresh local candidate checks:** clean archive `python tools/release_check.py --strict-tree --json` passed; `python -m compileall -q src tools tests` passed; pyflakes passed for `tools/release_check.py` and `src/local_ai_hub/mcp_server.py`; `python tools/selftest.py` passed 6/6; surface audit/inventory passed 775 tests in 118.98s; `python tools/sync_prompt_policies.py --check` passed.
-- **Wheel:** clean-archive build produced `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `cb7543a3ede8720d04e4953e2489d7953604db08d1366b6edd5bde7b75ec8dfb`. A fresh isolated venv installed the exact wheel; `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, version `5.1.0`, five MCP tools, and planner schema passed. Ollama was unavailable inside this isolated harness.
-- **Live install/restart:** managed `.venv` `direct_url.json` records the same wheel SHA. Hub was restarted from that environment; current PID `22876` listens on `127.0.0.1:11435`; `/health` returned HTTP 200, version `5.1.0`. `local_ai_status` reports online, `degraded=false`, and Ollama `qwen2.5-coder:3b`; `pip check` is clean; a fresh post-restart `doctor.py` passed all checks with no warnings.
-- **Dashboard:** after startup telemetry settled, current Chrome showed Healthy, complete data, 0 request failures and no active API requests. Persisted capture: [dashboard after current-candidate restart](dashboard-live-2026-10-28-890acda3.jpg), SHA-256 `2e13ac8e081b3723389e74e7fe9efea15a6ff39b15ee2d2adfc9ce886804ff62`. The older [Coordination screenshot](dashboard-live-2026-10-28-coordination.jpg) remains evidence for plan/task create-edit-list-reload.
+- **Source candidate:** `27e0807107dc9a31e167b87d8dbbd2d47f778c35`, pushed to `origin/master` and fast-forwarded into local `master`.
+- **Hosted CI:** [run #40782669676](https://github.com/Harfusha/local-ai-hub/actions/runs/40782669676) targets this exact commit. GitHub Actions page checked 2026-10-29 reports 11/12 matrix jobs complete; only `test (ubuntu-latest, 3.14)` is running. No terminal result: CI is not green. Anonymous job-log access returned HTTP 403.
+- **Fresh local candidate checks:** clean clone `python tools/release_check.py --strict-tree` passed; compileall and pyflakes passed for changed source/test files; focused dashboard regression tests passed 57/57.
+- **Wheel:** pinned build requirements produced `local_ai_hub-5.1.0-py3-none-any.whl`, SHA-256 `bd9c8ee32b101190b58aef20a07e8fd729e64acf67c9d8a804d15d90d920a4ee`. Fresh isolated install and `tools/wheel_smoke.py` passed (`success=true`, `smoke=passed`, version `5.1.0`, five MCP tools, planner schema passed); isolated `pip check` found no broken requirements. Ollama is intentionally not available in the isolated smoke environment.
+- **Live install/restart:** managed `.venv` `direct_url.json` records the same wheel SHA. Hub restarted from that environment; PID `41896` listens on `127.0.0.1:11435`; `/health` returned success/version `5.1.0`. `local_ai_status` reports online, `degraded=false`, Ollama online, and `qwen2.5-coder:3b`; `pip check` is clean.
+- **Dashboard:** no screenshot or project-plan UI lifecycle verification was performed against candidate `27e08071`. The existing [dashboard screenshot](dashboard-live-2026-10-28-890acda3.jpg) and [coordination screenshot](dashboard-live-2026-10-28-coordination.jpg) are historical evidence from earlier candidates; they do not prove current-candidate UI behavior.
 - **Benchmark:** [`docs/perf_candidate_json_budget.json`](perf_candidate_json_budget.json), SHA-256 `DAE952D917827902167C159A64E2B1AACD2CBC8E49366EC8B1CF1EC82F779EA1`, records 1,000 independently measured pairs with parity, p95 speedup 1.72x and p99 speedup 1.95x. This closes only the JSON-budget tail gate.
-- **Open gates:** exact-head CI terminal result; authentic Agent OS `command_execution_record.v2` receipts; incident test-isolation investigation; and `verify_completion`. Native tests, CI and wheel smoke are not broker receipts. Release acceptance remains open.
+- **Agent OS verification:** `verify_completion(task_release_5.1.0)` returned `complete=false`, `receipts=[]`; unsatisfied receipt criteria: selftest, release check, wheel smoke, and the 1,000-sample benchmark. The current tool surface exposes no command broker. Do not synthesize receipts.
+- **Open gates:** terminal green CI for final exact HEAD; dashboard UI verification against the candidate; authentic Agent OS receipts; incident test-isolation investigation; and successful `verify_completion`. Native tests, CI and wheel smoke are not broker receipts. Release acceptance remains open.
 
-**State: SOURCE LOCALLY VALIDATED; HOSTED CI IN PROGRESS (12/13); LIVE WHEEL INSTALLED; RELEASE ACCEPTANCE OPEN.**
+**State: SOURCE LOCALLY VALIDATED; HOSTED CI IN PROGRESS (11/12 MATRIX JOBS); EXACT WHEEL INSTALLED AND RESTARTED; RELEASE ACCEPTANCE OPEN.**
 
 ## Previous verified source candidate — 2026-10-28 (`2ec72c3e`, installed)
 

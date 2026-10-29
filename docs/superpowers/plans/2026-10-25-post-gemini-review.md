@@ -1,11 +1,11 @@
 # Post-Gemini Review and Deployment Plan
 
-## Current release checkpoint — 2026-10-28
+## Current release checkpoint — 2026-10-29
 
-- Current pushed candidate is `890acda3ce44c8fb68b29319e48026bb5dc8729e`. Its clean-archive strict release check, compileall, pyflakes, selftest 6/6, surface suite (775 passed), prompt sync check, and isolated wheel smoke passed.
-- The exact rebuilt wheel SHA-256 `cb7543a3ede8720d04e4953e2489d7953604db08d1366b6edd5bde7b75ec8dfb` is installed in the managed `.venv`; the restarted service PID `22876` answers `/health` on port 11435 with version 5.1.0. `local_ai_status` reports `degraded=false` and Ollama online; post-restart `doctor.py` passed all checks. After startup records settled, dashboard was Healthy with complete data and 0 failures; persisted capture: [current dashboard](../../dashboard-live-2026-10-28-890acda3.jpg), SHA-256 `2e13ac8e081b3723389e74e7fe9efea15a6ff39b15ee2d2adfc9ce886804ff62`.
-- CI [run #40777823756](https://github.com/Harfusha/local-ai-hub/actions/runs/40777823756) targets exact commit `890acda3`; latest API result is 12/13 jobs complete, no failures, with Ubuntu 3.14 still running. Do not call CI green until terminal success.
-- [ ] **OPEN — final release evidence and closure:** current source, runtime, and dashboard evidence are recorded in [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md). Exact-head hosted CI is still running. Authentic Agent OS receipts and incident test-isolation adjudication remain outstanding. Native output is not a broker receipt. Keep release acceptance open.
+- Current pushed candidate is `27e0807107dc9a31e167b87d8dbbd2d47f778c35`. Its clean-clone strict release check, focused dashboard regression cohort (57 passed), changed-source/test compileall and pyflakes, and isolated wheel smoke passed.
+- Wheel SHA-256 `bd9c8ee32b101190b58aef20a07e8fd729e64acf67c9d8a804d15d90d920a4ee` is installed in the managed `.venv`; restarted service PID `41896` answers `/health` on port 11435 with version 5.1.0. `local_ai_status` reports `degraded=false` and Ollama online; `pip check` is clean.
+- CI [run #40782669676](https://github.com/Harfusha/local-ai-hub/actions/runs/40782669676) targets exact commit `27e08071`; GitHub Actions page reports 11/12 matrix jobs complete, with Ubuntu 3.14 still running. Job logs return HTTP 403 anonymously. Do not call CI green until terminal success.
+- [ ] **OPEN — final release evidence and closure:** current source and runtime evidence are recorded in [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md). `verify_completion(task_release_5.1.0)` returned `complete=false`, no receipts; selftest, release check, wheel smoke and 1,000-sample benchmark receipts are missing. The dashboard screenshot is from parent candidate `890acda3`; UI behavior has not been rechecked against `27e08071`. Exact-head hosted CI, dashboard plan lifecycle, and incident test-isolation adjudication remain outstanding. Native output is not a broker receipt. Keep release acceptance open.
 
 
 > **For agentic workers:** Use superpowers:executing-plans for sequential implementation and acceptance. The main chat owns Git, validation and deployment.
