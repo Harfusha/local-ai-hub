@@ -1,5 +1,13 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Main installation checkpoint — 2026-10-29 (`626d8e1a`)
+
+- Source candidate `626d8e1a8b391a2afc153c5606fe7fe12ef24f2b` was pushed to master. Its clean Git archive passed `release_check.py --strict-tree`; the live checkout check still reports its pre-existing ignored `build/` directory.
+- A wheel built from that archive has SHA-256 `4534d3f3c62383a52cfca00c0ac63b8d473f5386812e189d9ec1da149a1e2ccb`. Its isolated Windows venv smoke returned `success=true`, `smoke=passed`, five tools and `planner_schema=passed`; Ollama was unavailable inside that isolated smoke. This native output is not a broker receipt. The wheel is installed in the main managed `.venv` and its PEP 610 metadata matches.
+- On the same source candidate, the surface audit and inventory passed 775 tests; targeted setup, search and status contract tests passed 26; selftest passed all six checks. `doctor.py` reported no warnings. Live Hub PID 38728 responded at `127.0.0.1:11435/health` with success and version 5.1.0; live Ollama was online.
+- [Candidate CI #40926047442](https://github.com/Harfusha/local-ai-hub/actions/runs/40926047442) was queued at this checkpoint; it is not a passing CI claim. Historical [CI #40410655500](https://github.com/Harfusha/local-ai-hub/actions/runs/40410655500) failed its Ubuntu full suite; subsequent earlier candidate [CI #40912185136](https://github.com/Harfusha/local-ai-hub/actions/runs/40912185136) passed.
+- Codex and Gemini MCP configurations point to the main installation. A new Codex session found the MCP tool but its invocation was rejected by the host approval policy; actual Gemini host use remains unverified. Broker receipts, Agent OS completion verification and a current saved dashboard screenshot remain open. No acceptance is inferred from the native checks.
+
 ## Current installation checkpoint — 2026-10-29 (`1c5155c7`)
 
 - A clean archive of `origin/master` commit `1c5155c7304fd0703a6fdefd9412f4823c2a515a` produced wheel SHA-256 `b2b7725f0f8aff7161117e7cdad94ab9bd3ee61878e3df1ef0d95737a30f0e93`. A new Windows venv installed that exact wheel; `pip check` reported no broken requirements and `tools/wheel_smoke.py` returned `success=true`, `smoke=passed`, five MCP tools and `planner_schema=passed`. Ollama was offline in the isolated smoke. This is native test output, not a broker receipt.
