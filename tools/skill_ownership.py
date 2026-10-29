@@ -465,7 +465,7 @@ def _rename_noreplace(
     if os.name == "nt":
         _rename_noreplace_windows(source, destination, quarantine_directory, source_pin)
         return
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith(("linux", "darwin")):
         import ctypes
         owns_source_pin = source_pin is None
         if source_pin is None:
@@ -495,19 +495,26 @@ def _rename_noreplace(
                 raise OSError("destination parent is not a directory")
 
             libc = ctypes.CDLL(None, use_errno=True)
-            renameat2 = getattr(libc, "renameat2", None)
-            if renameat2 is None:
+            if sys.platform.startswith("darwin"):
+                rename_noreplace = getattr(libc, "renameatx_np", None)
+                rename_flags = 0x00000004  # RENAME_EXCL
+                operation = "renameatx_np(RENAME_EXCL)"
+            else:
+                rename_noreplace = getattr(libc, "renameat2", None)
+                rename_flags = 1  # RENAME_NOREPLACE
+                operation = "renameat2(RENAME_NOREPLACE)"
+            if rename_noreplace is None:
                 import errno
 
-                raise OSError(errno.ENOTSUP, "renameat2(RENAME_NOREPLACE) is unavailable")
-            renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-            renameat2.restype = ctypes.c_int
-            result = renameat2(
+                raise OSError(errno.ENOTSUP, f"{operation} is unavailable")
+            rename_noreplace.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            rename_noreplace.restype = ctypes.c_int
+            result = rename_noreplace(
                 source_fd,
                 os.fsencode(source.name),
                 destination_fd,
                 os.fsencode(destination.name),
-                1,
+                rename_flags,
             )
             if result != 0:
                 error = ctypes.get_errno()
@@ -517,12 +524,12 @@ def _rename_noreplace(
                 moved_identity = (moved.st_dev, moved.st_ino)
                 restored = False
                 restore_error: OSError | None = None
-                restore_result = renameat2(
+                restore_result = rename_noreplace(
                     destination_fd,
                     os.fsencode(destination.name),
                     source_fd,
                     os.fsencode(source.name),
-                    1,
+                    rename_flags,
                 )
                 if restore_result == 0:
                     try:

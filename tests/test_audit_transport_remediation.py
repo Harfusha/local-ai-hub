@@ -16,9 +16,10 @@ import pytest
     ([9.0, 9.5], False, True),
 ])
 def test_request_head_deadline_is_checked_before_and_after_each_read(monkeypatch, clock_values, expired, consumed):
+    from types import SimpleNamespace
     from local_ai_hub import http_transport
     clock = iter(clock_values)
-    monkeypatch.setattr(http_transport.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(http_transport, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     timeouts = []
     raw = io.BytesIO(b"GET")
     reader = http_transport.RequestHeadReader(raw, SimpleNamespace(settimeout=timeouts.append))
