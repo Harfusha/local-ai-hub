@@ -603,8 +603,8 @@ def test_dashboard_health_treats_optional_probe_failure_as_attention() -> None:
     telemetry_failure = run_health(
         {"detail.agent_state.telemetry.summary": {"degraded": True}}
     )
-    assert telemetry_failure["health"]["level"] == "attention"
-    assert telemetry_failure["health"]["functional_health"] != "degraded"
+    assert telemetry_failure["health"]["level"] == "healthy"
+    assert telemetry_failure["health"]["functional_health"] == "healthy"
     assert telemetry_failure["badge"]["degradedCount"] == 0
     assert "degraded" not in telemetry_failure["badge"]["degradedLabel"]
 

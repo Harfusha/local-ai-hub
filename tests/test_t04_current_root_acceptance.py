@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import threading
 import time
+from http.client import HTTPConnection
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -80,12 +82,31 @@ def test_unsupported_chat_completions_rejects_valid_payload(live_api):
     assert "messages" not in result["error"]
 
 
-@pytest.mark.parametrize("messages", ["not-a-list", [], [{}] * 129, [{"role": "user", "content": "x" * 1_000_001}]])
+@pytest.mark.parametrize("messages", ["not-a-list", [], [{}] * 129])
 def test_unsupported_chat_completions_invalid_payloads_reach_404(live_api, messages):
     _app, client = live_api
     result = client.post("/api/chat/completions", {"messages": messages})
     assert result["success"] is False
     assert result["status_code"] == 404
+
+
+def test_unsupported_chat_completions_rejects_large_declared_body_before_reading(live_api):
+    _app, client = live_api
+    target = urlsplit(client.base_url)
+    assert target.hostname is not None
+    assert target.port is not None
+
+    connection = HTTPConnection(target.hostname, target.port, timeout=5)
+    try:
+        connection.putrequest("POST", "/api/chat/completions")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", "1000001")
+        connection.endheaders()
+        response = connection.getresponse()
+        assert response.status == 404
+        response.read()
+    finally:
+        connection.close()
 
 
 def test_client_list_tasks_serializes_query_and_preserves_positional_args(tmp_path, monkeypatch):

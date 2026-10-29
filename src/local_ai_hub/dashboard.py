@@ -879,7 +879,7 @@ function isTelemetrySummaryDependency(name){
 
 function dashboardHealthBadge(status={}){
   const dependencyEntries=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status):[];
-  const failedDependencies=dependencyEntries.filter(([name,value])=>!name.startsWith('runtime_stats.')&&!isTelemetrySummaryDependency(name)&&value?.degraded===true);
+  const failedDependencies=dependencyEntries.filter(([name,value])=>!name.startsWith('runtime_stats.')&&name!=='preprocessing.stats'&&!isTelemetrySummaryDependency(name)&&value?.degraded===true);
   const telemetrySummaryOnlyFailure=dependencyEntries.some(([name,value])=>isTelemetrySummaryDependency(name)&&value?.degraded===true)&&failedDependencies.length===0;
   const dependencies=failedDependencies.map(([,value])=>value);
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
