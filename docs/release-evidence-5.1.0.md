@@ -1,5 +1,12 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Main installation checkpoint — 2026-10-29 (`cdf871f7`)
+
+- Source candidate `cdf871f793e23a51d082d64059baa34efec2f770` is installed in the main managed environment. Master subsequently advanced to `79b12773b2fe359bb78b4f4e0466928fc0555f9f` with a plan-only change. The installed wheel SHA-256 is `d0a557bc277d103ba616eb766ad93eb77dfa44202de236ad9a004ebf7889583b`; its clean-archive strict release check and isolated wheel smoke passed. These native results are not broker receipts.
+- The five failures identified in the preceding CI run passed locally after the fix. A related 50-test set passed before the final formatting change. The surface audit from `626d8e1a` below is historical, not evidence for this candidate; a fresh audit was interrupted at the operator's request to run tests only after all changes are complete.
+- [CI for master `79b12773`](https://github.com/Harfusha/local-ai-hub/actions/runs/40936376090) was running at this checkpoint. No passing result is asserted. The live Hub status reported version 5.1.0, PID 47364 and Ollama online; this alone does not verify a new Gemini session.
+- Actual Gemini host use, authentic Agent OS verification receipts, a current saved dashboard screenshot, and the historical incident's non-test-data isolation remain unverified. Existing connected agent hosts need reconnection to load the updated MCP process.
+
 ## Main installation checkpoint — 2026-10-29 (`626d8e1a`)
 
 - Later in the current Codex session, the configured MCP `local_ai_status` returned `success=true`, Hub and Ollama online, and `degraded=false`; `local_ai_coord` also responded. `verify_completion` found the existing `task_release_5.1.0` with `complete=false`, no receipts, and four unsatisfied criteria: selftest, release check, wheel smoke, and benchmark. The earlier denied read-only Codex test was a different session. A checkpoint on the same existing task records the current incomplete phase. No native test output was promoted to a broker receipt.
