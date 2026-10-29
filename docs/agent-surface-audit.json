@@ -7144,7 +7144,9 @@
         "handler": "post_complete_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.complete_code"
+          "APP.services.complete_code",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -7159,7 +7161,9 @@
         "handler": "post_compress_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.compress"
+          "APP.services.compress",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -7640,7 +7644,9 @@
         "handler": "post_delegate_batch_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.batch_delegate"
+          "APP.services.batch_delegate",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -7655,7 +7661,9 @@
         "handler": "post_delegate_repo_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.delegate_repo"
+          "APP.services.delegate_repo",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -7768,7 +7776,9 @@
         "handler": "post_generate_tests_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.generate_tests"
+          "APP.services.generate_tests",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -8223,7 +8233,9 @@
         "handler": "post_reason_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.reason"
+          "APP.services.reason",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9044,7 +9056,9 @@
         "handler": "post_review_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.review"
+          "APP.services.review",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9059,7 +9073,9 @@
         "handler": "post_review_diff_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.review_diff"
+          "APP.services.review_diff",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9074,7 +9090,9 @@
         "handler": "post_route_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.route_context"
+          "APP.services.route_context",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9105,7 +9123,9 @@
         "handler": "post_second_opinion_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.second_opinion"
+          "APP.services.second_opinion",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9138,7 +9158,9 @@
         "handler": "post_solve_repo_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.solve_repo"
+          "APP.services.solve_repo",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9251,7 +9273,9 @@
         "handler": "post_scaffold_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.task_scaffold"
+          "APP.services.task_scaffold",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9266,7 +9290,9 @@
         "handler": "post_speculative_draft_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.speculative_draft"
+          "APP.services.speculative_draft",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9304,7 +9330,9 @@
         "handler": "post_task_vision_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.vision"
+          "APP.services.vision",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9387,7 +9415,9 @@
         "handler": "post_task_vision_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.vision"
+          "APP.services.vision",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9402,7 +9432,9 @@
         "handler": "post_task_vision_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.vision"
+          "APP.services.vision",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
