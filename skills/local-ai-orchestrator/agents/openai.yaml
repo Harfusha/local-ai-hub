@@ -1,6 +1,6 @@
 interface:
   display_name: "Local AI Orchestrator"
   short_description: "Local-first cached evidence routing, validation and review"
-  default_prompt: "Use $local-ai-orchestrator. Reuse fresh repository evidence; use bounded indexed/source lookup for exact facts. For non-trivial work without sufficient fresh evidence, use adaptive context before broad reads/searches. Preprocess only when the stable absolute root is unindexed or evidence is stale; never poll or force-refresh it. Route repeatable validation through the agent host's native command tool, reuse evidence/artifacts/caches, and coordinate overlapping edits. Native broad exploration is fallback-only after one bounded terminal Hub failure."
+  default_prompt: "Use $local-ai-orchestrator. Reuse fresh repository evidence; use bounded indexed/source lookup for exact facts. For non-trivial work without sufficient fresh evidence, use adaptive context before broad reads/searches. On first work in each stable root, inspect project config and add only evidence-backed missing settings, then call preprocess once for idempotent registration; never force-refresh or poll it. Route repeatable validation through the agent host's native command tool, reuse evidence/artifacts/caches, and coordinate overlapping edits. Native broad exploration is fallback-only after one bounded terminal Hub failure."
 policy:
   allow_implicit_invocation: true

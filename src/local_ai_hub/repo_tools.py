@@ -251,7 +251,7 @@ class RepositoryTools:
             "pytest.ini", "tox.ini", "phpunit.xml", "phpunit.xml.dist", "phpstan.neon", "phpstan.neon.dist",
         ])}
         default_ignore_dirs = {
-            ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
+            ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "tool-envs", "node_modules",
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
             ".serena", ".local-ai-hub", ".codegraphcontext", ".handoff",
@@ -1709,6 +1709,17 @@ class RepositoryTools:
         deadline = time.monotonic() + 60.0
         extension_check = getattr(self, "_path_extension_is_searchable", None)
         force_patterns = tuple(force_include_paths or ())
+        configured_state_relative: Path | None = None
+        server_config = self.config.get("server", {})
+        raw_state_dir = server_config.get("state_dir") if isinstance(server_config, Mapping) else None
+        if isinstance(raw_state_dir, (str, os.PathLike)) and os.fspath(raw_state_dir).strip():
+            try:
+                state_path = Path(raw_state_dir).expanduser()
+                if not state_path.is_absolute():
+                    state_path = Path.cwd() / state_path
+                configured_state_relative = state_path.resolve(strict=False).relative_to(base)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                configured_state_relative = None
 
         matching_relpaths: set[str] | None = None
         if self.use_ripgrep and self._rg and terms:
@@ -1717,8 +1728,18 @@ class RepositoryTools:
                 "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore",
                 "--no-messages", "-g", "!.git/**",
             ]
-            for d in ("logs", "temp", "library", ".serena", ".local-ai-hub", "bin", "obj", "build", "dist"):
+            # Exact search applies the project's ignore policy after candidate
+            # discovery, so mirror those directory exclusions in ripgrep too.
+            # Otherwise --no-ignore scans large ignored environments/state
+            # trees (for example .venv and tool-envs) before the bounded exact
+            # pass can inspect the repository's eligible files.
+            for d in sorted(self.ignore_dirs):
                 rg_cmd.extend(["-g", f"!**/{d}/**"])
+            if configured_state_relative and configured_state_relative.parts and all(
+                not any(char in part for char in "*?[]{}")
+                for part in configured_state_relative.parts
+            ):
+                rg_cmd.extend(["-g", f"!{configured_state_relative.as_posix()}/**"])
             for term in terms[:16]:
                 rg_cmd.extend(["-e", term])
             if phrase and len(phrase) <= 120 and phrase not in terms:
@@ -1898,8 +1919,6 @@ class RepositoryTools:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("exact repository search exceeded 60 seconds")
                 try:
-                    if path.is_symlink():
-                        continue
                     try:
                         relative = path.relative_to(base)
                     except ValueError:
@@ -1910,6 +1929,19 @@ class RepositoryTools:
                             continue
                     rel = relative.as_posix()
                     forced = any(self._path_control_matches(rel, (pattern,)) for pattern in force_patterns)
+                    if configured_state_relative and not forced:
+                        state_prefix = configured_state_relative.as_posix().rstrip("/")
+                        if rel == state_prefix or rel.startswith(f"{state_prefix}/"):
+                            continue
+                    # Ripgrep has already established that other files cannot
+                    # contain a result. Keep the exact total while avoiding
+                    # per-file resolve/stat/project-policy work on every
+                    # nonmatching path. Explicit force-includes still run
+                    # through the full safety and project-policy checks below.
+                    if matching_relpaths is not None and rel not in matching_relpaths and not forced:
+                        continue
+                    if path.is_symlink():
+                        continue
                     if project_settings is None:
                         if self._is_ignored_relative_path(relative):
                             continue
@@ -1943,9 +1975,6 @@ class RepositoryTools:
                         }
                     scanned += 1
                     previous_relative_path = rel
-
-                    if matching_relpaths is not None and rel not in matching_relpaths and not forced:
-                        continue
 
                     try:
                         path = path.resolve(strict=True)

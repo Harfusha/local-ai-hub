@@ -281,7 +281,7 @@ class FeatureSet:
         lines: list[str] = []
         if self.repo:
             lines.append(
-                "- Recipe — Explore: reuse fresh repository evidence; use bounded indexed/source lookup for exact file or symbol facts; use adaptive context when evidence is insufficient, and preprocess only for unindexed roots or stale evidence."
+                "- Recipe — Explore: on first work in a stable root, inspect project config and register with one idempotent preprocess call; use bounded indexed/source lookup for exact file or symbol facts and adaptive context when evidence is insufficient; never force-refresh or poll preprocessing."
             )
             lease_hint = " claim `local_ai_coord` leases for overlapping paths," if self.coord else ""
             contract_hint = " initialize an Agent OS contract," if self.agent_os else ""

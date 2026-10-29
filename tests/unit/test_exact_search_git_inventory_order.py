@@ -1,5 +1,6 @@
 """Deferred source regressions for mixed tracked/untracked Git inventories."""
 import io
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,3 +69,43 @@ def test_invalid_wait_protocol_does_not_retry_without_timeout(tmp_path, monkeypa
     assert set(calls[0]) == {"timeout"}
     assert 0 < calls[0]["timeout"] <= 60
     assert process.stdout.closed
+
+
+def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / "state").mkdir()
+    (tmp_path / "match.py").write_text("audit_needle = 1\n", encoding="utf-8")
+    (tmp_path / "skip.py").write_text("pass\n", encoding="utf-8")
+    (tmp_path / ".venv" / "forced.py").write_text("audit_needle = 2\n", encoding="utf-8")
+    (tmp_path / "state" / "cache.py").write_text("audit_needle = 3\n", encoding="utf-8")
+    payload = b"match.py\0skip.py\0.venv/forced.py\0state/cache.py\0"
+    monkeypatch.setattr(repo_tools, "popen_managed", lambda *args, **kwargs: _Process(payload))
+
+    rg_calls = []
+
+    def fake_ripgrep(command, **_kwargs):
+        rg_calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+
+    monkeypatch.setattr(repo_tools.subprocess, "run", fake_ripgrep)
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "server": {"state_dir": str(tmp_path / "state")},
+    })
+    tools._rg = "rg"
+    tools._project_file_allowed = lambda *_args, **_kwargs: True
+    tools._path_extension_is_searchable = lambda *_args, **_kwargs: True
+
+    result = tools.search(
+        str(tmp_path), "audit_needle", limit=10, exact_count=True,
+        project_settings=object(), force_include_paths=[".venv/forced.py"],
+    )
+
+    assert "!**/.venv/**" in rg_calls[0]
+    assert "!state/**" in rg_calls[0]
+    assert result["success"] is True, result
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 2
+    assert result["scanned_files"] == 2
+    assert {item["path"] for item in result["results"]} == {"match.py", ".venv/forced.py"}

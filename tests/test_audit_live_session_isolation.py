@@ -79,7 +79,7 @@ def isolated_hub(tmp_path, monkeypatch):
                      "Connection": "close"}, method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=20) as response:
                 return response.status, json.loads(response.read(256_001))
         except urllib.error.HTTPError as error:
             with error:

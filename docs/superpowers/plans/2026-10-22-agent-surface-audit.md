@@ -28,8 +28,8 @@
 - [x] Gate retained diagnostic operations before execution, including async submissions and alternate HTTP entry points. Keep status/cancel/control usable while detail is disabled.
 - [x] Refine output projection with explicit field policies; preserve useful domain data and accurate final wire accounting. Do not silently mutate stored records.
 - [x] Save the exhaustive disposition inventory and add a deterministic coverage check against current registries/response fields. New unreviewed surfaces must fail the check.
-- [x] Synchronize install/update prompts and affected existing tests. `python tools/sync_prompt_policies.py --check` passed on candidate `890acda3`; the current surface audit suite also passed 775/775.
-- [x] Review final changes, checkpoint actual evidence, release owned leases and close this surface-audit checklist. Candidate `890acda3ce44c8fb68b29319e48026bb5dc8729e` passed `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py`: 775 passed in 118.98s. This closes the surface-audit checklist only; overall 5.1.0 release status remains open in [current release status](local-ai-hub-current-status.md).
+- [x] Synchronize install/update prompts and affected existing tests. `python tools/sync_prompt_policies.py --check` passed on candidate `890acda3`; both prompts retain matching opt-in Cython wording. Fresh exact-worktree surface/inventory run on `c0efc61fb3d35c8054854c5af3205105efe30b54` passed 775/775 in 81.78s.
+- [x] Review final changes, checkpoint actual evidence, release owned leases and close this surface-audit checklist. Exact candidate `c0efc61fb3d35c8054854c5af3205105efe30b54` passed `tests/test_surface_audit_policy.py` plus `tests/test_surface_inventory.py`: 775 passed in 81.78s. This closes the surface-audit checklist only; overall 5.1.0 release status remains open in [current release status](local-ai-hub-current-status.md).
 
 ## Findings established before implementation
 
@@ -39,9 +39,9 @@
 - The AST coverage inventory includes preflight/rejection-only paths and currently omits dynamic action enums for task/work tools. It cannot be used as an unqualified count of active endpoints.
 - The initial diagnostic filter covers common fields and trace/log/timeline reads, but does not classify all diagnostic operations or prevent them from executing.
 
-## Verification log
+## Historical verification log
 
-Current focused batch: `python -m pytest -q tests/test_surface_audit_policy.py tests/test_command_guidance_removed.py tests/test_agent_diagnostic_surface.py --tb=short`: 85 passed, 1 failed. Failure is the mandatory exhaustive-disposition gate, deliberately unresolved while the audit remains incomplete. Earlier 285 PASS predates this audit.
+Historical focused batch: `python -m pytest -q tests/test_surface_audit_policy.py tests/test_command_guidance_removed.py tests/test_agent_diagnostic_surface.py --tb=short`: 85 passed, 1 failed. At that point the mandatory exhaustive-disposition gate remained unresolved. Earlier 285 PASS predates this audit. The final surface-audit result is recorded in the completed checklist above.
 
 Implemented: HTTP diagnostic preflight including retained async/artifact reads; lightweight status; seven retired HTTP aliases; MCP preflight before diagnostic execution including batch/pipeline/submit; removal of repo context_compile/verify_receipt/verify_completion; stale status fields/scope and guide hint; command generator residuals; equal pagination aliases removed; response-budget internal before-size hidden outside detail.
 
