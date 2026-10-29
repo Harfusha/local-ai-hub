@@ -17,12 +17,12 @@
         "Plan completion requires authentic task verification and verified integration of every required target"
       ],
       "accountable_role": "Codex",
-      "blocker": "Older connected MCP process omitted mutation_applied after an applied write and budget rejection. A freshly started installed MCP process returned mutation_applied=true through actual MCP, HTTP and plan file for the same 1600-token budget; existing host sessions require reconnection to load it. Candidate CI remains pending; real Gemini host use, broker receipts, current saved dashboard screenshot and non-test-data isolation investigation remain unverified. Conflict-heavy branches remain preserved.",
+      "blocker": "CI for cdf871f is running. Existing agent hosts need reconnection to load the updated MCP process. Real Gemini host use, authentic broker receipts, a saved dashboard screenshot and non-test-data isolation remain unverified. Conflict-heavy branches are preserved.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Source candidate 779db6c914b031f16e9d4b959b50688a37ff0821 is integrated and installed in the main environment. Its wheel SHA-256 6edc4d87b8bcaf821f26ad72555815ed3ac2d645960f548685ef107ef31d4507 passed isolated wheel smoke; 36 focused planner tests passed, including a real file write through the MCP layer with a test client. Prior candidate 626d8e1a passed clean archive strict release check, 775 surface tests and six self-tests; those earlier results are not exact-current-candidate receipts. Live Hub health and Codex MCP status/coordination calls succeeded. Current CI remains pending. Native test outputs are not broker receipts.",
+      "description": "Source candidate cdf871f793e23a51d082d64059baa34efec2f770 is pushed and installed in the main checkout. Its wheel SHA-256 d0a557bc277d103ba616eb766ad93eb77dfa44202de236ad9a004ebf7889583b passed isolated smoke and its clean archive passed strict release check. All five previously failing CI tests passed after final edits; the related 50-test suite passed before a final formatting change. Native outputs are not broker receipts.",
       "kind": "code",
-      "next_action": "Reconnect existing agent hosts to the updated MCP process; inspect candidate CI to terminal result, obtain authentic broker-backed receipts, and complete Gemini, dashboard and isolation gates. Keep task in progress.",
+      "next_action": "Inspect CI when finished; reconnect agent hosts and verify actual Gemini use, dashboard, isolation and authentic broker-backed receipts. Keep task in progress.",
       "title": "Complete 5.1.0 release and live acceptance",
       "work_phase": "verification",
       "work_status": "in_progress"
