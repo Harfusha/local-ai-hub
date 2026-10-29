@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.error
 import urllib.request
 import zipfile
@@ -461,6 +462,7 @@ def json_server_merge(
         raise RuntimeError(f"{container_key} is not an object in {path}")
     for name, raw_entry in servers.items():
         entry = dict(raw_entry)
+        entry = preserve_isolated_hub_args(name, container.get(name), entry)
         if require_stdio_type:
             entry.setdefault("type", "stdio")
         container[name] = entry
@@ -650,13 +652,35 @@ def toml_quote(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def preserve_isolated_hub_args(name: str, existing: Any, entry: dict[str, Any]) -> dict[str, Any]:
+    """Retain an existing isolated Python launch without carrying stale arguments."""
+    if (
+        name == "local-ai"
+        and isinstance(existing, dict)
+        and existing.get("args") == ["-I", "-m", "local_ai_hub.mcp_server"]
+        and entry.get("args") == ["-m", "local_ai_hub.mcp_server"]
+    ):
+        return {**entry, "args": ["-I", "-m", "local_ai_hub.mcp_server"]}
+    return entry
+
+
 def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool, *, startup_timeout: int = 60, tool_timeout: int = 900) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     backup(path, backup_enabled)
+    managed = re.search(rf"{re.escape(MARKER_BEGIN)}.*?{re.escape(MARKER_END)}", text, flags=re.DOTALL)
+    existing_servers: dict[str, Any] = {}
+    if managed:
+        try:
+            parsed_servers = tomllib.loads(managed.group()).get("mcp_servers", {})
+            if isinstance(parsed_servers, dict):
+                existing_servers = parsed_servers
+        except tomllib.TOMLDecodeError:
+            pass
     text = re.sub(rf"\n?{re.escape(MARKER_BEGIN)}.*?{re.escape(MARKER_END)}\n?", "\n", text, flags=re.DOTALL).rstrip() + "\n"
     blocks: list[str] = [MARKER_BEGIN]
     for name, entry in servers.items():
+        entry = preserve_isolated_hub_args(name, existing_servers.get(name), entry)
         # Never overwrite an explicitly user-managed block.
         if re.search(rf"(?m)^\[mcp_servers\.{re.escape(name)}\]\s*$", text):
             log(f"Codex MCP '{name}' exists outside the managed block; leaving it unchanged")

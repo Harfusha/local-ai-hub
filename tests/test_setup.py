@@ -250,6 +250,33 @@ def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Pa
     assert local_ai["env"]["LOCAL_AI_AGENT_PROFILE"] == "gemini"
 
 
+def test_mcp_merge_preserves_existing_isolated_hub_launch(tmp_path: Path):
+    import json
+    import tomllib
+
+    entry = {"command": "new-python", "args": ["-m", "local_ai_hub.mcp_server"], "cwd": "new-root"}
+    isolated = ["-I", "-m", "local_ai_hub.mcp_server"]
+    codex = tmp_path / "config.toml"
+    codex.write_text(
+        setup.MARKER_BEGIN + '\n[mcp_servers.local-ai]\ncommand = "old-python"\n'
+        'args = ["-I", "-m", "local_ai_hub.mcp_server"]\n' + setup.MARKER_END + '\n',
+        encoding="utf-8",
+    )
+    gemini = tmp_path / "settings.json"
+    gemini.write_text(json.dumps({"mcpServers": {"local-ai": {"args": isolated}, "other": {"command": "keep"}}}), encoding="utf-8")
+    for _ in range(2):
+        setup.codex_mcp_merge(codex, {"local-ai": entry}, False)
+        setup.json_mcp_merge(gemini, {"local-ai": entry}, False)
+    codex_server = tomllib.loads(codex.read_text(encoding="utf-8"))["mcp_servers"]["local-ai"]
+    gemini_servers = json.loads(gemini.read_text(encoding="utf-8"))["mcpServers"]
+    for server in (codex_server, gemini_servers["local-ai"]):
+        assert server["args"] == isolated
+        assert server["command"] == "new-python"
+        assert server["cwd"] == "new-root"
+    assert gemini_servers["other"] == {"command": "keep"}
+    assert setup.preserve_isolated_hub_args("local-ai", {"args": isolated + ["stale"]}, entry) == entry
+
+
 def test_codex_mcp_merge_writes_stable_working_directory(tmp_path: Path):
     path = tmp_path / "config.toml"
     setup.codex_mcp_merge(
