@@ -39,9 +39,9 @@
 - The AST coverage inventory includes preflight/rejection-only paths and currently omits dynamic action enums for task/work tools. It cannot be used as an unqualified count of active endpoints.
 - The initial diagnostic filter covers common fields and trace/log/timeline reads, but does not classify all diagnostic operations or prevent them from executing.
 
-## Verification log
+## Historical verification log
 
-Current focused batch: `python -m pytest -q tests/test_surface_audit_policy.py tests/test_command_guidance_removed.py tests/test_agent_diagnostic_surface.py --tb=short`: 85 passed, 1 failed. Failure is the mandatory exhaustive-disposition gate, deliberately unresolved while the audit remains incomplete. Earlier 285 PASS predates this audit.
+Historical focused batch: `python -m pytest -q tests/test_surface_audit_policy.py tests/test_command_guidance_removed.py tests/test_agent_diagnostic_surface.py --tb=short`: 85 passed, 1 failed. At that point the mandatory exhaustive-disposition gate remained unresolved. Earlier 285 PASS predates this audit. The final surface-audit result is recorded in the completed checklist above.
 
 Implemented: HTTP diagnostic preflight including retained async/artifact reads; lightweight status; seven retired HTTP aliases; MCP preflight before diagnostic execution including batch/pipeline/submit; removal of repo context_compile/verify_receipt/verify_completion; stale status fields/scope and guide hint; command generator residuals; equal pagination aliases removed; response-budget internal before-size hidden outside detail.
 
