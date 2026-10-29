@@ -2,7 +2,7 @@
 
 ## Current release checkpoint — 2026-10-29 (`626d8e1a`)
 
-- [ ] **OPEN — release closure:** The main master checkout contains the integrated work and runs the installed `626d8e1a` source candidate. The matching wheel smoke, surface audit, self-test and strict clean-archive check passed. Candidate CI is queued. Codex host approval denial, actual Gemini host use, broker receipts, `verify_completion`, a current saved dashboard screenshot and non-test-data isolation investigation remain open. The former checkout merge conflict was resolved, with earlier work preserved in Git history. See [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md).
+- [ ] **OPEN — release closure:** The main master checkout contains the integrated work and runs the installed `626d8e1a` source candidate. The matching wheel smoke, surface audit, self-test and strict clean-archive check passed. Candidate CI is queued. Current Codex MCP status and coordination calls succeeded; a previous read-only host invocation was denied. Actual Gemini host use, broker receipts, a complete `verify_completion`, a current saved dashboard screenshot and non-test-data isolation investigation remain open. The former checkout merge conflict was resolved, with earlier work preserved in Git history. See [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md).
 
 ## Historical release checkpoint — 2026-10-29 (`1c5155c7`)
 

@@ -2,6 +2,8 @@
 
 ## Main installation checkpoint — 2026-10-29 (`626d8e1a`)
 
+- Later in the current Codex session, the configured MCP `local_ai_status` returned `success=true`, Hub and Ollama online, and `degraded=false`; `local_ai_coord` also responded. `verify_completion` found the existing `task_release_5.1.0` with `complete=false`, no receipts, and four unsatisfied criteria: selftest, release check, wheel smoke, and benchmark. The earlier denied read-only Codex test was a different session. A checkpoint on the same existing task records the current incomplete phase. No native test output was promoted to a broker receipt.
+
 - Source candidate `626d8e1a8b391a2afc153c5606fe7fe12ef24f2b` was pushed to master. Its clean Git archive passed `release_check.py --strict-tree`; the live checkout check still reports its pre-existing ignored `build/` directory.
 - A wheel built from that archive has SHA-256 `4534d3f3c62383a52cfca00c0ac63b8d473f5386812e189d9ec1da149a1e2ccb`. Its isolated Windows venv smoke returned `success=true`, `smoke=passed`, five tools and `planner_schema=passed`; Ollama was unavailable inside that isolated smoke. This native output is not a broker receipt. The wheel is installed in the main managed `.venv` and its PEP 610 metadata matches.
 - On the same source candidate, the surface audit and inventory passed 775 tests; targeted setup, search and status contract tests passed 26; selftest passed all six checks. `doctor.py` reported no warnings. Live Hub PID 38728 responded at `127.0.0.1:11435/health` with success and version 5.1.0; live Ollama was online.
