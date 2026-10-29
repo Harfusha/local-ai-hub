@@ -103,6 +103,41 @@ def test_superpowers_download_has_overall_deadline(monkeypatch):
         setup.download_superpowers_archive()
 
 
+def test_superpowers_download_retries_rate_limit_with_bounded_backoff(monkeypatch):
+    import urllib.error
+
+    class Response:
+        read = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read1(self, size):
+            if self.read:
+                return b""
+            self.read = True
+            return b"verified archive"
+
+    attempts = []
+    delays = []
+
+    def open_archive(*args, **kwargs):
+        attempts.append(kwargs["timeout"])
+        if len(attempts) < 3:
+            raise urllib.error.HTTPError(args[0], 429, "rate limited", {"Retry-After": "1"}, None)
+        return Response()
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", open_archive)
+    monkeypatch.setattr(setup, "sleep", delays.append, raising=False)
+
+    assert setup.download_superpowers_archive() == b"verified archive"
+    assert attempts == [10, 10, 10]
+    assert delays == [1.0, 1.0]
+
+
 def test_superpowers_rejects_traversal_before_installing(tmp_path, monkeypatch):
     import io
     import zipfile

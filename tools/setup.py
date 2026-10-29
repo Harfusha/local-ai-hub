@@ -13,10 +13,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Callable
 
 _skill_ownership_spec = importlib.util.spec_from_file_location(
@@ -243,18 +244,35 @@ ANTIGRAVITY_POLICY_END = "<!-- END LOCAL AI HUB ANTIGRAVITY SKILLS -->"
 def download_superpowers_archive() -> bytes:
     url = f"https://codeload.github.com/obra/superpowers/zip/{SUPERPOWERS_COMMIT}"
     deadline = monotonic() + 30
-    payload = bytearray()
-    with urllib.request.urlopen(url, timeout=10) as response:
-        while True:
-            if monotonic() >= deadline:
-                raise TimeoutError("Superpowers archive download exceeded deadline")
-            chunk = response.read1(min(65536, 10_000_001 - len(payload)))
-            if not chunk:
-                break
-            payload.extend(chunk)
-            if len(payload) > 10_000_000:
-                raise ValueError("Superpowers archive exceeds size limit")
-    return bytes(payload)
+    for attempt in range(4):
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Superpowers archive download exceeded deadline")
+        try:
+            payload = bytearray()
+            with urllib.request.urlopen(url, timeout=min(10, remaining)) as response:
+                while True:
+                    if monotonic() >= deadline:
+                        raise TimeoutError("Superpowers archive download exceeded deadline")
+                    chunk = response.read1(min(65536, 10_000_001 - len(payload)))
+                    if not chunk:
+                        break
+                    payload.extend(chunk)
+                    if len(payload) > 10_000_000:
+                        raise ValueError("Superpowers archive exceeds size limit")
+            return bytes(payload)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == 3:
+                raise
+            try:
+                delay = min(8.0, max(0.0, float(exc.headers.get("Retry-After", ""))))
+            except (TypeError, ValueError):
+                delay = min(8.0, float(2 ** attempt))
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Superpowers archive download exceeded deadline") from exc
+            sleep(min(delay, remaining))
+    raise TimeoutError("Superpowers archive download exceeded deadline")
 
 
 def install_superpowers_skills(target: Path, manifest: Path | None = None) -> None:

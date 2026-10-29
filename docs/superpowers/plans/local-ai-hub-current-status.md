@@ -2,7 +2,7 @@
 
 ## Active checkpoint — 2026-10-29 (`d98c16ed` package source)
 
-Package source candidate `d98c16ed6538df732d023b95572ba563c9d78a07` is on `codex/ci-context-timeout-20261029`; finalization commits update only release evidence and plan state. Source candidate [run #40846602356](https://github.com/Harfusha/local-ai-hub/actions/runs/40846602356) passed (15 jobs, 14 success, one skipped, zero failures); CI for the final documentation commit is pending. The branch is not yet integrated into `origin/master` (`c039ec6364d170db7d8a7bcba3ab66ad3e5b2111`).
+Package source candidate `d98c16ed6538df732d023b95572ba563c9d78a07` is on `codex/ci-context-timeout-20261029`; finalization commits update only release evidence and plan state. Source candidate [run #40846602356](https://github.com/Harfusha/local-ai-hub/actions/runs/40846602356) passed (15 jobs, 14 success, one skipped, zero failures); Exact-HEAD CI [run #40885373656](https://github.com/Harfusha/local-ai-hub/actions/runs/40885373656) failed: 10 jobs passed, 3 failed, 2 skipped. Authenticated logs confirmed HTTP 429 fetching the pinned Superpowers archive on Ubuntu/macOS Python 3.12, unsupported Darwin no-replace rename during skill replacement, and Windows/Python 3.13 test `test_slow_request_head_has_one_total_deadline` exhausting a process-global monotonic mock (`StopIteration`). Bounded archive retry, Darwin `renameatx_np(RENAME_EXCL)`, and isolated clock mocking are implemented. Fresh exact-HEAD CI pending; branch not integrated into `origin/master` (`c039ec6364d170db7d8a7bcba3ab66ad3e5b2111`).
 
 Focused surface audit passed **775 tests**; the two explicit FastMCP status schema tests passed **5 tests**. `local_ai_status` uses explicit typed parameters; current canonical tests intentionally reject an `action` parameter. Do not change this API to the stale `action`/`root` proposal in the objective.
 
@@ -12,9 +12,9 @@ Benchmark artifact [`docs/perf_candidate_json_budget.json`](../../perf_candidate
 
 Setup generated current agent policies; Gemini MCP configs parse and point to the managed venv. Global/project Antigravity instruction markers are at line 1; required Superpowers/Caveman/Ultracave skill files exist. Actual Antigravity rule loading and MCP use remain unverified. The dashboard board loaded the exact `release-install-510` root (4 plans, 4 tasks, 3 active, 0 blocked); its header recovered from a transient stale/degraded label to `live` while the API stayed healthy. Current screenshot is visible in this session, not saved; an older screenshot is for a different worktree.
 
-Release acceptance remains open: exact-head CI for the final docs commit, safe integration into `origin/master`, saved current dashboard screenshot, remaining dashboard health/CRUD acceptance, actual Antigravity behavior after quota refresh, authentic `command_execution_record.v2` receipts and successful `verify_completion`. Original `task_f8d00ca6fd25` is still terminal 404 and its worktree absent. Do not synthesize receipts or close the plan.
+Release acceptance remains open: obtain green exact-HEAD CI, safe integration into `origin/master`, saved current dashboard screenshot, remaining dashboard health/CRUD acceptance, actual Antigravity behavior after quota refresh, authentic `command_execution_record.v2` receipts and successful `verify_completion`. Original `task_f8d00ca6fd25` is still terminal 404 and its worktree absent. Do not synthesize receipts or close the plan.
 
-**State: CANDIDATE CI GREEN; INSTALLED 5.1.0 HEALTHY; RELEASE ACCEPTANCE OPEN.**
+**State: CI REPAIR IMPLEMENTED; EXACT-HEAD CI PENDING; INSTALLED 5.1.0 HEALTHY; RELEASE ACCEPTANCE OPEN.**
 
 ## Superseded checkpoint — 2026-10-29 (`c6ddaeda`)
 
