@@ -82,7 +82,7 @@ Uživatel výslovně upřesnil, že `local_ai_command` nemá existovat. Neobnovo
 
 Požadavek zahrnuje opakování všech 100 promptů s porovnáním proti výše uvedenému baseline. Prompt katalog obsahuje 100 případů; předchozí výsledkový log eviduje 86 různých ID a řadu pouze částečných, syntetických či blokovaných průchodů. Nelze tedy porovnávat „100/100 předtím“ s novým během.
 
-Aktuální lokální kontrola `python tools/hubctl.py status` vrátila: Hub **v5.1.0, Online**, PID 18420; Ollama online, 8 modelů, GPU NVIDIA GeForce RTX 4060 (7 GB), žádný aktivní model. Tato kontrola dokládá dosažitelnost služby a stavovou odpověď, nikoli MCP průchod promptů.
+Aktuální lokální kontrola `python tools/hubctl.py status` vrátila: Hub **v5.1.0, Online**, PID 18420; Ollama online, 8 modelů, grafická karta NVIDIA (7 GB), žádný aktivní model. Tato kontrola dokládá dosažitelnost služby a stavovou odpověď, nikoli MCP průchod promptů.
 
 V tomto Codex chatu nejsou připojeny nástroje Local AI Hub MCP (`local_ai_repo`, `local_ai_coord`, `local_ai_task` ani další). Nelze proto pozorovat skutečné volání Hubu, request/evidence ID, agentní práci přes Hub ani bezpečně ověřit koordinaci. Opakování 100 případů **NEBYLO SPUŠTĚNO**; neoznačovat je jako PASS. Tato překážka je v agentním přístupu, zatímco samotný lokální status endpoint/CLI je dostupný.
 
@@ -105,6 +105,6 @@ V tomto Codex chatu nejsou připojeny nástroje Local AI Hub MCP (`local_ai_repo
 
 ### Doplněk — oprava MCP připojení
 
-Kontrola `C:\Users\Adam\.codex\config.toml` našla aktivní `local-ai` MCP záznam mířící do dočasného `lah-ci-repro` prostředí. Záznam byl přesměrován na běžící instalaci `C:\Users\Adam\.local-ai-hub` a její Python 3.13; před změnou vznikla ověřená záloha `config.toml.backup-local-ai-20261029-182334650`.
+Kontrola `~/.codex/config.toml` našla aktivní `local-ai` MCP záznam mířící do dočasného `lah-ci-repro` prostředí. Záznam byl přesměrován na běžící instalaci `~/.local-ai-hub` a její Python 3.13; před změnou vznikla ověřená záloha `config.toml.backup-local-ai-20261029-182334650`.
 
 Ověřený přímý stdio MCP handshake: inicializace PASS, 7 nástrojů nalezeno, `local_ai_status` PASS; Hub v5.1.0, `hub_online=true`, `degraded=false`, request `req_f3e0abf9670f`. Aktivní Codex session následně při vlastním `list_mcp_resources` stále selhala při initialize. Konfigurace je opravena, ale nástroje se do této běžící session zatím nenačetly; po reloadu/restartu Codexu je nutné ověřit znovu přítomnost `local_ai_*`. Testovací sada 100 promptů zůstává **NOT_RUN** do této kontroly.

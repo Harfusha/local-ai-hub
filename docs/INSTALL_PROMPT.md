@@ -338,12 +338,11 @@ Recipes (guidance, not gates):
 Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work. Use subagents only for independent bounded implementation that materially shortens the critical path, or on explicit request; see the simplified workflow spec.
 
 - Semantic delegation is on-demand and optional. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Use it only when an approved backend is available. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Local model routes follow the active hardware profile and user overrides; verify model availability before inference.
-- Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
-- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
+- Native subagents require independent bounded work or explicit user request. Codex controls scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
-Routing hierarchy: the main agent plans, audits, implements, reviews, and integrates directly. Use Local AI Hub for bounded retrieval and commands when available; Hub tools do not create a requirement to hand off work. On a bounded Hub failure, use the permitted direct local fallback and continue without retry loops.
+The main agent owns planning, implementation and integration. Use Local AI Hub for bounded retrieval and commands. On a bounded Hub failure, use the permitted direct local fallback and continue without retry loops.
 
 READ-ONLY AUDIT CONTRACT:
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
@@ -630,3 +629,24 @@ Commands and repository context never adopt the last active task implicitly. Sup
 - Agent-state schema preflight reuses only a successful proof bound to the same resolved DB path, DB/WAL/journal identities and validation policy. Changed inputs or failed validation discard the proof; SQLite validation remains confined to a private snapshot with the existing five-second deadline. Logs report source/copied bytes, copy/validation/total seconds, reuse and failure phase; reuse copies zero bytes. An unchanged schema version is not rewritten merely during initialization.
 
 **Budget administration:** `local_ai_coord(action="task_budget_increase")` is an increase-only operator control, available without diagnostic tracing. It uses ordinary write authorization, including canonical loopback access without an API token, and requires an authorized `root`, the existing `task_id`, an explicit `reason` and nested `budget` limits. Caller owner/actor overrides are rejected; ownership and current usage are loaded and rechecked server-side. Response-budget rejection happens before changing task limits. Limits may be increased for an existing failed task while preserving its failed status, owner and usage; task resume remains a separate explicit action. This source contract does not establish activation in installed processes.
+
+
+## Supported contract details
+
+- non-empty `content` is required; `title` and `metadata` are optional.
+- Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`.
+- Embedding errors do not stop lexical publication.
+- `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.
+- Success also returns `diagram_indexed` and the resolved image path.
+- `local_ai_repo(action="pipeline")` accepts closed step objects
+- `local_ai_artifact(action="list")` does not require `artifact_id`
+- `local_ai_coord(action="pubsub_poll")` accepts `after_seq`
+- `local_ai_coord` bounds `max_tokens` to 0 through 100000.
+- Repository pipelines serialize preprocessing mutation actions with other mutating steps.
+- `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs.
+- It does not disable module/project cards:
+- `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences
+- either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
+- Check active configuration and backend state before claiming synthesis is disabled.
+
+The service is loopback-only, with no remote-access or remote-control mode.
