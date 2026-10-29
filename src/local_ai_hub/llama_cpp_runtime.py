@@ -286,11 +286,14 @@ class LlamaCppManagedRuntime:
             rows.append(("hub-qwen-15", "qwen2.5-coder:1.5b"))
         return port, rows
 
-    def _write_preset(self) -> None:
+    def _write_preset(self, device: str | None = None) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         _, aliases = self._configured_routes()
         path_value = str(self.model_path.resolve()).replace("\\", "/")
-        sections = ["version = 1", "", "[*]", "n-gpu-layers = 99", "models-max = 1", ""]
+        sections = ["version = 1", "", "[*]", "n-gpu-layers = 99"]
+        if device is not None:
+            sections.append(f"device = {device}")
+        sections.extend(["models-max = 1", ""])
         default_alias = aliases[0][0]
         configured = self.llama_config.get("models", {})
         recoveries: dict[str, dict[str, Any]] = {}
@@ -483,6 +486,9 @@ class LlamaCppManagedRuntime:
             )
             attempts = self._device_attempts(gpu)
             for device, wait_seconds in attempts:
+                # Router child servers do not inherit the parent CLI's --device.
+                # Put the selected backend in the wildcard preset for each attempt.
+                self._write_preset(device=device)
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
                 args = [str(binary), "--models-preset", str(self.runtime_dir / "hub.models.ini"), "--models-max", "1", "--host", "127.0.0.1", "--port", str(port), "--device", device]
                 kwargs = hidden_run_kwargs(new_group=True)

@@ -74,6 +74,7 @@ from .status_executor import StatusDependencyExecutor
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
+_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS = 2.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
@@ -82,6 +83,8 @@ def _status_dependency_timeout_seconds(key: str) -> float:
     timeout = float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)
     if key == "telemetry.summary":
         timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
+    elif key == "preprocessing.status":
+        timeout = max(timeout, float(_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS))
     return max(0.0, timeout)
 
 

@@ -25,6 +25,11 @@ def status_dependency_executor():
     _STATUS_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
+def test_preprocessing_status_has_bounded_budget_for_large_registered_projects() -> None:
+    assert app_module._status_dependency_timeout_seconds("preprocessing.status") == 2.0
+    assert app_module._status_dependency_timeout_seconds("headless") == 0.25
+
+
 class Probe:
     def __init__(self, **responses):
         self.calls = {}

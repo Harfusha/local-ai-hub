@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +75,12 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertNotIn(f'model = "{model_path}"', preset)
             self.assertIn("load-on-startup = true", preset)
             self.assertIn("load-on-startup = false", preset)
+            runtime._write_preset(device="SYCL0")
+            preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
+            self.assertIn("[*]\nn-gpu-layers = 99\ndevice = SYCL0\nmodels-max = 1", preset)
+            runtime._write_preset(device="none")
+            preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
+            self.assertIn("device = none", preset)
 
     def test_intel_start_retries_on_cpu_after_sycl_failure(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -110,6 +116,7 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 patch.object(runtime, "provision", return_value=runtime.runtime_dir / "bin" / "llama-server.exe"),
                 patch.object(runtime, "_find_server", return_value=runtime.runtime_dir / "bin" / "llama-server.exe"),
                 patch.object(runtime, "_device_attempts", return_value=[("SYCL0", 0.1), ("none", 0.1)]),
+                patch.object(runtime, "_write_preset") as write_preset,
                 patch.object(runtime, "_ready", side_effect=[False, True]),
                 patch("local_ai_hub.llama_cpp_runtime.popen_managed", side_effect=fake_popen) as popen,
                 patch("local_ai_hub.llama_cpp_runtime.terminate_tree", return_value=True),
@@ -120,6 +127,7 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertEqual(popen.call_args_list[0].kwargs["env"]["GGML_SYCL_ENABLE_VMM"], "0")
             self.assertEqual(popen.call_args_list[1].args[0][-1], "none")
             self.assertNotIn("env", popen.call_args_list[1].kwargs)
+            self.assertEqual(write_preset.call_args_list, [call(device="SYCL0"), call(device="none")])
             self.assertEqual(processes[0].wait_calls, 1)
             self.assertEqual(runtime.mode_path.read_text(encoding="utf-8"), "none")
 
