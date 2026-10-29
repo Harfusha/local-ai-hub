@@ -445,7 +445,7 @@ Trigger map:
 Recipes (guidance, not gates):
 {recipe_lines}
 
-Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.
+Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work. Use subagents only for independent bounded implementation that materially shortens the critical path, or on explicit request; see the simplified workflow spec.
 {delegation_task}
 {work_delegation}
 - Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
@@ -763,7 +763,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
-        "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.\n"
+        "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work. Use subagents only for independent bounded implementation that materially shortens the critical path, or on explicit request; see the simplified workflow spec.\n"
         f"{task_delegation}\n"
         "- Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.\n"
         "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.\n"
