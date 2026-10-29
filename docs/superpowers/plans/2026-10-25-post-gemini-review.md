@@ -1,6 +1,10 @@
 # Post-Gemini Review and Deployment Plan
 
-## Current release checkpoint — 2026-10-29
+## Current release checkpoint — 2026-10-29 (`1c5155c7`)
+
+- [ ] **OPEN — release closure:** The clean `origin/master` archive `1c5155c7304fd0703a6fdefd9412f4823c2a515a` produced the installed and isolated-smoke-verified wheel SHA-256 `b2b7725f0f8aff7161117e7cdad94ab9bd3ee61878e3df1ef0d95737a30f0e93`. The main service runs from the main installation. The main checkout's fast-forward is blocked by preserved local conflicts; fresh Codex host invocation was denied by its approval policy, Gemini host behavior is unverified, and authentic receipts, `verify_completion`, current screenshot and the isolation investigation remain open. Source merge CI passed; follow-on master CI is in progress. See [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md).
+
+## Previous release checkpoint — 2026-10-29 (`c0efc61`)
 
 - [ ] **OPEN — final release evidence and closure:** Source candidate `c0efc61` was merged via [PR #4](https://github.com/Harfusha/local-ai-hub/pull/4) as `1b826975266046f6ed0126631f75ed5e94a963d8`; [merged-master CI #40912185136](https://github.com/Harfusha/local-ai-hub/actions/runs/40912185136) passed all 12 matrix jobs, critical coverage and package. Surface/inventory passed 775/775. A fresh isolated venv installed the exact wheel SHA-256 `3afe6a8f874990f95ba6a36c44289a051cfa9da95e4dd0db80431dde1123d46b`; `pip check` and `tools/wheel_smoke.py` passed. The mapped plan task returned terminal 404 and MCP coordination is unavailable, so authentic broker receipts and `verify_completion` remain open. A current repository-saved dashboard screenshot, test-data isolation investigation and real Antigravity behavior remain open. See [current status](local-ai-hub-current-status.md) and [release evidence](../../release-evidence-5.1.0.md).
 

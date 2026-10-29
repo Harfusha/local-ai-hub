@@ -1,6 +1,12 @@
 # Local AI Hub: current acceptance state
 
-## Current checkpoint — 2026-10-29 (`c0efc61`)
+## Current checkpoint — 2026-10-29 (`1c5155c7`)
+
+The main installation now runs a wheel built from clean `origin/master` archive `1c5155c7304fd0703a6fdefd9412f4823c2a515a`, SHA-256 `b2b7725f0f8aff7161117e7cdad94ab9bd3ee61878e3df1ef0d95737a30f0e93`. Isolated wheel smoke and `pip check` passed; the main service was restarted from its own checkout and `/health` succeeded. MCP configurations point to the main `.venv`. The current checkout itself remains behind because four preserved local files conflict with fast-forward. A fresh read-only Codex host call was denied by its approval policy; actual Gemini host use, Agent OS receipts and a current saved dashboard screenshot remain unverified. See [release evidence](../../release-evidence-5.1.0.md) for exact process, CI and provenance details.
+
+**Status: SOURCE INTEGRATED; MASTER CI IN PROGRESS; MASTER WHEEL INSTALLED; LOCAL CHECKOUT AND RELEASE ACCEPTANCE OPEN.**
+
+## Previous checkpoint — 2026-10-29 (`c0efc61`)
 
 Package source candidate `c0efc61fb3d35c8054854c5af3205105efe30b54` was integrated into `master` by [PR #4](https://github.com/Harfusha/local-ai-hub/pull/4), merge commit `1b826975266046f6ed0126631f75ed5e94a963d8`. Merged-master CI [#40912185136](https://github.com/Harfusha/local-ai-hub/actions/runs/40912185136) succeeded: all 12 platform/interpreter matrix jobs, critical coverage and package passed. Exact-source push CI [#40894159145](https://github.com/Harfusha/local-ai-hub/actions/runs/40894159145) also passed; its Ubuntu/Python 3.14 full suite reported 13,002 passed. Release publication was skipped on the non-tag branch.
 
