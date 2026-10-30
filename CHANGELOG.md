@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.1.3 — 2026-10-30
+
+- Align local_ai_coord task checkpoint test fixtures with canonical contract and reject legacy flat arguments.
+- Harden probe health checks and avoid status degradation on non-core diagnostic probe timeouts.
+- Improve Windows listener PID detection and service restart sequencing during installation.
+- Sanitize evaluation fixtures and reconcile release validation constraints.
+
 ## 5.1.2 — 2026-10-30
 
 - Fix Windows read-only SQLite URI handling for drive-letter paths.

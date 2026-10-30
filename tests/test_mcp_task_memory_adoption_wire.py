@@ -319,7 +319,11 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
     audit = {"used_ids": ["mem_store_wire"]}
     requests = [
         {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
-        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}}},
+        {"action": "task_checkpoint", "checkpoint": {
+            "phase": "edit", "next_action": "verify renderer cache theme revision",
+            "affected_paths": [], "evidence_ids": [], "blockers": [],
+            "state_data": {"memory_audit": audit},
+        }},
         {"action": "task_get"},
         {"action": "task_resume"},
     ]
@@ -365,7 +369,11 @@ def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_
     audit = {"used_ids": ["mem_store_wire"]}
     _, calls, results, tasks = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
-        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}},
+        {"action": "task_checkpoint", "checkpoint": {
+            "phase": "edit", "next_action": "verify renderer cache theme revision",
+            "affected_paths": [], "evidence_ids": [], "blockers": [],
+            "state_data": {"memory_audit": audit},
+        },
          "response_profile": "compact", "max_response_tokens": 128},
     ], monkeypatch, real_store=True, return_store=True)
     result = results[1]
@@ -390,7 +398,11 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(
     audit = {"used_ids": ["mem_store_wire"]}
     _, calls, results, tasks = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
-        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}},
+        {"action": "task_checkpoint", "checkpoint": {
+            "phase": "edit", "next_action": "verify renderer cache theme revision",
+            "affected_paths": [], "evidence_ids": [], "blockers": [],
+            "state_data": {"memory_audit": audit},
+        },
          "response_profile": "compact", "max_response_tokens": 3200},
     ], monkeypatch, real_store=True, return_store=True,
         detailed_diagnostics=detailed_diagnostics)
@@ -411,7 +423,11 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(
 def test_registered_mcp_checkpoint_rejects_malformed_audit_before_preflight(tmp_path, monkeypatch):
     _, calls, results, tasks = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
-        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": {}}},
+        {"action": "task_checkpoint", "checkpoint": {
+            "phase": "edit", "next_action": "verify renderer cache theme revision",
+            "affected_paths": [], "evidence_ids": [], "blockers": [],
+            "state_data": {"memory_audit": {}},
+        },
          "response_profile": "compact", "max_response_tokens": 3200},
     ], monkeypatch, real_store=True, return_store=True)
     payload = results[1].structuredContent
@@ -425,7 +441,11 @@ def test_registered_mcp_checkpoint_rejects_malformed_audit_before_preflight(tmp_
 @pytest.mark.parametrize("profile", ["compact", "minimal", "delta"])
 def test_registered_mcp_large_checkpoint_error_keeps_mutation_flags(tmp_path, monkeypatch, profile):
     _, calls, results = _round_trip(tmp_path, [{
-        "action": "task_checkpoint", "reason": "large_error", "checkpoint": {"phase": "edit"},
+        "action": "task_checkpoint", "reason": "large_error", "checkpoint": {
+            "phase": "edit", "next_action": "large error test",
+            "affected_paths": [], "evidence_ids": [], "blockers": [],
+            "state_data": {},
+        },
         "response_profile": profile, "reuse_key": f"checkpoint-large-error:{profile}",
         "max_response_tokens": 512,
     }], monkeypatch)
@@ -562,7 +582,9 @@ def test_stdio_checkpoint_get_show_current_audit_and_resume_resets_it(tmp_path, 
              "raw_debug": "private audit debug " * 4000}
     _, calls, results = _round_trip(tmp_path, [
         {"action": "task_checkpoint", "max_response_tokens": 2000, "checkpoint": {
-            "phase": "implement", "state_data": {"memory_audit": audit}}},
+            "phase": "implement", "next_action": "implement test",
+            "affected_paths": [], "evidence_ids": [], "blockers": [],
+            "state_data": {"memory_audit": audit}}},
         {"action": "task_get", "max_response_tokens": 2000},
         {"action": "task_resume", "max_response_tokens": 2000},
     ], monkeypatch)

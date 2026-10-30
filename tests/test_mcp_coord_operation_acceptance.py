@@ -1305,7 +1305,14 @@ def test_local_ai_coord_task_create_dispatch(monkeypatch, tmp_path):
 
 def test_local_ai_coord_task_checkpoint_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    checkpoint = {"phase": "verify", "revision": "r72"}
+    checkpoint = {
+        "phase": "verify",
+        "next_action": "verify task",
+        "affected_paths": ["tests/test_a.py"],
+        "evidence_ids": [],
+        "blockers": [],
+        "state_data": {"revision": "r72"},
+    }
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
         action="task_checkpoint", root=root, task_id="task-72", checkpoint=checkpoint

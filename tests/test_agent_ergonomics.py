@@ -422,6 +422,7 @@ def test_checkpoint_and_incident_canonical_inputs(tmp_path: Path):
 
         local_ai_coord(action="task_checkpoint", task_id="t1", checkpoint={
             "phase": "testing", "next_action": "pytest passed", "affected_paths": ["src/a.py"],
+            "evidence_ids": [], "blockers": [], "state_data": {},
         })
         assert mock_client.coord.called
         kwargs = mock_client.coord.call_args[1]
@@ -660,7 +661,10 @@ def test_memory_root_find_and_kind(tmp_path: Path):
 
         # Canonical nested checkpoint payload
         mock_client.coord.reset_mock()
-        local_ai_coord(action="task_checkpoint", task_id="t1", checkpoint={"phase": "implementation"})
+        local_ai_coord(action="task_checkpoint", task_id="t1", checkpoint={
+            "phase": "implementation", "next_action": "write code", "affected_paths": [],
+            "evidence_ids": [], "blockers": [], "state_data": {},
+        })
         assert mock_client.coord.called
         kwargs2 = mock_client.coord.call_args[1]
         assert kwargs2["action"] == "task_checkpoint"
@@ -1548,7 +1552,7 @@ def test_coord_task_create_criteria_and_criterion():
 # 5. local_ai_coord task_checkpoint accepts notes and state_data
 # ---------------------------------------------------------------------------
 
-def test_coord_checkpoint_accepts_notes_and_state_data():
+def test_coord_checkpoint_rejects_legacy_notes_and_state_data():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
         mc.coord.return_value = {"success": True, "task": {"task_id": "T-1"}}
         res = local_ai_coord(
@@ -1558,7 +1562,25 @@ def test_coord_checkpoint_accepts_notes_and_state_data():
             notes="Refactored internal state",
             state_data={"step": 2},
         )
-        assert res.get("success") is True, f"checkpoint with notes/state_data failed: {res}"
+        assert res.get("success") is False
+        assert "checkpoint must be" in res.get("error", "")
+        mc.coord.assert_not_called()
+
+        # Canonical nested checkpoint payload is accepted
+        res_ok = local_ai_coord(
+            action="task_checkpoint",
+            task_id="T-1",
+            root="/repo",
+            checkpoint={
+                "phase": "implementation",
+                "next_action": "Refactored internal state",
+                "affected_paths": ["src/main.py"],
+                "evidence_ids": [],
+                "blockers": [],
+                "state_data": {"step": 2},
+            },
+        )
+        assert res_ok.get("success") is True, f"checkpoint with canonical fields failed: {res_ok}"
         cp = mc.coord.call_args[1].get("checkpoint", {})
         assert cp.get("next_action") == "Refactored internal state"
         assert cp.get("state_data") == {"step": 2}

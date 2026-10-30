@@ -83,7 +83,7 @@ def _status_dependency_timeout_seconds(key: str) -> float:
     timeout = float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)
     if key == "telemetry.summary":
         timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
-    elif key == "preprocessing.status":
+    elif key in {"preprocessing.status", "preprocessing.stats"}:
         timeout = max(timeout, float(_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS))
     return max(0.0, timeout)
 
@@ -137,7 +137,7 @@ def _status_probe_key(view: str, scope: str, key: str) -> str:
     return f"{view}:{scope}:{key}" if key in {"telemetry.summary", "preprocessing.status"} else key
 
 
-_CORE_STATUS_PROBES = frozenset({"headless", "runtime.online", "scheduler"})
+_CORE_STATUS_PROBES = frozenset({"headless", "runtime.online", "ollama_profile", "scheduler"})
 
 
 def _status_probe_affects_core_health(key: str, *, healthy: bool) -> bool:
@@ -967,12 +967,10 @@ class LocalAIApp:
                 runtime_stats["deterministic"], _ = read("runtime_stats.deterministic", self.deterministic.status, {})
             if not light and self.code_index is not None:
                 runtime_stats["code_index"], _ = read("runtime_stats.code_index", self.code_index.status, {})
-            # Telemetry is diagnostic; a slow summary must not imply a Hub outage.
-            core_dependencies = (
-                item for name, item in dependency_status.items()
-                if name != "telemetry.summary"
+            core_degraded = any(
+                _status_probe_affects_core_health(name, healthy=not item["degraded"])
+                for name, item in dependency_status.items()
             )
-            core_degraded = any(item["degraded"] for item in core_dependencies)
             result = {
                 "success": not core_degraded, "hub_online": True, "version": __version__,
                 "snapshot_cached": False, "degraded": core_degraded,
