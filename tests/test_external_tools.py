@@ -501,7 +501,7 @@ def test_code_intelligence_timeouts_and_session_pool_defaults(tmp_path: Path):
     assert intel.get("query_timeout_seconds") == 60
     assert intel.get("soft_timeout_seconds") == 4.0
     assert intel.get("session_idle_ttl_seconds") == 3600
-    assert intel.get("max_sessions_per_backend") == 16
+    assert intel.get("max_sessions_per_backend") == 2
 
     # Test validation of soft_timeout_seconds
     valid_cfg = {"code_intelligence": {"soft_timeout_seconds": 5.0}}
@@ -556,11 +556,15 @@ def test_serena_session_retained_for_one_hour(tmp_path: Path):
 
     ext = ExternalCodeIntelligence({
         "server": {"state_dir": str(tmp_path / "state")},
-        "code_intelligence": {"enabled": True, "serena_enabled": True},
+        "code_intelligence": {
+            "enabled": True,
+            "serena_enabled": True,
+            "max_sessions_per_backend": 5,
+        },
     })
     try:
         assert ext.session_idle_ttl == 3600.0
-        assert ext.max_sessions == 16
+        assert ext.max_sessions == 5
 
         class DummyClient:
             def __init__(self):
