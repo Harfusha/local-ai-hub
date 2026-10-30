@@ -8,18 +8,18 @@
   "tasks": {
     "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
       "acceptance_criteria": [
-        "CI passes for the final pushed master commit containing the installer readiness-order fix",
-        "Clean release check and isolated wheel smoke pass for the same final commit",
-        "Published v5.1.2 assets and checksums match the verified build",
-        "Main Hub install and final restart succeed; service, Codex MCP, global/project instructions and dashboard are verified; Gemini remains deferred"
+        "CI passes for final pushed master including installer readiness-order fix",
+        "Clean release check and isolated wheel smoke pass for final pushed commit",
+        "Published v5.1.2 assets and checksums match verified build",
+        "Main Hub setup completes, final restart is healthy, service runs from main checkout, Codex MCP and global/project instructions are verified; Gemini remains deferred"
       ],
       "accountable_role": "Codex",
-      "blocker": "CI #367 run 41102379496 is running for 2a12a6a, before the installer-order fix. New exact-HEAD CI is required after committing/pushing the fix. Setup partially installed 2a12a6a but stopped at MCP readiness; Hub was manually restarted and is online. config.runtime.toml.lock remains runtime state and uncommitted.",
+      "blocker": "Local commit b4890bd contains installer ordering fix; install/application and final runtime checks are next. CI #367 run 41102379496 covers only 2a12a6a and is still running; fresh CI for b4890bd is required after push. config.runtime.toml.lock is runtime state and remains uncommitted.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Current master 2a12a6a is pushed. Found and reproduced setup ordering bug: it stopped/replaced the Hub, then configured Codex MCP before starting the service; HTTP readiness check failed and configuration stayed unchanged. Moved agent configuration after successful service startup and made service failure stop before agent changes. Related setup/prompt tests: 66 passed. The fix is local and not yet committed.",
+      "description": "Committed b4890bd (not pushed yet): starts/reconciles the Hub before agent MCP configuration and refuses to update agent configs if service startup fails. Relevant tests: 73 passed; targeted pyflakes/compileall/diff checks passed. The prior install from 2a12a6a failed at HTTP MCP readiness, then Hub was recovered manually; install must now be rerun from a clean source at b4890bd.",
       "kind": "code",
-      "next_action": "Run final local checks on the completed source, commit and push the installer-order fix and plan update, wait for fresh CI on exact master, rerun installation from a clean source at that commit, then verify main service/PID/path, Codex stdio MCP, global and project instructions, dashboard and final restart. Keep Gemini live use deferred.",
+      "next_action": "Install/apply b4890bd from a clean temporary source using preserved existing config, verify generated Codex/Gemini instructions and MCP, perform final restart and service/dashboard checks, then push master. Await exact-head CI; complete release asset and wheel checks after green CI.",
       "title": "Complete Local AI Hub 5.1.2 release and live cutover",
       "work_phase": "integration",
       "work_status": "in_progress"
