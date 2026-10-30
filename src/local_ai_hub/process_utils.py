@@ -1853,7 +1853,9 @@ def find_listening_pid(port: int) -> int | None:
         return None
     if os.name == "nt":
         pid = _find_listening_pid_win32(port)
-        if pid is not None:
+        # Windows can retain ownerless PID 0 rows after a listener exits.
+        # Confirm that ambiguous result with netstat before reporting a listener.
+        if pid is not None and pid > 0:
             return pid
         try:
             cp = subprocess.run(

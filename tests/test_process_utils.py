@@ -32,6 +32,26 @@ def _install_windows_startupinfo_double(monkeypatch):
     monkeypatch.setattr(process_utils.subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
 
 
+@pytest.mark.parametrize(
+    ("netstat_stdout", "expected"),
+    [
+        ("", None),
+        ("  TCP    127.0.0.1:11435    0.0.0.0:0    LISTENING    4321\n", 4321),
+        ("  TCP    127.0.0.1:11435    0.0.0.0:0    LISTENING    0\n", 0),
+    ],
+)
+def test_find_listening_pid_verifies_zero_win32_owner_with_netstat(monkeypatch, netstat_stdout, expected):
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(process_utils, "_find_listening_pid_win32", lambda _port: 0)
+    monkeypatch.setattr(
+        process_utils.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=netstat_stdout, stderr=""),
+    )
+
+    assert process_utils.find_listening_pid(11435) == expected
+
+
 class _ProcessHandle:
     def __init__(self, pid: int, returncode: int | None = None) -> None:
         self.pid = pid
