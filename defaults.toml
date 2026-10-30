@@ -543,7 +543,8 @@ index_timeout_seconds = 1200
 max_output_chars = 9000
 failure_threshold = 2
 cooldown_seconds = 60
-max_sessions_per_backend = 16
+# Keep at most two project-specific Serena servers active per Hub process.
+max_sessions_per_backend = 2
 session_idle_ttl_seconds = 3600
 # Optional escape hatch: expose Serena directly to cloud agents as extra MCP servers.
 # Default false saves tool-schema tokens and routes usage through Local AI Hub.
