@@ -553,7 +553,8 @@ def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Pat
 
 
 @pytest.mark.parametrize("service_ok", [True, False])
-def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatch, service_ok: bool):
+@pytest.mark.parametrize("restart_ok", [True, False])
+def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatch, service_ok: bool, restart_ok: bool):
     source = tmp_path / "source"
     install = tmp_path / "installed"
     source.mkdir()
@@ -584,12 +585,20 @@ def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatc
         return service_ok
 
     def configure_agents(*_args, **_kwargs):
-        assert "service-ready" in events
+        assert events == ["service-ready", "hub-restarted"]
         events.append("agents-configured")
+
+    def run(command, **_kwargs):
+        if command[-1:] == ["restart"] and any(
+            part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command
+        ):
+            events.append("hub-restarted")
+            if not restart_ok:
+                raise RuntimeError("Hub restart failed")
 
     monkeypatch.setattr(setup, "install_persistent_service", install_service)
     monkeypatch.setattr(setup, "configure_agents", configure_agents)
-    monkeypatch.setattr(setup, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "run", run)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -599,9 +608,14 @@ def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatc
         ],
     )
 
-    expected_status = 0 if service_ok else 1
+    expected_status = 0 if service_ok and restart_ok else 1
     assert setup.main() == expected_status
-    assert events == (["service-ready", "agents-configured"] if service_ok else ["service-ready"])
+    if not service_ok:
+        assert events == ["service-ready"]
+    elif not restart_ok:
+        assert events == ["service-ready", "hub-restarted"]
+    else:
+        assert events == ["service-ready", "hub-restarted", "agents-configured"]
 
 
 def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):

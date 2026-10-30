@@ -1460,15 +1460,15 @@ def main() -> int:
     service_ok = True
     if service_required:
         service_ok = install_persistent_service(hub_python, install_dir)
-    else:
-        try:
-            run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=30)
-        except Exception as exc:
-            log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
-            return 1
 
     if service_required and not service_ok:
         log("Setup incomplete: service registration failed. Review service-manager output, then rerun install/update with the same verified commit.")
+        return 1
+
+    try:
+        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=30)
+    except Exception as exc:
+        log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
         return 1
 
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
