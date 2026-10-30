@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.1.1 — 2026-10-30
+
+- Discard vision backend output when cancellation arrives after a non-interruptible inference call.
+- Serialize MCP HTTP cancellation notifications with compact JSON separators for strict clients.
+
 ## 5.1.0 — 2026-10-26
 
 - Follow-up candidate fix: treat upstream Caveman compression output that is not smaller than the input as no useful reduction, and cover that response with a regression test.
