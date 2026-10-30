@@ -1,5 +1,7 @@
 # Context Budget Gateway Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Enforce compact, artifact-backed MCP responses with measurable reuse so repeated Hub, search, command, validation, and edit context stops dominating Codex input tokens.

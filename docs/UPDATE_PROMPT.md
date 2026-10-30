@@ -104,7 +104,11 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 
 The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. `local_ai_status` supports compact `brief` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
 
-There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable. Do not invent verification receipts or infer support from internal APIs.
+There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable; `path` narrows the tracked Git diff to one literal path. One explicitly named untracked UTF-8 file with interior spaces but without quotes, control whitespace or leading/trailing whitespace in its path can be reviewed as added text when it fits 3200 lines, 12000 characters per 200-line page and the diff budget; every page must match the source digest, which is reported. Unsupported encodings and bare carriage returns are rejected. Other untracked files remain excluded; `review_scope_complete=false` means coverage is incomplete or unproven. Do not invent verification receipts or infer support from internal APIs.
+
+A RAG fingerprint mismatch blocks startup. Preserve the database and its WAL/SHM files while the service is stopped, then perform an explicit offline rebuild from authorized source data; never silently replace a nonempty index or claim data preservation without verification.
+
+Semantic review is advisory. A finding is source-grounded only when its path, post-image line and exact `citation.quote` match the supplied bounded diff. Missing or unstructured citations are marked unusable; even grounded citations do not verify the model's conclusion.
 
 ## Development workflow (binding)
 
@@ -450,7 +454,9 @@ Trigger map:
 - anti-pattern & incident tracking: `local_ai_coord(action="negative_knowledge_record"|"negative_knowledge_find")`. Record failed approaches, error classes, and root causes to avoid repeating mistakes.
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`
-- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent
+- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent. Submit requires a string task and non-empty string `acceptance_criteria`. Budget fields are validated before enqueue: `max_steps` is 1–16 within the configured limit, `max_llm_calls` is within its configured limit, and `max_seconds` is 30–7200; `max_tokens`, `max_edits`, and `max_commands` are also checked. Unsupported budget fields reject. Explicit `permissions` must be an object of supported boolean fields; invalid values never become default grants. An explicit `mode` must be a non-empty supported string.
+- Work orders require `read` permission. Execute mode currently requires both `tests` and `build`; selective validation is unsupported and rejected before enqueue. Plan-only modes can disable validation permissions.
+- `keep_failed_workspace` is an explicit boolean; malformed values reject instead of silently retaining failed changes.
 - symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
 - image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`
 - audio transcription: `local_ai_task(action="transcribe")`
@@ -521,7 +527,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
-- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
+- Use `local_ai_task(action="batch")` for independent bounded tasks. Optional item `id` values must be unique non-empty canonical strings; results preserve those IDs and input order, including item failures.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.

@@ -3142,7 +3142,33 @@ class DeterministicEngine:
         file_diff_lines: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"added": [], "deleted": []})
         current = ""
         orig_file = ""
-        for line in diff.splitlines():
+        old_remaining = new_remaining = 0
+        # Unicode separators inside source text must not become diff headers.
+        for line in diff.replace("\r\n", "\n").split("\n"):
+            if old_remaining or new_remaining:
+                if line.startswith("+") and new_remaining:
+                    added += 1
+                    new_remaining -= 1
+                    added_lines.append((current, line[1:]))
+                    if current:
+                        file_diff_lines[current]["added"].append(line[1:])
+                    continue
+                if line.startswith("-") and old_remaining:
+                    deleted += 1
+                    old_remaining -= 1
+                    target = current or orig_file
+                    if target:
+                        file_diff_lines[target]["deleted"].append(line[1:])
+                    continue
+                if line.startswith(" ") and old_remaining and new_remaining:
+                    old_remaining -= 1
+                    new_remaining -= 1
+                    continue
+                if line.startswith("\\ No newline"):
+                    continue
+                # Malformed hunk: do not let its unfinished counts consume a
+                # later file header as source content.
+                old_remaining = new_remaining = 0
             if line.startswith("--- a/"):
                 orig_file = line[6:].strip()
                 current = ""
@@ -3156,6 +3182,10 @@ class DeterministicEngine:
                     files.append(current)
             elif line.startswith("@@"):
                 hunks += 1
+                match = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+                if match:
+                    old_remaining = int(match.group(2) or "1")
+                    new_remaining = int(match.group(4) or "1")
             elif line.startswith("+") and not line.startswith("+++"):
                 added += 1
                 added_lines.append((current, line[1:]))

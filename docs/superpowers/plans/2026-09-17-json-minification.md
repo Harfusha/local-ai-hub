@@ -1,5 +1,7 @@
 # Minified JSON Serialization Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every production JSON serialization compact while preserving explicit human-readable exports, debug/artifact presentation, documentation, and test fixtures.

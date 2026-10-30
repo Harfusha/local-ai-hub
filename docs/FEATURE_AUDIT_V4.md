@@ -2,6 +2,8 @@
 
 Audit target: branch `codex/v4.0-hardening`, current checkout, 2026-09-21.
 
+**Historical audit:** The command tool described below has been removed and is not part of the current MCP surface. Run bounded tests and builds with the host-native command tool. The recorded 4.0 results describe that historical run only.
+
 Historical note: CodeGraphContext source/test/probe evidence describes only the 2026-09-21 checkout, not current runtime availability. Current status is removal from Hub; standalone setup guidance lives in `docs/INSTALLATION.md`.
 
 Scope: `FEATURES.md`, `README.md`, current `docs/` documentation, MCP declarations and

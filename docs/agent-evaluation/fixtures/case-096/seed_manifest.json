@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "case_id": "096",
+  "fixture_revision": "case-096-v1",
+  "entry_point": "prepare_wheels.py",
+  "workspace": "new disposable root outside existing Git repositories",
+  "server": "loopback ephemeral port in its own state directory",
+  "token": "generated temporary API token",
+  "expected_side_effects": "offline wheel builds, isolated installation, supervised sandbox process, backup and explicit rebuild only after verifying data scope",
+  "cleanup": "terminate owned process tree and preserve evidence before removing only the verified disposable root",
+  "runtime_acceptance": false,
+  "limitations": "specific archived revisions only; nonempty RAG and final integrated candidate not established"
+}

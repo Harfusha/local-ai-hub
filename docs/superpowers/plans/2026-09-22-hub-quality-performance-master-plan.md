@@ -1,5 +1,7 @@
 # Preserved T20 plan snapshot — historical, not current acceptance
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 The following original unfinished T20 plan is retained verbatim during worktree
 reconciliation. The authoritative consolidated master plan follows under
 `Current master plan`. Historical status claims are not fresh verification.

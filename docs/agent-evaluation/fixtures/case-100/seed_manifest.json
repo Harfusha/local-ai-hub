@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "case_id": "100",
+  "fixture_revision": "case-100-v1",
+  "entry_point": "prepare.py",
+  "workspace": "new-git-repository; operator supplies a new disposable absolute root",
+  "server": "none for Git seed preparation; real task, model and UI workflow requires a separate authorized Hub sandbox",
+  "token": "none for seed preparation; use sandbox credentials if the real workflow requires them",
+  "expected_side_effects": "creates local commit and foreign dirty change",
+  "cleanup": "operator removes only its verified disposable root after preserving evidence",
+  "runtime_acceptance": false,
+  "limitations": "requires real Agent OS task, interruption, model, service sandbox and API/UI evidence",
+  "kind": "synthetic-disposable-source",
+  "oracle": "oracle_100.py",
+  "seed_expectation": "unicode encoding error and cancellation failures"
+}

@@ -1,0 +1,11 @@
+# 096: sandboxový průchod 2026-10-29
+
+- Root: `C:\Users\Adam\AppData\Local\Temp\local-ai-eval-096-984a57350263462c99b8ac24860fe3b3`; samostatný config, state, venv a náhodné loopback porty.
+- Zdroj 5.0.0: commit `65a6fbe4f4caf862f00ba4d9b8dd77145a4a35df`, wheel SHA-256 `ec9f11393e47f72aa054572b0ba8b5b08dcadbc29b6750f22868b17ca35870d2`.
+- Zdroj 5.1.0: commit `6c7200a9c1b71554ebe368b8722a6757d94c0282`, wheel SHA-256 `5344e0712861b089aab5e499d82b3e4616ee23f228be1d4e983927b4bf6d2b78`. Není to dosud necommitovaný kandidát oprav.
+- Závislosti připraveny do wheelhouse před offline během; `wheelhouse-manifest.json` v sandboxu obsahuje SHA-256 všech 32 wheelů. Instalace obou verzí proběhly s `--no-index`. 5.0.0 na izolovaném portu vrátil `hub_online=true`. Pokus o zápis workspace memo vrátil 403 a nebyl opakován.
+- Po instalaci 5.1.0 první start selhal: `RAG database has fingerprint mismatch; explicit offline rebuild required`. Záloha původního stavu existuje. Před offline přesunem staré RAG databáze byly ověřeny nulové počty files/chunks/project_file_owners. Po přesunu a vytvoření nového indexu 5.1.0 vrátil `hub_online=true`. Všech pět původních řádků sandboxové telemetry zůstalo identických.
+- Rollback: 5.0.0 z původního wheelu a samostatné kopie zálohy. První start selhal na zkopírovaných starých identitách procesů; po ověření stale byly tyto soubory archivovány mimo aktivní state. Následně 5.0.0 vrátil `hub_online=true`; všech pět původních řádků telemetry zůstalo identických.
+- První ruční spuštění odhalilo Windows launcher: zánik původního Popen handle nedokazuje úklid potomků. Vlastní listener byl ukončen po kontrole identity a rodičovské vazby. Další běhy použily `popen_managed` a Windows Job Object; ukončení stromu potvrdilo `true`.
+- Opakovatelný `smoke.py` následně svázal port se skutečným PID listeneru a ověřil rodičovskou vazbu i cestu instalovaného balíčku pro 5.0.0 a 5.1.0. Podklady: `smoke-result-state-rollback-57348.json` a `smoke-result-state-61421.json` ve výše uvedeném sandboxu. Přímý parser netstatu selhal; použit existující `find_listening_pid`.
+- Omezení: zachování pěti telemetry řádků neprokazuje zachování všech druhů dat. Netestován neprázdný RAG, konverze starých tenant dat, API/MCP/UI task, lokální model ani kandidát aktuálních oprav. Nejde o produkční upgrade ani potvrzení plné funkčnosti Hubu.

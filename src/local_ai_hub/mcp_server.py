@@ -792,6 +792,7 @@ _RELIABILITY_PROTECTED_KEYS = (
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
     "mutation_applied", "operation_not_started",
     "semantic_quality", "review_consistency", "advisory_only", "quality_warning", "bypass_reason",
+    "review_scope_complete", "untracked_inventory_complete", "review_source_sha256",
 )
 _COORD_PROTECTED_KEYS = (
     "tasks", "task", "records", "matches", "items", "negative_knowledge",
@@ -1464,6 +1465,15 @@ def _compact(
         repeated, previous = _reuse_state(reuse_key, compacted)
         if profile == "delta" and previous is not None:
             if repeated and isinstance(compacted, dict):
+                if task_kind == "context":
+                    current = compacted
+                    compacted = {
+                        key: current[key]
+                        for key in (*_RELIABILITY_PROTECTED_KEYS, *_CONTEXT_PROTECTED_KEYS, "request_id", "root")
+                        if key in current
+                    }
+                    compacted["result_id"] = result_id({key: value for key, value in current.items() if key != "request_id"})
+                    compacted["delta"] = {"changed": {}, "added": {}, "removed": []}
                 compacted["unchanged"] = True
             elif not repeated:
                 compacted = delta_response(previous, compacted, result_id=result_id(compacted))
@@ -2996,6 +3006,8 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         "context_id", "task_context_artifact_id", "task_id", "next_action", "warnings", "repo_revision", "changed_paths", "stale",
         "delta_from", "since_hash", "unchanged", "reuse_pointer",
     ):
+        if key == "unchanged" and options.get("response_profile") == "delta" and projected.get("unchanged") is True:
+            continue
         if key in pack:
             authoritative[key] = pack[key]
         elif key in safe_value:
@@ -3054,6 +3066,8 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     # Without this, the final budget pass could return IDs/status while silently
     # dropping the context text needed by the next bounded agent step.
     for key in ("context", "query", "context_source", "estimated_tokens", "contract", "retrieval"):
+        if key == "context" and options.get("response_profile") == "delta" and projected.get("unchanged") is True:
+            continue
         if key in safe_value and key not in authoritative:
             authoritative[key] = safe_value[key]
     for key, item in authoritative.items():
@@ -3648,6 +3662,8 @@ def _local_ai_repo_impl(
         }
         if diff:
             payload["diff"] = diff
+        if path is not None:
+            payload["path"] = path
         return _compact(CLIENT.post("/api/review/diff", payload, timeout=_timeout("long")), "review_diff")
     if action == "impact":
         return _compact(CLIENT.post("/api/repo/impact", {"root": root, "base": base, "staged": staged}, timeout=_timeout("context")), "impact")
@@ -5362,18 +5378,17 @@ def local_ai_work(
         task = goal or prompt
     if workspace and (not root or root == "."):
         root = workspace
-    if isinstance(acceptance_criteria, str):
-        acceptance_criteria = [acceptance_criteria]
-    if isinstance(constraints, str):
-        constraints = [constraints]
     valid_actions = tuple(WorkAction.__args__)
     if not isinstance(action, str) or action not in valid_actions:
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
         return _invalid_action("local_ai_work", action_label, valid_actions, "Use submit for a closed task and one bounded wait/get for handoff.")
+    raw_work_call = _CURRENT_MCP_CALL_ARGUMENTS.get()
+    budget_supplied = bool(raw_work_call and raw_work_call[0] == "local_ai_work" and "budget" in raw_work_call[1])
+    permissions_supplied = bool(raw_work_call and raw_work_call[0] == "local_ai_work" and "permissions" in raw_work_call[1])
     payload: dict[str, Any] = {
         "action": action, "root": _client_root(root), "task": task, "work_id": work_id, "task_id": task_id,
         "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
-        "permissions": permissions or {}, "budget": budget or {}, "timeout_seconds": timeout_seconds, "answer": answer,
+        "permissions": permissions if permissions is not None or permissions_supplied else {}, "budget": budget if budget is not None or budget_supplied else {}, "timeout_seconds": timeout_seconds, "answer": answer,
         "response_profile": response_profile, "return_fields": return_fields or [], "max_output_tokens": max_output_tokens,
         "keep_failed_workspace": keep_failed_workspace,
     }
@@ -5694,6 +5709,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                 key: value[key]
                                 for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
                                             "mutation_applied", "operation_not_started",
+                                            "review_scope_complete", "untracked_inventory_complete",
                                             "total_matches", "has_more", "offset", "limit",
                                             "task_context_artifact_id", "next_action")
                                 if key in value and key not in dropped
@@ -5833,7 +5849,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             isinstance(value, dict)
             and value.get("success") is False
             and "error" in value
-            and json_tokens(_mcp_wire_view(value, structured=True)) > requested
+            and ("review_scope_complete" in value or json_tokens(_mcp_wire_view(value, structured=True)) > requested)
         ):
             bounded_error = _mcp_bounded_error(value, requested)
             if bounded_error is not None:

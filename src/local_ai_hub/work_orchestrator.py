@@ -36,6 +36,7 @@ from .work_fencing import (
 
 
 _TERMINAL = {"complete", "failed", "cancelled", "needs_agent", "partial"}
+_WORK_PERMISSION_FIELDS = frozenset({"read", "edit", "tests", "build", "network", "git_commit", "create", "delete"})
 
 
 def is_terminal_work_status(status: Any) -> bool:
@@ -887,7 +888,10 @@ class WorkOrchestrator:
         if not raw_root or not is_rooted_path(raw_root):
             return {"success": False, "error": "root must be an explicit absolute repository directory", "terminal": True}
         root = Path(raw_root).expanduser().resolve(strict=False)
-        task = str(payload.get("task", "")).strip()[:24000]
+        raw_task = payload.get("task", "")
+        if not isinstance(raw_task, str) or "\x00" in raw_task or len(raw_task) > 24000:
+            return {"success": False, "error": "task must be a string of at most 24000 characters without NUL", "terminal": True}
+        task = raw_task.strip()
         if not root.is_dir():
             return {"success": False, "error": "root must be an existing absolute repository directory", "terminal": True}
         if not task:
@@ -903,11 +907,71 @@ class WorkOrchestrator:
         task_id = raw_task_id.strip()
         if len(task_id) > 128 or any(ord(ch) < 32 for ch in task_id):
             return {"success": False, "error": "task_id must be at most 128 printable characters", "terminal": True}
-        acceptance = _string_list(payload.get("acceptance_criteria"), limit=24, item_chars=2000)
-        budgets = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
-        mode = str(payload.get("mode", "execute") or "execute").strip().lower().replace("-", "_")
+        raw_acceptance = payload.get("acceptance_criteria")
+        if (not isinstance(raw_acceptance, list) or not raw_acceptance or len(raw_acceptance) > 24
+                or any(not isinstance(item, str) or not item.strip() or "\x00" in item or len(item.strip()) > 2000
+                       for item in raw_acceptance)):
+            return {"success": False, "error": "work order requires explicit non-empty string acceptance criteria", "terminal": True}
+        acceptance = [item.strip() for item in raw_acceptance]
+        permissions = payload.get("permissions", {})
+        if (not isinstance(permissions, dict) or set(permissions) - _WORK_PERMISSION_FIELDS
+                or any(type(value) is not bool for value in permissions.values())):
+            return {"success": False, "error": "work order permissions must contain only supported boolean fields", "terminal": True}
+        if permissions.get("read") is False:
+            return {"success": False, "error": "work orders require repository read permission", "terminal": True}
+        budgets = payload.get("budget", {})
+        if not isinstance(budgets, dict):
+            return {"success": False, "error": "work order budget must be an object", "terminal": True}
+        if set(budgets) - {"max_steps", "max_llm_calls", "max_seconds", "max_tokens", "max_edits", "max_commands"}:
+            return {"success": False, "error": "work order budget contains unsupported fields", "terminal": True}
+        hard_max_steps = min(self.max_steps, 16)
+        try:
+            requested_max_steps = _budget_int(budgets.get("max_steps", hard_max_steps), "max_steps")
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True}
+        if requested_max_steps < 1 or requested_max_steps > hard_max_steps:
+            return {"success": False, "error": f"work order max_steps must be between 1 and {hard_max_steps}", "terminal": True}
+        execution_budgets: dict[str, int] = {}
+        for name, default, lower, upper in (
+            ("max_llm_calls", self.max_llm_calls, 1, self.max_llm_calls),
+            ("max_seconds", self.default_seconds, 30, 7200),
+        ):
+            if name not in budgets:
+                execution_budgets[name] = default
+                continue
+            try:
+                value = _budget_int(budgets[name], name)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc), "terminal": True}
+            if value < lower or value > upper:
+                return {"success": False, "error": f"work order {name} must be between {lower} and {upper}", "terminal": True}
+            execution_budgets[name] = value
+        planner_budgets: dict[str, int] = {}
+        for name, lower, upper in (
+            ("max_tokens", 128, 1400),
+            ("max_edits", 0, requested_max_steps),
+            ("max_commands", 0, requested_max_steps),
+        ):
+            if name not in budgets:
+                continue
+            try:
+                limit = _budget_int(budgets[name], name)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc), "terminal": True}
+            if limit < lower or limit > upper:
+                return {"success": False, "error": f"work order {name} must be between {lower} and {upper}", "terminal": True}
+            planner_budgets[name] = limit
+        raw_mode = payload.get("mode", "execute")
+        if not isinstance(raw_mode, str) or not raw_mode.strip():
+            return {"success": False, "error": "work order mode must be a non-empty string", "terminal": True}
+        mode = raw_mode.strip().lower().replace("-", "_")
         if mode not in {"execute", "plan", "plan_only", "dry_run"}:
             return {"success": False, "error": "mode must be execute, plan, plan_only, or dry_run", "terminal": True}
+        if mode == "execute" and (permissions.get("tests") is False or permissions.get("build") is False):
+            return {"success": False, "error": "execute mode requires both test and build permissions; selective validation is unsupported", "terminal": True}
+        keep_failed = payload.get("keep_failed_workspace", False)
+        if type(keep_failed) is not bool:
+            return {"success": False, "error": "keep_failed_workspace must be a boolean", "terminal": True}
         profile = str(payload.get("response_profile", self.default_response_profile) or self.default_response_profile).strip().lower()
         if profile not in {"minimal", "compact", "standard", "debug"}:
             profile = self.default_response_profile if self.default_response_profile in {"minimal", "compact", "standard", "debug"} else "compact"
@@ -917,16 +981,16 @@ class WorkOrchestrator:
             "acceptance_criteria": acceptance,
             "constraints": _string_list(payload.get("constraints"), limit=24, item_chars=2000),
             "mode": mode,
-            "permissions": _permission_map(payload.get("permissions")),
+            "permissions": _permission_map(permissions),
             "budget": {
-                "max_steps": _bounded_int(budgets.get("max_steps"), self.max_steps, 1, self.max_steps),
-                "max_llm_calls": _bounded_int(budgets.get("max_llm_calls"), self.max_llm_calls, 1, self.max_llm_calls),
-                "max_seconds": _bounded_int(budgets.get("max_seconds"), self.default_seconds, 30, 7200),
+                "max_steps": requested_max_steps,
+                **execution_budgets,
+                **planner_budgets,
             },
             "response_profile": profile,
             "return_fields": return_fields,
             "max_output_tokens": _bounded_int(payload.get("max_output_tokens"), self.default_max_output_tokens, 0, 4096),
-            "keep_failed_workspace": bool(payload.get("keep_failed_workspace", False)),
+            "keep_failed_workspace": keep_failed,
         }
         now = time.time()
         try:
@@ -1322,7 +1386,7 @@ class WorkOrchestrator:
         parsed = _json_object(str(res.get("text", ""))) if isinstance(res, dict) and res.get("success", True) else None
         if not parsed or not isinstance(parsed.get("steps"), list):
             parsed = {"summary": task[:240], "needs_agent": False, "question": "", "steps": [
-                {"id": "s1", "kind": "inspect", "task": "Collect deterministic repository evidence relevant to the task", "depends_on": [], "acceptance": []},
+                {"id": "s1", "kind": "inspect", "task": task, "depends_on": [], "acceptance": []},
                 {"id": "s2", "kind": "edit", "task": task, "depends_on": ["s1"], "acceptance": acceptance},
                 {"id": "s3", "kind": "validate", "task": "Run the smallest relevant validation commands", "depends_on": ["s2"], "acceptance": acceptance},
                 {"id": "s4", "kind": "review", "task": "Review the integrated change against the original task", "depends_on": ["s3"], "acceptance": acceptance},
@@ -1744,6 +1808,18 @@ class WorkOrchestrator:
     ) -> None:
         work_id, root_s, task = str(row["work_id"]), str(row["root"]), str(row["task"])
         root=Path(root_s); payload=json.loads(str(row["payload_json"] or "{}")); started=time.monotonic()
+        permissions = payload.get("permissions")
+        mode = payload.get("mode")
+        if (not isinstance(permissions, dict) or set(permissions) != _WORK_PERMISSION_FIELDS
+                or any(type(value) is not bool for value in permissions.values())
+                or not isinstance(mode, str)
+                or type(payload.get("keep_failed_workspace")) is not bool
+                or mode not in {"execute", "plan", "plan_only", "dry_run"}):
+            raise PermissionError("persisted work permission contract is invalid")
+        if not permissions["read"]:
+            raise PermissionError("work orders require repository read permission")
+        if mode == "execute" and (not permissions["tests"] or not permissions["build"]):
+            raise PermissionError("execute mode requires both test and build permissions")
         budget=payload["budget"]; llm_calls=0; replans=0; journal: list[_JournalEntry]=[]; lease_ids=[]; changed=[]; step_results=[]; validation=[]
         criteria = payload.get("acceptance_criteria") or []
         verification_receipts: list[Any] = []
