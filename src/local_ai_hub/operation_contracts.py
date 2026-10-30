@@ -606,11 +606,13 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         feature_requirements=("has_any_model",), action_requirements={"vision": ("vision",)},
         read_only=("status", "wait", "result", "evaluation_report"),
         required={
+            "submit": ("task",),
             "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
         },
         non_empty={
+            "submit": ("task",),
             "automation": ("root", "task_id"),
             "candidate_promote": ("candidate", "approver"),
         },
@@ -621,6 +623,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "automation": "browser_desktop_mutation",
         },
         allowed={
+            "submit": (
+                "job_action", "task", "context", "candidate", "complexity", "max_tokens",
+                "tasks", "profile", "root", "workspace", "timeout_seconds", "request_id",
+            ),
             "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
@@ -659,7 +665,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "workspace", "approver", "task_id", "language", "request_id",
             )},
             "complexity": {"type": "string", "default": "auto"},
-            "job_action": {"type": "string", "default": "reason"},
+            "job_action": {
+                "type": "string", "default": "reason",
+                "description": "Operation to run for action=submit; submit itself is asynchronous.",
+            },
             "max_tokens": {"type": "integer", "default": 0},
             "evaluation_days": {"type": "integer", "default": 30},
             "latency_budget_ms": {"type": "number", "default": 0},

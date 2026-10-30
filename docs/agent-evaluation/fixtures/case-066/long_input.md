@@ -1,0 +1,32 @@
+Non-sensitive asynchronous summarization fixture. Preserve every row ID and classify each status without inventing facts.
+
+R001: completed; output=alpha; warnings=none; revision=v1.
+R002: failed; output=none; error=timeout; revision=v1.
+R003: skipped; output=none; reason=not_applicable; revision=v1.
+R004: completed; output=delta; warnings=none; revision=v2.
+R005: failed; output=none; error=unavailable; revision=v2.
+R006: completed; output=foxtrot; warnings=one_retry; revision=v2.
+R007: skipped; output=none; reason=cancelled_before_start; revision=v3.
+R008: completed; output=hotel; warnings=none; revision=v3.
+R009: failed; output=none; error=invalid_input; revision=v3.
+R010: completed; output=juliet; warnings=none; revision=v3.
+R011: completed; output=kilo; warnings=none; revision=v4.
+R012: skipped; output=none; reason=filtered; revision=v4.
+R013: failed; output=none; error=storage_unavailable; revision=v4.
+R014: completed; output=november; warnings=none; revision=v4.
+R015: completed; output=oscar; warnings=one_retry; revision=v5.
+R016: failed; output=none; error=timeout; revision=v5.
+R017: skipped; output=none; reason=not_applicable; revision=v5.
+R018: completed; output=romeo; warnings=none; revision=v5.
+R019: failed; output=none; error=unavailable; revision=v6.
+R020: completed; output=tango; warnings=none; revision=v6.
+R021: skipped; output=none; reason=cancelled_before_start; revision=v6.
+R022: completed; output=uniform; warnings=none; revision=v6.
+R023: failed; output=none; error=invalid_input; revision=v7.
+R024: completed; output=whiskey; warnings=none; revision=v7.
+R025: completed; output=xray; warnings=one_retry; revision=v7.
+R026: skipped; output=none; reason=filtered; revision=v7.
+R027: failed; output=none; error=storage_unavailable; revision=v8.
+R028: completed; output=zulu; warnings=none; revision=v8.
+R029: completed; output=amber; warnings=none; revision=v8.
+R030: failed; output=none; error=timeout; revision=v8.

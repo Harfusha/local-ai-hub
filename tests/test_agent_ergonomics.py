@@ -1256,23 +1256,27 @@ def test_repo_accepts_file_paths_and_changed_paths():
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# 1. local_ai_coord task_checkpoint accepts next_action, blockers, evidence_ids
+# 1. local_ai_coord task_checkpoint requires the canonical nested payload
 # ---------------------------------------------------------------------------
 
-def test_coord_checkpoint_accepts_next_action_blockers_evidence():
+def test_coord_checkpoint_requires_canonical_nested_payload():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
         mc.coord.return_value = {"success": True, "task": {"task_id": "T1"}}
         res = local_ai_coord(
             action="task_checkpoint",
             task_id="T1",
             root="/repo",
-            phase="build",
-            next_action="run tests",
-            blockers=["PR pending"],
-            evidence_ids=["E100"],
+            checkpoint={
+                "phase": "build",
+                "next_action": "run tests",
+                "affected_paths": [],
+                "evidence_ids": ["E100"],
+                "blockers": ["PR pending"],
+                "state_data": {},
+            },
         )
-        assert res.get("success") is True, f"task_checkpoint with next_action failed: {res}"
-        assert mc.coord.call_count >= 1
+        assert res.get("success") is True, f"task_checkpoint with nested payload failed: {res}"
+        assert mc.coord.call_count == 1
         cp = mc.coord.call_args[1].get("checkpoint", {})
         assert cp.get("next_action") == "run tests"
         assert cp.get("blockers") == ["PR pending"]

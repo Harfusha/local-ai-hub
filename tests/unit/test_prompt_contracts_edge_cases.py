@@ -42,6 +42,20 @@ def test_build_prompt_with_none_iterables() -> None:
     assert "- none supplied" in package.user
 
 
+def test_code_operation_requires_diff_only_output() -> None:
+    package = build_prompt(
+        operation="code",
+        model="qwen2.5-coder:7b",
+        task="Return only a unified git diff for the supplied edit.",
+        context="report.py source supplied",
+        changed_paths=["report.py"],
+    )
+
+    assert "Return only a unified git diff" in package.user
+    assert "1. SUMMARY:" not in package.user
+    assert "Do not edit files" in package.system
+
+
 def test_large_model_tier_support() -> None:
     c72b = capability_for("qwen2.5-coder:72b")
     assert c72b.tier == "heavy"

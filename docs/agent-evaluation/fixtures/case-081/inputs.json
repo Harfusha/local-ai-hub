@@ -1,0 +1,7 @@
+{
+  "items": [
+    {"id": "summary-alpha", "text": "The export completed. Rows written: 12. Warnings: none."},
+    {"id": "summary-beta", "text": "The backup is incomplete. Failed files: 2. Skipped files: 1."},
+    {"id": "summary-gamma", "text": "The cache was reused. Source revision: r17. Evidence: ev-cache-17."}
+  ]
+}

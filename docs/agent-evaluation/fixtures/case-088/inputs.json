@@ -1,0 +1,9 @@
+{
+  "prompts": [
+    {"id": "bench-1", "text": "Summarize: Cache reused; no files changed."},
+    {"id": "bench-2", "text": "Summarize: 2 tests failed, 1 was skipped."},
+    {"id": "bench-3", "text": "Summarize: Revision r22 produced evidence ev-r22."}
+  ],
+  "max_duration_seconds": 60,
+  "download_models": false
+}

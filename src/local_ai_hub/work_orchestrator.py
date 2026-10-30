@@ -1352,10 +1352,20 @@ class WorkOrchestrator:
             if not self._stop.is_set() and self._has_queued_work():
                 self._ensure_workers()
 
-    def _ask(self, root: str, task: str, context: str, max_tokens: int = 4096, *, review: bool = False) -> dict[str, Any]:
+    def _ask(
+        self,
+        root: str,
+        task: str,
+        context: str,
+        max_tokens: int = 4096,
+        *,
+        review: bool = False,
+        complexity: str = "auto",
+        task_type: str = "auto",
+    ) -> dict[str, Any]:
         if review:
             return self.services.second_opinion({"question": task, "candidate": context, "context": "", "max_tokens": max_tokens, "complexity": "auto"})
-        return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": "auto"})
+        return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": complexity, "task_type": task_type})
 
     def _plan(self, root: str, task: str, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         acceptance = _string_list(payload.get("acceptance_criteria"), limit=24, item_chars=2000)
@@ -1452,6 +1462,47 @@ class WorkOrchestrator:
         return entries
 
     @staticmethod
+    def _failed_patch_source(root: Path, patch: str) -> str:
+        """Return a small, path-confined preimage for a failed patch retry."""
+        try:
+            paths, _, _ = _patch_changes(patch)
+        except Exception:
+            return ""
+        root = root.resolve()
+        chunks: list[str] = []
+        remaining = 12_000
+        for rel in paths[:8]:
+            lowered = rel.lower()
+            if any(marker in lowered for marker in (
+                ".env", "secret", "credential", "password", "token", "private",
+                "api_key", "apikey", "id_rsa", "id_ed25519", ".pem", ".p12", ".pfx", ".key",
+            )):
+                continue
+            try:
+                target = _safe_work_target(root, rel)
+                if not target.is_file():
+                    continue
+                data = target.read_bytes()
+                if b"\x00" in data[:8192]:
+                    continue
+                source = data.decode("utf-8")
+            except (OSError, UnicodeError, ValueError):
+                continue
+            header = f"\n--- {rel} (current workspace source) ---\n"
+            available = remaining - len(header)
+            if available <= 0:
+                break
+            clipped = source[:available]
+            chunks.append(header + clipped)
+            remaining -= len(header) + len(clipped)
+            if len(clipped) < len(source) or remaining <= 0:
+                chunks.append("\n[remaining source omitted to keep retry context bounded]\n")
+                break
+        if not chunks:
+            return ""
+        return "CURRENT SOURCE FOR FAILED PATCH PATHS:" + "".join(chunks)
+
+    @staticmethod
     def _preview_postimages(patch: str, snapshot: list[_JournalEntry]) -> list[_JournalEntry]:
         """Compute patch outputs in an isolated directory before workspace mutation."""
         with tempfile.TemporaryDirectory(prefix="local-ai-work-preview-") as temporary:
@@ -1462,7 +1513,7 @@ class WorkOrchestrator:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(entry.data)
             checked = subprocess.run(
-                ["git", "-C", str(preview_root), "apply", "--check", "--whitespace=nowarn", "-"],
+                ["git", "-C", str(preview_root), "apply", "--recount", "--check", "--whitespace=nowarn", "-"],
                 input=patch,
                 capture_output=True,
                 text=True,
@@ -1473,7 +1524,7 @@ class WorkOrchestrator:
             if checked.returncode != 0:
                 raise ValueError((checked.stderr or checked.stdout or "git apply preview check failed")[:1000])
             applied = subprocess.run(
-                ["git", "-C", str(preview_root), "apply", "--whitespace=nowarn", "-"],
+                ["git", "-C", str(preview_root), "apply", "--recount", "--whitespace=nowarn", "-"],
                 input=patch,
                 capture_output=True,
                 text=True,
@@ -1717,9 +1768,9 @@ class WorkOrchestrator:
                 try:
                     # Persist both images under the fence before mutating source.
                     self._persist_journal(work_id, journal)
-                    check=subprocess.run(["git","-C",str(root),"apply","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+                    check=subprocess.run(["git","-C",str(root),"apply","--recount","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
                     if check.returncode != 0: raise ValueError((check.stderr or check.stdout or "git apply --check failed")[:1000])
-                    applied=subprocess.run(["git","-C",str(root),"apply","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+                    applied=subprocess.run(["git","-C",str(root),"apply","--recount","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
                     if applied.returncode != 0: raise ValueError((applied.stderr or applied.stdout or "git apply failed")[:1000])
                     actual = self._snapshot(root, paths)
                     if any(
@@ -2008,14 +2059,19 @@ class WorkOrchestrator:
                     paths: list[str] = []
                     lease = ""
                     for retry_index in range(self.step_retry_limit + 1):
+                        retry_source = self._failed_patch_source(root, patch) if last_error and patch else ""
                         req=("Return ONLY a unified git diff that implements this bounded step. No prose. Preserve public APIs unless task requires otherwise. "
                              "Do not edit generated/vendor/cache files. Make the smallest coherent change and include tests when appropriate.\n"
                              f"ORIGINAL TASK:\n{task}\nSTEP:\n{step['task']}\nACCEPTANCE:\n{json_dumps(step.get('acceptance',[]),ensure_ascii=False)}"
-                             + (f"\nPREVIOUS PATCH ERROR:\n{last_error}" if last_error else ""))
-                        res=self._ask(root_s,req,json_dumps(fast,ensure_ascii=False)[:16000],1800); llm_calls+=1
+                             + (f"\nPREVIOUS PATCH ERROR:\n{last_error}" if last_error else "")
+                             + (f"\n{retry_source}" if retry_source else ""))
+                        patch_complexity = "auto" if retry_index == 0 else "heavy"
+                        res=self._ask(root_s,req,json_dumps(fast,ensure_ascii=False)[:16000],1800,complexity=patch_complexity,task_type="code"); llm_calls+=1
                         patch=_diff_from_text(str(res.get("text","")))
                         if not patch:
                             last_error = "local worker returned no unified diff"
+                            if retry_index > 0:
+                                raise RuntimeError("local worker returned no unified diff after heavy-code retry")
                             if retry_index < self.step_retry_limit and budget_ok():
                                 continue
                             raise RuntimeError(last_error)

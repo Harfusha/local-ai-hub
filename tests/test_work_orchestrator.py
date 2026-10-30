@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,24 @@ from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.project_config import resolve_project_context
+
+
+def test_preview_postimages_recounts_hunk_line_counts(tmp_path):
+    root = init_repo(tmp_path)
+    target = root / "a.txt"
+    before = target.read_bytes()
+    target.write_text("new\nsame\n", encoding="utf-8")
+    generated = subprocess.run(
+        ["git", "-C", str(root), "diff"], capture_output=True, text=True, check=True
+    ).stdout
+    patch = generated.replace("@@ -1 +1,2 @@", "@@ -1,1 +1,1 @@", 1)
+    assert patch != generated
+    entry = SimpleNamespace(path="a.txt", existed=True, data=before)
+    postimages = WorkOrchestrator._preview_postimages(patch, [entry])
+
+    assert len(postimages) == 1
+    newline = b"\r\n" if b"\r\n" in before else b"\n"
+    assert postimages[0].data == newline.join((b"new", b"same")) + newline
 
 
 class FakeArtifacts:
@@ -53,6 +72,9 @@ class FakeServices:
         self.patch = patch
         self.validation_ok = validation_ok
         self.delegate_calls = 0
+        self.delegate_complexities = []
+        self.delegate_task_types = []
+        self.delegate_requests = []
         self.verify_calls = 0
 
     def repo_profile(self, root): return {"success": True, "validation_commands": ["git diff --check"]}
@@ -66,6 +88,9 @@ class FakeServices:
         return {"success": True, "diff": cp.stdout}
     def delegate_repo(self, args):
         self.delegate_calls += 1
+        self.delegate_requests.append(dict(args))
+        self.delegate_complexities.append(args.get("complexity"))
+        self.delegate_task_types.append(args.get("task_type", "auto"))
         if self.delegate_calls == 1:
             plan = {
                 "summary": "change a.txt safely", "needs_agent": False,
@@ -567,11 +592,52 @@ def test_edit_retries_stop_at_configured_attempt_limit(tmp_path):
         result = wait_terminal(wo, submitted["work_id"])
 
         assert result["status"] == "failed", result
-        assert "no unified diff" in result.get("error", "")
+        assert "no unified diff after heavy-code retry" in result.get("error", "")
         assert services.delegate_calls == 3  # one plan and exactly two edit attempts
+        assert services.delegate_complexities == ["auto", "auto", "heavy"]
+        assert services.delegate_task_types == ["auto", "code", "code"]
+        assert services.verify_calls == 0
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
     finally:
         wo.close()
+
+
+def test_patch_failure_retry_includes_exact_current_file_contents(tmp_path):
+    root = init_repo(tmp_path)
+    bad_patch = "--- a/a.txt\n+++ b/a.txt\n@@ -4 +4 @@\n-nope\n+new\n"
+    services = FakeServices(bad_patch)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    wo.step_retry_limit = 1
+    try:
+        submitted = wo.submit({
+            "root": str(root.resolve()),
+            "task": "change old to new",
+            "acceptance_criteria": ["a.txt contains new"],
+            "response_profile": "debug",
+        })
+        result = wait_terminal(wo, submitted["work_id"])
+
+        assert result["status"] == "failed", result
+        assert services.delegate_calls == 3
+        retry_prompt = services.delegate_requests[2]["task"]
+        assert "PREVIOUS PATCH ERROR" in retry_prompt
+        assert "CURRENT SOURCE FOR FAILED PATCH PATHS" in retry_prompt
+        assert "old\r\n" in retry_prompt
+        assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
+    finally:
+        wo.close()
+
+
+def test_failed_patch_source_skips_private_key_material(tmp_path):
+    root = init_repo(tmp_path)
+    private_path = root / "keys" / "private.pem"
+    private_path.parent.mkdir()
+    private_path.write_text("PRIVATE KEY MATERIAL\n", encoding="utf-8")
+    patch = "--- a/keys/private.pem\n+++ b/keys/private.pem\n@@ -1 +1 @@\n-PRIVATE KEY MATERIAL\n+changed\n"
+
+    source = WorkOrchestrator._failed_patch_source(root, patch)
+
+    assert source == ""
 
 
 def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_path):

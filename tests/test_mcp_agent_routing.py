@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
 from local_ai_hub.features import FeatureSet  # noqa: E402
+from local_ai_hub.operation_contracts import validate_operation_arguments  # noqa: E402
 from local_ai_hub.routing import semantic_handoff_hint  # noqa: E402
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
 
@@ -75,6 +76,27 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     repo_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
     assert get_origin(repo_action) is Literal
     assert ("batch_replace" in get_args(repo_action)) is local_ai_mcp.FEATURES.batch_replacement
+
+
+def test_async_task_submit_contract_uses_task_context_without_async_alias() -> None:
+    valid = validate_operation_arguments(
+        "local_ai_task", "submit",
+        {"task": "Summarize the supplied text", "context": "A long report", "job_action": "compress"},
+        features=local_ai_mcp.FEATURES,
+    )
+    missing_task = validate_operation_arguments(
+        "local_ai_task", "submit", {"job_action": "compress"},
+        features=local_ai_mcp.FEATURES,
+    )
+    invented_alias = validate_operation_arguments(
+        "local_ai_task", "submit",
+        {"task": "Summarize the supplied text", "async": True},
+        features=local_ai_mcp.FEATURES,
+    )
+
+    assert valid is None
+    assert missing_task and "task" in missing_task
+    assert invented_alias and "async" in invented_alias
 
 
 def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, monkeypatch) -> None:

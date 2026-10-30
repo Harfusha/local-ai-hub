@@ -51,6 +51,10 @@ _CAPABILITIES = {
 
 _OPERATION_GUIDANCE = {
     "delegate": "Answer the bounded task using the supplied evidence.",
+    "code": (
+        "Generate a proposed unified git diff for the bounded code edit using only the supplied repository context "
+        "and allowed paths. Do not edit files, execute commands, or claim verification."
+    ),
     "explore": "Identify the smallest set of relevant facts, paths and symbols; do not invent missing context.",
     "reason": "Compare concrete hypotheses, select the strongest one, and explain what evidence supports or weakens it.",
     "review": "Find concrete correctness, regression, security or test risks in the supplied material. Default to a JSON verdict and cited findings; explicit task response formats take precedence.",
@@ -161,6 +165,9 @@ def build_prompt(
         2100,
     )
     required_response = (
+        "Return only a unified git diff with `diff --git` headers. No prose, JSON, or Markdown fences. "
+        "Use only supplied repository context and allowed paths. Do not claim tests, execution, or file changes.\n"
+        if operation_name == "code" else
         'Return only a JSON object with "verdict" ("pass" or "fail") and "findings" (a list). '
         'Use "pass" only when findings is empty; otherwise use "fail". Each finding must explain '
         'a concrete defect and include "citation": {"path": "supplied allowed path", "line": 1} '
@@ -195,7 +202,7 @@ def build_prompt(
         (
             "Nevymýšlej soubory, API, symboly, řádky ani výsledky testů. Každý řádek musí odkazovat na dodaný důkaz; "
             "holé 'line N' nepoužívej. Obecné rady bez vazby na dodaný context označ jako nedostatečné."
-            if operation_name != "compress" else ""
+            if operation_name not in {"compress", "code"} else ""
         )
     )
     return PromptPackage(system=system, user=user, capability=capability, operation=operation_name)

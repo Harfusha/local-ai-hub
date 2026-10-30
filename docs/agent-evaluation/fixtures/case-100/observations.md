@@ -1,0 +1,7 @@
+# 100: cizí změna, opravy a obnova — 2026-10-30
+
+- Seed sandbox: `%TEMP%\local-ai-eval-100-20261030-001`, commit `3cf29fa3913c70e506a8224d031fc982cedb6627`. Příprava zachovala záměrně necommitnutou změnu `FOREIGN.md`, SHA-256 `c31e338176f61ccc6107364de8e0d47266018c00ef84395ccecce66b6630bafb`.
+- Původní `python -B -m unittest oracle_100` odhalil tři projevy: `UnicodeEncodeError` při UTF-8 jménu, zbytečný soubor `.duplicate` při zrušení v kroku 1 a chybějící `ExportCancelled` při zrušení v kroku 2. Původní seed zůstává nedotčen pro skutečnou agentní práci.
+- Referenční sandbox `%TEMP%\local-ai-eval-100-reference-20261030-001` byl připraven ze stejného seedu; ruční implementace zapisuje UTF-8 do jedinečného souboru ve stejné složce, kontroluje zrušení před zápisem/během něj/před replace, zachová předchozí cíl a při chybě odstraní pouze svůj dočasný soubor. Oracle prošel `2/2`. Reference `exporter.py` SHA-256 `51c317838e650a626c3b69104d1ed3d91a5aba3aa14b78fcbe358004625b947d`.
+- Žádný skutečný `local_ai_work`/Agent OS task ani přerušení a obnovení ještě neběžel pro case 100. Reference není výsledkem agenta ani receipt; cizí diff seed sandboxu musí být při budoucím agentním průchodu porovnán před/po.
+- Nový MCP průchod `wo_4f1f107f7efd4199bcf4` skončil `warning: recount: unexpected line: ? / error: corrupt patch at line 8`; validace 0. Patch nebyl aplikován. Po opravě retry kontextu zopakovat na fresh seed a znovu porovnat hash `FOREIGN.md`.

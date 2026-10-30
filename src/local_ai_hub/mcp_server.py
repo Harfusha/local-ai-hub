@@ -2473,7 +2473,9 @@ def local_ai_task(
     feature-gated and exposed by the MCP schema, so callers must use the
     advertised actions rather than an inferred alias. Delivery and async
     constraints remain bounded; conversations are sync-only and process-memory
-    only. Use when one bounded semantic task should run on a configured local
+    only. The submit action already creates an asynchronous job: provide a
+    non-empty task, select its job_action, and place long source text in context.
+    There is no async flag or input_path argument. Use when one bounded semantic task should run on a configured local
     model. Use when: one bounded semantic task should run on a configured
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
@@ -4922,6 +4924,9 @@ def local_ai_coord(
     if action == "curate_dataset" and type(min_receipts) is not int:
         return contract_error("min_receipts must be an integer for action='curate_dataset'", status_code=400)
     coord_canonical_inputs: dict[str, dict[str, Any]] = {
+        "task_checkpoint": {
+            "root": root, "task_id": task_id, "checkpoint": checkpoint,
+        },
         "ask": {
             "root": root, "session_id": session_id,
             "question_id": question_id, "question": question, "task_id": task_id,
@@ -4996,6 +5001,43 @@ def local_ai_coord(
         )
         if validation_error is not None:
             return contract_error(validation_error, status_code=400)
+    if action == "task_checkpoint":
+        required_checkpoint_fields = {
+            "phase": str,
+            "next_action": str,
+            "affected_paths": list,
+            "evidence_ids": list,
+            "blockers": list,
+            "state_data": dict,
+        }
+        if type(checkpoint) is not dict:
+            return contract_error(
+                "checkpoint must be a canonical object for action='task_checkpoint'",
+                status_code=400,
+            )
+        missing = sorted(set(required_checkpoint_fields) - set(checkpoint))
+        if missing:
+            return contract_error(
+                f"checkpoint is missing required field '{missing[0]}' for action='task_checkpoint'",
+                status_code=400,
+            )
+        for field, expected_type in required_checkpoint_fields.items():
+            if type(checkpoint[field]) is not expected_type:
+                return contract_error(
+                    f"checkpoint.{field} must be {expected_type.__name__} for action='task_checkpoint'",
+                    status_code=400,
+                )
+        if not checkpoint["phase"].strip() or not checkpoint["next_action"].strip():
+            return contract_error(
+                "checkpoint.phase and checkpoint.next_action must be non-empty strings",
+                status_code=400,
+            )
+        for field in ("affected_paths", "evidence_ids", "blockers"):
+            if any(type(value) is not str for value in checkpoint[field]):
+                return contract_error(
+                    f"checkpoint.{field} items must be strings for action='task_checkpoint'",
+                    status_code=400,
+                )
     if action == "worktree_release" and not worktree_path and not worktree_id:
         return contract_error("worktree_path or worktree_id is required for action='worktree_release'", status_code=400)
     requested_root = str(root or "").strip()
@@ -5056,15 +5098,6 @@ def local_ai_coord(
             question_payload["response_budget_tokens"] = requested
         return _compact(CLIENT.coord(**question_payload), "status", extra_fields=["question"])
     if action.startswith("task_"):
-        if action == "task_checkpoint" and not checkpoint:
-            checkpoint = {
-                "phase": phase,
-                "next_action": next_action or reason,
-                "affected_paths": paths or [],
-                "evidence_ids": evidence_ids or [],
-                "blockers": blockers or [],
-                "state_data": state_data or {},
-            }
         task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
             "checkpoint": checkpoint, "status": status, "reason": reason,

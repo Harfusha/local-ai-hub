@@ -72,7 +72,10 @@ def test_local_ai_coord_task_get_forwards_task_and_root_identity(monkeypatch, tm
 
 def test_local_ai_coord_task_checkpoint_preserves_checkpoint_payload(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    checkpoint = {"phase": "verify", "next_action": "run focused suite", "revision": "r17"}
+    checkpoint = {
+        "phase": "verify", "next_action": "run focused suite", "affected_paths": [],
+        "evidence_ids": [], "blockers": [], "state_data": {}, "revision": "r17",
+    }
     backend = CoordBackend({"success": True, "summary": "checkpoint recorded for t-check-1"})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
@@ -89,6 +92,28 @@ def test_local_ai_coord_task_checkpoint_preserves_checkpoint_payload(monkeypatch
     }]
     assert result["success"] is True
     assert result["summary"] == "checkpoint recorded for t-check-1"
+
+
+def test_local_ai_coord_task_checkpoint_requires_canonical_nested_payload(monkeypatch, tmp_path):
+    root = str(tmp_path.resolve())
+    backend = CoordBackend({"success": True})
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+
+    flat = mcp_server.local_ai_coord(
+        action="task_checkpoint", task_id="t-check-2", root=root,
+        phase="verify", next_action="run focused checks", paths=[],
+        evidence_ids=[], blockers=[], state_data={},
+    )
+    empty = mcp_server.local_ai_coord(
+        action="task_checkpoint", task_id="t-check-2", root=root, checkpoint={},
+    )
+
+    assert flat["success"] is False
+    assert flat["status_code"] == 400
+    assert empty["success"] is False
+    assert empty["status_code"] == 400
+    assert backend.calls == []
 
 
 def test_local_ai_coord_task_transition_forwards_target_state_and_reason(monkeypatch, tmp_path):
