@@ -8,18 +8,18 @@
   "tasks": {
     "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
       "acceptance_criteria": [
-        "CI matrix passes for exact HEAD ba8e9ce0ec0a617655611ce84770b92dbbc35a94",
-        "Clean strict release check and isolated wheel smoke pass for exact HEAD",
-        "Published v5.1.2 assets and checksums match verified build",
-        "Main Hub install/restart and Codex MCP/dashboard point at main checkout; Gemini verification deferred"
+        "CI passes for the final pushed master commit containing the installer readiness-order fix",
+        "Clean release check and isolated wheel smoke pass for the same final commit",
+        "Published v5.1.2 assets and checksums match the verified build",
+        "Main Hub install and final restart succeed; service, Codex MCP, global/project instructions and dashboard are verified; Gemini remains deferred"
       ],
       "accountable_role": "Codex",
-      "blocker": "CI #366 run 41101803035 is queued for ba8e9ce. Do not retag or publish before exact-head CI and package checks. config.runtime.toml.lock is runtime state and remains uncommitted.",
+      "blocker": "CI #367 run 41102379496 is running for 2a12a6a, before the installer-order fix. New exact-HEAD CI is required after committing/pushing the fix. Setup partially installed 2a12a6a but stopped at MCP readiness; Hub was manually restarted and is online. config.runtime.toml.lock remains runtime state and uncommitted.",
       "clarifications": [],
       "depends_on": [],
-      "description": "CI fixes through ba8e9ce are pushed to master. CI #366 is queued for this exact HEAD. Current Codex global MCP config parses as streamable_http; live restart/install and instruction reconciliation remain pending.",
+      "description": "Current master 2a12a6a is pushed. Found and reproduced setup ordering bug: it stopped/replaced the Hub, then configured Codex MCP before starting the service; HTTP readiness check failed and configuration stayed unchanged. Moved agent configuration after successful service startup and made service failure stop before agent changes. Related setup/prompt tests: 66 passed. The fix is local and not yet committed.",
       "kind": "code",
-      "next_action": "After fresh CI result, complete clean release check and wheel smoke, publish/verify v5.1.2 assets if all gates pass, install and activate main checkout, restart Hub, and verify service, Codex MCP and dashboard. Gemini verification remains deferred.",
+      "next_action": "Run final local checks on the completed source, commit and push the installer-order fix and plan update, wait for fresh CI on exact master, rerun installation from a clean source at that commit, then verify main service/PID/path, Codex stdio MCP, global and project instructions, dashboard and final restart. Keep Gemini live use deferred.",
       "title": "Complete Local AI Hub 5.1.2 release and live cutover",
       "work_phase": "integration",
       "work_status": "in_progress"

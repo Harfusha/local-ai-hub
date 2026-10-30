@@ -552,6 +552,58 @@ def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Pat
     )
 
 
+@pytest.mark.parametrize("service_ok", [True, False])
+def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatch, service_ok: bool):
+    source = tmp_path / "source"
+    install = tmp_path / "installed"
+    source.mkdir()
+    install.mkdir()
+    config_text = (
+        f'[setup]\ninstall_dir="{install.as_posix()}"\n'
+        "install_agent_configs=true\ninstall_service=true\ninstall_optional_tools=false\n"
+        "[agents]\ncodex=true\n"
+        "[headless]\nenabled=true\n"
+        "[server]\nauto_start_ollama=false\n"
+        "[features]\ninstall_local_nlp_dependencies=false\n"
+        "install_openvino_dependencies=false\npull_models_during_setup=false\n"
+    )
+    (source / "config.toml").write_text(config_text, encoding="utf-8")
+    (install / "config.toml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "copy_install_tree", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
+    monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    events = []
+
+    def install_service(*_args, **_kwargs):
+        events.append("service-ready")
+        return service_ok
+
+    def configure_agents(*_args, **_kwargs):
+        assert "service-ready" in events
+        events.append("agents-configured")
+
+    monkeypatch.setattr(setup, "install_persistent_service", install_service)
+    monkeypatch.setattr(setup, "configure_agents", configure_agents)
+    monkeypatch.setattr(setup, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "setup.py", "--skip-model-pull", "--skip-tools", "--skip-token-economy",
+            "--skip-companion-skills", "--skip-local-nlp-preload", "--skip-ollama-install",
+        ],
+    )
+
+    expected_status = 0 if service_ok else 1
+    assert setup.main() == expected_status
+    assert events == (["service-ready", "agents-configured"] if service_ok else ["service-ready"])
+
+
 def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     for name in ("src", "skills", "tools"):

@@ -1437,11 +1437,6 @@ def main() -> int:
         else:
             log("Gemini CLI was not found on PATH; its Superpowers dependency was not checked.")
 
-    if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
-        configure_agents(install_dir, hub_python, serena, cfg, include_companion=include_companion)
-    else:
-        write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
-
     if os.name == "nt":
         has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in detected_gpus if isinstance(g, dict))
         has_igpu = any(bool(g.get("integrated")) or "intel" in str(g.get("name", "")).lower() or "radeon" in str(g.get("name", "")).lower() for g in detected_gpus if isinstance(g, dict))
@@ -1467,18 +1462,24 @@ def main() -> int:
         service_ok = install_persistent_service(hub_python, install_dir)
     else:
         try:
-            run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=False, timeout=30)
-        except Exception:
-            pass
+            run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=30)
+        except Exception as exc:
+            log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
+            return 1
+
+    if service_required and not service_ok:
+        log("Setup incomplete: service registration failed. Review service-manager output, then rerun install/update with the same verified commit.")
+        return 1
+
+    if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
+        configure_agents(install_dir, hub_python, serena, cfg, include_companion=include_companion)
+    else:
+        write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
 
     try:
         run([str(hub_python), str(install_dir / "tools" / "doctor.py")], check=False, timeout=60)
     except Exception as exc:
         log(f"WARNING: doctor could not complete: {exc}")
-
-    if service_required and not service_ok:
-        log("Setup incomplete: service registration failed. Review service-manager output, then rerun install/update with the same verified commit.")
-        return 1
 
     hw = cfg.get("_hardware", {})
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
