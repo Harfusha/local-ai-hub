@@ -1710,4 +1710,14 @@ Ověření provedeno nad worktree oprav po synchronizaci s aktuálním `master` 
 - **Skipy:** 105 testů zůstalo přeskočeno kvůli nedostupným symlink oprávněním na hostu, jednomu chybějícímu volitelnému `tree_sitter_python` a vypnutému opt-in živému MCP testu. Tyto skipy nejsou zeleným důkazem uvedených cest.
 - **Runtime kontrakt nástroje:** testy MCP wire surface a generátoru potvrzují, že vyřazený `local_ai_command` není zveřejněný nástroj. Jeho název zůstává v historických záznamech evaluace a v negativních regresních assertech, které hlídají jeho nepřítomnost.
 
-Tento výsledek dokládá zdrojový kandidát po integraci masteru a testovací smoke průchod. Samostatné nasazení změněného kandidáta do spravované instalace a její restart/ověření jsou zaznamenány až po jejich provedení; samotný selftest nad worktree je nenahrazuje.
+Tento výsledek dokládá zdrojový kandidát po integraci masteru a testovací smoke průchod. Spravovaná instalace byla následně restartována; při prvním startu 5.1.2 správně odmítla starý RAG index kvůli změně fingerprintu aplikace. Index nebyl automaticky přepsán.
+
+### Restart a ověření spravované instalace — 2026-10-30
+
+- **Příčina prvního neúspěšného startu:** `state/rag.sqlite3` měl fingerprint starší verze. Server skončil s `RAG database has fingerprint mismatch; explicit offline rebuild required`; supervisor jej opakovaně spouštěl. Po zastavení služby byla původní databáze i sidecary ověřeně zálohovány mimo repozitář do `%TEMP%\local-ai-hub-rag-backup-20261030-1534`.
+- **Explicitní offline obnova:** nový index vznikl v odděleném staging adresáři pouze z aktuálních zdrojů v šesti zachovaných repozitářích. Zahrnuje 17 souborů a 131 chunků; čtyři soubory ze zamýšleného integračního worktree byly vynechány. Obsahové SHA-1 všech zdrojových souborů souhlasí, fingerprint odpovídá konfiguraci 5.1.2 a `PRAGMA integrity_check` vrací `ok`. Původní DB zůstala zachována jako `rag.sqlite3.before-rebuild` a ověřená samostatná záloha zůstává v Temp.
+- **Restart po obnově:** MCP `local_ai_status` hlásí `hub_online=true`, verzi `5.1.2`, `ollama_online=true` a `degraded=false`. `hubctl status` potvrzuje Online, PID 55224, aktivní `qwen2.5-coder:3b`, 8 instalovaných modelů a RTX 4060 7 GB. `doctor.py` hlásí všechny kontroly OK, včetně MCP surface (7 nástrojů), Serena, Tree-sitter a databází; bez varování.
+- **Živé RAG čtení:** dotaz nad hlavním repozitářem skončil `success=true`, `reindex_required=false` a vrátil dva výsledky. Odpověď použila `heuristic_rerank` fallback (`degraded=true`, `graphrag_enriched=false`); jde o dostupnou degradovanou cestu, ne o selhání serveru. Příliš malý první rozpočet 512 tokenů byl odmítnut; explicitní rozpočet 1400 tokenů umožnil úspěšnou zkrácenou odpověď (1388 odhadovaných tokenů).
+- **Lokální modelový požadavek:** `local_ai_task(action="reason")` přijal požadavek s `success=true` a `fallback_used=false`; kompaktní obálka neobsahovala samotný text odpovědi, proto tímto nedokládáme její sémantickou kvalitu.
+
+RAG databáze se nyní spouští s aktuálním fingerprintem a po restartu Hub odpovídá. Zálohu původního indexu ponechat, dokud nebude samostatně rozhodnuto o její archivaci.
