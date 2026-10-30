@@ -373,6 +373,46 @@ def test_deterministic_schema_and_query_explain_safety():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_schema_inspect_handles_canonicalized_root_alias(monkeypatch, tmp_path):
+    from contextlib import closing
+    import sqlite3
+    from local_ai_hub.deterministic import DeterministicEngine
+
+    root_alias = tmp_path / "junction"
+    resolved_root = tmp_path / "resolved"
+    root_alias.mkdir()
+    resolved_root.mkdir()
+    alias_db = root_alias / "test.db"
+    resolved_db = resolved_root / "test.db"
+    for db_file in (alias_db, resolved_db):
+        with closing(sqlite3.connect(db_file)) as con:
+            con.execute('CREATE TABLE "order-items" (id INTEGER PRIMARY KEY, item TEXT)')
+            con.commit()
+
+    original_resolve = Path.resolve
+
+    def resolve_junction_alias(path, *args, **kwargs):
+        if path == root_alias:
+            return resolved_root
+        if path == alias_db:
+            return resolved_db
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_junction_alias)
+    det = DeterministicEngine(
+        {"deterministic": {"enabled": True}, "server": {"state_dir": str(resolved_root)}},
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    result = det.schema_inspect(str(root_alias), db_path=str(alias_db))
+
+    assert result["success"] is True
+    assert result["db_path"] == "test.db"
+    assert "order-items" in result["tables"]
+
+
 def test_agent_memory_reap_cleans_embeddings_and_fts():
     import sqlite3
     from local_ai_hub.agent_memory import MemoryStore, MemoryRecord, MemoryKind

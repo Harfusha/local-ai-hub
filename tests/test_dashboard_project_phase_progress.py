@@ -19,7 +19,7 @@ def _project_phase_projection(project, complete=False):
     script += "const x=" + json.dumps(project) + ";const isComplete=" + json.dumps(complete) + ";const n=String;"
     script += DASHBOARD_HTML[start:end]
     script += "console.log(JSON.stringify({title:phaseTitle,ids:PHASES.map(p=>p.id)}));"
-    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10, check=True, **hidden_run_kwargs())
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=10, check=True, **hidden_run_kwargs())
     return json.loads(result.stdout)
 
 

@@ -33,6 +33,9 @@ def emit_error(text: str) -> None:
         return
     message = _bounded_text(str(text))
     escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        escaped = escaped.encode(encoding, errors="backslashreplace").decode(encoding)
     print(f"{_ERROR_HEADER}{escaped}", flush=True)
 
 

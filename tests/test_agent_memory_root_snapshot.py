@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import tempfile
 import pytest
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
@@ -935,23 +936,24 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
 
 
 def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: MemoryStore, tmp_path: Path):
-    relative_root = os.path.relpath(tmp_path, Path.cwd())
-    record = store.record(
-        MemoryRecord.create(
-            kind=MemoryKind.FINDING,
-            scope=AgentScope.REPOSITORY,
-            key="relative-root",
-            value="evidence",
-            status=MemoryStatus.CONFIRMED,
-            provenance={
-                "repository_id": 'repo-evidence', "root": relative_root,
-                "repository_revision": "rev-1",
-                "path_refs": ["src/relative.py"],
-            },
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as root_dir:
+        relative_root = os.path.relpath(root_dir, Path.cwd())
+        record = store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="relative-root",
+                value="evidence",
+                status=MemoryStatus.CONFIRMED,
+                provenance={
+                    "repository_id": 'repo-evidence', "root": relative_root,
+                    "repository_revision": "rev-1",
+                    "path_refs": ["src/relative.py"],
+                },
+            )
         )
-    )
 
-    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/relative.py"]) == 1
+        assert store.mark_stale_for_revision(root_dir, "rev-2", ["src/relative.py"]) == 1
     assert store.get(record.record_id, **_repository_identity(record)).status is MemoryStatus.STALE
 
 

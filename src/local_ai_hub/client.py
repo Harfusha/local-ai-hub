@@ -687,7 +687,7 @@ class HubClient:
             src_dir = str(Path(__file__).resolve().parents[1])
             env["PYTHONPATH"] = src_dir + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
             service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
-            launch_timeout = remaining()
+            launch_timeout = min(budget, remaining())
             if launch_timeout <= 0:
                 return False
             process: subprocess.Popen[Any] | None = None

@@ -61,7 +61,7 @@ const cachedBoardItems=[
 renderKanbanBoard(); renderPlanProgressView();
 console.log(JSON.stringify({board:nodes.kanbanBoardContainer.innerHTML,progress:nodes.coordPlanProgressGrid.innerHTML}));
 """
-    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
     assert "Unverified" in rendered["board"]
@@ -88,7 +88,7 @@ const cachedBoardItems=[
 """ + progress + r"""
 renderPlanProgressView(); console.log(nodes.coordPlanProgressGrid.innerHTML);
 """
-    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout.count('class="milestone-card"') == 2
     assert "first" in result.stdout and "second" in result.stdout
@@ -114,7 +114,7 @@ const alert=message=>{throw Error(message);};
 """.replace("STATUS", json.dumps(status)) + source + r"""
 editPlanTask('p','t').then(()=>console.log(elements.modalBody.innerHTML));
 """
-    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", check=True, timeout=10)
     assert ("not verified" in completed.stdout) == (status != "cancelled")
     assert "controlled by verification" not in completed.stdout
 
@@ -139,7 +139,7 @@ const alert=message=>{throw Error(message);};
 """ + source + r"""
 submitPlanTaskEdit({preventDefault(){}}).then(()=>console.log(JSON.stringify(request)));
 """
-    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", check=True, timeout=10)
     request = json.loads(completed.stdout)
     assert request["path"] == "/api/coord/plan_task_edit"
     assert set(request["payload"]) == {
@@ -172,7 +172,7 @@ const alert=message=>{throw Error(message);};
 """ + source + r"""
 submitCreatePlan({preventDefault(){}}).then(()=>console.log(JSON.stringify({selected})));
 """
-    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", check=True, timeout=10)
     assert json.loads(completed.stdout).get("selected") == "plan_new"
 
 
@@ -191,7 +191,7 @@ const esc=value=>String(value);
 renderCoordPlanFilter([{id:'plan_new',title:'New',lifecycle:'active'}],'plan_new');
 console.log(JSON.stringify({value:select.value,disabled:edit.disabled}));
 """
-    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, check=True, timeout=10)
+    completed = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", check=True, timeout=10)
     assert json.loads(completed.stdout) == {"value": "plan_new", "disabled": False}
 
 
@@ -228,7 +228,7 @@ const validator=new RegExp('^(?:'+pattern+')$', 'v');
 console.log(JSON.stringify({normal,empty,manual:elements.newPlanId.value,
     validId:validator.test('plan_valid-123_test'),invalidId:validator.test('wrong_prefix')}));
 """
-    result = subprocess.run([node], input=harness, check=True, capture_output=True, text=True)
+    result = subprocess.run([node], input=harness, check=True, capture_output=True, text=True, encoding="utf-8")
     generated = json.loads(result.stdout)
 
     assert generated["normal"] == "plan_local-ai-hub-5-1-0-finalization"

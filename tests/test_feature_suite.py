@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata_and_tool_contract():
-    assert __version__ == "5.1.0"
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     tools = [
@@ -40,7 +39,7 @@ def test_release_metadata_and_tool_contract():
         "local_ai_work",
     }
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == "5.1.0"
+    assert release["version"] == __version__
     assert release["status"] == "production-ready"
 
 

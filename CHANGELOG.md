@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.1.2 — 2026-10-30
+
+- Fix Windows read-only SQLite URI handling for drive-letter paths.
+- Decode dashboard Node harness output as UTF-8 on Windows and keep cross-volume tests portable.
+- Clamp autostart process timeout to the caller's exact startup budget.
+- Keep GitHub failure annotations printable on legacy Windows console encodings.
+
+## 5.1.1 — 2026-10-30
+
+- Discard vision backend output when cancellation arrives after a non-interruptible inference call.
+- Serialize MCP HTTP cancellation notifications with compact JSON separators for strict clients.
+
 ## 5.1.0 — 2026-10-26
 
 - Follow-up candidate fix: treat upstream Caveman compression output that is not smaller than the input as no useful reduction, and cover that response with a regression test.
