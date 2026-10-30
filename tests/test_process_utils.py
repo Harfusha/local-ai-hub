@@ -43,6 +43,7 @@ def _install_windows_startupinfo_double(monkeypatch):
 def test_find_listening_pid_verifies_zero_win32_owner_with_netstat(monkeypatch, netstat_stdout, expected):
     monkeypatch.setattr(process_utils.os, "name", "nt")
     monkeypatch.setattr(process_utils, "_find_listening_pid_win32", lambda _port: 0)
+    monkeypatch.setattr(process_utils, "hidden_run_kwargs", lambda: {})
     monkeypatch.setattr(
         process_utils.subprocess,
         "run",
