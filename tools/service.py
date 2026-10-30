@@ -380,6 +380,19 @@ def native_start() -> None:
     spawn_detached()
 
 
+def wait_for_hub(timeout: float = 30.0) -> bool:
+    """Wait until the configured Hub endpoint reports ready."""
+    client = HubClient(config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if client._online(timeout=min(1.0, remaining)):
+            return True
+        time.sleep(min(0.25, remaining))
+
+
 def set_windows_user_startup(enabled: bool) -> bool:
     """Keep logon startup available when Task Scheduler requires elevation."""
     try:
@@ -523,7 +536,13 @@ def main() -> int:
             return 1
         print("stopped")
         return 0
-    if action == "start": native_start(); time.sleep(0.5); print("started"); return 0
+    if action == "start":
+        native_start()
+        if not wait_for_hub():
+            print(json.dumps({"success": False, "error": "hub endpoint unavailable after start"}, ensure_ascii=False))
+            return 1
+        print("started")
+        return 0
     if action == "restart":
         result = native_stop()
         if not result.get("success"):
@@ -531,6 +550,9 @@ def main() -> int:
             return 1
         time.sleep(0.5)
         native_start()
+        if not wait_for_hub():
+            print(json.dumps({"success": False, "error": "hub endpoint unavailable after restart"}, ensure_ascii=False))
+            return 1
         print("restarted")
         return 0
     client = HubClient(config_path=_ACTIVE_CONFIG_ARG, auto_start=False)

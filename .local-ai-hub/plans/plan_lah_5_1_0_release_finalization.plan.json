@@ -8,21 +8,18 @@
   "tasks": {
     "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
       "acceptance_criteria": [
-        "CI matrix passes for exact HEAD",
+        "CI matrix passes for exact HEAD ba8e9ce0ec0a617655611ce84770b92dbbc35a94",
         "Clean strict release check and isolated wheel smoke pass for exact HEAD",
-        "Live Hub process is proven to load exact pushed source after safe restart",
-        "Dashboard health ignores telemetry.summary diagnostic timeouts including detail.agent_state.telemetry.summary while retaining real runtime dependency failures",
-        "Dashboard health and project plan creation/list/task editing verified",
-        "No unrelated user work is modified or committed",
-        "Plan completion requires authentic task verification and verified integration of every required target"
+        "Published v5.1.2 assets and checksums match verified build",
+        "Main Hub install/restart and Codex MCP/dashboard point at main checkout; Gemini verification deferred"
       ],
       "accountable_role": "Codex",
-      "blocker": "CI #362 (41076559099) validates af5bb9e only. Final local candidate 7498d52a also includes the Serena session cap and case-096 nonempty RAG fixture/docs; run CI on the final pushed HEAD before moving v5.1.2. Runtime config lock stays uncommitted. Gemini remains deferred.",
+      "blocker": "CI #366 run 41101803035 is queued for ba8e9ce. Do not retag or publish before exact-head CI and package checks. config.runtime.toml.lock is runtime state and remains uncommitted.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Integrated and pushed master through af5bb9e, with seven evaluation-repair commits; CI #361 passed for parent 32c9769 and #362 is queued for af5bb9e. Local candidate 7498d52a additionally includes the Serena per-backend session cap and reproducible case-096 nonempty RAG upgrade fixture/observations. Fixture evidence is isolated and synthetic, not a receipt or product acceptance. v5.1.2 remains at d358e1b. Main install, restart, Codex MCP and dashboard checks remain pending; Gemini is deferred.",
+      "description": "CI fixes through ba8e9ce are pushed to master. CI #366 is queued for this exact HEAD. Current Codex global MCP config parses as streamable_http; live restart/install and instruction reconciliation remain pending.",
       "kind": "code",
-      "next_action": "Push the reviewed local commits, wait for CI on the exact final HEAD, then move v5.1.2 only after success. Verify published release wheel/checksum/smoke, update the main install, restart, and verify service/MCP/dashboard. Keep the runtime lock uncommitted.",
+      "next_action": "After fresh CI result, complete clean release check and wheel smoke, publish/verify v5.1.2 assets if all gates pass, install and activate main checkout, restart Hub, and verify service, Codex MCP and dashboard. Gemini verification remains deferred.",
       "title": "Complete Local AI Hub 5.1.2 release and live cutover",
       "work_phase": "integration",
       "work_status": "in_progress"
