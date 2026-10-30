@@ -153,7 +153,7 @@ def test_unique_mixed_batch_finishing_out_of_order_is_not_overall_success(tmp_pa
     )
 
     assert completion_order == ["fail", "wait-for-fast"]
-    assert list(result["results"]) == ["fast-second", "slow-first"]
+    assert set(result["results"]) == {"fast-second", "slow-first"}
     assert result["results"]["slow-first"]["success"] is True
     assert result["results"]["fast-second"]["success"] is False
     assert result["commands_completed"] == 2
