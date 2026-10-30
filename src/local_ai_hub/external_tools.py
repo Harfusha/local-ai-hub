@@ -439,7 +439,7 @@ class ExternalCodeIntelligence:
         self._operation_locks: dict[tuple[str, str], threading.Lock] = {}
         self._operation_lock_users: dict[tuple[str, str], int] = {}
         self._serena_sessions: dict[str, MCPStdioClient] = {}
-        self.max_sessions = max(1, int(self.cfg.get("max_sessions_per_backend") or 16))
+        self.max_sessions = max(1, int(self.cfg.get("max_sessions_per_backend") or 2))
         self.session_idle_ttl = _safe_float(self.cfg.get("session_idle_ttl_seconds"), 3600.0, min_val=1.0)
         self._session_access: dict[str, dict[str, float]] = {"serena": {}}
         self._failures: dict[str, int] = {"serena": 0}

@@ -532,6 +532,8 @@ serena_package = "serena-agent==1.7.0"
 enabled = true
 serena_enabled = true
 preprocess_serena = true
+# Keep at most two project-specific Serena servers active per Hub process.
+max_sessions_per_backend = 2
 # Set explicit executable paths only when auto-discovery is insufficient.
 serena_command = ""
 serena_context = "codex"
