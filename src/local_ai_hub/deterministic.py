@@ -7698,7 +7698,9 @@ def test_{sym}_regression_edge_cases():
             return {"success": False, "error": "multiple statements are not permitted"}
 
         try:
-            with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
+            resolved_db = target_db.resolve(strict=True)
+            relative_db = resolved_db.relative_to(p_root)
+            with closing(sqlite3.connect(f"{resolved_db.as_uri()}?mode=ro", uri=True)) as con:
                 rows = con.execute(f"EXPLAIN QUERY PLAN {clean_query}").fetchall()
                 plan_items = [{"id": r[0], "parent": r[1], "detail": r[3]} for r in rows]
                 uses_index = any("USING INDEX" in item["detail"] or "USING COVERING INDEX" in item["detail"] for item in plan_items)
@@ -7706,7 +7708,7 @@ def test_{sym}_regression_edge_cases():
 
             return {
                 "success": True,
-                "db_path": str(target_db.relative_to(p_root)).replace("\\", "/"),
+                "db_path": str(relative_db).replace("\\", "/"),
                 "query": clean_query,
                 "uses_index": uses_index,
                 "has_full_table_scan": full_scan,

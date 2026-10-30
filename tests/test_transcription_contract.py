@@ -353,9 +353,10 @@ def test_unreadable_audio_has_degraded_unavailable_reason(
     audio = tmp_path / "private.wav"
     audio.write_bytes(b"audio")
     real_stat = Path.stat
+    resolved_audio = audio.resolve()
 
     def deny_audio_stat(path: Path, *args: object, **kwargs: object):
-        if path == audio.resolve():
+        if path == resolved_audio:
             raise PermissionError("access denied")
         return real_stat(path, *args, **kwargs)
 

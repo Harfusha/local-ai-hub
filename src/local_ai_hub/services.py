@@ -8380,7 +8380,7 @@ class LocalAIServices:
                 telemetry_res = {"success": False, "retryable": True, "error": "telemetry resolution time budget exceeded"}
             except Exception as exc:
                 telemetry_res = {"success": False, "error_type": type(exc).__name__}
-            retryable = bool(telemetry_res.get("retryable"))
+            retryable = retryable or bool(telemetry_res.get("retryable"))
 
         resolved_incidents = 0
         if self.incident_store:

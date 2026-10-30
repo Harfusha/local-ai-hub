@@ -65,8 +65,6 @@ class _CommandCacheCoordinator:
                 if os.name == "nt":
                     import msvcrt
 
-                    if os.fstat(fd).st_size == 0:
-                        os.write(fd, b"\0")
                     os.lseek(fd, 0, os.SEEK_SET)
                     deadline = time.monotonic() + _COMMAND_CACHE_LOCK_TIMEOUT_SECONDS
                     while True:
@@ -78,6 +76,9 @@ class _CommandCacheCoordinator:
                             if remaining <= 0:
                                 raise TimeoutError("command-cache coordination lock timed out")
                             time.sleep(min(0.01, remaining))
+                    if os.fstat(fd).st_size == 0:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        os.write(fd, b"\0")
                 else:
                     import fcntl
 

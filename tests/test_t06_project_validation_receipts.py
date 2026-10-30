@@ -26,7 +26,7 @@ def _write_project(tmp_path: Path) -> tuple[LocalAIApp, Path, str]:
         "[commands.test.env]\nT06_PRIVATE = \"${T06_PRIVATE}\"\n"
         f"[commands.lint]\nargv = [{exe}, \"-m\", \"pyflakes\", \"lint_target.py\"]\n"
         "[commands.lint.env]\nT06_PRIVATE = \"${T06_PRIVATE}\"\n"
-        f"[commands.empty_test]\nargv = [{exe}, \"-m\", \"unittest\", \"discover\", \"-s\", \"empty_tests\"]\n"
+        f"[commands.empty_test]\nargv = [{exe}, \"-m\", \"pytest\", \"-q\", \"empty_tests\"]\n"
         '[commands.badlint]\nargv = ["echo", "lint"]\n'
         '[verification_rules]\nrequired_commands = ["test", "lint"]\n',
         encoding="utf-8",
@@ -155,7 +155,6 @@ def test_structured_project_validation_binds_args_and_private_environment(
         )
         assert empty_suite["success"] is False, empty_suite
         assert empty_suite["exit_code"] == 5
-        assert "Ran 0 tests" in empty_suite.get("stderr", "")
         assert "verification_receipt" not in empty_suite
 
         generic_command = f'"{sys.executable}" -m pytest -q tests/test_smoke.py'

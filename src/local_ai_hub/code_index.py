@@ -55,11 +55,6 @@ def _code_index_initialization_lock(db_path: Path) -> Iterator[None]:
     with thread_lock:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+b") as stream:
-            stream.seek(0, os.SEEK_END)
-            if stream.tell() == 0:
-                stream.write(b"\0")
-                stream.flush()
-
             deadline = time.monotonic() + 30.0
             locked = False
             if os.name == "nt":
@@ -92,6 +87,10 @@ def _code_index_initialization_lock(db_path: Path) -> Iterator[None]:
                         time.sleep(0.05)
 
             try:
+                stream.seek(0, os.SEEK_END)
+                if stream.tell() == 0:
+                    stream.write(b"\0")
+                    stream.flush()
                 yield
             finally:
                 if os.name == "nt":

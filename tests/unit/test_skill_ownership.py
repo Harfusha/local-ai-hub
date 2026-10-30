@@ -62,7 +62,10 @@ class SkillOwnershipTests(unittest.TestCase):
         quarantine_key, record = next(iter(entries.items()))
         quarantine = Path(record["quarantine_path"])
         self.assertEqual(quarantine_key, skill_ownership._canonical(quarantine))
-        self.assertEqual(quarantine.parent, self.skills_root.parent / ".local-ai-hub-skill-quarantine")
+        self.assertEqual(
+            quarantine.parent.resolve(),
+            (self.skills_root.parent / ".local-ai-hub-skill-quarantine").resolve(),
+        )
         self.assertTrue(quarantine.name.startswith("example-skill-"))
         self.assertFalse(quarantine.is_relative_to(self.skills_root))
         self.assertEqual(record["status"], "unverified")
@@ -242,7 +245,10 @@ class SkillOwnershipTests(unittest.TestCase):
         quarantine_records = [record for record in entries.values() if "quarantine_path" in record]
         self.assertEqual(len(quarantine_records), 1)
         quarantine = Path(quarantine_records[0]["quarantine_path"])
-        self.assertEqual(quarantine.parent, self.skills_root.parent / ".local-ai-hub-skill-quarantine")
+        self.assertEqual(
+            quarantine.parent.resolve(),
+            (self.skills_root.parent / ".local-ai-hub-skill-quarantine").resolve(),
+        )
         self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), "Hub version\n")
         self.assertEqual(quarantine_records[0]["status"], "unverified")
     def test_concurrent_installs_preserve_all_manifest_entries(self) -> None:
@@ -297,7 +303,7 @@ class SkillOwnershipTests(unittest.TestCase):
         real_move = skill_ownership._rename_noreplace
 
         def modify_before_quarantine(source: Path, destination: Path, **kwargs: object) -> None:
-            if source == self.target:
+            if skill_ownership._canonical(source) == skill_ownership._canonical(self.target):
                 (self.target / "SKILL.md").write_text("operator change\\n", encoding="utf-8")
             real_move(source, destination, **kwargs)
 
@@ -489,7 +495,7 @@ so.install_skill(source, target, root, manifest, name)
         competing_paths: list[Path] = []
 
         def occupy_quarantine(source: Path, destination: Path, **kwargs: object) -> None:
-            if source == self.target:
+            if skill_ownership._canonical(source) == skill_ownership._canonical(self.target):
                 destination.mkdir()
                 (destination / "competitor.txt").write_text("do not overwrite", encoding="utf-8")
                 competing_paths.append(destination)
@@ -618,7 +624,11 @@ so.install_skill(source, target, root, manifest, name)
         quarantine_path = Path(
             next(record["quarantine_path"] for record in entries.values() if record["status"] == "unverified")
         )
-        self.assertTrue(quarantine_path.is_relative_to(quarantine_root))
+        self.assertTrue(
+            Path(skill_ownership._canonical(quarantine_path)).is_relative_to(
+                Path(skill_ownership._canonical(quarantine_root))
+            )
+        )
         self.assertTrue((quarantine_path / "SKILL.md").is_file())
         self.assertTrue(quarantine_root.is_dir())
 
@@ -889,12 +899,16 @@ so.install_skill(source, target, root, manifest, name)
 
         def hash_only_active_tree(path: Path) -> str:
             hashed_paths.append(path)
-            self.assertEqual(path, self.target, "persisted quarantine must not be recursively hashed")
+            self.assertEqual(
+                skill_ownership._canonical(path),
+                skill_ownership._canonical(self.target),
+                "persisted quarantine must not be recursively hashed",
+            )
             return real_hash(path)
 
         def mutate_after_move(source: Path, destination: Path, **kwargs: object) -> None:
             real_move(source, destination, **kwargs)
-            if source == self.target:
+            if skill_ownership._canonical(source) == skill_ownership._canonical(self.target):
                 (destination / "SKILL.md").write_text("changed after move\\n", encoding="utf-8")
 
         with patch.object(skill_ownership, "_safe_tree_hash", side_effect=hash_only_active_tree), patch.object(
@@ -911,7 +925,10 @@ so.install_skill(source, target, root, manifest, name)
         record = next(iter(entries.values()))
         quarantine = Path(record["quarantine_path"])
         self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), "changed after move\\n")
-        self.assertEqual(hashed_paths, [self.target])
+        self.assertEqual(
+            [skill_ownership._canonical(path) for path in hashed_paths],
+            [skill_ownership._canonical(self.target)],
+        )
         self.assertEqual(record["hash_state"], "unverified")
 
     def test_recovery_move_never_overwrites_competing_active_target(self) -> None:

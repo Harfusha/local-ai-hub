@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -190,7 +191,8 @@ def test_rollback_rejects_junction_before_restoring_any_file(tmp_path: Path) -> 
     ]
 
     try:
-        assert junction.is_junction()
+        junction_info = junction.lstat()
+        assert junction_info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
         with pytest.raises(ValueError, match="symlink or reparse"):
             WorkOrchestrator._rollback(root, journal)
 
