@@ -506,7 +506,7 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
         sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "task_id": task_id, "acceptance_criteria": ["a.txt contains new"], "response_profile": "compact"})
-        res = wait_terminal(wo, sub["work_id"])
+        res = wait_terminal(wo, sub["work_id"], timeout=30)
         assert res["status"] == "complete", res
         assert (root / "a.txt").read_text(encoding="utf-8") == "new\n"
         assert res["changed_files"] == ["a.txt"]
