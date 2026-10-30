@@ -7641,7 +7641,8 @@ def test_{sym}_regression_edge_cases():
 
         tables: dict[str, Any] = {}
         try:
-            with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
+            database_uri = f"{target_db.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(database_uri, uri=True)) as con:
                 tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
                 for (tbl_name,) in tbl_rows:
                     safe_tbl = tbl_name.replace('"', '""')

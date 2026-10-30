@@ -19,6 +19,18 @@ def test_annotation_escapes_workflow_syntax_and_bounds_payload(monkeypatch, caps
     assert len(output) < 12_000
 
 
+def test_annotation_handles_console_encodings_without_emoji(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    buffer = io.BytesIO()
+    stdout = io.TextIOWrapper(buffer, encoding="cp1252")
+    monkeypatch.setattr(ci_diagnostics.sys, "stdout", stdout)
+
+    ci_diagnostics.emit_error("failure 🚀")
+    stdout.flush()
+
+    assert buffer.getvalue().decode("ascii").rstrip("\r\n").endswith(r"failure \U0001f680")
+
+
 def test_tail_tee_preserves_full_output_with_bounded_memory():
     target = io.StringIO()
     tee = ci_diagnostics.TailTee(target)

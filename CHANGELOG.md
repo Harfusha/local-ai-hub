@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.1.2 — 2026-10-30
+
+- Fix Windows read-only SQLite URI handling for drive-letter paths.
+- Decode dashboard Node harness output as UTF-8 on Windows and keep cross-volume tests portable.
+- Clamp autostart process timeout to the caller's exact startup budget.
+- Keep GitHub failure annotations printable on legacy Windows console encodings.
+
 ## 5.1.1 — 2026-10-30
 
 - Discard vision backend output when cancellation arrives after a non-interruptible inference call.
