@@ -7639,9 +7639,15 @@ def test_{sym}_regression_edge_cases():
         if not target_db or not target_db.is_file():
             return {"success": False, "error": f"no SQLite database found in root: {root}"}
 
+        try:
+            resolved_db = target_db.resolve(strict=True)
+            relative_db = resolved_db.relative_to(p_root)
+        except (OSError, ValueError) as exc:
+            return {"success": False, "error": f"database path is outside root or unavailable: {exc}"}
+
         tables: dict[str, Any] = {}
         try:
-            database_uri = f"{target_db.resolve().as_uri()}?mode=ro"
+            database_uri = f"{resolved_db.as_uri()}?mode=ro"
             with closing(sqlite3.connect(database_uri, uri=True)) as con:
                 tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
                 for (tbl_name,) in tbl_rows:
@@ -7656,7 +7662,7 @@ def test_{sym}_regression_edge_cases():
                     }
             return {
                 "success": True,
-                "db_path": str(target_db.relative_to(p_root)).replace("\\", "/"),
+                "db_path": str(relative_db).replace("\\", "/"),
                 "table_count": len(tables),
                 "tables": tables,
             }
