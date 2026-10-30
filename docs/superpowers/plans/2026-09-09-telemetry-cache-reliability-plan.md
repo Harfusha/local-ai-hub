@@ -1,5 +1,7 @@
 # Telemetry, Reliability, and Cache Correctness Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans (recommended for this session) to implement this plan task-by-task.
 
 **Goal:** Correct false token savings, make failure/cache telemetry truthful, and improve safe reuse of repeated local work.

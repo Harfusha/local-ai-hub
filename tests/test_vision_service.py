@@ -313,6 +313,9 @@ def test_vision_cancellation_after_generation_discards_output(tmp_path: Path) ->
         cancelled.set()
         return {"response": json.dumps({"summary": "late", "findings": []})}
 
+    # MagicMock fabricates arbitrary attributes, including request_interruptible.
+    # Make this runtime's lack of the optional interruptible API explicit.
+    runtime.request_interruptible = None
     runtime.request.side_effect = cancel_after_generation
     result = services.vision({"image": str(image)}, cancel_event=cancelled)
 

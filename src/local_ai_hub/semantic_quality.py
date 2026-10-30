@@ -35,7 +35,68 @@ def constrain_semantic_quality(quality: Mapping[str, Any], output: Mapping[str, 
     return result
 
 
-def assess_review_consistency(output: Any, evidence_paths: Iterable[str] = ()) -> dict[str, Any]:
+def _citation_path(value: Any) -> str | None:
+    if not isinstance(value, str) or ".." in value.replace("\\", "/").split("/"):
+        return None
+    return _normalize_path(value)
+
+
+def _diff_source_lines(source_diff: str | None) -> dict[tuple[str, int], str] | None:
+    """Map bounded, displayed post-image diff lines without reading the filesystem."""
+    if not isinstance(source_diff, str) or len(source_diff) > 200_000 or "\x00" in source_diff:
+        return None
+    source: dict[tuple[str, int], str] = {}
+    current_path: str | None = None
+    current_line: int | None = None
+    old_remaining = new_remaining = 0
+    in_hunk = False
+    # Unified diff framing uses LF (or CRLF), not every Unicode character
+    # that Python's splitlines treats as a line boundary.
+    for line in source_diff.replace("\r\n", "\n").split("\n"):
+        if in_hunk and line.startswith("\\"):
+            continue
+        if in_hunk and (old_remaining or new_remaining):
+            if line.startswith(("+", " ")):
+                if current_path is not None:
+                    key = (current_path, current_line)
+                    if key in source and source[key] != line[1:]:
+                        return None
+                    source[key] = line[1:]
+                current_line += 1
+                new_remaining -= 1
+            if line.startswith(("-", " ")):
+                old_remaining -= 1
+            if not line.startswith(("+", "-", " ")) or old_remaining < 0 or new_remaining < 0:
+                return None
+            continue
+        if in_hunk and line.startswith(("+", "-", " ")) and not line.startswith(("--- ", "+++ ")):
+            return None
+        in_hunk = False
+        if line.startswith(("diff --git ", "--- ")):
+            current_path = None
+            current_line = None
+        if line.startswith("+++ b/"):
+            current_path = _citation_path(line[6:])
+            current_line = None
+        elif line.startswith("+++ /dev/null"):
+            current_path = None
+            current_line = None
+        elif line.startswith("@@ "):
+            match = re.match(r"@@ -(\d{1,10})(?:,(\d{1,10}))? \+(\d{1,10})(?:,(\d{1,10}))? @@", line)
+            if not match:
+                return None
+            old_remaining = int(match.group(2) or "1")
+            new_remaining = int(match.group(4) or "1")
+            current_line = int(match.group(3))
+            if max(int(match.group(1)), old_remaining, current_line, new_remaining) > 2_147_483_647:
+                return None
+            in_hunk = True
+    if in_hunk and (old_remaining or new_remaining):
+        return None
+    return source or None
+
+
+def assess_review_consistency(output: Any, evidence_paths: Iterable[str] = (), *, source_diff: str | None = None) -> dict[str, Any]:
     """Check declared review structure, never the truth of a model assertion."""
     result: dict[str, Any] = {
         "usable": False, "status": "unverified", "verdict_consistent": None,
@@ -48,6 +109,9 @@ def assess_review_consistency(output: Any, evidence_paths: Iterable[str] = ()) -
         result["reason"] = error or path_error or "output_too_large"
         return result
     stripped = text.strip()
+    summary, separator, json_body = stripped.partition("\n```json\n")
+    if separator and re.fullmatch(r"SUMMARY:\s*\S[^\n]*", summary, re.IGNORECASE) and json_body.endswith("\n```"):
+        stripped = json_body[:-4]
     if stripped.startswith("```json\n") and stripped.endswith("\n```"):
         stripped = stripped[8:-4]
     try:
@@ -60,20 +124,23 @@ def assess_review_consistency(output: Any, evidence_paths: Iterable[str] = ()) -
         return result
     findings = report["findings"]
     consistent = (report["verdict"] == "pass") == (not findings)
+    source = _diff_source_lines(source_diff)
     invalid = []
     for index, finding in enumerate(findings):
         citation = finding.get("citation") if isinstance(finding, dict) else None
         path = citation.get("path") if isinstance(citation, dict) else None
         line = citation.get("line") if isinstance(citation, dict) else None
-        normalized = _normalize_path(path) if isinstance(path, str) else None
+        quote = citation.get("quote") if isinstance(citation, dict) else None
+        normalized = _citation_path(path)
         if (normalized is None or type(line) is not int or line < 1
-                or (paths and not _matches_evidence(normalized, paths))):
+                or (paths and not _matches_evidence(normalized, paths))
+                or (source is not None and (not isinstance(quote, str) or not quote or source.get((normalized, line)) != quote))):
             invalid.append(index)
     result.update({
-        "usable": consistent and not invalid, "status": "structure_checked",
+        "usable": consistent and not invalid and (not findings or source is not None), "status": "structure_checked",
         "verdict_consistent": consistent, "invalid_citation_indices": invalid,
-        "citation_scope": "supplied_paths_and_positive_line_only" if paths else "citation_shape_only",
-        "reason": "verdict_contradiction" if not consistent else "invalid_citation" if invalid else "structure_consistent",
+        "citation_scope": "supplied_diff_line_and_quote" if source is not None else "not_verified",
+        "reason": "verdict_contradiction" if not consistent else "invalid_citation" if invalid else "source_citation_unverified" if findings and source is None else "structure_consistent",
     })
     return result
 

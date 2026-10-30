@@ -1,5 +1,7 @@
 # T03 MCP Contracts and Auto-start Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the eight existing MCP tools expose and enforce action-specific input/output contracts, fix the T03 RecoveryJournal call compatibility, and prove MCP uses the existing bounded Hub auto-start path without leaving child processes behind.

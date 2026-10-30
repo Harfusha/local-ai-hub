@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "case_id": "098",
+  "fixture_revision": "case-098-v1",
+  "entry_point": "run.py",
+  "workspace": "new disposable root with distinct venv, state, and Git workspace",
+  "server": "loopback ephemeral port; sandbox-specific state",
+  "token": "empty only in this isolated loopback fixture",
+  "expected_side_effects": "one task creation or checkpoint of explicitly supplied existing task",
+  "cleanup": "terminate owned process tree, preserve evidence, remove only verified disposable root",
+  "runtime_acceptance": false,
+  "limitations": "authentic receipt producer and terminal completion remain outstanding"
+}

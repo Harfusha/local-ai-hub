@@ -30,7 +30,7 @@ def test_semantic_services_reject_retired_input_aliases_before_delegation(method
         (
             LocalAIServices.review,
             {"code": "source", "instructions": "find defects"},
-            "find defects",
+            "find defects\nFor each finding, cite the file path, post-image line number, and the exact full source line as citation.quote.",
             "source",
         ),
     ],

@@ -108,7 +108,11 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 
 The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. `local_ai_status` supports compact `brief` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
 
-There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable. Do not invent verification receipts or infer support from internal APIs.
+There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable; `path` narrows the tracked Git diff to one literal path. One explicitly named untracked UTF-8 file with interior spaces but without quotes, control whitespace or leading/trailing whitespace in its path can be reviewed as added text when it fits 3200 lines, 12000 characters per 200-line page and the diff budget; every page must match the source digest, which is reported. Unsupported encodings and bare carriage returns are rejected. Other untracked files remain excluded; `review_scope_complete=false` means coverage is incomplete or unproven. Do not invent verification receipts or infer support from internal APIs.
+
+A RAG fingerprint mismatch blocks startup. Preserve the database and its WAL/SHM files while the service is stopped, then perform an explicit offline rebuild from authorized source data; never silently replace a nonempty index or claim data preservation without verification.
+
+Semantic review is advisory. A finding is source-grounded only when its path, post-image line and exact `citation.quote` match the supplied bounded diff. Missing or unstructured citations are marked unusable; even grounded citations do not verify the model's conclusion.
 
 ## Development workflow (binding)
 

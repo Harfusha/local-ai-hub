@@ -85,7 +85,7 @@ def test_auto_start_timeout_terminates_and_reaps_only_its_child(tmp_path, monkey
 
 def test_auto_start_initial_health_probe_preserves_startup_budget(tmp_path, monkeypatch):
     client = _client(tmp_path)
-    client.startup_wait = 0.2
+    client.startup_wait = 1.0
     client.health_timeout = 0.2
     probe_timeouts = []
     launched = []
@@ -117,8 +117,8 @@ def test_auto_start_initial_health_probe_preserves_startup_budget(tmp_path, monk
     monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
     monkeypatch.setattr(client_module, "terminate_tree", lambda *_args, **_kwargs: None)
 
-    assert client.ensure_server(timeout=0.2) is False
-    assert probe_timeouts[0] <= 0.051
+    assert client.ensure_server(timeout=1.0) is False
+    assert probe_timeouts[0] <= 0.251
     assert launched == [child]
 
 

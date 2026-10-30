@@ -1,5 +1,7 @@
 # Audit Remediation Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **Current acceptance:** [short main-owned status](local-ai-hub-current-status.md). Historical candidate and owner statements below are retained evidence, not the current release verdict.
 
 > **2026-10-23 ownership and remaining-work update:** main chat `01a15ec3-cf4b-7fc0-b81a-0ae7446ff8ff` has taken over all Git/CPU/runtime work. The former integrator was stopped and handed off at master `1e54a5e2`. Follow [the complete takeover plan](2026-10-23-main-chat-takeover.md) for the effective goal, current evidence, every F01–F24/R01–R16 gate and remaining acceptance. Earlier owner assignments and candidate summaries below are historical; retain them as evidence, not current production acceptance.

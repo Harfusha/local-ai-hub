@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "case_id": "091",
+  "fixture_revision": "case-091-v1",
+  "entry_point": "zadani.md",
+  "workspace": "copy; operator supplies a new disposable absolute root",
+  "server": "none for seed oracle; real delegated workflow requires its own authorized Hub sandbox",
+  "token": "none for the seed oracle; use sandbox credentials if the real workflow requires them",
+  "expected_side_effects": "Python and Node execute only in disposable copy",
+  "cleanup": "operator removes only its verified disposable root after preserving evidence",
+  "runtime_acceptance": false,
+  "limitations": "no real agent delegation or integration is established",
+  "kind": "synthetic-disposable-source",
+  "oracle": "oracle_091.py",
+  "seed_expectation": "backend and frontend each violate the contract"
+}

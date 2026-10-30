@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "case_id": "090",
+  "fixture_revision": "case-090-v1",
+  "entry_point": "zadani.md",
+  "workspace": "copy; operator supplies a new disposable absolute root",
+  "server": "seed oracle starts a loopback HTTP server on an ephemeral port; it is not a Hub",
+  "token": "none for the seed oracle; real Hub workflow requires its own authorized sandbox configuration",
+  "expected_side_effects": "loopback HTTP on ephemeral port; no persistent state",
+  "cleanup": "operator removes only its verified disposable root after preserving evidence",
+  "runtime_acceptance": false,
+  "limitations": "tool adapter is a fixture; no running Hub acceptance",
+  "kind": "synthetic-disposable-source",
+  "oracle": "oracle_090.py",
+  "seed_expectation": "seed rejects nested contract and accepts retired flat form"
+}

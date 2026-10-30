@@ -1,0 +1,57 @@
+# Evaluation Fixtures Implementation Plan
+
+**Goal:** Provide reproducible, isolated inputs for the blocked evaluation cases and retain authentic evidence boundaries.
+
+**Architecture:** Store inert seed sources and per-case manifests in `docs/agent-evaluation/fixtures/`. Run agents only against disposable copies. Sandbox cases additionally require isolated services, state and genuine verification producers; fixture checks do not substitute for runtime acceptance.
+
+**Tech stack:** Python 3.11+, standard library, pytest and the existing Local AI Hub APIs.
+
+**Spec:** `docs/agent-evaluation/prompts.md` and `docs/agent-evaluation/evaluation-key.md`.
+
+## Global constraints
+
+- Preserve dirty user files and production state; no synthetic receipts or inferred live-process identity.
+- Each case records its seed revision, workspace, actual commands, failure and repair evidence.
+- Intentionally faulty seeds stay outside normal test discovery and are never executed in the tracked source directory.
+
+## Tasks
+
+- [x] 090 seed: old checkpoint contract across server, tool adapter, SDK and prompts; exact specification and loopback HTTP oracle. Agent execution remains separate.
+- [x] 091 seed: independent backend/TypeScript scopes and shared integration oracle. Actual delegated execution remains separate.
+- [ ] 092 seed: a disposable CLI project, output contract, manifest and oracle have been authored. The seed, oracle, actual closed delegation and receipts have not been run or verified.
+- [ ] 093 seed previously produced a real Git conflict; its Git-environment and bare-repository guards were subsequently changed and remain unvalidated. The checkpoint is simulated and a real agent interruption remains separate.
+- [x] 094 seed: deterministic valid, invalid, slow and cancelled inputs; copied seed fails its oracle, and a repaired reference copy passes. Agent execution remains a separate task below.
+- [x] 095 seed: existing disposable target, failpoint before replacement and byte-preservation oracle; repaired reference copy passes. Agent execution remains separate.
+- [ ] 096: wheels and dependencies prepared; isolated 5.0 → 5.1 upgrade and rollback ran after an explicit empty RAG rebuild. Five telemetry rows were preserved; reusable smoke checks listener provenance and owned cleanup. Git-root/environment hardening added afterwards is unvalidated. Nonempty index migration and verification of the final candidate remain outstanding; see `docs/agent-evaluation/fixtures/case-096/observations.md`.
+- [ ] 098: isolated MCP/HTTP/dashboard displayed one real task identity; reusable sandbox runner also supports noninteractive execution and resumed a real task across restart. An authentic validation receipt producer and terminal completion remain outstanding.
+- [ ] 100: seed exists with two reproducible defects, a dirty foreign change and a plan. Git-environment and bare-repository guards were subsequently changed and remain unvalidated. Actual resumable Agent OS task, local model, isolated service sandbox and authentic interruption/completion evidence remain outstanding.
+- [ ] Run each repaired fixture through the intended agent workflow; report fixture results separately from integrated live Hub acceptance.
+
+## Remaining Hub findings
+
+- [x] Wire diff citation grounding into `LocalAIServices.review` and label unstructured `review_diff` output unusable; model conclusions remain advisory. Public-boundary targeted tests pass; integrated/live evidence is still required.
+- [x] Require explicit boolean `success` in each batch result and preserve explicit item IDs. Reconcile with the concurrent batch cancellation change during integration.
+- [ ] Hunk-aware counts for header-like lines were verified through a prior installed sandbox MCP. A later static review identified that Python `splitlines()` also treats Unicode separators inside source content as diff framing; the current source now splits on LF/CRLF and includes unrun regressions for fabricated file headers and citations. The previous wheel predates this change; validate the new candidate and integrated runtime after tests are allowed.
+- [ ] Untracked review supports one explicitly named, bounded UTF-8 file and reports its source digest; other untracked paths remain excluded with incomplete coverage. Later source changes add up to 16 bounded pages with digest consistency checks and interior spaces in path names; they and their regressions are unrun. Quoted paths, control whitespace and files outside the bounds remain excluded. Validate the installed candidate.
+- [ ] Establish an authenticated host-native verification producer or retain fail-closed completion with the exact limitation; do not fabricate broker records.
+- [ ] Verify a successful real closed delegation and actual cancellation on the integrated candidate. Execute-mode selective test/build permissions remain deliberately unsupported until enforced safely.
+- [ ] Integrate the candidate with the separately owned main checkout, preserve existing work, and verify source, listener identity, MCP/HTTP/dashboard and runtime separately.
+
+## Boundaries for remaining work
+
+- The current host command tool supplies an exit status but no trusted `command_execution_record.v2` identity. `record_authentic_native_receipt` checks an existing broker record against task, owner, root and criterion; a caller-provided status cannot replace that record. A supported host attestation must originate at the trusted host boundary and bind the actual command execution and candidate revision before completion may rely on it.
+- `classify_verification_command` classifies evidence, not process capabilities. Do not use its lexical labels as enforcement of selective test/build permissions. Until an enforceable execution boundary exists, reject selective execute-mode permissions before enqueue.
+- RAG startup rejects mismatched index fingerprints, including those affected by application version. Preserve the original database and sidecars; nonempty-index recovery needs an explicit offline plan, source provenance and verification before any replacement. An empty-index sandbox rebuild does not establish nonempty data preservation.
+- The user explicitly instructed that tests must not run in this chat. Keep the final suite, fixture re-runs, integrated acceptance and live validation outstanding until that instruction changes. The separate main checkout remains under another active owner's control.
+
+## Integration preview 2026-10-30
+
+- **Preview stale:** the worktree `services.py` changed after the recorded preview to add paged untracked review and interior-space path handling. Recompute against current bytes before any integration.
+- Main later advanced to `935d3e61ac69b2759be9cf8b2ec09420fa27fda2`; commits since `704f75ff` change only `docs/agent-surface-audit.json` and `docs/release-evidence-5.1.0.md`. Fresh byte hashes of all four overlapping main/worktree paths match the `704f75ff` preview inputs. This does not validate the combined code; recheck before integration.
+- Main subsequently advanced to `704f75ffab4f94c7a0309f3e8084c552d3430d02`. A new disposable three-way preview against that HEAD found the same single `services.py` conflict; `mcp_server.py` and the two prompt files merge without textual conflict. These are the only tracked paths changed on both sides; no untracked worktree files collided with paths in main at the time of inspection. The existing user-owned results document and `config.runtime.toml.lock` remain uncommitted and must be preserved.
+- Current preview: `%TEMP%/local-ai-merge-704-i2xk4yg1/services.integrated-preview.py`, SHA-256 `0347c356c31483df0db957e0d6604860936ce02bf74bb523024e66e8dc505bf2`. It preserves batch cancellation, strict success and skipped IDs, and adds review cancellation checks. This preview is not integrated or validated; recheck exact inputs and ownership before use.
+- Main HEAD `a6593e4a1c9fa973b8292a4517f81874a656d485` differs from worktree baseline `6c7200a9c1b71554ebe368b8722a6757d94c0282` by a documentation commit; both checkouts also contain distinct uncommitted changes. All must be re-read before integration.
+- A disposable three-way preview normalized CRLF to LF solely for comparison. The MCP adapter and both prompt files merge without textual conflict. `services.py` has one conflict: preserve the main checkout's cancellation result and the worktree's strict boolean-success check together.
+- Semantic interaction: cancellation creates results for unsent batch items; those results must retain the original explicit item IDs. Prepared regression `test_cancelled_batch_preserves_ids_for_unsent_items` has not been run and relies on the main checkout's cancellation implementation. A candidate resolution exists only in `%TEMP%/local-ai-merge-preview-acp5e0ef/services.resolution-with-cancel-ids-preview.py`, SHA-256 `8d09386f8325054abfdbff3befc497d9f1d5d2bc71974951772e79fbd09400b9`; it is not integrated or validated.
+- The integrated preview also shows that cancellation during diff collection can otherwise produce a successful AST result. Prepared unrun regression `test_ast_review_cancelled_during_diff_collection_does_not_succeed` and a preview with cancellation checks plus batch-ID preservation are in `%TEMP%/local-ai-merge-preview-acp5e0ef/services.integrated-preview.py`, SHA-256 `0347c356c31483df0db957e0d6604860936ce02bf74bb523024e66e8dc505bf2`. Neither is validated; other cancellation boundaries still require review.
+- Preview inputs: main `services.py` SHA-256 `f7b07a1e1c4c22b60f26b471a1ae0429a7c214e2fb8d7d0044383664ef5f324e`, worktree `services.py` SHA-256 `2946dc99e98bda318a83ac22c1b92fefdf906b7ab07170b6b6ac5a931eff8820`. Never apply a stale preview to changed files; recompute it under exclusive ownership.

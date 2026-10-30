@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import unittest
 from unittest.mock import MagicMock
@@ -89,6 +90,18 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         self.assertEqual(calls[0]["context"], diff_text)
         self.assertEqual(calls[0]["complexity"], "fast")
         self.assertEqual(result["diff"]["review_chunks"], 1)
+        self.assertFalse(result["review_consistency"]["usable"])
+        self.assertFalse(result["review_consistency"]["semantic_truth_verified"])
+        self.assertTrue(result["advisory_only"])
+
+    def test_structured_single_diff_review_grounds_exact_citation(self):
+        diff_text = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+        services = self._services(diff_text, estimate_tokens(diff_text), changed_files=['a.py'])
+        report = {'verdict':'fail', 'findings':[{'citation':{'path':'a.py', 'line':1, 'quote':'new'}}]}
+        services.delegate = lambda payload: {'success':True, 'text':'SUMMARY: One issue.\n```json\n'+json.dumps(report)+'\n```', 'model':'3b'}
+        result = LocalAIServices.review_diff(services, {'root':'.'})
+        self.assertTrue(result['review_consistency']['usable'])
+        self.assertFalse(result['review_consistency']['semantic_truth_verified'])
 
     def test_malformed_model_text_is_not_reported_as_success(self):
         diff_text = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"

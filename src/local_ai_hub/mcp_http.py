@@ -85,9 +85,17 @@ class _DisconnectCancellation:
             if disconnected.result()["type"] != "http.disconnect":
                 await task
                 return
-            cancel_body = json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
-                                      "params": {"requestId": request_id, "reason": "HTTP client disconnected"}},
-                                     separators=(",", ":")).encode()
+            cancel_body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {
+                        "requestId": request_id,
+                        "reason": "HTTP client disconnected",
+                    },
+                },
+                separators=(",", ":"),
+            ).encode()
             cancel_scope = dict(scope)
             cancel_scope["headers"] = [(k, v) for k, v in headers if k.lower() != b"content-length"] + [
                 (b"content-length", str(len(cancel_body)).encode())]

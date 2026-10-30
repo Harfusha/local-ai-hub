@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "092",
+  "fixture_revision": "case-092-v1",
+  "entry_point": "prepare.py",
+  "workspace": "new disposable Git repository outside any other Git repository; operator supplies an absolute root",
+  "server": "none for the seed; closed delegation requires a separately authorized Hub sandbox",
+  "token": "none for the seed; use the isolated Hub sandbox's own credentials when required",
+  "expected_side_effects": "creates an isolated Git seed commit; delegated task writes only to caller-supplied paths within its disposable workspace",
+  "cleanup": "terminate any owned sandbox processes, retain evidence, then remove only the verified disposable root",
+  "runtime_acceptance": false,
+  "limitations": "seed and oracle have not been run; real closed delegation, application and receipt remain unverified",
+  "kind": "synthetic-disposable-source",
+  "oracle": "oracle_092.py",
+  "validation_command": "python -m unittest oracle_092",
+  "seed_expectation": "the --output argument is missing"
+}

@@ -2179,7 +2179,7 @@ class LocalAIServices:
             return {"success": False, "error": "instructions must be a string"}
         payload = {key: value for key, value in args.items() if key not in {"code", "instructions"}}
         payload["task_type"] = "review"
-        payload["task"] = instructions
+        payload["task"] = instructions + "\nFor each finding, cite the file path, post-image line number, and the exact full source line as citation.quote."
         payload["context"] = code
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
@@ -2189,7 +2189,7 @@ class LocalAIServices:
             return result
         from .semantic_quality import assess_review_consistency, constrain_semantic_quality
         result = dict(result)
-        quality = assess_review_consistency(result, args.get("changed_paths", ()))
+        quality = assess_review_consistency(result, args.get("changed_paths", ()), source_diff=code)
         result["advisory_only"] = True
         result["review_consistency"] = quality
         result["semantic_quality"] = constrain_semantic_quality(quality, result)
@@ -5009,10 +5009,11 @@ class LocalAIServices:
             "impact", root, {"base": base, "staged": staged, "max_symbols": max_symbols, "max_dependents": max_dependents}, compute,
         )
 
-    def repo_diff(self, root: str, base: str = "HEAD", staged: bool = False, max_tokens: int = 10000) -> dict[str, Any]:
+    def repo_diff(self, root: str, base: str = "HEAD", staged: bool = False, max_tokens: int = 10000,
+                  *, path: str | None = None) -> dict[str, Any]:
         return self._repo_cached(
-            "diff", root, {"base": base, "staged": staged, "max_tokens": max_tokens},
-            lambda: self.repo_tools.git_diff(root, base, staged, max_tokens),
+            "diff", root, {"base": base, "staged": staged, "max_tokens": max_tokens, "path": path},
+            lambda: self.repo_tools.git_diff(root, base, staged, max_tokens, path=path),
         )
 
     @staticmethod
@@ -6968,17 +6969,79 @@ class LocalAIServices:
             diff = self.repo_diff(
                 str(args.get("root", ".")), str(args.get("base", "HEAD")), bool(args.get("staged", False)),
                 max_tokens=int(args.get("diff_tokens", self.config.get("token_saving", {}).get("max_diff_tokens", 8000))),
+                path=args.get("path"),
             )
+        if cancelled():
+            return cancelled_result()
         if not diff.get("success"):
             return diff
+        # Git omits untracked files. An explicitly named file can be read via
+        # bounded source pages only while every page describes the same bytes.
+        path = args.get("path")
+        excluded = diff.get("untracked_files_excluded", [])
+        if (not diff.get("diff", "").strip() and isinstance(path, str)
+                and path.replace("\\", "/") in excluded
+                and len(excluded) == 1 and diff.get("untracked_inventory_complete") is True
+                and path == path.strip()
+                and not any((char.isspace() and char != " ") or char == '"' for char in path)):
+            from .source_slice import read_source_slice
+            requested_path = path.replace("\\", "/")
+            root = str(args.get("root", "."))
+            source = read_source_slice(root, requested_path, line_end=200, max_chars=12000)
+            total = source.get("total_lines")
+            digest = source.get("file_sha256")
+            parts = []
+            valid = (source.get("success") is True and source.get("complete") is True
+                     and type(total) is int and 0 <= total <= 3200
+                     and isinstance(digest, str) and len(digest) == 64
+                     and source.get("relative_path") == requested_path
+                     and isinstance(source.get("text"), str))
+            if valid:
+                parts.append(source["text"])
+                for start in range(201, total + 1, 200):
+                    page = read_source_slice(root, requested_path, line_start=start, line_end=start + 199, max_chars=12000)
+                    if (page.get("success") is not True or page.get("complete") is not True
+                            or page.get("total_lines") != total or page.get("file_sha256") != digest
+                            or page.get("relative_path") != requested_path or not isinstance(page.get("text"), str)):
+                        valid = False
+                        break
+                    parts.append(page["text"])
+            source_text = "".join(parts)
+            if valid and "\r" not in source_text.replace("\r\n", "\n"):
+                lines = source_text.replace("\r\n", "\n").split("\n")
+                if lines[-1] == "":
+                    lines.pop()
+                addition = "".join("+" + line + "\n" for line in lines)
+                added_diff = (f"diff --git a/{requested_path} b/{requested_path}\n"
+                              f"--- /dev/null\n+++ b/{requested_path}\n@@ -0,0 +1,{len(lines)} @@\n" + addition)
+                diff_budget = int(args.get("diff_tokens", self.config.get("token_saving", {}).get("max_diff_tokens", 8000)))
+                if not fit_text(added_diff, diff_budget).truncated:
+                    diff = {**diff, "diff": added_diff, "changed_files": [requested_path],
+                            "untracked_files_excluded": [], "review_source_sha256": digest}
+        if cancelled():
+            return cancelled_result()
         if not diff.get("diff", "").strip():
+            excluded = diff.get("untracked_files_excluded", [])
+            complete = diff.get("untracked_inventory_complete", False)
+            if excluded or complete is not True:
+                return {"success": False, "error": "No tracked diff to review; untracked files are excluded or their inventory is incomplete.",
+                        "changed_files": [], "diff_truncated": False, "untracked_files_excluded": excluded,
+                        "untracked_inventory_complete": complete, "review_scope_complete": False}
             return {"success": True, "text": "No diff to review.", "changed_files": [], "diff_truncated": False}
+        provided_diff = isinstance(diff_text, str) and bool(diff_text.strip())
+        excluded = diff.get("untracked_files_excluded", [])
+        inventory_complete = None if provided_diff else diff.get("untracked_inventory_complete", False)
+        scope_complete = not provided_diff and not excluded and inventory_complete is True and not bool(diff.get("truncated", False))
         det_diff = {}
         if self.deterministic is not None:
             try:
                 det_diff = self.deterministic.diff_facts(str(diff.get("diff", "")))
             except Exception:
                 det_diff = {}
+        if isinstance(diff_text, str) and diff_text.strip():
+            parsed_files = det_diff.get("files") if isinstance(det_diff, dict) else None
+            if isinstance(parsed_files, list) and all(isinstance(path, str) and path for path in parsed_files):
+                diff["changed_files"] = parsed_files
         instructions = str(args.get("instructions", "Review this git diff for actionable defects, regressions, security/concurrency issues and missing tests. Cite changed files/hunks."))
         det_hint = ""
         if det_diff:
@@ -7006,6 +7069,8 @@ class LocalAIServices:
                 det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
 
         if args.get("mode") == "ast" or str(args.get("instructions", "")).strip().lower() == "ast":
+            if cancelled():
+                return cancelled_result()
             count_fields = ("additions", "deletions", "hunks")
             if not all(type(det_diff.get(field)) is int and det_diff[field] >= 0 for field in count_fields):
                 return {"success": False, "mode": "ast", "changed_files": diff.get("changed_files", []),
@@ -7017,6 +7082,10 @@ class LocalAIServices:
                 "diff_facts": det_diff,
                 "breaking_changes": det_diff.get("breaking_changes", []),
                 "regressions": regressions,
+                "untracked_files_excluded": excluded,
+                "untracked_inventory_complete": inventory_complete,
+                "review_scope_complete": scope_complete,
+                **({"review_source_sha256": diff["review_source_sha256"]} if "review_source_sha256" in diff else {}),
                 "summary": f"AST Diff Summary: {len(diff.get('changed_files', []))} files, {det_diff['additions']} additions, {det_diff['deletions']} deletions across {det_diff['hunks']} hunks. {len(det_diff.get('breaking_changes', []))} potential breaking changes.",
             }
 
@@ -7060,7 +7129,11 @@ class LocalAIServices:
         )
         effective_prompt_budget_tokens = min(configured_input_budget, profile.prompt_budget_tokens)
         task_budget = max(128, int(effective_prompt_budget_tokens * 0.15))
-        review_task = fit_text(instructions + det_hint, task_budget).text
+        review_task = fit_text(
+            instructions + "\nReturn one SUMMARY: line followed by a fenced JSON object with verdict and findings. "
+            "Each finding must cite path, post-image line, and exact full source line as citation.quote."
+            + det_hint, task_budget,
+        ).text
         prompt_overhead = estimate_tokens(f"TASK:\n{review_task}\n\nCONTEXT:\n") + 64
         synthesis_task = fit_text(
             "SYNTHESIZE REVIEW FINDINGS ONLY. Merge duplicate findings and keep distinct actionable findings. "
@@ -7338,6 +7411,20 @@ class LocalAIServices:
             "review_model": review_model,
             "largest_review_chunk_tokens": largest_review_chunk_tokens,
         }
+        result["untracked_files_excluded"] = excluded
+        result["untracked_inventory_complete"] = inventory_complete
+        result["review_scope_complete"] = scope_complete
+        if "review_source_sha256" in diff:
+            result["review_source_sha256"] = diff["review_source_sha256"]
+        from .semantic_quality import assess_review_consistency, constrain_semantic_quality
+        quality = assess_review_consistency(result, diff.get("changed_files", ()), source_diff=diff_text)
+        result["advisory_only"] = True
+        result["review_consistency"] = quality
+        result["semantic_quality"] = constrain_semantic_quality(quality, result)
+        if not quality["usable"]:
+            warning = f"advisory review requires verification: {quality['reason']}"
+            result["quality_warning"] = "; ".join(filter(None, (result.get("quality_warning"), warning)))
+            result.setdefault("bypass_reason", quality["reason"])
         return result
 
     def compress(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
@@ -8257,6 +8344,18 @@ class LocalAIServices:
                 "rejected_indices_truncated": input_count > 64,
                 "results": [],
             }
+        item_ids: set[str] = set()
+        for item in tasks:
+            if isinstance(item, dict) and "id" in item:
+                identity = item["id"]
+                if (not isinstance(identity, str) or not identity or identity != identity.strip()
+                        or len(identity) > 160 or "\x00" in identity or identity in item_ids):
+                    return {"success": False, "error": "batch item ids must be unique non-empty canonical strings",
+                            "terminal": True, "retryable": False, "request_not_sent": True,
+                            "input_count": input_count, "accepted_count": 0, "rejected_count": input_count,
+                            "rejected_indices": list(range(input_count)),
+                            "results": []}
+                item_ids.add(identity)
         prepared: list[tuple[int, str, dict[str, Any]]] = []
         for i, raw in enumerate(tasks):
             item = raw if isinstance(raw, dict) else {"task": str(raw)}
@@ -8291,14 +8390,20 @@ class LocalAIServices:
                     "success": False,
                     "error": f"batch item failed ({type(exc).__name__})",
                 }
+            if not isinstance(results[i], dict) or type(results[i].get("success")) is not bool:
+                results[i] = {"success": False, "error": "batch item returned an invalid result"}
+            if "id" in item:
+                results[i] = {**results[i], "id": item["id"]}
             report_job_progress(100.0 * len(results) / len(prepared), f"batch:{len(results)}/{len(prepared)}")
         was_cancelled = cancelled()
         if was_cancelled:
             for i in range(input_count):
                 if i not in results:
                     results[i] = {"success": False, "cancelled": True, "reason": "cancelled", "request_not_sent": True}
+                    if isinstance(tasks[i], dict) and "id" in tasks[i]:
+                        results[i]["id"] = tasks[i]["id"]
         return {
-            "success": not was_cancelled and all(r.get("success", False) for r in results.values()),
+            "success": not was_cancelled and all(r["success"] is True for r in results.values()),
             **({"cancelled": True} if was_cancelled else {}),
             "input_count": input_count,
             "accepted_count": input_count,

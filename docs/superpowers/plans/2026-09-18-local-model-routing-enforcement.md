@@ -1,5 +1,7 @@
 # Local-model routing enforcement Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make semantic work visibly and measurably hand off to `local_ai_task` after deterministic evidence, while keeping cloud-agent coordination and verification intact.

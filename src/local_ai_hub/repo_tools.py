@@ -2776,9 +2776,18 @@ class RepositoryTools:
         snapshot = self.git_snapshot(str(repo))
         changed_files = list(dict.fromkeys(path_names + changed))
         changed_paths = changed_files if revision_mode or path else list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
+        untracked: list[str] = []
+        if not staged and not revision_mode:
+            path_filter = path.replace("\\", "/").rstrip("/") if path else ""
+            untracked = sorted(
+                item for item, state in snapshot.status.items()
+                if state == "untracked" and (not path_filter or item == path_filter or item.startswith(path_filter + "/"))
+            )
         return {
             "success": True, "root": str(repo), "diff": text, "changed_files": changed_files,
             "changed_paths": changed_paths, "revision": snapshot.revision,
+            "untracked_files_excluded": untracked[:100],
+            "untracked_inventory_complete": not snapshot.degraded and len(untracked) <= 100,
             "repository_revision": snapshot.repository_revision,
             "estimated_tokens": estimate_tokens(text),
             "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),

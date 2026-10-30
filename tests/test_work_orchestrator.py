@@ -253,6 +253,204 @@ def test_work_id_is_bounded_before_persistence(tmp_path):
         wo.close()
 
 
+@pytest.mark.parametrize("extra", [
+    {},
+    {"acceptance_criteria": ["done"], "budget": {"max_steps": 17}},
+    {"acceptance_criteria": ["done"], "budget": {"max_steps": True}},
+    {"acceptance_criteria": ["done"], "budget": []},
+    {"acceptance_criteria": ["done"], "budget": None},
+    {"acceptance_criteria": ["done"], "budget": {"max_tokens": True}},
+    {"acceptance_criteria": ["done"], "budget": {"max_steps": 2, "max_edits": 3}},
+    {"acceptance_criteria": ["done"], "budget": {"max_commands": -1}},
+    {"acceptance_criteria": ["done"], "budget": {"max_llm_calls": False}},
+    {"acceptance_criteria": ["done"], "budget": {"max_llm_calls": 0}},
+    {"acceptance_criteria": ["done"], "budget": {"max_llm_calls": None}},
+    {"acceptance_criteria": ["done"], "budget": {"max_seconds": 29}},
+    {"acceptance_criteria": ["done"], "budget": {"max_seconds": 7201}},
+    {"acceptance_criteria": ["done"], "budget": {"max_seconds": 1.5}},
+    {"acceptance_criteria": ["done"], "budget": {"max_time": 50}},
+    {"acceptance_criteria": [42]},
+    {"acceptance_criteria": ["done"], "permissions": {"edit": "false"}},
+    {"acceptance_criteria": ["done"], "permissions": {"network": 0}},
+    {"acceptance_criteria": ["done"], "permissions": {"unknown": False}},
+    {"acceptance_criteria": ["done"], "permissions": None},
+    {"acceptance_criteria": ["done"], "mode": False},
+    {"acceptance_criteria": ["done"], "mode": None},
+    {"acceptance_criteria": ["done"], "mode": ""},
+    {"acceptance_criteria": ["done"], "permissions": {"read": False}},
+    {"acceptance_criteria": ["done"], "permissions": {"tests": False}},
+    {"acceptance_criteria": ["done"], "permissions": {"build": False}},
+    {"acceptance_criteria": ["done"], "keep_failed_workspace": "false"},
+    {"acceptance_criteria": ["done"], "keep_failed_workspace": None},
+    {"acceptance_criteria": ["done"], "keep_failed_workspace": 0},
+])
+def test_submit_rejects_invalid_contract_before_enqueue(tmp_path, monkeypatch, extra):
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, "_ensure_workers", lambda: None)
+    try:
+        result = wo.submit({"root": str(tmp_path.resolve()), "task": "inspect", **extra})
+        assert result["success"] is False
+        assert result.get("terminal") is True
+        assert wo.stats()["states"] == {}
+    finally:
+        wo.close()
+
+
+def test_submit_default_step_budget_is_accepted_by_planner(tmp_path, monkeypatch):
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, "_ensure_workers", lambda: None)
+    try:
+        result = wo.submit({"root": str(tmp_path.resolve()), "task": "inspect", "acceptance_criteria": ["done"]})
+        assert result["success"] is True
+        payload = json.loads(wo._row(result["work_id"])["payload_json"])
+        assert 1 <= payload["budget"]["max_steps"] <= 16
+        assert wo._plan(str(tmp_path), "inspect", payload, {})["steps"]
+    finally:
+        wo.close()
+
+
+@pytest.mark.parametrize('task', [None, False, 123, [], 'bad\x00task', 'x' * 24001], ids=['null', 'bool', 'number', 'list', 'nul', 'oversized'])
+def test_submit_rejects_invalid_task_before_enqueue(tmp_path, monkeypatch, task):
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, "_ensure_workers", lambda: None)
+    try:
+        result = wo.submit({"root": str(tmp_path.resolve()), "task": task, "acceptance_criteria": ["done"]})
+        assert result["success"] is False
+        assert wo.stats()["states"] == {}
+    finally:
+        wo.close()
+
+
+def test_submit_preserves_explicit_planner_budgets(tmp_path, monkeypatch):
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, "_ensure_workers", lambda: None)
+    budget = {"max_steps": 8, "max_edits": 0, "max_commands": 1, "max_tokens": 512, "max_llm_calls": 2, "max_seconds": 60}
+    try:
+        result = wo.submit({"root": str(tmp_path.resolve()), "task": "inspect", "acceptance_criteria": ["done"], "budget": budget})
+        assert result["success"] is True
+        stored = json.loads(wo._row(result["work_id"])["payload_json"])["budget"]
+        assert all(stored[key] == value for key, value in budget.items())
+    finally:
+        wo.close()
+
+
+def test_submit_preserves_explicit_permission_denial(tmp_path, monkeypatch):
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, '_ensure_workers', lambda: None)
+    try:
+        result = wo.submit({'root':str(tmp_path.resolve()), 'task':'inspect', 'acceptance_criteria':['done'], 'permissions':{'edit':False}})
+        assert result['success'] is True
+        payload = json.loads(wo._row(result['work_id'])['payload_json'])
+        assert payload['permissions']['edit'] is False
+    finally:
+        wo.close()
+
+
+def test_plan_only_accepts_disabled_validation_permissions(tmp_path, monkeypatch):
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, '_ensure_workers', lambda: None)
+    try:
+        result = wo.submit({'root':str(tmp_path.resolve()), 'task':'inspect', 'acceptance_criteria':['done'], 'mode':'plan', 'permissions':{'tests':False, 'build':False}})
+        assert result['success'] is True
+    finally:
+        wo.close()
+
+
+@pytest.mark.parametrize('permissions, error', [
+    ({'read':False, 'edit':True, 'tests':True, 'build':True, 'network':False, 'git_commit':False, 'create':True, 'delete':True}, 'read permission'),
+    ({'read':True, 'edit':True, 'tests':False, 'build':True, 'network':False, 'git_commit':False, 'create':True, 'delete':True}, 'test and build'),
+    ({'read':True}, 'contract is invalid'),
+])
+def test_resumed_work_rechecks_permissions_before_repository_access(tmp_path, permissions, error):
+    wo = object.__new__(WorkOrchestrator)
+    row = {'work_id':'work', 'root':str(tmp_path), 'task':'inspect', 'payload_json':json.dumps({'budget':{}, 'mode':'execute', 'permissions':permissions, 'keep_failed_workspace':False})}
+    with pytest.raises(PermissionError, match=error):
+        wo._execute_fenced(row, None, 10)
+
+
+def test_resumed_work_rejects_nonstring_mode_before_repository_access(tmp_path):
+    wo = object.__new__(WorkOrchestrator)
+    permissions = {'read':True, 'edit':True, 'tests':True, 'build':True, 'network':False, 'git_commit':False, 'create':True, 'delete':True}
+    row = {'work_id':'work', 'root':str(tmp_path), 'task':'inspect', 'payload_json':json.dumps({'budget':{}, 'mode':[], 'permissions':permissions, 'keep_failed_workspace':False})}
+    with pytest.raises(PermissionError, match='contract is invalid'):
+        wo._execute_fenced(row, None, 10)
+
+
+def test_resumed_work_rejects_nonboolean_retention_before_repository_access(tmp_path):
+    wo = object.__new__(WorkOrchestrator)
+    permissions = {'read':True, 'edit':True, 'tests':True, 'build':True, 'network':False, 'git_commit':False, 'create':True, 'delete':True}
+    row = {'work_id':'work', 'root':str(tmp_path), 'task':'inspect', 'payload_json':json.dumps({'budget':{}, 'mode':'execute', 'permissions':permissions, 'keep_failed_workspace':'false'})}
+    with pytest.raises(PermissionError):
+        wo._execute_fenced(row, None, 10)
+
+
+def test_mcp_work_preserves_explicit_null_budget_for_server_validation(monkeypatch):
+    from local_ai_hub import mcp_server
+    calls = []
+    client = mcp_server.HubClient(auto_start=False)
+    monkeypatch.setattr(mcp_server.FEATURES, 'work_orchestrator', True)
+    monkeypatch.setattr(mcp_server, 'CLIENT', client)
+    monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kwargs: calls.append(payload) or {'success':False, 'error':'invalid budget'})
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
+    token = mcp_server._CURRENT_MCP_CALL_ARGUMENTS.set(('local_ai_work', {'action':'submit', 'budget':None}))
+    try:
+        mcp_server.local_ai_work(action='submit', budget=None)
+    finally:
+        mcp_server._CURRENT_MCP_CALL_ARGUMENTS.reset(token)
+    assert calls[0]['budget'] is None
+
+
+@pytest.mark.parametrize('field', ['budget', 'permissions'])
+def test_explicit_null_object_is_rejected_at_registered_mcp_boundary(tmp_path, monkeypatch, field):
+    import asyncio
+    import mcp.types as mcp_types
+    from local_ai_hub import mcp_server
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, '_ensure_workers', lambda: None)
+    client = mcp_server.HubClient(auto_start=False)
+    monkeypatch.setattr(mcp_server.FEATURES, 'work_orchestrator', True)
+    monkeypatch.setattr(mcp_server, 'CLIENT', client)
+    monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kwargs: wo.submit(payload))
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
+    request = mcp_types.CallToolRequest(method='tools/call', params=mcp_types.CallToolRequestParams(
+        name='local_ai_work', arguments={'action':'submit', 'root':str(tmp_path.resolve()), 'task':'inspect', 'acceptance_criteria':['done'], field:None}))
+    try:
+        result = asyncio.run(mcp_server.mcp._mcp_server.request_handlers[mcp_types.CallToolRequest](request)).root
+        assert result.structuredContent['success'] is False
+        assert wo.stats()['states'] == {}
+    finally:
+        wo.close()
+
+
+def test_mcp_work_does_not_promote_scalar_acceptance_criteria(tmp_path, monkeypatch):
+    from local_ai_hub import mcp_server
+    wo = WorkOrchestrator({"work_orchestrator": {"enabled": True}}, tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, '_ensure_workers', lambda: None)
+    client = mcp_server.HubClient(auto_start=False)
+    monkeypatch.setattr(mcp_server.FEATURES, 'work_orchestrator', True)
+    monkeypatch.setattr(mcp_server, 'CLIENT', client)
+    monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kwargs: wo.submit(payload))
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
+    try:
+        result = mcp_server.local_ai_work(action='submit', root=str(tmp_path.resolve()), task='inspect', acceptance_criteria='done')
+        assert result['success'] is False
+        assert wo.stats()['states'] == {}
+    finally:
+        wo.close()
+
+
+def test_fallback_plan_inspects_the_actual_task(tmp_path, monkeypatch):
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(wo, "_ask", lambda *_args, **_kwargs: {"success": True, "text": "not a plan"})
+    try:
+        task = "Add --output to the CSV export CLI"
+        plan = wo._plan(str(tmp_path), task, {"acceptance_criteria": ["output is saved"]}, {})
+        assert plan["steps"][0]["kind"] == "inspect"
+        assert plan["steps"][0]["task"] == task
+    finally:
+        wo.close()
+
+
 def test_patch_paths_rejects_traversal_and_absolute_paths():
     with pytest.raises(ValueError):
         _patch_paths("--- a/../secret\n+++ b/../secret\n@@ -1 +1 @@\n-x\n+y\n")
@@ -308,7 +506,7 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts, verification_store=verification_store)
     try:
         sub = wo.submit({"root": str(root.resolve()), "task": "change old to new", "task_id": task_id, "acceptance_criteria": ["a.txt contains new"], "response_profile": "compact"})
-        res = wait_terminal(wo, sub["work_id"])
+        res = wait_terminal(wo, sub["work_id"], timeout=30)
         assert res["status"] == "complete", res
         assert (root / "a.txt").read_text(encoding="utf-8") == "new\n"
         assert res["changed_files"] == ["a.txt"]

@@ -1,0 +1,5 @@
+# Fixture 098
+
+Připrav nový disposable root se samostatným `workspace`, `state` a `venv`, nainstaluj z offline wheelhouse pouze zamýšlený Hub. `workspace` musí být autorizovaný lokální Git root. Potom v interaktivním terminálu spusť `ROOT/venv/Scripts/python.exe -I run.py ROOT`; na Windows použij přesnou cestu k interpretu venv. Skript spustí izolovaný loopback supervisor, vytvoří jedinou Agent OS úlohu přes skutečné MCP stdio a získá stejné ID přes HTTP. V otevřeném dashboardu ověř Tasks, ID, stav a fázi; po kontrole ukonči Enterem. Pro pokračování existující úlohy použij `--task-id ID`, nikdy nevytvářej novou po nejasném výsledku.
+
+Skript záměrně nevyrábí receipt. Pro dokončení scénáře je nutný skutečný autorizovaný producent validačního důkazu a shoda stavu/evidence ve všech vrstvách. Není prokázáno release acceptance ani kvalita modelu. State a venv slouží pouze tomuto scénáři; sandbox nesmí sdílet stav produkční instalace. MCP/HTTP na tomto explicitně izolovaném loopback sandboxu mají prázdný token.

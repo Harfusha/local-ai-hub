@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "case_id": "094",
+  "fixture_revision": "case-094-v1",
+  "entry_point": "batch_export.py",
+  "workspace": "copy; operator supplies a new disposable absolute root",
+  "server": "none for seed oracle; real agent workflow requires its own authorized Hub sandbox",
+  "token": "none for the seed oracle; use sandbox credentials if the real workflow requires them",
+  "expected_side_effects": "bounded synthetic export calls inside copied fixture",
+  "cleanup": "operator removes only its verified disposable root after preserving evidence",
+  "runtime_acceptance": false,
+  "limitations": "no running Hub acceptance",
+  "kind": "synthetic-disposable-source",
+  "oracle": "oracle_094.py",
+  "seed_expectation": "three oracle failures before repair"
+}

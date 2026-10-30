@@ -1509,9 +1509,9 @@ def test_work_accepts_id_alias_and_goal():
         assert len(calls) >= 1
         assert calls[-1][0][1].get("work_id") == "W-123"
 
-        # submit with goal= and single string acceptance_criteria
+        # submit with goal= and canonical array acceptance_criteria
         mc.post.return_value = {"success": True, "work_id": "W-124"}
-        res_sub = local_ai_work(action="submit", goal="Build parser", acceptance_criteria="All tests pass")
+        res_sub = local_ai_work(action="submit", goal="Build parser", acceptance_criteria=["All tests pass"])
         assert res_sub.get("success") is True
         work_calls = [c for c in mc.post.call_args_list if "/api/work-orders" in str(c)]
         payload = work_calls[-1][0][1]
