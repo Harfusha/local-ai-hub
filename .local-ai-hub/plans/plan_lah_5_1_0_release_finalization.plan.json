@@ -8,18 +8,18 @@
   "tasks": {
     "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
       "acceptance_criteria": [
-        "CI passes for final pushed master including installer readiness-order fix",
+        "CI passes for final pushed master with installer startup-order and stale-PID stop fixes",
         "Clean release check and isolated wheel smoke pass for final pushed commit",
         "Published v5.1.2 assets and checksums match verified build",
-        "Main Hub setup completes, final restart is healthy, service runs from main checkout, Codex MCP and global/project instructions are verified; Gemini remains deferred"
+        "Main setup applies instructions/MCP, final restart is healthy, service runs from main checkout, Codex MCP and dashboard work; Gemini remains deferred"
       ],
       "accountable_role": "Codex",
-      "blocker": "Local commit b4890bd contains installer ordering fix; install/application and final runtime checks are next. CI #367 run 41102379496 covers only 2a12a6a and is still running; fresh CI for b4890bd is required after push. config.runtime.toml.lock is runtime state and remains uncommitted.",
+      "blocker": "Install attempt at 0672d150 failed safely before source swap: stop_existing_runtime reported hub_stop_unverified because kill_hub treated a dead stale hub.pid as an unverified listener child. Hub was restored online by service.py start. New fix is local, 74 relevant tests pass, and must be committed/pushed before clean-source install. CI #367 covers only 2a12a6a; fresh CI required for final commit. config.runtime.toml.lock remains runtime state and uncommitted.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Committed b4890bd (not pushed yet): starts/reconciles the Hub before agent MCP configuration and refuses to update agent configs if service startup fails. Relevant tests: 73 passed; targeted pyflakes/compileall/diff checks passed. The prior install from 2a12a6a failed at HTTP MCP readiness, then Hub was recovered manually; install must now be rerun from a clean source at b4890bd.",
+      "description": "Commits b4890bd/0672d150 contain the installer ordering fix. A follow-up install exposed a Windows stop bug: after no listener is found, kill_hub reads a stale hub.pid and refuses because the PID is dead and has no verifiable parent. Added a guard to ignore only dead stale listener PIDs while retaining fail-closed handling for live unverified children. 74 related setup/service tests pass; targeted pyflakes, compileall and diff checks pass.",
       "kind": "code",
-      "next_action": "Install/apply b4890bd from a clean temporary source using preserved existing config, verify generated Codex/Gemini instructions and MCP, perform final restart and service/dashboard checks, then push master. Await exact-head CI; complete release asset and wheel checks after green CI.",
+      "next_action": "Commit and push the stale-PID service fix and updated plan. Run setup from a clean source at final HEAD, confirm service stop/start, generated Codex/Gemini MCP and instruction files, perform final restart, verify health/PID/path and dashboard, then wait for exact-head CI and complete release artifact checks. Gemini live use remains deferred.",
       "title": "Complete Local AI Hub 5.1.2 release and live cutover",
       "work_phase": "integration",
       "work_status": "in_progress"

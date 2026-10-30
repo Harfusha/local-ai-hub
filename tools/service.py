@@ -217,7 +217,7 @@ def kill_hub() -> bool:
                 listener_pid = int((STATE / "hub.pid").read_text(encoding="utf-8").strip())
             except (FileNotFoundError, OSError, ValueError):
                 listener_pid = 0
-        if listener_pid > 0 and listener_pid != launcher_pid:
+        if listener_pid > 0 and listener_pid != launcher_pid and pid_alive(listener_pid):
             # On Windows the venv pythonw launcher may own a second interpreter
             # process that hosts the HTTP listener. Stop it only when both its
             # parent and its process identity prove it belongs to this hub.

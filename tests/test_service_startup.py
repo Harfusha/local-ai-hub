@@ -123,6 +123,7 @@ def test_kill_hub_terminates_verified_listener_child_before_launcher(tmp_path, m
     monkeypatch.setattr(service, "STATE", state_dir)
     monkeypatch.setattr(service, "find_listening_pid", lambda _port: listener_pid)
     monkeypatch.setattr(service, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(service, "pid_alive", lambda _pid: True)
     monkeypatch.setattr(
         service,
         "process_parent_pid",
@@ -148,6 +149,44 @@ def test_kill_hub_terminates_verified_listener_child_before_launcher(tmp_path, m
     assert stopped == [listener_pid, launcher_pid]
 
 
+def test_kill_hub_ignores_dead_stale_listener_pid(tmp_path, monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_stale_listener", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    launcher_pid, stale_listener_pid = 101, 202
+    owner = {
+        "pid": launcher_pid,
+        "role": "hub",
+        "state_dir": str(state_dir),
+        "executable": "launcher.exe",
+    }
+    (state_dir / "hub.owner.json").write_text(json.dumps(owner), encoding="utf-8")
+    (state_dir / "hub.pid").write_text(str(stale_listener_pid), encoding="utf-8")
+    monkeypatch.setattr(service, "STATE", state_dir)
+    monkeypatch.setattr(service, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(service, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(service, "pid_alive", lambda pid: pid != stale_listener_pid)
+    monkeypatch.setattr(
+        service,
+        "process_parent_pid",
+        lambda _pid: pytest.fail("dead stale listener PID must not be inspected"),
+    )
+    stopped = []
+    monkeypatch.setattr(
+        service,
+        "terminate_owned_process",
+        lambda process_owner, *_args, **_kwargs: stopped.append(process_owner["pid"]) or True,
+    )
+    monkeypatch.setattr(service, "_role_stopped", lambda _role: True)
+
+    assert service.kill_hub() is True
+    assert stopped == [launcher_pid]
+
+
 def test_kill_hub_does_not_signal_unverified_listener_child(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "test_hub_service_unverified_child",
@@ -167,6 +206,7 @@ def test_kill_hub_does_not_signal_unverified_listener_child(tmp_path, monkeypatc
     monkeypatch.setattr(service, "STATE", tmp_path)
     monkeypatch.setattr(service, "find_listening_pid", lambda _port: listener_pid)
     monkeypatch.setattr(service, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(service, "pid_alive", lambda _pid: True)
     monkeypatch.setattr(service, "process_parent_pid", lambda _pid: 303)
     stopped = []
     monkeypatch.setattr(
