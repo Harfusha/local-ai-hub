@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub import __version__
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.embeddings import EmbeddingModel
@@ -229,7 +230,7 @@ def test_post_test_hygiene_allows_tooling_caches_but_not_runtime_db(tmp_path: Pa
 
 
 def test_release_gate_can_bind_expected_tag_version() -> None:
-    ok = run_checks(ROOT, expected_version="5.1.0", post_test=True)
+    ok = run_checks(ROOT, expected_version=__version__, post_test=True)
     assert not [e for e in ok["errors"] if "expected release version" in e]
     bad = run_checks(ROOT, expected_version="v9.9.9", post_test=True)
     assert any("expected release version '9.9.9'" in e for e in bad["errors"])

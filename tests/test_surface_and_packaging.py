@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import tomllib
 from pathlib import Path
 
 from local_ai_hub import __version__
@@ -56,7 +57,8 @@ def test_shipping_agent_policy_advertises_compact_workflow():
 
 
 def test_version_and_disconnect_regressions(tmp_path: Path):
-    assert __version__ == "5.1.0"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert __version__ == project["project"]["version"]
     assert _is_client_disconnect(BrokenPipeError()) is True
     assert _is_client_disconnect(ConnectionResetError()) is True
     assert _is_client_disconnect(ConnectionAbortedError()) is True

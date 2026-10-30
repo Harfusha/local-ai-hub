@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+import tomllib
 
 from local_ai_hub import __version__
 from local_ai_hub.agent_context import ContextCompiler, ContextRequest
@@ -20,7 +21,9 @@ import local_ai_hub.mcp_server as mcp_mod
 
 
 def test_release_version() -> None:
-    assert __version__ == "5.1.0"
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert __version__ == project["project"]["version"]
 
 
 def test_rooted_path_detection_is_host_independent() -> None:
