@@ -124,9 +124,14 @@ def test_startup_lock_survives_stale_mtime_and_recovers_after_owner_exit(tmp_pat
     owner = _start_lock_owner(lock, ready)
     try:
         deadline = time.monotonic() + 5.0
-        while not ready.exists() and owner.poll() is None and time.monotonic() < deadline:
+        marker = ""
+        while owner.poll() is None and time.monotonic() < deadline:
+            if ready.exists():
+                marker = ready.read_text(encoding="utf-8")
+                if marker == "locked":
+                    break
             time.sleep(0.01)
-        assert ready.exists() and ready.read_text(encoding="utf-8") == "locked"
+        assert marker == "locked"
         stale = time.time() - 120.0
         os.utime(lock, (stale, stale))
         assert client_module._acquire_start_lock(lock) is None
