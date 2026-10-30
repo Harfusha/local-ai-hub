@@ -38,7 +38,8 @@ def test_document_ingest_requires_explicit_content_and_does_not_use_query_or_roo
         "error": "content is required for ingest_document",
     }
     assert {key: result[key] for key in expected} == expected
-    assert client.calls == []
+    # Rejected tool calls still emit telemetry; only forbid RAG ingestion.
+    assert all(path != "/api/rag/ingest_document" for path, _, _ in client.calls)
 
 
 def test_document_ingest_maps_explicit_content_on_first_call(monkeypatch, tmp_path):
