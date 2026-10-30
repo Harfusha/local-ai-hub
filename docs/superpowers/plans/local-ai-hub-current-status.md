@@ -1,6 +1,12 @@
 # Local AI Hub: current acceptance state
 
-## Current checkpoint — 2026-10-29 (`ff3813ab`)
+## Current checkpoint — 2026-10-30 (`c2e2d5df`)
+
+The main checkout and `origin/master` are both at `c2e2d5df71cb60347c779c9c7cf97c1d7cfc09a6`. This commit contains Windows CI fixes for empty lock-file initialization races, Windows SQLite URI handling, and platform-specific test behavior. The focused local regression set passed 34 tests with 6 platform skips. GitHub CI run [#359](https://github.com/Harfusha/local-ai-hub/actions/runs/41065218813) passed critical coverage and showed 11/12 matrix jobs complete at this checkpoint; the final job and package/release follow-up are still pending. Release `v5.1.2` still points at older commit `d358e1b25c2ba4e489ed2c284cafccedc01d4b06`; it has not been retargeted or published. The changelog now records the CI fixes. The installed service has not yet been updated from the final release candidate. Gemini host verification remains deferred at the operator's request. Authentic broker receipts, current saved dashboard screenshot and the historical non-test-data isolation investigation remain open; no synthetic or native test output is represented as a broker receipt.
+
+**Status: SOURCE PUSHED; FOCUSED REGRESSIONS PASSED; CI RUNNING; RELEASE AND INSTALLATION OPEN.**
+
+## Historical checkpoint — 2026-10-29 (`ff3813ab`)
 
 The main checkout contains `ff3813abf28df95abaf4fcc000b35cbc7c1cd957`; later commits record release evidence. Its clean archive passed strict release validation and its wheel passed isolated smoke. The wheel's contents match the installed `72e20fd2` wheel; see [release evidence](../../release-evidence-5.1.0.md) for distinct archive hashes and runtime provenance. [CI for `72e20fd2`](https://github.com/Harfusha/local-ai-hub/actions/runs/40942499561) completed successfully, including all 12 matrix jobs, critical coverage and package. [CI for candidate `ff3813ab`](https://github.com/Harfusha/local-ai-hub/actions/runs/40946163960) also passed all 12 matrix jobs, critical coverage and package. CI for subsequent documentation commits is separate. The historical [JSON budget benchmark](../../perf_candidate_json_budget.json) records 1,000 pairs and a passed tail gate; it is not a current performance measurement. The native combined suite passed 898 tests with one POSIX-specific skip; selftest passed six checks. Authentic broker receipts, actual Gemini host use, a saved dashboard screenshot and historical incident isolation remain open.
 

@@ -3,6 +3,8 @@
 ## 5.1.2 — 2026-10-30
 
 - Fix Windows read-only SQLite URI handling for drive-letter paths.
+- Prevent concurrent Windows initialization of empty cache and code-index lock files from racing before the first lock.
+- Resolve Windows SQLite EXPLAIN URIs safely within the repository root and stabilize Windows CI path and Python 3.11 test behavior.
 - Decode dashboard Node harness output as UTF-8 on Windows and keep cross-volume tests portable.
 - Clamp autostart process timeout to the caller's exact startup budget.
 - Keep GitHub failure annotations printable on legacy Windows console encodings.
