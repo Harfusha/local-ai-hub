@@ -237,9 +237,9 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     app.services._generate = fake_generate
     original_delegate = app.services.delegate
 
-    def capture_delegate(payload):
+    def capture_delegate(payload, **kwargs):
         received.append(dict(payload))
-        return original_delegate(payload)
+        return original_delegate(payload, **kwargs)
 
     app.services.delegate = capture_delegate
 
