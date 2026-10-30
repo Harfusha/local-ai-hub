@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import time
 
 
 class FakeRuntime:
@@ -269,14 +271,57 @@ def test_model_prepare_forwards_cancellation_controls_to_selected_runtime(tmp_pa
     runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
     should_stop = lambda: False
     admission = lambda: True
+    deadline = time.monotonic() + 10.0
 
     runtime.prepare_model(
-        "qwen2.5-coder:7b", should_stop=should_stop, deadline=123.4,
+        "qwen2.5-coder:7b", should_stop=should_stop, deadline=deadline,
         post_unload_admission=admission,
     )
 
-    assert fast.prepare_controls == [(should_stop, 123.4, admission)]
+    assert fast.prepare_controls == [(should_stop, deadline, admission)]
     assert smart.prepare_controls == []
+
+
+def test_cancel_during_inventory_does_not_unload_peer_or_start_target(tmp_path: Path):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    cancelled = threading.Event()
+    fast = FakeRuntime([{"name": "qwen2.5-coder:7b"}])
+    smart = FakeRuntime()
+    original_inventory = fast.loaded_model_inventory
+    def inventory(**kwargs):
+        snapshot = original_inventory(**kwargs)
+        cancelled.set()
+        return snapshot
+    fast.loaded_model_inventory = inventory
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
+    result = runtime.request_interruptible(
+        "/api/generate", {"model": "qwen3.5:9b"}, cancelled.is_set,
+        timeout=2.0, deadline=time.monotonic() + 2.0,
+    )
+    assert result.get("preempted") is True
+    assert fast.loaded == [{"name": "qwen2.5-coder:7b"}]
+    assert not fast.events and not smart.events
+
+
+def test_cancel_during_prepare_inventory_does_not_unload_peer(tmp_path: Path):
+    import pytest
+    from local_ai_hub.ollama import ModelPreparationCancelled
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+    cancelled = threading.Event()
+    fast = FakeRuntime([{"name": "qwen2.5-coder:7b"}])
+    smart = FakeRuntime()
+    original_inventory = fast.loaded_model_inventory
+    def inventory(**kwargs):
+        snapshot = original_inventory(**kwargs)
+        cancelled.set()
+        return snapshot
+    fast.loaded_model_inventory = inventory
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
+    with pytest.raises(ModelPreparationCancelled):
+        runtime.prepare_model("qwen3.5:9b", should_stop=cancelled.is_set, deadline=time.monotonic() + 2)
+    assert fast.loaded == [{"name": "qwen2.5-coder:7b"}]
+    assert not fast.events and not smart.events
 
 
 def test_interruptible_request_forwards_deadline_to_selected_runtime(tmp_path: Path):
@@ -286,14 +331,19 @@ def test_interruptible_request_forwards_deadline_to_selected_runtime(tmp_path: P
     smart = FakeRuntime()
     runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
     should_stop = lambda: False
+    deadline = time.monotonic() + 5.0
 
     result = runtime.request_interruptible(
         "/api/generate", {"model": "qwen2.5-coder:7b"}, should_stop,
-        timeout=0.5, deadline=123.4,
+        timeout=0.5, deadline=deadline,
     )
 
     assert result["done"] is True
-    assert fast.request_controls == [(should_stop, 0.5, 123.4)]
+    assert len(fast.request_controls) == 1
+    forwarded_stop, forwarded_timeout, forwarded_deadline = fast.request_controls[0]
+    assert forwarded_stop is should_stop
+    assert 0 < forwarded_timeout <= 0.5
+    assert forwarded_deadline == deadline
     assert smart.request_controls == []
 
 

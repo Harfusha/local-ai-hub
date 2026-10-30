@@ -1,5 +1,7 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
+The optional shared HTTP MCP transport is experimental and disabled by default. Source configuration uses `[mcp_http]` with `enabled` and a loopback `port`; local clients do not need a token. Marked synchronous model requests, repository delegation, routing, batches, vision and transcription propagate disconnect cancellation where supported; other operations and intermediate work may continue. Do not enable or switch active clients until lifecycle and cancellation are verified for the installation.
+
 For Gemini/Antigravity with companion skills enabled, setup installs the bundled Local AI Hub skills including Caveman (ultra mode), and downloads pinned, SHA-256-verified Superpowers skills into the standard `~/.gemini/skills/` directory. It prepends a managed activation block to global `~/.gemini/AGENTS.md` and the current project `AGENTS.md`, preserving existing user instructions and unmanaged skills; it leaves `~/.gemini/GEMINI.md` intact outside its existing managed blocks. Network or integrity failures stop setup with a clear error; an existing Superpowers source cache that differs from the pinned archive requires operator review. Installation does not prove Antigravity loaded or obeyed the skills. Start an Antigravity session and verify actual skill and MCP use separately. Respect explicit companion-skill and global-instruction opt-outs.
 
 `local-ai-hub --discover-caveman ROOT --caveman-skill-dir DIR --caveman-model LOCAL_MODEL --caveman-review-model LOCAL_REVIEW_MODEL --caveman-staging-dir OUTSIDE_ROOT` discovers agent instructions, verifies byte-for-byte backups for the full batch, then stages candidates with local semantic review. Repeat `--discover-caveman` for agent roots. Add `--apply-caveman` to atomically apply candidates only when structure checks, semantic review, backup hashes, and source hashes pass. Restore an applied file with `--restore-caveman MANIFEST`. Managed plugin caches and secret-named files are excluded. Generated agent instructions and unstructured local delegations use terse Caveman prose while preserving facts, requirements, constraints, exceptions, uncertainty, and requested structure. `[token_saving].concise_local_output = true` enables terse output; `[token_saving].compress_local_input = true` enables safe plain-text whitespace compaction. Structured payloads remain unchanged.
@@ -313,9 +315,7 @@ Trigger map:
 - anti-pattern & incident tracking: `local_ai_coord(action="negative_knowledge_record"|"negative_knowledge_find")`. Record failed approaches, error classes, and root causes to avoid repeating mistakes.
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`
-- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent. Submit requires a string task and non-empty string `acceptance_criteria`. Budget fields are validated before enqueue: `max_steps` is 1–16 within the configured limit, `max_llm_calls` is within its configured limit, and `max_seconds` is 30–7200; `max_tokens`, `max_edits`, and `max_commands` are also checked. Unsupported budget fields reject. Explicit `permissions` must be an object of supported boolean fields; invalid values never become default grants. An explicit `mode` must be a non-empty supported string.
-- Work orders require `read` permission. Execute mode currently requires both `tests` and `build`; selective validation is unsupported and rejected before enqueue. Plan-only modes can disable validation permissions.
-- `keep_failed_workspace` is an explicit boolean; malformed values reject instead of silently retaining failed changes.
+- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent
 - symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
 - image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`
 - audio transcription: `local_ai_task(action="transcribe")`
@@ -386,7 +386,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
-- Use `local_ai_task(action="batch")` for independent bounded tasks. Optional item `id` values must be unique non-empty canonical strings; results preserve those IDs and input order, including item failures.
+- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.

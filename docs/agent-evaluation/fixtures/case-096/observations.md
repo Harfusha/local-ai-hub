@@ -1,6 +1,6 @@
 # 096: sandboxový průchod 2026-10-29
 
-- Root: `C:\Users\Adam\AppData\Local\Temp\local-ai-eval-096-984a57350263462c99b8ac24860fe3b3`; samostatný config, state, venv a náhodné loopback porty.
+- Root: `<temp>/local-ai-eval-096-984a57350263462c99b8ac24860fe3b3`; samostatný config, state, venv a náhodné loopback porty.
 - Zdroj 5.0.0: commit `65a6fbe4f4caf862f00ba4d9b8dd77145a4a35df`, wheel SHA-256 `ec9f11393e47f72aa054572b0ba8b5b08dcadbc29b6750f22868b17ca35870d2`.
 - Zdroj 5.1.0: commit `6c7200a9c1b71554ebe368b8722a6757d94c0282`, wheel SHA-256 `5344e0712861b089aab5e499d82b3e4616ee23f228be1d4e983927b4bf6d2b78`. Není to dosud necommitovaný kandidát oprav.
 - Závislosti připraveny do wheelhouse před offline během; `wheelhouse-manifest.json` v sandboxu obsahuje SHA-256 všech 32 wheelů. Instalace obou verzí proběhly s `--no-index`. 5.0.0 na izolovaném portu vrátil `hub_online=true`. Pokus o zápis workspace memo vrátil 403 a nebyl opakován.

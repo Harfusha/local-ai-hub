@@ -1,6 +1,6 @@
 # 098: částečný sandboxový průchod 2026-10-29
 
-Oddělený sandbox `C:\Users\Adam\AppData\Local\Temp\local-ai-eval-096-984a57350263462c99b8ac24860fe3b3\fixture098`, Hub 5.1.0 z commitu `6c7200a9c1b71554ebe368b8722a6757d94c0282`, vlastní venv, workspace a state.
+Oddělený sandbox `<temp>/local-ai-eval-096-984a57350263462c99b8ac24860fe3b3/fixture098`, Hub 5.1.0 z commitu `6c7200a9c1b71554ebe368b8722a6757d94c0282`, vlastní venv, workspace a state.
 
 MCP stdio vytvořilo úlohu `task_afe30b9a8ffd`; checkpoint pro stejnou úlohu prošel. HTTP vrátilo stejné ID, stav `planned`, fázi `sandbox-ready`; v dashboardu Tasks byly viditelné stejné ID, stav PLANNED a fáze. MCP a HTTP odpovědi jsou v sandboxovém `identity.json`. Supervisor byl ukončen s potvrzeným úklidem Job Object.
 

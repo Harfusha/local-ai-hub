@@ -287,7 +287,17 @@ class VisionService:
                 return self.cancelled_result(model)
             if capability_error:
                 return capability_error
-            res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if cancel_event is not None:
+                interruptible = getattr(self.runtime, "request_interruptible", None)
+                if callable(interruptible):
+                    res = interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=timeout)
+                else:
+                    # A runtime without in-flight interruption can still safely
+                    # finish generation. The cancellation check below discards
+                    # its output before any artifact or parsed result is exposed.
+                    res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            else:
+                res = self.runtime.request("/api/generate", payload, timeout=timeout)
             if is_cancelled():
                 return self.cancelled_result(model)
             generation_error = vision_generation_error(res, model)

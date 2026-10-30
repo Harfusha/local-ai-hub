@@ -1,6 +1,6 @@
 # 092: mezikandidát 2026-10-29
 
-V izolovaném sandboxu `C:\Users\Adam\AppData\Local\Temp\local-ai-eval-096-984a57350263462c99b8ac24860fe3b3\candidate-prewire` byl z commitu `6c7200a9c1b71554ebe368b8722a6757d94c0282` a čtyř upravených zdrojových souborů sestaven wheel SHA-256 `374db60769534bca56ee9fb7c249123eb6b712eeffd27302176027766e588b71`. Přesné zdrojové hashe jsou v sandboxovém `source-manifest.json`; kandidát není integrovaný ani finální.
+V izolovaném sandboxu `<temp>/local-ai-eval-096-984a57350263462c99b8ac24860fe3b3/candidate-prewire` byl z commitu `6c7200a9c1b71554ebe368b8722a6757d94c0282` a čtyř upravených zdrojových souborů sestaven wheel SHA-256 `374db60769534bca56ee9fb7c249123eb6b712eeffd27302176027766e588b71`. Přesné zdrojové hashe jsou v sandboxovém `source-manifest.json`; kandidát není integrovaný ani finální.
 
 HTTP smoke nainstalovaného wheelu ověřil verzi 5.1.0, identitu listeneru a ukončení vlastního stromu; důkaz `smoke-result-state-61994.json`. První MCP pokus byl neprůkazný, protože work orchestrator byl vypnutý; výsledky jsou uloženy zvlášť jako `mcp-preflight-results-disabled.json`.
 

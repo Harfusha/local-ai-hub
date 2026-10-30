@@ -107,6 +107,8 @@ class LocalAgentPipeline:
         self.worker_runs = 0
 
     def _stage(self, key_payload: dict[str, Any], compute: Any) -> dict[str, Any]:
+        from .client import CURRENT_REQUEST_CANCEL_EVENT
+        cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
         key = stable_hash(key_payload)
         def _wrapped_compute() -> dict[str, Any]:
             res = compute()
@@ -116,7 +118,14 @@ class LocalAgentPipeline:
                 return res
             return {"success": False, "result": res, "_cacheable": False}
 
-        result, hit, coalesced = self.cache.get_or_compute(key, _wrapped_compute)
+        if cancel_event is not None:
+            result = ({"success": False, "cancelled": True, "reason": "cancelled"}
+                      if cancel_event.is_set() else _wrapped_compute())
+            hit, coalesced = False, False
+            if cancel_event.is_set():
+                result = {"success": False, "cancelled": True, "reason": "cancelled"}
+        else:
+            result, hit, coalesced = self.cache.get_or_compute(key, _wrapped_compute)
         out = copy.deepcopy(result) if isinstance(result, dict) else {"success": False, "result": result}
         out["stage_cache_hit"] = bool(hit)
         out["stage_coalesced"] = bool(coalesced)
@@ -149,6 +158,14 @@ class LocalAgentPipeline:
         return heavy_model if smart_required else fast_model
 
     def solve_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .client import CURRENT_REQUEST_CANCEL_EVENT
+        cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        def cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+        def cancelled_result() -> dict[str, Any]:
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
+        if cancelled():
+            return cancelled_result()
         from .repository_scope import RepositoryScopeError, authorized_repository_root, reject_retired_tenancy_fields
 
         try:
@@ -297,6 +314,8 @@ class LocalAgentPipeline:
                 "success": True, "model": "deterministic", "text": "", "stage_cache_hit": True,
                 "structured": {"role": "explorer", "summary": "deterministic evidence/graph sufficient for exploration", "confidence": plan.get("confidence"), "evidence_ids": [str(x.get("evidence_id")) for x in ev_items if isinstance(x, dict) and x.get("evidence_id")][:10], "candidate_files": [str(x.get("path")) for x in ev_items if isinstance(x, dict) and x.get("path")][:12], "missing_evidence": []},
             }
+        if cancelled():
+            return cancelled_result()
         if bool(plan.get("explorer")) and not explorer.get("success") and self.tool_agent is not None and not _is_repetition_loop(explorer):
             # Tool-calling support varies by local model/template. Retry the exact same
             # bounded stage without tools before degrading the whole pipeline.
@@ -307,6 +326,8 @@ class LocalAgentPipeline:
                 self.max_explorer_tokens, 0.05, source="pipeline:explorer-fallback", priority=7,
                 semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
             )
+        if cancelled():
+            return cancelled_result()
         if not explorer.get("success"):
             if _is_repetition_loop(explorer):
                 return _repetition_loop_failure(explorer, stage="explorer", mode=mode)
@@ -366,6 +387,8 @@ class LocalAgentPipeline:
                 {"app_version": __version__, "execution": self.execution_policy_fp, "role": "worker", "task": task, "context": context_fp, "explorer": stable_hash(explorer.get("structured") or explorer.get("text", "")), "model": worker_model},
                 compute_worker,
             )
+            if cancelled():
+                return cancelled_result()
             if not worker.get("success"):
                 if _is_repetition_loop(worker):
                     return _repetition_loop_failure(worker, stage="worker", mode=mode)
@@ -406,6 +429,8 @@ class LocalAgentPipeline:
                     {"app_version": __version__, "execution": self.execution_policy_fp, "role": "worker-refine", "task": task, "context": context_fp, "first": stable_hash(first_state), "model": worker_model},
                     compute_refine,
                 )
+                if cancelled():
+                    return cancelled_result()
                 if refined.get("success"):
                     worker = refined
         else:
@@ -451,9 +476,13 @@ class LocalAgentPipeline:
                 {"app_version": __version__, "execution": self.execution_policy_fp, "role": "critic", "task": task, "context": context_fp, "candidate": stable_hash(worker.get("structured") or worker.get("text", "")), "model": critic_model},
                 compute_critic,
             )
+            if cancelled():
+                return cancelled_result()
             if _is_repetition_loop(critic):
                 return _repetition_loop_failure(critic, stage="critic", mode=mode)
 
+        if cancelled():
+            return cancelled_result()
         worker_structured = worker.get("structured") if isinstance(worker.get("structured"), dict) else None
         canonical_text = str(worker_structured.get("summary", "") if worker_structured else worker.get("text", ""))
         if worker_structured and worker_structured.get("actions"):

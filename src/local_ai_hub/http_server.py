@@ -14,6 +14,7 @@ import math
 import os
 import queue
 import re
+import select
 import socket
 import sqlite3
 import uuid
@@ -339,16 +340,50 @@ class _ActiveTranscriptionRegistry:
 
 _ACTIVE_TRANSCRIPTIONS = _ActiveTranscriptionRegistry()
 _ACTIVE_CONVERSATIONS = _ActiveTranscriptionRegistry()
+_ACTIVE_DELEGATES = _ActiveTranscriptionRegistry()
 _GAMING_DRAIN_TIMEOUT_SECONDS = 4.5
 
 
-def _invoke_cancellable_request(registry: _ActiveTranscriptionRegistry, callback: Any, payload: dict[str, Any]) -> Any:
+def _start_disconnect_monitor(connection: socket.socket | None, cancel_event: threading.Event) -> tuple[threading.Event, threading.Thread | None]:
+    stop_monitor = threading.Event()
+    if not isinstance(connection, socket.socket):
+        return stop_monitor, None
+    def watch_disconnect() -> None:
+        while not stop_monitor.is_set():
+            try:
+                readable, _, _ = select.select([connection], [], [], 0.05)
+                if readable and connection.recv(1, socket.MSG_PEEK) == b"":
+                    cancel_event.set()
+                    return
+                if readable:
+                    stop_monitor.wait(0.05)
+            except (OSError, ValueError):
+                if not stop_monitor.is_set():
+                    cancel_event.set()
+                return
+    monitor = threading.Thread(target=watch_disconnect, name="hub-request-disconnect", daemon=True)
+    monitor.start()
+    return stop_monitor, monitor
+
+
+def _invoke_cancellable_request(
+    registry: _ActiveTranscriptionRegistry, callback: Any, payload: dict[str, Any],
+    *, connection: socket.socket | None = None,
+) -> Any:
+    from .client import CURRENT_REQUEST_CANCEL_EVENT
+
     token, cancel_event = registry.begin()
+    context_token = CURRENT_REQUEST_CANCEL_EVENT.set(cancel_event)
     result: Any = {}
+    stop_monitor, monitor = _start_disconnect_monitor(connection, cancel_event)
     try:
         result = callback(payload, cancel_event=cancel_event)
         return result
     finally:
+        stop_monitor.set()
+        if monitor is not None:
+            monitor.join(timeout=0.2)
+        CURRENT_REQUEST_CANCEL_EVENT.reset(context_token)
         registry.finish(token, result)
 
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
@@ -6093,12 +6128,17 @@ class Handler(BaseHTTPRequestHandler):
             if delivery is not None:
                 self._send(*delivery); return
             if path == "/api/delegate":
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
                 if bool(payload.get("conversation", False)):
-                    result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.delegate, payload)
+                    result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.delegate, payload, connection=connection)
+                    self._send(200, result); return
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.delegate, payload, connection=connection)
                     self._send(200, result); return
                 self._send(200, APP.services.delegate(payload)); return
             if path == "/api/conversations/continue":
-                result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload)
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload, connection=connection)
                 self._send(200, result); return
             if 'post_agent_state_tasks_1' in post_route_ids:
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
@@ -7441,24 +7481,64 @@ class Handler(BaseHTTPRequestHandler):
                 res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
                 self._send(200, res); return
             if 'post_delegate_repo_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.delegate_repo, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.delegate_repo(payload)); return
             if 'post_solve_repo_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.solve_repo, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.solve_repo(payload)); return
             if 'post_route_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.route_context, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.route_context(payload)); return
             if 'post_delegate_batch_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.batch_delegate, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.batch_delegate(payload)); return
             if 'post_review_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.review, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.review(payload)); return
             if 'post_review_diff_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.review_diff, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.review_diff(payload)); return
             if 'post_reason_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.reason, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.reason(payload)); return
             if 'post_second_opinion_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.second_opinion, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.second_opinion(payload)); return
             if 'post_compress_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.compress, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.compress(payload)); return
             if 'post_generate_tests_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.generate_tests, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.generate_tests(payload))
                 return
             if 'post_patch_validate_1' in post_route_ids:
@@ -7661,6 +7741,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"success": False, "error": f"unknown code-intelligence action: {action}"}); return
             if 'post_complete_1' in post_route_ids:
                 # FIM completion routed through APP.services with caching / APP.scheduler.submit
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.complete_code, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.complete_code(payload)); return
             if 'post_preprocess_1' in post_route_ids:
                 self._send(200, APP.services.preprocess(payload)); return
@@ -8160,8 +8244,16 @@ class Handler(BaseHTTPRequestHandler):
                 APP.rag.require_workspace_root(workspace=workspace, root=payload["root"])
                 self._send(200, APP.rag.search(str(payload.get("query", "")), workspace=workspace, top_k=int(payload.get("top_k", 8)), use_reranker=bool(payload.get("use_reranker", True)))); return
             if 'post_speculative_draft_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.speculative_draft, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.speculative_draft(payload)); return
             if 'post_scaffold_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.task_scaffold, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.task_scaffold(payload)); return
             if 'post_models_manage_1' in post_route_ids:
                 action = str(payload.get("action", "list"))
@@ -8210,6 +8302,10 @@ class Handler(BaseHTTPRequestHandler):
                     events = list(payload.get("events", []))
                     self._send(200, APP.agent_state_store.import_delta(events)); return
             if 'post_task_vision_1' in post_route_ids:
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                if connection is not None:
+                    result = _invoke_cancellable_request(_ACTIVE_DELEGATES, APP.services.vision, payload, connection=connection)
+                    self._send(200, result); return
                 self._send(200, APP.services.vision(payload)); return
             if 'post_task_browser_1' in post_route_ids:
                 from .browser_bridge import capture_browser_page
@@ -8237,6 +8333,8 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_task_transcribe_1' in post_route_ids:
                 from .process_utils import ProcessCleanupUnverifiedError
                 token, cancel_event = _ACTIVE_TRANSCRIPTIONS.begin()
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                stop_monitor, monitor = _start_disconnect_monitor(connection, cancel_event)
                 result: Any = {}
                 cleanup_deferred = False
                 try:
@@ -8253,6 +8351,9 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self._send(503, result); return
                 finally:
+                    stop_monitor.set()
+                    if monitor is not None:
+                        monitor.join(timeout=0.2)
                     if not cleanup_deferred:
                         _ACTIVE_TRANSCRIPTIONS.finish(token, result)
             if path in {"/api/repo/code_invariants", "/api/code_invariants"}:

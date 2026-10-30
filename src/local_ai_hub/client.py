@@ -959,6 +959,8 @@ class HubClient:
                 "Content-Type": "application/json",
                 "X-LocalAI-Agent": self.agent, "X-LocalAI-Request-ID": request_id,
             }
+            if cancel_event is not None:
+                headers["X-LocalAI-Cancel-On-Disconnect"] = "1"
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
             try:

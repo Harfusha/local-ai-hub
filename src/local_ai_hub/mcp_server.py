@@ -170,6 +170,9 @@ class _MCPHubClientAdapter:
             client.request = request_with_policy  # type: ignore[method-assign]
 
     def get(self, path: str, **kwargs: Any) -> Any:
+        cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        if cancel_event is not None:
+            kwargs.setdefault("cancel_event", cancel_event)
         if getattr(self._client, "auto_start", False):
             request_timeout = min(
                 max(0.2, float(kwargs.get("timeout", 15.0))),

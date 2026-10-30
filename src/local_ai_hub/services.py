@@ -87,6 +87,15 @@ class _LinkedCancelEvent:
                 self._event.set()
         return self._event.is_set()
 
+    def wait(self, timeout: float | None = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while not self.is_set():
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            self._event.wait(0.05 if remaining is None else min(0.05, remaining))
+        return True
+
 
 # Keep optional context workers bounded across concurrent requests. Each backend
 # gets its own single-worker lane for Serena
@@ -139,6 +148,15 @@ def is_retryable_local_backend_error(value: Any) -> bool:
         "connection aborted", "broken pipe", "temporarily unavailable", "ollama unavailable",
         "timed out", "timeout", "eof", "queue limit reached", "queue full", "resource pressure",
     ))
+
+
+def _generation_cache_dispatch(cache: Any, key: str, compute: Any, compute_inner: Any, *,
+                               use_cache: bool, request_cancel_event: threading.Event | None) -> tuple[Any, bool, bool]:
+    # Cancellation belongs to one request, so its in-flight computation must never
+    # become the shared leader for another caller.
+    if use_cache and request_cancel_event is None:
+        return cache.get_or_compute(key, compute)
+    return compute_inner(), False, False
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -1180,10 +1198,15 @@ class LocalAIServices:
         trace_system = system if trace_system_override is None else str(trace_system_override)
         mode_pause_result: dict[str, Any] | None = None
         if cancel_event is None:
+            from .client import CURRENT_REQUEST_CANCEL_EVENT
+            cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        request_cancel_event = cancel_event
+        if cancel_event is None:
             cancel_event = threading.Event()
         parent_stop = capture_job_cancellation()
         if parent_stop is not None:
             cancel_event = _LinkedCancelEvent(cancel_event, parent_stop)
+            request_cancel_event = cancel_event
         if project_settings is not None:
             model, project_payload = self.model_policy.apply_project_settings(
                 model,
@@ -1661,10 +1684,10 @@ class LocalAIServices:
                         )
                 return result
 
-        if use_cache:
-            raw, cache_hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
-        else:
-            raw, cache_hit, coalesced = compute_inner(), False, False
+        raw, cache_hit, coalesced = _generation_cache_dispatch(
+            self.generation_cache, cache_key, compute, compute_inner,
+            use_cache=use_cache, request_cancel_event=request_cancel_event,
+        )
         if mode_pause_result is not None:
             return mode_pause_result
         origin = str(raw.get("_lah_cache_origin", "")) if isinstance(raw, dict) else ""
@@ -1946,7 +1969,7 @@ class LocalAIServices:
             if str(args.get("delivery", "sync")).strip().lower() != "sync":
                 return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
-            return self.delegate_profile(args)
+            return self.delegate_profile(args, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
         project_context, project_config_digest, project_namespace, project_revision = self._resolve_local_task_project(
             args.get("root") or args.get("cwd", "")
         )
@@ -2051,7 +2074,13 @@ class LocalAIServices:
             project_namespace=project_namespace,
             repository_revision=project_revision or str(args.get("repository_revision", "")),
             use_cache=project_context is None or bool(project_namespace),
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:
+            return attach_project_warning({"success": False, "cancelled": True, "reason": "cancelled", "route": route})
+        if result.get("cancelled") is True:
+            result["route"] = route
+            return attach_project_warning(result)
         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
         return attach_project_warning(result)
@@ -2073,7 +2102,9 @@ class LocalAIServices:
             result["bypass_reason"] = reason
         return result
 
-    def delegate_profile(self, args: dict[str, Any]) -> dict[str, Any]:
+    def delegate_profile(
+        self, args: dict[str, Any], *, cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
         profile_name = str(args.get("profile", "")).strip()
         if not self.profile_catalog.enabled:
@@ -2099,6 +2130,7 @@ class LocalAIServices:
                 workspace=args.get("workspace"),
                 seed_context=str(args.get("context", "")),
                 priority=int(args.get("priority", 5)),
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
             )
 
         context = str(args.get("context", ""))
@@ -2119,7 +2151,10 @@ class LocalAIServices:
             source=f"profile:{profile.name}", priority=int(args.get("priority", 5)),
             semantic_query=task,
             semantic_context_fingerprint=stable_hash(context + candidate),
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         result.update({
             "profile": profile.name,
             "language": self.profile_catalog.detect_language(task),
@@ -2132,7 +2167,7 @@ class LocalAIServices:
         })
         return result
 
-    def review(self, args: dict[str, Any]) -> dict[str, Any]:
+    def review(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
         if "context" in args:
             return {"success": False, "error": "review accepts code; context is not an alias"}
@@ -2149,7 +2184,7 @@ class LocalAIServices:
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
         payload.setdefault("format", "json")
-        result = self.delegate(payload)
+        result = self.delegate(payload, cancel_event=cancel_event) if cancel_event is not None else self.delegate(payload)
         if not isinstance(result, dict) or result.get("success") is not True:
             return result
         from .semantic_quality import assess_review_consistency, constrain_semantic_quality
@@ -2164,7 +2199,7 @@ class LocalAIServices:
             result.setdefault("bypass_reason", quality["reason"])
         return result
 
-    def reason(self, args: dict[str, Any]) -> dict[str, Any]:
+    def reason(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
         if "task" in args:
             return {"success": False, "error": "reason accepts problem; task is not an alias"}
@@ -2176,6 +2211,8 @@ class LocalAIServices:
         payload["task"] = problem
         payload["operation"] = str(args.get("operation", "reason"))
         payload.setdefault("max_tokens", 4096)
+        if cancel_event is not None:
+            return self.delegate(payload, cancel_event=cancel_event)
         return self.delegate(payload)
 
     def distill_command_error(self, failure: dict[str, Any]) -> str:
@@ -2193,7 +2230,7 @@ class LocalAIServices:
             return ""
         return str(result.get("text", "")).strip()[:300]
 
-    def second_opinion(self, args: dict[str, Any]) -> dict[str, Any]:
+    def second_opinion(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
         question = str(args.get("question", "") or args.get("task", "") or args.get("prompt", ""))
         candidate = str(args.get("candidate", "") or args.get("code", ""))
@@ -2221,14 +2258,22 @@ class LocalAIServices:
             int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
             source="second-opinion", priority=int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:
+            return {"success": False, "cancelled": True, "reason": "cancelled", "route": route}
+        if result.get("cancelled") is True:
+            result["route"] = route
+            return result
         result = self._apply_semantic_quality(result, task=question, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
         return result
 
-    def speculative_draft(self, args: dict[str, Any]) -> dict[str, Any]:
+    def speculative_draft(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         """Draft code using fast model and verify against affected tests."""
         reject_retired_tenancy_fields(args)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         aliases = {"prompt", "path", "cwd"} & args.keys()
         if aliases:
             return {"success": False, "error": "speculative_draft rejects aliases: " + ", ".join(sorted(aliases))}
@@ -2262,7 +2307,12 @@ class LocalAIServices:
             float(args.get("temperature", 0.1)),
             source="speculative-draft",
             priority=5,
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
+        if gen_result.get("cancelled") is True:
+            return gen_result
 
         draft_value = gen_result.get("text") or gen_result.get("response") or ""
         draft_code = draft_value.strip() if isinstance(draft_value, str) else ""
@@ -2302,13 +2352,20 @@ class LocalAIServices:
             and self.commands
             and verification["syntax_valid"]
         ):
+            if cancel_event is not None and cancel_event.is_set():
+                return {"success": False, "cancelled": True, "reason": "cancelled"}
             aff = self.affected_tests(str(resolved_root), changed_paths=[file_path])
             if aff.get("suggested_command"):
-                cmd_res = self.commands.run(aff["suggested_command"], str(resolved_root))
+                cmd_res = self.commands.run(
+                    aff["suggested_command"], str(resolved_root),
+                    **({"request_cancel_event": cancel_event} if cancel_event is not None else {}),
+                )
                 verification["tests_passed"] = bool(cmd_res.get("success"))
                 verification["test_summary"] = cmd_res.get("summary", "")
 
         if bool(args.get("smart_review", False)):
+            if cancel_event is not None and cancel_event.is_set():
+                return {"success": False, "cancelled": True, "reason": "cancelled"}
             smart_model = str(self.config.get("models", {}).get("heavy_code", "qwen2.5-coder:3b"))
             review_prompt = f"REVIEW DRAFT IMPLEMENTATION:\nTask: {task}\nDraft Code:\n{draft_code}\nDoes this draft correctly solve the task without syntax or logical bugs? Return a short JSON object: {{\"approved\": true/false, \"confidence\": 0.0-1.0, \"summary\": \"...\"}}"
             review_res = self._generate(
@@ -2319,7 +2376,12 @@ class LocalAIServices:
                 0.1,
                 source="speculative-review",
                 priority=6,
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
             )
+            if cancel_event is not None and cancel_event.is_set():
+                return {"success": False, "cancelled": True, "reason": "cancelled"}
+            if review_res.get("cancelled") is True:
+                return review_res
             review_text = review_res.get("text") or review_res.get("response") or ""
             verification["smart_review"] = {
                 "model": smart_model,
@@ -2327,6 +2389,8 @@ class LocalAIServices:
                 "approved": "true" in review_text.lower(),
             }
 
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         return {
             "success": True,
             "model": fast_model,
@@ -2421,9 +2485,11 @@ class LocalAIServices:
         self._lint_daemons.close()
         self._biome_daemons.close()
 
-    def task_scaffold(self, args: dict[str, Any]) -> dict[str, Any]:
+    def task_scaffold(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""
         reject_retired_tenancy_fields(args)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         aliases = {"spec", "task"} & args.keys()
         if aliases:
             return {"success": False, "error": "scaffold rejects aliases: " + ", ".join(sorted(aliases))}
@@ -2458,7 +2524,12 @@ class LocalAIServices:
             float(args.get("temperature", 0.1)),
             source="scaffold",
             priority=5,
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
+        if gen_result.get("cancelled") is True:
+            return gen_result
         if gen_result.get("success") is False:
             return {
                 "success": False,
@@ -6779,10 +6850,15 @@ class LocalAIServices:
             },
         }
 
-    def delegate_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+    def delegate_repo(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
+        if cancel_event is None:
+            from .client import CURRENT_REQUEST_CANCEL_EVENT
+            cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         if str(args.get("profile", "")).strip():
-            return self.delegate_profile(args)
+            return self.delegate_profile(args, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
         root = str(args.get("root", "."))
         task = str(args.get("task", ""))
         requested_context_tokens = int(args.get("context_tokens", 0) or 0)
@@ -6798,6 +6874,8 @@ class LocalAIServices:
             else:
                 max_context_tokens = int(workflow.get("fast_repo_context_tokens", 2200))
         packed = self._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=max_context_tokens)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         if not packed.get("success"):
             return packed
         payload = {
@@ -6810,7 +6888,7 @@ class LocalAIServices:
             # Packed local context is a diagnostic, not proof of cloud-side input
             # avoided: the agent may have used RG or another narrower tool.
         }
-        result = self.delegate(payload)
+        result = self.delegate(payload, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
         result["repo_context"] = {
             "root": packed.get("root", root), "evidence": packed.get("evidence", []),
             "local_context_tokens": packed.get("estimated_tokens", 0), "semantic_used": bool(packed.get("semantic_used", False)),
@@ -6818,14 +6896,25 @@ class LocalAIServices:
         }
         return result
 
-    def solve_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+    def solve_repo(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         if self.pipeline is None:
-            return self.delegate_repo(args)
-        return self.pipeline.solve_repo(args)
+            return self.delegate_repo(args, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
+        if cancel_event is None:
+            return self.pipeline.solve_repo(args)
+        from .client import CURRENT_REQUEST_CANCEL_EVENT
+        token = CURRENT_REQUEST_CANCEL_EVENT.set(cancel_event)
+        try:
+            return self.pipeline.solve_repo(args)
+        finally:
+            CURRENT_REQUEST_CANCEL_EVENT.reset(token)
 
-    def route_context(self, args: dict[str, Any]) -> dict[str, Any]:
+    def route_context(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         if self.token_router is None:
             return {"success": False, "error": "lossless token router unavailable"}
         if "task" in args or "context" in args:
@@ -6849,11 +6938,30 @@ class LocalAIServices:
             root = args.get("root", ".")
             if not isinstance(root, str):
                 return {"success": False, "error": "root must be a string"}
-            return self.token_router.route_file(root, path, query)
-        return self.token_router.route_text(text, query, path=label)
+        from .client import CURRENT_REQUEST_CANCEL_EVENT
+        token = CURRENT_REQUEST_CANCEL_EVENT.set(cancel_event) if cancel_event is not None else None
+        try:
+            result = (self.token_router.route_file(root, path, query) if path
+                      else self.token_router.route_text(text, query, path=label))
+        finally:
+            if token is not None:
+                CURRENT_REQUEST_CANCEL_EVENT.reset(token)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
+        return result
 
-    def review_diff(self, args: dict[str, Any]) -> dict[str, Any]:
+    def review_diff(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
+        def cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+        def cancelled_result() -> dict[str, Any]:
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
+        def delegate_review(payload: dict[str, Any]) -> dict[str, Any]:
+            if cancelled():
+                return cancelled_result()
+            return self.delegate(payload, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
+        if cancelled():
+            return cancelled_result()
         diff_text = args.get("diff")
         if isinstance(diff_text, str) and diff_text.strip():
             diff = {"success": True, "diff": diff_text, "changed_files": []}
@@ -6863,6 +6971,8 @@ class LocalAIServices:
                 max_tokens=int(args.get("diff_tokens", self.config.get("token_saving", {}).get("max_diff_tokens", 8000))),
                 path=args.get("path"),
             )
+        if cancelled():
+            return cancelled_result()
         if not diff.get("success"):
             return diff
         # Git omits untracked files. An explicitly named file can be read via
@@ -6908,6 +7018,8 @@ class LocalAIServices:
                 if not fit_text(added_diff, diff_budget).truncated:
                     diff = {**diff, "diff": added_diff, "changed_files": [requested_path],
                             "untracked_files_excluded": [], "review_source_sha256": digest}
+        if cancelled():
+            return cancelled_result()
         if not diff.get("diff", "").strip():
             excluded = diff.get("untracked_files_excluded", [])
             complete = diff.get("untracked_inventory_complete", False)
@@ -6957,6 +7069,8 @@ class LocalAIServices:
                 det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
 
         if args.get("mode") == "ast" or str(args.get("instructions", "")).strip().lower() == "ast":
+            if cancelled():
+                return cancelled_result()
             count_fields = ("additions", "deletions", "hunks")
             if not all(type(det_diff.get(field)) is int and det_diff[field] >= 0 for field in count_fields):
                 return {"success": False, "mode": "ast", "changed_files": diff.get("changed_files", []),
@@ -7098,6 +7212,8 @@ class LocalAIServices:
         format_recovery_used = False
         format_recoveries: list[dict[str, Any]] = []
         for index, review_code in enumerate(review_chunks, start=1):
+            if cancelled():
+                return cancelled_result()
             task = review_task
             if chunked:
                 task += (
@@ -7117,7 +7233,9 @@ class LocalAIServices:
                 "priority": int(args.get("priority", 5)),
             }
             review_payloads.append(review_payload)
-            response = self.delegate(review_payload)
+            response = delegate_review(review_payload)
+            if cancelled():
+                return cancelled_result()
             if not isinstance(response, dict) or response.get("success") is False:
                 if len(review_chunks) == 1 and isinstance(response, dict):
                     return response
@@ -7161,8 +7279,10 @@ class LocalAIServices:
                     "Then list only actionable defects, or write `- None.` when there are none. Do not emit fragments or markdown fences."
                 )
                 try:
-                    retry_response = self.delegate(retry_payload)
+                    retry_response = delegate_review(retry_payload)
                 except Exception as exc:
+                    if cancelled():
+                        return cancelled_result()
                     return {
                         "success": False,
                         "error": f"Review segment {index}/{len(review_chunks)} format recovery failed: {exc}",
@@ -7172,6 +7292,8 @@ class LocalAIServices:
                         "invalid_model_output": True,
                         "partial_reviews": [str(item.get("text", "")) for item in primary_results],
                     }
+                if cancelled():
+                    return cancelled_result()
                 retry_error = (
                     _review_text_error(retry_response.get("text"))
                     if isinstance(retry_response, dict) and retry_response.get("success") is not False
@@ -7211,12 +7333,14 @@ class LocalAIServices:
             "synthesis_task": synthesis_task,
             "max_output_tokens": max_output_tokens,
             "complexity": complexity,
-            "delegate": self.delegate,
+            "delegate": delegate_review,
             "priority": int(args.get("priority", 5)),
         }
         result["text"], result["review_synthesis"] = _merge_review_segment_results(
             primary_results, label="Review segment", task_type="review", **merge_options
         )
+        if cancelled():
+            return cancelled_result()
         if result["review_synthesis"].get("model"):
             result["model"] = result["review_synthesis"]["model"]
 
@@ -7228,6 +7352,8 @@ class LocalAIServices:
             try:
                 secondary_results = []
                 for review_payload in review_payloads:
+                    if cancelled():
+                        return cancelled_result()
                     sec_payload = dict(review_payload)
                     sec_payload["task_type"] = "reasoning"
                     sec_payload["task"] = (
@@ -7236,7 +7362,9 @@ class LocalAIServices:
                         "Confirm genuine issues and flag false positives.\n\n"
                         + str(review_payload["task"])
                     )
-                    sec_result = self.delegate(sec_payload)
+                    sec_result = delegate_review(sec_payload)
+                    if cancelled():
+                        return cancelled_result()
                     if not isinstance(sec_result, dict) or sec_result.get("success") is False:
                         raise ValueError(f"Counter-review segment {len(secondary_results) + 1} failed.")
                     output_error = _review_text_error(sec_result.get("text"))
@@ -7264,6 +7392,8 @@ class LocalAIServices:
             except Exception as exc:
                 result["consensus"] = {"enabled": True, "degraded": True, "error": str(exc)}
 
+        if cancelled():
+            return cancelled_result()
         if regressions:
             result["regressions"] = regressions
         result["diff"] = {
@@ -7297,8 +7427,13 @@ class LocalAIServices:
             result.setdefault("bypass_reason", quality["reason"])
         return result
 
-    def compress(self, args: dict[str, Any]) -> dict[str, Any]:
+    def compress(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
+        def cancelled() -> dict[str, Any]:
+            return {"success": False, "cancelled": True, "reason": "cancelled", "terminal": True, "retryable": False}
+
+        if cancel_event is not None and cancel_event.is_set():
+            return cancelled()
         text = str(args.get("text", ""))
         instruction = str(args.get("instruction", "Compress this while preserving facts, identifiers, numbers, decisions, errors and uncertainty."))
         target_tokens = max(128, int(args.get("target_tokens", 900)))
@@ -7312,6 +7447,8 @@ class LocalAIServices:
                 det = self.deterministic.compress_text(text, target_tokens)
             except Exception:
                 det = {"success": False}
+            if cancel_event is not None and cancel_event.is_set():
+                return cancelled()
             if det.get("success") and float(det.get("confidence", 0.0)) >= float(self.config.get("deterministic", {}).get("compression_confidence", 0.88)):
                 det["compression"] = {
                     "input_tokens_est": estimate_tokens(text),
@@ -7327,6 +7464,8 @@ class LocalAIServices:
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
         general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")))
         for index, chunk in enumerate(chunks):
+            if cancel_event is not None and cancel_event.is_set():
+                return cancelled()
             package = build_prompt(
                 operation="compress",
                 model=general_model,
@@ -7339,12 +7478,15 @@ class LocalAIServices:
                 package.system,
                 per_chunk_out, 0.1, source="compress:map", priority=int(args.get("priority", 4)),
                 internal=True,
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
             )
             if not result.get("success"):
                 return result
             summaries.append(str(result.get("text", "")))
 
         combined = "\n\n".join(summaries)
+        if cancel_event is not None and cancel_event.is_set():
+            return cancelled()
         if len(chunks) > 1 or estimate_tokens(combined) > target_tokens:
             package = build_prompt(
                 operation="compress",
@@ -7359,9 +7501,12 @@ class LocalAIServices:
                 package.system,
                 target_tokens, 0.1, source="compress:reduce", priority=int(args.get("priority", 4)),
                 internal=True,
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
             )
         else:
             final = {"success": True, "model": general_model, "text": combined}
+        if final.get("cancelled") is True or (cancel_event is not None and cancel_event.is_set()):
+            return final if final.get("cancelled") is True else cancelled()
         final["compression"] = {
             "input_tokens_est": estimate_tokens(text),
             "output_tokens_est": estimate_tokens(str(final.get("text", ""))),
@@ -7369,9 +7514,11 @@ class LocalAIServices:
         }
         return self.artifacts.compact(final, kind="compress")
 
-    def complete_code(self, args: dict[str, Any]) -> dict[str, Any]:
+    def complete_code(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         """Low-latency FIM (Fill-In-The-Middle) code completion for tab auto-complete."""
         reject_retired_tenancy_fields(args)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled", "validated": False}
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
@@ -7391,7 +7538,14 @@ class LocalAIServices:
         }
         cache_key = stable_hash({"complete_code": True, "model": model, "prompt": prompt, "max_tokens": max_tokens})
         def compute() -> dict[str, Any]:
-            res = self.scheduler.submit(model, source="complete_code", execute=lambda: self.runtime.request("/api/generate", payload, timeout=6.0))
+            def execute() -> dict[str, Any]:
+                if cancel_event is not None:
+                    return self.runtime.request_interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=6.0)
+                return self.runtime.request("/api/generate", payload, timeout=6.0)
+            res = self.scheduler.submit(model, source="complete_code", execute=execute,
+                                        **({"cancel_event": cancel_event} if cancel_event is not None else {}))
+            if cancel_event is not None and cancel_event.is_set():
+                return {"success": False, "cancelled": True, "reason": "cancelled", "validated": False}
             if isinstance(res, dict) and "error" in res:
                 return {"success": False, "error": res["error"], "validated": False}
             response_value = res.get("response") if isinstance(res, dict) else None
@@ -7407,7 +7561,12 @@ class LocalAIServices:
                 "completion": response_value,
                 "validated": False,
             }
-        raw, hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
+        if cancel_event is not None:
+            raw, hit, coalesced = compute(), False, False
+        else:
+            raw, hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled", "validated": False}
         result = copy.deepcopy(raw)
         result["cache_hit"] = hit or coalesced
         return result
@@ -7478,9 +7637,11 @@ class LocalAIServices:
             self._query_expansion_l1.set(cache_key, result)
         return result
 
-    def generate_tests(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def generate_tests(self, payload: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         """Generate complete unit test code for a symbol or file."""
         reject_retired_tenancy_fields(payload)
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         symbol = str(payload.get("symbol", ""))
         code_context = str(payload.get("code", ""))
         framework = str(payload.get("framework", "auto")).lower()
@@ -7507,6 +7668,8 @@ class LocalAIServices:
             else:
                 framework = "pytest"
 
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         if payload.get("fast_scaffold") or payload.get("template_only") or payload.get("deterministic"):
             clean_sym = re.sub(r"[^A-Za-z0-9_]", "_", symbol) or "target"
             pending_reason = "Replace scaffold with behavior-based assertions before enabling this test."
@@ -7566,7 +7729,10 @@ class LocalAIServices:
             512,
             0.1,
             source="generate_tests", priority=4,
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            return {"success": False, "cancelled": True, "reason": "cancelled"}
         if not res.get("success"):
             return res
 
@@ -8146,7 +8312,7 @@ class LocalAIServices:
 
         return result
 
-    def batch_delegate(self, args: dict[str, Any]) -> dict[str, Any]:
+    def batch_delegate(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
         tasks = args.get("tasks", [])
         if not isinstance(tasks, list) or not tasks:
@@ -8205,13 +8371,20 @@ class LocalAIServices:
         default_priority = int(args.get("priority", 5))
         inherited_root = args.get("root") or args.get("cwd")
         from .async_jobs import report_job_progress
+        parent_stop = capture_job_cancellation()
+        effective_cancel = (_LinkedCancelEvent(cancel_event or threading.Event(), parent_stop)
+                            if parent_stop is not None else cancel_event)
+        def cancelled() -> bool:
+            return (effective_cancel is not None and effective_cancel.is_set()) or current_job_should_stop()
         for i, _model, item in prepared:
+            if cancelled():
+                break
             item = dict(item)
             item.setdefault("priority", default_priority)
             if inherited_root and not item.get("root") and not item.get("cwd"):
                 item["root"] = inherited_root
             try:
-                results[i] = self.delegate(item)
+                results[i] = self.delegate(item, **({"cancel_event": effective_cancel} if effective_cancel is not None else {}))
             except Exception as exc:
                 results[i] = {
                     "success": False,
@@ -8222,8 +8395,16 @@ class LocalAIServices:
             if "id" in item:
                 results[i] = {**results[i], "id": item["id"]}
             report_job_progress(100.0 * len(results) / len(prepared), f"batch:{len(results)}/{len(prepared)}")
+        was_cancelled = cancelled()
+        if was_cancelled:
+            for i in range(input_count):
+                if i not in results:
+                    results[i] = {"success": False, "cancelled": True, "reason": "cancelled", "request_not_sent": True}
+                    if isinstance(tasks[i], dict) and "id" in tasks[i]:
+                        results[i]["id"] = tasks[i]["id"]
         return {
-            "success": all(r["success"] is True for r in results.values()),
+            "success": not was_cancelled and all(r["success"] is True for r in results.values()),
+            **({"cancelled": True} if was_cancelled else {}),
             "input_count": input_count,
             "accepted_count": input_count,
             "rejected_count": 0,

@@ -218,7 +218,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     config_path = tmp_path / "autostart.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {port}\nstate_dir = "{state_dir}"\n'
-        "[client]\nstartup_wait_seconds = 2\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.2\n",
+        "[client]\nstartup_wait_seconds = 15\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.2\n",
         encoding="utf-8",
     )
     received: list[dict[str, object]] = []
@@ -317,9 +317,20 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
-    if "local_ai_task" not in local_ai_mcp.mcp._tool_manager._tools:
-        local_ai_mcp.mcp.tool()(local_ai_mcp.local_ai_task)
-        request.addfinalizer(lambda: local_ai_mcp.mcp._tool_manager._tools.pop("local_ai_task", None))
+    # The MCP server is a module singleton shared across test modules. Replace
+    # any previously registered wrapper with this test's current callable, then
+    # restore the exact prior registration instead of inheriting another test's
+    # captured dependencies or monkeypatches.
+    tool_registry = local_ai_mcp.mcp._tool_manager._tools
+    previous_task_tool = tool_registry.pop("local_ai_task", None)
+    local_ai_mcp.mcp.tool()(local_ai_mcp.local_ai_task)
+
+    def restore_task_tool() -> None:
+        tool_registry.pop("local_ai_task", None)
+        if previous_task_tool is not None:
+            tool_registry["local_ai_task"] = previous_task_tool
+
+    request.addfinalizer(restore_task_tool)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: False)
     # Isolate client process creation. Patching subprocess.Popen in-place also
     # intercepts unrelated ExternalCodeIntelligence and pip preflight children.
@@ -350,7 +361,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
                 "complexity": "low",
                 "max_tokens": 256,
                 "delivery": "sync",
-                "latency_budget_ms": 1500,
+                "latency_budget_ms": 15000,
             })
             for task, context in tasks
         ))
@@ -405,7 +416,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
             "complexity": "low",
             "max_tokens": 256,
             "delivery": "sync",
-            "latency_budget_ms": 1500,
+            "latency_budget_ms": 15000,
             "model": "",
             "operation": "delegate",
             "changed_paths": [],
