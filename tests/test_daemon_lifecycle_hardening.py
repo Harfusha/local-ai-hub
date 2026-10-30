@@ -1302,9 +1302,12 @@ def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
     monkeypatch.setattr(commands_module, "_resume_suspended_process", lambda _child: True)
     monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
     stop_calls = 0
+    original_stop_daemon_tree = commands_module._stop_daemon_tree
 
-    def stop_then_confirm(_info: dict[str, Any]) -> bool:
+    def stop_then_confirm(candidate_info: dict[str, Any]) -> bool:
         nonlocal stop_calls
+        if candidate_info.get("process") is not process:
+            return original_stop_daemon_tree(candidate_info)
         stop_calls += 1
         return stop_calls > 1
 
