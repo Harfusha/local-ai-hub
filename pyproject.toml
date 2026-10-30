@@ -36,7 +36,7 @@ intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026
 token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]
 performance = ["orjson>=3.10,<4", "msgspec>=0.18,<1", "Cython>=3,<4"]
 profiling = ["py-spy>=0.3,<1", "scalene>=1.5,<2"]
-dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8", "psutil>=7,<8", "numpy>=2,<3", "setuptools>=61.0"]
+dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8", "psutil>=7,<8", "numpy>=2,<3", "setuptools>=61.0", "wheel>=0.45,<1"]
 
 [project.scripts]
 local-ai-hub = "local_ai_hub.__main__:main"
