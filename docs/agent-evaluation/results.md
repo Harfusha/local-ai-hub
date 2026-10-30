@@ -1721,3 +1721,9 @@ Tento výsledek dokládá zdrojový kandidát po integraci masteru a testovací 
 - **Lokální modelový požadavek:** `local_ai_task(action="reason")` přijal požadavek s `success=true` a `fallback_used=false`; kompaktní obálka neobsahovala samotný text odpovědi, proto tímto nedokládáme její sémantickou kvalitu.
 
 RAG databáze se nyní spouští s aktuálním fingerprintem a po restartu Hub odpovídá. Zálohu původního indexu ponechat, dokud nebude samostatně rozhodnuto o její archivaci.
+
+### Fixture 096: neprázdný RAG upgrade — 2026-10-30
+
+Poprvé je ověřen upgrade neprázdného indexu na integrovaném kandidátu 5.1.2 v odděleném sandboxu. Wheel 5.1.0 pochází z `6c7200a9c1b71554ebe368b8722a6757d94c0282`; kandidátní wheel z master `af5bb9e7443ce5196bfd24d78e2f2abb53774d5`. Supervisor odmítl starý fingerprint s požadavkem na explicitní offline rebuild. SHA-256 RAG DB, WAL a SHM zůstal při odmítnutí shodný a celý starý state byl zachován. Rebuild ze sandboxového zdroje vytvořil jeden soubor, chunk a owner; obsahový hash souhlasí a SQLite integrity je `ok`. Kandidátní HTTP smoke pro 5.1.2 skončil úspěšně a potvrdil ukončení procesu stromu.
+
+Reprodukovatelné kroky a omezení jsou v [case-096 README](fixtures/case-096/README.md) a [case-096 observations](fixtures/case-096/observations.md). Modelový embedding v tomto fixture je záměrně deterministický; výsledek nedokládá sémantickou kvalitu modelu, úplné zachování všech produkčních RAG dat ani release acceptance. Starý testovací state a obě pozorovací JSON evidence zůstávají v `%TEMP%\local-ai-eval-096-rag-upgrade-20261030-002`.
