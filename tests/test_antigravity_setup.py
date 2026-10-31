@@ -264,3 +264,160 @@ def test_skip_companion_does_not_download_superpowers(tmp_path, monkeypatch):
     setup.configure_gemini_instance(gemini, tmp_path / "install", Path("python"), None, {}, False, False)
     assert not (gemini / "GEMINI.md").exists()
     assert not (gemini / "AGENTS.md").exists()
+
+
+
+def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path):
+    import json
+    hooks_file = tmp_path / "hooks.json"
+    hooks_file.write_text(json.dumps({"custom-hook": {"enabled": True, "PreInvocation": []}}), encoding="utf-8")
+
+    fake_python = tmp_path / "bin" / "python.exe"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.write_text("", encoding="utf-8")
+
+    setup.sync_antigravity_hooks_json(hooks_file, tmp_path, fake_python, False)
+    data = json.loads(hooks_file.read_text(encoding="utf-8"))
+
+    assert "custom-hook" in data
+    assert data["custom-hook"]["enabled"] is True
+    import os
+    assert "local-ai-hub" in data
+    assert (tmp_path / ("local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh")).is_file()
+    hub_hook = data["local-ai-hub"]
+    assert hub_hook["enabled"] is True
+    assert len(hub_hook["PreInvocation"]) == 1
+    assert "local-ai-hook" in hub_hook["PreInvocation"][0]["command"]
+    assert len(hub_hook["PreToolUse"]) == 1
+    assert hub_hook["PreToolUse"][0]["matcher"] == "read_file|run_command"
+    assert "local-ai-hook" in hub_hook["PreToolUse"][0]["hooks"][0]["command"]
+
+    # Test idempotency
+    first_text = hooks_file.read_text(encoding="utf-8")
+    setup.sync_antigravity_hooks_json(hooks_file, tmp_path, fake_python, False)
+    assert hooks_file.read_text(encoding="utf-8") == first_text
+
+
+def test_antigravity_hook_pre_invocation():
+    from local_ai_hub import antigravity_hook
+    res = antigravity_hook.handle_pre_invocation({})
+    assert "injectSteps" in res
+    assert len(res["injectSteps"]) == 1
+    msg = res["injectSteps"][0]["ephemeralMessage"]
+    assert "LOCAL AI HUB POLICY" in msg
+    assert "call_mcp_tool" in msg
+    assert "local_ai_repo" in msg
+    assert "local_ai_coord" in msg
+
+
+def test_antigravity_hook_pre_tool_use_read_file(tmp_path):
+    from local_ai_hub import antigravity_hook
+
+    # Whitelisted path
+    res = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(tmp_path / ".gemini" / "GEMINI.md")}}
+    })
+    assert res["decision"] == "allow"
+
+    # Slice <= 80 lines allowed
+    res = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": "src/foo.py", "StartLine": 1, "EndLine": 80}}
+    })
+    assert res["decision"] == "allow"
+
+    # Slice > 80 lines denied
+    res = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": "src/foo.py", "StartLine": 1, "EndLine": 81}}
+    })
+    assert res["decision"] == "deny"
+    assert "81 lines" in res["reason"]
+
+    # File on disk with >80 lines denied on full read
+    large_file = tmp_path / "large.py"
+    large_file.write_text("\n".join(f"line_{i} = {i}" for i in range(100)), encoding="utf-8")
+    res = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(large_file)}}
+    })
+    assert res["decision"] == "deny"
+    assert "100 lines" in res["reason"]
+
+    # File on disk with <=80 lines allowed on full read
+    small_file = tmp_path / "small.py"
+    small_file.write_text("\n".join(f"line_{i} = {i}" for i in range(20)), encoding="utf-8")
+    res = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(small_file)}}
+    })
+    assert res["decision"] == "allow"
+
+
+def test_antigravity_hook_pre_tool_use_run_command():
+    from local_ai_hub import antigravity_hook
+
+    # Unconstrained searches denied
+    for bad_cmd in ["dir /s", "dir /s /b", "findstr /s foo *", "grep -r foo .", "rg pattern", "ripgrep test"]:
+        res = antigravity_hook.handle_pre_tool_use({
+            "toolCall": {"name": "run_command", "args": {"CommandLine": bad_cmd}}
+        })
+        assert res["decision"] == "deny", f"expected deny for {bad_cmd}"
+        assert "prohibited" in res["reason"]
+
+    # Bounded searches or normal commands allowed
+    for good_cmd in ["rg -m 5 pattern", "rg --max-count 10 foo", "pytest tests/", "git status", "python -m build"]:
+        res = antigravity_hook.handle_pre_tool_use({
+            "toolCall": {"name": "run_command", "args": {"CommandLine": good_cmd}}
+        })
+        assert res["decision"] == "allow", f"expected allow for {good_cmd}"
+
+
+
+def test_antigravity_hook_autostart_when_offline_and_cooldown(tmp_path, monkeypatch):
+    from local_ai_hub import antigravity_hook
+    import urllib.request
+    import io
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setenv("LOCAL_AI_STATE_DIR", str(state_dir))
+
+    # Fake hubctl.py
+    fake_hubctl = tmp_path / "tools" / "hubctl.py"
+    fake_hubctl.parent.mkdir()
+    fake_hubctl.write_text("print('started')", encoding="utf-8")
+
+    spawn_calls = []
+    def fake_popen(*args, **kwargs):
+        spawn_calls.append(args)
+        class Dummy:
+            pid = 9999
+        return Dummy()
+
+    monkeypatch.setattr(antigravity_hook.subprocess, "Popen", fake_popen)
+
+    # When offline:
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("connection refused")))
+
+    # 1. Should trigger
+    triggered = antigravity_hook._check_and_autostart_hub()
+    assert triggered is True
+    assert len(spawn_calls) == 1
+    assert (state_dir / ".hook_autostart_cooldown").is_file()
+
+    # 2. Cooldown active -> should NOT trigger
+    triggered_again = antigravity_hook._check_and_autostart_hub()
+    assert triggered_again is False
+    assert len(spawn_calls) == 1
+
+    # 3. If service.disabled -> should NOT trigger even after cooldown reset
+    (state_dir / ".hook_autostart_cooldown").unlink()
+    (state_dir / "service.disabled").write_text("", encoding="utf-8")
+    assert antigravity_hook._check_and_autostart_hub() is False
+    (state_dir / "service.disabled").unlink()
+
+    # 4. If degraded operational mode -> should NOT trigger
+    (state_dir / "operational_mode.json").write_text('{"degraded": true}', encoding="utf-8")
+    assert antigravity_hook._check_and_autostart_hub() is False
+    (state_dir / "operational_mode.json").unlink()
+
+    # 5. When online -> should NOT trigger
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b'{"success": true}'))
+    assert antigravity_hook._check_and_autostart_hub() is False

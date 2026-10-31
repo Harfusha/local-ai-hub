@@ -592,6 +592,78 @@ def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
     log(f"Antigravity permissions configured: {path}")
 
 
+def sync_antigravity_hooks_json(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> None:
+    """Ensure Antigravity lifecycle hooks configure Local AI Hub enforcement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {}
+    if path.exists():
+        backup(path, backup_enabled)
+        try:
+            raw_text = path.read_text(encoding="utf-8").strip()
+            if raw_text:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict):
+                    data = parsed
+        except Exception as exc:
+            log(f"WARNING: could not parse {path}: {exc}")
+
+    python_exe = str(hub_python.resolve())
+    if os.name == "nt":
+        hook_script = path.parent / "local-ai-hook.cmd"
+        batch_content = (
+            "@echo off\r\n"
+            f'"{python_exe}" -m local_ai_hub.antigravity_hook %*\r\n'
+            "if %ERRORLEVEL% NEQ 0 (\r\n"
+            '    echo {"decision": "allow"}\r\n'
+            "    exit /b 0\r\n"
+            ")\r\n"
+        )
+        hook_script.write_text(batch_content, encoding="utf-8")
+    else:
+        hook_script = path.parent / "local-ai-hook.sh"
+        sh_content = (
+            "#!/bin/sh\n"
+            f'"{python_exe}" -m local_ai_hub.antigravity_hook "$@" || echo \'{{"decision": "allow"}}\'\n'
+            "exit 0\n"
+        )
+        hook_script.write_text(sh_content, encoding="utf-8")
+        try:
+            hook_script.chmod(0o755)
+        except OSError:
+            pass
+    hook_config: dict[str, Any] = {
+        "enabled": True,
+        "PreInvocation": [
+            {
+                "type": "command",
+                "command": "local-ai-hook.cmd PreInvocation" if os.name == "nt" else "./local-ai-hook.sh PreInvocation",
+                "timeout": 15,
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "read_file|run_command",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "local-ai-hook.cmd PreToolUse" if os.name == "nt" else "./local-ai-hook.sh PreToolUse",
+                        "timeout": 15,
+                    }
+                ],
+            }
+        ],
+    }
+
+    data["local-ai-hub"] = hook_config
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    log(f"Antigravity hooks configured: {path}")
+
+
 def configure_gemini_instance(
     gemini_dir: Path,
     install_dir: Path,
@@ -631,6 +703,10 @@ def configure_gemini_instance(
     sync_antigravity_config_json(
         gemini_dir / "config" / "config.json",
         backup_enabled,
+    )
+    sync_antigravity_hooks_json(
+        gemini_dir / "config" / "hooks.json",
+        install_dir, hub_python, backup_enabled,
     )
 
     antigravity_mcp = gemini_dir / "antigravity" / "mcp" / "local-ai"

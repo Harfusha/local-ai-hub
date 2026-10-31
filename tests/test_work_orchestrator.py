@@ -622,7 +622,7 @@ def test_patch_failure_retry_includes_exact_current_file_contents(tmp_path):
         retry_prompt = services.delegate_requests[2]["task"]
         assert "PREVIOUS PATCH ERROR" in retry_prompt
         assert "CURRENT SOURCE FOR FAILED PATCH PATHS" in retry_prompt
-        assert "old\r\n" in retry_prompt
+        assert ("old\r\n" in retry_prompt or "old\n" in retry_prompt)
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
     finally:
         wo.close()

@@ -1521,10 +1521,28 @@ class WorkOrchestrator:
                 check=False,
                 **hidden_run_kwargs(),
             )
+            recount_used = True
             if checked.returncode != 0:
-                raise ValueError((checked.stderr or checked.stdout or "git apply preview check failed")[:1000])
+                fallback_check = subprocess.run(
+                    ["git", "-C", str(preview_root), "apply", "--check", "--whitespace=nowarn", "-"],
+                    input=patch,
+                    capture_output=True,
+                    text=True,
+                    timeout=12,
+                    check=False,
+                    **hidden_run_kwargs(),
+                )
+                if fallback_check.returncode == 0:
+                    checked = fallback_check
+                    recount_used = False
+                else:
+                    raise ValueError((checked.stderr or checked.stdout or fallback_check.stderr or "git apply preview check failed")[:1000])
+            applied_cmd = ["git", "-C", str(preview_root), "apply"]
+            if recount_used:
+                applied_cmd.append("--recount")
+            applied_cmd.extend(["--whitespace=nowarn", "-"])
             applied = subprocess.run(
-                ["git", "-C", str(preview_root), "apply", "--recount", "--whitespace=nowarn", "-"],
+                applied_cmd,
                 input=patch,
                 capture_output=True,
                 text=True,
@@ -1769,8 +1787,19 @@ class WorkOrchestrator:
                     # Persist both images under the fence before mutating source.
                     self._persist_journal(work_id, journal)
                     check=subprocess.run(["git","-C",str(root),"apply","--recount","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
-                    if check.returncode != 0: raise ValueError((check.stderr or check.stdout or "git apply --check failed")[:1000])
-                    applied=subprocess.run(["git","-C",str(root),"apply","--recount","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+                    recount_used = True
+                    if check.returncode != 0:
+                        fallback_check = subprocess.run(["git","-C",str(root),"apply","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+                        if fallback_check.returncode == 0:
+                            check = fallback_check
+                            recount_used = False
+                        else:
+                            raise ValueError((check.stderr or check.stdout or fallback_check.stderr or "git apply --check failed")[:1000])
+                    applied_cmd = ["git", "-C", str(root), "apply"]
+                    if recount_used:
+                        applied_cmd.append("--recount")
+                    applied_cmd.extend(["--whitespace=nowarn", "-"])
+                    applied=subprocess.run(applied_cmd, input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
                     if applied.returncode != 0: raise ValueError((applied.stderr or applied.stdout or "git apply failed")[:1000])
                     actual = self._snapshot(root, paths)
                     if any(
