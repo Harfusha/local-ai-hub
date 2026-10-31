@@ -85,8 +85,8 @@ def _is_pid_alive(pid: int) -> bool:
 def _check_and_autostart_hub() -> bool:
     """If Local AI Hub is offline and supervisor is dead/not in error, trigger one-shot background start."""
     try:
-        req = urllib.request.Request("http://127.0.0.1:11435/api/status", headers={"User-Agent": "AntigravityHook"})
-        with urllib.request.urlopen(req, timeout=0.15):
+        req = urllib.request.Request("http://127.0.0.1:11435/health", headers={"User-Agent": "AntigravityHook"})
+        with urllib.request.urlopen(req, timeout=0.8):
             return False
     except Exception:
         pass
@@ -121,9 +121,16 @@ def _check_and_autostart_hub() -> bool:
         for marker in (state_dir / "supervisor.pid", state_dir / "supervisor.lock"):
             if marker.is_file():
                 try:
-                    pid = int(marker.read_text(encoding="utf-8").strip() or 0)
-                    if _is_pid_alive(pid):
+                    text = marker.read_text(encoding="utf-8").strip()
+                    if text.startswith("{"):
+                        data = json.loads(text)
+                        pid = int(data.get("pid") or 0)
+                    else:
+                        pid = int(text or 0)
+                    if pid and _is_pid_alive(pid):
                         return False
+                except PermissionError:
+                    return False
                 except Exception:
                     pass
 
