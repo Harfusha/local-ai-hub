@@ -610,7 +610,8 @@ class HubClient:
             return False
         if getattr(operational_mode, "mode", None) != "active" or getattr(operational_mode, "degraded", True):
             return False
-        # If managed service supervisor is dead, recovery proceeds below.
+        if (state_dir / "service.managed").exists():
+            return False
         config_path = self.config["_config_path"]
         state_dir.mkdir(parents=True, exist_ok=True)
         if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
@@ -679,7 +680,8 @@ class HubClient:
                 return False
             if live_supervisor() or find_listening_pid(port):
                 return wait_until_ready()
-            # If managed service supervisor is dead, service start is launched below.
+            if (state_dir / "service.managed").exists():
+                return False
             env = os.environ.copy()
             env["LOCAL_AI_CONFIG"] = config_path
             src_dir = str(Path(__file__).resolve().parents[1])

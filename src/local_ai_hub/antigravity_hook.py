@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         result = {"decision": "allow"}
 
-    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
     return 0
 
