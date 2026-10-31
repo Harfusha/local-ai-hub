@@ -618,41 +618,61 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     </section>
   </div>
   <section class="section" id="endpointStatsSection">
-      <h2>
-        <span style="display:flex;align-items:center;gap:8px">
-          Long-Term Endpoint &amp; MCP Analytics
-          <span class="tiny" id="endpointStatsSub">Persistent latency percentiles (p50 / p95 / p99), call counts, and success rates</span>
-        </span>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <select id="epStatsProjectSelect" aria-label="Project filter for Endpoint Analytics" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
-            <option value="">Global (All Projects)</option>
-          </select>
-          <select id="epStatsTypeSelect" aria-label="Type filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
-            <option value="all">All Types</option>
-            <option value="endpoint">HTTP Endpoints</option>
-            <option value="mcp">MCP Tools</option>
-          </select>
-          <select id="epStatsSortSelect" aria-label="Sort filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
-            <option value="calls_desc">Most Used</option>
-            <option value="calls_asc">Unused / Least Used</option>
-            <option value="p95_desc">Slowest (p95)</option>
-            <option value="fail_desc">Most Failing</option>
-          </select>
-          <button class="btn" id="epStatsRefreshBtn" style="padding:4px 10px;font-size:11px">↻ Refresh</button>
-          <button class="btn warn" id="epStatsResetBtn" style="padding:4px 10px;font-size:11px">Reset Stats</button>
+    <h2>
+      <span style="display:flex;align-items:center;gap:8px">
+        Dlouhodobá analytika endpointů a MCP
+        <span class="tiny" id="endpointStatsSub">Perzistentní percentily latence (p50 / p95 / p99), počty volání a úspěšnost</span>
+      </span>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <select id="epStatsProjectSelect" aria-label="Project filter for Endpoint Analytics" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
+          <option value="">Globální (Všechny projekty)</option>
+        </select>
+        <select id="epStatsTypeSelect" aria-label="Type filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
+          <option value="all">Všechny typy</option>
+          <option value="endpoint">HTTP Endpointy</option>
+          <option value="mcp">MCP Nástroje</option>
+        </select>
+        <select id="epStatsSortSelect" aria-label="Sort filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
+          <option value="p95_desc">Nejpomalejší (p95 latence)</option>
+          <option value="calls_desc">Nejvíce volané (provoz)</option>
+          <option value="fail_desc">Nejvyšší chybovost</option>
+          <option value="name_asc">Název (A-Z)</option>
+        </select>
+        <button class="btn" id="epStatsRefreshBtn" style="padding:4px 10px;font-size:11px">↻ Obnovit</button>
+        <button class="btn warn" id="epStatsResetBtn" style="padding:4px 10px;font-size:11px">Resetovat</button>
+      </div>
+    </h2>
+    <div style="padding:8px 14px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;font-size:11px;background:var(--panel2);align-items:center">
+      <div class="subtabs" id="epStatsScopeTabs" style="margin:0;border:0;padding:0;gap:4px">
+        <button class="subtab-btn active" id="epScopeActive" type="button" style="padding:3px 9px;font-size:11px">Aktivní (<span id="epCountActive">0</span>)</button>
+        <button class="subtab-btn" id="epScopeAll" type="button" style="padding:3px 9px;font-size:11px">Všechny (<span id="epCountTotal">0</span>)</button>
+        <button class="subtab-btn" id="epScopeUnused" type="button" style="padding:3px 9px;font-size:11px">Nepoužité (<span id="epCountUnused">0</span>)</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
+        <span class="pill warn-t" id="epStatsSlowCount" style="display:none">0 pomalé</span>
+        <span class="pill bad-t" id="epStatsFailingCount" style="display:none">0 padající</span>
+        <span class="tiny muted" id="epStatsStatusMsg"></span>
+      </div>
+    </div>
+    <div id="epTopChartsGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px;padding:12px 14px;background:var(--bg);border-bottom:1px solid var(--line)">
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong style="font-size:11px;color:var(--text)">Srovnání latence (Top nejpomalejší p95)</strong>
+          <span class="tiny muted">p50 / p95 / p99</span>
         </div>
-      </h2>
-      <div style="padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;font-size:11px;background:var(--panel2);align-items:center">
-        <span class="pill" id="epStatsTotalCount">Total: 0</span>
-        <span class="pill ok" id="epStatsActiveCount">Active: 0</span>
-        <span class="pill" id="epStatsUnusedCount" style="color:var(--muted)">Unused: 0</span>
-        <span class="pill warn-t" id="epStatsSlowCount">Slow (p95 &gt; 1s): 0</span>
-        <span class="pill bad-t" id="epStatsFailingCount">Failing (&lt; 90%): 0</span>
-        <span class="tiny muted" id="epStatsStatusMsg" style="margin-left:auto"></span>
+        <div id="epLatencyBenchmarkChart" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
-      <div id="epStatsChartContainer" style="padding:16px;max-height:600px;overflow-y:auto">
-        <div id="epStatsList" class="tiny muted">Loading analytics…</div>
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong style="font-size:11px;color:var(--text)">Srovnání provozu (Top nejvolanější)</strong>
+          <span class="tiny muted">Volání &amp; úspěšnost</span>
+        </div>
+        <div id="epTrafficBenchmarkChart" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
+    </div>
+    <div id="epStatsChartContainer" style="padding:12px;max-height:600px;overflow-y:auto">
+      <div id="epStatsList" class="tiny muted">Načítání analytiky…</div>
+    </div>
     </section>
 </div>
 
@@ -5888,19 +5908,20 @@ document.addEventListener('click',e=>{
 // ── Long-Term Endpoint & MCP Analytics ────────────────────────────────────────
 let cachedEndpointStats = null;
 let endpointStatsLoading = false;
+let epCurrentScope = 'active';
 
 async function loadEndpointStatsView() {
   if (endpointStatsLoading) return;
   endpointStatsLoading = true;
   const project = $('epStatsProjectSelect')?.value || '';
   const statusMsg = $('epStatsStatusMsg');
-  if (statusMsg) statusMsg.textContent = 'Updating analytics…';
+  if (statusMsg) statusMsg.textContent = 'Aktualizace…';
 
   try {
     const url = '/api/telemetry/endpoint-stats' + (project ? '?root=' + encodeURIComponent(project) : '');
     const res = await fetchDashboardJson(url, { cache: 'no-store' });
     if (!res || !res.success) {
-      if ($('epStatsList')) $('epStatsList').innerHTML = '<div class="tiny bad-t">Failed to load analytics: ' + esc(res?.error || 'unknown') + '</div>';
+      if ($('epStatsList')) $('epStatsList').innerHTML = '<div class="tiny bad-t">Chyba načítání: ' + esc(res?.error || 'unknown') + '</div>';
       return;
     }
     cachedEndpointStats = res;
@@ -5908,7 +5929,7 @@ async function loadEndpointStatsView() {
     const projSelect = $('epStatsProjectSelect');
     if (projSelect && Array.isArray(res.projects)) {
       const currentVal = projSelect.value;
-      const opts = ['<option value="">Global (All Projects)</option>'];
+      const opts = ['<option value="">Globální (Všechny projekty)</option>'];
       for (const p of res.projects) {
         opts.push(`<option value="${esc(p)}"${p === currentVal ? ' selected' : ''}>${esc(p)}</option>`);
       }
@@ -5916,9 +5937,9 @@ async function loadEndpointStatsView() {
     }
 
     renderEndpointStatsView();
-    if (statusMsg) statusMsg.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    if (statusMsg) statusMsg.textContent = 'Aktualizováno ' + new Date().toLocaleTimeString();
   } catch (err) {
-    if ($('epStatsList')) $('epStatsList').innerHTML = '<div class="tiny bad-t">Error loading analytics: ' + esc(String(err)) + '</div>';
+    if ($('epStatsList')) $('epStatsList').innerHTML = '<div class="tiny bad-t">Chyba načítání: ' + esc(String(err)) + '</div>';
   } finally {
     endpointStatsLoading = false;
   }
@@ -5928,48 +5949,166 @@ function renderEndpointStatsView() {
   const data = cachedEndpointStats;
   if (!data || !Array.isArray(data.items)) return;
 
-  if ($('epStatsTotalCount')) $('epStatsTotalCount').textContent = `Total: ${data.total_items || data.items.length}`;
-  if ($('epStatsActiveCount')) $('epStatsActiveCount').textContent = `Active: ${(data.total_items || data.items.length) - (data.unused_count || 0)}`;
-  if ($('epStatsUnusedCount')) $('epStatsUnusedCount').textContent = `Unused: ${data.unused_count || 0}`;
-  if ($('epStatsSlowCount')) $('epStatsSlowCount').textContent = `Slow (p95 > 1s): ${data.slow_count || 0}`;
-  if ($('epStatsFailingCount')) $('epStatsFailingCount').textContent = `Failing (< 90%): ${data.failing_count || 0}`;
+  const totalCount = data.total_items || data.items.length;
+  const unusedCount = data.unused_count || 0;
+  const activeCount = totalCount - unusedCount;
+
+  if ($('epCountTotal')) $('epCountTotal').textContent = totalCount;
+  if ($('epCountActive')) $('epCountActive').textContent = activeCount;
+  if ($('epCountUnused')) $('epCountUnused').textContent = unusedCount;
+
+  const slowEl = $('epStatsSlowCount');
+  if (slowEl) {
+    if (data.slow_count > 0) {
+      slowEl.style.display = 'inline-block';
+      slowEl.textContent = `${data.slow_count} pomalé (>1s)`;
+    } else {
+      slowEl.style.display = 'none';
+    }
+  }
+
+  const failEl = $('epStatsFailingCount');
+  if (failEl) {
+    if (data.failing_count > 0) {
+      failEl.style.display = 'inline-block';
+      failEl.textContent = `${data.failing_count} padající (<90%)`;
+    } else {
+      failEl.style.display = 'none';
+    }
+  }
+
+  $('epScopeActive')?.classList.toggle('active', epCurrentScope === 'active');
+  $('epScopeAll')?.classList.toggle('active', epCurrentScope === 'all');
+  $('epScopeUnused')?.classList.toggle('active', epCurrentScope === 'unused');
 
   const typeFilter = $('epStatsTypeSelect')?.value || 'all';
-  const sortFilter = $('epStatsSortSelect')?.value || 'calls_desc';
+  const sortFilter = $('epStatsSortSelect')?.value || 'p95_desc';
 
   let items = data.items.slice();
   if (typeFilter !== 'all') {
     items = items.filter(it => it.type === typeFilter);
   }
 
+  if (epCurrentScope === 'active') {
+    items = items.filter(it => (it.calls || 0) > 0);
+  } else if (epCurrentScope === 'unused') {
+    items = items.filter(it => (it.calls || 0) === 0);
+  }
+
   items.sort((a, b) => {
     if (sortFilter === 'calls_desc') return (b.calls || 0) - (a.calls || 0);
-    if (sortFilter === 'calls_asc') {
-      if ((a.calls || 0) !== (b.calls || 0)) return (a.calls || 0) - (b.calls || 0);
-      return a.name.localeCompare(b.name);
-    }
     if (sortFilter === 'p95_desc') return (b.p95_ms || 0) - (a.p95_ms || 0);
     if (sortFilter === 'fail_desc') {
       const aFail = a.calls > 0 ? (a.fail_calls || 0) / a.calls : -1;
       const bFail = b.calls > 0 ? (b.fail_calls || 0) / b.calls : -1;
       return bFail - aFail;
     }
+    if (sortFilter === 'name_asc' || sortFilter === 'calls_asc') {
+      return a.name.localeCompare(b.name);
+    }
     return 0;
   });
+
+  const activeItems = data.items.filter(it => (it.calls || 0) > 0);
+  let maxActiveP95 = 10.0;
+  let maxActiveCalls = 1;
+  for (const it of activeItems) {
+    if (it.p95_ms > maxActiveP95) maxActiveP95 = it.p95_ms;
+    if (it.calls > maxActiveCalls) maxActiveCalls = it.calls;
+  }
+
+  const topGrid = $('epTopChartsGrid');
+  if (topGrid) {
+    if (epCurrentScope === 'unused' || activeItems.length === 0) {
+      topGrid.style.display = 'none';
+    } else {
+      topGrid.style.display = 'grid';
+
+      const topLatency = activeItems.slice().sort((a, b) => (b.p95_ms || 0) - (a.p95_ms || 0)).slice(0, 5);
+      const latHtml = topLatency.map(it => {
+        const isMcp = it.type === 'mcp';
+        const p50 = it.p50_ms || 0;
+        const p95 = it.p95_ms || 0;
+        const p99 = it.p99_ms || 0;
+        const barWidth = Math.max(8, Math.min(100, (p95 / maxActiveP95) * 100));
+        const p50Pct = p95 > 0 ? Math.min(100, (p50 / p95) * 100) : 50;
+
+        return `
+        <div style="font-size:11px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+            <div style="display:flex;align-items:center;gap:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%">
+              <span class="pill" style="font-size:9px;padding:1px 4px;background:${isMcp ? '#2e1065;color:#c084fc' : '#082f49;color:#38bdf8'}">${isMcp ? 'MCP' : 'HTTP'}</span>
+              <code style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis" title="${esc(it.name)}">${esc(it.name)}</code>
+            </div>
+            <div style="font-family:monospace;font-size:10px;color:var(--muted)">
+              <span style="color:#38bdf8">${p50 >= 1000 ? (p50/1000).toFixed(1)+'s' : p50.toFixed(0)+'ms'}</span> / 
+              <span style="color:#f59e0b;font-weight:600">${p95 >= 1000 ? (p95/1000).toFixed(1)+'s' : p95.toFixed(0)+'ms'}</span> / 
+              <span style="color:#f43f5e">${p99 >= 1000 ? (p99/1000).toFixed(1)+'s' : p99.toFixed(0)+'ms'}</span>
+            </div>
+          </div>
+          <div style="background:var(--bg);height:12px;border-radius:3px;overflow:hidden;display:flex">
+            <div style="width:${barWidth}%;height:100%;display:flex;border-radius:3px;overflow:hidden">
+              <div style="width:${p50Pct}%;background:#38bdf8;height:100%" title="p50: ${p50.toFixed(1)}ms"></div>
+              <div style="flex:1;background:#f59e0b;height:100%" title="p95: ${p95.toFixed(1)}ms"></div>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+      if ($('epLatencyBenchmarkChart')) $('epLatencyBenchmarkChart').innerHTML = latHtml || '<div class="tiny muted">Žádná aktivní data</div>';
+
+      const topCalls = activeItems.slice().sort((a, b) => (b.calls || 0) - (a.calls || 0)).slice(0, 5);
+      const trafHtml = topCalls.map(it => {
+        const isMcp = it.type === 'mcp';
+        const calls = it.calls || 0;
+        const succ = it.success_rate != null ? it.success_rate : 100;
+        const barWidth = Math.max(8, Math.min(100, (calls / maxActiveCalls) * 100));
+        const color = succ >= 98 ? '#10b981' : (succ >= 90 ? '#f59e0b' : '#ef4444');
+
+        return `
+        <div style="font-size:11px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+            <div style="display:flex;align-items:center;gap:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%">
+              <span class="pill" style="font-size:9px;padding:1px 4px;background:${isMcp ? '#2e1065;color:#c084fc' : '#082f49;color:#38bdf8'}">${isMcp ? 'MCP' : 'HTTP'}</span>
+              <code style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis" title="${esc(it.name)}">${esc(it.name)}</code>
+            </div>
+            <div style="font-family:monospace;font-size:10px">
+              <strong>${n(calls)}</strong> <span style="color:${color}">(${succ.toFixed(1)}%)</span>
+            </div>
+          </div>
+          <div style="background:var(--bg);height:12px;border-radius:3px;overflow:hidden">
+            <div style="width:${barWidth}%;background:${color};height:100%;border-radius:3px" title="${calls} volání, ${succ.toFixed(1)}% úspěch"></div>
+          </div>
+        </div>`;
+      }).join('');
+      if ($('epTrafficBenchmarkChart')) $('epTrafficBenchmarkChart').innerHTML = trafHtml || '<div class="tiny muted">Žádná aktivní data</div>';
+    }
+  }
 
   const listEl = $('epStatsList');
   if (!listEl) return;
   if (items.length === 0) {
-    listEl.innerHTML = '<div class="tiny muted" style="padding:16px;text-align:center">No endpoints match the selected filter.</div>';
+    listEl.innerHTML = '<div class="tiny muted" style="padding:24px;text-align:center">Žádné endpointy neodpovídají zvolenému filtru.</div>';
     return;
   }
 
-  let maxP99 = 100.0;
-  for (const it of items) {
-    if (it.p99_ms > maxP99) maxP99 = it.p99_ms;
-  }
+  let tableHtml = `
+  <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead>
+        <tr style="border-bottom:1px solid var(--line);color:var(--muted);text-align:left">
+          <th style="width:48px;padding:6px 8px">Typ</th>
+          <th style="padding:6px 8px">Endpoint / Nástroj</th>
+          <th style="width:110px;padding:6px 8px">Volání</th>
+          <th style="width:80px;padding:6px 8px">Úspěšnost</th>
+          <th style="width:26%;padding:6px 8px">Relativní latence (p50 / p95)</th>
+          <th style="width:75px;text-align:right;padding:6px 8px">p50</th>
+          <th style="width:75px;text-align:right;padding:6px 8px">p95</th>
+          <th style="width:75px;text-align:right;padding:6px 8px">p99</th>
+        </tr>
+      </thead>
+      <tbody>`;
 
-  const html = items.map(item => {
+  for (const item of items) {
     const isMcp = item.type === 'mcp';
     const calls = item.calls || 0;
     const p50 = item.p50_ms || 0;
@@ -5977,69 +6116,74 @@ function renderEndpointStatsView() {
     const p99 = item.p99_ms || 0;
 
     let succClass = 'ok';
-    let succText = `${item.success_rate != null ? item.success_rate.toFixed(1) : 100}% success`;
+    let succText = `${item.success_rate != null ? item.success_rate.toFixed(1) : 100}%`;
     if (calls === 0) {
       succClass = 'muted';
-      succText = 'Unused';
+      succText = '0 volání';
     } else if (item.success_rate != null && item.success_rate < 90) {
       succClass = 'bad-t';
     } else if (item.success_rate != null && item.success_rate < 98) {
       succClass = 'warn-t';
     }
 
-    const p50Width = Math.max(1, Math.min(100, (p50 / maxP99) * 100));
-    const p95Width = Math.max(1, Math.min(100, (p95 / maxP99) * 100));
-    const p99Width = Math.max(1, Math.min(100, (p99 / maxP99) * 100));
+    const relCallsWidth = Math.max(2, Math.min(100, (calls / maxActiveCalls) * 100));
+    const relLatWidth = calls > 0 ? Math.max(4, Math.min(100, (p95 / maxActiveP95) * 100)) : 0;
+    const p50Pct = p95 > 0 ? Math.min(100, (p50 / p95) * 100) : 50;
 
-    return `
-    <div style="margin-bottom:10px;padding:12px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:6px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span class="pill" style="font-size:10px;font-weight:600;background:${isMcp ? '#2e1065;color:#c084fc' : '#082f49;color:#38bdf8'}">${isMcp ? 'MCP' : 'HTTP'}</span>
-          <code style="font-size:12px;font-weight:600;color:var(--text)">${esc(item.name)}</code>
-          ${item.status === 'slow' ? '<span class="pill warn-t" style="font-size:9px">SLOW</span>' : ''}
-          ${item.status === 'failing' ? '<span class="pill bad-t" style="font-size:9px">FAILING</span>' : ''}
-        </div>
-        <div style="display:flex;align-items:center;gap:10px;font-size:11px">
-          <span style="color:var(--muted)">${n(calls)} calls</span>
-          <span class="pill ${succClass}" style="font-weight:600">${succText}</span>
-        </div>
-      </div>
-      ${calls > 0 ? `
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
-          <span style="width:28px;color:var(--muted)">p50</span>
-          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden">
-            <div style="width:${p50Width}%;background:#38bdf8;height:100%;border-radius:2px"></div>
+    tableHtml += `
+    <tr style="border-bottom:1px solid var(--line);background:var(--panel2)">
+      <td style="padding:6px 8px">
+        <span class="pill" style="font-size:9px;padding:1px 5px;font-weight:600;background:${isMcp ? '#2e1065;color:#c084fc' : '#082f49;color:#38bdf8'}">${isMcp ? 'MCP' : 'HTTP'}</span>
+      </td>
+      <td style="padding:6px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <code style="font-size:12px;font-weight:600;color:var(--text)" title="${esc(item.name)}">${esc(item.name)}</code>
+        ${item.status === 'slow' ? '<span class="pill warn-t" style="font-size:9px;margin-left:4px">SLOW</span>' : ''}
+        ${item.status === 'failing' ? '<span class="pill bad-t" style="font-size:9px;margin-left:4px">FAILING</span>' : ''}
+      </td>
+      <td style="padding:6px 8px">
+        ${calls > 0 ? `
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-family:monospace;width:32px">${n(calls)}</span>
+          <div style="flex:1;background:var(--bg);height:6px;border-radius:2px;overflow:hidden">
+            <div style="width:${relCallsWidth}%;background:#64748b;height:100%"></div>
           </div>
-          <span style="width:65px;text-align:right;font-family:monospace;color:var(--text)">${p50.toFixed(1)} ms</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
-          <span style="width:28px;color:var(--muted)">p95</span>
-          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden">
-            <div style="width:${p95Width}%;background:#f59e0b;height:100%;border-radius:2px"></div>
+        ` : `<span style="color:var(--muted)">0</span>`}
+      </td>
+      <td style="padding:6px 8px">
+        <span class="pill ${succClass}" style="font-size:10px;font-weight:600">${succText}</span>
+      </td>
+      <td style="padding:6px 8px">
+        ${calls > 0 ? `
+        <div style="display:flex;align-items:center;gap:6px">
+          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden;display:flex">
+            <div style="width:${relLatWidth}%;height:100%;display:flex">
+              <div style="width:${p50Pct}%;background:#38bdf8;height:100%" title="p50: ${p50.toFixed(1)}ms"></div>
+              <div style="flex:1;background:#f59e0b;height:100%" title="p95: ${p95.toFixed(1)}ms"></div>
+            </div>
           </div>
-          <span style="width:65px;text-align:right;font-family:monospace;color:var(--text)">${p95.toFixed(1)} ms</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
-          <span style="width:28px;color:var(--muted)">p99</span>
-          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden">
-            <div style="width:${p99Width}%;background:#f43f5e;height:100%;border-radius:2px"></div>
-          </div>
-          <span style="width:65px;text-align:right;font-family:monospace;color:var(--text)">${p99.toFixed(1)} ms</span>
-        </div>
-      </div>
-      ` : `
-      <div style="background:var(--bg);padding:6px 10px;border-radius:3px;font-size:11px;color:var(--muted)">
-        Unused · 0 recorded calls
-      </div>
-      `}
-    </div>`;
-  }).join('');
+        ` : `<span class="tiny muted">—</span>`}
+      </td>
+      <td style="padding:6px 8px;text-align:right;font-family:monospace;color:${calls > 0 ? 'var(--text)' : 'var(--muted)'}">
+        ${calls > 0 ? (p50 >= 1000 ? (p50/1000).toFixed(2)+'s' : p50.toFixed(1)+'ms') : '—'}
+      </td>
+      <td style="padding:6px 8px;text-align:right;font-family:monospace;font-weight:600;color:${calls > 0 ? (p95 >= 1000 ? '#f59e0b' : 'var(--text)') : 'var(--muted)'}">
+        ${calls > 0 ? (p95 >= 1000 ? (p95/1000).toFixed(2)+'s' : p95.toFixed(1)+'ms') : '—'}
+      </td>
+      <td style="padding:6px 8px;text-align:right;font-family:monospace;color:${calls > 0 ? (p99 >= 2000 ? '#f43f5e' : 'var(--muted)') : 'var(--muted)'}">
+        ${calls > 0 ? (p99 >= 1000 ? (p99/1000).toFixed(2)+'s' : p99.toFixed(1)+'ms') : '—'}
+      </td>
+    </tr>`;
+  }
 
-  listEl.innerHTML = html;
+  tableHtml += `</tbody></table></div>`;
+  listEl.innerHTML = tableHtml;
 }
 
+$('epScopeActive')?.addEventListener('click', () => { epCurrentScope = 'active'; renderEndpointStatsView(); });
+$('epScopeAll')?.addEventListener('click', () => { epCurrentScope = 'all'; renderEndpointStatsView(); });
+$('epScopeUnused')?.addEventListener('click', () => { epCurrentScope = 'unused'; renderEndpointStatsView(); });
 $('epStatsProjectSelect')?.addEventListener('change', () => loadEndpointStatsView());
 $('epStatsTypeSelect')?.addEventListener('change', () => renderEndpointStatsView());
 $('epStatsSortSelect')?.addEventListener('change', () => renderEndpointStatsView());
@@ -6050,13 +6194,13 @@ $('subtabEndpointStatsJump')?.addEventListener('click', () => {
 });
 $('epStatsResetBtn')?.addEventListener('click', async () => {
   const project = $('epStatsProjectSelect')?.value || '';
-  const label = project ? `project "${project}"` : 'ALL projects globally';
-  if (!confirm(`Are you sure you want to reset long-term stats for ${label}?`)) return;
+  const label = project ? `projekt "${project}"` : 'VŠECHNY projekty globálně';
+  if (!confirm(`Opravdu chcete resetovat dlouhodobé statistiky pro ${label}?`)) return;
   const res = await post('/api/telemetry/endpoint-stats/reset', { root: project });
   if (res && res.success) {
     await loadEndpointStatsView();
   } else {
-    alert('Reset failed: ' + (res?.error || 'unknown error'));
+    alert('Resetování selhalo: ' + (res?.error || 'neznámá chyba'));
   }
 });
 
