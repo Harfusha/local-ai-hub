@@ -551,6 +551,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
       <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Incidents &amp; lessons</button>
       <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Run history</button>
+      <button class="subtab-btn" id="subtabEndpointStatsJump" type="button" style="margin-left:auto;border-color:var(--accent);color:var(--accent)">📊 Endpoint &amp; MCP Analytics ↓</button>
     </div>
   </section>
 
@@ -615,7 +616,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><button class="btn ok" id="visionReviewOpen" style="padding:4px 8px;font-size:11px">Frontend vision review</button><select id="traceKind" aria-label="Trace kind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
-    <section class="section" id="endpointStatsSection">
+  </div>
+  <section class="section" id="endpointStatsSection">
       <h2>
         <span style="display:flex;align-items:center;gap:8px">
           Long-Term Endpoint &amp; MCP Analytics
@@ -652,7 +654,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <div id="epStatsList" class="tiny muted">Loading analytics…</div>
       </div>
     </section>
-  </div>
 </div>
 
 
@@ -6043,6 +6044,10 @@ $('epStatsProjectSelect')?.addEventListener('change', () => loadEndpointStatsVie
 $('epStatsTypeSelect')?.addEventListener('change', () => renderEndpointStatsView());
 $('epStatsSortSelect')?.addEventListener('change', () => renderEndpointStatsView());
 $('epStatsRefreshBtn')?.addEventListener('click', () => loadEndpointStatsView());
+$('subtabEndpointStatsJump')?.addEventListener('click', () => {
+  $('endpointStatsSection')?.scrollIntoView({ behavior: 'smooth' });
+  loadEndpointStatsView();
+});
 $('epStatsResetBtn')?.addEventListener('click', async () => {
   const project = $('epStatsProjectSelect')?.value || '';
   const label = project ? `project "${project}"` : 'ALL projects globally';
