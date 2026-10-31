@@ -58,6 +58,7 @@ from local_ai_hub.token_accounting import account_projection, attach_accounting,
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.search_pagination import MAX_PAGE_SIZE, pagination_bounds_error
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
+from local_ai_hub.endpoint_stats import EndpointStatsStore
 from local_ai_hub.task_memory_wire import (
     mcp_wire_tokens as _task_memory_mcp_wire_tokens,
     normalize_task_memory_response as _normalize_task_memory_response,
@@ -308,6 +309,7 @@ try:
         max_active_scopes=int(CFG.get("workflow", {}).get("root_family_max_active_scopes", 1) or 1),
     )
     ADOPTION_METRICS = AdoptionMetricsStore(configured_state_dir(CFG))
+    ENDPOINT_STATS = EndpointStatsStore(configured_state_dir(CFG))
 except Exception as _init_exc:  # pragma: no cover
     import sys
     print(f"[local-ai-hub] MCP server init failed: {_init_exc}", file=sys.stderr)
@@ -618,6 +620,7 @@ def _desc_coord() -> str:
         actions = [name for name in (
             "claim", "release", "memory_record",
             "memory_find", "context_compile", "task_create", "task_checkpoint", "ask", "answer",
+            "plan_list", "plan_get", "plan_board_view", "plan_task_edit",
         ) if name in supported]
         purpose = (
             "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts"
@@ -802,6 +805,7 @@ _COORD_PROTECTED_KEYS = (
     "receipts", "missing_criteria", "unverified_criteria", "total_count",
     "active_count", "offset", "limit", "has_more", "next_offset",
     "board", "columns", "summary", "checkpoint_sync",
+    "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
 )
 _REPO_PROTECTED_KEYS = (
     "symbols", "files", "results", "evidence", "findings", "issues", "diff",
@@ -2329,6 +2333,16 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
         ADOPTION_METRICS.record(tool, action, intent, outcome, fallback_reason=reason, duration_ms=duration_ms, output_size=output_size)
         if recommended:
             ADOPTION_METRICS.record(tool, action, intent, "recommended", duration_ms=duration_ms, output_size=output_size)
+        if ENDPOINT_STATS is not None:
+            mcp_name = f"{tool}:{action}" if action and action != "default" else tool
+            mcp_root = str(arguments.get("root", "") or "")
+            ENDPOINT_STATS.record_call(
+                item_type="mcp",
+                item_name=mcp_name,
+                duration_ms=duration_ms,
+                success=outcome == "used",
+                root=mcp_root,
+            )
     except Exception:
         pass
 
@@ -4648,7 +4662,12 @@ def local_ai_coord(
         result = CLIENT.coord(action=action, **arguments)
         if action == "plan_task_edit" and isinstance(result, dict) and result.get("success") is True:
             result = {**result, "mutation_applied": True}
-        return _compact(result, "coord" if action == "plan_bind_task" else "status")
+        plan_extra = ["plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head", "board", "columns", "items", "tasks"]
+        return _compact(
+            result,
+            "coord" if action.startswith("plan_") or action == "plan_bind_task" else "status",
+            extra_fields=plan_extra if action.startswith("plan_") else None,
+        )
     if changed_paths is not None and not paths:
         paths = changed_paths
     if (path or file) and not paths:

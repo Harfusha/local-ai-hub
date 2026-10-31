@@ -1,6 +1,6 @@
 # Security model
 
-The Hub binds to `127.0.0.1` by default and rejects non-loopback binds. `/health` and the dashboard shell are public. Protected HTTP routes fail closed unless a configured credential grants the route's permission. Send credentials in `X-LocalAI-Token` or `Authorization: Bearer`.
+The Hub binds to `127.0.0.1` by default and rejects non-loopback binds. `/health` and the dashboard shell are public. By default with no tokens configured, local loopback clients are trusted. When credentials (`security.api_token`, `supervisor_token`, or `action_tokens`) are configured, protected HTTP routes enforce authentication and fail closed unless a valid credential grants the route's permission. Send credentials in `X-LocalAI-Token` or `Authorization: Bearer`.
 
 `security.api_token` is the service credential and uses `api_token_permissions` for its coarse role grants. `security.supervisor_token` grants only `admin:read` and `admin:write`. `security.action_tokens` maps exact action names to narrowly scoped credentials. `security.users`, `security.api_token_tenant`, and `security.api_token_principal` are removed and reject by presence. API, supervisor, and action token values must be unique. Configured credentials are redacted from diagnostic config views.
 

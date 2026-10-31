@@ -3455,6 +3455,23 @@ class RAGStore:
             raise ValueError("diagram image path must identify a regular file")
         return candidate
 
+    @staticmethod
+    def _safe_open_diagram(path: Path) -> tuple[int, os.stat_result]:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400):
+                os.close(fd)
+                raise ValueError("diagram image path must identify a regular file without symlinks or reparse points")
+            return fd, st
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+
     def ingest_document(
         self,
         *,
@@ -3643,14 +3660,22 @@ class RAGStore:
             try:
                 rag_cfg = self.config.get("rag", {})
                 max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
-                if int(p_img.stat().st_size) > max_bytes:
-                    return {
-                        "success": False,
-                        "error": "diagram exceeds configured file size limit",
-                        "diagram_indexed": False,
-                    }
-                with p_img.open("rb") as svg_file:
-                    raw_bytes = svg_file.read(max_bytes + 1)
+                fd, st = self._safe_open_diagram(p_img)
+                try:
+                    if int(st.st_size) > max_bytes:
+                        return {
+                            "success": False,
+                            "error": "diagram exceeds configured file size limit",
+                            "diagram_indexed": False,
+                        }
+                    with open(fd, "rb") as svg_file:
+                        raw_bytes = svg_file.read(max_bytes + 1)
+                except Exception:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                    raise
                 if len(raw_bytes) > max_bytes:
                     return {
                         "success": False,
@@ -3661,14 +3686,19 @@ class RAGStore:
                 texts = re.findall(r"<text[^>]*>(.*?)</text>", raw_svg, re.DOTALL | re.I)
                 svg_text_nodes = [t.strip() for t in texts if t.strip()]
                 diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(svg_text_nodes)
-            except Exception:
+            except Exception as exc:
                 return {
                     "success": False,
-                    "error": "diagram could not be read",
+                    "error": str(exc) if "symlink" in str(exc).lower() or "regular file" in str(exc).lower() else "diagram could not be read",
                     "diagram_indexed": False,
                 }
         else:
-            file_size_kb = round(p_img.stat().st_size / 1024, 1)
+            try:
+                fd, st = self._safe_open_diagram(p_img)
+                os.close(fd)
+                file_size_kb = round(st.st_size / 1024, 1)
+            except Exception as exc:
+                return {"success": False, "error": str(exc), "diagram_indexed": False}
             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
 
         res = self.ingest_document(

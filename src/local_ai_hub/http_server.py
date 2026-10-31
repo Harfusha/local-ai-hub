@@ -392,6 +392,7 @@ MONITOR_PATHS = {
     "/health", "/ready", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
     "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline",
+    "/api/telemetry/endpoint-stats",
     "/api/audit/tail",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/mode", "/api/admin/mode",
@@ -511,6 +512,7 @@ HTTP_MODE_OPERATOR_GET_PATHS = frozenset({
     "/api/live/status", "/api/logs/tail", "/api/metrics", "/api/mode",
     "/api/models/manage", "/api/preprocess/status", "/api/status",
     "/api/telemetry/report", "/api/telemetry/timeline",
+    "/api/telemetry/endpoint-stats",
 })
 HTTP_MODE_GAMING_READ_GET_PATHS = frozenset({
     "/api/agent-state/blackboard", "/api/agent-state/events",
@@ -3567,6 +3569,18 @@ class Handler(BaseHTTPRequestHandler):
                         APP.telemetry.record_request_evaluation(request_evaluation, duration_ms=elapsed_ms)
                     if record_operational_error and err:
                         APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override="http_request_failed", retryable=status in {429, 500, 502, 503, 504})
+                    if APP is not None and getattr(APP, "endpoint_stats", None) is not None:
+                        try:
+                            req_root = getattr(self, "_request_root", "") or (data.get("root") if isinstance(data, dict) else "")
+                            APP.endpoint_stats.record_call(
+                                item_type="endpoint",
+                                item_name=path,
+                                duration_ms=elapsed_ms,
+                                success=reliability_success,
+                                root=str(req_root or ""),
+                            )
+                        except Exception:
+                            pass
                 self._telemetry_finished = True
             except Exception:
                 pass

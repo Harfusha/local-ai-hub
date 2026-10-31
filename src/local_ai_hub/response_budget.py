@@ -42,6 +42,7 @@ _POINTER_KEYS = (
     "tasks", "task", "records", "matches", "items", "negative_knowledge",
     "receipts", "total_count", "active_count", "has_more", "offset", "limit", "next_offset",
     "symbols", "files", "board", "columns", "missing_criteria", "unverified_criteria",
+    "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
 )
 
 
@@ -403,6 +404,7 @@ def _fit_to_tokens(
             collection_keep = (
                 "tasks", "records", "matches", "items", "negative_knowledge",
                 "total_count", "active_count", "tasks_omitted", "records_omitted", "items_omitted",
+                "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
             )
         keep_keys = (
             "success", "status", "error", "artifact_id", "reuse_key", "reused",

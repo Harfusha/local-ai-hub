@@ -2268,8 +2268,8 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
                     score += sum(min(low.count(t), 3) * 0.5 for t in matched)
-                    start = max(0, idx - self.snippet_lines)
-                    end = min(len(lines), idx + self.snippet_lines + 1)
+                    start = max(0, idx - effective_snippet_lines)
+                    end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
                     hits.append({
                         "path": rel, "start_line": start + 1, "end_line": end,

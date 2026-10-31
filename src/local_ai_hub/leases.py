@@ -246,12 +246,7 @@ class ScopeLeaseStore:
             if not isinstance(p, str) or not p.strip() or "\x00" in p:
                 return {"success": False, "error": f"invalid lease path: {p}"}
         windows_root = PureWindowsPath(root)
-        posix_drive_relative_root = os.name != "nt" and bool(windows_root.drive)
-        if (
-            not Path(root).is_absolute()
-            and not windows_root.is_absolute()
-            and not posix_drive_relative_root
-        ):
+        if not Path(root).is_absolute() and not windows_root.is_absolute():
             return {"success": False, "error": "root must be an absolute repository root"}
         root_path, physical_root_id = self._root(root)
         case_insensitive_paths = os.name == "nt" or windows_root.is_absolute()

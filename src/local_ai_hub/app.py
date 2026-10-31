@@ -33,6 +33,7 @@ from .background_gpu import IdleGPUWorker
 from .accelerators import accelerator_status
 from .services import LocalAIServices
 from .telemetry import TelemetryStore
+from .endpoint_stats import EndpointStatsStore
 from .token_router import LosslessTokenRouter
 from .pipeline import LocalAgentPipeline
 from .projection import AgentProjector
@@ -411,6 +412,7 @@ class LocalAIApp:
             queue_size=int(obs.get("queue_size", 10000)),
             live_buffer_size=int(self.config.get("monitoring", {}).get("live_event_buffer", 2500)),
         )
+        self.endpoint_stats = EndpointStatsStore(state_dir, enabled=bool(obs.get("enabled", True)))
         self.debug_traces = DebugTraceStore(self.config)
         self.debug_traces.recover_incomplete(reason="hub restarted")
         self.repo_tools = RepositoryTools(self.config)

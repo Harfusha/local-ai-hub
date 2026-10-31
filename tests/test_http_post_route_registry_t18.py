@@ -104,7 +104,8 @@ _CURRENT_ADDED_ROUTES = {'post_task_browser_1': {'paths': ['/api/task/browser'],
  'post_repo_git_status_1': {'paths': ['/api/repo/git_status'], 'before': 'post_implementations_1'},
  'post_repo_revert_1': {'paths': ['/api/repo/revert'], 'before': 'post_implementations_1'},
  'post_repo_find_files_1': {'paths': ['/api/repo/find_files'], 'before': 'post_implementations_1'},
- 'post_repo_file_info_1': {'paths': ['/api/repo/file_info'], 'before': 'post_implementations_1'}}
+ 'post_repo_file_info_1': {'paths': ['/api/repo/file_info'], 'before': 'post_implementations_1'},
+ 'post_telemetry_endpoint_stats_reset_1': {'paths': ['/api/telemetry/endpoint-stats/reset'], 'before': 'post_work_orders_1'}}
 _ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 

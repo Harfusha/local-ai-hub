@@ -188,6 +188,23 @@ class RepoPlanStorage:
 
     def _atomic_write_bytes(self, target_path: Path, data: bytes) -> None:
         """Write bytes to target_path using atomic replacement with Windows file-sharing retries."""
+        resolved_root = self.repo_root.resolve()
+        resolved_target = target_path.resolve()
+        resolved_parent = target_path.parent.resolve()
+        try:
+            resolved_parent.relative_to(resolved_root)
+            resolved_target.relative_to(resolved_root)
+        except ValueError as exc:
+            raise RepoPlanValidationError(f"Target path escapes repository root: {target_path}") from exc
+        current = resolved_root
+        try:
+            rel_parts = target_path.parent.relative_to(self.repo_root).parts
+            for part in rel_parts:
+                current = current / part
+                if current.is_symlink():
+                    raise RepoPlanValidationError(f"Plan write path component is a symlink: {current}")
+        except ValueError:
+            pass
         target_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = target_path.parent / f".tmp_{target_path.name}_{uuid.uuid4().hex[:8]}"
 
@@ -296,6 +313,12 @@ class RepoPlanStorage:
                         and intent.idempotency_key == key and isinstance(intent.result, dict)):
                     record = {"payload_sha256": payload_sha, "status": "completed", "result": intent.result}
                     self._save_request(key, record)
+            else:
+                try:
+                    self._request_path(key).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return None
         if record.get("status") != "completed" or not isinstance(record.get("result"), dict):
             raise RepoPlanConflictError("Idempotent operation remains pending or requires reconciliation")
         return record["result"]
@@ -373,8 +396,8 @@ class RepoPlanStorage:
             result["intent_id"] = intent_id
             intent = OperationIntent(intent_id, operation, key, payload_sha, owner, time.time(), "pending", targets,
                                      context["git_branch"], context["git_head"], context, result)
-            self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id})
             self._save_intent(intent)
+            self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id})
             for target, (_, data, _) in zip(targets, candidates):
                 self._check_fence(context, lease_check_fn)
                 validate_repo_path(target.rel_path, repo_root=self.repo_root)
