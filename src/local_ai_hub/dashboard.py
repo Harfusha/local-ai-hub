@@ -615,6 +615,43 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><button class="btn ok" id="visionReviewOpen" style="padding:4px 8px;font-size:11px">Frontend vision review</button><select id="traceKind" aria-label="Trace kind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
+    <section class="section" id="endpointStatsSection">
+      <h2>
+        <span style="display:flex;align-items:center;gap:8px">
+          Long-Term Endpoint &amp; MCP Analytics
+          <span class="tiny" id="endpointStatsSub">Persistent latency percentiles (p50 / p95 / p99), call counts, and success rates</span>
+        </span>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <select id="epStatsProjectSelect" aria-label="Project filter for Endpoint Analytics" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
+            <option value="">Global (All Projects)</option>
+          </select>
+          <select id="epStatsTypeSelect" aria-label="Type filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
+            <option value="all">All Types</option>
+            <option value="endpoint">HTTP Endpoints</option>
+            <option value="mcp">MCP Tools</option>
+          </select>
+          <select id="epStatsSortSelect" aria-label="Sort filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
+            <option value="calls_desc">Most Used</option>
+            <option value="calls_asc">Unused / Least Used</option>
+            <option value="p95_desc">Slowest (p95)</option>
+            <option value="fail_desc">Most Failing</option>
+          </select>
+          <button class="btn" id="epStatsRefreshBtn" style="padding:4px 10px;font-size:11px">↻ Refresh</button>
+          <button class="btn warn" id="epStatsResetBtn" style="padding:4px 10px;font-size:11px">Reset Stats</button>
+        </div>
+      </h2>
+      <div style="padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;font-size:11px;background:var(--panel2);align-items:center">
+        <span class="pill" id="epStatsTotalCount">Total: 0</span>
+        <span class="pill ok" id="epStatsActiveCount">Active: 0</span>
+        <span class="pill" id="epStatsUnusedCount" style="color:var(--muted)">Unused: 0</span>
+        <span class="pill warn-t" id="epStatsSlowCount">Slow (p95 &gt; 1s): 0</span>
+        <span class="pill bad-t" id="epStatsFailingCount">Failing (&lt; 90%): 0</span>
+        <span class="tiny muted" id="epStatsStatusMsg" style="margin-left:auto"></span>
+      </div>
+      <div id="epStatsChartContainer" style="padding:16px;max-height:600px;overflow-y:auto">
+        <div id="epStatsList" class="tiny muted">Loading analytics…</div>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -4330,7 +4367,7 @@ function switchTab(tabId){
   try{localStorage.setItem('activeTab',tabId)}catch{}
   if(location.hash.replace('#','')!==tabId)history.replaceState(null,'','#'+tabId);
   if(tabId==='config')loadConfigView();
-  if(tabId==='agentos')loadAgentOsView();
+  if(tabId==='agentos'){loadAgentOsView();loadEndpointStatsView();}
   if(tabId==='coordination')loadCoordinationView();
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();loadResidentInventory();}
   if(tabId==='commands')loadWorktrees();
@@ -5844,6 +5881,177 @@ document.addEventListener('click',e=>{
   if(el){
     const tid=el.dataset.viewTraj;
     viewTrajectory(tid);
+  }
+});
+
+// ── Long-Term Endpoint & MCP Analytics ────────────────────────────────────────
+let cachedEndpointStats = null;
+let endpointStatsLoading = false;
+
+async function loadEndpointStatsView() {
+  if (endpointStatsLoading) return;
+  endpointStatsLoading = true;
+  const project = $('epStatsProjectSelect')?.value || '';
+  const statusMsg = $('epStatsStatusMsg');
+  if (statusMsg) statusMsg.textContent = 'Updating analytics…';
+
+  try {
+    const url = '/api/telemetry/endpoint-stats' + (project ? '?root=' + encodeURIComponent(project) : '');
+    const res = await fetchDashboardJson(url, { cache: 'no-store' });
+    if (!res || !res.success) {
+      if ($('epStatsList')) $('epStatsList').innerHTML = '<div class="tiny bad-t">Failed to load analytics: ' + esc(res?.error || 'unknown') + '</div>';
+      return;
+    }
+    cachedEndpointStats = res;
+
+    const projSelect = $('epStatsProjectSelect');
+    if (projSelect && Array.isArray(res.projects)) {
+      const currentVal = projSelect.value;
+      const opts = ['<option value="">Global (All Projects)</option>'];
+      for (const p of res.projects) {
+        opts.push(`<option value="${esc(p)}"${p === currentVal ? ' selected' : ''}>${esc(p)}</option>`);
+      }
+      projSelect.innerHTML = opts.join('');
+    }
+
+    renderEndpointStatsView();
+    if (statusMsg) statusMsg.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    if ($('epStatsList')) $('epStatsList').innerHTML = '<div class="tiny bad-t">Error loading analytics: ' + esc(String(err)) + '</div>';
+  } finally {
+    endpointStatsLoading = false;
+  }
+}
+
+function renderEndpointStatsView() {
+  const data = cachedEndpointStats;
+  if (!data || !Array.isArray(data.items)) return;
+
+  if ($('epStatsTotalCount')) $('epStatsTotalCount').textContent = `Total: ${data.total_items || data.items.length}`;
+  if ($('epStatsActiveCount')) $('epStatsActiveCount').textContent = `Active: ${(data.total_items || data.items.length) - (data.unused_count || 0)}`;
+  if ($('epStatsUnusedCount')) $('epStatsUnusedCount').textContent = `Unused: ${data.unused_count || 0}`;
+  if ($('epStatsSlowCount')) $('epStatsSlowCount').textContent = `Slow (p95 > 1s): ${data.slow_count || 0}`;
+  if ($('epStatsFailingCount')) $('epStatsFailingCount').textContent = `Failing (< 90%): ${data.failing_count || 0}`;
+
+  const typeFilter = $('epStatsTypeSelect')?.value || 'all';
+  const sortFilter = $('epStatsSortSelect')?.value || 'calls_desc';
+
+  let items = data.items.slice();
+  if (typeFilter !== 'all') {
+    items = items.filter(it => it.type === typeFilter);
+  }
+
+  items.sort((a, b) => {
+    if (sortFilter === 'calls_desc') return (b.calls || 0) - (a.calls || 0);
+    if (sortFilter === 'calls_asc') {
+      if ((a.calls || 0) !== (b.calls || 0)) return (a.calls || 0) - (b.calls || 0);
+      return a.name.localeCompare(b.name);
+    }
+    if (sortFilter === 'p95_desc') return (b.p95_ms || 0) - (a.p95_ms || 0);
+    if (sortFilter === 'fail_desc') {
+      const aFail = a.calls > 0 ? (a.fail_calls || 0) / a.calls : -1;
+      const bFail = b.calls > 0 ? (b.fail_calls || 0) / b.calls : -1;
+      return bFail - aFail;
+    }
+    return 0;
+  });
+
+  const listEl = $('epStatsList');
+  if (!listEl) return;
+  if (items.length === 0) {
+    listEl.innerHTML = '<div class="tiny muted" style="padding:16px;text-align:center">No endpoints match the selected filter.</div>';
+    return;
+  }
+
+  let maxP99 = 100.0;
+  for (const it of items) {
+    if (it.p99_ms > maxP99) maxP99 = it.p99_ms;
+  }
+
+  const html = items.map(item => {
+    const isMcp = item.type === 'mcp';
+    const calls = item.calls || 0;
+    const p50 = item.p50_ms || 0;
+    const p95 = item.p95_ms || 0;
+    const p99 = item.p99_ms || 0;
+
+    let succClass = 'ok';
+    let succText = `${item.success_rate != null ? item.success_rate.toFixed(1) : 100}% success`;
+    if (calls === 0) {
+      succClass = 'muted';
+      succText = 'Unused';
+    } else if (item.success_rate != null && item.success_rate < 90) {
+      succClass = 'bad-t';
+    } else if (item.success_rate != null && item.success_rate < 98) {
+      succClass = 'warn-t';
+    }
+
+    const p50Width = Math.max(1, Math.min(100, (p50 / maxP99) * 100));
+    const p95Width = Math.max(1, Math.min(100, (p95 / maxP99) * 100));
+    const p99Width = Math.max(1, Math.min(100, (p99 / maxP99) * 100));
+
+    return `
+    <div style="margin-bottom:10px;padding:12px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="pill" style="font-size:10px;font-weight:600;background:${isMcp ? '#2e1065;color:#c084fc' : '#082f49;color:#38bdf8'}">${isMcp ? 'MCP' : 'HTTP'}</span>
+          <code style="font-size:12px;font-weight:600;color:var(--text)">${esc(item.name)}</code>
+          ${item.status === 'slow' ? '<span class="pill warn-t" style="font-size:9px">SLOW</span>' : ''}
+          ${item.status === 'failing' ? '<span class="pill bad-t" style="font-size:9px">FAILING</span>' : ''}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:11px">
+          <span style="color:var(--muted)">${n(calls)} calls</span>
+          <span class="pill ${succClass}" style="font-weight:600">${succText}</span>
+        </div>
+      </div>
+      ${calls > 0 ? `
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
+          <span style="width:28px;color:var(--muted)">p50</span>
+          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden">
+            <div style="width:${p50Width}%;background:#38bdf8;height:100%;border-radius:2px"></div>
+          </div>
+          <span style="width:65px;text-align:right;font-family:monospace;color:var(--text)">${p50.toFixed(1)} ms</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
+          <span style="width:28px;color:var(--muted)">p95</span>
+          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden">
+            <div style="width:${p95Width}%;background:#f59e0b;height:100%;border-radius:2px"></div>
+          </div>
+          <span style="width:65px;text-align:right;font-family:monospace;color:var(--text)">${p95.toFixed(1)} ms</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
+          <span style="width:28px;color:var(--muted)">p99</span>
+          <div style="flex:1;background:var(--bg);height:10px;border-radius:2px;overflow:hidden">
+            <div style="width:${p99Width}%;background:#f43f5e;height:100%;border-radius:2px"></div>
+          </div>
+          <span style="width:65px;text-align:right;font-family:monospace;color:var(--text)">${p99.toFixed(1)} ms</span>
+        </div>
+      </div>
+      ` : `
+      <div style="background:var(--bg);padding:6px 10px;border-radius:3px;font-size:11px;color:var(--muted)">
+        Unused · 0 recorded calls
+      </div>
+      `}
+    </div>`;
+  }).join('');
+
+  listEl.innerHTML = html;
+}
+
+$('epStatsProjectSelect')?.addEventListener('change', () => loadEndpointStatsView());
+$('epStatsTypeSelect')?.addEventListener('change', () => renderEndpointStatsView());
+$('epStatsSortSelect')?.addEventListener('change', () => renderEndpointStatsView());
+$('epStatsRefreshBtn')?.addEventListener('click', () => loadEndpointStatsView());
+$('epStatsResetBtn')?.addEventListener('click', async () => {
+  const project = $('epStatsProjectSelect')?.value || '';
+  const label = project ? `project "${project}"` : 'ALL projects globally';
+  if (!confirm(`Are you sure you want to reset long-term stats for ${label}?`)) return;
+  const res = await post('/api/telemetry/endpoint-stats/reset', { root: project });
+  if (res && res.success) {
+    await loadEndpointStatsView();
+  } else {
+    alert('Reset failed: ' + (res?.error || 'unknown error'));
   }
 });
 

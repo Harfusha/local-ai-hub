@@ -4666,7 +4666,7 @@ def local_ai_coord(
         return _compact(
             result,
             "coord" if action.startswith("plan_") or action == "plan_bind_task" else "status",
-            extra_fields=plan_extra if action.startswith("plan_") else None,
+            plan_extra if action.startswith("plan_") else None,
         )
     if changed_paths is not None and not paths:
         paths = changed_paths

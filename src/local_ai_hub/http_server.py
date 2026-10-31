@@ -4109,7 +4109,10 @@ class Handler(BaseHTTPRequestHandler):
         self._handler_execution_started = time.perf_counter()
         parsed = urlparse(self.path)
         path = parsed.path
-        if not self._reject_identity_fields(parse_qs(parsed.query, keep_blank_values=True)):
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+        if "root" in query_params and query_params["root"]:
+            self._request_root = str(query_params["root"][0])
+        if not self._reject_identity_fields(query_params):
             return
         if path == "/health":
             self._send(200, {"success": True, "hub_online": True, "version": __version__})
@@ -4731,6 +4734,15 @@ class Handler(BaseHTTPRequestHandler):
                         "terminal": False,
                     }); return
                 self._send(200, {"success": True, **page}); return
+            if path == "/api/telemetry/endpoint-stats":
+                req_root = (query.get("root") or [""])[0]
+                if req_root in ("all", "__all__"):
+                    req_root = ""
+                store = getattr(APP, "endpoint_stats", None)
+                if store is None:
+                    self._send(200, {"success": True, "available": False, "projects": [], "items": []}); return
+                stats = store.get_stats(root=req_root)
+                self._send(200, stats); return
             if path == "/api/audit/tail":
                 try:
                     limit = int((query.get("limit") or [20])[0])
@@ -5873,6 +5885,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             self._validate_payload(path, payload)
+            if isinstance(payload, dict) and "root" in payload and payload["root"]:
+                self._request_root = str(payload["root"])
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         if (
@@ -5994,6 +6008,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/memory/") and not self._bind_workspace_memory_payload(path, payload):
             return
+        if path == "/api/telemetry/endpoint-stats/reset":
+            store = getattr(APP, "endpoint_stats", None)
+            if store is None:
+                self._send(200, {"success": True, "reset": False, "available": False}); return
+            req_root = str(payload.get("root", "") or "")
+            ok = store.reset(root=req_root)
+            self._send(200, {"success": ok, "reset": ok, "root": req_root}); return
         if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this
             # metadata transport as an agent workload/tool call. Journal request IDs
@@ -6020,6 +6041,22 @@ class Handler(BaseHTTPRequestHandler):
                         rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                         continue
                     accepted += 1
+                    if APP is not None and getattr(APP, "endpoint_stats", None) is not None:
+                        try:
+                            tool_name = str(scoped_event.get("tool", ""))
+                            op_name = str(scoped_event.get("operation", scoped_event.get("action", "")))
+                            mcp_name = f"{tool_name}:{op_name}" if op_name and op_name not in ("default", tool_name) else tool_name
+                            dur = float(scoped_event.get("duration_ms", 0.0) or 0.0)
+                            mcp_root = str(scoped_event.get("root", "") or "")
+                            APP.endpoint_stats.record_call(
+                                item_type="mcp",
+                                item_name=mcp_name,
+                                duration_ms=dur,
+                                success=bool(scoped_event.get("success", True)),
+                                root=mcp_root,
+                            )
+                        except Exception:
+                            pass
                 except Exception as exc:
                     rejected += 1
                     reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"

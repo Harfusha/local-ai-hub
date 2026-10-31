@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Dokončit a ověřit hlavní checkout a instalaci, integraci větví, CI, dashboard, MCP a publikaci odpovídajícího release; živý test Gemini je uživatelem odložen. Verzi release určit podle existujících tagů.",
   "id": "plan_lah_5_1_0_release_finalization",
-  "lifecycle": "active",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {

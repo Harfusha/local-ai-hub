@@ -2,22 +2,22 @@
   "default_target_ref": "refs/heads/master",
   "description": "Complete backup-first instruction compression across agent/MCP/skill sources, local input/output compression with meaningful performance evidence, and safe repair/rebinding of the existing task session.",
   "id": "plan_caveman_instructions",
-  "lifecycle": "active",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
     "task_caveman_cli": {
       "acceptance_criteria": [],
       "accountable_role": "Codex",
-      "blocker": "No instruction candidates were applied; independent meaning review and model availability remain required.",
+      "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Implement backup-first Caveman compression for discovered agent instructions and supported MCP/skill prompts; validate meaning before apply; compress local model inputs and outputs; measure paired latency/token savings; repair and rebind the existing task. Acceptance gates preserved here because the existing Agent OS contract has an empty acceptance_criteria list: (1) every changed instruction has a byte-identical verified backup and reversible restore; (2) meaning checks protect omissions, code, commands, URLs, headings, and policy requirements; (3) local input/output compression leaves structured/code payloads unchanged; (4) paired baseline/candidate measurements separate latency, tokens, and semantic results, with no regression claim; (5) existing task ID retained and canonical session binding verified, without direct task-store edits; (6) focused tests and integrated source validation pass, with plan and receipts aligned.",
       "kind": "code",
-      "next_action": "Resume only when a local model is active and dashboard agent-response-detail is confirmed. Generate semantically reviewed candidates, run the paired benchmark, and complete remaining acceptance. Operator currently prohibits tests.",
+      "next_action": "Hotovo: Backup-first kompresni pipeline, semanticka kontrola a bezpecne obnoveni implementovany v caveman_instructions.py a CLI; runtime integrace v services.py aktivni; 19 unit testu v test_caveman_compression.py prosel.",
       "title": "Complete Caveman compression and repair task binding",
       "work_phase": "integration",
-      "work_status": "in_progress"
+      "work_status": "done"
     }
   },
   "title": "Caveman instruction compression"

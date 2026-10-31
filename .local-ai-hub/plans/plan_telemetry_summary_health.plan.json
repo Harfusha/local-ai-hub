@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Investigate recurring status degradation caused by telemetry.summary probe timeouts. Keep telemetry availability visible while preventing this optional diagnostic probe from falsely degrading core Hub health. Add a deterministic regression test and validate.",
   "id": "plan_telemetry_summary_health",
-  "lifecycle": "draft",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {

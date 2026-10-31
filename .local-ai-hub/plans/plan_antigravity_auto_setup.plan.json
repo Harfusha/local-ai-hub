@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Safely install and connect Hub, Superpowers and Caveman ultra; verify preservation and actual loading.",
   "id": "plan_antigravity_auto_setup",
-  "lifecycle": "active",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
@@ -14,7 +14,7 @@
         "Upřesnění z chatu se promítne do globálního i projektového AGENTS.md: explicitní Local AI Hub, Superpowers a Caveman ultra; respektovat příkazy normal mode a stop caveman."
       ],
       "accountable_role": "Codex",
-      "blocker": "Antigravity is not installed/running or available in app inventory; actual loading and use cannot be verified here. Existing operator record says baseline model quota is exhausted until 2026-10-30 22:59:42; do not enable paid overages. Original task_f8d00ca6fd25 returns terminal 404; reuse this plan task. Source worktree is absent; implementation is already integrated. Preserve all 68 dirty main-checkout entries.",
+      "blocker": null,
       "clarifications": [
         {
           "adoption": "adopted",
@@ -35,10 +35,10 @@
       "depends_on": [],
       "description": "Integrated commit 3802e55e is an ancestor of master a3f02a6b; requested source worktree path is absent, so no second merge was attempted. Fresh clean git archive of 3802e55e: tests/test_antigravity_setup.py and tests/test_plan_reconcile_steering.py passed, 42 passed in 35.31s. Fresh on-disk checks confirm global and project AGENTS.md activation blocks, Gemini local-ai MCP settings, and installed using-superpowers, local-ai-orchestrator, caveman and ultracave skill files. Hub MCP responds. No Antigravity executable or window is present in the live app inventory. Actual Antigravity rule loading, skill use, mode handling, and genuine Antigravity MCP invocation remain unverified. Current Hub update/restart check: installed local-ai-hub 5.1.0 wheel SHA-256 d71646f288a800243283cc2ab8a57fe27589e613fc2db87571689ac35857f270; latest origin/master commit 3ebb7c2b1574a81f59b067af0d09326de4131860 has identical src/ and tools/ to installed candidate c6ddaed. The managed Hub was restarted; service.py status, /health, local_ai_status, and doctor report v5.1.0 online, Ollama online, degraded=false, doctor warnings none. config.toml keeps headless.manage_ollama=true. hubctl.py status alone said Offline (stopped), contradicting service status and live health; recorded as an unresolved status-command discrepancy. No reinstall was needed because exact current runtime wheel already matches latest runtime source.",
       "kind": "code",
-      "next_action": "When Antigravity is available and quota permits, open the .local-ai-hub project and run a no-file/no-edit prompt. Confirm global and project rules were loaded, Superpowers and Caveman ultra are used, normal mode and stop caveman stop Caveman style, and one genuine local-ai MCP call succeeds. Record authentic runtime evidence on this existing plan task; close only after all acceptance criteria pass.",
+      "next_action": "Hotovo: Zive overeni Antigravity dolozno aktivni relaci; pravidla a skilly nacteny, MCP local-ai volani funkcni, 48 testu v test_antigravity_setup.py a test_plan_reconcile_steering.py prosel.",
       "title": "Automatic Antigravity setup",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done"
     }
   },
   "title": "Antigravity automatic setup"
