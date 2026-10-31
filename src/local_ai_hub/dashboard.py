@@ -633,10 +633,18 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
           <option value="mcp">MCP Nástroje</option>
         </select>
         <select id="epStatsSortSelect" aria-label="Sort filter" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
-          <option value="p95_desc">Nejpomalejší (p95 latence)</option>
-          <option value="calls_desc">Nejvíce volané (provoz)</option>
-          <option value="fail_desc">Nejvyšší chybovost</option>
-          <option value="name_asc">Název (A-Z)</option>
+          <option value="p95_desc">Nejpomalejší (p95 latence) ↓</option>
+          <option value="p95_asc">Nejrychlejší (p95 latence) ↑</option>
+          <option value="p50_desc">Nejpomalejší medián (p50) ↓</option>
+          <option value="p50_asc">Nejrychlejší medián (p50) ↑</option>
+          <option value="p99_desc">Nejvyšší tail (p99) ↓</option>
+          <option value="p99_asc">Nejnižší tail (p99) ↑</option>
+          <option value="calls_desc">Nejvíce volané (provoz) ↓</option>
+          <option value="calls_asc">Nejméně volané ↑</option>
+          <option value="fail_desc">Nejvyšší chybovost ↓</option>
+          <option value="succ_desc">Nejvyšší úspěšnost (%) ↓</option>
+          <option value="name_asc">Název (A → Z)</option>
+          <option value="name_desc">Název (Z → A)</option>
         </select>
         <button class="btn" id="epStatsRefreshBtn" style="padding:4px 10px;font-size:11px">↻ Obnovit</button>
         <button class="btn warn" id="epStatsResetBtn" style="padding:4px 10px;font-size:11px">Resetovat</button>
@@ -5909,6 +5917,39 @@ document.addEventListener('click',e=>{
 let cachedEndpointStats = null;
 let endpointStatsLoading = false;
 let epCurrentScope = 'active';
+let epSortCol = 'p95';
+let epSortAsc = false;
+
+function setEpTableSort(col) {
+  if (epSortCol === col) {
+    epSortAsc = !epSortAsc;
+  } else {
+    epSortCol = col;
+    epSortAsc = (col === 'name' || col === 'type');
+  }
+  syncEpSortSelect();
+  renderEndpointStatsView();
+}
+
+function syncEpSortSelect() {
+  const sel = $('epStatsSortSelect');
+  if (!sel) return;
+  let key = `${epSortCol}_${epSortAsc ? 'asc' : 'desc'}`;
+  if (epSortCol === 'success') {
+    key = epSortAsc ? 'fail_desc' : 'succ_desc';
+  }
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === key) {
+      sel.selectedIndex = i;
+      return;
+    }
+  }
+}
+
+function epSortIndicator(col) {
+  if (epSortCol !== col) return '<span style="color:var(--muted);opacity:0.35;margin-left:3px;font-size:9px">⇅</span>';
+  return epSortAsc ? '<span style="color:var(--accent);margin-left:3px;font-size:10px;font-weight:bold">▲</span>' : '<span style="color:var(--accent);margin-left:3px;font-size:10px;font-weight:bold">▼</span>';
+}
 
 async function loadEndpointStatsView() {
   if (endpointStatsLoading) return;
@@ -5982,7 +6023,6 @@ function renderEndpointStatsView() {
   $('epScopeUnused')?.classList.toggle('active', epCurrentScope === 'unused');
 
   const typeFilter = $('epStatsTypeSelect')?.value || 'all';
-  const sortFilter = $('epStatsSortSelect')?.value || 'p95_desc';
 
   let items = data.items.slice();
   if (typeFilter !== 'all') {
@@ -5996,17 +6036,28 @@ function renderEndpointStatsView() {
   }
 
   items.sort((a, b) => {
-    if (sortFilter === 'calls_desc') return (b.calls || 0) - (a.calls || 0);
-    if (sortFilter === 'p95_desc') return (b.p95_ms || 0) - (a.p95_ms || 0);
-    if (sortFilter === 'fail_desc') {
-      const aFail = a.calls > 0 ? (a.fail_calls || 0) / a.calls : -1;
-      const bFail = b.calls > 0 ? (b.fail_calls || 0) / b.calls : -1;
-      return bFail - aFail;
+    let diff = 0;
+    if (epSortCol === 'calls') {
+      diff = (a.calls || 0) - (b.calls || 0);
+    } else if (epSortCol === 'p95') {
+      diff = (a.p95_ms || 0) - (b.p95_ms || 0);
+    } else if (epSortCol === 'p50') {
+      diff = (a.p50_ms || 0) - (b.p50_ms || 0);
+    } else if (epSortCol === 'p99') {
+      diff = (a.p99_ms || 0) - (b.p99_ms || 0);
+    } else if (epSortCol === 'success') {
+      const aSucc = a.calls > 0 ? (a.success_rate != null ? a.success_rate : 100) : -1;
+      const bSucc = b.calls > 0 ? (b.success_rate != null ? b.success_rate : 100) : -1;
+      diff = aSucc - bSucc;
+    } else if (epSortCol === 'type') {
+      diff = a.type.localeCompare(b.type);
+    } else if (epSortCol === 'name') {
+      diff = a.name.localeCompare(b.name);
     }
-    if (sortFilter === 'name_asc' || sortFilter === 'calls_asc') {
-      return a.name.localeCompare(b.name);
+    if (diff === 0) {
+      diff = a.name.localeCompare(b.name);
     }
-    return 0;
+    return epSortAsc ? diff : -diff;
   });
 
   const activeItems = data.items.filter(it => (it.calls || 0) > 0);
@@ -6096,14 +6147,14 @@ function renderEndpointStatsView() {
     <table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead>
         <tr style="border-bottom:1px solid var(--line);color:var(--muted);text-align:left">
-          <th style="width:48px;padding:6px 8px">Typ</th>
-          <th style="padding:6px 8px">Endpoint / Nástroj</th>
-          <th style="width:110px;padding:6px 8px">Volání</th>
-          <th style="width:80px;padding:6px 8px">Úspěšnost</th>
-          <th style="width:26%;padding:6px 8px">Relativní latence (p50 / p95)</th>
-          <th style="width:75px;text-align:right;padding:6px 8px">p50</th>
-          <th style="width:75px;text-align:right;padding:6px 8px">p95</th>
-          <th style="width:75px;text-align:right;padding:6px 8px">p99</th>
+          <th style="width:52px;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('type')" title="Řadit podle typu">Typ ${epSortIndicator('type')}</th>
+          <th style="padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('name')" title="Řadit podle názvu">Endpoint / Nástroj ${epSortIndicator('name')}</th>
+          <th style="width:115px;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('calls')" title="Řadit podle volání">Volání ${epSortIndicator('calls')}</th>
+          <th style="width:85px;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('success')" title="Řadit podle úspěšnosti">Úspěšnost ${epSortIndicator('success')}</th>
+          <th style="width:26%;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('p95')" title="Řadit podle p95 latence">Relativní latence (p50 / p95) ${epSortIndicator('p95')}</th>
+          <th style="width:75px;text-align:right;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('p50')" title="Řadit podle p50">p50 ${epSortIndicator('p50')}</th>
+          <th style="width:75px;text-align:right;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('p95')" title="Řadit podle p95">p95 ${epSortIndicator('p95')}</th>
+          <th style="width:75px;text-align:right;padding:6px 8px;cursor:pointer;user-select:none" onclick="setEpTableSort('p99')" title="Řadit podle p99">p99 ${epSortIndicator('p99')}</th>
         </tr>
       </thead>
       <tbody>`;
@@ -6186,7 +6237,25 @@ $('epScopeAll')?.addEventListener('click', () => { epCurrentScope = 'all'; rende
 $('epScopeUnused')?.addEventListener('click', () => { epCurrentScope = 'unused'; renderEndpointStatsView(); });
 $('epStatsProjectSelect')?.addEventListener('change', () => loadEndpointStatsView());
 $('epStatsTypeSelect')?.addEventListener('change', () => renderEndpointStatsView());
-$('epStatsSortSelect')?.addEventListener('change', () => renderEndpointStatsView());
+$('epStatsSortSelect')?.addEventListener('change', () => {
+  const val = $('epStatsSortSelect')?.value || 'p95_desc';
+  const parts = val.split('_');
+  if (parts.length >= 2) {
+    const dir = parts.pop();
+    const col = parts.join('_');
+    if (col === 'fail') {
+      epSortCol = 'success';
+      epSortAsc = true;
+    } else if (col === 'succ') {
+      epSortCol = 'success';
+      epSortAsc = false;
+    } else {
+      epSortCol = col;
+      epSortAsc = (dir === 'asc');
+    }
+  }
+  renderEndpointStatsView();
+});
 $('epStatsRefreshBtn')?.addEventListener('click', () => loadEndpointStatsView());
 $('subtabEndpointStatsJump')?.addEventListener('click', () => {
   $('endpointStatsSection')?.scrollIntoView({ behavior: 'smooth' });
