@@ -624,6 +624,7 @@ def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, 
         assert submitted["success"] is True
         handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
         assert handoff["status"] == "failed", handoff
+        assert flag in handoff["error"]
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
     finally:
         wo.close()

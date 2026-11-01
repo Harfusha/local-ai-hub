@@ -50,6 +50,23 @@ _UNCERTAIN_COMMAND_FLAGS = (
     "timed_out", "cancelled", "aborted_interactive", "outcome_unknown", "in_progress",
     "cleanup_unconfirmed", "output_capture_unconfirmed", "log_callback_delivery_unconfirmed",
 )
+_UNCERTAIN_MODEL_FLAGS = (
+    "timed_out", "cancelled", "preempted", "outcome_unknown", "in_progress",
+    "cleanup_unconfirmed", "_lah_partial_response",
+)
+
+
+def _certain_work_model_response(response: Any) -> bool:
+    return (isinstance(response, dict) and response.get("success") is True
+            and all(response.get(flag, False) is False for flag in _UNCERTAIN_MODEL_FLAGS))
+
+
+def _work_model_response_error(response: Any, phase: str) -> str:
+    if isinstance(response, dict):
+        for flag in _UNCERTAIN_MODEL_FLAGS:
+            if response.get(flag, False) is not False:
+                return f"bounded {phase} returned uncertain response: {flag}"
+    return f"bounded {phase} returned an unsuccessful response"
 
 
 def _work_edit_context(fast: Any, previous_steps: list[dict[str, Any]], generation: int) -> str:
@@ -2237,8 +2254,8 @@ class WorkOrchestrator:
             + (f"\nAGENT ANSWER TO PRIOR BLOCKER:\n{str(payload.get('agent_answer',''))[:8000]}" if payload.get("agent_answer") else "")
         )
         res = self._ask(root, prompt, json_dumps(context, ensure_ascii=False)[:14000], requested_max_tokens)
-        if payload.get("mode") == "bounded" and (not isinstance(res, dict) or res.get("success") is not True):
-            raise ValueError("bounded work planner returned an unsuccessful response")
+        if payload.get("mode") == "bounded" and not _certain_work_model_response(res):
+            raise ValueError(_work_model_response_error(res, "work planner"))
         parsed = _json_object(str(res.get("text", ""))) if isinstance(res, dict) and res.get("success", True) else None
         if not parsed or not isinstance(parsed.get("steps"), list):
             if payload.get("mode") == "bounded":
@@ -3043,8 +3060,8 @@ class WorkOrchestrator:
                  f"NEW EVIDENCE / FAILURE:\n{reason[:4000]}")
             res=self._ask(root_s,req,json_dumps(current,ensure_ascii=False)[:18000],1800); llm_calls+=1; replans+=1
             assert_active()
-            if mode == "bounded" and (not isinstance(res, dict) or res.get("success") is not True):
-                return False
+            if mode == "bounded" and not _certain_work_model_response(res):
+                raise RuntimeError(_work_model_response_error(res, "repair"))
             patch=_diff_from_text(str(res.get("text","")))
             if not patch:
                 return False
@@ -3152,7 +3169,7 @@ class WorkOrchestrator:
                                     assert_active()
                                     meta = explored.get("tool_agent") if isinstance(explored, dict) else None
                                     counts = meta.get("tool_evidence") if isinstance(meta, dict) else None
-                                    if (isinstance(explored, dict) and explored.get("success") is True
+                                    if (_certain_work_model_response(explored)
                                             and isinstance(counts, dict) and type(counts.get("completed")) is int
                                             and 0 < counts["completed"] <= 6
                                             and type(counts.get("attempted")) is int and counts["attempted"] == counts["completed"]
@@ -3197,8 +3214,8 @@ class WorkOrchestrator:
                         if mode == "bounded":
                             outcome.setdefault("model_observations", []).append(_work_model_observation(res))
                         assert_active()
-                        if mode == "bounded" and (not isinstance(res, dict) or res.get("success") is not True):
-                            raise RuntimeError("bounded local worker returned an unsuccessful response")
+                        if mode == "bounded" and not _certain_work_model_response(res):
+                            raise RuntimeError(_work_model_response_error(res, "local worker"))
                         patch=_diff_from_text(str(res.get("text","")))
                         if not patch:
                             last_error = "local worker returned no unified diff"
@@ -3239,8 +3256,8 @@ class WorkOrchestrator:
                            f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}")
                         vr=self._ask(root_s,q,json_dumps(diff,ensure_ascii=False)[:18000],1200,review=True); llm_calls+=1
                         assert_active()
-                        if mode == "bounded" and (not isinstance(vr, dict) or vr.get("success") is not True):
-                            raise RuntimeError("bounded review returned an unsuccessful response")
+                        if mode == "bounded" and not _certain_work_model_response(vr):
+                            raise RuntimeError(_work_model_response_error(vr, "review"))
                         parsed=_json_object(str(vr.get("text",""))) or {"passed":False,"summary":"verifier returned invalid result","risks":["invalid verifier response"]}
                         if mode == "bounded" and (type(parsed.get("passed")) is not bool
                                                   or ("needs_agent" in parsed and type(parsed["needs_agent"]) is not bool)):
@@ -3283,8 +3300,8 @@ class WorkOrchestrator:
                          f"VALIDATION:\n{json_dumps(validation,ensure_ascii=False)}")
                 final=self._ask(root_s,final_q,json_dumps(diff,ensure_ascii=False)[:22000],1200,review=True); llm_calls+=1
                 assert_active()
-                if mode == "bounded" and (not isinstance(final, dict) or final.get("success") is not True):
-                    raise RuntimeError("bounded final verifier returned an unsuccessful response")
+                if mode == "bounded" and not _certain_work_model_response(final):
+                    raise RuntimeError(_work_model_response_error(final, "final verifier"))
                 verification=_json_object(str(final.get("text",""))) or {"passed":False,"summary":"invalid final verifier response","risks":["invalid verifier response"]}
                 if mode == "bounded" and type(verification.get("passed")) is not bool:
                     raise RuntimeError("bounded verifier returned an invalid passed flag")
