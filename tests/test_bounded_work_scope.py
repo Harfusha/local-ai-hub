@@ -907,7 +907,8 @@ def test_deadline_after_broker_reply_retains_validation_evidence(tmp_path, monke
         wo.close()
 
 
-def test_cancel_during_local_edit_retains_observation_and_does_not_apply_late_patch(tmp_path):
+@pytest.mark.parametrize("save_artifact", [True, False])
+def test_cancel_during_local_edit_retains_observation_and_does_not_apply_late_patch(tmp_path, save_artifact):
     import json
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
 
@@ -925,7 +926,13 @@ def test_cancel_during_local_edit_retains_observation_and_does_not_apply_late_pa
             return super().second_opinion(args)
 
     root = init_repo(tmp_path)
-    artifacts = FakeArtifacts()
+    class Artifacts(FakeArtifacts):
+        def put(self, text, *, kind):
+            if kind == "work-cancellation" and not save_artifact:
+                return None
+            return super().put(text, kind=kind)
+
+    artifacts = Artifacts()
     services = SlowEdit("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
     try:
@@ -939,10 +946,13 @@ def test_cancel_during_local_edit_retains_observation_and_does_not_apply_late_pa
         handoff = wait_terminal(wo, submitted["work_id"], timeout=15)
         assert handoff["status"] == "cancelled"
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
-        report = json.loads(artifacts.get(handoff["artifact_id"])["text"])
-        assert report["cancelled_step"]["success"] is False
-        assert report["cancelled_step"]["model_observations"][0]["reported_model"] == "synthetic:9b"
-        assert report["cancelled_step"]["model_observations"][0]["identity_verified"] is False
+        if save_artifact:
+            report = json.loads(artifacts.get(handoff["artifact_id"])["text"])
+            assert report["cancelled_step"]["success"] is False
+            assert report["cancelled_step"]["model_observations"][0]["reported_model"] == "synthetic:9b"
+            assert report["cancelled_step"]["model_observations"][0]["identity_verified"] is False
+        else:
+            assert handoff["error"] == "cancellation step artifact unavailable"
     finally:
         wo.close()
 
