@@ -576,6 +576,8 @@ def test_bounded_scope_reaches_work_endpoint_through_mcp(monkeypatch, tmp_path):
 @pytest.mark.parametrize("response", [
     {"success": False, "text": ""},
     {"text": '{"steps": []}'},
+    {"success": True, "outcome_unknown": True,
+     "text": '{"steps": [{"id": "s1", "kind": "edit", "task": "change", "depends_on": []}]}'},
 ])
 def test_bounded_plan_rejects_malformed_model_response(tmp_path, response):
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config
@@ -589,6 +591,40 @@ def test_bounded_plan_rejects_malformed_model_response(tmp_path, response):
                 "acceptance_criteria": ["change is correct"],
                 "allowed_paths": ["a.py"], "approved_commands": ["python -m pytest"],
             }, {})
+    finally:
+        wo.close()
+
+
+@pytest.mark.parametrize("stage", ["edit", "review"])
+@pytest.mark.parametrize("flag", ["outcome_unknown", "timed_out", "cancelled", "cleanup_unconfirmed", "_lah_partial_response", "preempted"])
+def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, flag):
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
+
+    class UncertainModel(FakeServices):
+        def delegate_repo(self, args, **kwargs):
+            response = super().delegate_repo(args)
+            if stage == "edit" and self.delegate_calls > 1:
+                response[flag] = True
+            return response
+
+        def second_opinion(self, args, **kwargs):
+            response = super().second_opinion(args)
+            if stage == "review":
+                response[flag] = True
+            return response
+
+    root = init_repo(tmp_path)
+    services = UncertainModel("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    try:
+        submitted = wo.submit({"root": str(root), "task": "replace old with new", "mode": "bounded",
+            "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
+        assert handoff["status"] == "failed", handoff
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
     finally:
         wo.close()
 

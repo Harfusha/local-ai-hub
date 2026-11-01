@@ -10,6 +10,44 @@ import pytest
 from local_ai_hub.scheduler import AffinityScheduler
 
 
+def test_existing_scheduler_observes_external_reservation(tmp_path):
+    config = {"server": {"state_dir": str(tmp_path)}}
+    runtime = SimpleNamespace(loaded_models=lambda: [], loaded_model_details=lambda: [])
+    owner = AffinityScheduler(runtime, config)
+    other = AffinityScheduler(runtime, config)
+    try:
+        token = owner.reserve_external_gpu()
+        assert token is not None
+        assert not other.acquire_background_gpu(0)
+        assert other.foreground_busy()
+        assert not other.background_allowed()
+        assert owner.release_external_gpu(token)
+        assert other.acquire_background_gpu(0)
+        other.release_background_gpu()
+    finally:
+        owner.close()
+        other.close()
+
+
+def test_existing_scheduler_does_not_dispatch_during_new_external_reservation(tmp_path):
+    config = {"server": {"state_dir": str(tmp_path)}}
+    preparations, calls = [], []
+    runtime = SimpleNamespace(loaded_model_details=lambda: [],
+                              prepare_model=lambda *a, **k: preparations.append(True))
+    owner = AffinityScheduler(runtime, config)
+    other = AffinityScheduler(runtime, config)
+    try:
+        token = owner.reserve_external_gpu()
+        assert token
+        with pytest.raises(TimeoutError):
+            other.submit("model", source="test", execute=lambda: calls.append(True), wait_timeout=0.2)
+        assert preparations == [] and calls == []
+        assert owner.release_external_gpu(token)
+    finally:
+        owner.close()
+        other.close()
+
+
 def test_background_worker_never_terminates_an_unmanaged_listener(tmp_path, monkeypatch):
     from local_ai_hub import background_gpu
 
