@@ -578,6 +578,8 @@ def test_bounded_scope_reaches_work_endpoint_through_mcp(monkeypatch, tmp_path):
     {"text": '{"steps": []}'},
     {"success": True, "outcome_unknown": True,
      "text": '{"steps": [{"id": "s1", "kind": "edit", "task": "change", "depends_on": []}]}'},
+    {"success": True, "timed_out": None,
+     "text": '{"steps": [{"id": "s1", "kind": "edit", "task": "change", "depends_on": []}]}'},
 ])
 def test_bounded_plan_rejects_malformed_model_response(tmp_path, response):
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config
@@ -595,7 +597,7 @@ def test_bounded_plan_rejects_malformed_model_response(tmp_path, response):
         wo.close()
 
 
-@pytest.mark.parametrize("stage", ["edit", "review"])
+@pytest.mark.parametrize("stage", ["edit", "repair", "review", "final"])
 @pytest.mark.parametrize("flag", ["outcome_unknown", "timed_out", "cancelled", "cleanup_unconfirmed", "_lah_partial_response", "preempted"])
 def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, flag):
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
@@ -603,18 +605,18 @@ def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, 
     class UncertainModel(FakeServices):
         def delegate_repo(self, args, **kwargs):
             response = super().delegate_repo(args)
-            if stage == "edit" and self.delegate_calls > 1:
+            if (stage == "edit" and self.delegate_calls > 1) or (stage == "repair" and self.delegate_calls > 2):
                 response[flag] = True
             return response
 
         def second_opinion(self, args, **kwargs):
             response = super().second_opinion(args)
-            if stage == "review":
+            if stage == "review" or (stage == "final" and "FINAL WHOLE-TASK VERIFIER" in args.get("question", "")):
                 response[flag] = True
             return response
 
     root = init_repo(tmp_path)
-    services = UncertainModel("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    services = UncertainModel("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n", validation_ok=stage != "repair")
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
     try:
         submitted = wo.submit({"root": str(root), "task": "replace old with new", "mode": "bounded",
