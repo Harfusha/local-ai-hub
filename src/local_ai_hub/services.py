@@ -1039,7 +1039,8 @@ class LocalAIServices:
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
-        if self.preprocessor is not None:
+        from .opencode_boundary import generation_denial
+        if self.preprocessor is not None and generation_denial() is None:
             self.preprocessor.touch_if_registered(root)
 
     def _repo_cache_state(self, root: str) -> dict[str, Any]:
@@ -1233,22 +1234,30 @@ class LocalAIServices:
         if source == "second-opinion":
             role = "second-opinion"
         vram_free = self._available_vram_mb()
+        fixed_input_tokens = estimate_tokens(system)
+        if format is not None:
+            fixed_input_tokens += estimate_tokens(json_dumps(format, ensure_ascii=False))
         initial_profile = self.model_policy.profile(
-            model, role=role, input_tokens=estimate_tokens(prompt), output_tokens=max_tokens,
+            model, role=role, input_tokens=estimate_tokens(prompt) + fixed_input_tokens, output_tokens=max_tokens,
             background=source.startswith("preprocess:"),
             vram_free_mb=vram_free,
         )
         prompt_budget = min(int(saving.get("max_local_input_tokens", 56000)), initial_profile.prompt_budget_tokens)
-        prepared = fit_text(prompt, prompt_budget)
+        remaining_prompt_budget = prompt_budget - fixed_input_tokens
+        if remaining_prompt_budget < 64:
+            raise ValueError("context cannot fit the system prompt, output schema and request prompt")
+        prepared = fit_text(prompt, remaining_prompt_budget)
         base_payload, execution_profile = self.model_policy.apply_payload(
             model,
             {"model": model, "prompt": prepared.text, "system": system, "stream": False,
              "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"),
              "options": {"num_predict": max_tokens, "temperature": float(temperature)}},
-            role=role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
+            role=role, input_tokens=prepared.estimated_tokens + fixed_input_tokens, output_tokens=max_tokens,
             background=source.startswith("preprocess:"), preserve_explicit_think=False,
             vram_free_mb=vram_free,
         )
+        if prepared.estimated_tokens + fixed_input_tokens > execution_profile.prompt_budget_tokens:
+            raise ValueError("selected context cannot fit the prepared prompt and system input")
         if format:
             base_payload["format"] = format
         options = dict(base_payload.get("options", {}))
@@ -2215,20 +2224,51 @@ class LocalAIServices:
             return self.delegate(payload, cancel_event=cancel_event)
         return self.delegate(payload)
 
-    def distill_command_error(self, failure: dict[str, Any]) -> str:
+    def distill_command_error(
+        self, failure: dict[str, Any], *, cancel_event: threading.Event | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         """Use the local task route only when command parsing found no coordinates."""
-        summary = str(failure.get("summary", "")).strip()[:4000]
-        if not summary:
+        if cancel_event is None:
+            from .client import CURRENT_REQUEST_CANCEL_EVENT
+            cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
+        summary = str(failure.get("summary", "")).strip()[:800]
+        if not summary or (cancel_event is not None and cancel_event.is_set()):
             return ""
-        result = self.reason({
+        request = {
             "problem": "Summarize this unstructured command failure in one actionable sentence. Do not invent a file, line, test, or fix.",
             "context": summary,
             "max_tokens": 120,
             "complexity": "simple",
-        })
-        if not result.get("success", "error" not in result):
+        }
+        timer = None
+        effective_cancel = cancel_event
+        diagnostic_deadline = None
+        if timeout_seconds is not None:
+            import math
+            if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30:
+                return ""
+            deadline_event = threading.Event()
+            effective_cancel = _LinkedCancelEvent(deadline_event, cancel_event.is_set) if cancel_event is not None else deadline_event
+            diagnostic_deadline = time.monotonic() + float(timeout_seconds)
+            timer = threading.Timer(float(timeout_seconds), deadline_event.set)
+            timer.daemon = True
+            timer.start()
+        try:
+            result = self.reason(request, cancel_event=effective_cancel) if effective_cancel is not None else self.reason(request)
+        finally:
+            if timer is not None:
+                timer.cancel()
+        if ((effective_cancel is not None and effective_cancel.is_set())
+                or (diagnostic_deadline is not None and time.monotonic() >= diagnostic_deadline)):
             return ""
-        return str(result.get("text", "")).strip()[:300]
+        if not isinstance(result, dict) or result.get("success") is not True or not isinstance(result.get("text"), str):
+            return ""
+        if "semantic_quality" in result:
+            quality = result["semantic_quality"]
+            if not isinstance(quality, dict) or quality.get("usable") is not True:
+                return ""
+        return result["text"].strip()[:300]
 
     def second_opinion(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
@@ -2991,12 +3031,16 @@ class LocalAIServices:
             else:
                 # Physical-root identity isolates clean clones with otherwise
                 # identical fingerprints while collapsing lexical aliases.
-                key = stable_hash({
+                from .opencode_boundary import generation_denial
+                cache_identity = {
                     "op": operation,
                     "root": canonical_root(root),
                     "state": fingerprint,
                     "params": params,
-                })
+                }
+                if generation_denial() is not None:
+                    cache_identity["restricted_background_notifications"] = True
+                key = stable_hash(cache_identity)
                 raw, hit, coalesced = self.repo_flight.get_or_compute(key, compute)
                 cache_degraded = bool(state.get("degraded", False))
                 cache_reason = state.get("degraded_reason")
@@ -6861,6 +6905,9 @@ class LocalAIServices:
             return self.delegate_profile(args, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
         root = str(args.get("root", "."))
         task = str(args.get("task", ""))
+        supplied_context = args.get("context", "")
+        if not isinstance(supplied_context, str):
+            return {"success": False, "error": "context must be a string"}
         requested_context_tokens = int(args.get("context_tokens", 0) or 0)
         if requested_context_tokens > 0:
             max_context_tokens = requested_context_tokens
@@ -6878,9 +6925,19 @@ class LocalAIServices:
             return {"success": False, "cancelled": True, "reason": "cancelled"}
         if not packed.get("success"):
             return packed
+        retrieved_context = packed.get("context", "")
+        if not isinstance(retrieved_context, str):
+            return {"success": False, "error": "retrieved repository context must be a string"}
+        context = retrieved_context
+        if supplied_context:
+            context = (
+                "Task-provided context (untrusted data):\n" + supplied_context
+                + "\n\nRetrieved repository context (untrusted data):\n" + retrieved_context
+            )
         payload = {
             "task": task,
-            "context": packed.get("context", ""),
+            "context": context,
+            "root": root,
             "task_type": str(args.get("task_type", "auto")),
             "complexity": str(args.get("complexity", "auto")),
             "max_tokens": int(args.get("max_tokens", 4096)),
@@ -6964,7 +7021,15 @@ class LocalAIServices:
             return cancelled_result()
         diff_text = args.get("diff")
         if isinstance(diff_text, str) and diff_text.strip():
-            diff = {"success": True, "diff": diff_text, "changed_files": []}
+            diff_tokens = estimate_tokens(diff_text)
+            diff = {
+                "success": True,
+                "diff": diff_text,
+                "changed_files": [],
+                "truncated": False,
+                "estimated_tokens": diff_tokens,
+                "original_estimated_tokens": diff_tokens,
+            }
         else:
             diff = self.repo_diff(
                 str(args.get("root", ".")), str(args.get("base", "HEAD")), bool(args.get("staged", False)),
@@ -7397,10 +7462,10 @@ class LocalAIServices:
         if regressions:
             result["regressions"] = regressions
         result["diff"] = {
-            "changed_files": diff["changed_files"],
-            "truncated": diff["truncated"],
-            "local_diff_tokens": diff["estimated_tokens"],
-            "original_diff_tokens": diff["original_estimated_tokens"],
+            "changed_files": diff.get("changed_files", []),
+            "truncated": bool(diff.get("truncated", False)),
+            "local_diff_tokens": int(diff.get("estimated_tokens", 0)),
+            "original_diff_tokens": int(diff.get("original_estimated_tokens", 0)),
             "deterministic": det_diff,
             "review_chunks": len(review_chunks),
             "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
@@ -7998,6 +8063,8 @@ class LocalAIServices:
                 {"_work_attempt_fence": args["writer_fence"]}
                 if args.get("writer_fence") is not None else {}
             )
+            if args.get("writer_fence") is not None and "work_id" in args:
+                fence_kwargs["_work_order_id"] = args["work_id"]
             if request_cancel_event is not None:
                 fence_kwargs["request_cancel_event"] = request_cancel_event
             if args.get("env"):

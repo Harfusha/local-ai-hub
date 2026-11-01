@@ -22,7 +22,9 @@ LIFECYCLE_PROTECTED_KEYS = (
     "job_id", "task_id", "work_id", "request_id", "execution_id", "in_progress",
     "request_not_sent", "outcome_unknown", "mutation_applied", "operation_not_started",
     "complete", "partial", "cancel_requested",
+    "requires_primary_review", "task_barrier_status", "task_barrier_error",
     "expires_at", "artifact_id", "output_artifact_id", "task_context_artifact_id",
+    "local_diagnostic_status", "diagnostic_context_artifact_id", "local_diagnostic",
 )
 
 _POINTER_KEYS = (
@@ -42,7 +44,7 @@ _POINTER_KEYS = (
     "tasks", "task", "records", "matches", "items", "negative_knowledge",
     "receipts", "total_count", "active_count", "has_more", "offset", "limit", "next_offset",
     "symbols", "files", "board", "columns", "missing_criteria", "unverified_criteria",
-    "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
+    "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head", "local_handoff",
 )
 
 

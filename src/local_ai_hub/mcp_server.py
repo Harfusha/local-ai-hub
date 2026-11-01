@@ -16,6 +16,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
@@ -66,7 +67,7 @@ from local_ai_hub.task_memory_wire import (
     task_memory_original_tokens as _task_memory_original_tokens,
     task_memory_projection as _task_memory_projection,
 )
-from local_ai_hub.routing import semantic_handoff_hint
+from local_ai_hub.routing import semantic_handoff_hint, targeted_semantic_handoff
 from local_ai_hub.operation_contracts import (
     operation_contract,
     operation_actions,
@@ -120,6 +121,8 @@ class _MissingMCP:
 # time, so HubClient, config and projectors must be created here. Any failure
 # produces a clear SystemExit instead of a confusing AttributeError later.
 AGENT_NAME = os.environ.get("LOCAL_AI_AGENT", "agent")
+CLIENT_PROFILE = os.environ.get("LOCAL_AI_AGENT_PROFILE") or AGENT_NAME
+_PROFILE_HIDDEN_TOOLS = frozenset({"local_ai_task", "local_ai_work"}) if CLIENT_PROFILE == "opencode-local" else frozenset()
 _workspace = canonical_root(Path.cwd())
 if "LOCAL_AI_TENANT" in os.environ:
     raise SystemExit("LOCAL_AI_TENANT is retired; this installation has one local owner")
@@ -2101,7 +2104,7 @@ def _tool_catalog_schema_tokens() -> int:
     """
     try:
         desc_map = globals().get("_all_desc_map", {})
-        names = [name for name in desc_map if name not in set(getattr(FEATURES, "disabled_tools", []) or [])]
+        names = [name for name in desc_map if name not in set(getattr(FEATURES, "disabled_tools", []) or []) and name not in _PROFILE_HIDDEN_TOOLS]
         return json_tokens({"tools": [_schema_descriptor(name) for name in names]})
     except Exception:
         return 0
@@ -2110,6 +2113,7 @@ def _tool_catalog_schema_tokens() -> int:
 def _record_tool_accounting(
     *, tool_name: str, arguments: dict[str, Any], response: Any,
     measured: dict[str, Any], metadata: dict[str, Any], result_id_value: str = "",
+    event_id: str = "", duration_ms: float = 0.0, call_success: bool | None = None,
 ) -> None:
     try:
         event = finalize_tool_accounting(
@@ -2117,6 +2121,11 @@ def _record_tool_accounting(
             schema_tokens_est=_tool_catalog_schema_tokens(), metadata=metadata,
         )
         event.update({"agent": AGENT_NAME, "created_at": time.time()})
+        if event_id and type(call_success) is bool:
+            raw_root = arguments.get("root", "")
+            root = raw_root if isinstance(raw_root, str) and (os.path.isabs(raw_root) or ntpath.isabs(raw_root)) else ""
+            event.update({"event_id": event_id, "operation": str(arguments.get("action") or "default").lower(),
+                          "root": root, "duration_ms": duration_ms, "success": call_success})
         CONTEXT_LEDGER.record(
             tool=tool_name,
             operation=str(arguments.get("action") or "default"),
@@ -2202,10 +2211,21 @@ def _instrumented_tool():
                 fanout_count=len(arguments.get("tasks") or []) if isinstance(arguments.get("tasks"), list) else 0,
             )
             metadata = {}
+            call_event_id = uuid.uuid4().hex
             try:
                 result = fn(*args, **kwargs)
             except Exception:
-                _record_adoption(fn.__name__, arguments, None, (time.monotonic() - started) * 1000, failed=True)
+                duration_ms = (time.monotonic() - started) * 1000
+                _record_adoption(fn.__name__, arguments, None, duration_ms, failed=True, event_id=call_event_id)
+                pending = _PENDING_MCP_ACCOUNTING.get()
+                if pending is None:
+                    _record_tool_accounting(tool_name=fn.__name__, arguments=arguments, response={"success": False},
+                                            measured={}, metadata={}, event_id=call_event_id,
+                                            duration_ms=duration_ms, call_success=False)
+                else:
+                    pending.append({"tool_name": fn.__name__, "arguments": arguments,
+                                    "response": {"success": False}, "measured": {}, "metadata": {},
+                                    "event_id": call_event_id, "duration_ms": duration_ms, "call_success": False})
                 raise
             finally:
                 metadata = efficiency_metadata()
@@ -2215,10 +2235,22 @@ def _instrumented_tool():
                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
                 _CURRENT_OPERATIONAL_CONTEXT.reset(operational_token)
             clean, measured = pop_accounting(result)
+            proactive_hint = None
+            if fn.__name__ == "local_ai_repo" and arguments.get("action") in {"affected_tests", "test_matrix"}:
+                proactive_hint = targeted_semantic_handoff(
+                    fn.__name__, str(arguments.get("action") or "").lower(), clean,
+                    FEATURES.tasks and FEATURES.has_any_model(),
+                )
+            if proactive_hint is not None and isinstance(clean, dict) and "local_handoff" not in clean:
+                candidate = {**clean, "local_handoff": proactive_hint}
+                requested_tokens = int(arguments.get("max_response_tokens") or 0)
+                if requested_tokens <= 0 or json_tokens(candidate) <= requested_tokens:
+                    clean = candidate
+                    handoff_added = True
             if (isinstance(clean, dict) and clean.get("success") is True
                     and ("routing" in (arguments.get("extra_fields") or ())
                          or arguments.get("response_profile") == "debug")):
-                hint = semantic_handoff_hint(
+                hint = proactive_hint or semantic_handoff_hint(
                     fn.__name__,
                     str(arguments.get("action") or "").lower(),
                     FEATURES.tasks and FEATURES.has_any_model(),
@@ -2253,18 +2285,22 @@ def _instrumented_tool():
                     "failure_kind": "output_contract_violation",
                     **({"request_id": clean["request_id"]} if isinstance(clean, dict) and isinstance(clean.get("request_id"), str) else {}),
                 }
-            _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
+            duration_ms = (time.monotonic() - started) * 1000
+            call_success = isinstance(clean, dict) and clean.get("success") is True
+            _record_adoption(fn.__name__, arguments, clean, duration_ms, recommended=handoff_added, event_id=call_event_id)
             pending = _PENDING_MCP_ACCOUNTING.get()
             if pending is None:
                 _record_tool_accounting(
                     tool_name=fn.__name__, arguments=arguments, response=clean,
                     measured=measured, metadata=metadata,
+                    event_id=call_event_id, duration_ms=duration_ms, call_success=call_success,
                     result_id_value=clean["result_id"] if isinstance(clean, dict) and "result_id" in clean else "",
                 )
             else:
                 pending.append({
                     "tool_name": fn.__name__, "arguments": arguments, "response": clean,
                     "measured": measured, "metadata": metadata,
+                    "event_id": call_event_id, "duration_ms": duration_ms, "call_success": call_success,
                 })
             return clean
 
@@ -2305,10 +2341,11 @@ def _adoption_target(arguments: dict[str, Any]) -> tuple[str, str] | None:
     return tool, action
 
 
-def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False, recommended: bool = False) -> None:
+def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False, recommended: bool = False, event_id: str = "") -> None:
     """Best-effort aggregate telemetry; never retain request/response values."""
     try:
         action = str(arguments.get("action") or "default").lower()
+        called_tool, called_action = tool, action
         target = _adoption_target(arguments)
         if target is not None:
             tool, action = target
@@ -2334,14 +2371,16 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
         if recommended:
             ADOPTION_METRICS.record(tool, action, intent, "recommended", duration_ms=duration_ms, output_size=output_size)
         if ENDPOINT_STATS is not None:
-            mcp_name = f"{tool}:{action}" if action and action != "default" else tool
-            mcp_root = str(arguments.get("root", "") or "")
+            mcp_name = f"{called_tool}:{called_action}" if called_action and called_action != "default" else called_tool
+            raw_root = arguments.get("root", "")
+            mcp_root = raw_root if isinstance(raw_root, str) and (os.path.isabs(raw_root) or ntpath.isabs(raw_root)) else ""
             ENDPOINT_STATS.record_call(
                 item_type="mcp",
                 item_name=mcp_name,
                 duration_ms=duration_ms,
-                success=outcome == "used",
+                success=not failed and payload.get("success") is True,
                 root=mcp_root,
+                **({"event_id": event_id} if event_id else {}),
             )
     except Exception:
         pass
@@ -5214,6 +5253,8 @@ def local_ai_coord(
             memory_kwargs["kind"] = kind
         if mem_include_all:
             memory_kwargs["include_all_scopes"] = True
+        if limit is not None:
+            memory_kwargs["limit"] = limit
         if ttl_seconds is not None:
             memory_kwargs["ttl_seconds"] = ttl_seconds
         if confidence is not None:
@@ -5408,6 +5449,8 @@ def local_ai_work(
     acceptance_criteria: list[str] | None = None,
     constraints: list[str] | None = None,
     mode: str = "execute",
+    allowed_paths: list[str] | None = None,
+    approved_commands: list[str] | None = None,
     permissions: dict[str, Any] | None = None,
     budget: dict[str, Any] | None = None,
     timeout_seconds: float = 90.0,
@@ -5443,6 +5486,7 @@ def local_ai_work(
     payload: dict[str, Any] = {
         "action": action, "root": _client_root(root), "task": task, "work_id": work_id, "task_id": task_id,
         "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
+        "allowed_paths": allowed_paths, "approved_commands": approved_commands,
         "permissions": permissions if permissions is not None or permissions_supplied else {}, "budget": budget if budget is not None or budget_supplied else {}, "timeout_seconds": timeout_seconds, "answer": answer,
         "response_profile": response_profile, "return_fields": return_fields or [], "max_output_tokens": max_output_tokens,
         "keep_failed_workspace": keep_failed_workspace,
@@ -5558,7 +5602,7 @@ _ALL_REGISTERED_TOOLS: dict[str, Any] = (
     if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools")
     else {}
 )
-for _disabled in FEATURES.disabled_tools:
+for _disabled in set(FEATURES.disabled_tools) | _PROFILE_HIDDEN_TOOLS:
     if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         mcp._tool_manager._tools.pop(_disabled, None)
     if hasattr(mcp, "tools") and isinstance(mcp.tools, list):
@@ -6289,6 +6333,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         return contents, safe
 
     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        call_started = time.monotonic()
         arguments = dict(arguments)
         if (name == "local_ai_coord" and str(arguments.get("action") or "").startswith("plan_")
                 and "acceptance_criteria" not in operation_contract("local_ai_coord")["actions"].get(
@@ -6344,16 +6389,28 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 _record_tool_accounting(
                     tool_name=item["tool_name"], arguments=item["arguments"], response=emitted_response,
                     measured=measured, metadata=metadata,
+                    event_id=item.get("event_id", ""), duration_ms=item.get("duration_ms", 0.0),
+                    call_success=item.get("call_success"),
                     result_id_value=item_response["result_id"] if isinstance(item_response, dict) and "result_id" in item_response else "",
                 )
-            if account_unwrapped_error and not pending_accounting:
+            if not pending_accounting:
                 _record_tool_accounting(
                     tool_name=name, arguments=arguments, response=emitted_response, measured={},
                     metadata={"protocol_tokens_est": tool_request_tokens(name, arguments) + emitted_tokens},
+                    event_id=uuid.uuid4().hex,
+                    duration_ms=(time.monotonic() - call_started) * 1000,
+                    call_success=isinstance(candidate_value, dict) and candidate_value.get("success") is True,
                 )
             return result
 
         try:
+            if name in _PROFILE_HIDDEN_TOOLS:
+                payload = {
+                    "success": False, "status_code": 403, "unsupported": True,
+                    "error_code": "profile_tool_disabled", "terminal": True, "retryable": False,
+                    "error": "tool is disabled for the opencode-local profile",
+                }
+                return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             selector = "detail" if name == "local_ai_status" else "action"
             validation_arguments = dict(arguments)
             validation = validate_operation_call(name, validation_arguments, features=FEATURES)

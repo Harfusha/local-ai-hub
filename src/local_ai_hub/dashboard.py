@@ -5213,7 +5213,7 @@ async function pollEvents(isCurrent=()=>document.visibilityState!=='hidden'){
   eventsPollAbortController=controller;
   try{
     const previousCursor=cursor,opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
-    const r=await apiFetch('/api/live?after='+cursor+'&limit=200',opts);if(!isCurrent())return false;
+    const r=await apiFetch('/api/live?after='+cursor+'&limit='+(cursor?200:50),opts);if(!isCurrent())return false;
     const d=await r.json();if(!isCurrent()||!d.success)return false;
     const events=Array.isArray(d.events)?d.events:[];cursor=Number(d.cursor||cursor);
     const changed=!eventsPollHasLoaded||cursor!==previousCursor||events.length>0;eventsPollHasLoaded=true;

@@ -319,6 +319,45 @@ def test_committed_task_completion_survives_restart_before_publish(tmp_path, mon
     )
     assert command_result.get("success") is True
     assert isinstance(command_result.get("verification_receipt"), dict)
+    from local_ai_hub.work_orchestrator import _broker_receipt_from_result
+
+    forwarded = _broker_receipt_from_result(
+        broker, command_result, task_id=task_id, owner=task.owner,
+        root=str(repo_root), criterion="pytest suite passes", generation=0,
+    )
+    assert forwarded is not None
+    assert forwarded.to_dict() == command_result["verification_receipt"]
+    forged = dict(command_result)
+    forged["verification_receipt"] = dict(command_result["verification_receipt"], passed=False)
+    assert _broker_receipt_from_result(
+        broker, forged, task_id=task_id, owner=task.owner,
+        root=str(repo_root), criterion="pytest suite passes", generation=0,
+    ) is None
+    assert _broker_receipt_from_result(
+        broker, command_result, task_id=task_id, owner=task.owner,
+        root=str(tmp_path), criterion="pytest suite passes", generation=0,
+    ) is None
+    assert _broker_receipt_from_result(
+        broker, command_result, task_id=task_id, owner=task.owner,
+        root=str(repo_root), criterion="pytest suite passes", generation=1,
+    ) is None
+    ambiguous = dict(command_result, timed_out=True)
+    assert _broker_receipt_from_result(
+        broker, ambiguous, task_id=task_id, owner=task.owner,
+        root=str(repo_root), criterion="pytest suite passes", generation=0,
+    ) is None
+    for index, flag in enumerate(("timed_out", "cancelled", "aborted_interactive", "outcome_unknown",
+                                  "in_progress", "cleanup_unconfirmed", "output_capture_unconfirmed",
+                                  "log_callback_delivery_unconfirmed"), 1):
+        result = {"success": True, "exit_code": 0, flag: True}
+        execution_id = f"{index:032x}"
+        broker._record_command_verification(
+            result, task_id=task_id, criterion="pytest suite passes", command="python -m pytest -q test_receipt.py",
+            command_id=execution_id, command_digest="a" * 64, repository_revision=revision,
+            duration_ms=1, repository_root=str(repo_root),
+        )
+        assert "verification_receipt" not in result
+        assert broker.get_command_execution_record(execution_id, task_id=task_id, repository_root=str(repo_root)) is None
     from local_ai_hub import project_config
 
     monkeypatch.setattr(

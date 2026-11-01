@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -39,6 +40,14 @@ _update_transaction_module = importlib.util.module_from_spec(_update_transaction
 _update_transaction_spec.loader.exec_module(_update_transaction_module)
 replace_install_payload = _update_transaction_module.replace_install_payload
 stop_existing_runtime = _update_transaction_module.stop_existing_runtime
+
+_opencode_install_spec = importlib.util.spec_from_file_location(
+    "_local_ai_hub_opencode_install", Path(__file__).with_name("opencode_install.py")
+)
+if _opencode_install_spec is None or _opencode_install_spec.loader is None:
+    raise ImportError("could not load sibling opencode_install.py")
+_opencode_install_module = importlib.util.module_from_spec(_opencode_install_spec)
+_opencode_install_spec.loader.exec_module(_opencode_install_module)
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 # Keep the lexical path for safety checks; ``resolve()`` would erase evidence of
@@ -1122,6 +1131,44 @@ def ensure_llama_cpp_for_setup(cfg: dict[str, Any]) -> bool:
         raise RuntimeError(f"Managed llama.cpp setup failed: {exc}") from exc
 
 
+def _opencode_platform_supported() -> bool:
+    return sys.platform == "win32" and platform.machine().lower() in {"amd64", "x86_64"}
+
+
+def prepare_opencode_components(
+    cfg: dict[str, Any], install_dir: Path, hardware: dict[str, Any], *, destination: Path,
+    requested: str = "auto", model: str | None = None, allow_pull: bool = True,
+) -> dict[str, Any]:
+    """Prepare components without claiming runtime or target-GPU acceptance."""
+    from local_ai_hub.opencode_hardware import inspect_opencode_hardware
+    from local_ai_hub.opencode_models import ModelPreparationError, ensure_model, local_inventory, local_pull
+    from local_ai_hub.opencode_provider_service import derive_provider_token
+
+    if not _opencode_platform_supported():
+        raise ValueError("OpenCode component preparation currently supports Windows x64 only")
+    profile = inspect_opencode_hardware(hardware, requested=requested, model=model)
+    if profile["profile"] == "unsupported":
+        raise ValueError("OpenCode preparation requires at least 12 GB dedicated GPU memory")
+    if not (install_dir / "tools" / "opencode_goal" / "index.js").is_file():
+        raise ValueError("bundled OpenCode goal plugin is missing from the install")
+    candidate = profile["candidates"][0]
+    executable = _opencode_install_module.install_windows_x64(destination)
+    origin = cfg.get("server", {}).get("ollama_url", "")
+    def pull_candidate(name: str) -> None:
+        ollama = find_ollama_executable()
+        if not ollama:
+            raise ModelPreparationError("Ollama executable unavailable")
+        local_pull(ollama, origin, name)
+    model_result = ensure_model(candidate, inventory=lambda: local_inventory(origin), pull=pull_candidate, allow_pull=allow_pull)
+    pending = ["runtime and GPU admission not verified", "local-only isolation and goal acceptance incomplete"]
+    try:
+        derive_provider_token(cfg.get("security", {}).get("api_token", ""), "validation-nonce-0123456789")
+    except ValueError:
+        pending.append("Hub API token of at least 32 ASCII characters required")
+    return {"complete": False, "runtime_verified": False, "profile": profile["profile"],
+            "candidate": candidate, "executable": str(executable), "model": model_result, "pending": pending}
+
+
 def pull_ollama_models(cfg: dict[str, Any]) -> None:
     if not cfg.get("features", {}).get("pull_models_during_setup", True) or not ollama_setup_required(cfg):
         return
@@ -1319,6 +1366,14 @@ def main() -> int:
     parser.add_argument("--skip-token-economy", action="store_true", help="Do not install token economy packages or probe external CLI tools")
     parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
+    parser.add_argument("--install-opencode-cli-only", action="store_true", help="Install the pinned Windows x64 OpenCode CLI only; this does not configure the local agent.")
+    parser.add_argument("--with-opencode", action="store_true", help="Also prepare experimental OpenCode components; runtime acceptance remains required.")
+    parser.add_argument("--opencode-dir", type=Path, help="Destination for the pinned OpenCode executable.")
+    parser.add_argument("--inspect-opencode-hardware", action="store_true", help="Report candidate OpenCode GPU profiles without installing or running a model.")
+    parser.add_argument("--opencode-profile", choices=["auto", "12gb", "16gb"], help="Requested profile for inspection or OpenCode preparation.")
+    parser.add_argument("--opencode-model", help="Unverified model candidate for inspection or OpenCode preparation.")
+    parser.add_argument("--prepare-opencode-model", metavar="MODEL", help="Prepare one explicit Ollama model without running the full installer.")
+    parser.add_argument("--opencode-ollama-url", help="Loopback Ollama origin for --prepare-opencode-model (default: http://127.0.0.1:11434).")
     parser.add_argument("--expected-revision", help="Exact verified 40-character source commit required for install/update.")
     parser.add_argument("--host-project-root", type=Path, help="Explicit project root for isolated host-hook maintenance; skips Hub install/service/model actions.")
     parser.add_argument("--host-adapter", choices=["codex", "gemini_cli"], help="Documented local host hook format.")
@@ -1330,6 +1385,78 @@ def main() -> int:
     parser.add_argument("--superpowers-entrypoint", type=Path, help="Absolute Gemini CLI JavaScript entrypoint for a native Node launcher.")
     parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
     args = parser.parse_args()
+
+    if args.prepare_opencode_model is not None:
+        allowed = {"prepare_opencode_model", "opencode_ollama_url", "skip_model_pull"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("--prepare-opencode-model cannot be combined with other setup modes or options")
+        from local_ai_hub.opencode_models import ModelPreparationError, ensure_model, local_inventory, local_pull
+        origin = args.opencode_ollama_url or "http://127.0.0.1:11434"
+        def pull_opencode_model(model: str) -> None:
+            executable = find_ollama_executable()
+            if not executable:
+                raise ModelPreparationError("Ollama executable is unavailable; model not downloaded")
+            local_pull(executable, origin, model)
+        try:
+            result = ensure_model(args.prepare_opencode_model, inventory=lambda: local_inventory(origin),
+                                  pull=pull_opencode_model, allow_pull=not args.skip_model_pull)
+        except (ModelPreparationError, ValueError) as exc:
+            print(json.dumps({"success": False, "error": str(exc)}))
+            return 1
+        print(json.dumps({"success": True, **result}))
+        return 0
+    if args.opencode_ollama_url is not None:
+        parser.error("--opencode-ollama-url requires --prepare-opencode-model")
+
+    if args.inspect_opencode_hardware:
+        allowed = {"inspect_opencode_hardware", "opencode_profile", "opencode_model"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("--inspect-opencode-hardware cannot be combined with other setup modes or options")
+        from local_ai_hub.hardware import detect_hardware
+        from local_ai_hub.opencode_hardware import inspect_opencode_hardware
+        try:
+            result = inspect_opencode_hardware(detect_hardware(), requested=args.opencode_profile or "auto", model=args.opencode_model)
+        except ValueError as exc:
+            print(json.dumps({"success": False, "error": str(exc)}))
+            return 1
+        print(json.dumps({"success": True, **result}, ensure_ascii=False))
+        return 0
+    if not args.with_opencode and (args.opencode_profile is not None or args.opencode_model is not None):
+        parser.error("--opencode-profile and --opencode-model require --inspect-opencode-hardware or --with-opencode")
+
+    if args.install_opencode_cli_only:
+        incompatible = (
+            args.config is not None or args.profile is not None or args.expected_revision is not None
+            or args.skip_model_pull or args.skip_local_nlp_preload or args.skip_tools
+            or args.skip_agent_config or args.skip_service or args.skip_ollama_install
+            or args.skip_token_economy or args.skip_companion_skills or args.generate_only
+            or args.host_project_root is not None or args.host_adapter is not None
+            or args.host_action != "preview" or args.host_preview_revision is not None
+            or args.superpowers_root is not None or args.install_superpowers
+            or args.superpowers_executable is not None or args.superpowers_entrypoint is not None
+            or args.superpowers_consent or args.with_opencode
+        )
+        if incompatible:
+            parser.error("--install-opencode-cli-only cannot be combined with other setup modes or options")
+        if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
+            log("OpenCode CLI-only installation currently supports Windows x64 only.")
+            return 1
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if args.opencode_dir is None and not local_appdata:
+            log("OpenCode CLI-only installation requires LOCALAPPDATA or --opencode-dir.")
+            return 1
+        destination = args.opencode_dir or Path(local_appdata) / "Programs" / "OpenCode-LocalAIHub" / _opencode_install_module.VERSION
+        try:
+            executable = _opencode_install_module.install_windows_x64(destination)
+        except _opencode_install_module.InstallError as exc:
+            log(f"OpenCode CLI installation failed: {exc}")
+            return 1
+        log(f"OpenCode CLI installed: {executable}. PATH, MCP, models, goals and local-only security are not configured by this command.")
+        return 0
+    if args.opencode_dir is not None and not args.with_opencode:
+        parser.error("--opencode-dir requires --install-opencode-cli-only or --with-opencode")
+    if args.with_opencode and (args.generate_only or args.host_project_root is not None or args.host_adapter is not None):
+        parser.error("--with-opencode requires normal installation")
 
     if args.host_project_root is not None or args.host_adapter is not None:
         if args.host_project_root is None or args.host_adapter is None:
@@ -1367,6 +1494,23 @@ def main() -> int:
             args.install_superpowers, args.superpowers_executable is not None,
             args.superpowers_entrypoint is not None, args.superpowers_consent]):
         parser.error("host maintenance options require --host-project-root and --host-adapter")
+
+    opencode_hardware = None
+    if args.with_opencode:
+        from local_ai_hub.hardware import detect_hardware
+        from local_ai_hub.opencode_hardware import inspect_opencode_hardware
+        try:
+            if not _opencode_platform_supported():
+                raise ValueError("OpenCode component preparation currently supports Windows x64 only")
+            opencode_hardware = detect_hardware()
+            hint = inspect_opencode_hardware(opencode_hardware, requested=args.opencode_profile or "auto", model=args.opencode_model)
+            if hint["profile"] == "unsupported":
+                raise ValueError("OpenCode preparation requires at least 12 GB dedicated GPU memory")
+            if args.opencode_dir is None and not os.environ.get("LOCALAPPDATA"):
+                raise ValueError("OpenCode preparation requires LOCALAPPDATA or --opencode-dir")
+        except ValueError as exc:
+            log(f"OpenCode setup incomplete: {exc}")
+            return 1
 
     if not args.generate_only and args.expected_revision:
         try:
@@ -1417,7 +1561,9 @@ def main() -> int:
             text = text.rstrip() + f'\n\n[hardware]\nprofile = "{args.profile}"\nauto_tune = true\n'
         installed_config.write_text(text, encoding="utf-8")
     cfg = load_hub_config(str(installed_config))
-    if args.skip_model_pull:
+    if args.skip_model_pull or args.with_opencode:
+        # OpenCode setup prepares its one provisional candidate separately.
+        # Do not pull every unrelated Hub model as a side effect of this mode.
         cfg.setdefault("features", {})["pull_models_during_setup"] = False
     hub_python = ensure_venv(install_dir / ".venv")
     install_requirements(hub_python, install_dir / "requirements-core.txt")
@@ -1556,6 +1702,20 @@ def main() -> int:
         run([str(hub_python), str(install_dir / "tools" / "doctor.py")], check=False, timeout=60)
     except Exception as exc:
         log(f"WARNING: doctor could not complete: {exc}")
+
+    if args.with_opencode:
+        destination = args.opencode_dir or Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenCode-LocalAIHub" / _opencode_install_module.VERSION
+        try:
+            prepared = prepare_opencode_components(
+                cfg, install_dir, opencode_hardware, destination=destination,
+                requested=args.opencode_profile or "auto", model=args.opencode_model,
+                allow_pull=not args.skip_model_pull,
+            )
+        except (_opencode_install_module.InstallError, RuntimeError, ValueError, OSError) as exc:
+            log(f"Hub setup completed; OpenCode setup incomplete: {exc}")
+            return 1
+        log("Hub setup completed; OpenCode preparation is incomplete: " + json.dumps(prepared, ensure_ascii=False))
+        return 1
 
     hw = cfg.get("_hardware", {})
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")

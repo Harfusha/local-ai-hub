@@ -61,23 +61,15 @@ class FeatureSet:
         )
         self.rag: bool = bool(feat.get("rag", True))
         self.async_jobs: bool = _tbl("async_jobs").get("enabled", False) is True
-        self.ollama: bool = bool(srv.get("auto_start_ollama", True))
+        # Startup ownership and permission to use an existing backend are
+        # independent: an externally managed Ollama may already be online.
+        self.ollama: bool = _tbl("ollama").get("enabled", bool(srv.get("auto_start_ollama", False))) is True
         llama = _tbl("llama_cpp")
         llama_mode = str(llama.get("mode", "off")).strip().lower()
         llama_models = llama.get("models") if isinstance(llama.get("models"), dict) else {}
-        hardware = _tbl("_hardware")
-        gpus = hardware.get("gpus") if isinstance(hardware.get("gpus"), list) else []
-        intel_gpu = any(
-            str(gpu.get("vendor", "")).lower() == "intel" or "intel" in str(gpu.get("name", "")).lower()
-            for gpu in gpus if isinstance(gpu, dict)
-        )
-        dedicated_other = any(
-            str(gpu.get("vendor", "")).lower() in {"amd", "nvidia"} and not bool(gpu.get("integrated"))
-            for gpu in gpus if isinstance(gpu, dict)
-        )
-        self.llama_cpp: bool = bool(llama_models) and (
-            llama_mode == "on" or (llama_mode == "auto" and intel_gpu and not dedicated_other)
-        )
+        # An explicitly configured external auto route is hardware independent;
+        # endpoint validity and health are checked by LlamaCppRouter at use time.
+        self.llama_cpp: bool = bool(llama_models) and llama_mode in {"on", "auto"}
         self.tasks: bool = (
             bool(feat.get("tasks", True))
             and bool(feat.get("local_models", True))
@@ -227,7 +219,7 @@ class FeatureSet:
         if self.tasks and self.has_any_model():
             lines.append('- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`')
         if self.work_orchestrator:
-            lines.append("- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent")
+            lines.append("- `local_ai_work`: only for explicitly requested closed delegation; use bounded mode for suitable small tasks with exact allowed paths, approved commands, permissions, time budget and acceptance criteria; the primary agent reviews diff, tests and integration")
         lines.extend(self.specialized_trigger_lines())
         return lines
 
@@ -308,7 +300,7 @@ class FeatureSet:
         if self.tasks and self.has_any_model():
             parts.append("`local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression")
         if self.work_orchestrator:
-            parts.append("`local_ai_work` only for closed delegation explicitly requested by the user")
+            parts.append("`local_ai_work` only for explicitly requested closed delegation with primary-agent review")
         if self.rag:
             parts.append("`local_ai_rag` only after cheaper indexed evidence")
         if self.artifacts:

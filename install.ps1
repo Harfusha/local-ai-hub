@@ -12,11 +12,19 @@ param(
     [switch]$SkipOllamaInstall,
     [switch]$SkipLocalNlpPreload,
     [switch]$SkipTokenEconomy,
-    [switch]$SkipCompanionSkills
+    [switch]$SkipCompanionSkills,
+    [switch]$WithOpenCode,
+    [ValidateSet('auto','12gb','16gb')]
+    [string]$OpenCodeProfile,
+    [string]$OpenCodeModel,
+    [string]$OpenCodeDir
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $WithOpenCode -and ($OpenCodeProfile -or $OpenCodeModel -or $OpenCodeDir)) {
+    throw 'OpenCode options require -WithOpenCode.'
+}
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git is required to verify the installer source commit.' }
 $ActualRevision = (& git -C $Root rev-parse --verify HEAD).Trim()
@@ -87,6 +95,10 @@ if ($SkipOllamaInstall) { $argsList += '--skip-ollama-install' }
 if ($SkipLocalNlpPreload) { $argsList += '--skip-local-nlp-preload' }
 if ($SkipTokenEconomy) { $argsList += '--skip-token-economy' }
 if ($SkipCompanionSkills) { $argsList += '--skip-companion-skills' }
+if ($WithOpenCode) { $argsList += '--with-opencode' }
+if ($OpenCodeProfile) { $argsList += @('--opencode-profile', $OpenCodeProfile) }
+if ($OpenCodeModel) { $argsList += @('--opencode-model', $OpenCodeModel) }
+if ($OpenCodeDir) { $argsList += @('--opencode-dir', $OpenCodeDir) }
 
 & $Python @argsList
 exit $LASTEXITCODE

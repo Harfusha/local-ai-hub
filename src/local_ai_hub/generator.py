@@ -104,7 +104,9 @@ def _semantic_handoff_contract(fs: FeatureSet) -> str:
         "selectively for bounded generation, review, independent second opinions, test-log compression, "
         "commit message generation, and drafting where helpful. Cloud reasoning and planning are never "
         "blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact "
-        "facts, symbols, diff and tests."
+        "facts, symbols, diff and tests. For non-trivial edits, request evidence-grounded local test suggestions and review the diff "
+        "using `local_ai_task(action=\"review\")` when a suitable local backend is available; use `local_ai_task(action=\"delegate\")` for test suggestions. Verify findings against source and tests. "
+        "Skip when unavailable, unsuitable or restricted, and continue with the primary agent."
     )
 
 
@@ -179,8 +181,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     if fs.tasks and fs.has_any_model():
         delegation_task = (
             f"- Semantic delegation is on-demand: after deterministic/indexed evidence, {_semantic_handoff_contract(fs)} Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
-            f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
-            f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
+            " Follow the active hardware profile and user overrides; verify model availability and select autonomy by task risk and measured quality."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
         )
     else:
@@ -191,9 +192,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     work_delegation = ""
     if fs.work_orchestrator:
         work_delegation = (
-            '- `local_ai_work`: use only when the user explicitly requests closed whole-task delegation; routine work stays with the primary agent.'
+            '- `local_ai_work`: only for explicitly requested closed delegation; when profile `high` is active and task/model quality is evaluated, use bounded mode for suitable small tasks with exact allowed files, approved commands, explicit permissions, time budget and acceptance criteria. On Windows, bounded patch parent directories must already exist. A patch targeting mixed LF and CRLF within a single file fails visibly. The primary agent reviews the diff, test results and integration.'
         )
-    work_owner_note = "The main agent owns planning, edits, review, validation and final integration."
+    work_owner_note = "The main agent owns task scope, permissions, diff and test review, and final integration. Never infer tool execution or test success from model prose; verify actual tool results or traces. Missing provenance is unknown."
     # Ownership & tiering bullets
     tiering_bullets: list[str] = [
         "- **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search,"
@@ -207,8 +208,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         model_config = cfg.get("models", {}) if isinstance(cfg.get("models", {}), dict) else {}
         reasoning_tier = f"`{fs.reasoning_model}`" if "reasoning" in model_config else "the configured hardest-reasoning tier"
         tiering_bullets.append(
-            f"- **Tiered local models:** `{fs.background_model}` for preprocessing, `{fs.fast_model}` for quick/simple requests, "
-            f"`{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning. "
+            "- **Local model routing:** follow the active profile and user overrides, preserve the configured preprocessing provider, and verify installed model availability. Measured task quality and risk govern autonomy. "
             "Run deterministic/indexed Hub actions first for exact facts, symbols, diff and tests. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression."
         )
     if fs.rag:
@@ -217,13 +217,13 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
     tiering_section = "\n".join(tiering_bullets)
 
-    ollama_enabled = bool(cfg.get("ollama", {}).get("enabled", False)) if isinstance(cfg.get("ollama", {}), dict) else False
+    ollama_enabled = cfg.get("ollama", {}).get("enabled", False) is True if isinstance(cfg.get("ollama", {}), dict) else False
     manage_ollama = bool(cfg.get("headless", {}).get("manage_ollama", False))
     if not ollama_enabled:
         ollama_ownership_section = (
             "## Ollama process ownership\n\n"
             "Ollama is disabled by policy (`ollama.enabled = false`). Setup and the supervisor must not install, start, pull, or probe Ollama. "
-            "Use only an already-running llama.cpp endpoint when the hardware-gated `llama_cpp.mode = auto` route is healthy; there is no automatic fallback."
+            "Use only an explicitly configured, already-running loopback llama.cpp endpoint when its route is healthy; there is no automatic fallback. `llama_cpp.mode = auto` does not require a particular GPU."
         )
     elif manage_ollama:
         ollama_ownership_section = (
@@ -237,7 +237,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     else:
         ollama_ownership_section = (
             "## Ollama process ownership\n\n"
-            "`headless.manage_ollama = false` leaves an explicitly enabled Ollama user-managed. Keep its startup and environment outside the Hub."
+            "`headless.manage_ollama = false` leaves an explicitly enabled Ollama user-managed. Keep its startup and environment outside the Hub. "
+            "`server.auto_start_ollama = false` does not disable an explicitly enabled external backend; verify endpoint health and model availability before inference."
         )
 
     # Read-only audit contract
@@ -289,7 +290,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.')
         r_idx += 1
     if fs.work_orchestrator:
-        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit")` — only for explicit user requests for closed delegation; Hub plans a bounded DAG, validates, verifies, and returns a compact handoff.')
+        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit", mode="bounded")` — only for explicitly requested closed delegation after task/model quality evaluation; the primary agent reviews the diff, tests and integration.')
         r_idx += 1
     if fs.rag:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
@@ -525,9 +526,9 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
         semantic_note = f", {fs.semantic_hint()}" if fs.has_semantic() else ""
         tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}, context/solve" + (", preprocess" if fs.preprocessing else "") + ", impact, `review_diff`, `security_audit`, patch validation and repository checks.")
     if fs.work_orchestrator:
-        tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
+        tool_bullets.append("- `local_ai_work`: bounded implementation for explicit closed delegation with an active qualified high profile, caller-defined scope, permissions and limits; primary-agent review and integration remain required.")
     if fs.tasks and fs.has_any_model():
-        tool_bullets.append(f"- `local_ai_task`: tiered local-model work (`{fs.fast_model}` quick, `{fs.general_model}` ordinary, `{fs.smart_model}` more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. `local_ai_repo(action=\"solve\")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.")
+        tool_bullets.append("- `local_ai_task`: local-model semantic generation, reasoning, review, independent second opinions and compression; follow the active profile and user overrides and verify availability. Use deterministic/indexed tools for exact facts, symbols, diff and tests. `local_ai_repo(action=\"solve\")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.")
     if fs.rag:
         tool_bullets.append("- `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.")
     if fs.artifacts:
@@ -605,7 +606,16 @@ Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_a
         whole_task = """
 ## Whole-task handoff
 
-Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile="compact")` only when the user explicitly requests closed delegation. The Hub collects deterministic context, plans dependency-ordered steps, leases edited paths, journals mutations, validates each relevant phase, performs whole-task verification against the original request and returns only a compact handoff. The primary agent owns routine planning, edits, review, validation and final integration. Use `work_get` fields/artifacts lazily for details.
+Only when the user explicitly requests closed delegation, profile `high` is active, and task/model quality has been evaluated, submit suitable small work to `local_ai_work` with `mode="bounded"`, absolute root, task, acceptance criteria, exact `allowed_paths`, `approved_commands`, an explicit edit permission choice, test/build permissions, and finite `budget.max_seconds` and `max_steps`. Select work by measured quality and task risk; keep security and architecture decisions with the primary agent. The Hub retains broker authorization, leases and journaled patches. A successful bounded handoff has status `needs_agent`; the primary agent checks the diff, actual test results and integration and records its own review. Local verification is not final acceptance. Inspect handoff artifacts when needed.
+
+On Windows, bounded patch parent directories must already exist; a missing or unpinnable parent fails visibly. A patch targeting mixed LF and CRLF within a single file fails visibly. The Windows pin does not prove non-Windows race safety.
+
+`validation.receipt_status="not_recorded"` means the command outcome has no durable broker verification receipt; command success does not replace primary-agent review.
+`receipt_status="recorded_unmapped"` identifies an authentic broker receipt awaiting primary-agent review and mapping; it is not task completion. A later edit makes receipts from older mutation generations stale.
+
+`task_barrier_error=finalization_event_lookup_timeout` with `task_barrier_status=pending_finalization` means recovery awaits its scheduled retry; it is not completion and must not be duplicated or forced.
+
+For an opted-in validation failure with `local_handoff`, inspect the referenced artifact, select a narrow non-sensitive preview, check local backend availability, and only then optionally request `local_ai_task(action="reason")`. The hint is not an inference or a successful validation.
 
 """
     refs["workflows.md"] = f"""# Routing workflows
@@ -686,7 +696,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     model_default = ""
     if fs.tasks and fs.has_any_model():
         model_default = (
-            "\nLocal model policy: Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping."
+            "\nLocal model policy: Follow the active hardware profile and user overrides; see `docs/MODEL_CAPABILITIES.md` for foreground targets. Do not silently change the preprocessing provider. Pinned master `2458f72c` has no Gemini preprocessing provider; agent manifests do not prove runtime support. Model pulls are opt-in; check installed models before inference. Configured routes do not prove availability, quality or performance."
         )
     llama_cpp = cfg.get("llama_cpp", {})
     if isinstance(llama_cpp, dict) and str(llama_cpp.get("mode", "off")).casefold() == "on":
@@ -967,6 +977,97 @@ def generate_mcp_configs(
     return entries
 
 
+def _opencode_local_agents() -> dict[str, dict[str, Any]]:
+    """V2 role definitions; subagents inherit the session model."""
+    shared = (
+        "Use the explicit absolute project root with Local AI Hub. Prefer bounded "
+        "repository symbols, references and available retrieval before broad reads. "
+        "Treat tool results as evidence, preserve unrelated user changes and do not "
+        "invent test results. Do not invoke cloud providers in a local-only session. "
+        "Do not start parallel local inference; use the session model."
+    )
+    read_only = [
+        {"action": "edit", "resource": "*", "effect": "deny"},
+        {"action": "shell", "resource": "*", "effect": "deny"},
+    ]
+    return {
+        "local-builder": {
+            "description": "Implement and verify coding tasks locally",
+            "mode": "primary",
+            "system": shared + " Read applicable project AGENTS.md instructions. Understand the goal and acceptance criteria, make a plan, "
+                "implement directly, run targeted tests, investigate failures and repair them. "
+                "Track task state and decisions in Agent OS; restore relevant state after restart. "
+                "Never claim completion without objective verification and authentic receipts.",
+        },
+        "local-planner": {
+            "description": "Plan a bounded change without modifying files",
+            "mode": "subagent", "permissions": [dict(rule) for rule in read_only],
+            "system": shared + " Produce a concise implementation plan, acceptance criteria and risks.",
+        },
+        "local-reviewer": {
+            "description": "Review changes for correctness and regressions",
+            "mode": "subagent", "permissions": [dict(rule) for rule in read_only],
+            "system": shared + " Review the changes and report actionable findings with locations and evidence.",
+        },
+        "local-debugger": {
+            "description": "Diagnose failing tests without modifying files",
+            "mode": "subagent", "permissions": [dict(rule) for rule in read_only],
+            "system": shared + " Diagnose supplied failures, distinguish evidence from hypotheses and suggest focused checks.",
+        },
+    }
+
+
+def generate_opencode_mcp_config(
+    cfg: dict[str, Any],
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None = None,
+) -> dict[str, Any]:
+    """Build a standalone OpenCode V2 manifest without modifying user config."""
+    entries = generate_mcp_configs(cfg, install_dir, hub_python, serena, "opencode-local")
+    servers: dict[str, dict[str, Any]] = {}
+    for name, entry in entries.items():
+        server: dict[str, Any] = {
+            "type": "local",
+            "command": [entry["command"], *entry.get("args", [])],
+            "codemode": False,
+        }
+        if "cwd" in entry:
+            server["cwd"] = entry["cwd"]
+        if "env" in entry:
+            server["environment"] = dict(entry["env"])
+        servers[name] = server
+    return {"$schema": "https://opencode.ai/config.json", "default_agent": "local-builder", "mcp": {"servers": servers}, "agents": _opencode_local_agents()}
+
+
+def generate_opencode_runtime_config(
+    cfg: dict[str, Any], install_dir: Path, hub_python: Path, *, model: str, provider_port: int, hub_port: int,
+) -> dict[str, Any]:
+    """Build an experimental per-launch V2 config without embedding credentials."""
+    from .opencode_model_names import validate_local_model_name
+
+    validate_local_model_name(model)
+    if any(type(port) is not int or not 1 <= port <= 65535 for port in (provider_port, hub_port)):
+        raise ValueError("invalid loopback port")
+    result = generate_opencode_mcp_config(cfg, install_dir, hub_python)
+    result["model"] = f"local-hub/{model}"
+    result["providers"] = {
+        "local-hub": {
+            "name": "Local AI Hub",
+            "package": "@opencode/ai/providers/openai-compatible",
+            "settings": {"baseURL": f"http://127.0.0.1:{provider_port}/v1", "apiKey": "{env:LOCAL_AI_OPENCODE_PROVIDER_TOKEN}"},
+            "models": {model: {"name": model}},
+        },
+    }
+    result["policies"] = [
+        {"action": "provider.use", "resource": "*", "effect": "deny"},
+        {"action": "provider.use", "resource": "local-hub", "effect": "allow"},
+    ]
+    result["plugins"] = [{"package": str(install_dir / "tools" / "opencode_goal"),
+                          "options": {"hubURL": f"http://127.0.0.1:{hub_port}", "tokenEnv": "LOCAL_AI_HUB_TOKEN"}}]
+    return result
+
+
 def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[str, Any]) -> None:
     """Describe the common response budget contract for every public tool."""
     for schema in schemas.values():
@@ -1146,6 +1247,10 @@ def write_all_generated(
     vscode_mcp_path = gen_dir / "vscode-mcp.json"
     vscode_mcp_path.write_text(json_dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode_mcp.items()}}) + "\n", encoding="utf-8")
     results["mcp"].append(str(vscode_mcp_path))
+
+    opencode_mcp_path = gen_dir / "opencode-mcp.json"
+    opencode_mcp_path.write_text(json_dumps(generate_opencode_mcp_config(cfg, target_root, python_bin, serena)) + "\n", encoding="utf-8")
+    results["mcp"].append(str(opencode_mcp_path))
 
     # 4. Generated JSON tool schemas
     schemas_dir = gen_dir / "schemas"

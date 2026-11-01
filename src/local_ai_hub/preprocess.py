@@ -3563,6 +3563,26 @@ class ProjectPreprocessor:
         rows = self._find_next_files(root, 1)
         return rows[0] if rows else None
 
+    @staticmethod
+    def _generated_card_data(result: dict[str, Any]) -> Any:
+        data = result.get("data", {})
+        budget = result.get("prompt_budget")
+        if not isinstance(data, dict):
+            return data
+        data = {key: value for key, value in data.items() if key != "_input_prompt_budget"}
+        if (not isinstance(budget, dict)
+                or type(budget.get("truncated")) is not bool
+                or type(budget.get("estimated_tokens")) is not int
+                or type(budget.get("original_estimated_tokens")) is not int
+                or budget["estimated_tokens"] < 0
+                or budget["original_estimated_tokens"] < budget["estimated_tokens"]):
+            return data
+        return {**data, "_input_prompt_budget": {
+            "truncated": budget["truncated"],
+            "estimated_tokens": budget["estimated_tokens"],
+            "original_estimated_tokens": budget["original_estimated_tokens"],
+        }}
+
     def _store_file_card(self, root: str, item: sqlite3.Row, card_key: str, data: dict[str, Any], model: str) -> None:
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
@@ -3600,16 +3620,29 @@ class ProjectPreprocessor:
         # Defensive fallback for tests/minimal embeddings that construct the
         # preprocessor without the Local AI idle GPU worker.
         def execute() -> dict[str, Any]:
-            payload, _profile = self.services.model_policy.apply_payload(
+            from .budget import estimate_tokens, fit_text
+
+            fixed_input_tokens = estimate_tokens(system) + estimate_tokens(json_dumps(schema, ensure_ascii=False))
+            profile_hint = self.services.model_policy.profile(
+                model, role="background", input_tokens=estimate_tokens(prompt) + fixed_input_tokens,
+                output_tokens=int(max_tokens), background=True,
+            )
+            prompt_budget = profile_hint.prompt_budget_tokens - fixed_input_tokens
+            if prompt_budget < 64:
+                return {"success": False, "error": "context cannot fit the system prompt, output schema and request prompt"}
+            prepared = fit_text(prompt, prompt_budget)
+            payload, profile = self.services.model_policy.apply_payload(
                 model,
                 {
-                    "model": model, "prompt": prompt, "system": system, "format": schema,
+                    "model": model, "prompt": prepared.text, "system": system, "format": schema,
                     "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"),
                     "options": {"num_predict": int(max_tokens), "temperature": 0.2},
                 },
-                role="background", input_tokens=max(1, (len(prompt) + len(system)) // 4),
+                role="background", input_tokens=prepared.estimated_tokens + fixed_input_tokens,
                 output_tokens=int(max_tokens), background=True, preserve_explicit_think=False,
             )
+            if prepared.estimated_tokens + fixed_input_tokens > profile.prompt_budget_tokens:
+                return {"success": False, "error": "selected context cannot fit the prepared prompt and system input"}
             # A queued scheduler closure must recheck mode at the runtime handoff.
             if state_dir is not None:
                 try:
@@ -3636,7 +3669,11 @@ class ProjectPreprocessor:
                 data = json.loads(text)
             except Exception:
                 data = {"purpose": text[:1200], "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
-            return {"success": True, "model": model, "data": data, "load_duration_ns": response.get("load_duration", 0)}
+            return {"success": True, "model": model, "data": data,
+                    "prompt_budget": {"estimated_tokens": prepared.estimated_tokens,
+                                      "original_estimated_tokens": prepared.original_tokens,
+                                      "truncated": prepared.truncated},
+                    "load_duration_ns": response.get("load_duration", 0)}
 
         try:
             return self.scheduler.submit(
@@ -3780,7 +3817,7 @@ class ProjectPreprocessor:
                 self._store_file_card(root, item, card_key, fallback_data, "fallback-error")
                 progressed = True
                 continue
-            self._store_file_card(root, item, card_key, generated.get("data", {}), background_model)
+            self._store_file_card(root, item, card_key, self._generated_card_data(generated), background_model)
             progressed = True
             with self._stats_lock:
                 self._stats["file_card_generations"] = self._stats.get("file_card_generations", 0) + 1
@@ -3887,7 +3924,7 @@ class ProjectPreprocessor:
                 self._store_module_card(root, module, revision, fallback_data)
                 progressed = True
                 continue
-            self._store_module_card(root, module, revision, generated.get("data", {}))
+            self._store_module_card(root, module, revision, self._generated_card_data(generated))
             progressed = True
             with self._stats_lock:
                 self._stats["module_generations"] += 1
@@ -3936,7 +3973,7 @@ class ProjectPreprocessor:
             if not generated.get("success"):
                 project_data = {"summary": f"project generation error: {str(generated.get('error', ''))[:200]}", "architecture": {}, "entry_points": [], "modules": module_data[:10], "tests": []}
             else:
-                project_data = generated.get("data", {})
+                project_data = self._generated_card_data(generated)
             with self._stats_lock:
                 self._stats["project_generations"] += 1
         with self._db_lock, closing(self._connect()) as con:

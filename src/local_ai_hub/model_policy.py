@@ -149,7 +149,20 @@ class ModelExecutionPolicy:
         vram_free_mb: int | None = None,
     ) -> ExecutionProfile:
         role_l = _clean_str(role).strip().lower()
-        tier = "vision" if role_l == "vision" else self.tier_for(model)
+        if background or role_l in {"background", "background_code"}:
+            tier = "background"
+        elif role_l == "vision":
+            tier = "vision"
+        elif role_l in {"fast", "fast_code"}:
+            tier = "fast"
+        elif role_l in {"smart", "heavy_code", "reasoning"}:
+            tier = "smart"
+        elif role_l and _clean_str(model).strip() in self.smart_models:
+            tier = "smart"
+        elif role_l and _clean_str(model).strip() == self.fast_model:
+            tier = "fast"
+        else:
+            tier = self.tier_for(model)
         cfg = self._tier_cfg(tier)
         default_hint = 32768 if tier in {"fast", "background"} else 49152
         default_ctx = _safe_int(cfg.get("context_tokens", default_hint), default_hint, minimum=4096)
@@ -174,6 +187,8 @@ class ModelExecutionPolicy:
         need = safe_in + safe_out + reserve
         if background:
             target = background_ctx
+        elif need > large_ctx:
+            target = max_ctx
         elif need > default_ctx * 0.78:
             target = large_ctx
         else:
@@ -195,6 +210,8 @@ class ModelExecutionPolicy:
                 target = min(target, 8192)
 
         target = min(max_ctx, max(4096, target))
+        if max(256, safe_out) + reserve + 1024 > target:
+            raise ValueError("context cannot fit requested output, reserve and minimum prompt budget")
 
         default_think = bool(cfg.get("thinking", False))
         raw_think_roles = cfg.get("thinking_roles", ["reasoning", "critic", "second-opinion"])

@@ -2603,6 +2603,14 @@ class RAGStore:
 
     def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
         clean_query = normalize_query(query)
+        from .opencode_boundary import generation_denial
+
+        if generation_denial() is not None:
+            # Do not join another client's semantic singleflight or invoke an
+            # embedding provider: this request uses the existing lexical index.
+            result = self._search_uncached(clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True)
+            result["search_cache"] = {"hit": False, "coalesced": False}
+            return self._postprocess_search_payload(result, top_k)
         revision = self.revision(workspace=workspace)
         cache_identity_known = self._embedding_space_cache_identity_known()
         query_space = self._embedding_space_id()
@@ -2924,17 +2932,20 @@ class RAGStore:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
 
         def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]
 
-        try:
-            query_result = self.services.embed([query], priority=priority, query=True)
-        except Exception as exc:
-            query_result = {"success": False, "error": str(exc)}
+        if lexical_only:
+            query_result = {"success": False, "error": "opencode_local_lexical_only"}
+        else:
+            try:
+                query_result = self.services.embed([query], priority=priority, query=True)
+            except Exception as exc:
+                query_result = {"success": False, "error": str(exc)}
         if query_result.get("success"):
             embeddings = query_result.get("embeddings")
             try:

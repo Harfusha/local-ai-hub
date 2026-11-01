@@ -13,6 +13,10 @@ class RouteRule:
 
 
 POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
+    RouteRule('post_opencode_provider_start_1', frozenset(('/api/opencode/provider/start',))),
+    RouteRule('post_opencode_provider_status_1', frozenset(('/api/opencode/provider/status',))),
+    RouteRule('post_opencode_provider_stop_1', frozenset(('/api/opencode/provider/stop',))),
+    RouteRule('post_opencode_provider_wait_1', frozenset(('/api/opencode/provider/wait',))),
     RouteRule('post_admin_mode_1', frozenset(('/api/admin/mode',))),
     RouteRule('post_bundle_import_1', frozenset(('/api/bundle/import',))),
     RouteRule('post_telemetry_tool_accounting_1', frozenset(('/api/telemetry/tool-accounting',))),

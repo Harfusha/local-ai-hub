@@ -507,6 +507,16 @@ def _receipt_count(event: dict[str, Any]) -> int:
     return 1 if event.get("receipt_id") else 0
 
 
+_LIVE_OMIT_EMPTY = frozenset({
+    "bypass_reason", "terminal", "retryable", "receipt_count", "queue_age_ms",
+    "wait_count", "wait_duration_ms", "service_ms", "tool_calls", "evidence_count",
+    "response_bytes", "component", "operation", "fingerprint", "recovered",
+    "preprocessed_hit", "root", "error_type", "error_fingerprint", "model",
+    "stage", "task_type", "complexity", "route", "cache_layer", "coalesced",
+    "retry_count", "fallback_used", "degraded", "load_duration_ms", "trace_id",
+})
+
+
 class TelemetryStore:
     """Low-overhead, metadata-only observability store.
 
@@ -965,8 +975,7 @@ class TelemetryStore:
             "error_type", "error_fingerprint",
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
             "fingerprint", "retryable", "recovered", "name", "metrics_json",
-            "preprocessed_hit", "root", "db_wait_ms", "exec_ms", "serialization_ms",
-            "db_wait_measured", "exec_measured", "serialization_measured",
+            "preprocessed_hit", "root",
         }
         event = {k: v for k, v in payload.items() if k in allowed}
         event["kind"] = kind
@@ -976,14 +985,21 @@ class TelemetryStore:
             event["seq"] = self._live_seq
             self._live_events.append(event)
 
-    def live(self, after: int = 0, limit: int = 200) -> dict[str, Any]:
+    def live(self, after: int = 0, limit: int = 200, compact: bool = True) -> dict[str, Any]:
         limit = max(1, min(int(limit), 1000))
         with self._live_lock:
-            events = [dict(e) for e in self._live_events if int(e.get("seq", 0)) > int(after)]
-            if len(events) > limit:
-                events = events[-limit:]
+            raw_events = [e for e in self._live_events if int(e.get("seq", 0)) > int(after)]
+            if len(raw_events) > limit:
+                raw_events = raw_events[-limit:]
             cursor = self._live_seq
             oldest = int(self._live_events[0].get("seq", 0)) if self._live_events else cursor
+        if compact:
+            events = [
+                {k: v for k, v in e.items() if not (k in _LIVE_OMIT_EMPTY and (v in ("", 0, 0.0, -1, None)))}
+                for e in raw_events
+            ]
+        else:
+            events = [dict(e) for e in raw_events]
         return {"success": True, "cursor": cursor, "oldest": oldest, "events": events}
 
     def _enqueue(self, kind: str, payload: dict[str, Any]) -> bool:
@@ -1040,7 +1056,7 @@ class TelemetryStore:
                 return self._refresh_dashboard_report_writer(cached)
             try:
                 report = self.report(bounded_days, recent_errors=12, scope=scope, _flush=False)
-                report["recent_http"] = self.recent_http(200, _flush=False)
+                report["recent_http"] = self.recent_http(50, _flush=False)
                 report["summary"] = {**report.get("summary", {}), "data_available": self.enabled, "stale": False}
             except Exception:
                 report = dict(cached) if cached else {"summary": {"enabled": self.enabled}}
@@ -1068,7 +1084,7 @@ class TelemetryStore:
             )
         return refreshed
 
-    def realtime_summary(self, *, scope: str = "process") -> dict[str, Any]:
+    def realtime_summary(self, *, scope: str = "process", light: bool = False) -> dict[str, Any]:
         with self._live_lock:
             events = [dict(e) for e in self._live_events]
         inference = [e for e in events if e.get("event_type") == "inference"]
@@ -1117,7 +1133,7 @@ class TelemetryStore:
             "preprocessed_query_hits": int(history.get("preprocessed_query_hits", 0) or 0),
             "preprocessed_query_events": int(history.get("preprocessed_query_events", 0) or 0),
             "preprocessed_query_hit_rate": float(history.get("preprocessed_query_hit_rate", 0.0) or 0.0),
-            "sessions": history.get("sessions", []),
+            "sessions": [] if light else history.get("sessions", []),
             "cache_domains": history.get("cache_domains", {}),
             "http_outcomes": history.get("http_outcomes", {}),
             "net_cloud_token_delta_est": int(history.get("net_cloud_token_delta_est", 0) or 0),
@@ -1169,13 +1185,13 @@ class TelemetryStore:
             "recent_http": report.get("recent_http", []) if isinstance(report, dict) else [],
             "window": history.get("window", {"scope": scope}),
             "counts": history.get("counts", {}),
-            "routes": history.get("routes", []),
-            "cache": history.get("cache", []),
-            "bypass": history.get("bypass", []),
+            "routes": [] if light else history.get("routes", []),
+            "cache": [] if light else history.get("cache", []),
+            "bypass": [] if light else history.get("bypass", []),
             "errors": history.get("errors", {}),
             "queue": history.get("queue", {}),
-            "detail": history.get("detail", {}),
-            "decision_grade": history.get("decision_grade", {}),
+            "detail": {} if light else history.get("detail", {}),
+            "decision_grade": {} if light else history.get("decision_grade", {}),
         }
 
     def record(self, **event: Any) -> bool:
@@ -1351,16 +1367,17 @@ class TelemetryStore:
             pass
         self._current_session_id = None
 
-    def sessions(self, days: int = 30) -> list[dict[str, Any]]:
+    def sessions(self, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
         if not self.enabled:
             return []
         cutoff = time.time() - max(1, int(days)) * 86400
         now = time.time()
+        session_limit = max(1, min(int(limit), 100))
         with closing(self._connect()) as con:
             session_rows = con.execute(
                 "SELECT id,pid,version,started_at,stopped_at,last_heartbeat,exit_clean "
-                "FROM process_sessions WHERE started_at>=? ORDER BY started_at DESC LIMIT 100",
-                (cutoff,),
+                "FROM process_sessions WHERE started_at>=? ORDER BY started_at DESC LIMIT ?",
+                (cutoff, session_limit),
             ).fetchall()
             if not session_rows:
                 return []
@@ -2348,7 +2365,7 @@ class TelemetryStore:
             "preprocessed_query_hits": prep_hits,
             "preprocessed_query_events": prep_events,
             "preprocessed_query_hit_rate": prep_hit_rate,
-            "sessions": self.sessions(days=int(days)),
+            "sessions": self.sessions(days=int(days), limit=20),
             "cache_domains": cache_domains,
             "http_outcomes": http_outcomes,
             "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),

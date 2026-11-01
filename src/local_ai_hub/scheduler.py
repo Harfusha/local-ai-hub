@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import logging
 import math
+import os
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -12,6 +15,26 @@ from typing import Any, Callable
 
 from .model_policy import ModelExecutionPolicy
 from .trace_context import observer
+
+
+_INVALID_EXTERNAL_RESERVATION = "invalid"
+
+
+def _read_external_reservation(path: Any) -> str | None:
+    try:
+        if path.is_symlink():
+            return _INVALID_EXTERNAL_RESERVATION
+        with path.open("rb") as stream:
+            value = stream.read(65)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return _INVALID_EXTERNAL_RESERVATION
+    try:
+        digest = value.decode("ascii")
+    except UnicodeDecodeError:
+        return _INVALID_EXTERNAL_RESERVATION
+    return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else _INVALID_EXTERNAL_RESERVATION
 
 
 _T12_SCENARIO_NAMES = frozenset({"scheduler", "batch", "deadline", "overload", "cancel", "fallback"})
@@ -234,6 +257,13 @@ class AffinityScheduler:
         self._foreground_preempt_hook: Callable[[], None] | None = None
         self._foreground_preempting = False
         self._background_gpu_lease = False
+        server_cfg = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
+        raw_state_dir = server_cfg.get("state_dir")
+        self._external_gpu_path = None
+        if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip():
+            from .state_paths import configured_state_dir
+            self._external_gpu_path = configured_state_dir(config) / "external-gpu-reservation"
+        self._external_gpu_token = _read_external_reservation(self._external_gpu_path) if self._external_gpu_path else None
         self._executor = ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="local-ai")
         self._stats = {
             "submitted": 0,
@@ -702,6 +732,12 @@ class AffinityScheduler:
         background: bool = False,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        # Reject before queueing: the worker thread does not inherit request context.
+        from .opencode_boundary import generation_denial
+
+        denial = generation_denial()
+        if denial is not None:
+            return denial
         if not isinstance(model, str) or not model or "\x00" in model:
             raise ValueError("invalid_model")
         if not isinstance(source, str) or not source.strip() or "\x00" in source:
@@ -949,6 +985,8 @@ class AffinityScheduler:
         """
         with self._cond:
             now = time.monotonic()
+            if getattr(self, "_external_gpu_token", None):
+                return False
             if self._background_gpu_lease:
                 return True
             if self._switching or self._inflight or self._pending:
@@ -992,6 +1030,52 @@ class AffinityScheduler:
                 self._cond.notify_all()
                 return bool(clean)
 
+    def reserve_external_gpu(self) -> str | None:
+        """Reserve an idle scheduler for a future coordinated external session.
+
+        The caller must hold the returned capability until all external inference
+        has stopped. Process restart preserves the fence in the configured state dir.
+        """
+        import secrets
+
+        with self._cond:
+            if (not self._running or not self._external_gpu_path or self._external_gpu_token or self._background_gpu_lease
+                    or self._switching or self._inflight or self._pending):
+                return None
+            token = secrets.token_urlsafe(32)
+            digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            try:
+                with self._external_gpu_path.open("xb") as stream:
+                    stream.write(digest.encode("ascii"))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError:
+                self._external_gpu_token = _read_external_reservation(self._external_gpu_path) or _INVALID_EXTERNAL_RESERVATION
+                self._cond.notify_all()
+                return None
+            self._external_gpu_token = digest
+            self._cond.notify_all()
+            return token
+
+    def release_external_gpu(self, token: str) -> bool:
+        import secrets
+
+        with self._cond:
+            current = self._external_gpu_token
+            if not isinstance(token, str) or not token.isascii() or current in (None, _INVALID_EXTERNAL_RESERVATION):
+                return False
+            digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            if not secrets.compare_digest(current, digest) or _read_external_reservation(self._external_gpu_path) != current:
+                return False
+            try:
+                self._external_gpu_path.unlink()
+            except OSError:
+                return False
+            self._external_gpu_token = None
+            self._last_foreground_activity = time.monotonic()
+            self._cond.notify_all()
+            return True
+
     def release_background_gpu(self) -> None:
         with self._cond:
             self._background_gpu_lease = False
@@ -1005,12 +1089,12 @@ class AffinityScheduler:
         """True when background work should yield before starting another micro-step."""
         with self._cond:
             foreground_inflight = self._inflight - self._inflight_background
-            return bool(foreground_inflight > 0 or any(not j.background for j in self._pending) or self._switching)
+            return bool(getattr(self, "_external_gpu_token", None) or foreground_inflight > 0 or any(not j.background for j in self._pending) or self._switching)
 
     def background_allowed(self, *, require_switch_idle: bool = False) -> bool:
         with self._cond:
             now = time.monotonic()
-            if self._inflight - self._inflight_background > 0 or any(not j.background for j in self._pending):
+            if getattr(self, "_external_gpu_token", None) or self._inflight - self._inflight_background > 0 or any(not j.background for j in self._pending):
                 return False
             grace = self.background_switch_grace if require_switch_idle else self.background_idle_grace
             return now - self._last_foreground_activity >= grace
@@ -1040,7 +1124,7 @@ class AffinityScheduler:
     def _claim_idle_unload(self, now: float) -> str | None:
         """Caller holds _cond; reserve residency before releasing that lock."""
         if (not self._running or self.idle_timeout_seconds <= 0 or self._switching
-                or self._pending or self._inflight or self._background_gpu_lease
+                or self._pending or self._inflight or self._background_gpu_lease or getattr(self, "_external_gpu_token", None)
                 or not self._active_model or self._idle_owned_model != self._active_model
                 or now - self._last_model_activity < self.idle_timeout_seconds):
             return None
@@ -1080,6 +1164,9 @@ class AffinityScheduler:
             with self._cond:
                 while self._running:
                     now = time.monotonic()
+                    if getattr(self, "_external_gpu_token", None):
+                        self._cond.wait(timeout=0.10)
+                        continue
                     idle_unload = self._claim_idle_unload(now)
                     if idle_unload is not None:
                         break

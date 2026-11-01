@@ -265,7 +265,7 @@ class MCPStdioClient:
         return (props if isinstance(props, dict) else {}, {str(x) for x in required if isinstance(x, str)})
 
     def call_tool(self, name: str, args: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
-        lock_wait = min(float(soft_timeout), 5.0) if soft_timeout is not None else (float(timeout) if timeout is not None else None)
+        lock_wait = min(float(soft_timeout), 8.0) if soft_timeout is not None else (float(timeout) if timeout is not None else None)
         acquired = self._lock.acquire(timeout=lock_wait if lock_wait is not None else -1)
         if not acquired:
             raise MCPSoftTimeoutError(f"MCP lock wait timeout for tool: {name}")
@@ -430,7 +430,7 @@ class ExternalCodeIntelligence:
         else:
             self.install_root = Path(__file__).resolve().parents[2]
         self.call_timeout = _safe_float(self.cfg.get("query_timeout_seconds"), 60.0, min_val=1.0)
-        self.soft_timeout = _safe_float(self.cfg.get("soft_timeout_seconds"), 4.0, min_val=0.1)
+        self.soft_timeout = _safe_float(self.cfg.get("soft_timeout_seconds"), 10.0, min_val=0.1)
         self.startup_timeout = _safe_float(self.cfg.get("startup_timeout_seconds"), 60.0, min_val=1.0)
         self.index_timeout = _safe_float(self.cfg.get("index_timeout_seconds"), 1200.0, min_val=1.0)
         self.max_output_chars = max(1000, int(self.cfg.get("max_output_chars") or 9000))
@@ -1087,7 +1087,7 @@ class ExternalCodeIntelligence:
         eff_soft_timeout = float(soft_timeout) if soft_timeout is not None else self.soft_timeout
         if timeout is not None and eff_soft_timeout is not None:
             eff_soft_timeout = min(eff_soft_timeout, float(timeout))
-        lock_wait = min(eff_soft_timeout, 1.5) if eff_soft_timeout > 0 else (float(timeout) if timeout is not None else 60.0)
+        lock_wait = min(eff_soft_timeout, 8.0) if eff_soft_timeout > 0 else (float(timeout) if timeout is not None else 60.0)
         try:
             with self._backend_operation("serena", root, timeout=lock_wait):
                 return self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=eff_soft_timeout)

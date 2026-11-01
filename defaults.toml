@@ -83,7 +83,8 @@ cloud_provider = ""
 [llama_cpp]
 # `auto` discovers an existing loopback llama.cpp server without downloading.
 # `on` explicitly selects managed llama.cpp; setup pins and provisions runtime/model.
-# Ollama wins whenever [ollama].enabled is true.
+# A mapped llama.cpp route takes precedence; when unavailable, Ollama is used
+# only if fallback_to_ollama is true and Ollama is enabled.
 mode = "auto" # off | auto (external only) | on (managed llama.cpp)
 model_load_timeout_seconds = 600
 managed_model_filename = "hub-qwen-15.gguf"
@@ -270,6 +271,12 @@ allow_delete = true
 rollback_on_failure = true
 default_response_profile = "compact"
 default_max_output_tokens = 1600
+
+[work_orchestrator.tool_exploration]
+# Optional read-only exploration requires reviewed evidence for this exact model digest.
+enabled = false
+model = ""
+qualification_artifact_id = ""
 
 [transcription]
 # The optional Whisper CLI uses verified cached weights; downloads require operator opt-in.
@@ -576,7 +583,7 @@ work_orchestrator = true # whole-task DAG execution and verified handoff (local_
 enriched_search = true # source-enriched repository search
 batch_replacement = true # atomic repository batch replacement
 diagnostic_artifacts = true # persist command diagnostic artifacts
-local_diagnostic_dispatch = true # bounded L1 local failure diagnosis
+local_diagnostic_dispatch = false # opt in to bounded local failure diagnosis
 reranker = true
 install_local_nlp_dependencies = true
 install_openvino_dependencies = true
@@ -618,7 +625,7 @@ default_tokens = 3200
 max_tokens = 16000
 reuse_cache_size = 256
 ledger_size = 512
-tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 3200, local_ai_rag = 3000, local_ai_coord = 2500, local_ai_artifact = 4000, local_ai_work = 4000 }
+tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 3200, local_ai_rag = 3000, local_ai_coord = 3200, local_ai_artifact = 4000, local_ai_work = 4000 }
 # MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
 # foreground tool should need an unbounded multi-hour socket wait.
 quick_timeout_seconds = 180

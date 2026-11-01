@@ -6,12 +6,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
-from urllib.parse import urlparse
 
 from .budget import estimate_tokens, fit_text
 from .model_policy import ModelExecutionPolicy
 from .ollama import OllamaRuntime
-from .process_utils import find_listening_pid, terminate_tree, process_executable
 
 
 class IdleGPUWorker:
@@ -171,29 +169,26 @@ class IdleGPUWorker:
                 self._cancel.clear()
 
             try:
-                # Do not hijack or rely on an unrelated service occupying the dedicated
-                # port: we would be unable to guarantee NUM_PARALLEL or preempt it safely.
+                def reject_unmanaged() -> bool:
+                    with self._lock:
+                        self._stats["unmanaged_endpoint_rejections"] += 1
+                    self._cool_down_after_start_failure(
+                        f"background Ollama endpoint already in use by unmanaged process: {self.endpoint}"
+                    )
+                    self.scheduler.release_background_gpu()
+                    with self._lock:
+                        self._lease = False
+                    return False
+
+                # An unrelated service cannot be safely adopted or stopped.
                 if self.runtime.is_online() and not self.runtime.managed_profile_status().get("managed"):
-                    parsed_port = urlparse(self.endpoint).port or 11436
-                    listening_pid = find_listening_pid(parsed_port)
-                    exe_name = (process_executable(listening_pid) or "").lower() if listening_pid else ""
-                    if listening_pid and ("ollama" in exe_name or not exe_name):
-                        terminate_tree(listening_pid, grace_seconds=5.0)
-                        deadline = time.monotonic() + 5.0
-                        while time.monotonic() < deadline and self.runtime.is_online():
-                            time.sleep(0.15)
-                    if self.runtime.is_online() and not self.runtime.managed_profile_status().get("managed"):
-                        with self._lock:
-                            self._stats["unmanaged_endpoint_rejections"] += 1
-                        self._cool_down_after_start_failure(
-                            f"background Ollama endpoint already in use by unmanaged process: {self.endpoint}"
-                        )
-                        self.scheduler.release_background_gpu()
-                        with self._lock:
-                            self._lease = False
-                        return False
+                    return reject_unmanaged()
                 if not self.runtime.ensure_running():
                     raise RuntimeError("could not start dedicated background Ollama server")
+                # ensure_running can borrow a listener that appeared after the
+                # first probe. Do not load or unload any model without ownership.
+                if not self.runtime.managed_profile_status().get("managed"):
+                    return reject_unmanaged()
                 if self._foreground_requested():
                     self.preempt_foreground()
                     return False
@@ -262,6 +257,12 @@ class IdleGPUWorker:
                 with self._lock:
                     self._cpu_lease = False
                 return False
+            # Startup may have borrowed an endpoint that appeared concurrently.
+            if not self.cpu_runtime.managed_profile_status().get("managed"):
+                with self._lock:
+                    self._last_error = f"background CPU endpoint is unmanaged: {self.cpu_endpoint}"
+                    self._cpu_lease = False
+                return False
             try:
                 self.cpu_runtime.prepare_model(self.model, unload_others=True)
                 details = self.cpu_runtime.loaded_model_details()
@@ -315,32 +316,41 @@ class IdleGPUWorker:
             return {"success": False, "preempted": True, "error": "foreground work pending"}
         prompt = str(task.get("prompt", ""))
         system = str(task.get("system", ""))
+        schema = task.get("schema")
+        fixed_input_tokens = estimate_tokens(system)
+        if schema is not None:
+            fixed_input_tokens += estimate_tokens(json.dumps(schema, ensure_ascii=False))
         max_tokens = max(32, int(task.get("max_tokens", 320)))
         profile_hint = policy.profile(
             self.model,
             role="background",
-            input_tokens=estimate_tokens(prompt) + estimate_tokens(system),
+            input_tokens=estimate_tokens(prompt) + fixed_input_tokens,
             output_tokens=max_tokens,
             background=True,
         )
-        prepared = fit_text(prompt, profile_hint.prompt_budget_tokens)
+        prompt_budget = profile_hint.prompt_budget_tokens - fixed_input_tokens
+        if prompt_budget < 64:
+            return {"success": False, "error": "context cannot fit the system prompt, output schema and request prompt"}
+        prepared = fit_text(prompt, prompt_budget)
         payload, profile = policy.apply_payload(
             self.model,
             {
                 "model": self.model,
                 "prompt": prepared.text,
                 "system": system,
-                "format": task.get("schema"),
+                "format": schema,
                 "stream": True,
                 "keep_alive": config.get("ollama", {}).get("keep_alive", "10m"),
                     "options": {"num_predict": max_tokens, "temperature": float(task.get("temperature", 0.2))},
             },
             role="background",
-            input_tokens=prepared.estimated_tokens,
+            input_tokens=prepared.estimated_tokens + fixed_input_tokens,
             output_tokens=max_tokens,
             background=True,
             preserve_explicit_think=False,
         )
+        if prepared.estimated_tokens + fixed_input_tokens > profile.prompt_budget_tokens:
+            return {"success": False, "error": "selected context cannot fit the prepared prompt and system input"}
         # Executor jobs can sit queued across a gaming/maintenance transition.
         try:
             from .operational_mode import load_operational_mode
@@ -367,6 +377,9 @@ class IdleGPUWorker:
             "success": True,
             "model": self.model,
             "data": data,
+            "prompt_budget": {"estimated_tokens": prepared.estimated_tokens,
+                              "original_estimated_tokens": prepared.original_tokens,
+                              "truncated": prepared.truncated},
             "execution_profile": profile.cache_scope(),
             "load_duration_ns": response.get("load_duration", 0),
             "prompt_eval_count": response.get("prompt_eval_count", 0),

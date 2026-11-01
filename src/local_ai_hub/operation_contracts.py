@@ -311,7 +311,7 @@ _ACTION_SCOPED_FIELDS = {
         "budget": frozenset({"task_budget_increase"}),
         "stream_id": frozenset({"task_sync"}),
         "events": frozenset({"task_sync"}),
-        "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list", "plan_list"}),
+        "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list", "plan_list", "memory_find"}),
         "after_seq": frozenset({"task_sync", "pubsub_poll"}),
         "receipt": frozenset({"verify_receipt"}),
         "since_hash": frozenset({"context_compile"}),
@@ -1089,7 +1089,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_id": {"type": "string", "default": ""},
             "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
             "constraints": {"type": "array", "items": {"type": "string"}},
-            "mode": {"type": "string", "enum": ["execute", "plan", "plan_only", "dry_run"], "default": "execute"},
+            "mode": {"type": "string", "enum": ["execute", "bounded", "plan", "plan_only", "dry_run"], "default": "execute"},
+            "allowed_paths": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
+            "approved_commands": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
             "permissions": {"type": "object"},
             "budget": {"type": "object"},
             "timeout_seconds": {"type": "number", "default": 90},
@@ -1127,7 +1129,7 @@ def operation_guide_cards(features: Any = None) -> dict[str, Any]:
         "local_ai_rag": "Use after indexed retrieval is insufficient; scope the repository.",
         "local_ai_coord": "Reuse existing tasks and findings; preserve ownership and scope.",
         "local_ai_artifact": "Slice exact evidence rather than replaying full payloads.",
-        "local_ai_work": "Closed delegation only when explicitly requested; reuse the work ID.",
+        "local_ai_work": "Only for explicitly requested closed delegation; bounded mode requires exact files, approved commands, permissions and budget; review the handoff.",
     }
     cards = []
     for tool, example in examples.items():

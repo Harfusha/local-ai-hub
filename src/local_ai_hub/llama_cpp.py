@@ -1015,6 +1015,7 @@ class LlamaCppRouter:
         return {
             "model": model,
             "capabilities": capabilities,
+            "capabilities_complete": False,
             "details": {"architecture": architecture},
         }
 
@@ -1190,6 +1191,10 @@ class LlamaCppRouter:
         timeout: float | None = None, should_stop: Any | None = None,
         on_thinking: Any | None = None, deadline: float | None = None,
     ) -> dict[str, Any] | None:
+        from .opencode_boundary import generation_denial
+        denied = generation_denial()
+        if denied is not None:
+            return denied
         if endpoint not in {"/api/chat", "/api/generate"} or not isinstance(payload, dict):
             return None
         model = str(payload.get("model", "")).strip()

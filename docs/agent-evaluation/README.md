@@ -8,6 +8,7 @@ Reusable prompt suite for testing agent tool use, source grounding, changes, coo
 - [evaluation-key.md](evaluation-key.md): fixture setup, expected behavior, and failure signals. Keep out of the tested agent's context.
 - [results.md](results.md): append one evidence-bound record for each run. Keep results separate by agent, Hub build, instructions, and fixture revision.
 - [fixtures/](fixtures/README.md): inert synthetic source trees for selected read-only repository lookup cases.
+- [local-model-gpu-cases.md](local-model-gpu-cases.md) and [local-model-gpu-scoring.md](local-model-gpu-scoring.md): fixed paired post-upgrade local-model cases and operator-only scoring key.
 
 Start with the 20-case pilot in [prompts.md](prompts.md). Cases marked as multi-turn, fault-injected, or sandbox-only need their listed preparation before use. New chats/worktrees do not isolate shared Hub memory, leases, queues, quotas, or runtime state. Projectless Codex threads can also access their launching chat through `codex_app.read_thread`; include the isolation harness rule in every run.
 

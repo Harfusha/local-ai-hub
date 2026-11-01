@@ -183,13 +183,18 @@ class EvidenceStore:
                         item.pop("evidence_id", None)
         return out
 
-    def get(self, evidence_id: str, *, verify: bool = True) -> dict[str, Any]:
+    def get(self, evidence_id: str, *, verify: bool = True, root: str | None = None) -> dict[str, Any]:
         eid = _clean_text(evidence_id).strip()
         if not eid:
             return {"success": False, "error": "evidence not found"}
         try:
             with self._lock, closing(self._connect()) as con:
-                row = con.execute("SELECT * FROM evidence WHERE id=?", (eid,)).fetchone()
+                if root is not None:
+                    if not isinstance(root, str) or not root:
+                        return {"success": False, "error": "evidence not found"}
+                    row = con.execute("SELECT * FROM evidence WHERE id=? AND root=?", (eid, root)).fetchone()
+                else:
+                    row = con.execute("SELECT * FROM evidence WHERE id=?", (eid,)).fetchone()
                 if not row:
                     return {"success": False, "error": "evidence not found"}
                 # A fetched evidence item is normally reused repeatedly within one

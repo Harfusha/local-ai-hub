@@ -500,6 +500,10 @@ class OllamaRuntime:
         should_stop: Any | None = None, deadline: float | None = None,
         single_attempt: bool = False,
     ) -> dict[str, Any]:
+        from .opencode_boundary import generation_denial
+        denied = generation_denial()
+        if denied is not None:
+            return denied
         emitted = False
 
         if callable(on_chunk):
@@ -612,6 +616,7 @@ class OllamaRuntime:
             generated = []
             chat = []
             thinking_parts = []
+            tool_calls: list[Any] = []
             emitted_output = False
             stream_error = False
             final: dict[str, Any] = {}
@@ -697,6 +702,11 @@ class OllamaRuntime:
                                     final["_lah_repetition_loop_detected"] = True
                                     break
                         message = chunk.get("message")
+                        if isinstance(message, dict) and "tool_calls" in message:
+                            calls = message["tool_calls"]
+                            if not isinstance(calls, list):
+                                return {"error": "invalid streamed tool_calls", "retryable": False}
+                            tool_calls.extend(calls)
                         if isinstance(message, dict) and message.get("content") is not None:
                             text = str(message["content"])
                             if text:
@@ -746,6 +756,10 @@ class OllamaRuntime:
                     if watchdog.loop_detected:
                         chat_text = watchdog.trim_trailing_loop(chat_text)
                     message["content"] = chat_text
+                    final["message"] = message
+                if tool_calls:
+                    message = dict(final.get("message") or {})
+                    message["tool_calls"] = tool_calls
                     final["message"] = message
                 if thinking_parts:
                     final["thinking"] = "".join(thinking_parts)

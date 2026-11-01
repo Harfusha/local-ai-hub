@@ -13,6 +13,14 @@ Follow [`docs/superpowers/specs/2026-10-07-simplified-worktree-integration.md`](
 
 ## Architecture rules
 
+Bounded work may return authentic broker test receipts as `recorded_unmapped`; this does not accept or complete the task. The primary agent reviews the diff, actual test results, integration, current repository revision and task mutation generation before independently mapping a receipt. A later patch makes earlier receipts stale; partial, missing or uncertain evidence never establishes completion.
+
+Bounded handoff `validation.receipt_status="not_recorded"` means command success has no durable broker verification receipt; inspect the command results and diff and retain the primary review gate.
+
+`task_barrier_error=finalization_event_lookup_timeout` with `task_barrier_status=pending_finalization` is a visible recovery timeout awaiting the scheduled retry, not completion; retain primary review and do not duplicate recovery.
+
+On Windows, bounded patch parent directories must already exist. The Hub pins ancestor directories during patch application and uses pinned file handles during rollback; missing or unpinnable parents fail visibly. A patch targeting mixed LF and CRLF within a single file fails visibly. Do not infer equivalent non-Windows race protection.
+
 Task memory adoption passes the same resolved repository coordination ID into compilation, record materialization and excluded-memory diagnostics; expiry checks retain the current repository and declared scope identity.
 
 Consistency-guard repository memory writes and audit reads require the current server-derived project coordination ID and declared scope; missing required identity cannot fall back to a physical-root lookup. No tenant routing or synthetic tenant identity is permitted. Windows isolated-parser workers treat only WerGetFlags ERROR_NOT_FOUND as absent per-process flags before setting NO_UI; other HRESULT failures remain explicit.
@@ -33,7 +41,7 @@ Canonical repository inputs: `context` takes its task description in `query`; `s
 
 - Python 3.11+; all runtime state belongs under the configured `server.state_dir` and must not be committed.
 - The public MCP surface stays compact. local_ai_work provides optional whole-task delegation. Add capability behind one of the seven existing tools unless a separate schema clearly saves more tokens than it costs.
-- For repository scanning, deterministic and indexed operations precede embeddings or model inference. Preprocessing uses qwen2.5-coder:1.5b. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence; local LLM calls remain excluded from architecture, security, mutations and open-ended coding.
+- For repository scanning, deterministic and indexed operations precede embeddings or model inference. Preprocessing uses qwen2.5-coder:1.5b. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence. Only when the user explicitly requests closed delegation and task/model quality has been evaluated may suitable small work use `local_ai_work(mode="bounded")` with caller-defined exact files, approved commands, permissions, time budget and acceptance criteria; the primary agent reviews the diff, tests and integration. Architecture, security decisions and open-ended coding remain outside local autonomy.
 - Serena is an optional managed backend. Its absence, crash, timeout, or malformed response must degrade cleanly to built-in indexes rather than block the hub.
 - Every subprocess and network wait must be bounded. Drain child stderr/stdout and terminate process trees on timeout.
 - On Windows use helpers from `process_utils.py` so background subprocesses do not flash console windows.

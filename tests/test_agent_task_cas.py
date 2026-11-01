@@ -19,6 +19,37 @@ from local_ai_hub.agent_tasks import (
 from local_ai_hub.sqlite_support import connect_sqlite
 
 
+def test_competing_generation_advances_do_not_silently_share_a_generation(tmp_path):
+    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
+    tasks = TaskStore(state_store)
+    task = tasks.create(GoalContract(goal="generation CAS"), ScopeContext(task_id="generation-cas"),
+                        task_id="generation-cas")
+    barrier = Barrier(2)
+    original_get = tasks.get
+
+    def synchronized_get(task_id):
+        snapshot = original_get(task_id)
+        barrier.wait(timeout=5)
+        return snapshot
+
+    def advance(_):
+        try:
+            return tasks.advance_mutation_generation(task.task_id)
+        except ConcurrentTaskUpdateError as exc:
+            return exc
+
+    tasks.get = synchronized_get
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(advance, range(2)))
+    finally:
+        tasks.get = original_get
+    assert sum(isinstance(outcome, ConcurrentTaskUpdateError) for outcome in outcomes) == 1
+    assert original_get(task.task_id).checkpoint.state_data["mutation_generation"] == 1
+    retried = tasks.advance_mutation_generation(task.task_id)
+    assert retried.checkpoint.state_data["mutation_generation"] == 2
+
+
 def test_competing_transitions_use_compare_and_set(tmp_path):
     state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
     tasks = TaskStore(state_store)

@@ -62,6 +62,27 @@ def _repetition_loop_failure(response: dict[str, Any], *, stage: str, mode: str)
 }
 
 
+def _stage_tool_evidence(stage: dict[str, Any]) -> dict[str, Any] | None:
+    """Project observed dispatches, preserving missing and reused evidence."""
+    agent = stage.get("tool_agent")
+    counts = agent.get("tool_evidence") if isinstance(agent, dict) else None
+    keys = ("attempted", "completed", "failed", "unknown")
+    if not isinstance(counts, dict) or any(type(counts.get(k)) is not int or counts[k] < 0 for k in keys):
+        return None
+    if counts["attempted"] != sum(counts[k] for k in keys[1:]):
+        return None
+    cache = stage.get("tool_agent_cache")
+    flags = [stage.get("stage_cache_hit"), stage.get("stage_coalesced")]
+    flags.extend([cache.get("hit"), cache.get("coalesced")] if isinstance(cache, dict) else [None, None])
+    if flags[1] is True or flags[3] is True:
+        reuse = "coalesced"
+    elif flags[0] is True or flags[2] is True:
+        reuse = "cached"
+    else:
+        reuse = "fresh" if all(flag is False for flag in flags) else "unknown"
+    return {"counts": {key: counts[key] for key in keys}, "reuse": reuse}
+
+
 class LocalAgentPipeline:
     """Adaptive local explorer -> worker -> critic pipeline.
 
@@ -498,6 +519,11 @@ class LocalAgentPipeline:
         return {
             "success": True,
             "text": canonical_text,
+            "tool_evidence": {
+                **({"explorer": _stage_tool_evidence(explorer)} if plan.get("explorer") else {}),
+                **({"worker": _stage_tool_evidence(worker)} if need_worker else {}),
+                **({"critic": _stage_tool_evidence(critic)} if critic else {}),
+            },
             "canonical": {
                 "task": task,
                 "route": route,

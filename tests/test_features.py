@@ -18,13 +18,13 @@ from local_ai_hub.features import FeatureSet
 
 
 class TestFeatureSetDefaults:
-    def test_all_on_by_default(self):
+    def test_unconfigured_model_backend_is_off(self):
         fs = FeatureSet({})
         assert fs.serena is True
         assert not hasattr(fs, "codegraph")
         assert fs.rag is True
-        assert fs.ollama is True
-        assert fs.subagents is True
+        assert fs.ollama is False
+        assert fs.subagents is False
 
     def test_default_model_names(self):
         fs = FeatureSet({})
@@ -39,7 +39,7 @@ class TestFeatureSetDefaults:
         assert FeatureSet({}).has_semantic() is True
 
     def test_has_any_model_true_when_ollama_on(self):
-        assert FeatureSet({}).has_any_model() is True
+        assert FeatureSet({"ollama": {"enabled": True}}).has_any_model() is True
 
 
 class TestVisionConfig:
@@ -51,7 +51,7 @@ class TestVisionConfig:
         assert fs.vision_model == ""
 
     def test_valid_vision_model_enables_vision(self):
-        fs = FeatureSet({"models": {"vision": "qwen3-vl:8b"}})
+        fs = FeatureSet({"ollama": {"enabled": True}, "models": {"vision": "qwen3-vl:8b"}})
 
         assert fs.vision is True
         assert fs.vision_model == "qwen3-vl:8b"
@@ -112,25 +112,25 @@ class TestRagDisabled:
 
 class TestOllamaDisabled:
     def test_ollama_off(self):
-        cfg = {"server": {"auto_start_ollama": False}}
+        cfg = {"ollama": {"enabled": False}}
         fs = FeatureSet(cfg)
         assert fs.ollama is False
         assert fs.has_any_model() is False
         assert fs.subagents is False
 
     def test_trigger_map_no_task_when_ollama_off(self):
-        cfg = {"server": {"auto_start_ollama": False}}
+        cfg = {"ollama": {"enabled": False}}
         lines = FeatureSet(cfg).trigger_map_lines()
         assert not any("local_ai_task" in line for line in lines)
 
     def test_cheapest_path_no_model_when_ollama_off(self):
-        cfg = {"server": {"auto_start_ollama": False}}
+        cfg = {"ollama": {"enabled": False}}
         fs = FeatureSet(cfg)
         assert fs.fast_model not in fs.cheapest_path_hint()
 
     def test_llama_cpp_backend_keeps_local_tasks_available_when_ollama_is_off(self):
         cfg = {
-            "server": {"auto_start_ollama": False},
+            "ollama": {"enabled": False},
             "llama_cpp": {
                 "mode": "on",
                 "models": {"qwen2.5-coder:3b": {"url": "http://127.0.0.1:12438"}},
@@ -151,7 +151,7 @@ class TestCustomModelNames:
         assert FeatureSet(cfg).fast_model == "my-model:latest"
 
     def test_custom_model_in_cheapest_path(self):
-        cfg = {"models": {"fast_code": "custom-coder:7b"}}
+        cfg = {"ollama": {"enabled": True}, "models": {"fast_code": "custom-coder:7b"}}
         assert "custom-coder:7b" in FeatureSet(cfg).cheapest_path_hint()
 
 
@@ -183,8 +183,9 @@ class TestBuildGlobalPolicy:
         assert "-> semantic" not in self.build(cfg)
 
     def test_model_name_custom(self):
-        policy = self.build({"models": {"fast_code": "awesome-coder:7b"}})
-        assert "Model routing follows the active hardware profile and user overrides" in policy
+        policy = self.build({"ollama": {"enabled": True}, "models": {"fast_code": "awesome-coder:7b"}})
+        assert "active hardware profile and user overrides" in policy
+        assert "check installed models before inference" in policy
 
     def test_task_absent_when_ollama_off(self):
         cfg = {"server": {"auto_start_ollama": False}}

@@ -26,7 +26,8 @@ def _config(*, agent_os: bool = True, work_orchestrator: bool = False, speculati
             "code_intelligence": True,
             "dashboard": True,
         },
-        "server": {"auto_start_ollama": True},
+        "server": {"auto_start_ollama": False},
+        "ollama": {"enabled": True},
         "commands": {"enabled": True},
         "coord": {"enabled": True},
         "work_orchestrator": {"enabled": work_orchestrator},
@@ -125,6 +126,20 @@ def test_whole_task_tool_obeys_its_feature_gate():
     assert "local_ai_work" in enabled_refs["tools.md"]
     assert "local_ai_work" in enabled_refs["multi-agent.md"]
     assert "local_ai_work" in enabled_schemas
+
+
+def test_external_llama_auto_on_nvidia_exposes_generated_model_tools(monkeypatch):
+    cfg = _config(work_orchestrator=True)
+    cfg["ollama"] = {"enabled": False}
+    cfg["_hardware"] = {"gpus": [{"vendor": "nvidia", "integrated": False}]}
+    cfg["llama_cpp"] = {
+        "mode": "auto", "models": {"example": {"url": "http://127.0.0.1:12438"}},
+    }
+    schemas = generate_mcp_tool_schemas(cfg)
+    assert "local_ai_task" in schemas
+    assert "local_ai_work" in schemas
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet.from_config(cfg))
+    assert "Local inference is disabled" not in local_ai_mcp._desc_task()
 
 
 def test_retired_command_tool_stays_absent_when_speculative_lint_is_opted_in():

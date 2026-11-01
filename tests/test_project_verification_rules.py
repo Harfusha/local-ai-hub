@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import threading
 from typing import Any
 import urllib.request
@@ -268,27 +269,60 @@ def test_http_task_completion_uses_persisted_project_receipts(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        request = urllib.request.Request(
+        mismatch = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/tasks",
-            data=json.dumps(
-                {
-                    "action": "complete",
-                    "task_id": task_id,
-                    "root": str(project_root),
-                    "reason": "verified",
-                }
-            ).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-LocalAI-Agent": "agent",
-            },
+            data=json.dumps({
+                "action": "complete", "task_id": task_id, "root": str(project_root),
+                "expected_criteria": ["different criterion"],
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-LocalAI-Agent": "agent"},
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            pytest.fail(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}")
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(mismatch, timeout=5)
+        assert rejected.value.code == 400
+        assert "acceptance criteria" in rejected.value.read().decode("utf-8")
+        rejected.value.close()
+        assert app.agent_tasks.get(task_id).status.value != "completed"
+        assert app.agent_tasks.get(task_id).owner == "agent"
+        adoption = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/tasks",
+            data=json.dumps({
+                "action": "complete", "task_id": task_id, "root": str(project_root),
+                "expected_criteria": ["required_commands"], "allow_adopt": True,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-LocalAI-Agent": "different-agent"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as adoption_rejected:
+            urllib.request.urlopen(adoption, timeout=5)
+        assert adoption_rejected.value.code == 400
+        adoption_rejected.value.close()
+        assert app.agent_tasks.get(task_id).owner == "agent"
+        wrong_binding = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/tasks",
+            data=json.dumps({"action": "complete", "task_id": task_id, "root": str(project_root),
+                "expected_criteria": ["required_commands"],
+                "expected_binding": {"goal": "verify configured project rules", "session_id": "other"}}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-LocalAI-Agent": "agent"}, method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as binding_rejected:
+            urllib.request.urlopen(wrong_binding, timeout=5)
+        assert binding_rejected.value.code == 400
+        binding_rejected.value.close()
+        assert app.agent_tasks.get(task_id).status.value != "completed"
+        script = '''
+import { completeTask } from "./tools/opencode_goal/transport.js";
+const result = await completeTask({root:process.argv[1],taskId:process.argv[2],goal:"verify configured project rules",criteria:["required_commands"]},
+  {baseURL:`http://127.0.0.1:${process.argv[3]}`,actor:"agent",sessionId:"session-http-completion"});
+console.log(JSON.stringify(result));
+'''
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(project_root), task_id, str(server.server_address[1])],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
     finally:
         server.shutdown()
         server.server_close()

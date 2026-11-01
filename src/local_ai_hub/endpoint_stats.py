@@ -179,6 +179,8 @@ class EndpointStatsStore:
             con.execute(sql)
             con.execute("CREATE INDEX IF NOT EXISTS idx_ep_stats_root ON endpoint_stats(scope_root)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_ep_stats_item ON endpoint_stats(item_type, item_name)")
+            con.execute("CREATE TABLE IF NOT EXISTS endpoint_call_ids (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, created_at REAL NOT NULL)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_endpoint_call_ids_created ON endpoint_call_ids(created_at)")
             con.commit()
 
     def record_call(
@@ -189,6 +191,7 @@ class EndpointStatsStore:
         duration_ms: float,
         success: bool = True,
         root: str = "",
+        event_id: str = "",
     ) -> None:
         """Record an endpoint or MCP tool call into the histogram."""
         if not self.enabled:
@@ -196,6 +199,8 @@ class EndpointStatsStore:
         clean_type = "mcp" if str(item_type).lower().strip() == "mcp" else "endpoint"
         clean_name = str(item_name).strip()[:200]
         if not clean_name:
+            return
+        if not isinstance(event_id, str) or len(event_id) > 128 or any(ord(ch) < 32 for ch in event_id):
             return
         safe_root = clean_project_root(root)
         b_idx = get_latency_bucket_index(duration_ms)
@@ -217,12 +222,26 @@ class EndpointStatsStore:
         """
         try:
             with self._lock, closing(self._connect()) as con:
+                if event_id:
+                    con.execute("BEGIN IMMEDIATE")
+                    cursor = con.execute("INSERT OR IGNORE INTO endpoint_call_ids(event_id, created_at) VALUES (?, ?)", (event_id, now))
+                    if cursor.rowcount == 0:
+                        con.rollback()
+                        return
                 con.execute(sql, (safe_root, clean_type, clean_name, is_succ, is_fail, now, is_succ, is_fail, now))
+                if event_id:
+                    con.execute("DELETE FROM endpoint_call_ids WHERE created_at < ? OR seq <= (SELECT MAX(seq) - 100000 FROM endpoint_call_ids)", (now - 7 * 86400,))
                 con.commit()
         except sqlite3.Error:
             pass
 
-    def get_stats(self, root: str | None = None) -> dict[str, Any]:
+    def get_stats(
+        self,
+        root: str | None = None,
+        *,
+        include_unused: bool = True,
+        include_buckets: bool = False,
+    ) -> dict[str, Any]:
         """Query statistics, optionally filtered to a project root or aggregated globally."""
         if not self.enabled:
             return {"success": False, "error": "endpoint stats disabled", "projects": [], "items": []}
@@ -233,7 +252,7 @@ class EndpointStatsStore:
         catalog = get_registered_surface_catalog()
         known_map: dict[tuple[str, str], dict[str, Any]] = {}
         for c in catalog:
-            known_map[(c["type"], c["name"])] = {
+            entry = {
                 "type": c["type"],
                 "name": c["name"],
                 "calls": 0,
@@ -245,8 +264,10 @@ class EndpointStatsStore:
                 "p99_ms": 0.0,
                 "last_used": 0.0,
                 "status": "unused",
-                "bucket_counts": [0] * NUM_BUCKETS,
             }
+            if include_buckets:
+                entry["bucket_counts"] = [0] * NUM_BUCKETS
+            known_map[(c["type"], c["name"])] = entry
 
         projects: list[str] = []
         try:
@@ -259,7 +280,7 @@ class EndpointStatsStore:
                 for d_type, d_name in db_items:
                     key = (str(d_type), str(d_name))
                     if key not in known_map:
-                        known_map[key] = {
+                        entry = {
                             "type": str(d_type),
                             "name": str(d_name),
                             "calls": 0,
@@ -271,8 +292,10 @@ class EndpointStatsStore:
                             "p99_ms": 0.0,
                             "last_used": 0.0,
                             "status": "unused",
-                            "bucket_counts": [0] * NUM_BUCKETS,
                         }
+                        if include_buckets:
+                            entry["bucket_counts"] = [0] * NUM_BUCKETS
+                        known_map[key] = entry
 
                 bucket_cols = ", ".join(f"b{i}" for i in range(NUM_BUCKETS))
                 if is_global:
@@ -316,7 +339,7 @@ class EndpointStatsStore:
                     elif p95 >= 1000.0:
                         status = "slow"
 
-                    known_map[(itype, iname)] = {
+                    entry = {
                         "type": itype,
                         "name": iname,
                         "calls": calls,
@@ -328,21 +351,32 @@ class EndpointStatsStore:
                         "p99_ms": p99,
                         "last_used": l_used,
                         "status": status,
-                        "bucket_counts": b_counts,
                     }
+                    if include_buckets:
+                        entry["bucket_counts"] = b_counts
+                    known_map[(itype, iname)] = entry
         except sqlite3.Error:
             pass
 
-        items = list(known_map.values())
+        all_items = list(known_map.values())
+        unused_count = sum(1 for it in all_items if it["calls"] == 0)
+        slow_count = sum(1 for it in all_items if it["status"] == "slow")
+        failing_count = sum(1 for it in all_items if it["status"] == "failing")
+
+        if not include_unused:
+            items = [it for it in all_items if it["calls"] > 0]
+        else:
+            items = all_items
+
         return {
             "success": True,
             "root": target_root if not is_global else "",
             "is_global": is_global,
             "projects": projects,
-            "total_items": len(items),
-            "unused_count": sum(1 for it in items if it["calls"] == 0),
-            "slow_count": sum(1 for it in items if it["status"] == "slow"),
-            "failing_count": sum(1 for it in items if it["status"] == "failing"),
+            "total_items": len(all_items),
+            "unused_count": unused_count,
+            "slow_count": slow_count,
+            "failing_count": failing_count,
             "items": items,
         }
 

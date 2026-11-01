@@ -78,6 +78,12 @@ class TieredOllamaRuntime:
             return "smart", self.smart, self.fast
         return "fast", self.fast, self.smart
 
+    def model_digest(self, model: str) -> str | None:
+        """Read identity from the serving tier without initiating a handoff."""
+        _, runtime, _ = self._runtime_for_model(model)
+        reader = getattr(runtime, "model_digest", None)
+        return reader(model) if callable(reader) else None
+
     @staticmethod
     def _details(runtime: Any) -> list[dict[str, Any]]:
         try:
@@ -187,6 +193,11 @@ class TieredOllamaRuntime:
                 return None
 
     def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+        if endpoint == "/api/show" and isinstance(payload, dict):
+            name = payload.get("name")
+            if isinstance(name, str) and name:
+                _, runtime, _ = self._runtime_for_model(name)
+                return runtime.request(endpoint, payload, timeout)
         model = str((payload or {}).get("model", ""))
         if not model:
             return self.fast.request(endpoint, payload, timeout)

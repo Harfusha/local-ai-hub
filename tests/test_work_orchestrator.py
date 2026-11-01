@@ -17,7 +17,7 @@ from local_ai_hub.services import LocalAIServices
 from local_ai_hub.work_orchestrator import WorkOrchestrator, _patch_changes, _patch_paths, _stable_toposort_steps
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import GoalContract, TaskStore
+from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.project_config import resolve_project_context
 
@@ -109,7 +109,7 @@ class FakeServices:
         return {"success": True, "text": json.dumps({
             "passed": True, "summary": "verified", "criteria": [{"criterion":"a.txt contains new","passed":True}], "risks": []
         })}
-    def command(self, args):
+    def command(self, args, *, request_cancel_event=None):
         if args.get("action") == "discover":
             return {"success": True, "validation_commands": ["git diff --check"]}
         return {"success": self.validation_ok, "exit_code": 0 if self.validation_ok else 1, "error": "" if self.validation_ok else "failed"}
@@ -141,6 +141,8 @@ def owned_verification_context(tmp_path: Path, root: Path, artifacts: FakeArtifa
         actor="work-order-owner",
         repo_root=str(root),
     )
+    tasks.transition(task_id, TaskStatus.ACTIVE, reason="start bounded work",
+                     actor="work-order-owner", idempotency_key="start-bounded-work")
     return VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
 
 
@@ -552,6 +554,83 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
 
 
 
+def test_execute_missing_receipt_preserves_patch_for_primary_review(tmp_path):
+    root = init_repo(tmp_path)
+
+    class Services(FakeServices):
+        def __init__(self):
+            super().__init__("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+
+        def delegate_repo(self, args):
+            response = super().delegate_repo(args)
+            if self.delegate_calls == 1:
+                plan = json.loads(response["text"])
+                plan["validation_commands"] = ["pytest -q tests"]
+                response["text"] = json.dumps(plan)
+            return response
+
+        def second_opinion(self, args):
+            return {"success": True, "text": json.dumps({"passed": True, "summary": "checked",
+                    "criteria": [{"criterion": "pytest suite", "passed": True}], "risks": []})}
+
+    artifacts = FakeArtifacts()
+    task_id = "work-order-needs-broker-receipt"
+    store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", Services(), None,
+                          FakeLeases(), artifacts, verification_store=store)
+    try:
+        submitted = wo.submit({"root": str(root), "task": "change old to new", "task_id": task_id,
+                               "acceptance_criteria": ["pytest suite"], "response_profile": "debug"})
+        result = wait_terminal(wo, submitted["work_id"], timeout=30)
+        assert result["status"] == "needs_agent", result
+        assert result["requires_primary_review"] is True
+        assert result["validation"]["receipt_status"] == "not_recorded"
+        assert result["verification"]["receipt_gate"]["complete"] is False
+        assert result["verification_receipts"] == []
+        assert (root / "a.txt").read_text(encoding="utf-8") == "new\n"
+    finally:
+        wo.close()
+
+
+@pytest.mark.parametrize("response", [
+    {"success": True, "exit_code": 0, "cleanup_unconfirmed": True},
+    {"success": True, "exit_code": 0, "outcome_unknown": True},
+    {"success": True},
+    {"success": True, "exit_code": 1},
+    {"success": False, "exit_code": 0},
+    {"success": "true", "exit_code": 0},
+])
+def test_execute_rejects_ambiguous_validation_without_repair(tmp_path, response):
+    root = init_repo(tmp_path)
+
+    class Services(FakeServices):
+        validation_calls = 0
+
+        def command(self, args, *, request_cancel_event=None):
+            if args.get("action") == "discover":
+                return {"success": True, "validation_commands": ["git diff --check"]}
+            self.validation_calls += 1
+            return dict(response)
+
+    services = Services("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    artifacts = FakeArtifacts()
+    task_id = "execute-uncertain-validation"
+    store = owned_verification_context(tmp_path, root, artifacts, task_id)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None,
+                          FakeLeases(), artifacts, verification_store=store)
+    try:
+        submitted = wo.submit({"root": str(root), "task": "change old to new", "task_id": task_id,
+                               "acceptance_criteria": ["a.txt contains new"], "response_profile": "debug"})
+        result = wait_terminal(wo, submitted["work_id"], timeout=30)
+        assert result["status"] == "failed", result
+        assert services.validation_calls == 1
+        assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
+        report = json.loads(artifacts.data[result["artifact_id"]]["text"])
+        assert report["validation"][0]["success"] is False
+    finally:
+        wo.close()
+
+
 def test_work_order_rolls_back_when_validation_fails(tmp_path):
     root = init_repo(tmp_path)
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
@@ -689,7 +768,7 @@ def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_p
         wo.close()
 
 
-def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
+def test_final_validation_cannot_create_receipt_from_command_id_alone(tmp_path):
     root = init_repo(tmp_path)
 
     class NoChangeTestServices(FakeServices):
@@ -719,7 +798,7 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
                 "risks": [],
             })}
 
-        def command(self, args):
+        def command(self, args, *, request_cancel_event=None):
             if args.get("action") == "discover":
                 return {"success": True, "validation_commands": ["pytest -q tests"]}
             self.validation_runs.append(args["command"])
@@ -747,10 +826,11 @@ def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
         })
         result = wait_terminal(wo, submitted["work_id"])
 
-        assert result["status"] == "complete", result
+        assert result["status"] != "complete", result
         assert result["changed_files"] == []
         assert services.validation_runs == ["pytest -q tests"]
-        assert result["verification"]["receipt_gate"]["complete"] is True
+        assert result.get("verification_receipts", []) == []
+        assert result["verification"]["receipt_gate"]["complete"] is False
     finally:
         wo.close()
 
@@ -882,7 +962,7 @@ class RepairServices(FakeServices):
             return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}
         return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-new\n+fixed\n"}
 
-    def command(self, args):
+    def command(self, args, *, request_cancel_event=None):
         if args.get("action") == "discover":
             return {"success": True, "validation_commands": ["git diff --check"]}
         self.run_calls += 1
@@ -1005,7 +1085,7 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
             super().__init__(patch)
             self.run_args = []
 
-        def command(self, args):
+        def command(self, args, *, request_cancel_event=None):
             result = super().command(args)
             if args.get("action") == "run":
                 self.run_args.append(dict(args))

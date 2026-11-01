@@ -1,8 +1,24 @@
 # Local model capability matrix
 
-The Hub keeps every local model advisory. The matrix controls prompt scope and
-expected work; it does not discard a model response. A weak response remains
-visible with `semantic_quality` and `quality_warning` metadata.
+Unknown tool capability uses an advisory response without tools; the tool-aware agent checks backend capability metadata before advertising local tool schemas. A configured tag does not itself prove support. The selected execution profile is not proof of the context actually used by the backend.
+
+The tool-aware loop caps each run at three model steps and six tool calls, even
+when a configured subagent profile requests higher limits. Lower configured
+limits still apply.
+
+Semantic model responses remain advisory. Explicitly requested, quality-evaluated bounded
+implementation can use the existing work executor with caller-owned file and
+command scopes; the primary agent must review its diff, validation and
+integration. Select suitable work by task risk and measured quality, not model
+size alone. The matrix controls prompt scope and expected work; it does not
+discard a model response. Weak semantic responses remain visible with
+`semantic_quality` and `quality_warning` metadata.
+
+Bounded work accepts at most eight exact file paths, eight approved commands,
+eight plan steps and 1,800 seconds. Each patch rejects rename, copy, binary and
+file-mode changes. The deadline requests cooperative model cancellation; late
+results are rejected before mutation. It is not a guarantee that an
+uncooperative backend stops immediately.
 
 Hugging Face embedding and reranker weights use existing local caches by default.
 Missing cache files do not authorize downloads. `models.allow_hf_downloads=true`
@@ -16,7 +32,7 @@ Cached fallback models remain eligible while downloads are disabled.
 | `qwen2.5-coder:3b` | bounded review, test plans, simple patch plans, comparisons | architecture decisions, high-risk migrations, security decisions, edits |
 | `qwen2.5-coder:7b` | root-cause analysis, cross-file reasoning, diff review, patch/test plans | security decisions, final verification, edits |
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
-| `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review | edits, security decisions, final verification |
+| `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review; quality-evaluated bounded implementation through `local_ai_work` | unscoped or unreviewed edits, security decisions, final verification |
 
 Whisper CLI has a separate `transcription` policy: verified official cache weights
 are required by default; downloads require `allow_model_downloads=true`. The

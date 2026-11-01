@@ -1,0 +1,63 @@
+"""Conservative capacity hints for the OpenCode local installation.
+
+These are not inference admission or benchmark results. Callers must verify the
+model, backend, free memory, context and GPU concurrency before selecting it.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from .opencode_model_names import validate_local_model_name
+
+# Driver inventories can report a few MiB less than the board's nominal VRAM.
+# This tolerance is only for labelling candidates, never for memory admission.
+_CAPACITY_MB = {"12gb": 12 * 1024 - 32, "16gb": 16 * 1024 - 32}
+_CANDIDATES = {
+    "12gb": ("qwen3.5:9b", "qwen2.5-coder:7b"),
+    "16gb": ("qwen2.5-coder:14b", "qwen3.5:9b", "gemma4:12b"),
+}
+
+
+def inspect_opencode_hardware(
+    hardware: dict[str, Any], *, requested: str = "auto", model: str | None = None,
+) -> dict[str, Any]:
+    """Describe a single dedicated GPU's capacity, without approving inference."""
+    if not isinstance(requested, str) or requested not in {"auto", "12gb", "16gb"}:
+        raise ValueError("profile must be auto, 12gb or 16gb")
+    if model is not None:
+        validate_local_model_name(model)
+    rows = hardware.get("gpus", []) if isinstance(hardware, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    candidates = []
+    for gpu in rows:
+        if not isinstance(gpu, dict) or not isinstance(gpu.get("vendor"), str) or gpu["vendor"] not in {"nvidia", "amd", "intel"}:
+            continue
+        if gpu.get("integrated", False) is not False or gpu.get("shared_memory", False) is not False:
+            continue
+        memory = gpu.get("vram_mb")
+        if type(memory) is not int or memory < 0:
+            continue
+        candidates.append(gpu)
+    selected_gpu = max(candidates, key=lambda item: item["vram_mb"], default=None)
+    memory = selected_gpu["vram_mb"] if selected_gpu else 0
+    detected = "16gb" if memory >= _CAPACITY_MB["16gb"] else "12gb" if memory >= _CAPACITY_MB["12gb"] else "unsupported"
+    if requested != "auto" and memory < _CAPACITY_MB[requested]:
+        raise ValueError(f"{requested} profile exceeds detected dedicated GPU capacity")
+    profile = detected if requested == "auto" else requested
+    names = list(_CANDIDATES.get(profile, ()))
+    if model is not None:
+        names = [model, *(name for name in names if name != model)]
+    return {
+        "profile": profile,
+        "detected_profile": detected,
+        "gpu": dict(selected_gpu) if selected_gpu else None,
+        "candidates": names,
+        "selected_model": None,
+        "runtime_verified": False,
+        "admission": "unverified",
+        "reason": ("dedicated_gpu_not_detected" if selected_gpu is None else
+                   "dedicated_vram_unknown" if memory == 0 else
+                   "dedicated_vram_below_12gb" if detected == "unsupported" else
+                   "runtime_validation_required"),
+    }

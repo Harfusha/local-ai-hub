@@ -651,7 +651,7 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
             pool = _get_worker_pool()
             future = (pool.submit(_worker_parse, text, language, source_key)
                       if source_key is not None else pool.submit(_worker_parse, text, language))
-            result = future.result(timeout=10.0)
+            result = future.result(timeout=25.0)
             if isinstance(result, dict) and result.get("fallback_reason") == "worker_error":
                 cleanup = _disable_worker_pool(
                     f"worker_error:{result.get('error_type', 'unknown')}"

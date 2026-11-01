@@ -1121,6 +1121,38 @@ class AgentStateStore:
 
 
 
+    def has_exact_event(self, stream_id: str, kind: str, payload: Mapping[str, Any], *, actor: str) -> bool:
+        """Find an exact persisted event without paging an unrelated event history."""
+        for identity in (stream_id, kind, actor):
+            if not isinstance(identity, str) or not identity.strip() or "\x00" in identity:
+                raise ValueError("event lookup requires valid identities")
+        if not isinstance(payload, Mapping):
+            raise TypeError("event lookup payload must be a mapping")
+        serialized = json_dumps(payload, separators=(",", ":"))
+        if len(serialized.encode("utf-8")) > self.max_payload_bytes:
+            raise ValueError("event lookup payload exceeds configured limit")
+        if not self.enabled:
+            raise RuntimeError("agent_state is disabled")
+        if not self.db_path.exists():
+            return False
+        self._ensure_schema()
+        deadline = time.monotonic() + 1.0
+        with closing(connect_sqlite(self.db_path, timeout_seconds=1.0, isolation_level=None)) as con:
+            con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+            try:
+                row = con.execute(
+                    "SELECT 1 FROM agent_events INDEXED BY idx_agent_events_kind "
+                    "WHERE kind=? AND stream_id=? AND actor=? AND payload=? LIMIT 1",
+                    (kind, stream_id, actor, serialized),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if is_busy_error(exc) or time.monotonic() >= deadline:
+                    raise TimeoutError("event lookup time limit exceeded") from exc
+                raise
+            finally:
+                con.set_progress_handler(None, 0)
+        return row is not None
+
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         # Initialize first so durable-schema failures remain typed and actionable.
         if self.enabled and self.db_path.exists():

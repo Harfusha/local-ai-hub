@@ -110,3 +110,31 @@ def test_endpoint_stats_store_lifecycle(tmp_path: Path):
     assert store.reset() is True
     after_global_reset = store.get_stats()
     assert all(it["calls"] == 0 for it in after_global_reset["items"])
+
+
+def test_endpoint_stats_compaction_options(tmp_path: Path):
+    store = EndpointStatsStore(tmp_path / "state")
+    store.record_call(item_type="endpoint", item_name="/api/status", duration_ms=15.0, success=True)
+
+    # Default: include_unused=True, include_buckets=False
+    stats_default = store.get_stats()
+    assert stats_default["total_items"] > 10
+    assert stats_default["unused_count"] > 10
+    assert len(stats_default["items"]) == stats_default["total_items"]
+    # Buckets omitted by default
+    assert "bucket_counts" not in stats_default["items"][0]
+
+    # Compact: include_unused=False
+    stats_active = store.get_stats(include_unused=False)
+    assert stats_active["total_items"] == stats_default["total_items"]
+    assert stats_active["unused_count"] == stats_default["unused_count"]
+    assert len(stats_active["items"]) == 1
+    assert stats_active["items"][0]["name"] == "/api/status"
+    assert "bucket_counts" not in stats_active["items"][0]
+
+    # With buckets: include_buckets=True
+    stats_with_buckets = store.get_stats(include_unused=False, include_buckets=True)
+    assert len(stats_with_buckets["items"]) == 1
+    assert "bucket_counts" in stats_with_buckets["items"][0]
+    assert len(stats_with_buckets["items"][0]["bucket_counts"]) == 14
+

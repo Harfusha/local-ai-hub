@@ -1,4 +1,4 @@
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 class SemanticHandoffHint(TypedDict):
@@ -8,6 +8,7 @@ class SemanticHandoffHint(TypedDict):
     actions: list[str]
     bypass_tool: NotRequired[str]
     bypass_action: NotRequired[str]
+    purpose: NotRequired[str]
 
 
 _SEMANTIC_ACTIONS = (
@@ -60,6 +61,19 @@ def list_semantic_actions() -> list[str]:
 
 def list_evidence_actions() -> list[str]:
     return sorted(_EVIDENCE_ACTIONS)
+
+
+def targeted_semantic_handoff(tool: str, action: str, result: Any, enabled: bool) -> SemanticHandoffHint | None:
+    """Offer test ideas only when a successful test-impact query produced paths."""
+    if not enabled or tool != "local_ai_repo" or action not in {"affected_tests", "test_matrix"}:
+        return None
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return None
+    paths = result.get("test_files")
+    if not isinstance(paths, list) or not any(isinstance(path, str) and path.strip() for path in paths):
+        return None
+    return {"required": False, "advisory": True, "tool": "local_ai_task", "actions": ["delegate"],
+            "purpose": "Suggest behavioral and boundary tests using the returned evidence; the primary agent selects and runs them."}
 
 
 def semantic_handoff_hint(

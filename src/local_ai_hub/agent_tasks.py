@@ -485,10 +485,21 @@ def _preserve_checkpoint_memory_state(
     checkpoint: TaskCheckpoint,
     *,
     allow_server_memory_refresh: bool = False,
+    allow_server_work_update: bool = False,
 ) -> TaskCheckpoint:
     if not allow_server_memory_refresh:
         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
     merged_state_data = dict(checkpoint.state_data)
+    if not allow_server_work_update:
+        key = "_pending_fenced_work"
+        if key in merged_state_data and (key not in current_state_data or merged_state_data[key] != current_state_data[key]):
+            raise ValueError("pending fenced work is server-managed")
+        if key in current_state_data:
+            merged_state_data[key] = current_state_data[key]
+            if ("mutation_generation" in merged_state_data
+                    and merged_state_data["mutation_generation"] != current_state_data.get("mutation_generation")):
+                raise ValueError("mutation generation is server-managed while work is pending")
+            merged_state_data["mutation_generation"] = current_state_data.get("mutation_generation")
     for key in (
         "memory_context",
         "memory_audit",
@@ -2209,6 +2220,8 @@ class TaskStore:
         return task
 
     def _verify_completion(self, task: TaskState, *, current_revision: str = "") -> None:
+        if "_pending_fenced_work" in task.checkpoint.state_data:
+            raise CompletionGateError("Cannot transition to COMPLETED: fenced work mutation is pending")
         memory_audit_validator = getattr(self, "_validate_memory_audit", None)
         if callable(memory_audit_validator):
             memory_audit_validator(task)
@@ -3230,6 +3243,122 @@ class TaskStore:
         )
         return self._commit_update(current, updated, event)
 
+    def _begin_fenced_work_mutation(
+        self, task_id: str, *, root: str, owner: str, fencing_store: Any,
+        lease: Any, attempt: Any, paths: list[str],
+    ) -> TaskState:
+        """Persist a completion barrier before a fenced work mutation begins."""
+        from .work_fencing import FencingLease, FencingLeaseStore, WorkAttemptFence, canonical_resource
+
+        if (not isinstance(fencing_store, FencingLeaseStore) or not isinstance(lease, FencingLease)
+                or not isinstance(attempt, WorkAttemptFence) or not isinstance(owner, str) or not owner
+                or lease.resource != canonical_resource(root) or attempt.resource != lease.resource
+                or lease.attempt_id != attempt.attempt_id or lease.attempt_token != attempt.fencing_token):
+            raise ValueError("invalid fenced work identity")
+        with fencing_store.commit_guard(lease, paths):
+            current = self.get(task_id)
+            if (current is None or current.status is not TaskStatus.ACTIVE or current.owner != owner
+                    or _task_scope_root(current) != _canonical_repository_root(root)):
+                raise PermissionError("task owner, state, or root does not match fenced work")
+            state_data = dict(current.checkpoint.state_data)
+            if "_pending_fenced_work" in state_data:
+                expected = {"work_id": attempt.work_id, "attempt_id": attempt.attempt_id,
+                            "attempt_token": attempt.fencing_token}
+                if state_data["_pending_fenced_work"] != expected:
+                    raise ValueError("another fenced work mutation is pending")
+            generation = state_data.get("mutation_generation", 0)
+            if type(generation) is not int or generation < 0:
+                raise ValueError("invalid task mutation generation")
+            state_data["mutation_generation"] = generation + 1
+            state_data["_pending_fenced_work"] = {"work_id": attempt.work_id, "attempt_id": attempt.attempt_id,
+                                                   "attempt_token": attempt.fencing_token}
+            updated = replace(current, checkpoint=replace(current.checkpoint, state_data=state_data),
+                              updated_at=time.time())
+            event = AgentEvent.create(stream_id=f"task:{task_id}", kind="task.fenced_work_started",
+                                      payload=state_data["_pending_fenced_work"], actor=owner,
+                                      idempotency_key=f"fenced_work_{uuid.uuid4().hex}")
+            return self._commit_update(current, updated, event, allow_server_work_update=True)
+
+    def _adopt_fenced_work_mutation(
+        self, task_id: str, *, root: str, owner: str, fencing_store: Any,
+        lease: Any, attempt: Any, paths: list[str],
+    ) -> TaskState:
+        """Transfer a pending barrier to a newer fenced attempt of the same work."""
+        from .work_fencing import FencingLease, FencingLeaseStore, WorkAttemptFence, canonical_resource
+
+        if (not isinstance(fencing_store, FencingLeaseStore) or not isinstance(lease, FencingLease)
+                or not isinstance(attempt, WorkAttemptFence) or not isinstance(owner, str) or not owner
+                or lease.resource != canonical_resource(root) or attempt.resource != lease.resource
+                or lease.attempt_id != attempt.attempt_id or lease.attempt_token != attempt.fencing_token):
+            raise ValueError("invalid fenced work identity")
+        with fencing_store.commit_guard(lease, paths):
+            current = self.get(task_id)
+            if (current is None or current.owner != owner
+                    or _task_scope_root(current) != _canonical_repository_root(root)):
+                raise PermissionError("task owner or root does not match fenced work")
+            state = dict(current.checkpoint.state_data)
+            marker = state.get("_pending_fenced_work")
+            if (not isinstance(marker, dict) or set(marker) != {"work_id", "attempt_id", "attempt_token"}
+                    or marker.get("work_id") != attempt.work_id or not isinstance(marker.get("attempt_id"), str)
+                    or type(marker.get("attempt_token")) is not int or marker["attempt_token"] <= 0):
+                raise ValueError("pending fenced work identity does not match")
+            if marker["attempt_id"] == attempt.attempt_id and marker["attempt_token"] == attempt.fencing_token:
+                return current
+            if attempt.fencing_token <= marker["attempt_token"]:
+                raise ValueError("recovery attempt is not newer")
+            generation = state.get("mutation_generation")
+            if type(generation) is not int or generation < 0:
+                raise ValueError("invalid task mutation generation")
+            state["mutation_generation"] = generation + 1
+            state["_pending_fenced_work"] = {"work_id": attempt.work_id, "attempt_id": attempt.attempt_id,
+                                               "attempt_token": attempt.fencing_token}
+            updated = replace(current, checkpoint=replace(current.checkpoint, state_data=state), updated_at=time.time())
+            event = AgentEvent.create(stream_id=f"task:{task_id}", kind="task.fenced_work_recovered",
+                                      payload=state["_pending_fenced_work"], actor=owner,
+                                      idempotency_key=f"fenced_work_{uuid.uuid4().hex}")
+            return self._commit_update(current, updated, event, allow_server_work_update=True)
+
+    def _finish_fenced_work_mutation(
+        self, task_id: str, *, root: str, owner: str, fencing_store: Any,
+        lease: Any, attempt: Any, paths: list[str], rollback: bool, finalize: Any,
+    ) -> TaskState:
+        """Finalize the journal under its fence before removing the completion barrier."""
+        from .work_fencing import FencingLease, FencingLeaseStore, WorkAttemptFence, canonical_resource
+
+        if (not isinstance(fencing_store, FencingLeaseStore) or not isinstance(lease, FencingLease)
+                or not isinstance(attempt, WorkAttemptFence) or not isinstance(owner, str) or not owner
+                or type(rollback) is not bool or not callable(finalize)
+                or lease.resource != canonical_resource(root) or attempt.resource != lease.resource
+                or lease.attempt_id != attempt.attempt_id or lease.attempt_token != attempt.fencing_token):
+            raise ValueError("invalid fenced work identity")
+        with fencing_store.commit_guard(lease, paths):
+            current = self.get(task_id)
+            if (current is None or current.owner != owner
+                    or _task_scope_root(current) != _canonical_repository_root(root)):
+                raise PermissionError("task owner or root does not match fenced work")
+            state = dict(current.checkpoint.state_data)
+            expected = {"work_id": attempt.work_id, "attempt_id": attempt.attempt_id,
+                        "attempt_token": attempt.fencing_token}
+            if state.get("_pending_fenced_work") != expected:
+                raise ValueError("pending fenced work identity does not match")
+            generation = state.get("mutation_generation")
+            if type(generation) is not int or generation < 0:
+                raise ValueError("invalid task mutation generation")
+            if rollback:
+                state["mutation_generation"] = generation + 1
+                updated = replace(current, checkpoint=replace(current.checkpoint, state_data=state), updated_at=time.time())
+                event = AgentEvent.create(stream_id=f"task:{task_id}", kind="task.fenced_work_rollback_started",
+                                          payload=expected, actor=owner, idempotency_key=f"fenced_work_{uuid.uuid4().hex}")
+                current = self._commit_update(current, updated, event, allow_server_work_update=True)
+            finalize()
+            state = dict(current.checkpoint.state_data)
+            del state["_pending_fenced_work"]
+            updated = replace(current, checkpoint=replace(current.checkpoint, state_data=state), updated_at=time.time())
+            event = AgentEvent.create(stream_id=f"task:{task_id}", kind="task.fenced_work_finalized",
+                                      payload={**expected, "rollback": rollback}, actor=owner,
+                                      idempotency_key=f"fenced_work_{uuid.uuid4().hex}")
+            return self._commit_update(current, updated, event, allow_server_work_update=True)
+
     def advance_mutation_generation(
         self,
         task_id: str,
@@ -3254,7 +3383,9 @@ class TaskStore:
             current,
             checkpoint,
             actor=actor,
-            idempotency_key=f"mutation_{task_id}_{generation}",
+            # Separate concurrent advances must not be mistaken for a replay
+            # merely because they read the same previous generation.
+            idempotency_key=f"mutation_{task_id}_{generation}_{uuid.uuid4().hex}",
         )
 
     def rollback(
@@ -4238,12 +4369,14 @@ class TaskStore:
         event: AgentEvent,
         *,
         allow_server_memory_refresh: bool = False,
+        allow_server_work_update: bool = False,
     ) -> TaskState:
         """CAS-update projection and append its event/cursor in one transaction."""
         checkpoint = _preserve_checkpoint_memory_state(
             current.checkpoint.state_data,
             updated.checkpoint,
             allow_server_memory_refresh=allow_server_memory_refresh,
+            allow_server_work_update=allow_server_work_update,
         )
         if checkpoint != updated.checkpoint:
             updated = replace(updated, checkpoint=checkpoint)

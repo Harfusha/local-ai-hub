@@ -1,0 +1,75 @@
+"""Fail-closed HTTP route admission for the OpenCode local client profile.
+
+This is only one layer of the local-only design. It does not authenticate the
+agent label or stop independently scheduled background work.
+"""
+from __future__ import annotations
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+from typing import Any
+
+_PROFILE = "opencode-local"
+_LOCAL_GENERATION_BLOCKED: ContextVar[bool] = ContextVar("opencode_local_generation_blocked", default=False)
+_READ_PATHS = frozenset({"/health", "/ready", "/api/status", "/api/mode"})
+_POST_PATHS = frozenset({
+    "/api/repo/code-index", "/api/repo/callers", "/api/search", "/api/rag/search",
+    "/api/artifact/get", "/api/artifact/list",
+    "/api/evidence/get", "/api/evidence/verify",
+    "/api/leases/claim_batch", "/api/leases/release",
+    "/api/agent-state/tasks", "/api/agent-state/verification", "/api/agent-state/memory",
+    "/api/opencode/provider/start", "/api/opencode/provider/status", "/api/opencode/provider/stop",
+    "/api/opencode/provider/wait",
+})
+_ACTIONS = {
+    "/api/agent-state/tasks": frozenset({"create", "get", "list", "count", "checkpoint", "complete", "transition"}),
+    "/api/agent-state/verification": frozenset({"completion", "receipt"}),
+    "/api/agent-state/memory": frozenset({"record", "get", "find"}),
+}
+
+
+@contextmanager
+def generation_scope(agent: str):
+    """Restrict synchronous nested work without relaxing an outer restriction."""
+    token = _LOCAL_GENERATION_BLOCKED.set(_LOCAL_GENERATION_BLOCKED.get() or agent == _PROFILE)
+    try:
+        yield
+    finally:
+        _LOCAL_GENERATION_BLOCKED.reset(token)
+
+
+def scoped_http_request(handler):
+    @wraps(handler)
+    def guarded(self, *args, **kwargs):
+        with generation_scope(self._agent()):
+            return handler(self, *args, **kwargs)
+    return guarded
+
+
+def generation_denial() -> dict[str, Any] | None:
+    if not _LOCAL_GENERATION_BLOCKED.get():
+        return None
+    return {"success": False, "error_code": "opencode_generation_disabled", "error": "internal generation is disabled for opencode-local", "terminal": True, "retryable": False}
+
+
+def path_allowed(agent: str, method: str, path: str) -> bool:
+    if agent != _PROFILE:
+        return True
+    if method == "GET":
+        return path in _READ_PATHS
+    if method == "POST":
+        return path in _POST_PATHS
+    return False
+
+
+def payload_allowed(agent: str, path: str, payload: Any) -> bool:
+    if agent != _PROFILE:
+        return True
+    if path not in _POST_PATHS or not isinstance(payload, dict):
+        return False
+    actions = _ACTIONS.get(path)
+    if actions is None:
+        return True
+    action = payload.get("action")
+    return isinstance(action, str) and action in actions

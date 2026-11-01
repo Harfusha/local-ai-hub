@@ -3438,6 +3438,9 @@ class CommandBroker:
     def set_fencing_lease_store(self, fencing_lease_store: Any) -> None:
         self.fencing_lease_store = fencing_lease_store
 
+    def set_bounded_work_authorizer(self, authorizer: Any) -> None:
+        self.bounded_work_authorizer = authorizer if callable(authorizer) else None
+
     @staticmethod
     def _work_attempt_fence_payload(work_attempt_fence: WorkAttemptFence) -> dict[str, Any]:
         if not isinstance(work_attempt_fence, WorkAttemptFence):
@@ -3955,8 +3958,13 @@ class CommandBroker:
         repository_root: str = "",
     ) -> None:
         if (
-            not result.get("success") or not task_id or self.verification_store is None
+            result.get("success") is not True or not task_id or self.verification_store is None
             or cached or result.get("cache_hit") or result.get("coalesced")
+            or any(result.get(flag, False) is not False for flag in (
+                "timed_out", "cancelled", "aborted_interactive", "outcome_unknown",
+                "in_progress", "cleanup_unconfirmed", "output_capture_unconfirmed",
+                "log_callback_delivery_unconfirmed",
+            ))
             or len(command_id) != 32 or any(character not in "0123456789abcdef" for character in command_id)
         ):
             return
@@ -4133,7 +4141,11 @@ class CommandBroker:
             # requires this record when execution provenance is enabled, so a
             # caller-supplied receipt can never race ahead and mint completion.
             self._persist_command_execution_record(command_id, record)
-            self.verification_store.record(receipt)
+            if "_pending_fenced_work" in state_data:
+                # The primary agent must review the handoff before task acceptance.
+                self.verification_store.record(receipt, update_task=False)
+            else:
+                self.verification_store.record(receipt)
             result["verification_receipt"] = receipt_data
             result["verification_evidence_id"] = str(evidence_id)
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
@@ -6272,6 +6284,7 @@ class CommandBroker:
             with callback_queue.all_tasks_done:
                 while callback_queue.unfinished_tasks and time.monotonic() < callback_deadline:
                     callback_queue.all_tasks_done.wait(timeout=max(0.0, callback_deadline - time.monotonic()))
+                callbacks_drained = callback_queue.unfinished_tasks == 0
             while True:
                 try:
                     item = callback_queue.get_nowait()
@@ -6284,7 +6297,9 @@ class CommandBroker:
                 callback_queue.task_done()
             callback_queue.put_nowait(None)
             callback_thread.join(timeout=0.05)
-            callback_delivery_unconfirmed = callback_thread.is_alive()
+            # Once all queued callbacks have completed, a worker still exiting
+            # after its sentinel cannot make their delivery uncertain.
+            callback_delivery_unconfirmed = not callbacks_drained
 
         with reader_error_lock:
             reader_error = reader_errors[0] if reader_errors else None
@@ -7620,8 +7635,58 @@ class CommandBroker:
                 self._transaction_leases.release(owner=transaction_name, lease_id=str(lease.get("lease_id") or ""))
 
 
-    def _distill_error_with_model(self, result: dict[str, Any]) -> str:
-        if not callable(self.error_distiller):
+    @staticmethod
+    def _local_diagnostic_preview_allowed(text: str) -> bool:
+        if not isinstance(text, str) or not text:
+            return False
+        try:
+            from .agent_consistency import _redact_memory_text
+            return _redact_memory_text(text, limit=800) == text
+        except Exception:
+            return False
+
+    def _local_diagnostic_context(self, result: dict[str, Any], root: str) -> dict[str, str] | None:
+        """Validate a newly compacted, bounded diagnostic before local inference."""
+        if not rollout_feature_enabled(self.config, "local_diagnostic_dispatch") or self.artifacts is None:
+            return None
+        if (result.get("success") is not False or type(result.get("exit_code")) is not int
+                or result["exit_code"] == 0 or result.get("cache_hit") is not False
+                or result.get("coalesced") is not False):
+            return None
+        if any(result.get(flag, False) is not False for flag in (
+            "timed_out", "cancelled", "outcome_unknown", "cleanup_unconfirmed", "output_capture_unconfirmed",
+            "in_progress", "aborted_interactive", "log_callback_delivery_unconfirmed", "budget_accounting_unavailable",
+        )):
+            return None
+        failure = result.get("failure_summary")
+        if not isinstance(failure, dict) or failure.get("path"):
+            return None
+        state = result.get("repo_state")
+        artifact_id, preview = result.get("diagnostic_context_artifact_id"), result.get("preview")
+        if (not isinstance(state, dict) or not isinstance(state.get("root"), str)
+                or not isinstance(root, str) or not root or not isinstance(artifact_id, str) or not artifact_id
+                or not isinstance(preview, str) or not preview):
+            return None
+        try:
+            if Path(state["root"]).resolve(strict=True) != Path(root).resolve(strict=True):
+                return None
+            artifact = self.artifacts.get(artifact_id, max_chars=801)
+        except Exception:
+            return None
+        text = preview[:800]
+        if not self._local_diagnostic_preview_allowed(text):
+            return None
+        if (not isinstance(artifact, dict) or artifact.get("success") is not True
+                or artifact.get("kind") != "local_diagnostic_context" or artifact.get("text") != text
+                or artifact.get("next_offset") is not None):
+            return None
+        return {"artifact_id": artifact_id, "summary": text}
+
+    def _distill_error_with_model(
+        self, result: dict[str, Any], *, cancel_event: threading.Event | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        if not callable(self.error_distiller) or (cancel_event is not None and cancel_event.is_set()):
             return ""
         payload = {
             "exit_code": int(result.get("exit_code", 1) or 1),
@@ -7629,12 +7694,21 @@ class CommandBroker:
             "diagnostics": list(result.get("diagnostics", []))[:2],
         }
         try:
-            distilled = self.error_distiller(payload)
+            options = {}
+            if cancel_event is not None:
+                options["cancel_event"] = cancel_event
+            if timeout_seconds is not None:
+                options["timeout_seconds"] = timeout_seconds
+            distilled = self.error_distiller(payload, **options)
         except Exception:
             return ""
+        if cancel_event is not None and cancel_event.is_set():
+            return ""
         if isinstance(distilled, dict):
-            distilled = distilled.get("text", distilled.get("summary", ""))
-        return str(distilled or "").strip()[:300]
+            if distilled.get("success") is not True:
+                return ""
+            distilled = distilled.get("text")
+        return distilled.strip()[:300] if isinstance(distilled, str) else ""
 
     @staticmethod
     def _project_environment(
@@ -7955,6 +8029,7 @@ class CommandBroker:
         fix_generator: Any | None,
         docker_image: str,
         work_attempt_fence: WorkAttemptFence | None,
+        request_cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         if task_id and self.policy_engine:
             try:
@@ -7973,6 +8048,26 @@ class CommandBroker:
 
         compacted = self._compact(result, command)
         compacted["execution_id"] = execution_id
+        # Work orders own their model-call and time budgets. Do not introduce
+        # an unaccounted nested inference during their broker validation.
+        if work_attempt_fence is None and (request_cancel_event is None or not request_cancel_event.is_set()):
+            evidence = self._local_diagnostic_context(compacted, cwd)
+            if evidence is not None:
+                compacted["local_diagnostic_status"] = "unavailable"
+                diagnostic_started = time.monotonic()
+                diagnosis = self._distill_error_with_model(
+                    {"summary": evidence["summary"], "exit_code": compacted["exit_code"]},
+                    cancel_event=request_cancel_event, timeout_seconds=10.0,
+                )
+                if diagnosis and (request_cancel_event is None or not request_cancel_event.is_set()):
+                    compacted["local_diagnostic_status"] = "completed"
+                    compacted["local_diagnostic"] = {
+                        "text": diagnosis, "artifact_id": evidence["artifact_id"], "advisory": True,
+                    }
+                elif request_cancel_event is not None and request_cancel_event.is_set():
+                    compacted["local_diagnostic_status"] = "cancelled"
+                elif time.monotonic() - diagnostic_started >= 10.0:
+                    compacted["local_diagnostic_status"] = "timed_out"
         if task_id:
             compacted["task_id"] = task_id
             if criterion:
@@ -8032,6 +8127,7 @@ class CommandBroker:
         _cache_context: str = "",
         _transaction_context: str = "",
         _work_attempt_fence: WorkAttemptFence | None = None,
+        _work_order_id: str = "",
         _project_command_context: _ResolvedProjectCommand | None = None,
         request_cancel_event: threading.Event | None = None,
         stdin: str | bytes | None = None,
@@ -8287,16 +8383,28 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
+        if not isinstance(_work_order_id, str) or _work_order_id != _work_order_id.strip() or "\x00" in _work_order_id:
+            return {"success": False, "error": "invalid work order identity",
+                    "failure_kind": "work_attempt_fence_invalid", "terminal": True, "retryable": False}
+        if _work_order_id and _work_attempt_fence is None:
+            return {"success": False, "error": "work order identity requires a current work attempt fence",
+                    "failure_kind": "work_attempt_fence_invalid", "terminal": True, "retryable": False}
         if _work_attempt_fence is not None:
             try:
+                if _work_order_id and (is_mutating or auto_fix or rollback_on_failure or _transaction_context):
+                    raise ValueError("work order identity is invalid for this command")
                 fence_resource = cwd
                 if _transaction_context:
                     fence_resource = self._transaction_source_for_context(_transaction_context)
                     if fence_resource is None:
                         raise ValueError("private transaction source identity is unavailable")
                 self._assert_work_attempt_fence(
-                    _work_attempt_fence, task_id=task_id, resource=fence_resource
+                    _work_attempt_fence, task_id=_work_order_id or task_id, resource=fence_resource
                 )
+                if _work_order_id:
+                    authorizer = getattr(self, "bounded_work_authorizer", None)
+                    if not callable(authorizer) or authorizer(_work_order_id, task_id, str(cwd), original_command) is not True:
+                        raise ValueError("work order does not authorize this task, root and command")
             except (AttributeError, OSError, TypeError, ValueError, RuntimeError) as exc:
                 return {
                     "success": False,
@@ -8643,11 +8751,6 @@ class CommandBroker:
                 result["failed_tests"] = self._extract_failed_tests(result)
                 result["error_distillation"] = self._distill_error(result)
                 result["error_distillation_source"] = "deterministic"
-                if self._needs_model_error_distillation(result):
-                    model_distillation = self._distill_error_with_model(result)
-                    if model_distillation:
-                        result["error_distillation"] = model_distillation
-                        result["error_distillation_source"] = "local_model"
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if (
                 not result.get("success")
@@ -8816,6 +8919,7 @@ class CommandBroker:
             fix_generator=fix_generator,
             docker_image=docker_image,
             work_attempt_fence=_work_attempt_fence,
+            request_cancel_event=request_cancel_event,
         )
 
     @_stable_rollback_status
@@ -10577,6 +10681,9 @@ class CommandBroker:
 
 
     def _compact(self, result: dict[str, Any], command: str) -> dict[str, Any]:
+        # A context artifact must be created by this compaction, never inherited
+        # from a prior result or replayed as if it belonged to this execution.
+        result.pop("diagnostic_context_artifact_id", None)
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         argv = self._tokens(command)
         executable = Path(argv[0]).name.lower() if argv else ""
@@ -10651,7 +10758,14 @@ class CommandBroker:
             if combined_chars <= self.inline_chars and not result.get("artifact_id") and not failure_summary.get("path"):
                 if local_diagnostic_dispatch_enabled and self.artifacts is not None:
                     diagnostic = str(result["preview"])[:800]
-                    result["artifact_id"] = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
+                    if self._local_diagnostic_preview_allowed(diagnostic):
+                        result["artifact_id"] = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
+                        if result["artifact_id"]:
+                            result["diagnostic_context_artifact_id"] = result["artifact_id"]
+                    else:
+                        result["local_diagnostic_status"] = "skipped_sensitive" if diagnostic else "skipped_no_preview"
+                        if diagnostic_artifacts_enabled and diagnostic:
+                            result["artifact_id"] = self.artifacts.put(diagnostic, kind="command_diagnostic")
                 elif not diagnostic_artifacts_enabled:
                     result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
                 elif self.artifacts is not None:
@@ -10659,9 +10773,16 @@ class CommandBroker:
                     result["artifact_id"] = self.artifacts.put(diagnostic, kind="command_diagnostic")
         if combined_chars > self.inline_chars:
             full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-            if local_diagnostic_dispatch_enabled and not diagnostic_artifacts_enabled and self.artifacts is not None:
+            if (local_diagnostic_dispatch_enabled and not diagnostic_artifacts_enabled
+                    and self.artifacts is not None and not result.get("success")
+                    and not result.get("cancelled") and result.get("preview")):
                 diagnostic = str(result.get("preview", ""))[:800]
-                result["artifact_id"] = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
+                if self._local_diagnostic_preview_allowed(diagnostic):
+                    result["artifact_id"] = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
+                    if result["artifact_id"]:
+                        result["diagnostic_context_artifact_id"] = result["artifact_id"]
+                else:
+                    result["local_diagnostic_status"] = "skipped_sensitive" if diagnostic else "skipped_no_preview"
             elif not diagnostic_artifacts_enabled:
                 result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
             elif self.artifacts is not None:
@@ -10669,6 +10790,15 @@ class CommandBroker:
                 result["artifact_id"] = artifact_id
                 if artifact_id and not capture_incomplete:
                     result["output_artifact_id"] = artifact_id
+                if (local_diagnostic_dispatch_enabled and not result.get("success")
+                        and not result.get("cancelled") and not failure_summary.get("path")):
+                    diagnostic = str(result.get("preview", ""))[:800]
+                    if self._local_diagnostic_preview_allowed(diagnostic):
+                        context_id = self.artifacts.put(diagnostic, kind="local_diagnostic_context")
+                        if context_id:
+                            result["diagnostic_context_artifact_id"] = context_id
+                    else:
+                        result["local_diagnostic_status"] = "skipped_sensitive" if diagnostic else "skipped_no_preview"
             retained_stdout = stdout[: self.inline_chars // 2]
             retained_stderr = stderr[-self.inline_chars // 2:]
             result["discarded_output_chars"] = previously_discarded + combined_chars - len(retained_stdout) - len(retained_stderr)

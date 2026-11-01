@@ -386,6 +386,14 @@ class LocalAIApp:
         fast_runtime = OllamaRuntime(self.config)
         self.runtime = TieredOllamaRuntime(self.config, fast_runtime=fast_runtime) if bool(self.config.get("smart_ollama", {}).get("enabled", False)) else fast_runtime
         self.scheduler = AffinityScheduler(self.runtime, self.config)
+        from .opencode_provider_service import ProviderService
+        from .opencode_peer import verify_supervised_peer
+        self.opencode_provider = ProviderService(
+            self.scheduler,
+            upstream_url=self.config.get("server", {}).get("ollama_url", ""),
+            hub_token=self.config.get("security", {}).get("api_token", ""),
+            peer_verifier=lambda connection: verify_supervised_peer(connection, state_dir),
+        )
         self.background_gpu = IdleGPUWorker(self.config, self.scheduler)
         self.scheduler.set_foreground_preempt_hook(self.background_gpu.preempt_foreground)
         self.embeddings = EmbeddingModel(self.config)
@@ -573,6 +581,18 @@ class LocalAIApp:
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
             self._prewarm_thread.start()
         self.async_jobs.recover()
+        try:
+            from .hardware import detect_hardware
+            threading.Thread(target=detect_hardware, name="local-ai-hardware-warmup", daemon=True).start()
+            def _status_ticker() -> None:
+                while not self._shutdown.wait(2.5):
+                    try:
+                        self.realtime_status(light=True)
+                    except Exception:
+                        pass
+            threading.Thread(target=_status_ticker, name="local-ai-status-ticker", daemon=True).start()
+        except Exception:
+            pass
 
     def _reap_expired_task_scopes(self) -> list[str]:
         """Reap bounded authorized repository scopes without a global bypass."""
@@ -856,7 +876,7 @@ class LocalAIApp:
         cache_ttl = 5.0 if light else 1.5
 
         def cached_snapshot(cached: tuple[float, dict[str, Any]], now: float, *, stale: bool = False) -> dict[str, Any]:
-            result = deepcopy(cached[1])
+            result = dict(cached[1])
             result["snapshot_cached"] = True
             result["status_age_ms"] = max(0, int((now - cached[0]) * 1000))
             if stale:
@@ -932,13 +952,23 @@ class LocalAIApp:
             prep_status, prep_status_healthy = read("preprocessing.status", self.preprocessor.status, {"success": False, "projects": []})
             projects = []
             for item in prep_status.get("projects", []) if isinstance(prep_status, dict) else []:
-                row = dict(item)
-                root = str(row.get("root", ""))
-                row["project"] = Path(root).name or root
-                projects.append(row)
+                root = str(item.get("root", ""))
+                proj_name = item.get("project") or Path(root).name or root
+                if light:
+                    projects.append({
+                        "root": root,
+                        "project": proj_name,
+                        "status": item.get("status", "complete"),
+                        "phase": item.get("phase", "complete"),
+                        "overall_progress_pct": item.get("overall_progress_pct", 100),
+                    })
+                else:
+                    row = dict(item)
+                    row["project"] = proj_name
+                    projects.append(row)
             from .features import FeatureSet
             fs = FeatureSet.from_config(self.config)
-            observability, telemetry_healthy = read("telemetry.summary", lambda: self.telemetry.realtime_summary(scope=scope), {})
+            observability, telemetry_healthy = read("telemetry.summary", lambda: self.telemetry.realtime_summary(scope=scope, light=light), {})
             accelerators, accelerator_healthy = read("accelerators", lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config))
             background_gpu, background_gpu_healthy = read("background_gpu", self.background_gpu.status, {})
             model_policy = getattr(getattr(self, "services", None), "model_policy", None)
@@ -1015,8 +1045,12 @@ class LocalAIApp:
                 "debug_traces": debug_traces,
                 "observability": observability,
                 "preprocessing": {
-                    **(prep_status if isinstance(prep_status, dict) else {}),
-                    **prep_stats,
+                    **({
+                        "success": bool(prep_status.get("success", True)),
+                        "enabled": bool(prep_status.get("enabled", True)),
+                        "max_preprocessing_projects": prep_status.get("max_preprocessing_projects", 1),
+                    } if light and isinstance(prep_status, dict) else (prep_status if isinstance(prep_status, dict) else {})),
+                    **({} if light else prep_stats),
                     "projects": projects,
                     "paused": bool(prep_status.get("paused", False)) if isinstance(prep_status, dict) else False,
                     "global_diagnostic": str(prep_status.get("global_diagnostic", "")) if isinstance(prep_status, dict) else "",
@@ -1250,7 +1284,7 @@ class LocalAIApp:
                 "reranker": reranker, "features": dict(self.config.get("features", {})),
                 "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
-                "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": debug_traces,
+                "observability": telemetry_summary, "token_saving": ({k: v for k, v in telemetry_summary.items() if k != "sessions"} if isinstance(telemetry_summary, dict) else telemetry_summary), "debug_traces": debug_traces,
             }
             res["agent_state"] = agent_state
             self._status_full_cache[scope] = {"time": time.monotonic(), "data": deepcopy(res)}
@@ -2287,7 +2321,7 @@ class LocalAIApp:
                     ("status_dependencies", lambda: self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)),
                     ("helper_threads", join_helpers),
                 ]
-                for name in ("automation", "recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "background_gpu", "scheduler", "telemetry", "deterministic", "code_index"):
+                for name in ("automation", "recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "opencode_provider", "background_gpu", "scheduler", "telemetry", "deterministic", "code_index"):
                     component = getattr(self, name, None)
                     if component is not None and callable(getattr(component, "close", None)):
                         steps.append((name, component.close))

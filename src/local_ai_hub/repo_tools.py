@@ -1686,6 +1686,34 @@ class RepositoryTools:
                 ):
                     yield metadata, file_hash, lines, error
 
+    MAX_SNIPPET_LINE_CHARS = 1000
+    MAX_SNIPPET_TOTAL_CHARS = 4000
+
+    @staticmethod
+    def _format_search_snippet(
+        lines: Any,
+        start: int,
+        end: int,
+        *,
+        max_line_chars: int = 1000,
+        max_total_chars: int = 4000,
+    ) -> str:
+        parts: list[str] = []
+        total = 0
+        for idx in range(start, end):
+            line = lines[idx]
+            if len(line) > max_line_chars:
+                line = line[:max_line_chars] + " ... [line truncated]"
+            formatted = f"{idx + 1}: {line}"
+            if total + len(formatted) > max_total_chars and parts:
+                remaining = end - idx
+                parts.append(f"... [{remaining} lines omitted to fit snippet bound]")
+                break
+            parts.append(formatted)
+            total += len(formatted)
+        return "\n".join(parts)
+
+
     def _exact_search_page(
         self, base: Path, query: str, limit: int, offset: int,
         context_lines: int | None, project_settings: Any | None,
@@ -1879,6 +1907,21 @@ class RepositoryTools:
             def raise_walk_error(error: OSError) -> None:
                 raise error
 
+            if matching_relpaths is not None:
+                forced_inventory: set[str] = set()
+                for forced_path in self._expand_project_force_paths(
+                    base, project_settings, file_cap, extra_patterns=force_patterns,
+                ):
+                    try:
+                        forced_inventory.add(forced_path.relative_to(base).as_posix())
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                for relative in sorted(matching_relpaths | forced_inventory):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("exact repository search exceeded 60 seconds")
+                    yield base / relative
+                return
+
             for directory, dirnames, filenames in os.walk(
                 base, followlinks=False, onerror=raise_walk_error,
             ):
@@ -1976,10 +2019,11 @@ class RepositoryTools:
                     scanned += 1
                     previous_relative_path = rel
 
-                    try:
-                        path = path.resolve(strict=True)
-                    except (OSError, RuntimeError, ValueError):
-                        continue
+                    if not path.is_absolute():
+                        try:
+                            path = path.resolve(strict=True)
+                        except (OSError, RuntimeError, ValueError):
+                            continue
 
                     file_hash, lines = self._read_snapshot(
                         path, max_bytes=self.max_file_bytes,
@@ -2021,7 +2065,7 @@ class RepositoryTools:
                     hit = {
                         "path": rel, "start_line": start + 1, "end_line": end,
                         "score": round(score, 3),
-                        "text": "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end)),
+                        "text": "",
                         "file_sha256": file_hash,
                     }
                     bucket = hit["start_line"] // snippet_lines
@@ -2086,7 +2130,7 @@ class RepositoryTools:
                 end = min(len(lines), int(reference["end_line"]))
                 materialized[(relative_path, int(reference["start_line"]))] = {
                     **reference,
-                    "text": "\n".join(f"{index + 1}: {lines[index]}" for index in range(start, end)),
+                    "text": self._format_search_snippet(lines, start, end),
                 }
         page = [
             materialized[(str(reference["path"]), int(reference["start_line"]))]
@@ -2214,7 +2258,7 @@ class RepositoryTools:
                     score = float(len(matched) * 3 + path_matches * 2 + sum(min(low.count(t), 3) * 0.5 for t in matched))
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
-                    snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
+                    snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
         # A timeout/error from both bounded accelerators must not trigger an
         # unbounded O(repository) Python scan. A valid accelerated zero result is
@@ -2270,7 +2314,7 @@ class RepositoryTools:
                     score += sum(min(low.count(t), 3) * 0.5 for t in matched)
                     start = max(0, idx - effective_snippet_lines)
                     end = min(len(lines), idx + effective_snippet_lines + 1)
-                    snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
+                    snippet = self._format_search_snippet(lines, start, end)
                     hits.append({
                         "path": rel, "start_line": start + 1, "end_line": end,
                         "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
@@ -3267,7 +3311,7 @@ class RepositoryTools:
                 score += sum(min(low.count(t), 3) * 0.5 for t in matched)
                 start = max(0, idx - effective_snippet_lines)
                 end = min(len(lines), idx + effective_snippet_lines + 1)
-                snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
+                snippet = self._format_search_snippet(lines, start, end)
                 hits.append({
                     "path": rel, "start_line": start + 1, "end_line": end,
                     "score": round(score, 3), "text": snippet, "file_sha256": file_hash,

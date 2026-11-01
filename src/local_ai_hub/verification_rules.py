@@ -317,6 +317,32 @@ def _completion_mutation_generation(task: object) -> int:
     return generation
 
 
+def validate_expected_criteria(task: TaskState, expected_criteria: object) -> None:
+    """Bind an explicit goal contract to the current persisted task contract."""
+    if (not isinstance(expected_criteria, (list, tuple)) or not expected_criteria
+            or any(type(item) is not str or not item or item != item.strip() or "\x00" in item
+                   for item in expected_criteria)
+            or len(set(expected_criteria)) != len(expected_criteria)):
+        raise CompletionGateError("expected acceptance criteria must be a nonempty list of distinct canonical strings")
+    contract = getattr(task, "contract", None)
+    if tuple(expected_criteria) != tuple(getattr(contract, "acceptance_criteria", ())):
+        raise CompletionGateError("expected acceptance criteria do not match the stored task contract")
+
+
+_BINDING_UNSET = object()
+
+
+def validate_expected_binding(task: TaskState, binding: object) -> None:
+    if not isinstance(binding, dict) or set(binding) != {"goal", "session_id"}:
+        raise CompletionGateError("expected goal binding must contain goal and session_id")
+    goal, session_id = binding["goal"], binding["session_id"]
+    if any(type(value) is not str or not value or value != value.strip() or "\x00" in value for value in (goal, session_id)):
+        raise CompletionGateError("expected goal binding values must be canonical strings")
+    if (getattr(getattr(task, "contract", None), "goal", None) != goal
+            or getattr(getattr(task, "context", None), "session_id", None) != session_id):
+        raise CompletionGateError("expected goal binding does not match stored task")
+
+
 def complete_task_with_project_rules(
     task_store: TaskStore,
     verification_store: CompletionReceiptStore,
@@ -330,6 +356,8 @@ def complete_task_with_project_rules(
     idempotency_key: str = "",
     now: float | None = None,
     response_budget_tokens: int | None = None,
+    expected_criteria: list[str] | tuple[str, ...] | None = None,
+    expected_binding: object = _BINDING_UNSET,
 ) -> TaskState:
     """Resolve payload-root project rules and gate mutation on persisted receipts."""
     task_key = str(task_id or "").strip()
@@ -347,6 +375,12 @@ def complete_task_with_project_rules(
     before = task_getter(task_key)
     if before is None or str(getattr(before, "task_id", "")).strip() != task_key:
         raise CompletionGateError("trusted task is unavailable")
+    if expected_criteria is not None:
+        validate_expected_criteria(before, expected_criteria)
+    if expected_binding is not _BINDING_UNSET:
+        if expected_criteria is None:
+            raise CompletionGateError("expected goal binding requires acceptance criteria")
+        validate_expected_binding(before, expected_binding)
     before_owner = str(getattr(before, "owner", "") or "").strip()
     if not before_owner:
         raise CompletionGateError("task owner is unavailable")
@@ -484,6 +518,8 @@ def complete_task_with_project_rules(
             expected_completion_content = snapshot_fn(preflight_current)
         except (AttributeError, TypeError):
             expected_completion_content = None
+    if expected_binding is not _BINDING_UNSET and expected_completion_content is None:
+        raise CompletionGateError("expected goal binding requires an atomic completion snapshot")
     return task_store.complete(
         task_key,
         reason=reason,

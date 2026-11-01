@@ -28,6 +28,13 @@ PROMPTS = ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md")
 
 
 @pytest.mark.parametrize("name", PROMPTS)
+def test_bounded_handoff_documents_absent_receipt(name: str) -> None:
+    prompt = (ROOT / "docs" / name).read_text(encoding="utf-8")
+    assert 'validation.receipt_status="not_recorded"' in prompt
+    assert "no durable broker verification receipt" in prompt
+
+
+@pytest.mark.parametrize("name", PROMPTS)
 def test_current_adaptive_pack_contract(name: str) -> None:
     prompt = (ROOT / "docs" / name).read_text(encoding="utf-8")
     for contract in (
