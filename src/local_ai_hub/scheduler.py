@@ -1536,7 +1536,7 @@ class AffinityScheduler:
     def prewarm(self, model: str) -> bool:
         """Warm one model only while completely idle; never delays queued user work."""
         with self._cond:
-            if self._pending or self._inflight or self._switching or self._background_gpu_lease:
+            if self._pending or self._inflight or self._switching or self._background_gpu_lease or self._external_gpu_reserved():
                 return False
             if self._active_model == model:
                 return True

@@ -123,7 +123,7 @@ def test_disabled_qualification_does_not_probe_runtime_or_artifacts():
     assert result["qualified"] is False
 
 
-@pytest.mark.parametrize("scenario", ["qualified", "wrong_digest", "profile", "budget", "unsupported", "unknown", "bad_metadata"])
+@pytest.mark.parametrize("scenario", ["qualified", "wrong_digest", "profile", "budget", "unsupported", "unknown", "bad_metadata", "uncertain_success"])
 def test_bounded_work_exploration_obeys_qualification_scope_and_budget(tmp_path, scenario):
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config as base_config, init_repo, wait_terminal
     from local_ai_hub.work_orchestrator import WorkOrchestrator
@@ -144,10 +144,13 @@ def test_bounded_work_exploration_obeys_qualification_scope_and_budget(tmp_path,
             counts = {"attempted": 1, "completed": 1, "failed": 0, "unknown": 0}
             if scenario == "bad_metadata":
                 counts["unknown"] = 1
-            return {"success": True, "text": "verified local FINDING", "tool_agent": {
+            result = {"success": True, "text": "verified local FINDING", "tool_agent": {
                 "steps": 2, "tool_calls": 1, "tool_evidence": counts,
                 "tool_capability": True, "tool_fallback": False,
             }}
+            if scenario == "uncertain_success":
+                result["timed_out"] = True
+            return result
 
     class Services(FakeServices):
         def delegate_repo(self, args, **kwargs):
@@ -187,6 +190,8 @@ def test_bounded_work_exploration_obeys_qualification_scope_and_budget(tmp_path,
         inspection = next(step for step in report["steps"] if step["kind"] == "inspect")
         if scenario == "unknown":
             assert inspection["local_exploration"]["status"] == "unknown"
+        if scenario == "uncertain_success":
+            assert inspection["local_exploration"] == {"status": "unavailable", "reason": "timed_out"}
         if calls:
             args, kwargs = calls[0]
             assert args[0] == "local:model" and args[1] == "worker" and args[3] == str(root)

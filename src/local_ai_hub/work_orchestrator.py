@@ -3189,6 +3189,11 @@ class WorkOrchestrator:
                                         outcome["local_exploration"] = {
                                             "status": "unknown" if isinstance(explored, dict) and explored.get("outcome_unknown") is True else "unavailable"
                                         }
+                                        if isinstance(explored, dict):
+                                            reason = next((flag for flag in _UNCERTAIN_MODEL_FLAGS
+                                                           if explored.get(flag, False) is not False), None)
+                                            if reason is not None:
+                                                outcome["local_exploration"]["reason"] = reason
                 elif kind == "edit":
                     perms = payload.get("permissions", {})
                     if not bool(perms.get("edit", True)):

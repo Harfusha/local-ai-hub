@@ -10,6 +10,33 @@ import pytest
 from local_ai_hub.scheduler import AffinityScheduler
 
 
+@pytest.mark.parametrize("other_scheduler", [False, True])
+def test_prewarm_respects_external_gpu_reservation(tmp_path, other_scheduler):
+    config = {"server": {"state_dir": str(tmp_path)}}
+    runtime = SimpleNamespace(loaded_model_details=lambda: [])
+    owner = AffinityScheduler(runtime, config)
+    target = AffinityScheduler(runtime, config) if other_scheduler else owner
+    switches = []
+    target._perform_switch = lambda model: switches.append(model) or True
+    try:
+        token = owner.reserve_external_gpu()
+        assert token
+        assert target.prewarm("model") is False
+        assert switches == []
+        with target._cond:
+            target._active_model = "model"
+        assert target.prewarm("model") is False
+        with target._cond:
+            target._active_model = None
+        assert owner.release_external_gpu(token)
+        assert target.prewarm("model") is True
+        assert switches == ["model"]
+    finally:
+        if target is not owner:
+            target.close()
+        owner.close()
+
+
 def test_existing_scheduler_observes_external_reservation(tmp_path):
     config = {"server": {"state_dir": str(tmp_path)}}
     runtime = SimpleNamespace(loaded_models=lambda: [], loaded_model_details=lambda: [])
