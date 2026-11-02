@@ -84,6 +84,9 @@ def test_selftest_preserves_control_flow_exceptions(monkeypatch, capsys, error):
 
 def test_pytest_annotations_are_failure_only_and_count_bounded(monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(ci_diagnostics, "_emitted", 0)
+    monkeypatch.setattr(ci_diagnostics, "_omitted_count", 0)
+    monkeypatch.setattr(ci_diagnostics, "_omitted_ids", [])
     ci_diagnostics.pytest_sessionstart(None)
     passed = SimpleNamespace(failed=False, nodeid="passed", longreprtext="")
     ci_diagnostics.pytest_runtest_logreport(passed)
