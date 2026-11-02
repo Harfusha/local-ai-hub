@@ -240,6 +240,7 @@ def test_post_failure_diagnostics_keep_stack_without_request_secrets(monkeypatch
     handler = SimpleNamespace(
         path="/api/diagnostic-regression?token=private-query-token-537",
         headers={"Content-Type": "application/json"},
+        _agent=lambda: "generic",
         _require_authorized=lambda: True,
         _begin_trace=lambda *args: None,
         _read_json=lambda: {"secret": "private-payload-token-537"},

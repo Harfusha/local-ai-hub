@@ -322,6 +322,7 @@ def test_debug_trace_list_route_handles_sqlite_oversized_offset(tmp_path, monkey
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = f"/api/debug-traces?offset={offset}"
+    handler.headers = {}
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -534,6 +535,8 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/debug-traces/missing-trace"
+    handler.headers = {}
+    handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
     responses = []
@@ -887,6 +890,7 @@ def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/debug-traces/trace-1?full=1&content_field=output&content_offset=128"
+    handler.headers = {}
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True

@@ -77,6 +77,8 @@ def test_project_command_fingerprints_ignore_missing_or_mismatched_context() -> 
 
 def test_finalize_run_result_compacts_and_attaches_execution_id() -> None:
     broker = object.__new__(CommandBroker)
+    broker.config = {}
+    broker.artifacts = None
     broker.policy_engine = None
     observed = {}
 
@@ -111,6 +113,8 @@ def test_finalize_run_result_compacts_and_attaches_execution_id() -> None:
 
 def test_finalize_run_result_charges_compute_and_external_call() -> None:
     broker = object.__new__(CommandBroker)
+    broker.config = {}
+    broker.artifacts = None
     charges = []
 
     class PolicyEngine:
@@ -140,6 +144,8 @@ def test_finalize_run_result_charges_compute_and_external_call() -> None:
 
 def test_finalize_run_result_routes_failed_autofix_once() -> None:
     broker = object.__new__(CommandBroker)
+    broker.config = {}
+    broker.artifacts = None
     broker.policy_engine = None
     broker._compact = lambda result, command: dict(result)
     calls = []
