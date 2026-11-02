@@ -2357,6 +2357,10 @@ class OllamaRuntime:
                 if fallback is not None:
                     return fallback
                 raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_inventory_incomplete"})
+            configured_context = selected[0].get("context_length")
+            if (not isinstance(configured_context, int) or isinstance(configured_context, bool)
+                    or configured_context < self.model_policy.profile(model).num_ctx):
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_context_insufficient"})
             evicted: list[str] = []
 
             def is_selected_cuda(row: Any) -> bool:

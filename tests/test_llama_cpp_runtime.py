@@ -344,6 +344,24 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             inventory.assert_not_called()
             load.assert_not_called()
 
+    def test_mixed_cuda_rejects_context_smaller_than_execution_profile(self):
+        from local_ai_hub.ollama import ModelPreparationAdmissionRejected, OllamaRuntime
+
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = OllamaRuntime({
+                "server": {"state_dir": temp, "ollama_url": "http://127.0.0.1:11434"},
+                "ollama": {"enabled": True},
+                "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True,
+                              "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
+                              "models": {"candidate": {"url": "http://127.0.0.1:12438", "context_length": 512}}},
+            })
+            with (patch.object(runtime, "loaded_model_inventory", return_value={"complete": True, "models": []}),
+                  patch.object(runtime.llama_cpp, "ensure_model", return_value=True) as load):
+                with self.assertRaises(ModelPreparationAdmissionRejected) as rejected:
+                    runtime.prepare_model("candidate", post_unload_admission=lambda: {"state": "admitted"})
+            self.assertEqual(rejected.exception.admission["reason"], "mixed_cuda_context_insufficient")
+            load.assert_not_called()
+
     def test_legacy_load_rejects_mixed_model_without_scheduler_admission(self):
         from local_ai_hub.ollama import OllamaRuntime
 
