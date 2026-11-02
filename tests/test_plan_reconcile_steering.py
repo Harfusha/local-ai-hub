@@ -137,6 +137,37 @@ def test_oversized_pending_record_is_not_persisted(test_environment):
     assert not path.exists()
 
 
+def test_existing_pending_blocks_new_steering_before_plan_or_spec_changes(test_environment):
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    binding = agent_bridge.TaskBindingManager(root).get_binding("task_001")
+    agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"reason": "unfinished"})
+    spec_before = spec.read_bytes()
+    task_before = task_store.get("task_001")
+    with pytest.raises(RepoPlanConflictError, match="pending reconciliation"):
+        agent_bridge.reconcile_task_steering(
+            task_store, root=str(root), task_id="task_001", steering_id="new",
+            spec_rel_path="docs/feature.md", spec_content="changed\n",
+            acceptance_criteria=["New requirement"], expected_revision=plan_rev,
+            expected_spec_revision=hashlib.sha256(spec_before).hexdigest())
+    assert storage.read_plan_file(plan_path)[1] == plan_rev
+    assert spec.read_bytes() == spec_before
+    assert task_store.get("task_001").contract == task_before.contract
+
+
+def test_oversized_recovery_payload_is_rejected_before_plan_or_spec_changes(test_environment):
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    spec_before = spec.read_bytes()
+    criteria = [f"{index}:" + "\U0001f431" * 4000 for index in range(25)]
+    with pytest.raises(ValueError, match="size limit"):
+        agent_bridge.reconcile_task_steering(
+            task_store, root=str(root), task_id="task_001", steering_id="oversized",
+            spec_rel_path="docs/feature.md", spec_content="changed\n",
+            acceptance_criteria=criteria, expected_revision=plan_rev,
+            expected_spec_revision=hashlib.sha256(spec_before).hexdigest())
+    assert storage.read_plan_file(plan_path)[1] == plan_rev
+    assert spec.read_bytes() == spec_before
+
+
 def test_service_reconcile_routes_to_real_persistence(test_environment):
     from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
     from local_ai_hub.services import LocalAIServices

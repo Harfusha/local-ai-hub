@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import functools
 import json
 import logging
 import os
@@ -263,7 +264,7 @@ def _persist_pending_contract_reconciliation(
     encoded = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8")
     if len(encoded) > 1024 * 1024:
         raise ValueError("pending reconciliation record exceeds size limit")
-    with exclusive_file_update(target):
+    with exclusive_file_update(target, reentrant=True):
         if target.is_symlink() or getattr(target, "is_junction", lambda: False)():
             raise ValueError("pending reconciliation record cannot be a link")
         if target.exists():
@@ -452,6 +453,22 @@ def sync_checkpoint_to_plan(
     )
 
 
+def _serialize_contract_reconciliation(method):
+    @functools.wraps(method)
+    def wrapped(storage, binding, *args, **kwargs):
+        name = hashlib.sha256(binding.task_id.encode("utf-8")).hexdigest() + ".json"
+        relative = f".local-ai-hub/local/pending-contract-reconciliation/{name}"
+        validate_repo_path(relative, repo_root=storage.repo_root)
+        target = storage.repo_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with exclusive_file_update(target, reentrant=True):
+            if target.exists() or target.is_symlink() or getattr(target, "is_junction", lambda: False)():
+                raise RepoPlanConflictError("pending reconciliation must be resolved before a new clarification")
+            return method(storage, binding, *args, **kwargs)
+    return wrapped
+
+
+@_serialize_contract_reconciliation
 def reconcile_contract_revision(
     storage: RepoPlanStorage,
     binding: TaskBinding,
@@ -529,6 +546,16 @@ def reconcile_contract_revision(
     # Update acceptance criteria
     task_data["acceptance_criteria"] = list(new_acceptance_criteria)
 
+    # Reserve enough space for the bounded error diagnostic before changing
+    # either target; ensure_ascii expands a non-BMP codepoint to 12 bytes.
+    pending_size_probe = {
+        "task_id": binding.task_id, "plan_id": binding.plan_id, "plan_task_id": binding.plan_task_id,
+        "contract_revision": current_contract_revision + 1, "acceptance_criteria": new_acceptance_criteria,
+        "reason": reason, "plan_revision": "0" * 64, "error": "\U0010ffff" * 256,
+    }
+    if len(json.dumps(pending_size_probe, sort_keys=True, indent=2).encode("utf-8")) > 1024 * 1024:
+        raise ValueError("pending reconciliation record exceeds size limit")
+
     # Plan/spec become the durable user clarification before execution resumes.
     if spec_rel_path and spec_content is not None:
         spec_path = storage.repo_root / spec_rel_path
@@ -566,7 +593,7 @@ def reconcile_contract_revision(
                    "contract_revision": current_contract_revision + 1,
                    "acceptance_criteria": new_acceptance_criteria,
                    "reason": reason, "plan_revision": save_res.get("plan_revision", save_res.get("file_revision", "")),
-                   "error": str(exc)}
+                   "error": str(exc)[:256]}
         try:
             _persist_pending_contract_reconciliation(storage, binding, payload)
         except Exception as persist_exc:
@@ -588,7 +615,7 @@ def reconcile_contract_revision(
                    "contract_revision": binding.contract_revision,
                    "acceptance_criteria": new_acceptance_criteria,
                    "reason": reason, "plan_revision": binding.adopted_plan_revision,
-                   "error": str(exc)}
+                   "error": str(exc)[:256]}
         try:
             _persist_pending_contract_reconciliation(storage, binding, payload)
         except Exception as persist_exc:
