@@ -11,6 +11,7 @@ import re
 import stat
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,10 +28,17 @@ from .models import (
     TaskWorkStatus,
 )
 from .schema_validation import RepoPlanConflictError, RepoPlanNotFoundError, validate_repo_path
-from .storage import RepoPlanStorage, compute_file_sha256, get_git_context
+from .storage import RepoPlanStorage, _pin_windows_write_directories, compute_file_sha256, get_git_context
 
 logger = logging.getLogger(__name__)
 MAX_PENDING_RECONCILIATION_BYTES = 4 * 1024 * 1024
+
+
+@contextmanager
+def _pinned_pending_directory(root: Path, parent: Path):
+    with _pin_windows_write_directories(root, parent):
+        parent.mkdir(parents=True, exist_ok=True)
+        yield
 
 DISALLOWED_PASS_COMMANDS = frozenset({"echo pass", "echo ok", "echo true", "echo 1", "true", ":"})
 # We will define it as regex or set:
@@ -247,6 +255,14 @@ class TaskBindingManager:
 def _persist_pending_contract_reconciliation(
     storage: RepoPlanStorage, binding: TaskBinding, payload: dict[str, Any]
 ) -> Path:
+    pending_dir = storage.repo_root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    with _pinned_pending_directory(storage.repo_root, pending_dir):
+        return _persist_pending_contract_reconciliation_pinned(storage, binding, payload)
+
+
+def _persist_pending_contract_reconciliation_pinned(
+    storage: RepoPlanStorage, binding: TaskBinding, payload: dict[str, Any]
+) -> Path:
     """Persist a safe, atomic local retry record when the task DB update fails."""
     root = storage.repo_root.resolve(strict=True)
     hub_dir = root / ".local-ai-hub"
@@ -273,17 +289,17 @@ def _persist_pending_contract_reconciliation(
                 return target
             raise RepoPlanConflictError("a different pending reconciliation already exists")
         temporary = resolved_pending / f".{name}.{uuid.uuid4().hex}.tmp"
+        created = False
         try:
             with temporary.open("xb") as stream:
+                created = True
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
         finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+            if created:
+                temporary.unlink(missing_ok=True)
     return target
 
 
@@ -461,8 +477,7 @@ def _serialize_contract_reconciliation(method):
         relative = f".local-ai-hub/local/pending-contract-reconciliation/{name}"
         validate_repo_path(relative, repo_root=storage.repo_root)
         target = storage.repo_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with exclusive_file_update(target, reentrant=True):
+        with _pinned_pending_directory(storage.repo_root, target.parent), exclusive_file_update(target, reentrant=True):
             if target.exists() or target.is_symlink() or getattr(target, "is_junction", lambda: False)():
                 pending = json.loads(_read_pending_reconciliation(target).decode("utf-8"))
                 key = pending.get("storage_idempotency_key") if isinstance(pending, dict) else None
@@ -636,7 +651,6 @@ def reconcile_task_steering(
     """Reconcile an explicitly revision-bound operator clarification."""
     from local_ai_hub.agent_tasks import _task_scope_root
     from local_ai_hub.repository_scope import canonical_repository_root
-    from .workspace import RepoPlanWorkspace
 
     if type(root) is not str or not root:
         raise ValueError("root must be an explicit absolute path")
@@ -667,6 +681,22 @@ def reconcile_task_steering(
     binding = manager.get_binding(task_id)
     if binding is None or not execution.context.session_id or binding.session_id != execution.context.session_id:
         raise ValueError("task must have a matching bound session")
+
+    pending_dir = Path(canonical) / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    with _pinned_pending_directory(Path(canonical), pending_dir):
+        return _reconcile_task_steering_pinned(
+            task_store, canonical, task_id, steering_id, spec_rel_path, spec_content,
+            acceptance_criteria, expected_revision, expected_spec_revision, summary,
+            execution, manager, binding,
+        )
+
+
+def _reconcile_task_steering_pinned(
+    task_store, canonical, task_id, steering_id, spec_rel_path, spec_content,
+    acceptance_criteria, expected_revision, expected_spec_revision, summary,
+    execution, manager, binding,
+):
+    from .workspace import RepoPlanWorkspace
 
     payload = {"root": canonical, "task_id": task_id, "session_id": binding.session_id,
                "steering_id": steering_id, "spec_rel_path": spec_rel_path,
@@ -796,14 +826,17 @@ def reconcile_task_steering(
                     if len(encoded) > MAX_PENDING_RECONCILIATION_BYTES:
                         raise ValueError("pending reconciliation record exceeds size limit")
                     temporary = pending_path.parent / f".{pending_path.name}.{uuid.uuid4().hex}.tmp"
+                    created = False
                     try:
                         with temporary.open("xb") as stream:
+                            created = True
                             stream.write(encoded)
                             stream.flush()
                             os.fsync(stream.fileno())
                         os.replace(temporary, pending_path)
                     finally:
-                        temporary.unlink(missing_ok=True)
+                        if created:
+                            temporary.unlink(missing_ok=True)
 
                 # Serialize the fresh check and contract update with plan writers.
                 with exclusive_file_update(storage._lock_path, reentrant=True):

@@ -1,6 +1,8 @@
 import hashlib
 import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +10,63 @@ from local_ai_hub.agent_tasks import GoalContract, ScopeContext
 from local_ai_hub.repo_plan import agent_bridge
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
 from test_repo_plan_agent_os import create_initial_plan_file, test_environment
+
+
+def test_pending_temp_collision_preserves_existing_file(test_environment, monkeypatch):
+    root, storage, _, task_store, _, _, manager = test_environment
+    setup_bound_task(test_environment)
+    binding = manager.get_binding("task_001")
+    pending = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    pending.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(b"task_001").hexdigest() + ".json"
+    token = "1234567890abcdef1234567890abcdef"
+    existing = pending / f".{name}.{token}.tmp"
+    existing.write_bytes(b"preserve")
+    monkeypatch.setattr(agent_bridge.uuid, "uuid4", lambda: SimpleNamespace(hex=token))
+    with pytest.raises(FileExistsError):
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"reason": "new"})
+    assert existing.read_bytes() == b"preserve"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
+def test_pending_reconciliation_resists_parent_junction_swap(test_environment, monkeypatch, tmp_path):
+    root, storage, _, task_store, _, _, manager = test_environment
+    setup_bound_task(test_environment)
+    binding = manager.get_binding("task_001")
+    parent = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path.parent / (tmp_path.name + "-steering-outside")
+    outside.mkdir()
+    name = hashlib.sha256(b"task_001").hexdigest() + ".json"
+    sentinel = outside / name
+    sentinel.write_bytes(b"unchanged")
+    junction = root / "staged-steering-junction"
+    env = {**os.environ, "LAH_RACE_LINK": str(junction), "LAH_RACE_TARGET": str(outside)}
+    created = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "New-Item -ItemType Junction -Path $env:LAH_RACE_LINK -Target $env:LAH_RACE_TARGET | Out-Null"],
+        env=env, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if created.returncode or not junction.exists():
+        pytest.skip("Cannot create a Windows junction in this test environment")
+    original_mkdir = Path.mkdir
+    attempted = False
+
+    def swap_parent(path, *args, **kwargs):
+        nonlocal attempted
+        if path == parent and not attempted:
+            attempted = True
+            parent.rename(parent.with_name("old-pending"))
+            junction.rename(parent)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", swap_parent)
+    try:
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"reason": "new"})
+    except OSError:
+        pass
+    assert attempted
+    assert sentinel.read_bytes() == b"unchanged"
 
 
 def setup_bound_task(test_environment):
