@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -32,6 +33,47 @@ logger = logging.getLogger(__name__)
 DISALLOWED_PASS_COMMANDS = frozenset({"echo pass", "echo ok", "echo true", "echo 1", "true", ":"})
 # We will define it as regex or set:
 DISALLOWED_COMMAND_REGEX = re.compile(r"^\s*(?:echo\s+pass|echo\s+ok|echo\s+true|echo\s+1|true|:)\s*$", re.IGNORECASE)
+
+
+def _read_pending_reconciliation(path: Path) -> bytes:
+    """Read a bounded regular file after checking its opened identity."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if os.name != "nt":
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+            raise ValueError("secure pending reconciliation read is unavailable")
+        flags |= os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("pending reconciliation record must be a regular file")
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            get_final = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+            get_final.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+            get_final.restype = wintypes.DWORD
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_final(msvcrt.get_osfhandle(descriptor), buffer, len(buffer), 0)
+            if not length or length >= len(buffer):
+                raise ValueError("cannot verify opened pending reconciliation path")
+            actual = buffer.value
+            if actual.startswith("\\\\?\\UNC\\"):
+                actual = "\\\\" + actual[8:]
+            elif actual.startswith("\\\\?\\"):
+                actual = actual[4:]
+            if os.path.normcase(os.path.normpath(actual)) != os.path.normcase(os.path.normpath(str(path))):
+                raise ValueError("opened pending reconciliation path differs from expected path")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            data = stream.read(1024 * 1024 + 1)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(data) > 1024 * 1024:
+        raise RuntimeError("pending reconciliation record exceeds size limit")
+    return data
 
 
 @dataclass
@@ -638,10 +680,7 @@ def reconcile_task_steering(
             if not pending_path.is_file() or pending_path.stat().st_size > 1024 * 1024:
                 raise RuntimeError("persisted steering reconciliation is pending without a safe retry record")
             with exclusive_file_update(pending_path):
-                with pending_path.open("rb") as stream:
-                    pending_bytes = stream.read(1024 * 1024 + 1)
-                if len(pending_bytes) > 1024 * 1024:
-                    raise RuntimeError("pending reconciliation record exceeds size limit")
+                pending_bytes = _read_pending_reconciliation(pending_path)
                 pending = json.loads(pending_bytes.decode("utf-8"))
                 if not isinstance(pending, dict):
                     raise ValueError("pending reconciliation record must be an object")

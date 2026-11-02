@@ -82,6 +82,37 @@ def test_pending_steering_growth_after_stat_has_bounded_read(test_environment, m
     assert storage.read_plan_file(plan_path)[1] == saved_revision
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle path validation")
+def test_pending_read_rejects_handle_opened_outside_expected_path(tmp_path, monkeypatch):
+    expected = tmp_path / "pending.json"
+    outside = tmp_path / "outside.json"
+    expected.write_text("{}", encoding="utf-8")
+    outside.write_text("{}", encoding="utf-8")
+    real_open = os.open
+    opened = []
+
+    def swapped_open(path, flags, *args, **kwargs):
+        if Path(path) == expected:
+            descriptor = real_open(outside, flags, *args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_bridge.os, "open", swapped_open)
+    with pytest.raises(ValueError, match="opened pending reconciliation path"):
+        agent_bridge._read_pending_reconciliation(expected)
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO regression")
+def test_pending_read_rejects_fifo_without_waiting_for_writer(tmp_path):
+    fifo = tmp_path / "pending-fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="regular file"):
+        agent_bridge._read_pending_reconciliation(fifo)
+
+
 def test_service_reconcile_routes_to_real_persistence(test_environment):
     from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
     from local_ai_hub.services import LocalAIServices
