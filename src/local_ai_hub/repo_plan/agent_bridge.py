@@ -261,7 +261,15 @@ def _persist_pending_contract_reconciliation(
     name = hashlib.sha256(binding.task_id.encode("utf-8")).hexdigest() + ".json"
     target = resolved_pending / name
     encoded = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8")
+    if len(encoded) > 1024 * 1024:
+        raise ValueError("pending reconciliation record exceeds size limit")
     with exclusive_file_update(target):
+        if target.is_symlink() or getattr(target, "is_junction", lambda: False)():
+            raise ValueError("pending reconciliation record cannot be a link")
+        if target.exists():
+            if _read_pending_reconciliation(target) == encoded:
+                return target
+            raise RepoPlanConflictError("a different pending reconciliation already exists")
         temporary = resolved_pending / f".{name}.{uuid.uuid4().hex}.tmp"
         try:
             with temporary.open("xb") as stream:

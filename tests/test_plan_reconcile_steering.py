@@ -113,6 +113,30 @@ def test_pending_read_rejects_fifo_without_waiting_for_writer(tmp_path):
         agent_bridge._read_pending_reconciliation(fifo)
 
 
+def test_pending_record_does_not_replace_unresolved_distinct_content(test_environment):
+    root, storage, _, _, _, _, _ = test_environment
+    binding = agent_bridge.TaskBinding(task_id="task_001", repo_root=str(root), plan_id="plan_a",
+                                       plan_task_id="task_a", plan_rel_path=".local-ai-hub/plans/plan_a.plan.json")
+    original = {"task_id": "task_001", "reason": "first clarification"}
+    path = agent_bridge._persist_pending_contract_reconciliation(storage, binding, original)
+    before = path.read_bytes()
+    assert agent_bridge._persist_pending_contract_reconciliation(storage, binding, original) == path
+    assert path.read_bytes() == before
+    with pytest.raises(RepoPlanConflictError, match="pending reconciliation"):
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {**original, "reason": "different"})
+    assert path.read_bytes() == before
+
+
+def test_oversized_pending_record_is_not_persisted(test_environment):
+    root, storage, _, _, _, _, _ = test_environment
+    binding = agent_bridge.TaskBinding(task_id="task_oversized", repo_root=str(root), plan_id="plan_a",
+                                       plan_task_id="task_a", plan_rel_path=".local-ai-hub/plans/plan_a.plan.json")
+    with pytest.raises(ValueError, match="size limit"):
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"text": "x" * (1024 * 1024)})
+    path = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation" / (hashlib.sha256(b"task_oversized").hexdigest() + ".json")
+    assert not path.exists()
+
+
 def test_service_reconcile_routes_to_real_persistence(test_environment):
     from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
     from local_ai_hub.services import LocalAIServices
