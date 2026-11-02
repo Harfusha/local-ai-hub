@@ -3673,13 +3673,13 @@ class RAGStore:
                 max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
                 fd, st = self._safe_open_diagram(p_img)
                 try:
-                    if int(st.st_size) > max_bytes:
-                        return {
-                            "success": False,
-                            "error": "diagram exceeds configured file size limit",
-                            "diagram_indexed": False,
-                        }
                     with open(fd, "rb") as svg_file:
+                        if int(st.st_size) > max_bytes:
+                            return {
+                                "success": False,
+                                "error": "diagram exceeds configured file size limit",
+                                "diagram_indexed": False,
+                            }
                         raw_bytes = svg_file.read(max_bytes + 1)
                 except Exception:
                     try:
