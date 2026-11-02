@@ -172,3 +172,36 @@ def test_archive_retry_is_distinct_from_update_action(tmp_path):
     assert workspace.archive_plan("plan_replay", expected_revision=created["file_revision"], idempotency_key="archive") == archived
     with pytest.raises(RepoPlanConflictError):
         workspace.update_plan("plan_replay", lifecycle="archived", expected_revision=created["file_revision"], idempotency_key="archive")
+
+
+def test_create_retry_keeps_original_result_and_preserves_later_edits(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    first = workspace.create_plan(plan_id="plan_replay", title="Initial", idempotency_key="create")
+    assert first["no_op"] is False
+    later = workspace.update_plan("plan_replay", title="Later", expected_revision=first["file_revision"])
+    replay = workspace.create_plan(plan_id="plan_replay", title="Initial", idempotency_key="create")
+    assert replay == first
+    assert workspace.get_plan("plan_replay")["file_revision"] == later["file_revision"]
+    with pytest.raises(RepoPlanConflictError):
+        workspace.create_plan(plan_id="plan_replay", title="Different", idempotency_key="create")
+
+
+def test_create_reports_mutation_with_small_mcp_budget(tmp_path, monkeypatch):
+    import asyncio
+    from local_ai_hub import mcp_server
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    class Backend:
+        def coord(self, action, **payload):
+            assert action == "plan_create"
+            payload.pop("root")
+            return workspace.create_plan(**payload)
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", Backend())
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_create", "root": str(tmp_path), "plan_id": "plan_budget",
+        "title": "Budget", "description": "long description " * 500,
+        "idempotency_key": "budget", "max_response_tokens": 256,
+    }))
+    assert result.get("mutation_applied") is True
+    assert workspace.get_plan("plan_budget")["plan"]["title"] == "Budget"

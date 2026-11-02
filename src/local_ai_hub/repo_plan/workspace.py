@@ -358,6 +358,7 @@ class RepoPlanWorkspace:
             "plan_id": plan_id,
             "file_revision": save_res["file_revision"],
             "rel_path": rel_path,
+            "no_op": save_res["no_op"],
             "plan": plan_dict,
         }
 
