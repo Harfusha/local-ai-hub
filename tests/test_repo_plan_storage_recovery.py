@@ -120,6 +120,30 @@ def test_journal_read_rejects_symlink(tmp_path):
         storage._read_record(path)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_journal_read_rejects_directory_junction(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    storage = RepoPlanStorage(root)
+    storage._ensure_intents_dir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(b"unchanged")
+    path = storage._request_path("linked")
+    env = {**os.environ, "LAH_RACE_LINK": str(path), "LAH_RACE_TARGET": str(outside)}
+    created = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "New-Item -ItemType Junction -Path $env:LAH_RACE_LINK -Target $env:LAH_RACE_TARGET | Out-Null"],
+        env=env, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if created.returncode:
+        pytest.skip("Cannot create a Windows junction in this test environment")
+    with pytest.raises((RepoPlanError, OSError)):
+        storage._read_record(path)
+    assert sentinel.read_bytes() == b"unchanged"
+
+
 def test_plan_write_never_overwrites_or_deletes_existing_temp_file(tmp_path, monkeypatch):
     from local_ai_hub.repo_plan import storage as storage_module
 
