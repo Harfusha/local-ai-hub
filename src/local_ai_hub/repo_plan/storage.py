@@ -314,11 +314,9 @@ class RepoPlanStorage:
                     record = {"payload_sha256": payload_sha, "status": "completed", "result": intent.result}
                     self._save_request(key, record)
             else:
-                try:
-                    self._request_path(key).unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return None
+                raise RepoPlanConflictError(
+                    "Idempotent operation references a missing intent and requires reconciliation"
+                )
         if record.get("status") != "completed" or not isinstance(record.get("result"), dict):
             raise RepoPlanConflictError("Idempotent operation remains pending or requires reconciliation")
         return record["result"]
@@ -416,7 +414,24 @@ class RepoPlanStorage:
             self._complete_intent(intent)
             return result
 
+    def _assert_request_owned(self, intent: OperationIntent) -> None:
+        # Recovery must not replace a request that belongs to another intent or
+        # a different payload. A missing journal entry is not proof that an
+        # older operation never published its targets.
+        if intent.idempotency_key:
+            request_path = self._request_path(intent.idempotency_key)
+            if request_path.exists():
+                record = self._read_record(request_path)
+                if record.get("payload_sha256") != intent.payload_sha256:
+                    raise RepoPlanConflictError("Idempotency key belongs to a different payload")
+                if record.get("status") == "pending" and record.get("intent_id") != intent.intent_id:
+                    raise RepoPlanConflictError("Idempotency key belongs to a different intent")
+                if record.get("status") == "completed" and record.get("result") != intent.result:
+                    raise RepoPlanConflictError("Idempotency key already has a different result")
+                if record.get("status") not in ("pending", "completed"):
+                    raise RepoPlanConflictError("Idempotency record requires reconciliation")
     def _complete_intent(self, intent: OperationIntent) -> None:
+        self._assert_request_owned(intent)
         intent.status = "completed"
         self._save_intent(intent)
         if intent.result is not None:
@@ -435,6 +450,7 @@ class RepoPlanStorage:
                     intent = OperationIntent.from_dict(self._read_record(path))
                     if intent.status != "pending":
                         continue
+                    self._assert_request_owned(intent)
                     if path != self._intent_path(intent.intent_id) or not intent.targets:
                         raise RepoPlanError("Invalid pending intent identity or targets")
                     for target in intent.targets:
