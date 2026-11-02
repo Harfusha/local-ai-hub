@@ -10,6 +10,8 @@ Mixed operation requires `ollama.enabled = true`, `smart_ollama.enabled = false`
 
 The selected mixed model must be prepared with a post-unload VRAM admission callback before inference can use Ollama fallback. Fallback inference requires a fresh, complete Ollama inventory showing that model as the sole resident with at least the configured execution-profile context. If loading times out or its result is uncertain, the port reservation remains held and inference stays blocked until preparation succeeds or a verified unload releases it.
 
+For CUDA routing, set the selected model route's `context_length` to at least the execution profile's required context. A missing or smaller value is rejected before CUDA model loading; the offline-server fallback remains subject to its own admission and residency checks.
+
 ## Managed setup
 
 Set `ollama.enabled = false` and `llama_cpp.mode = "on"`, then run setup or restart the Hub. The installer selects the pinned platform build; on Windows Intel it uses the official SYCL bundle, which includes the SYCL runtime DLLs. The default GGUF is Qwen2.5-Coder 1.5B Q4_K_M. No model is downloaded while mode is `auto` or `off`. [Official releases](https://github.com/ggml-org/llama.cpp/releases) · [Windows SYCL instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#option-1-download-the-binary-package-directly)
