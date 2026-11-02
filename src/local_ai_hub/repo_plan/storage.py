@@ -394,8 +394,8 @@ class RepoPlanStorage:
             result["intent_id"] = intent_id
             intent = OperationIntent(intent_id, operation, key, payload_sha, owner, time.time(), "pending", targets,
                                      context["git_branch"], context["git_head"], context, result)
-            self._save_intent(intent)
             self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id})
+            self._save_intent(intent)
             for target, (_, data, _) in zip(targets, candidates):
                 self._check_fence(context, lease_check_fn)
                 validate_repo_path(target.rel_path, repo_root=self.repo_root)

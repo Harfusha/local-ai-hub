@@ -76,3 +76,23 @@ def test_recovery_does_not_publish_when_request_belongs_to_another_intent(tmp_pa
     assert outcomes[0]["resolution"] == "recovery_blocked"
     assert (tmp_path / "second.md").read_bytes() == b"old-second"
     assert storage._read_record(storage._request_path("shared-key")) == newer
+
+
+def test_crash_after_key_reservation_cannot_retry_or_change_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = RepoPlanStorage(tmp_path)
+    target = [("plan.md", b"new-content", None)]
+
+    def fail_before_intent(_intent: OperationIntent) -> None:
+        raise OSError("simulated crash after reservation")
+
+    monkeypatch.setattr(storage, "_save_intent", fail_before_intent)
+    with pytest.raises(OSError, match="simulated crash"):
+        storage._save_targets("save_plan", target, "agent", "reserved-key", None)
+
+    assert not (tmp_path / "plan.md").exists()
+    assert storage._request_path("reserved-key").exists()
+    assert list(storage.intents_dir.glob("*.intent.json")) == []
+    with pytest.raises(RepoPlanConflictError, match="missing intent"):
+        storage._save_targets("save_plan", target, "agent", "reserved-key", None)
+    with pytest.raises(RepoPlanConflictError, match="different payload"):
+        storage._save_targets("save_plan", [("plan.md", b"other", None)], "agent", "reserved-key", None)
