@@ -1,9 +1,63 @@
 from concurrent.futures import ThreadPoolExecutor
+import os
+from pathlib import Path
 
 import pytest
 
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory share-delete behavior")
+def test_workspace_pins_journal_parent_before_opening_lock(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    parent = workspace.storage.intents_dir
+    original_mkdir = Path.mkdir
+    attempted = False
+
+    def try_swap(path, *args, **kwargs):
+        nonlocal attempted
+        if path == parent and not attempted:
+            attempted = True
+            with pytest.raises(OSError):
+                parent.rename(parent.with_name("moved-intents"))
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", try_swap)
+    result = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pinned")
+    assert attempted and result["success"] is True
+
+
+def test_identical_retry_recovers_missing_intent_without_manual_reconciliation(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._save_intent
+    monkeypatch.setattr(workspace.storage, "_save_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
+    monkeypatch.setattr(workspace.storage, "_save_intent", original)
+    result = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    assert result["success"] is True
+    assert workspace.get_plan("plan_replay")["plan"]["title"] == "First"
+    assert workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved") == result
+
+
+def test_different_retry_cannot_resume_missing_intent(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._save_intent
+    monkeypatch.setattr(workspace.storage, "_save_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    monkeypatch.setattr(workspace.storage, "_save_intent", original)
+    with pytest.raises(RepoPlanConflictError):
+        workspace.update_plan("plan_replay", title="Different", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
 
 
 def test_mcp_does_not_invent_mutation_outcome_without_storage_evidence(tmp_path, monkeypatch):

@@ -15,9 +15,12 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
 
 
-@pytest.mark.parametrize("action", ["plan_create", "plan_update", "plan_task_edit", "plan_task_delete", "plan_archive", "plan_adopt_legacy_board"])
+@pytest.mark.parametrize("action", ["plan_create", "plan_update", "plan_update_crash", "plan_task_edit", "plan_task_delete", "plan_archive", "plan_adopt_legacy_board"])
 def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, action):
     import local_ai_hub.repo_plan.workspace as workspace_module
+    crash_reservation = action == "plan_update_crash"
+    if crash_reservation:
+        action = "plan_update"
     assert Path(workspace_module.__file__).resolve().is_relative_to(Path(__file__).resolve().parents[1] / "src")
     root = tmp_path / "repo"
     root.mkdir()
@@ -67,6 +70,17 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     else:
         different = {**arguments, "owner": "different-owner"}
     try:
+        if crash_reservation:
+            from local_ai_hub.repo_plan.storage import RepoPlanStorage
+
+            original = RepoPlanStorage._save_intent
+            def crash_after_reservation(_storage, _intent):
+                raise RuntimeError("injected interruption after reservation")
+            monkeypatch.setattr(RepoPlanStorage, "_save_intent", crash_after_reservation)
+            _, failed = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
+            assert failed["success"] is False
+            assert workspace.get_plan("plan_replay")["file_revision"] == created["file_revision"]
+            monkeypatch.setattr(RepoPlanStorage, "_save_intent", original)
         _, first = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
         assert first["success"] is True, first
         assert first["mutation_applied"] is True

@@ -11,6 +11,7 @@ import hashlib
 import inspect
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +31,19 @@ from .schema_validation import (
     validate_plan_dict,
     validate_repo_path,
 )
-from .storage import OperationIntent, RepoPlanStorage, get_git_context
+from .storage import OperationIntent, RepoPlanStorage, _pin_windows_write_directories, get_git_context
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
+
+
+@contextmanager
+def _workspace_storage_lock(storage):
+    with _pin_windows_write_directories(storage.repo_root, storage.intents_dir):
+        with _pin_windows_write_directories(storage.repo_root, storage._lock_path.parent):
+            storage._ensure_intents_dir()
+            with exclusive_file_update(storage._lock_path, reentrant=True):
+                yield
 
 
 def _replayable_plan_edit(method):
@@ -51,8 +61,7 @@ def _replayable_plan_edit(method):
             raise RepoPlanValidationError("Idempotency key must be a string of at most 1024 characters")
         if not key:
             return method(self, *args, **kwargs)
-        self.storage._ensure_intents_dir()
-        with exclusive_file_update(self.storage._lock_path, reentrant=True):
+        with _workspace_storage_lock(self.storage):
             context = self.storage._context()
             try:
                 identity = json.dumps({"method": method.__name__, "arguments": values, "context": context},
@@ -67,7 +76,14 @@ def _replayable_plan_edit(method):
                 if record.get("status") == "pending" and record.get("intent_id"):
                     intent_path = self.storage._intent_path(record["intent_id"])
                     if not intent_path.exists():
-                        raise RepoPlanConflictError("Idempotent operation references a missing intent and requires reconciliation")
+                        snapshot = record.get("reserved_intent")
+                        snapshot_result = snapshot.get("result") if isinstance(snapshot, dict) else None
+                        if (not isinstance(snapshot_result, dict)
+                                or snapshot_result.get("client_request_fingerprint") != fingerprint):
+                            raise RepoPlanConflictError("Idempotent operation references a missing intent and requires reconciliation")
+                        outcomes = self.storage.recover_pending_intents(only_key=key, resume_unapplied=True)
+                        if len(outcomes) != 1 or outcomes[0].get("status") != "completed":
+                            raise RepoPlanConflictError("Idempotent operation requires reconciliation")
                     intent = OperationIntent.from_dict(self.storage._read_record(intent_path))
                     stored = intent.result
                 if not isinstance(stored, dict) or stored.get("client_request_fingerprint") != fingerprint:

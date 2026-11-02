@@ -628,7 +628,7 @@ class RepoPlanStorage:
             return []
         self._ensure_intents_dir()
         outcomes = []
-        with exclusive_file_update(self._lock_path):
+        with exclusive_file_update(self._lock_path, reentrant=True):
             if only_key:
                 request = self._read_record(self._request_path(only_key))
                 if request.get("status") != "pending":
