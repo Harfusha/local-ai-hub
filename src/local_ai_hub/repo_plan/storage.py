@@ -19,6 +19,7 @@ from ..file_locks import exclusive_file_update
 from ..process_utils import clean_git_env, hidden_run_kwargs
 
 from .schema_validation import (
+    MAX_PLAN_FILE_BYTES,
     RepoPlanConflictError,
     RepoPlanError,
     RepoPlanValidationError,
@@ -244,9 +245,12 @@ class RepoPlanStorage:
         if not full_path.exists():
             raise FileNotFoundError(f"Plan file not found: {rel_path}")
 
-        raw_bytes = full_path.read_bytes()
-        sha = compute_bytes_sha256(raw_bytes)
+        # Bound the read itself: validating after read_bytes() can allocate an
+        # arbitrarily large attacker-controlled file before rejecting it.
+        with full_path.open("rb") as stream:
+            raw_bytes = stream.read(MAX_PLAN_FILE_BYTES + 1)
         data = parse_plan_json(raw_bytes)
+        sha = compute_bytes_sha256(raw_bytes)
         validate_plan_dict(data, repo_root=self.repo_root)
         return data, sha
 

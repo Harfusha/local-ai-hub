@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import base64
+import io
 from pathlib import Path
 import pytest
 
-from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError
+from local_ai_hub.repo_plan.schema_validation import MAX_PLAN_FILE_BYTES, RepoPlanConflictError, RepoPlanValidationError
 from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, RepoPlanStorage, compute_bytes_sha256
 
 
@@ -19,6 +20,28 @@ def test_atomic_write_bytes_rejects_escaping_path() -> None:
 
         with pytest.raises(RepoPlanValidationError, match="escapes repository root"):
             storage._atomic_write_bytes(outside_dir / "escaped.json", b"{}")
+
+
+def test_read_plan_bounds_bytes_before_rejecting_oversized_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = tmp_path / "large.plan.json"
+    plan.write_bytes(b"{}")
+    reads: list[int] = []
+    original_open = Path.open
+
+    class ObservedStream(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            reads.append(size)
+            return super().read(size)
+
+    def open_observed(path: Path, *args, **kwargs):
+        if path == plan and args == ("rb",):
+            return ObservedStream(b"x" * (MAX_PLAN_FILE_BYTES + 2))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_observed)
+    with pytest.raises(RepoPlanValidationError, match="maximum size"):
+        RepoPlanStorage(tmp_path).read_plan_file("large.plan.json")
+    assert reads == [MAX_PLAN_FILE_BYTES + 1]
 
 
 def test_request_replay_preserves_pending_request_with_missing_intent() -> None:
