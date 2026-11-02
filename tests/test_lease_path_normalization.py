@@ -161,6 +161,10 @@ def test_posix_drive_relative_names_keep_case_sensitive_root_identity(
         owner="task-drive-lower", root="c:repo", paths=["src/file.py"], purpose="drive relative test"
     )
 
+    assert upper["success"] is False
+    assert lower["success"] is False
+    upper = store.claim(owner="task-drive-upper", root=str(upper_root), paths=["src/file.py"], purpose="case test")
+    lower = store.claim(owner="task-drive-lower", root=str(lower_root), paths=["src/file.py"], purpose="case test")
     assert upper["success"] is True
     assert lower["success"] is True
 

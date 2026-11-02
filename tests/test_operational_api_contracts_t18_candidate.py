@@ -954,6 +954,7 @@ def test_debug_trace_list_retryable_store_failure_returns_503(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(debug_traces=SimpleNamespace(enabled=True, list=lambda **kwargs: failure)))
 
     handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = {}
     handler.path = "/api/debug-traces"
     handler.command = "GET"
     handler._begin_trace = lambda path: None

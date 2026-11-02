@@ -88,7 +88,7 @@ def test_system_contract_requires_hub_tools_advisory_mode_and_matching_language(
 
 
 def test_profile_docs_describe_hub_tools_and_advisory_boundary() -> None:
-    text = generate_skill_markdown({"models": {"fast_code": "qwen2.5-coder:7b"}})
+    text = generate_skill_markdown({"ollama": {"enabled": True}, "models": {"fast_code": "qwen2.5-coder:7b"}})
 
     assert "qwen-explorer" in text
     assert "qwen-drafter" in text
