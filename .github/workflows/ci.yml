@@ -73,6 +73,8 @@ jobs:
           tests/test_process_group_identity_guard.py
           tests/test_supervisor_windows_launcher.py
           tests/test_canonical_root.py
+          tests/test_repo_plan_posix_races.py
+          tests/unit/test_plan_storage_hardening.py
           tests/test_client_startup_resilience.py
           tests/test_client_startup_transport_fallback.py
           tests/test_sqlite_resilience.py
