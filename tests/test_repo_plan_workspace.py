@@ -1,5 +1,6 @@
 """Unit tests for RepoPlanWorkspace and Kanban board view."""
 
+import json
 import pytest
 
 from local_ai_hub.repo_plan import (
@@ -53,6 +54,39 @@ def test_adopting_same_legacy_item_twice_is_a_noop(workspace):
     assert first["adopted_count"] == 1
     assert second["adopted_count"] == 0
     assert second["file_revision"] == first["file_revision"]
+
+
+def test_adoption_preserves_legacy_metadata(workspace):
+    _root, ws = workspace
+    item = {"item_id": "item-1", "title": "Legacy", "status": "planned", "priority": "high",
+            "labels": ["český", "urgent"], "assignee": "Adam", "milestone": "M1",
+            "linked_task_id": "task_original", "details": {"description": "detail", "nested": [1, False]},
+            "created_at": 1.25, "updated_at": 2.5}
+    ws.adopt_legacy_board_items("plan_adopted", [item])
+    description = ws.get_plan("plan_adopted")["plan"]["tasks"]["task_item-1"]["description"]
+    assert json.loads(description.split("\nLegacy board item JSON:\n", 1)[1]) == item
+    assert ws.adopt_legacy_board_items("plan_adopted", [item])["adopted_count"] == 0
+
+
+def test_adoption_refuses_oversize_legacy_metadata_without_creating_plan(workspace):
+    root, ws = workspace
+    item = {"item_id": "item-1", "title": "Legacy", "details": {"description": "x" * 40000}}
+    with pytest.raises(RepoPlanValidationError):
+        ws.adopt_legacy_board_items("plan_adopted", [item])
+    assert not (root / ".local-ai-hub" / "plans" / "plan_adopted.plan.json").exists()
+
+
+def test_adoption_updates_legacy_marker_and_rejects_changed_source(workspace):
+    _root, ws = workspace
+    created = ws.create_plan("plan_adopted", "Existing")
+    old = ws.edit_task("plan_adopted", "task_item-1", title="Legacy", description="Adopted from board item item-1", expected_revision=created["file_revision"])
+    item = {"item_id": "item-1", "title": "Legacy", "priority": "high"}
+    result = ws.adopt_legacy_board_items("plan_adopted", [item])
+    assert result["adopted_count"] == 0 and result["no_op"] is False
+    assert result["file_revision"] != old["file_revision"]
+    with pytest.raises(RepoPlanConflictError, match="collision"):
+        ws.adopt_legacy_board_items("plan_adopted", [{**item, "priority": "low"}])
+    assert ws.get_plan("plan_adopted")["file_revision"] == result["file_revision"]
 
 
 @pytest.mark.parametrize("selected_plan", ["", "plan_bad"])

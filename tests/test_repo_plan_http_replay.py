@@ -1,6 +1,7 @@
 """Plan replay through registered MCP, real HTTP, and file-backed storage."""
 
 import asyncio
+import json
 import sqlite3
 import threading
 from contextlib import closing
@@ -39,8 +40,8 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
         board._ensure_schema()
         with closing(sqlite3.connect(board.db_path)) as connection, connection:
             connection.executemany(
-                "INSERT INTO agent_board_items (item_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                [(f"legacy_{index}", f"Legacy {index}", "planned", 1.0, float(index)) for index in range(201)],
+                "INSERT INTO agent_board_items (item_id, title, status, priority, labels_json, assignee, details_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(f"legacy_{index}", f"Legacy {index}", "planned", "high", '["urgent"]', "Adam", '{"description":"kept"}', 1.0, float(index)) for index in range(201)],
             )
     monkeypatch.setattr(http_server, "APP", app)
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -70,7 +71,11 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
         assert first["success"] is True, first
         assert first["mutation_applied"] is True
         if action == "plan_adopt_legacy_board":
-            assert len(workspace.get_plan("plan_replay")["plan"]["tasks"]) == 201
+            tasks = workspace.get_plan("plan_replay")["plan"]["tasks"]
+            assert len(tasks) == 201
+            metadata = json.loads(tasks["task_legacy_0"]["description"].split("\nLegacy board item JSON:\n", 1)[1])
+            assert metadata["priority"] == "high" and metadata["labels"] == ["urgent"]
+            assert metadata["assignee"] == "Adam" and metadata["details"]["description"] == "kept"
             with closing(sqlite3.connect(board.db_path)) as connection:
                 assert connection.execute("SELECT count(*) FROM agent_board_items").fetchone()[0] == 201
         later = workspace.update_plan("plan_replay", description="Later", expected_revision=first["file_revision"])

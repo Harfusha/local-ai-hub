@@ -754,6 +754,7 @@ class RepoPlanWorkspace:
         if not isinstance(items_to_adopt, list):
             raise RepoPlanValidationError("legacy board items must be a list")
         seen_ids: dict[str, tuple[str, dict[str, Any]]] = {}
+        serialized_items: dict[str, str] = {}
         for item in items_to_adopt:
             if not isinstance(item, dict):
                 raise RepoPlanValidationError("legacy board item must be an object")
@@ -773,6 +774,10 @@ class RepoPlanWorkspace:
             if previous is not None and (previous[0] != item_id or previous[1] != item):
                 raise RepoPlanConflictError(f"Legacy board identity collision for task '{task_id}'")
             seen_ids[task_id] = (item_id, item)
+            try:
+                serialized_items[task_id] = json.dumps(item, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RepoPlanValidationError("legacy board item must contain finite JSON data") from exc
         rel_path = self._plan_rel_path(plan_id)
         full_path = self.repo_root / rel_path
         if not full_path.exists():
@@ -797,10 +802,15 @@ class RepoPlanWorkspace:
             # Convert item_id to valid task_id
             safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
             task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
+            marker = f"Adopted from board item {item_id}"
+            preserved_description = marker + "\nLegacy board item JSON:\n" + serialized_items[task_id]
 
             if task_id in tasks:
                 existing = tasks[task_id]
-                if not isinstance(existing, dict) or existing.get("description") != f"Adopted from board item {item_id}":
+                description = existing.get("description") if isinstance(existing, dict) else None
+                if description == marker:
+                    existing["description"] = preserved_description
+                elif description != preserved_description:
                     raise RepoPlanConflictError(f"Legacy board identity collision for existing task '{task_id}'")
                 continue
 
@@ -815,7 +825,7 @@ class RepoPlanWorkspace:
 
             tasks[task_id] = {
                 "title": title,
-                "description": f"Adopted from board item {item_id}",
+                "description": preserved_description,
                 "kind": "code",
                 "work_status": plan_status,
                 "depends_on": [],
