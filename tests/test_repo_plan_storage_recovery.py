@@ -1,6 +1,9 @@
 """Regression coverage for durable CAS, retries and partial-file recovery."""
 import json
 import multiprocessing
+import os
+from pathlib import Path
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
 from threading import Event
@@ -13,6 +16,52 @@ from test_repo_plan_storage import create_sample_plan_dict
 
 PLAN = ".local-ai-hub/plans/main.plan.json"
 SPEC = "docs/spec.md"
+
+
+class PlanWriteEscapedRoot(AssertionError):
+    pass
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
+@pytest.mark.xfail(strict=True, raises=PlanWriteEscapedRoot,
+                   reason="known parent-directory junction race in plan writes")
+def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    parent = root / "docs"
+    outside = tmp_path / "outside"
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    sentinel = outside / "spec.md"
+    sentinel.write_bytes(b"unchanged")
+    junction = root / "staged-junction"
+    env = {**os.environ, "LAH_RACE_LINK": str(junction), "LAH_RACE_TARGET": str(outside)}
+    created = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "New-Item -ItemType Junction -Path $env:LAH_RACE_LINK -Target $env:LAH_RACE_TARGET | Out-Null"],
+        env=env, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if created.returncode or not junction.exists():
+        pytest.skip("Cannot create a Windows junction in this test environment")
+    storage = RepoPlanStorage(root)
+    original_mkdir = Path.mkdir
+    swapped = False
+
+    def swap_parent(path, *args, **kwargs):
+        nonlocal swapped
+        if path == parent and not swapped:
+            swapped = True
+            parent.rename(root / "old-docs")
+            junction.rename(parent)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", swap_parent)
+    try:
+        storage._atomic_write_bytes(parent / "spec.md", b"changed")
+    except OSError:
+        pass  # A safe implementation may deny the attempted swap or write.
+    assert swapped, "The controlled swap must be exercised"
+    if sentinel.read_bytes() != b"unchanged":
+        raise PlanWriteEscapedRoot("plan write changed a file outside the repository")
 
 
 def test_fresh_instance_rejects_different_request_payload(tmp_path):
