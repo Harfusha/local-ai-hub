@@ -585,6 +585,8 @@ class LlamaCppRouter:
     def _entry(self, model: str) -> tuple[dict[str, Any], str] | None:
         if not self._hardware_allows():
             return None
+        if self.settings.get("managed_with_ollama") is True and model != self.settings.get("managed_model_logical"):
+            return None
         models = self.settings.get("models", {})
         raw = models.get(str(model or "").strip()) if isinstance(models, dict) else None
         if not isinstance(raw, dict):
@@ -639,6 +641,8 @@ class LlamaCppRouter:
                 self._generation_lock.release()
 
     def supports_model(self, model: str) -> bool:
+        if self.settings.get("managed_with_ollama") is True and model != self.settings.get("managed_model_logical"):
+            return False
         models = self.settings.get("models", {})
         return isinstance(models, dict) and isinstance(models.get(str(model or "").strip()), dict)
 
@@ -910,6 +914,11 @@ class LlamaCppRouter:
             return {"complete": True, "models": [], "errors": {}, "endpoint_status": {}, "endpoints": {}}
         if not isinstance(models, dict):
             return {"complete": False, "models": [], "errors": {"configuration": "invalid model map"}, "endpoint_status": {}, "endpoints": {}}
+        if self.settings.get("managed_with_ollama") is True:
+            logical = self.settings.get("managed_model_logical")
+            if not isinstance(logical, str) or logical not in models:
+                return {"complete": False, "models": [], "errors": {"configuration": "invalid managed model"}, "endpoint_status": {}, "endpoints": {}}
+            models = {logical: models[logical]}
 
         by_endpoint: dict[str, list[str]] = {}
         errors: dict[str, str] = {}
@@ -925,6 +934,13 @@ class LlamaCppRouter:
             endpoint_status_by_url[selected[1]] = "unknown"
 
         rows: list[dict[str, Any]] = []
+        backend = "llama.cpp-sycl"
+        if self.settings.get("managed_with_ollama") is True and self.managed_runtime is not None:
+            try:
+                device = str(self.managed_runtime.status().get("mode", ""))
+            except Exception:
+                device = ""
+            backend = "llama.cpp-cuda" if device.startswith("CUDA") else "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl"
         for url, configured_names in by_endpoint.items():
             if _stop_requested(should_stop) or (deadline is not None and time.monotonic() >= deadline):
                 for name in configured_names:
@@ -944,6 +960,12 @@ class LlamaCppRouter:
                         raise ValueError("llama.cpp model inventory omitted a usable load status")
                     if state in {"loaded", "loading"}:
                         logical_name = served_id
+                        if self.settings.get("managed_with_ollama") is True:
+                            for logical in configured_names:
+                                entry = models.get(logical, {})
+                                if isinstance(entry, dict) and str(entry.get("served_model") or logical).strip() == served_id:
+                                    logical_name = logical
+                                    break
                         for logical, recovery in self._active_recoveries.copy().items():
                             if recovery.get("served_model") == served_id and self._valid_recovery_entry(logical) is not None:
                                 logical_name = str(recovery.get("recovery_original_alias") or logical)
@@ -961,7 +983,7 @@ class LlamaCppRouter:
                             "gpu_fraction": 0.0,
                             "cpu_offload_fraction": 0.0,
                             "context_length": 0,
-                            "backend": "llama.cpp-sycl",
+                            "backend": backend,
                             "endpoint_url": url,
                         })
                 rows.extend(active_rows)
@@ -1136,6 +1158,10 @@ class LlamaCppRouter:
         ):
             if source in options:
                 result[target] = options[source]
+        if payload.get("think") is False:
+            # The pinned llama.cpp server uses OpenAI's reasoning_effort="none"
+            # to disable reasoning for templates that support it.
+            result["reasoning_effort"] = "none"
         if isinstance(payload.get("tools"), list):
             result["tools"] = payload["tools"]
         fmt = payload.get("format")

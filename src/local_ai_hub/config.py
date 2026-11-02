@@ -216,6 +216,13 @@ def validate_config(data: dict[str, Any]) -> None:
         mode = str(llama_cpp.get("mode", "auto")).strip().lower()
         if mode not in {"off", "auto", "on"}:
             raise ConfigError("llama_cpp.mode must be off, auto, or on")
+        backend = llama_cpp.get("backend", "auto")
+        if not isinstance(backend, str) or backend not in {"auto", "cuda"}:
+            raise ConfigError("llama_cpp.backend must be auto or cuda")
+        if "managed_model_sha256" in llama_cpp:
+            digest = llama_cpp["managed_model_sha256"]
+            if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ConfigError("llama_cpp.managed_model_sha256 must be a lowercase SHA-256 digest")
         _number(llama_cpp, "model_load_timeout_seconds", minimum=1, maximum=3600)
         _number(llama_cpp, "startup_timeout_seconds", minimum=1, maximum=3600)
         model_filename = str(llama_cpp.get("managed_model_filename", "hub-qwen-15.gguf")).strip()
@@ -224,6 +231,21 @@ def validate_config(data: dict[str, Any]) -> None:
         models = llama_cpp.get("models", {})
         if not isinstance(models, dict):
             raise ConfigError("llama_cpp.models must be a TOML table")
+        if "managed_model_logical" in llama_cpp:
+            logical = llama_cpp["managed_model_logical"]
+            if ("managed_model_sha256" not in llama_cpp or not isinstance(logical, str)
+                    or not logical or logical != logical.strip() or "vl" in logical.lower()
+                    or not isinstance(models.get(logical), dict)):
+                raise ConfigError("llama_cpp.managed_model_logical must select one configured text model with a managed model digest")
+        if "managed_with_ollama" in llama_cpp:
+            mixed = llama_cpp["managed_with_ollama"]
+            if not isinstance(mixed, bool):
+                raise ConfigError("llama_cpp.managed_with_ollama must be a boolean")
+            if mixed and (mode != "on" or backend != "cuda" or "managed_model_logical" not in llama_cpp
+                          or not isinstance(data.get("ollama"), dict) or data["ollama"].get("enabled") is not True):
+                raise ConfigError("llama_cpp.managed_with_ollama requires enabled Ollama, managed CUDA, and an explicit model")
+            if mixed and isinstance(data.get("smart_ollama"), dict) and bool(data["smart_ollama"].get("enabled", False)):
+                raise ConfigError("llama_cpp.managed_with_ollama does not support smart_ollama")
         for model, entry in models.items():
             if not isinstance(entry, dict):
                 raise ConfigError(f"llama_cpp.models.{model} must be a TOML table")

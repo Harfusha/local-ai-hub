@@ -349,13 +349,14 @@ def _persist_pending_contract_reconciliation_pinned(
             if _read_pending_reconciliation(target) == encoded:
                 return target
             raise RepoPlanConflictError("a different pending reconciliation already exists")
+        temp_name = f".{name}.{uuid.uuid4().hex}.tmp"
         if os.name != "nt":
             descriptor = _pending_fd(target)
             if descriptor is None:
                 raise ValueError("pending reconciliation directory is not pinned")
-            _atomic_write_posix(root, target, encoded, parent_fd=descriptor)
+            _atomic_write_posix(root, target, encoded, parent_fd=descriptor, temp_name=temp_name)
             return target
-        temporary = resolved_pending / f".{name}.{uuid.uuid4().hex}.tmp"
+        temporary = resolved_pending / temp_name
         created = False
         try:
             with temporary.open("xb") as stream:
@@ -892,13 +893,14 @@ def _reconcile_task_steering_pinned(
                     encoded = json.dumps(pending, sort_keys=True, indent=2).encode("utf-8")
                     if len(encoded) > MAX_PENDING_RECONCILIATION_BYTES:
                         raise ValueError("pending reconciliation record exceeds size limit")
+                    temp_name = f".{pending_path.name}.{uuid.uuid4().hex}.tmp"
                     if os.name != "nt":
                         descriptor = _pending_fd(pending_path)
                         if descriptor is None:
                             raise ValueError("pending reconciliation directory is not pinned")
-                        _atomic_write_posix(Path(canonical), pending_path, encoded, parent_fd=descriptor)
+                        _atomic_write_posix(Path(canonical), pending_path, encoded, parent_fd=descriptor, temp_name=temp_name)
                         return
-                    temporary = pending_path.parent / f".{pending_path.name}.{uuid.uuid4().hex}.tmp"
+                    temporary = pending_path.parent / temp_name
                     created = False
                     try:
                         with temporary.open("xb") as stream:

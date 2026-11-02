@@ -20,6 +20,30 @@ from local_ai_hub.doctor_support import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_mixed_inference_backend_reports_both_services_required():
+    online = doctor_support.inference_backend_online
+    selected = "ollama + llama.cpp (managed)"
+    assert online(selected, {"ollama_online": True}, {"online": True}) is True
+    assert online(selected, {"ollama_online": False}, {"online": True}) is False
+    assert online(selected, {"ollama_online": True}, {"online": False}) is False
+    assert online("ollama", {"ollama_online": True}, {"online": False}) is True
+    assert online("llama.cpp (managed)", {"ollama_online": False}, {"online": True}) is True
+
+
+def test_mixed_model_availability_respects_route_fallback_and_unknown_inventory():
+    available = doctor_support.mixed_model_available
+    base = {"logical_model": "candidate", "ollama_models": {"other"}, "llama_models": {"candidate"}, "fallback": False}
+    assert available("candidate", **base) is True
+    assert available("other", **base) is True
+    assert available("missing", **base) is False
+    assert available("missing", **{**base, "ollama_models": set()}) is None
+    assert available("candidate", **{**base, "llama_models": {"other"}}) is False
+    assert available("candidate", **{**base, "llama_models": set()}) is None
+    assert available("candidate", **{**base, "llama_models": set(), "ollama_models": {"candidate"}, "fallback": True}) is True
+    assert available("candidate", **{**base, "llama_models": set(), "ollama_models": {"candidate"}}) is None
+    assert available("candidate", **{**base, "llama_models": {"other"}, "ollama_models": set(), "fallback": True}) is None
+
+
 class _StatusUnavailableClient:
     def __init__(self):
         self.paths: list[str] = []
@@ -147,6 +171,22 @@ def test_doctor_text_report_shows_local_tool_presence_when_hub_is_offline():
     assert any("Serena executable" in line and "Not installed" in line for line in lines)
     assert not any("codegraph" in line.lower() for line in lines)
     assert any("Status unavailable" in line and "Hub is offline" in line for line in lines)
+
+
+def test_doctor_text_report_does_not_mark_unknown_mixed_models_as_available():
+    doctor_path = ROOT / "tools" / "doctor.py"
+    tree = ast.parse(doctor_path.read_text(encoding="utf-8"), filename=str(doctor_path))
+    names = {"format_doctor_report", "_optional_component_lines"}
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    namespace = {"Any": Any, "Path": Path, "__version__": "test", "optional_component_lines": optional_component_lines, "sys": sys}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(doctor_path), "exec"), namespace)
+    output = namespace["format_doctor_report"]({
+        "config": {"inference_backend": "ollama + llama.cpp (managed)"},
+        "runtime": {"configured_generation_models": ["candidate"], "unknown_generation_models": ["candidate"],
+                    "vision": {"enabled": True, "model": "vision", "installed": False, "status_known": False}},
+    })
+    assert "[??] Model availability unknown: candidate" in output
+    assert "[??] Vision:" in output
 
 
 def test_doctor_falls_back_to_runtime_model_inventory_when_status_is_empty():

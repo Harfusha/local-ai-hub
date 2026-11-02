@@ -282,12 +282,19 @@ class OllamaRuntime:
         self._managed_process: subprocess.Popen[Any] | None = None
         self.model_policy = ModelExecutionPolicy(config)
         self.llama_cpp_managed = LlamaCppManagedRuntime(config)
+        mixed_managed = (isinstance(config.get("llama_cpp"), dict)
+                         and config["llama_cpp"].get("managed_with_ollama") is True)
         self.llama_cpp = LlamaCppRouter(config, managed_runtime=(
-            self.llama_cpp_managed if llama_cpp_managed_selected(config) else None
+            self.llama_cpp_managed if llama_cpp_managed_selected(config) or mixed_managed else None
         ))
         self._meta_cache: dict[str, Any] = {}
         self._meta_cache_at: dict[str, float] = {}
         self._ensure_lock = threading.Lock()
+        self._mixed_provider_lock = threading.RLock()
+        self._mixed_fallback_guard: socket.socket | None = None
+        self._mixed_fallback_model: str | None = None
+        self._mixed_fallback_preparing = False
+        self._mixed_fallback_admitted = False
 
     def _is_embedding_model(self, model: str) -> bool:
         configured = str(self.config.get("models", {}).get("embedding", "") or "").strip()
@@ -296,6 +303,8 @@ class OllamaRuntime:
     def _llama_version_label(self) -> str:
         if llama_cpp_managed_selected(self.config):
             mode = str(self.llama_cpp_managed.status().get("mode", ""))
+            if mode.startswith("CUDA"):
+                return "llama.cpp CUDA"
             return "llama.cpp CPU" if mode == "none" else "llama.cpp SYCL" if mode else "llama.cpp"
         return "llama.cpp external"
 
@@ -494,11 +503,70 @@ class OllamaRuntime:
         return self._request_stream_tracked(endpoint, payload, on_chunk, timeout,
                                             on_thinking=on_thinking, should_stop=should_stop, deadline=deadline)
 
+    def _reserve_mixed_cuda_endpoint(self) -> socket.socket | None:
+        managed = self.llama_cpp_managed
+        guard: socket.socket | None = None
+        try:
+            if managed._managed_pid_alive() or managed.pid_path.exists():
+                return None
+            port, _ = managed._port_and_url()
+            guard = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if os.name == "nt":
+                guard.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            guard.bind(("127.0.0.1", port))
+            guard.listen(1)
+            if managed._managed_pid_alive() or managed.pid_path.exists():
+                return None
+            reserved = guard
+            guard = None
+            return reserved
+        except (OSError, ValueError, TypeError):
+            return None
+        finally:
+            if guard is not None:
+                guard.close()
+
+    def _release_mixed_fallback_guard(self, model: str) -> None:
+        with self._mixed_provider_lock:
+            if self._mixed_fallback_model == model and self._mixed_fallback_guard is not None:
+                self._mixed_fallback_guard.close()
+                self._mixed_fallback_guard = None
+                self._mixed_fallback_model = None
+                self._mixed_fallback_admitted = False
+
+    def _confirm_mixed_fallback_unloaded(self, model: str, *, should_stop: Any | None, deadline: float | None) -> bool:
+        limit = min(time.monotonic() + self.timeout, float(deadline)) if deadline is not None else time.monotonic() + self.timeout
+        acquired = False
+        try:
+            while not acquired:
+                if _stop_requested(should_stop):
+                    return False
+                remaining = limit - time.monotonic()
+                if remaining <= 0:
+                    return False
+                acquired = self._mixed_provider_lock.acquire(timeout=min(0.1, remaining))
+            if self._mixed_fallback_model != model or self._mixed_fallback_guard is None:
+                return True
+            snapshot = self.loaded_model_inventory(should_stop=should_stop, deadline=limit, force_refresh=True, include_llama=False)
+            if (not isinstance(snapshot, dict) or snapshot.get("complete") is not True
+                    or not isinstance(snapshot.get("models"), list)
+                    or any(not isinstance(row, dict) or row.get("name") == model for row in snapshot["models"])):
+                return False
+            if not self._mixed_fallback_preparing:
+                self._release_mixed_fallback_guard(model)
+            return True
+        except Exception:
+            return False
+        finally:
+            if acquired:
+                self._mixed_provider_lock.release()
+
     def _request_stream_tracked(
         self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any,
         timeout: float | None = None, *, on_thinking: Any | None = None,
         should_stop: Any | None = None, deadline: float | None = None,
         single_attempt: bool = False,
+        force_ollama: bool = False,
     ) -> dict[str, Any]:
         from .opencode_boundary import generation_denial
         denied = generation_denial()
@@ -522,13 +590,43 @@ class OllamaRuntime:
         else:
             forward_thinking = None
 
+        def reserve_cuda_endpoint() -> bool:
+            model = payload.get("model") if isinstance(payload, dict) else None
+            # Only model preparation may reserve this port: it performs fresh
+            # residency checks and VRAM admission before Ollama can load a runner.
+            return bool(self._mixed_fallback_model == model and self._mixed_fallback_guard is not None
+                        and self._mixed_fallback_admitted)
+
+        mixed_lock = (self._mixed_provider_lock if isinstance(self.config.get("llama_cpp"), dict)
+                      and self.config["llama_cpp"].get("managed_with_ollama") is True else None)
+        acquired = False
         try:
+            if mixed_lock is not None:
+                limit = time.monotonic() + max(0.05, float(timeout if timeout is not None else self.timeout))
+                if deadline is not None:
+                    limit = min(limit, float(deadline))
+                while not acquired:
+                    if _stop_requested(should_stop):
+                        return {"success": False, "preempted": True, "error": "request cancelled during provider admission"}
+                    remaining = limit - time.monotonic()
+                    if remaining <= 0:
+                        return {"error": "provider admission timed out", "timed_out": True}
+                    acquired = mixed_lock.acquire(timeout=min(0.1, remaining))
+                deadline = limit
             result = self._request_stream_impl(endpoint, payload, forward, timeout,
                                                on_thinking=forward_thinking, should_stop=should_stop, deadline=deadline,
-                                               single_attempt=single_attempt)
+                                               single_attempt=single_attempt, force_ollama=force_ollama,
+                                               fallback_guard=reserve_cuda_endpoint)
+            if (mixed_lock is not None and not force_ollama and isinstance(payload, dict)
+                    and payload.get("model") == self.config["llama_cpp"].get("managed_model_logical")
+                    and isinstance(result, dict) and "error" not in result and "_lah_provider" not in result):
+                result = {**result, "_lah_provider": "ollama", "fallback_used": True}
         except Exception as exc:
             return {"success": False, "error": f"{type(exc).__name__}: {exc}",
                     "_lah_partial_response": emitted, "terminal": True, "retryable": False}
+        finally:
+            if acquired and mixed_lock is not None:
+                mixed_lock.release()
         if emitted and "error" in result:
             return {**result, "_lah_partial_response": True}
         return result
@@ -544,6 +642,8 @@ class OllamaRuntime:
         should_stop: Any | None = None,
         deadline: float | None = None,
         single_attempt: bool = False,
+        force_ollama: bool = False,
+        fallback_guard: Any | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
@@ -557,11 +657,52 @@ class OllamaRuntime:
         if _stop_requested(should_stop):
             return {"success": False, "preempted": True, "error": "request cancelled before start", "_lah_provider": "ollama"}
         llama_router = getattr(self, "llama_cpp", None)
-        llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
+        llama_selected = not force_ollama and not bool(self.config.get("ollama", {}).get("enabled", False))
+        llama_config = self.config.get("llama_cpp", {})
+        mixed_selected = (
+            not force_ollama and not llama_selected and isinstance(llama_config, dict)
+            and llama_config.get("managed_with_ollama") is True
+            and llama_config.get("mode") == "on" and llama_config.get("backend") == "cuda"
+            and isinstance(payload, dict) and payload.get("model") == llama_config.get("managed_model_logical")
+            and isinstance(llama_config.get("managed_model_logical"), str)
+            and bool(llama_config.get("managed_model_logical"))
+        )
+        llama_emitted = False
+
+        def llama_chunk(value: Any) -> None:
+            nonlocal llama_emitted
+            llama_emitted = llama_emitted or bool(value)
+            if callable(on_chunk):
+                on_chunk(value)
+
+        def llama_thinking(value: Any) -> None:
+            nonlocal llama_emitted
+            llama_emitted = llama_emitted or bool(value)
+            if callable(on_thinking):
+                on_thinking(value)
+
+        mixed_ready = False
+        if mixed_selected:
+            try:
+                snapshot = self.loaded_model_inventory(should_stop=should_stop, deadline=request_deadline, force_refresh=True)
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, dict) and snapshot.get("complete") is True and isinstance(snapshot.get("models"), list):
+                configured = llama_config.get("models", {}).get(payload.get("model"), {})
+                configured_url = str(configured.get("url", "")).rstrip("/") if isinstance(configured, dict) else ""
+                rows = snapshot["models"]
+                expected = lambda row: (isinstance(row, dict) and row.get("backend") == "llama.cpp-cuda"
+                                        and row.get("name") == payload.get("model")
+                                        and str(row.get("endpoint_url", "")).rstrip("/") == configured_url
+                                        and row.get("status") == "loaded")
+                if any(not expected(row) for row in rows) and not all(isinstance(row, dict) and row.get("backend") == "ollama" for row in rows):
+                    return {"error": "mixed-provider model residency is not exclusive", "_lah_provider": "llama.cpp"}
+                mixed_ready = len(rows) == 1 and expected(rows[0])
         llama_result = llama_router.request_stream(
-            endpoint, payload, on_chunk, timeout=remaining, on_thinking=on_thinking,
+            endpoint, payload, llama_chunk if callable(on_chunk) else None, timeout=remaining,
+            on_thinking=llama_thinking if callable(on_thinking) else None,
             should_stop=should_stop, deadline=request_deadline,
-        ) if llama_selected and llama_router is not None else None
+        ) if (llama_selected or mixed_ready) and llama_router is not None else None
         if not (isinstance(llama_result, dict) and (llama_result.get("preempted") or llama_result.get("timed_out"))):
             provider = "llama.cpp" if llama_selected else "ollama"
             if _stop_requested(should_stop):
@@ -570,11 +711,17 @@ class OllamaRuntime:
                 return {"error": "request deadline expired before backend fallback", "timed_out": True, "_lah_provider": provider}
         if llama_result is not None:
             if "_lah_backend_unavailable" not in llama_result:
-                if llama_cpp_managed_selected(self.config):
+                if llama_cpp_managed_selected(self.config) or mixed_selected:
                     device = str(self.llama_cpp_managed.status().get("mode", ""))
-                    llama_result["_lah_provider"] = "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl" if device else "llama.cpp"
+                    llama_result["_lah_provider"] = "llama.cpp-cuda" if device.startswith("CUDA") else "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl" if device else "llama.cpp"
                 return llama_result
             backend_fallback = str(llama_result.get("_lah_backend_unavailable", "SYCL unavailable"))
+            if mixed_selected and (llama_emitted or llama_result.get("_lah_partial_response")):
+                return {**llama_result, "error": llama_result.get("error", backend_fallback), "_lah_partial_response": True}
+            if mixed_selected and any(llama_result.get(key) for key in ("timed_out", "preempted", "cancelled", "outcome_unknown")):
+                return llama_result
+            if mixed_selected and llama_config.get("fallback_to_ollama") is not True:
+                return {"error": f"llama.cpp unavailable: {backend_fallback}", "_lah_provider": "llama.cpp"}
             if llama_selected:
                 if _stop_requested(should_stop):
                     return {"success": False, "preempted": True, "error": "request cancelled while llama.cpp was unavailable", "_lah_provider": "llama.cpp"}
@@ -583,6 +730,8 @@ class OllamaRuntime:
                 return {"error": f"llama.cpp unavailable: {backend_fallback}", "_lah_provider": "llama.cpp"}
         else:
             backend_fallback = ""
+            if mixed_selected and llama_config.get("fallback_to_ollama") is not True:
+                return {"error": "Selected llama.cpp route is unavailable for this model", "_lah_provider": "llama.cpp"}
             if llama_selected:
                 if _stop_requested(should_stop):
                     return {"success": False, "preempted": True, "error": "request cancelled while llama.cpp route was unavailable", "_lah_provider": "llama.cpp"}
@@ -593,6 +742,25 @@ class OllamaRuntime:
             return {"success": False, "preempted": True, "error": "request cancelled before Ollama backend", "_lah_provider": "ollama"}
         if time.monotonic() >= request_deadline:
             return {"error": "request deadline expired before Ollama backend", "timed_out": True, "_lah_provider": "ollama"}
+        if mixed_selected:
+            if not callable(fallback_guard) or not fallback_guard():
+                return {"error": "CUDA endpoint state is not safely reserved; Ollama fallback blocked", "_lah_provider": "llama.cpp"}
+            try:
+                ollama_snapshot = self.loaded_model_inventory(should_stop=should_stop, deadline=request_deadline,
+                                                              force_refresh=True, include_llama=False)
+            except Exception:
+                ollama_snapshot = None
+            rows = ollama_snapshot.get("models") if isinstance(ollama_snapshot, dict) else None
+            if (not isinstance(ollama_snapshot, dict) or ollama_snapshot.get("complete") is not True
+                    or not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+                    or rows[0].get("backend") != "ollama" or rows[0].get("name") != payload.get("model")):
+                return {"success": False, "error": "Ollama fallback residency is not verified; prepare the model again",
+                        "error_code": "model_preparation_required", "operation_not_started": True, "_lah_provider": "ollama"}
+            context = rows[0].get("context_length")
+            if (not isinstance(context, int) or isinstance(context, bool)
+                    or context < self.model_policy.profile(str(payload["model"])).num_ctx):
+                return {"success": False, "error": "Ollama fallback context is not verified; prepare the model again",
+                        "error_code": "model_preparation_required", "operation_not_started": True, "_lah_provider": "ollama"}
         clean = dict(_normalise_keep_alive(payload) or {})
         clean["stream"] = True
         body = json_dumps(clean).encode("utf-8")
@@ -1716,7 +1884,9 @@ class OllamaRuntime:
         if not bool(self.config.get("ollama", {}).get("enabled", False)):
             return self.llama_cpp.is_online()
         llama = self.config.get("llama_cpp", {})
-        if str(llama.get("mode", "auto")).strip().lower() != "off" and not bool(llama.get("fallback_to_ollama", True)):
+        if (str(llama.get("mode", "auto")).strip().lower() != "off"
+                and llama.get("managed_with_ollama") is not True
+                and not bool(llama.get("fallback_to_ollama", True))):
             return False
         # An already-running endpoint is borrowed. PID/name/port discovery
         # never grants permission to stop it or apply a different profile.
@@ -2018,6 +2188,73 @@ class OllamaRuntime:
         self._meta_cache.pop("loaded_details", None)
         self._meta_cache_at.pop("loaded_details", None)
 
+    def _prepare_ollama_fallback(
+        self, model: str, *, unload_others: bool, post_unload_admission: Any | None,
+        should_stop: Any, deadline: float,
+    ) -> list[str]:
+        def check() -> None:
+            if should_stop():
+                raise ModelPreparationCancelled("model preparation cancelled")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("model preparation deadline expired")
+
+        check()
+        if self._is_embedding_model(model) or not self.ensure_running():
+            raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_unavailable"})
+        snapshot = self.loaded_model_inventory(should_stop=should_stop, deadline=deadline, force_refresh=True, include_llama=False)
+        if not isinstance(snapshot, dict) or snapshot.get("complete") is not True or not isinstance(snapshot.get("models"), list):
+            raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_inventory_incomplete"})
+        profile = self.model_policy.profile(model)
+        evicted: list[str] = []
+        keep_current = False
+        for row in snapshot["models"]:
+            check()
+            if not isinstance(row, dict) or row.get("backend") != "ollama":
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_inventory_invalid"}, evicted)
+            name = str(row.get("name") or row.get("model") or "")
+            if not name:
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_inventory_invalid"}, evicted)
+            if name == model and int(row.get("context_length", 0) or 0) >= profile.num_ctx:
+                keep_current = True
+                continue
+            if name != model and not unload_others:
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_other_model_loaded"}, evicted)
+            if not self.unload_inventory_model(row, should_stop=should_stop, deadline=deadline):
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_unload_unconfirmed"}, evicted)
+            evicted.append(name)
+        if evicted:
+            check()
+            verified = self.loaded_model_inventory(should_stop=should_stop, deadline=deadline, force_refresh=True, include_llama=False)
+            if (not isinstance(verified, dict) or verified.get("complete") is not True
+                    or not isinstance(verified.get("models"), list)
+                    or any(not isinstance(row, dict) or row.get("name") != model or row.get("name") in evicted
+                           for row in verified["models"])):
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_unload_unconfirmed"}, evicted)
+        if keep_current:
+            return evicted
+        if post_unload_admission is not None:
+            check()
+            try:
+                admission = post_unload_admission()
+            except Exception as exc:
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "post_unload_admission_failed", "failure_type": type(exc).__name__}, evicted) from exc
+            if not isinstance(admission, dict) or admission.get("state") != "admitted":
+                rejected = dict(admission) if isinstance(admission, dict) else {}
+                rejected.update({"state": "rejected", "reason": rejected.get("reason", "post_unload_admission_rejected")})
+                raise ModelPreparationAdmissionRejected(rejected, evicted)
+        check()
+        payload = {"model": model, "prompt": "", "stream": False,
+                   "keep_alive": self.config.get("ollama", {}).get("keep_alive", "24h"),
+                   "options": {"num_ctx": profile.num_ctx}}
+        result = self._request_stream_tracked("/api/generate", payload, None,
+            timeout=max(0.05, min(self.timeout, deadline - time.monotonic())),
+            should_stop=should_stop, deadline=deadline, force_ollama=True)
+        check()
+        if not isinstance(result, dict) or "error" in result or result.get("preempted"):
+            raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "ollama_fallback_load_failed"}, evicted)
+        self._invalidate_loaded_cache()
+        return evicted
+
     def prepare_model(
         self,
         model: str,
@@ -2033,6 +2270,32 @@ class OllamaRuntime:
         the method in the runtime rather than duplicating load/unload/context logic in
         scheduler/background callers so all adapters share one contract.
         """
+        mixed = isinstance(self.config.get("llama_cpp"), dict) and self.config["llama_cpp"].get("managed_with_ollama") is True
+        if mixed:
+            limit = time.monotonic() + max(0.05, float(self.config["llama_cpp"].get("model_load_timeout_seconds", 90)))
+            if deadline is not None:
+                limit = min(limit, float(deadline))
+            acquired = False
+            try:
+                while not acquired:
+                    if _stop_requested(should_stop):
+                        raise ModelPreparationCancelled("model preparation cancelled during provider admission")
+                    remaining = limit - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("model preparation deadline expired during provider admission")
+                    acquired = self._mixed_provider_lock.acquire(timeout=min(0.1, remaining))
+                return self._prepare_model_impl(model, unload_others=unload_others, post_unload_admission=post_unload_admission,
+                                                should_stop=should_stop, deadline=limit)
+            finally:
+                if acquired:
+                    self._mixed_provider_lock.release()
+        return self._prepare_model_impl(model, unload_others=unload_others, post_unload_admission=post_unload_admission,
+                                        should_stop=should_stop, deadline=deadline)
+
+    def _prepare_model_impl(
+        self, model: str, *, unload_others: bool, post_unload_admission: Any | None,
+        should_stop: Any | None, deadline: float | None,
+    ) -> list[str]:
         model = str(model or "").strip()
         if not model:
             raise ValueError("model is required")
@@ -2052,6 +2315,100 @@ class OllamaRuntime:
                 raise TimeoutError("model preparation deadline expired")
 
         check_active()
+        llama_options = self.config.get("llama_cpp", {})
+        mixed_target = (isinstance(llama_options, dict) and llama_options.get("managed_with_ollama") is True
+                        and model == llama_options.get("managed_model_logical"))
+        if mixed_target:
+            if not callable(post_unload_admission):
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_vram_admission_required"})
+            selected = self.llama_cpp._entry(model)
+            if selected is None:
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_route_unavailable"})
+            managed_status = self.llama_cpp_managed.status()
+            if (isinstance(managed_status, dict) and managed_status.get("online") is True
+                    and not str(managed_status.get("mode", "")).startswith("CUDA")):
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_device_unavailable"})
+
+            def fallback_to_ollama(already_evicted: list[str]) -> list[str] | None:
+                if llama_options.get("fallback_to_ollama") is not True:
+                    return None
+                reused = self._mixed_fallback_model == model and self._mixed_fallback_guard is not None
+                guard = self._mixed_fallback_guard if reused else self._reserve_mixed_cuda_endpoint()
+                if guard is None:
+                    return None
+                if not reused:
+                    # Retain ownership even on an uncertain load outcome. Ollama
+                    # can remain resident after a timeout or transport failure.
+                    self._mixed_fallback_guard = guard
+                    self._mixed_fallback_model = model
+                self._mixed_fallback_admitted = False
+                self._mixed_fallback_preparing = True
+                try:
+                    prepared = self._prepare_ollama_fallback(model, unload_others=unload_others,
+                        post_unload_admission=post_unload_admission, should_stop=stopped, deadline=prepare_deadline)
+                    self._mixed_fallback_admitted = True
+                    return already_evicted + prepared
+                finally:
+                    self._mixed_fallback_preparing = False
+
+            snapshot = self.loaded_model_inventory(should_stop=stopped, deadline=prepare_deadline, force_refresh=True)
+            if not isinstance(snapshot, dict) or snapshot.get("complete") is not True or not isinstance(snapshot.get("models"), list):
+                fallback = fallback_to_ollama([])
+                if fallback is not None:
+                    return fallback
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_inventory_incomplete"})
+            evicted: list[str] = []
+
+            def is_selected_cuda(row: Any) -> bool:
+                return (isinstance(row, dict) and row.get("backend") == "llama.cpp-cuda"
+                        and row.get("name") == model and row.get("endpoint_url") == selected[1])
+
+            selected_loaded = False
+            for row in snapshot["models"]:
+                check_active()
+                if is_selected_cuda(row):
+                    if row.get("status") != "loaded":
+                        raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_residency_unverified"}, evicted)
+                    selected_loaded = True
+                    continue
+                if not isinstance(row, dict) or not unload_others:
+                    raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_other_model_loaded"}, evicted)
+                if not self.unload_inventory_model(row, should_stop=stopped, deadline=prepare_deadline):
+                    raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_unload_unconfirmed"}, evicted)
+                evicted.append(str(row.get("name") or row.get("model") or ""))
+            if evicted:
+                check_active()
+                verified = self.loaded_model_inventory(should_stop=stopped, deadline=prepare_deadline, force_refresh=True)
+                if (not isinstance(verified, dict) or verified.get("complete") is not True or not isinstance(verified.get("models"), list)
+                        or any(not is_selected_cuda(row) or row.get("status") != "loaded" for row in verified["models"])):
+                    raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_unload_unconfirmed"}, evicted)
+                selected_loaded = any(is_selected_cuda(row) for row in verified["models"])
+            if post_unload_admission is not None and not selected_loaded:
+                check_active()
+                try:
+                    admission = post_unload_admission()
+                except Exception as exc:
+                    raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "post_unload_admission_failed",
+                        "failure_type": type(exc).__name__}, evicted) from exc
+                if not isinstance(admission, dict) or admission.get("state") != "admitted":
+                    rejected = dict(admission) if isinstance(admission, dict) else {}
+                    rejected.update({"state": "rejected", "reason": rejected.get("reason", "post_unload_admission_rejected")})
+                    raise ModelPreparationAdmissionRejected(rejected, evicted)
+            check_active()
+            if self.llama_cpp.ensure_model(model, timeout=max(0.05, prepare_deadline - time.monotonic()),
+                                           should_stop=stopped, deadline=prepare_deadline):
+                check_active()
+                loaded = self.loaded_model_inventory(should_stop=stopped, deadline=prepare_deadline, force_refresh=True)
+                if (isinstance(loaded, dict) and loaded.get("complete") is True
+                        and isinstance(loaded.get("models"), list) and len(loaded["models"]) == 1
+                        and is_selected_cuda(loaded["models"][0]) and loaded["models"][0].get("status") == "loaded"):
+                    return evicted
+                raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_residency_unverified"}, evicted)
+            check_active()
+            fallback = fallback_to_ollama(evicted)
+            if fallback is not None:
+                return fallback
+            raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_load_unavailable"}, evicted)
         # llama.cpp loads the configured GGUF in its local server. Avoid also
         # loading that same model into Ollama when the SYCL endpoint is ready.
         llama_enabled = str(self.config.get("llama_cpp", {}).get("mode", "auto")).strip().lower() != "off"
@@ -2151,17 +2508,29 @@ class OllamaRuntime:
     def supports_post_unload_admission(self, model: str) -> bool:
         """Whether this model uses Ollama's unload-then-load preparation path."""
         try:
+            llama = self.config.get("llama_cpp", {})
+            if isinstance(llama, dict) and llama.get("managed_with_ollama") is True and model == llama.get("managed_model_logical"):
+                return True
             if str(self.config.get("llama_cpp", {}).get("mode", "auto")).strip().lower() == "off":
                 return bool(self.config.get("ollama", {}).get("enabled", False))
             return not bool(self.llama_cpp.supports_model(model))
         except Exception:
             return False
 
+    def requires_post_unload_admission(self, model: str) -> bool:
+        llama = self.config.get("llama_cpp", {})
+        return bool(isinstance(llama, dict) and llama.get("managed_with_ollama") is True
+                    and model == llama.get("managed_model_logical"))
+
     def unload(self, model: str) -> bool:
         """Scheduler-facing alias with cache invalidation."""
         return self.unload_model(model)
 
     def load_model(self, model: str, *, keep_alive: str | None = None) -> bool:
+        # This legacy API has no post-unload VRAM admission callback. Mixed
+        # models must enter through prepare_model and its scheduler admission.
+        if self.requires_post_unload_admission(model):
+            return False
         if self.llama_cpp.supports_model(model):
             if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 600))):
                 return True
@@ -2187,6 +2556,9 @@ class OllamaRuntime:
         should_stop: Any | None = None,
         deadline: float | None = None,
     ) -> bool:
+        if self._mixed_fallback_model == model and self._mixed_fallback_guard is not None:
+            return self.unload_inventory_model({"name": model, "backend": "ollama"},
+                                               should_stop=should_stop, deadline=deadline)
         if self.llama_cpp.supports_model(model) and (
             self.llama_cpp.ready_for_model(model)
             if should_stop is None and deadline is None
@@ -2290,7 +2662,7 @@ class OllamaRuntime:
                     endpoint_id = str(row.get("endpoint_url", "")).strip()
                     if not name or not endpoint_id or endpoint_status.get(endpoint_id) != "complete":
                         raise ValueError(f"llama.cpp model row {index} has incomplete identity")
-                    endpoint_rows.append({**row, "name": name, "model": str(row.get("model") or name), "backend": "llama.cpp-sycl", "endpoint_id": endpoint_id})
+                    endpoint_rows.append({**row, "name": name, "model": str(row.get("model") or name), "backend": str(row.get("backend") or "llama.cpp-sycl"), "endpoint_id": endpoint_id})
                 rows.extend(endpoint_rows)
             except Exception as exc:
                 errors["llama.cpp"] = "cancelled" if _stop_requested(should_stop) else str(exc) or type(exc).__name__
@@ -2324,21 +2696,27 @@ class OllamaRuntime:
             return False
         backend = str(row.get("backend", ""))
         if backend == "ollama":
-            response = self.request(
-                "/api/generate", {"model": name, "prompt": "", "keep_alive": 0},
+            if not bool(self.config.get("ollama", {}).get("enabled", False)):
+                return False
+            response = self._request_stream_tracked(
+                "/api/generate", {"model": name, "prompt": "", "keep_alive": 0}, None,
                 timeout=None if deadline is None else max(0.0, deadline - time.monotonic()),
-                should_stop=should_stop, deadline=deadline,
+                should_stop=should_stop, deadline=deadline, force_ollama=True,
             )
             ok = isinstance(response, dict) and "error" not in response and response.get("done_reason") == "unload"
             if ok:
                 self._invalidate_loaded_cache()
+                ok = self._confirm_mixed_fallback_unloaded(name, should_stop=should_stop, deadline=deadline)
             return ok
         endpoint_url = str(row.get("endpoint_id") or row.get("endpoint_url") or "").strip()
-        if backend == "llama.cpp-sycl" and endpoint_url:
+        if backend in {"llama.cpp-sycl", "llama.cpp-cuda", "llama.cpp-cpu"} and endpoint_url:
             served = str(row.get("served_model") or name).strip()
             if served != name:
                 resolve = getattr(self.llama_cpp, "recovery_alias_for_model", None)
-                if not callable(resolve) or resolve(name) != served:
+                configured = self.llama_cpp._entry(name)
+                configured_match = (configured is not None and configured[1] == endpoint_url
+                                    and str(configured[0].get("served_model") or name).strip() == served)
+                if not configured_match and (not callable(resolve) or resolve(name) != served):
                     return False
             return bool(self.llama_cpp.unload_model(served, endpoint_url=endpoint_url, should_stop=should_stop, deadline=deadline))
         return False

@@ -339,7 +339,7 @@ class IdleGPUWorker:
         schema = task.get("schema")
         fixed_input_tokens = estimate_tokens(system)
         if schema is not None:
-            fixed_input_tokens += estimate_tokens(json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+            fixed_input_tokens += estimate_tokens(json.dumps(schema, ensure_ascii=False))
         max_tokens = max(32, int(task.get("max_tokens", 320)))
         profile_hint = policy.profile(
             self.model,
@@ -369,7 +369,7 @@ class IdleGPUWorker:
             background=True,
             preserve_explicit_think=False,
         )
-        if prepared.estimated_tokens + fixed_input_tokens > profile.prompt_budget_tokens:
+        if prepared.estimated_tokens + fixed_input_tokens > getattr(profile, 'prompt_budget_tokens', getattr(profile_hint, 'prompt_budget_tokens', 8192)):
             return {"success": False, "error": "selected context cannot fit the prepared prompt and system input"}
         # Executor jobs can sit queued across a gaming/maintenance transition.
         try:

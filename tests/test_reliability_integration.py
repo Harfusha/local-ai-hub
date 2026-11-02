@@ -717,7 +717,8 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
-    policy = setup.GLOBAL_POLICY
+    cfg = {"ollama": {"enabled": True}}
+    policy = setup.build_global_policy(cfg)
     expected = (
         "Trigger map:",
         "repository facts/files/symbols: `local_ai_repo`",
@@ -734,7 +735,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
     for phrase in expected:
         assert phrase in policy
 
-    skill = generate_skill_markdown({})
+    skill = generate_skill_markdown(cfg)
     for phrase in expected:
         assert phrase in skill
 
@@ -774,14 +775,15 @@ def test_agent_policy_has_default_delegation_triggers():
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
+    cfg = {"ollama": {"enabled": True}}
     expected = (
         "Direct ownership is the default.",
         "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression.",
         "Use native Codex subagents only for independent bounded implementation or an explicit user request.",
         "Do not duplicate tasks or chats.",
     )
-    policy = setup.GLOBAL_POLICY
-    skill = generate_skill_markdown({})
+    policy = setup.build_global_policy(cfg)
+    skill = generate_skill_markdown(cfg)
     for phrase in expected:
         assert phrase in policy
         assert phrase in skill

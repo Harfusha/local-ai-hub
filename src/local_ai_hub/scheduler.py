@@ -317,6 +317,11 @@ class AffinityScheduler:
                 name = str(row.get("name", "")) if isinstance(row, dict) else ""
                 ctx = int(row.get("context_length", 0) or 0) if isinstance(row, dict) else 0
                 if name and ctx >= self.model_policy.profile(name).num_ctx:
+                    requires_admission = getattr(runtime, "requires_post_unload_admission", None)
+                    if callable(requires_admission) and requires_admission(name):
+                        # Mixed backends must establish provider ownership and the
+                        # port guard even when a matching runner already exists.
+                        continue
                     self._active_model = name
                     self._active_since = time.monotonic()
                     break
@@ -1371,8 +1376,6 @@ class AffinityScheduler:
                             job.done.set()
                         self._switching = False
                 with self._cond:
-                    if not switched and not self._switch_not_started:
-                        self._internal_gpu_uncertain = True
                     self._gpu_prepare_in_progress = False
                     self._cond.notify_all()
                 continue
@@ -1552,11 +1555,16 @@ class AffinityScheduler:
                 )
                 prepare_kwargs: dict[str, Any] = {"unload_others": self.unload_others}
                 active_model = str(getattr(self, "_active_model", None) or "").strip()
+                required_check = getattr(self.runtime, "requires_post_unload_admission", None)
+                requires_admission = bool(required_check(target)) if callable(required_check) else False
+                supports_admission = self._supports_post_unload_admission(target)
+                if requires_admission and not supports_admission:
+                    raise RuntimeError("required post-unload VRAM admission is unavailable")
                 if (
-                    bool(getattr(self, "unload_others", False))
-                    and active_model
-                    and active_model.casefold() != target.strip().casefold()
-                    and self._supports_post_unload_admission(target)
+                    supports_admission and (requires_admission or (
+                        bool(getattr(self, "unload_others", False)) and active_model
+                        and active_model.casefold() != target.strip().casefold()
+                    ))
                 ):
                     def check_post_unload_admission() -> dict[str, Any]:
                         nonlocal post_unload_admission
@@ -1763,6 +1771,14 @@ class AffinityScheduler:
                 if execute_started and (uncertain or (failed and result.get("operation_not_started") is not True
                                                        and not completed_at_limit)):
                     self._internal_gpu_uncertain = True
+                reprepare = (not uncertain and result.get("success") is False
+                             and result.get("operation_not_started") is True
+                             and result.get("error_code") == "model_preparation_required")
+                if reprepare and getattr(self, "_active_model", None) == job.model:
+                    self._active_model = None
+                    self._active_since = 0.0
+                    self._active_dispatched = 0
+                    self._idle_owned_model = None
                 self._inflight -= 1
                 self._last_model_activity = job.finished_at
                 if getattr(self, "_active_model", None) == job.model:

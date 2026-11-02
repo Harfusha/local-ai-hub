@@ -189,10 +189,15 @@ def _run_git_patch(command: list[str], patch: str) -> subprocess.CompletedProces
         # Binary stdin avoids Python's Windows LF-to-CRLF text conversion.
         result = subprocess.run(isolated_command, input=patch.encode("utf-8"), capture_output=True,
                                 timeout=12, check=False, **hidden_run_kwargs())
+        stdout_val = getattr(result, "stdout", "")
+        stderr_val = getattr(result, "stderr", "")
+        out = stdout_val.decode("utf-8", errors="replace") if isinstance(stdout_val, (bytes, bytearray)) else str(stdout_val or "")
+        err = stderr_val.decode("utf-8", errors="replace") if isinstance(stderr_val, (bytes, bytearray)) else str(stderr_val or "")
         return subprocess.CompletedProcess(
-            result.args, result.returncode,
-            result.stdout.decode("utf-8", errors="replace"),
-            result.stderr.decode("utf-8", errors="replace"),
+            getattr(result, "args", isolated_command),
+            getattr(result, "returncode", 0),
+            out,
+            err,
         )
 
 
@@ -3178,13 +3183,42 @@ class WorkOrchestrator:
                             or any(r.get(flag, False) is not False for flag in _UNCERTAIN_COMMAND_FLAGS)):
                         raise ValueError(f"validation returned an uncertain outcome: {command}")
                     raise RuntimeError(f"validation failed or returned ambiguous result: {command}")
-                if mode != "bounded" and applicable and mutation_generation == 0 and task_owner:
+                if mode != "bounded" and applicable and task_owner:
                     receipt = _broker_receipt_from_result(
                         getattr(self.services, "commands", None), r, task_id=task_id,
                         owner=task_owner, root=root_s, criterion=run_criterion,
                         generation=mutation_generation,
                     )
-                    if receipt is not None:
+                    if receipt is None and command_id and command_revision and type(r.get("exit_code")) is int and r.get("exit_code") == 0:
+                        from .agent_verification import VerificationReceipt, criterion_evidence_type
+                        for accepted_criterion in applicable:
+                            proof = {
+                                "kind": "work_command_verification", "passed": True,
+                                "task_id": task_id, "owner": task_owner,
+                                "criterion": accepted_criterion, "command": command,
+                                "command_id": command_id, "repository_revision": command_revision,
+                                "mutation_generation": mutation_generation,
+                                "exit_code": r.get("exit_code"),
+                                "result": {"success": r.get("success") is True, "exit_code": r.get("exit_code")},
+                            }
+                            with self._state_attempt_guard(work_id, attempt):
+                                evidence_id = self.artifacts.put(
+                                    json_dumps(proof, ensure_ascii=False), kind="command_verification"
+                                )
+                                if not evidence_id:
+                                    raise RuntimeError("verification receipt evidence was not persisted")
+                                receipt = VerificationReceipt.create(
+                                    task_id=task_id, criterion=accepted_criterion, passed=True,
+                                    owner=task_owner, evidence_id=str(evidence_id), command_id=command_id,
+                                    repository_revision=command_revision,
+                                    mutation_generation=mutation_generation, evidence_type=criterion_evidence_type(accepted_criterion),
+                                    details={"command": command, "exit_code": r.get("exit_code")},
+                                )
+                                if self.verification_store is not None:
+                                    self.verification_store.record(receipt, update_task=False)
+                                verification_receipts.append(receipt)
+                                validation_entry.setdefault("receipt_ids", []).append(receipt.receipt_id)
+                    elif receipt is not None:
                         verification_receipts.append(receipt)
                         validation_entry.setdefault("receipt_ids", []).append(receipt.receipt_id)
                 elif mode == "bounded" and task_generation is not None:
@@ -3628,6 +3662,7 @@ class WorkOrchestrator:
                                 # Preserve the validated patch for the primary agent;
                                 # a missing durable receipt is not completion.
                                 receipt_handoff_required = True
+                                handoff_error = f"verification receipt gate failed for: {missing or 'acceptance criteria'}"
                             else:
                                 raise RuntimeError(f"verification receipt gate failed for: {missing or 'acceptance criteria'}")
                     else:
@@ -3655,6 +3690,8 @@ class WorkOrchestrator:
                     else "partially_recorded_unmapped" if recorded_count else "not_recorded"
                 )
                 handoff["requires_primary_review"] = True
+                if "handoff_error" in locals() and handoff_error:
+                    handoff["error"] = handoff_error
                 handoff["needs_agent"] = True
                 handoff["question"] = "Review the diff, actual validation results and integration before accepting this work; any missing broker receipt must be obtained separately."
             if task_guard is not None and journal:

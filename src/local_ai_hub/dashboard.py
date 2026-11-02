@@ -435,12 +435,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <details id="controlMenu" class="control-menu">
       <summary>Controls</summary>
       <div class="control-popover">
-        <div class="tiny muted">API authentication</div>
-        <label class="tiny" for="dashboardApiToken">API token</label>
-        <input id="dashboardApiToken" type="password" aria-label="API token" autocomplete="off" spellcheck="false" placeholder="Token for this page only">
-        <button class="btn" id="dashboardAuthSet">Use token</button>
-        <button class="btn" id="dashboardAuthClear">Forget token</button>
-        <span class="tiny control-notice" id="dashboardAuthStatus" role="status" aria-live="polite">Token not set. Stored only in this page's memory.</span>
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
         <span class="tiny control-notice">Capture request details for troubleshooting. Off by default.</span>
@@ -1379,20 +1373,10 @@ function scopeAgentOsRequest(path,options={}){
   }
   return {path,options};
 }
-let dashboardApiToken='';
-function dashboardAuthenticatedHeaders(path,headers,token,baseUrl,secureContext){
-  const h=new Headers(headers||{}),target=new URL(path,baseUrl),base=new URL(baseUrl);
-  if(token&&secureContext&&target.origin===base.origin&&target.pathname.startsWith('/api/')&&!h.has('Authorization')){
-    h.set('Authorization','Bearer '+token);
-  }
-  return h;
-}
 async function apiFetch(path,opts={}){
   const scoped=scopeAgentOsRequest(path,opts);path=scoped.path;opts=scoped.options;
   opts={...opts};
-  const h=typeof dashboardApiToken!=='undefined'&&dashboardApiToken
-    ?dashboardAuthenticatedHeaders(path,opts.headers,dashboardApiToken,location.href,window.isSecureContext)
-    :new Headers(opts.headers||{});
+  const h=new Headers(opts.headers||{});
   h.set('X-LocalAI-Client','dashboard');opts.headers=h;
   const request=async requestOpts=>{
     const next={...requestOpts},parentSignal=next.signal;let controller=null,timer=null,timedOut=false,abortParent=null;
@@ -5483,17 +5467,6 @@ function renderAgentOsLoadErrors(){
   });
 }
 
-$('dashboardAuthSet')?.addEventListener('click',()=>{
-  const input=$('dashboardApiToken'),status=$('dashboardAuthStatus');
-  if(!window.isSecureContext){if(status)status.textContent='Token requires a secure context (HTTPS or loopback).';return}
-  dashboardApiToken=input?.value.trim()||'';
-  if(input)input.value='';
-  if(status)status.textContent=dashboardApiToken?'Token set for this page. Refresh the current view.':'Token not set.';
-});
-$('dashboardAuthClear')?.addEventListener('click',()=>{
-  dashboardApiToken='';if($('dashboardApiToken'))$('dashboardApiToken').value='';
-  if($('dashboardAuthStatus'))$('dashboardAuthStatus').textContent='Token forgotten.';
-});
 $('agentOsRefresh')?.addEventListener('click',loadAgentOsView);
 $('agentOsRepoSelect')?.addEventListener('change',()=>{
   const val=$('agentOsRepoSelect').value;

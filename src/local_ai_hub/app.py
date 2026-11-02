@@ -804,7 +804,14 @@ class LocalAIApp:
                 "vision": fs.vision,
             },
             "models": {
-                "vision": fs.vision_model,
+                "vision": fs.vision_model or (
+                    str(self.config.get("models", {}).get("vision", ""))
+                    if bool(self.config.get("features", {}).get("vision", True))
+                    and isinstance(self.config.get("models", {}).get("vision"), str)
+                    and self.config.get("models", {}).get("vision", "").strip() == self.config.get("models", {}).get("vision")
+                    and "\x00" not in self.config.get("models", {}).get("vision")
+                    else ""
+                ),
             },
             "token_saving": [
                 "compact MCP surface with agent-specific final projection and field-selectable work handoffs",

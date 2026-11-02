@@ -8684,15 +8684,16 @@ class LocalAIServices:
         selected = llama_cpp_backend_selection(self.config)
         if selected == "disabled":
             checks.append({"component": "Inference Backend", "status": "OFF", "detail": "Ollama and llama.cpp are disabled."})
-        elif selected == "ollama":
+        if selected in {"ollama", "ollama + llama.cpp (managed)"}:
             online = self.runtime.is_online()
             checks.append({"component": "Inference Backend (Ollama)", "status": "OK" if online else "FAIL", "detail": f"Installed models: {len(self.runtime.installed_models())}"})
-        else:
+        if selected not in {"disabled", "ollama"}:
             online = self.runtime.llama_cpp.is_online()
-            runtime_status = self.runtime.llama_cpp_managed.status() if selected == "llama.cpp (managed)" else {}
+            managed = selected in {"llama.cpp (managed)", "ollama + llama.cpp (managed)"}
+            runtime_status = self.runtime.llama_cpp_managed.status() if managed else {}
             mode = str(runtime_status.get("mode", "") or "device unreported")
             detail = f"Selected provider: {selected}; server {'online' if online else 'unavailable'}"
-            if selected == "llama.cpp (managed)":
+            if managed:
                 detail += f"; execution device: {mode}"
                 if not online and runtime_status.get("last_error"):
                     detail += f"; {runtime_status['last_error']}"

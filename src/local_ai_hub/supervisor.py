@@ -81,6 +81,7 @@ class Supervisor:
         self._signal_wake_reader: socket.socket | None = None
         self._signal_wake_writer: socket.socket | None = None
         self._signal_wake_thread: threading.Thread | None = None
+        self._mixed_cuda_worker: threading.Thread | None = None
         self.started_at = time.time()
         self.restarts = 0
         self.spawns = 0
@@ -90,6 +91,43 @@ class Supervisor:
 
     def is_supervisor_stopping(self) -> bool:
         return bool(self.stopping)
+
+    def _start_mixed_cuda(self) -> None:
+        llama = self.config.get("llama_cpp", {})
+        if not isinstance(llama, dict) or llama.get("managed_with_ollama") is not True:
+            return
+        if self.stopping or self._stop_event.is_set():
+            return
+        if self._mixed_cuda_worker is not None and self._mixed_cuda_worker.is_alive():
+            return
+
+        def start_owned() -> None:
+            try:
+                self.runtime.llama_cpp_managed.ensure_running(
+                    should_stop=lambda: self.stopping or self._stop_event.is_set()
+                )
+            except Exception as exc:
+                self.log(f"managed CUDA startup failed: {type(exc).__name__}")
+            finally:
+                owner = self.runtime.llama_cpp_managed
+                if (self.stopping or self._stop_event.is_set()) and getattr(owner, "_managed_process", None) is not None:
+                    owner.stop()
+
+        self._mixed_cuda_worker = threading.Thread(target=start_owned, name="managed-cuda-start", daemon=True)
+        self._mixed_cuda_worker.start()
+
+    def _stop_mixed_cuda(self) -> None:
+        worker = self._mixed_cuda_worker
+        if worker is None:
+            return
+        self._stop_event.set()
+        worker.join(timeout=5.0)
+        if worker.is_alive():
+            self.log("managed CUDA startup is still cancelling")
+            return
+        owner = self.runtime.llama_cpp_managed
+        if getattr(owner, "_managed_process", None) is not None:
+            owner.stop()
 
     def _start_mcp_http(self) -> None:
         settings = self.config.get("mcp_http", {})
@@ -703,6 +741,7 @@ class Supervisor:
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
                 manage_llama_cpp = llama_cpp_managed_selected(self.config)
+                self._start_mixed_cuda()
                 ollama_online = self.runtime.ensure_running() if manage_ollama or manage_llama_cpp else None
                 if self.child_ready and self.hub_online():
                     unhealthy_since = 0.0
@@ -771,6 +810,7 @@ class Supervisor:
             self.log(f"supervisor exception pid={os.getpid()}\n{traceback.format_exc()}")
             raise
         finally:
+            self._stop_mixed_cuda()
             self._stop_signal_wakeup()
             try:
                 self._stop_mcp_http()

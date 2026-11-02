@@ -208,6 +208,10 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         model_config = cfg.get("models", {}) if isinstance(cfg.get("models", {}), dict) else {}
         reasoning_tier = f"`{fs.reasoning_model}`" if "reasoning" in model_config else "the configured hardest-reasoning tier"
         tiering_bullets.append(
+            f"- **Tiered local models:** `{fs.background_model}` for preprocessing, `{fs.fast_model}` for quick/simple requests, "
+            f"`{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning."
+        )
+        tiering_bullets.append(
             "- **Local model routing:** follow the active profile and user overrides, preserve the configured preprocessing provider, and verify installed model availability. Measured task quality and risk govern autonomy. "
             "Run deterministic/indexed Hub actions first for exact facts, symbols, diff and tests. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression."
         )

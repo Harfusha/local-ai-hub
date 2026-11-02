@@ -116,6 +116,12 @@ class LlamaCppRoutingTests(unittest.TestCase):
             },
         }
 
+    def test_openai_payload_disables_reasoning_when_think_is_false(self):
+        payload = LlamaCppRouter._openai_payload("/api/generate", {"model": "candidate", "prompt": "1+1", "think": False}, {})
+        self.assertEqual(payload["reasoning_effort"], "none")
+        default = LlamaCppRouter._openai_payload("/api/generate", {"model": "candidate", "prompt": "1+1"}, {})
+        self.assertNotIn("reasoning_effort", default)
+
     def test_openai_payload_maps_raw_schema_and_preserves_valid_response_formats(self):
         schema = {
             "type": "object",

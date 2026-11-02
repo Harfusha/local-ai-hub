@@ -9,6 +9,30 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 
+def inference_backend_online(selected: str, status: dict[str, Any], llama_status: dict[str, Any]) -> bool:
+    """Report whether every explicitly selected inference backend is reachable."""
+    if selected == "ollama + llama.cpp (managed)":
+        return bool(status.get("ollama_online", False)) and bool(llama_status.get("online", False))
+    if selected == "ollama":
+        return bool(status.get("ollama_online", False))
+    if selected.startswith("llama.cpp"):
+        return bool(llama_status.get("online", False))
+    return True
+
+
+def mixed_model_available(
+    model: str, *, logical_model: str, ollama_models: set[str], llama_models: set[str], fallback: bool,
+) -> bool | None:
+    """Return unknown when an empty inventory cannot establish absence."""
+    if model != logical_model:
+        return model in ollama_models if ollama_models else None
+    if model in llama_models or (fallback and model in ollama_models):
+        return True
+    if not llama_models or (fallback and not ollama_models):
+        return None
+    return False
+
+
 def installed_models_from_status(
     status: dict[str, Any],
     *,

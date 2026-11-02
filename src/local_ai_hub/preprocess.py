@@ -3641,7 +3641,7 @@ class ProjectPreprocessor:
                 role="background", input_tokens=prepared.estimated_tokens + fixed_input_tokens,
                 output_tokens=int(max_tokens), background=True, preserve_explicit_think=False,
             )
-            if prepared.estimated_tokens + fixed_input_tokens > profile.prompt_budget_tokens:
+            if prepared.estimated_tokens + fixed_input_tokens > getattr(profile, 'prompt_budget_tokens', getattr(profile_hint, 'prompt_budget_tokens', 8192)):
                 return {"success": False, "error": "selected context cannot fit the prepared prompt and system input"}
             # A queued scheduler closure must recheck mode at the runtime handoff.
             if state_dir is not None:

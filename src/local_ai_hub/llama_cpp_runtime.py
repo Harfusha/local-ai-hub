@@ -48,6 +48,11 @@ SYCL_WINDOWS_X64 = (
     "18820bc29cd38ceb664034acd426a59b3bae3704c580added5fd17dd1ddd632e",
     "zip",
 )
+CUDA_VERSION = "b12054"
+CUDA_WINDOWS_X64 = (
+    ("llama-b12054-bin-win-cuda-13.4-x64.zip", "74f8777a14924275e72d3c83d7c7f57f92aeae9e7020dd41b95449236c825ca1", "zip"),
+    ("cudart-llama-bin-win-cuda-13.4-x64.zip", "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668", "zip"),
+)
 
 
 def llama_cpp_managed_selected(config: dict[str, Any]) -> bool:
@@ -66,6 +71,8 @@ def llama_cpp_backend_selection(config: dict[str, Any]) -> str:
     llama = llama if isinstance(llama, dict) else {}
     mode = str(llama.get("mode", "auto")).strip().lower()
     if bool(ollama.get("enabled", False)):
+        if mode == "on" and llama.get("backend") == "cuda" and llama.get("managed_with_ollama") is True:
+            return "ollama + llama.cpp (managed)"
         return "ollama"
     if mode == "on":
         return "llama.cpp (managed)"
@@ -83,12 +90,25 @@ class LlamaCppManagedRuntime:
         llama = config.get("llama_cpp", {}) if isinstance(config.get("llama_cpp", {}), dict) else {}
         self.state_dir = Path(str(server.get("state_dir", "~/.local-ai-hub/state"))).expanduser().resolve()
         self.llama_config = llama
-        self.runtime_dir = self.state_dir / "runtime" / f"llama.cpp-{LLAMA_VERSION}"
+        backend = llama.get("backend", "auto")
+        if not isinstance(backend, str) or backend not in {"auto", "cuda"}:
+            raise ValueError("llama_cpp.backend must be auto or cuda")
+        self.cuda_selected = backend == "cuda"
+        runtime_name = f"llama.cpp-{CUDA_VERSION}-cuda" if self.cuda_selected else f"llama.cpp-{LLAMA_VERSION}"
+        self.runtime_dir = self.state_dir / "runtime" / runtime_name
         self.model_dir = self.state_dir / "models" / "llama.cpp"
         filename = str(llama.get("managed_model_filename", "hub-qwen-15.gguf")).strip()
         if not filename or Path(filename).name != filename or not filename.lower().endswith(".gguf"):
             raise RuntimeError("llama_cpp.managed_model_filename must be a .gguf filename inside the managed model directory")
         self.model_path = self.model_dir / filename
+        custom_digest = llama.get("managed_model_sha256")
+        if "managed_model_sha256" in llama and (
+            not isinstance(custom_digest, str)
+            or len(custom_digest) != 64
+            or any(char not in "0123456789abcdef" for char in custom_digest)
+        ):
+            raise ValueError("llama_cpp.managed_model_sha256 must be a lowercase SHA-256 digest")
+        self.managed_model_sha256 = custom_digest
         self.pid_path = self.state_dir / "llama.cpp.managed.pid"
         self.mode_path = self.state_dir / "llama.cpp.managed-mode"
         self.log_path = self.state_dir / "logs" / "llama.cpp-server.log"
@@ -208,25 +228,38 @@ class LlamaCppManagedRuntime:
     def provision(self) -> Path:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.model_dir.mkdir(parents=True, exist_ok=True)
-        asset, digest, kind = self.runtime_asset()
         gpus = (self.config.get("_hardware", {}) or {}).get("gpus", [])
-        intel_gpu = os.name == "nt" and any(
-            "intel" in str(row.get("vendor", "")).lower() or "intel" in str(row.get("name", "")).lower()
-            for row in gpus if isinstance(row, dict)
-        )
-        if intel_gpu and self._host_platform() == ("win32", "amd64"):
-            asset, digest, kind = SYCL_WINDOWS_X64
+        if self.cuda_selected:
+            nvidia_gpu = any("nvidia" in str(row.get("vendor", "")).lower() for row in gpus if isinstance(row, dict))
+            if self._host_platform() != ("win32", "amd64") or not nvidia_gpu:
+                raise RuntimeError("Managed CUDA llama.cpp requires Windows x64 and a detected NVIDIA GPU")
+            assets = CUDA_WINDOWS_X64
+            version = CUDA_VERSION
+        else:
+            asset = self.runtime_asset()
+            intel_gpu = os.name == "nt" and any(
+                "intel" in str(row.get("vendor", "")).lower() or "intel" in str(row.get("name", "")).lower()
+                for row in gpus if isinstance(row, dict)
+            )
+            if intel_gpu and self._host_platform() == ("win32", "amd64"):
+                asset = SYCL_WINDOWS_X64
+            assets = (asset,)
+            version = LLAMA_VERSION
+        expected_marker = ":".join(spec[1] for spec in assets)
         binary = self._find_server(self.runtime_dir)
         marker = self.runtime_dir / ".runtime-sha256"
-        verified = marker.exists() and marker.read_text(encoding="utf-8").strip() == digest
+        verified = marker.exists() and marker.read_text(encoding="utf-8").strip() == expected_marker
+        if self.cuda_selected and binary is not None and not (binary.parent / "cudart64_13.dll").is_file():
+            verified = False
         if binary is None or not verified:
-            archive = self.runtime_dir / asset
-            if not archive.exists() or self._sha256(archive) != digest:
-                archive.unlink(missing_ok=True)
-                self._download(f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_VERSION}/{asset}", archive, digest, MAX_RUNTIME_BYTES, timeout=60)
             stage = Path(tempfile.mkdtemp(prefix="extract-", dir=self.runtime_dir))
             try:
-                self._extract(archive, stage, kind)
+                for asset, digest, kind in assets:
+                    archive = self.runtime_dir / asset
+                    if not archive.exists() or self._sha256(archive) != digest:
+                        archive.unlink(missing_ok=True)
+                        self._download(f"https://github.com/ggml-org/llama.cpp/releases/download/{version}/{asset}", archive, digest, MAX_RUNTIME_BYTES, timeout=60)
+                    self._extract(archive, stage, kind)
                 extracted = self._find_server(stage)
                 if extracted is None:
                     raise RuntimeError("Verified llama.cpp archive does not contain llama-server.")
@@ -240,12 +273,19 @@ class LlamaCppManagedRuntime:
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(item, target)
                 binary = self._find_server(target_dir)
-                marker.write_text(digest, encoding="utf-8")
+                if self.cuda_selected and (binary is None or not (binary.parent / "cudart64_13.dll").is_file()):
+                    raise RuntimeError("Verified CUDA archives do not contain the required runtime DLL beside llama-server")
+                marker.write_text(expected_marker, encoding="utf-8")
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
         if binary is None:
             raise RuntimeError("llama-server was not installed from the verified archive.")
-        if not self.model_path.exists() or self._sha256(self.model_path) != MODEL_SHA256:
+        if self.managed_model_sha256 is not None:
+            if self.model_path.is_symlink() or self.model_path.resolve().parent != self.model_dir.resolve():
+                raise RuntimeError("The configured managed model cannot be a link outside its model directory")
+            if not self.model_path.is_file() or self._sha256(self.model_path) != self.managed_model_sha256:
+                raise RuntimeError("The configured managed model is missing or has the wrong SHA-256 digest")
+        elif not self.model_path.exists() or self._sha256(self.model_path) != MODEL_SHA256:
             self._download(MODEL_URL, self.model_path, MODEL_SHA256, MAX_MODEL_BYTES, timeout=60)
         self._write_preset()
         return binary
@@ -268,10 +308,19 @@ class LlamaCppManagedRuntime:
 
     def _configured_routes(self) -> tuple[int, list[tuple[str, str]]]:
         models = self.llama_config.get("models", {})
+        selected = self.llama_config.get("managed_model_logical")
+        if "managed_model_logical" in self.llama_config and (
+            self.managed_model_sha256 is None or not isinstance(selected, str) or not selected
+            or selected != selected.strip() or not isinstance(models, dict)
+            or not isinstance(models.get(selected), dict) or "vl" in selected.lower()
+        ):
+            raise ValueError("llama_cpp.managed_model_logical must select one configured text model with a managed model digest")
         rows: list[tuple[str, str]] = []
         port = 12438
         if isinstance(models, dict):
             for logical, entry in models.items():
+                if selected is not None and logical != selected:
+                    continue
                 if not isinstance(entry, dict):
                     continue
                 if "vl" in str(logical).lower():
@@ -289,6 +338,11 @@ class LlamaCppManagedRuntime:
     def _write_preset(self, device: str | None = None) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         _, aliases = self._configured_routes()
+        configured_models = self.llama_config.get("models", {})
+        if self.managed_model_sha256 is not None and self.llama_config.get("managed_model_logical") is None and isinstance(configured_models, dict):
+            logical_models = [name for name, entry in configured_models.items() if isinstance(entry, dict) and "vl" not in str(name).lower()]
+            if len(logical_models) > 1:
+                raise ValueError("A custom managed model may serve only one logical model")
         path_value = str(self.model_path.resolve()).replace("\\", "/")
         sections = ["version = 1", "", "[*]", "n-gpu-layers = 99"]
         if device is not None:
@@ -299,7 +353,7 @@ class LlamaCppManagedRuntime:
         recoveries: dict[str, dict[str, Any]] = {}
         alias_contexts: dict[str, int] = {}
         fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:1.5b"))
-        if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict):
+        if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict) and any(logical == fast_model for _, logical in aliases):
             default_alias = str(configured[fast_model].get("served_model", fast_model))
         for alias, logical in aliases:
             entry = configured.get(logical, {}) if isinstance(configured, dict) else {}
@@ -311,7 +365,8 @@ class LlamaCppManagedRuntime:
             if context_length < 0 or isinstance(raw_context, bool) or (isinstance(raw_context, float) and not raw_context.is_integer()):
                 raise ValueError(f"Invalid llama.cpp context_length for {logical}")
             alias_contexts[alias] = context_length
-            sections.extend([f"[{alias}]", f"model = {path_value}", f'alias = "{alias}"', f"load-on-startup = {'true' if alias == default_alias else 'false'}"])
+            load_on_startup = alias == default_alias and self.llama_config.get("managed_with_ollama") is not True
+            sections.extend([f"[{alias}]", f"model = {path_value}", f'alias = "{alias}"', f"load-on-startup = {'true' if load_on_startup else 'false'}"])
             if context_length:
                 sections.append(f"ctx-size = {context_length}")
             sections.append("")
@@ -323,6 +378,8 @@ class LlamaCppManagedRuntime:
                 recoveries[logical] = fallback
         if isinstance(configured, dict):
             for logical, entry in configured.items():
+                if self.llama_config.get("managed_model_logical") is not None and logical != self.llama_config["managed_model_logical"]:
+                    continue
                 if not isinstance(entry, dict) or "vl" in str(logical).lower():
                     continue
                 alias = str(entry.get("served_model", logical)).strip()
@@ -361,12 +418,16 @@ class LlamaCppManagedRuntime:
         _port, aliases = self._configured_routes()
         configured = self.llama_config.get("models", {})
         fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:1.5b"))
-        if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict):
+        if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict) and any(logical == fast_model for _, logical in aliases):
             return str(configured[fast_model].get("served_model", fast_model))
         return aliases[0][0]
 
     def _device_attempts(self, intel_windows_gpu: bool) -> list[tuple[str, float]]:
         timeout = float(self.llama_config.get("startup_timeout_seconds", self.llama_config.get("model_load_timeout_seconds", 600)))
+        if self.cuda_selected:
+            if self.llama_config.get("managed_with_ollama") is True:
+                return [("CUDA0", timeout)]
+            return [("CUDA0", timeout), ("none", timeout)]
         return [("SYCL0", 25.0), ("none", timeout)] if intel_windows_gpu else [("none", timeout)]
 
     def _managed_pid_alive(self) -> bool:
@@ -402,10 +463,12 @@ class LlamaCppManagedRuntime:
         except Exception:
             return False
 
-    def _ready(self, url: str, timeout: float, process: subprocess.Popen[Any]) -> bool:
+    def _ready(self, url: str, timeout: float, process: subprocess.Popen[Any], *, should_stop: Any | None = None) -> bool:
         deadline = time.monotonic() + max(1.0, timeout)
         default_alias = self._default_alias()
         while time.monotonic() < deadline:
+            if should_stop is not None and should_stop():
+                return False
             if process.poll() is not None:
                 return False
             try:
@@ -416,6 +479,9 @@ class LlamaCppManagedRuntime:
                 for row in rows if isinstance(rows, list) else []:
                     if isinstance(row, dict) and row.get("id") == default_alias:
                         status = row.get("status", {})
+                        if (self.llama_config.get("managed_with_ollama") is True and isinstance(status, dict)
+                                and not status.get("failed") and str(status.get("value", "")).lower() == "unloaded"):
+                            return True
                         if isinstance(status, dict) and str(status.get("value", "")).lower() == "loaded":
                             return True
                         if isinstance(status, dict) and status.get("failed"):
@@ -442,12 +508,33 @@ class LlamaCppManagedRuntime:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
-    def ensure_running(self) -> bool:
+    def ensure_running(self, *, should_stop: Any | None = None) -> bool:
+        def stopped() -> bool:
+            if should_stop is None:
+                return False
+            try:
+                return bool(should_stop())
+            except Exception:
+                return True
+
+        if stopped():
+            return False
         if self.is_online():
             return True
         with self._lock:
+            if stopped():
+                return False
             if self.is_online():
                 return True
+            if self.llama_config.get("managed_with_ollama") is True:
+                try:
+                    port, _ = self._port_and_url()
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                        if os.name == "nt":
+                            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                        probe.bind(("127.0.0.1", port))
+                except (OSError, ValueError, TypeError):
+                    return False
             if time.monotonic() < self._retry_after:
                 return False
             try:
@@ -455,6 +542,8 @@ class LlamaCppManagedRuntime:
             except Exception as exc:
                 self._last_error = str(exc)
                 self._retry_after = time.monotonic() + 60.0
+                return False
+            if stopped():
                 return False
             try:
                 stale_pid = int(self.pid_path.read_text(encoding="utf-8").strip() or 0)
@@ -486,6 +575,8 @@ class LlamaCppManagedRuntime:
             )
             attempts = self._device_attempts(gpu)
             for device, wait_seconds in attempts:
+                if stopped():
+                    return False
                 # Router child servers do not inherit the parent CLI's --device.
                 # Put the selected backend in the wildcard preset for each attempt.
                 self._write_preset(device=device)
@@ -512,7 +603,9 @@ class LlamaCppManagedRuntime:
                         self._last_error = "Could not start llama-server. See state/logs/llama.cpp-server.log."
                         self._retry_after = time.monotonic() + 60.0
                         return False
-                if proc is not None and self._ready(url, wait_seconds, proc):
+                ready = (self._ready(url, wait_seconds, proc, should_stop=stopped) if should_stop is not None
+                         else self._ready(url, wait_seconds, proc)) if proc is not None else False
+                if proc is not None and ready and not stopped():
                     self._managed_process = proc
                     self._recovery_process = proc
                     self._prepared_recovery_routes = dict(self._recovery_routes)
@@ -527,6 +620,8 @@ class LlamaCppManagedRuntime:
                         self._retry_after = time.monotonic() + 60.0
                         return False
                 self.pid_path.unlink(missing_ok=True)
+                if stopped():
+                    return False
             self._last_error = "llama-server did not become healthy in SYCL/CPU mode. See state/logs/llama.cpp-server.log."
             self._retry_after = time.monotonic() + 60.0
             return False
@@ -552,7 +647,7 @@ class LlamaCppManagedRuntime:
         return stopped
 
     def status(self) -> dict[str, Any]:
-        selected = llama_cpp_managed_selected(self.config)
+        selected = llama_cpp_managed_selected(self.config) or self.llama_config.get("managed_with_ollama") is True
         mode = self.mode_path.read_text(encoding="utf-8").strip() if self.mode_path.exists() else ""
         _, url = self._port_and_url()
         return {"selected": selected, "online": self.is_online() if selected else False, "mode": mode, "last_error": self._last_error, "url": url, "runtime_dir": str(self.runtime_dir), "model_path": str(self.model_path)}

@@ -507,7 +507,8 @@ def test_process_crash_after_patch_write_recovers_from_persisted_journal(
             command = args[0] if args else kwargs.get("args")
             if (
                 isinstance(command, list)
-                and command[:4] == ["git", "-C", str(root), "apply"]
+                and "apply" in command
+                and str(root) in command
                 and "--check" not in command
                 and result.returncode == 0
             ):

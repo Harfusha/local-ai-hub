@@ -17,8 +17,10 @@ from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 from local_ai_hub.doctor_support import (
+    inference_backend_online,
     installed_models_from_status,
     managed_serena_executable,
+    mixed_model_available,
     probe_hub_status,
 )
 from local_ai_hub.http_server import validate_network_security
@@ -122,9 +124,21 @@ llama_status = ollama_profile.get("llama_cpp", {}) if isinstance(ollama_profile.
 llama_online_models = llama_status.get("online_models", []) if isinstance(llama_status.get("online_models", []), list) else []
 installed = installed_models_from_status(status, cfg=cfg)
 missing_models = [m for m in configured_generation if installed and m not in installed] if inference_backend == "ollama" else []
+unknown_models: list[str] = []
 vision_installed = bool(vision_model and (vision_model in llama_online_models if inference_backend.startswith("llama.cpp") else installed and vision_model in installed))
 vision_missing = bool(vision_model and installed and vision_model not in installed) if inference_backend == "ollama" else False
 vision_status_known = bool(installed) if inference_backend == "ollama" else bool(llama_online_models)
+if inference_backend == "ollama + llama.cpp (managed)":
+    def mixed_available(model: str) -> bool | None:
+        return mixed_model_available(model, logical_model=str(llama_cfg.get("managed_model_logical", "")),
+            ollama_models=installed, llama_models={name for name in llama_online_models if isinstance(name, str)},
+            fallback=llama_cfg.get("fallback_to_ollama") is True)
+    missing_models = [model for model in configured_generation if mixed_available(model) is False]
+    unknown_models = [model for model in configured_generation if mixed_available(model) is None]
+    vision_available = mixed_available(vision_model) if vision_model else None
+    vision_installed = vision_available is True
+    vision_missing = vision_available is False
+    vision_status_known = vision_available is not None
 
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
@@ -324,18 +338,14 @@ if not hub_online:
     warnings.append("Local AI Hub is not online")
 elif not status_available:
     warnings.append("Local AI Hub health check passed but its status endpoint did not return diagnostic data")
-selected_backend_online = (
-    bool(status.get("ollama_online", False)) if inference_backend == "ollama"
-    else bool(llama_status.get("online", False)) if inference_backend.startswith("llama.cpp")
-    else True
-)
+selected_backend_online = inference_backend_online(inference_backend, status, llama_status)
 if status.get("hub_online", False) and inference_backend != "disabled" and not selected_backend_online:
     warnings.append(f"Selected inference backend ({inference_backend}) is unavailable")
-if inference_backend == "ollama" and missing_models:
+if inference_backend in {"ollama", "ollama + llama.cpp (managed)"} and missing_models:
     warnings.append("Missing configured Ollama models: " + ", ".join(missing_models))
 if vision_enabled and not vision_model:
     warnings.append("Vision capability is enabled but models.vision is not configured")
-if inference_backend == "ollama" and vision_missing:
+if inference_backend in {"ollama", "ollama + llama.cpp (managed)"} and vision_missing:
     warnings.append("Missing configured vision model: " + vision_model)
 if inference_backend == "ollama" and vision_enabled and vision_model and vision_status_known and not vision_installed and not vision_missing:
     warnings.append("Vision model is not available: no configured vision route is available on the selected inference backend")
@@ -446,6 +456,7 @@ report = {
         "active_model": (status.get("scheduler") or {}).get("active_model") if isinstance(status, dict) else None,
         "configured_generation_models": configured_generation,
         "missing_generation_models": missing_models,
+        "unknown_generation_models": unknown_models,
         "vision": {"enabled": vision_enabled, "model": vision_model, "installed": vision_installed, "status_known": vision_status_known},
         "model_execution": execution_summary,
         "loaded_model_details": loaded_details,
@@ -593,9 +604,15 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     lines.append("Models:")
     cfg_models = rt.get("configured_generation_models", [])
     missing = rt.get("missing_generation_models", [])
+    unknown = rt.get("unknown_generation_models", [])
     if provider.startswith("llama.cpp"):
         online_models = llama.get("online_models", [])
         lines.append(f"  {'[OK]' if online_models else '[ERR]'} llama.cpp models: {', '.join(online_models) if online_models else 'No model online'}")
+    elif provider == "ollama + llama.cpp (managed)" and (missing or unknown):
+        if missing:
+            lines.append(f"  [ERR] Missing Models: {', '.join(missing)}")
+        if unknown:
+            lines.append(f"  [??] Model availability unknown: {', '.join(unknown)}")
     elif missing:
         lines.append(f"  [ERR] Missing Models: {', '.join(missing)}")
     else:
@@ -603,6 +620,8 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     vision = rt.get("vision", {}) if isinstance(rt, dict) else {}
     if not vision.get("enabled", True):
         lines.append("  [--] Vision:          Disabled")
+    elif provider == "ollama + llama.cpp (managed)" and not vision.get("status_known"):
+        lines.append(f"  [??] Vision:          {vision.get('model') or 'Not configured'} (presence unknown)")
     elif provider.startswith("llama.cpp") and not vision.get("installed"):
         lines.append("  [--] Vision:          No llama.cpp vision model online")
     elif vision.get("status_known") and not vision.get("installed"):

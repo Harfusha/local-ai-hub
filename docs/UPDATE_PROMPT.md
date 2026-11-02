@@ -45,6 +45,8 @@ Ollama backend permission and process ownership are independent: `ollama.enabled
 
 An explicitly configured external llama.cpp route in `llama_cpp.mode = auto` does not require a particular GPU. The route must still be an authorized loopback endpoint and pass its health and model checks.
 
+Experimental managed CUDA on Windows x64 requires a detected NVIDIA GPU, `llama_cpp.backend = "cuda"`, and mode `on`. Mixed operation with Ollama requires `managed_with_ollama = true`, an explicit `managed_model_logical`, and `smart_ollama.enabled = false`; see `docs/LLAMA_CPP_SYCL.md` for admission and fallback limits. A custom managed GGUF requires its filename and lowercase SHA-256. This does not automatically prefer FP4 or establish model quality.
+
 Work validation never invents broker receipts from command IDs. An `execute` order with a missing post-patch receipt returns `needs_agent` and retains the patch for primary review; it cannot pass its completion gate. Task-bound bounded work can return a real `recorded_unmapped` broker receipt as described above; missing evidence remains `not_recorded` and never replaces primary-agent review.
 
 On Windows, bounded patch targets must have existing parent directories. The Hub pins those directories during patching and pins rollback files against replacement; if a parent is missing or cannot be pinned, the operation fails visibly. A patch targeting mixed LF and CRLF within a single file fails visibly. Do not interpret the Windows protection as proof of non-Windows race safety.
@@ -556,7 +558,6 @@ CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as opti
 > - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository.
 > - **Repository & Code Search**: Call `local_ai_repo(action="solve"|"context"|"search"|"code_index"|"review_diff"|"security_audit", root="...")`. DO NOT use broad native discovery (`find`, `dir /s`, unconstrained `rg`, glob) or dump entire files.
 > - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion", ...)`. Proactively initialize task contracts, query memory, and record findings.
-> - **Semantic Review & Second Opinion**: Actively call `local_ai_task(action="review"|"second_opinion"|"compress")` before finalizing non-trivial edits.
 > - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.
 > - **Native fallback**: `terminal=true` alone is insufficient; outages require `retryable=false` too. A Hub-unknown command needs broker `native_fallback_allowed=true`; the native tool must authorize the fallback, bounded to the same root/scope. Hard stops: `native_fallback_allowed=false`, a dangerous command, mutation denial, required approval/override, cancellation, `outcome_unknown`. This permits fallback only, never Hub execution. Missing native authorization: stop and report blocker.
 
@@ -577,16 +578,7 @@ Trigger map:
 - durable project memory & architecture facts: `local_ai_coord(action="memory_record"|"memory_find")`. Actively persist and consult project facts, conventions, and user preferences.
 - anti-pattern & incident tracking: `local_ai_coord(action="negative_knowledge_record"|"negative_knowledge_find")`. Record failed approaches, error classes, and root causes to avoid repeating mistakes.
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`
-- `local_ai_work`: only for explicitly requested closed delegation; use bounded mode for suitable tasks after task/model quality evaluation. The primary agent reviews diff, tests and integration.
 - symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
-- image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`
-- audio transcription: `local_ai_task(action="transcribe")`
-- local-model or device benchmarking: `local_ai_task` benchmark actions
-- model/prompt evaluation and drift checks: `local_ai_task` evaluation actions
-- model/prompt candidate and speculative-draft workflows: `local_ai_task` candidate actions
-- durable asynchronous local jobs: `local_ai_task` submit/status/wait/result/cancel; wait once, never poll
-- named read-only local advisory profiles: `local_ai_task(action="delegate", profile=...)`
 - curated knowledge sets and document/diagram ingestion: `local_ai_rag` docset and ingest actions
 - multi-agent swarms, shared blackboard, and isolated worktrees: `local_ai_coord` swarm, blackboard, and worktree actions
 - cross-agent resource semaphores and signal sync: `local_ai_coord(action="semaphore_acquire"|"semaphore_release"|"semaphore_status"|"wait_for_event")`. Guard exclusive resources and await events without polling.
@@ -599,14 +591,12 @@ Recipes (guidance, not gates):
 - Recipe — Explore: on first work in a stable root, inspect project config and register with one idempotent preprocess call; use bounded indexed/source lookup for exact file or symbol facts and adaptive context when evidence is insufficient; never force-refresh or poll preprocessing.
 - Recipe — Change: gather indexed evidence, initialize an Agent OS contract, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
 - Recipe — Validate: run bounded repeatable commands with the host-native command tool; use `review_diff` or `security_audit` when relevant.
-- Recipe — Semantic work: actively use `local_ai_task` for code review (`action="review"`), second opinion on non-trivial logic (`action="second_opinion"`), exploration (`action="explore"`), and compressing noisy test outputs (`action="compress"`).
 - Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action="task_create")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; attach explicit verification receipts; and verify completion (`verify_completion`) before closure.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
 - A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work; see the simplified workflow spec.
 
-- Semantic delegation is on-demand and optional. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Use it only when an approved backend is available. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Local model routes follow the active hardware profile and user overrides; verify model availability before inference.
 - Use native Codex subagents only for independent bounded implementation or an explicit user request.
 - Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit request. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
@@ -624,7 +614,7 @@ Background preprocessing may inspect and index project files, but project-derive
 
 Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates. For substantial work without fresh evidence, use adaptive `context` once with a stable root. On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.
 
-Adoption gate: Use bounded host-native validation commands after fresh repository evidence exists. For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`). For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
+Adoption gate: Use bounded host-native validation commands after fresh repository evidence exists. For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`). For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 
 Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action="context", mode="adaptive")`; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently. Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
@@ -635,9 +625,8 @@ Run bounded validation commands with the agent host native command tool.
  Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`. Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope. For overlapping edits use `local_ai_coord` leases; record concise findings in permitted scoped Agent OS memory or the existing operator-approved coordination file.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
-Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression, `local_ai_work` only for explicitly requested closed delegation with primary review, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
+Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
 
-Local model policy: Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping.
 ## Context economy contract
 
 - Every Hub response is aggregate-bounded (default ≈3200 tokens).
@@ -649,7 +638,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
-- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
+
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.

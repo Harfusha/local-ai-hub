@@ -69,7 +69,8 @@ def _open_posix_plan_directory(root: Path, parent: Path, *, create: bool = True,
 
 
 def _atomic_write_posix(
-    root: Path, target: Path, data: bytes, *, parent_fd: int | None = None, root_fd: int | None = None
+    root: Path, target: Path, data: bytes, *, parent_fd: int | None = None, root_fd: int | None = None,
+    temp_name: str | None = None,
 ) -> None:
     """Publish within an opened directory rather than re-resolving its pathname."""
     directory = (_open_posix_plan_directory(root, target.parent, root_fd=root_fd)
@@ -82,7 +83,7 @@ def _atomic_write_posix(
         else:
             if stat.S_ISLNK(target_info.st_mode):
                 raise RepoPlanValidationError(f"Plan write target is a symlink: {target}")
-        temporary = f".tmp_{target.name}_{uuid.uuid4().hex}"
+        temporary = temp_name or f".tmp_{target.name}_{uuid.uuid4().hex}"
         created = False
         try:
             descriptor = os.open(
@@ -424,11 +425,13 @@ class RepoPlanStorage:
         self._ensure_intents_dir()
         path = self._intent_path(intent.intent_id)
         raw = json.dumps(intent.to_dict(), indent=2, sort_keys=True)
+        temp_name = f".tmp_{intent.intent_id}_{uuid.uuid4().hex[:6]}"
         if os.name != "nt":
             _atomic_write_posix(self.repo_root, path, raw.encode("utf-8"),
-                                parent_fd=getattr(self._storage_path_guard, "intents_fd", None))
+                                parent_fd=getattr(self._storage_path_guard, "intents_fd", None),
+                                temp_name=temp_name)
             return
-        temp_path = self.intents_dir / f".tmp_{intent.intent_id}_{uuid.uuid4().hex[:6]}"
+        temp_path = self.intents_dir / temp_name
         created = False
         try:
             with open(temp_path, "xb") as f:
@@ -667,12 +670,13 @@ class RepoPlanStorage:
         raw = json.dumps(data, sort_keys=True).encode("utf-8")
         if len(raw) > 12 * 1024 * 1024:
             raise RepoPlanError("Operation record exceeds 12 MiB limit")
+        temp_name = f".tmp_{uuid.uuid4().hex}"
         if os.name != "nt":
             pinned_fd = (getattr(self._storage_path_guard, "intents_fd", None)
                          if path.parent == self.intents_dir else None)
-            _atomic_write_posix(self.repo_root, path, raw, parent_fd=pinned_fd)
+            _atomic_write_posix(self.repo_root, path, raw, parent_fd=pinned_fd, temp_name=temp_name)
             return
-        temporary = path.with_name(f".tmp_{uuid.uuid4().hex}")
+        temporary = path.with_name(temp_name)
         created = False
         try:
             with temporary.open("xb") as stream:

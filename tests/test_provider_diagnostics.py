@@ -32,6 +32,19 @@ def test_doctor_reports_disabled_backends_as_off_not_failure(tmp_path):
     assert backend["status"] == "OFF"
 
 
+def test_doctor_reports_both_mixed_backends_independently(tmp_path):
+    service = _services(
+        {"ollama": {"enabled": True}, "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True}},
+        tmp_path, llama_online=False, ollama_online=True, mode="CUDA0",
+    )
+    with patch("local_ai_hub.gpu_monitor.get_gpu_telemetry", return_value={"available": False}):
+        checks = service.run_doctor()["checks"]
+    backends = {row["component"]: row for row in checks}
+    assert backends["Inference Backend (Ollama)"]["status"] == "OK"
+    assert backends["Inference Backend (llama.cpp)"]["status"] == "FAIL"
+    assert "CUDA0" in backends["Inference Backend (llama.cpp)"]["detail"]
+
+
 def test_doctor_reports_managed_llama_cpu_fallback_as_healthy(tmp_path):
     service = _services(
         {"ollama": {"enabled": False}, "llama_cpp": {"mode": "on"}},

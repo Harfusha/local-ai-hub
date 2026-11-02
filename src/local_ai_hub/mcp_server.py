@@ -5650,11 +5650,14 @@ def local_ai_work(
     payload: dict[str, Any] = {
         "action": action, "root": _client_root(root), "task": task, "work_id": work_id, "task_id": task_id,
         "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
-        "allowed_paths": allowed_paths, "approved_commands": approved_commands,
         "permissions": permissions if permissions is not None or permissions_supplied else {}, "budget": budget if budget is not None or budget_supplied else {}, "timeout_seconds": timeout_seconds, "answer": answer,
         "response_profile": response_profile, "return_fields": return_fields or [], "max_output_tokens": max_output_tokens,
         "keep_failed_workspace": keep_failed_workspace,
     }
+    if allowed_paths is not None:
+        payload["allowed_paths"] = allowed_paths
+    if approved_commands is not None:
+        payload["approved_commands"] = approved_commands
     return _compact(CLIENT.post("/api/work-orders", payload, timeout=_timeout("long") if action in {"wait"} else _timeout("quick")), "status")
 
 
