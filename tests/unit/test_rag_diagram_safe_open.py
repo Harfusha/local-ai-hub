@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import os
+import stat
+from types import SimpleNamespace
 from pathlib import Path
 import pytest
 
@@ -28,6 +30,29 @@ def test_safe_open_diagram_rejects_directory() -> None:
 
         with pytest.raises(Exception):
             RAGStore._safe_open_diagram(dir_path)
+
+
+def test_invalid_diagram_descriptor_is_closed_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image = tmp_path / "test.svg"
+    image.write_bytes(b"<svg/>")
+    original_fstat, original_close = os.fstat, os.close
+    closed: list[int] = []
+
+    def invalid_stat(_fd: int):
+        return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0)
+
+    def record_close(fd: int) -> None:
+        closed.append(fd)
+        original_close(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fstat", invalid_stat)
+        patch.setattr(os, "close", record_close)
+        with pytest.raises(ValueError, match="regular file"):
+            RAGStore._safe_open_diagram(image)
+    assert len(closed) == 1
+    with pytest.raises(OSError):
+        original_fstat(closed[0])
 
 
 def test_oversized_svg_closes_open_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

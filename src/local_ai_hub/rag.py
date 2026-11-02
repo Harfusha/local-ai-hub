@@ -3473,7 +3473,6 @@ class RAGStore:
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400):
-                os.close(fd)
                 raise ValueError("diagram image path must identify a regular file without symlinks or reparse points")
             return fd, st
         except Exception:
@@ -3673,20 +3672,21 @@ class RAGStore:
                 max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
                 fd, st = self._safe_open_diagram(p_img)
                 try:
-                    with open(fd, "rb") as svg_file:
-                        if int(st.st_size) > max_bytes:
-                            return {
-                                "success": False,
-                                "error": "diagram exceeds configured file size limit",
-                                "diagram_indexed": False,
-                            }
-                        raw_bytes = svg_file.read(max_bytes + 1)
-                except Exception:
+                    svg_file = open(fd, "rb")
+                except BaseException:
                     try:
                         os.close(fd)
                     except OSError:
                         pass
                     raise
+                with svg_file:
+                    if int(st.st_size) > max_bytes:
+                        return {
+                            "success": False,
+                            "error": "diagram exceeds configured file size limit",
+                            "diagram_indexed": False,
+                        }
+                    raw_bytes = svg_file.read(max_bytes + 1)
                 if len(raw_bytes) > max_bytes:
                     return {
                         "success": False,
