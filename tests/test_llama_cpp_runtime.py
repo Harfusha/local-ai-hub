@@ -542,7 +542,7 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 "ollama": {"enabled": True},
                 "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True,
                               "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
-                              "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}}},
+                              "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4", "context_length": 131072}}},
             })
             events = []
             row = {"name": "candidate", "backend": "ollama", "endpoint_id": "http://127.0.0.1:11434"}
@@ -685,7 +685,7 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 "ollama": {"enabled": True},
                 "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True,
                               "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
-                              "fallback_to_ollama": True, "models": {"candidate": {"url": "http://127.0.0.1:12438"}}},
+                              "fallback_to_ollama": True, "models": {"candidate": {"url": "http://127.0.0.1:12438", "context_length": 131072}}},
             })
             guard = SimpleNamespace(close=lambda: None)
             with (patch.object(runtime, "loaded_model_inventory", return_value={"complete": True, "models": []}),

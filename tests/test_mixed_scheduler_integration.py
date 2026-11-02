@@ -202,7 +202,7 @@ def test_scheduler_routes_cuda_only_after_ollama_unload_and_admission(tmp_path, 
         "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True,
                       "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate", "fallback_to_ollama": True,
                       "model_load_timeout_seconds": 10,
-                      "models": {"candidate": {"url": f"http://127.0.0.1:{cuda.server_port}", "served_model": "alias"}}},
+                      "models": {"candidate": {"url": f"http://127.0.0.1:{cuda.server_port}", "served_model": "alias", "context_length": 131072}}},
         "scheduler": {"model_vram_estimates_bytes": {"candidate": 1024**3}, "max_loaded_models": 1},
     }
     runtime = OllamaRuntime(config)
