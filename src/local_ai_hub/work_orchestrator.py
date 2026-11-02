@@ -129,7 +129,7 @@ def _run_git_patch(command: list[str], patch: str) -> subprocess.CompletedProces
             raise ValueError(f"cannot safely patch mixed line endings: {relative}")
         eol = "crlf" if crlf_count else "lf"
         pattern = "/" + "".join("\\" + char if char in "\\*?[" else char for char in relative)
-        attributes.append(f"{json.dumps(pattern, ensure_ascii=False)} text eol={eol}\n")
+        attributes.append(f"{json.dumps(pattern, ensure_ascii=False, separators=(',', ':'))} text eol={eol}\n")
     with tempfile.TemporaryDirectory(prefix="local-ai-patch-git-") as temporary:
         git_dir = Path(temporary) / "git"
         initialized = subprocess.run(["git", "init", "-q", "--bare", str(git_dir)],

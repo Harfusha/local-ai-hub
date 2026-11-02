@@ -100,7 +100,7 @@ def launch_opencode(
                if not key.upper().startswith("OPENCODE_") and not key.upper().endswith(("_API_KEY", "_TOKEN"))}
         with tempfile.TemporaryDirectory(prefix="config-", dir=profile) as config_dir:
             env.update({
-                "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG_CONTENT": json.dumps(runtime),
+                "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG_CONTENT": json.dumps(runtime, separators=(",", ":")),
                 "OPENCODE_CONFIG_DIR": config_dir, "LOCAL_AI_HUB_TOKEN": hub_token,
                 "LOCAL_AI_OPENCODE_PROVIDER_TOKEN": provider_token,
                 "XDG_CONFIG_HOME": config_dir, "XDG_DATA_HOME": str(profile / "data"),
