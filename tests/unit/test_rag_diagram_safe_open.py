@@ -38,12 +38,15 @@ def test_invalid_diagram_descriptor_is_closed_once(tmp_path: Path, monkeypatch: 
     image.write_bytes(b"<svg/>")
     original_fstat, original_close = os.fstat, os.close
     closed: list[int] = []
+    checked: list[int] = []
 
-    def invalid_stat(_fd: int):
+    def invalid_stat(fd: int):
+        checked.append(fd)
         return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0)
 
     def record_close(fd: int) -> None:
-        closed.append(fd)
+        if checked and fd == checked[-1]:
+            closed.append(fd)
         original_close(fd)
 
     with monkeypatch.context() as patch:
@@ -51,7 +54,8 @@ def test_invalid_diagram_descriptor_is_closed_once(tmp_path: Path, monkeypatch: 
         patch.setattr(os, "close", record_close)
         with pytest.raises(ValueError, match="regular file"):
             RAGStore._safe_open_diagram(tmp_path, image)
-    assert len(closed) == 1
+    assert len(checked) == 1
+    assert closed == checked
     with pytest.raises(OSError):
         original_fstat(closed[0])
 
