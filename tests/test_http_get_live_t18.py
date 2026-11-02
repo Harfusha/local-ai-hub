@@ -21,7 +21,7 @@ def test_live_handler_preserves_cursor_limits_clamp_and_response(monkeypatch) ->
     live_page = {"events": [{"id": 11}], "next_after": 11}
     monkeypatch.setattr(
         http_server, "APP",
-        SimpleNamespace(config={"monitoring": {"live_max_batch": 250}}, telemetry=SimpleNamespace(live=lambda after, limit: calls.append((after, limit)) or live_page)),
+        SimpleNamespace(config={"monitoring": {"live_max_batch": 250}}, telemetry=SimpleNamespace(live=lambda after, limit, *, compact: calls.append((after, limit, compact)) or live_page)),
     )
     handler = http_server.Handler.__new__(http_server.Handler)
     responses = []
@@ -29,13 +29,14 @@ def test_live_handler_preserves_cursor_limits_clamp_and_response(monkeypatch) ->
 
     handler._handle_get_live({"after": ["10"], "limit": ["400"]})
     handler._handle_get_live({})
+    handler._handle_get_live({"compact": ["false"]})
 
-    assert calls == [(10, 250), (0, 200)]
-    assert responses == [(200, live_page), (200, live_page)]
+    assert calls == [(10, 250, True), (0, 50, True), (0, 50, False)]
+    assert responses == [(200, live_page)] * 3
 
 
 def test_live_handler_propagates_parse_and_service_errors_to_shared_boundary(monkeypatch) -> None:
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, telemetry=SimpleNamespace(live=lambda *_args: (_ for _ in ()).throw(RuntimeError("live read failed")))))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, telemetry=SimpleNamespace(live=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("live read failed")))))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler._send = lambda *_args: None
     with pytest.raises(ValueError):
