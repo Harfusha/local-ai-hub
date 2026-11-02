@@ -4,6 +4,33 @@ Bounded work may optionally use read-only tool exploration only on `high`, when 
 
 For task-bound bounded work, `recorded_unmapped` identifies an authentic broker test receipt stored without attaching it to task completion. Check the current task mutation generation, repository revision, actual command result and diff; a later patch makes an earlier receipt stale. `partially_recorded_unmapped` and `not_recorded` do not establish complete verification. The primary agent must review the result and integration before independently accepting or mapping any receipt.
 
+After rollback, `receipt_status="stale"` and `stale_verification_receipts` preserve historical broker evidence; they do not validate the current workspace or complete the task.
+Bounded `partial` and `needs_agent` handoff artifacts contain validation and bounded accepted-patch previews; `truncated=true` means a preview is incomplete. If the artifact is unavailable, the handoff reports an error. Inspect the workspace and actual tests independently.
+Cancellation during failure finalization retains rollback and task-barrier reconciliation status. A failure artifact that cannot be stored is reported explicitly.
+When rollback loses its work-attempt fence, the superseded worker stops; the authoritative successor or fenced recovery owns the journal and task barrier.
+After safe recovery, interrupted bounded work reports `outcome_unknown=true` and requires primary review; it is never automatically requeued. A requested cancellation remains `cancelled`.
+
+For a bounded order still owned by the responding process, `timed_out=true` with `in_progress=true` means its deadline elapsed but the backend has not returned. This is not a terminal result or permission to retry; cancellation is cooperative. Another process may not observe this in-memory deadline.
+
+New endpoint statistics use hashed absolute root identities; a filtered reset affects the selected root. Historical `legacy:` groups remain separate basename aggregates and cannot be split into individual roots; resetting one removes that entire historical group. Tool-call counts alone do not establish model inference.
+
+For `local_ai_coord` claim or release, omit `max_response_tokens` or set at least 512. Smaller explicit budgets reject before mutation. A successful claim returns the exact `lease_id`; release returns `released_rows` and `mutation_applied`. An invalid returned identity or row count is an unknown outcome, not permission to retry.
+
+When generation fails after a scheduler admission rejection, `last_admission_state`, `last_admission_reason` and `last_admission_model` describe the last attempted model only when supplied by the scheduler. They do not prove inference ran or identify earlier fallback attempts.
+
+Backend `done_reason=length` produces `success=false`, `output_truncated=true` and `stop_reason=length`; partial text is not a complete answer or a usable bounded-work patch. Do not infer truncation solely from missing stop metadata or automatically retry it. A backend-confirmed completed length stop does not by itself reserve the GPU as an unknown operation; timeout, cancellation, unconfirmed cleanup or contradictory status still retain the reservation. This never converts partial output to success. A queued scheduler job with `wait_reason=gpu-reservation` is blocked by a retained GPU reservation; do not infer its owner or release it without verified authority.
+The existing read-only tool loop also rejects a length-truncated tool selection before dispatch and a length-truncated final synthesis; prior cache entries are not reused.
+
+For direct `local_ai_task` generation actions, explicit nonzero `max_tokens` below 64 reject before inference; values of 64 or more are forwarded without the former 160-token floor, subject to configured upper limits. For `compress`, the field is a target rather than a hard output cap and its explicit minimum is 128. Zero leaves the operation default.
+`continue` rejects unknown bounded outcomes and unresolved task-barrier or rollback reconciliation; independently inspect and reconcile rather than replaying the same order.
+Bounded `continue` accepts a genuine clarification question, not a final review handoff or questionless recovery failure.
+Final bounded handoff requires a persisted artifact identifier; an unavailable artifact triggers failure and configured rollback or retained-workspace handling, not an accepted handoff.
+For bounded work, `local_exploration_status` reports the most conservative observed tool-inspection outcome; inspect the artifact for details. It is not task completion or model qualification.
+The candidate `qwen3.5:4b-q4_K_M` and `gemma4:12b` prompt scopes are advisory only; they do not establish model quality, image or tool support, or permission to edit.
+Quantized and unmatched heavy or vision prompt profiles exclude security decisions, direct edits and final verification; scoped authorization remains authoritative.
+For routine bounded implementation delegation, require the relevant task-type cases and overall evaluation gate to pass; follow `docs/agent-evaluation/local-model-gpu-scoring.md` in the Hub installation. Controlled evaluation runs follow that protocol separately.
+If rollback fails and receipt freshness cannot be established, `receipt_status="unknown"` and `uncertain_verification_receipts` require reconciliation, not acceptance.
+
 `task_barrier_status=pending_finalization` with `task_barrier_error=finalization_event_lookup_timeout` means recovery is waiting to retry an exact event lookup. It is not completion; preserve primary-agent review and do not force or duplicate the recovery.
 
 Ollama backend permission and process ownership are independent: `ollama.enabled = true` permits an already-running configured Ollama backend even when `server.auto_start_ollama = false`. The latter only controls automatic startup. Enabling the backend does not establish endpoint health or model availability; verify both before inference. Never change these settings or pull models without the applicable authorization.
@@ -18,9 +45,15 @@ Timeouts, cancellation, interactive aborts, unknown or ongoing outcomes, unconfi
 
 `python tools/setup.py --install-opencode-cli-only` installs the pinned, SHA-256-verified OpenCode 2.2.5 Windows x64 executable only. `--opencode-dir` optionally selects its destination. This command does not configure PATH, MCP, Ollama, goals, or local-only enforcement; the full OpenCode integration is not yet complete. See `docs/OPENCODE.md`.
 
+`python tools/setup.py --install-opencode-sandbox-only` provisions the pinned, checksum-verified Microsoft MXC 1.0.1 Windows x64 executor without overwriting other files. `--opencode-sandbox-dir` selects a destination. This does not enable or prove isolation.
+
 `python tools/setup.py --inspect-opencode-hardware` reports capacity-based OpenCode candidates without installing or running a model. Optional `--opencode-profile auto|12gb|16gb` and `--opencode-model NAME` select a profile or candidate for inspection or preparation; neither model fit nor GPU admission is verified.
 
 `python tools/setup.py --prepare-opencode-model NAME` checks loopback Ollama and downloads only the named missing model. `--skip-model-pull` checks presence only; `--opencode-ollama-url` selects a loopback origin. A timeout leaves the pull outcome unknown. This does not verify inference or GPU fit.
+
+`python tools/setup.py --stage-opencode-profile 12gb|16gb` stages the pinned executable and a provisional model for future hardware without changing the active profile or authorizing inference. `--skip-model-pull` requires an existing model; runtime and GPU admission remain unverified.
+
+The experimental OpenCode launcher forwards only an operating-system environment allowlist plus its scoped credentials; custom development environment variables are omitted. It disables OpenCode model-catalog fetching and auto-update. The MCP client uses a temporary secret-free config and cannot start a replacement Hub. Same-user file access and launched-tool networking remain unrestricted.
 
 The local OpenCode path rejects explicit Ollama `:cloud` and `-cloud` model names before download or GPU reservation. The experimental provider accepts Ollama 0.34.0 only, checks version and loaded models on the inference TCP connection, and adds `:local` to requests. An isolated real Ollama test rejected a renamed remote alias; its unsuffixed control reached a loopback-only fake remote. Initial server identity and arbitrary shell networking are not fenced; local-only operation is not yet established.
 
@@ -35,9 +68,15 @@ On Windows the experimental provider requires its inference TCP peer to match th
 
 The `opencode-local` agent identity skips task-creation adaptive context warmup in the Hub HTTP handler. This closes one implicit model path only; it does not enforce deterministic-only operation or prevent independent background inference.
 
+The experimental provider and cooperating Hub schedulers use a persistent GPU admission file in the configured state directory. Focused tests cover cross-process exclusion and failure fencing; independent backend clients, crash recovery and actual GPU exclusivity remain unverified. Unknown internal inference outcomes retain the fence. Do not manually clear it while inference may still be running.
+
+Direct Ollama embedding requests and CUDA SentenceTransformers embedding loads and encoding also acquire that admission file when a state directory is configured; incomplete responses retain it. A CUDA model may remain resident afterward. This does not fence independent clients or other embedding backends.
+
 The generated OpenCode manifest defines `local-builder`, `local-planner`, `local-reviewer`, and `local-debugger`. The three subagents inherit the session model and deny OpenCode edit and shell permissions; this alone does not restrict separately configured MCP tools or serialize inference. The manifest is not installed automatically. The `opencode-local` MCP process hides and rejects direct calls to `local_ai_task` and `local_ai_work`. Its HTTP handler denies unclassified paths and actions, and synchronous Ollama/llama.cpp generation and scheduler submission observe a request-scoped deny. Deterministic caller lookup is allowed. RAG search uses lexical retrieval without embeddings or reranking; other RAG actions remain denied. The route allowlist is incomplete; the caller-supplied label, arbitrary threads and independent background workers are not isolated. This does not establish full local-only enforcement.
 
 The generator also builds an experimental per-launch OpenCode V2 config containing the local provider, MCP and goal plugin. It denies other model providers and references credentials through environment variables. An isolated OpenCode probe used a fake backend and registered `/goal` after asynchronous initialization. This is not installed by setup, and provider policy does not prohibit network access through arbitrary tools.
+
+The experimental launcher passes a domain-separated restricted Hub credential, not the master token, to OpenCode. The HTTP handler forces this credential into `opencode-local` regardless of a supplied agent header and denies provider lifecycle calls. Same-user processes can still read Hub configuration; this is not OS isolation or a complete local-only guarantee.
 
 The experimental Windows launcher `python tools/opencode_local.py --model MODEL --project PATH`, also available as `python tools/hubctl.py opencode --opencode-model MODEL --root PATH`, requires the updated running Hub, a configured Hub API token of at least 32 ASCII characters and the verified pinned OpenCode executable. It owns a provider session and uses a separate managed data directory. Project OpenCode config is disabled; shell network access is not sandboxed. Normal setup prepares components only when requested; target GPU acceptance remains outstanding.
 
@@ -46,6 +85,8 @@ The scheduler's experimental external GPU reservation persists a capability hash
 An experimental loopback-only authenticated provider bridge uses a single-model session, serializes requests and requires an OpenAI-compatible SSE `[DONE]` event plus upstream EOF. Uncertain streams retain the reservation. The Hub owns authenticated start/status/stop endpoints; starting requires a configured Hub token of at least 32 ASCII characters, and the provider credential is derived locally from a returned nonce. Requests to enter gaming or maintenance initiate provider shutdown and reject the mode change until shutdown is confirmed. An isolated OpenCode 2.2.5 probe used a fake backend. Setup does not activate it. Actual Ollama/GPU behavior, safe recovery and full GPU ownership remain unverified.
 
 The experimental, not-yet-installed `/goal` plugin can create an Agent OS task when given a goal and explicit acceptance criteria, or bind an existing task ID only after checking the goal, ordered criteria, owner, project root and session. An unverified binding blocks continuation and can be rechecked on resume. A complete model-driven workflow is not yet verified.
+
+For an uncertain prompt admission, `/goal resume` may reconcile exact prompt and successful idle history to `PAUSED` after validating task binding; it does not send a prompt or establish goal completion. A second resume continues. Missing or ambiguous history remains blocked. Cross-process ownership and real-model recovery are unverified.
 
 Agent OS HTTP task completion optionally accepts `expected_criteria`, a nonempty ordered list that must exactly match the persisted acceptance criteria. Criteria-bound completion cannot adopt a task. This check adds to receipt and ownership verification; it does not install an OpenCode goal controller.
 

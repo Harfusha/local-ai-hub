@@ -1,0 +1,7 @@
+# Case 051: delta over a single MCP session
+
+Run `python prepare.py ABSOLUTE_NEW_ROOT --port HUB_PORT --source ABSOLUTE_HUB_SOURCE`. It creates a new sandbox using case 076's separate state and workspace. Start the isolated supervisor with that config and verify process identity and loopback endpoint before running `python -B session_probe.py` from the sandbox. The client makes one compact context call and, only after a confirmed success, one delta call with the same root, query and reuse key through the same stdio server process. It writes complete responses once to `session-outcomes.json` and records hashes of three relevant source files before and after; this is not a hash of the whole installation.
+
+No production state, preprocessing, model pulls or repeated unknown calls. The file is a transport observation, not an Agent OS receipt or proof of the production Hub. Preserve it and stop only identity-verified fixture processes after inspection.
+
+For a separate fresh sandbox, `python -B session_probe.py --change-marker` changes only the explicit fixture marker after the first successful call and saves `session-outcomes-changed.json`. Inspect whether the backend actually observes the changed marker; a stale index or unchanged response is not proof that a changed delta was exercised. The evidence file is reserved before the first call so an interrupted run is not repeated silently.

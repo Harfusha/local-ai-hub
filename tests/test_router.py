@@ -165,6 +165,30 @@ def test_second_opinion_uses_basic_qwen_by_default():
     assert result["model"] == "qwen2.5-coder:3b"
 
 
+def test_second_opinion_applies_explicit_model_override_and_quality_floor():
+    from local_ai_hub.router import ModelRouter
+    from local_ai_hub.services import LocalAIServices
+
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"models": {"fast_code": "qwen2.5-coder:1.5b", "heavy_code": "qwen2.5-coder:3b",
+                                 "reasoning": "qwen2.5-coder:7b", "general": "qwen2.5-coder:1.5b"},
+                      "routing": {"heavy_min_score": 3}}
+    service.router = ModelRouter(service.config)
+    calls = []
+    def generate(model, *args, **kwargs):
+        calls.append(model)
+        return {"success": True, "model": model}
+    service._generate = generate
+    args = {"question": "Why does this function fail?", "candidate": "It has a bug."}
+    result = service.second_opinion({**args, "model": "qwen2.5-coder:7b"})
+    assert result["model"] == "qwen2.5-coder:7b" and calls == ["qwen2.5-coder:7b"]
+    result = service.second_opinion({**args, "model": "qwen2.5-coder:1.5b"})
+    assert result["success"] is False and "quality floor" in result["error"]
+    result = service.second_opinion({**args, "model": "unconfigured:latest"})
+    assert result["success"] is False and "configured model tier" in result["error"]
+    assert calls == ["qwen2.5-coder:7b"]
+
+
 def test_semantic_language_marks_local_inference_as_required():
     route = _router().classify("Explore the relevant behavior and explain alternatives")
 

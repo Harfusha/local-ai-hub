@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "case_id": "093",
-  "fixture_revision": "case-093-v1",
-  "entry_point": "prepare.py",
+  "fixture_revision": "case-093-export-v2",
+  "entry_point": "prepare_export.py",
   "workspace": "new-git-repository; operator supplies a new disposable absolute root",
   "server": "none for Git seed preparation; real agent interruption requires an authorized Hub sandbox",
   "token": "none for seed preparation; use sandbox credentials if the real workflow requires them",
@@ -11,6 +11,6 @@
   "runtime_acceptance": false,
   "limitations": "checkpoint is simulated; real agent interruption is required",
   "kind": "synthetic-disposable-source",
-  "oracle": "test_pricing.py",
+  "oracle": "test_export.py",
   "seed_expectation": "unresolved merge conflict prevents tests"
 }

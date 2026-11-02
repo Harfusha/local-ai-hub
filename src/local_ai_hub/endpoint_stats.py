@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import ntpath
+import re
 import sqlite3
 import threading
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import quote, unquote
 
 from .sqlite_support import connect_sqlite, is_busy_error
 
@@ -69,14 +73,34 @@ def calculate_percentiles(bucket_counts: Sequence[int], total_calls: int) -> tup
     return p50, p95, p99
 
 
-def clean_project_root(root: str | None) -> str:
-    """Normalize project root to safe directory basename or empty string."""
-    if not root:
+def _exact_project_scope(root: str) -> str:
+    """Return a stable hashed selector only for an absolute project root."""
+    raw = str(root or "")
+    if not raw or "\x00" in raw:
         return ""
-    raw = str(root).replace("\\", "/").rstrip("/")
-    if not raw or raw in ("all", "__all__"):
+    drive, _ = ntpath.splitdrive(raw)
+    if drive and ntpath.isabs(raw):
+        normalized = ntpath.normcase(ntpath.normpath(raw))
+        if os.name == "nt":
+            normalized = ntpath.normcase(os.path.realpath(raw))
+        basename = ntpath.basename(normalized.rstrip("\\/")) or "root"
+    elif os.path.isabs(raw):
+        normalized = os.path.normcase(os.path.realpath(raw))
+        basename = os.path.basename(normalized.rstrip("/")) or "root"
+    else:
         return ""
-    return Path(raw).name
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"root:{digest}:{quote(basename, safe='')}"
+
+
+def _scope_selector(root: str | None) -> tuple[str, str]:
+    raw = str(root or "")
+    if raw.startswith("legacy:"):
+        return "legacy", unquote(raw[len("legacy:"):])
+    if re.fullmatch(r"root:[0-9a-f]{64}:[A-Za-z0-9_.%~-]+", raw):
+        return "exact", raw
+    exact = _exact_project_scope(raw)
+    return ("exact", exact) if exact else ("invalid", "")
 
 
 def get_registered_surface_catalog() -> list[dict[str, str]]:
@@ -177,6 +201,7 @@ class EndpointStatsStore:
 
             sql = f"CREATE TABLE IF NOT EXISTS endpoint_stats ({', '.join(columns)})"
             con.execute(sql)
+            con.execute(f"CREATE TABLE IF NOT EXISTS endpoint_stats_exact ({', '.join(columns)})")
             con.execute("CREATE INDEX IF NOT EXISTS idx_ep_stats_root ON endpoint_stats(scope_root)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_ep_stats_item ON endpoint_stats(item_type, item_name)")
             con.execute("CREATE TABLE IF NOT EXISTS endpoint_call_ids (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, created_at REAL NOT NULL)")
@@ -202,7 +227,7 @@ class EndpointStatsStore:
             return
         if not isinstance(event_id, str) or len(event_id) > 128 or any(ord(ch) < 32 for ch in event_id):
             return
-        safe_root = clean_project_root(root)
+        safe_root = _exact_project_scope(root)
         b_idx = get_latency_bucket_index(duration_ms)
         is_succ = 1 if success else 0
         is_fail = 0 if success else 1
@@ -210,7 +235,7 @@ class EndpointStatsStore:
 
         col_b = f"b{b_idx}"
         sql = f"""
-        INSERT INTO endpoint_stats(
+        INSERT INTO endpoint_stats_exact(
             scope_root, item_type, item_name, calls, success_calls, fail_calls, {col_b}, last_used
         ) VALUES (?, ?, ?, 1, ?, ?, 1, ?)
         ON CONFLICT(scope_root, item_type, item_name) DO UPDATE SET
@@ -246,8 +271,10 @@ class EndpointStatsStore:
         if not self.enabled:
             return {"success": False, "error": "endpoint stats disabled", "projects": [], "items": []}
 
-        target_root = clean_project_root(root)
         is_global = root is None or str(root).strip() in ("", "all", "__all__")
+        scope_kind, target_root = _scope_selector(root)
+        if not is_global and (scope_kind == "invalid" or not target_root):
+            return {"success": False, "error": "expected absolute root or explicit project selector", "projects": [], "items": []}
 
         catalog = get_registered_surface_catalog()
         known_map: dict[tuple[str, str], dict[str, Any]] = {}
@@ -273,10 +300,11 @@ class EndpointStatsStore:
         try:
             with self._lock, closing(self._connect()) as con:
                 p_rows = con.execute("SELECT DISTINCT scope_root FROM endpoint_stats WHERE scope_root != '' ORDER BY scope_root").fetchall()
-                projects = [str(r[0]) for r in p_rows]
+                projects = ["legacy:" + quote(str(r[0]), safe="") for r in p_rows]
+                projects += [str(r[0]) for r in con.execute("SELECT DISTINCT scope_root FROM endpoint_stats_exact WHERE scope_root != '' ORDER BY scope_root").fetchall()]
 
                 # Also include all items currently known in DB across any scope
-                db_items = con.execute("SELECT DISTINCT item_type, item_name FROM endpoint_stats").fetchall()
+                db_items = con.execute("SELECT item_type, item_name FROM endpoint_stats UNION SELECT item_type, item_name FROM endpoint_stats_exact").fetchall()
                 for d_type, d_name in db_items:
                     key = (str(d_type), str(d_name))
                     if key not in known_map:
@@ -304,17 +332,18 @@ class EndpointStatsStore:
                            SUM(calls), SUM(success_calls), SUM(fail_calls),
                            {', '.join(f'SUM(b{i})' for i in range(NUM_BUCKETS))},
                            MAX(last_used)
-                    FROM endpoint_stats
+                    FROM (SELECT * FROM endpoint_stats UNION ALL SELECT * FROM endpoint_stats_exact)
                     GROUP BY item_type, item_name
                     """
                     rows = con.execute(query).fetchall()
                 else:
+                    table = "endpoint_stats" if scope_kind == "legacy" else "endpoint_stats_exact"
                     query = f"""
                     SELECT item_type, item_name,
                            calls, success_calls, fail_calls,
                            {bucket_cols},
                            last_used
-                    FROM endpoint_stats
+                    FROM {table}
                     WHERE scope_root = ?
                     """
                     rows = con.execute(query, (target_root,)).fetchall()
@@ -356,7 +385,7 @@ class EndpointStatsStore:
                         entry["bucket_counts"] = b_counts
                     known_map[(itype, iname)] = entry
         except sqlite3.Error:
-            pass
+            return {"success": False, "error": "endpoint stats unavailable", "projects": [], "items": []}
 
         all_items = list(known_map.values())
         unused_count = sum(1 for it in all_items if it["calls"] == 0)
@@ -370,8 +399,9 @@ class EndpointStatsStore:
 
         return {
             "success": True,
-            "root": target_root if not is_global else "",
+            "root": (("legacy:" + quote(target_root, safe="")) if scope_kind == "legacy" else target_root) if not is_global else "",
             "is_global": is_global,
+            "project_scope_precision": "mixed" if is_global else ("historical_basename" if scope_kind == "legacy" else "exact_root"),
             "projects": projects,
             "total_items": len(all_items),
             "unused_count": unused_count,
@@ -384,14 +414,18 @@ class EndpointStatsStore:
         """Reset statistics globally or for a specific project."""
         if not self.enabled:
             return False
-        target_root = clean_project_root(root)
         is_global = root is None or str(root).strip() in ("", "all", "__all__")
+        scope_kind, target_root = _scope_selector(root)
+        if not is_global and (scope_kind == "invalid" or not target_root):
+            return False
         try:
             with self._lock, closing(self._connect()) as con:
                 if is_global:
                     con.execute("DELETE FROM endpoint_stats")
+                    con.execute("DELETE FROM endpoint_stats_exact")
                 else:
-                    con.execute("DELETE FROM endpoint_stats WHERE scope_root = ?", (target_root,))
+                    table = "endpoint_stats" if scope_kind == "legacy" else "endpoint_stats_exact"
+                    con.execute(f"DELETE FROM {table} WHERE scope_root = ?", (target_root,))
                 con.commit()
             return True
         except sqlite3.Error:

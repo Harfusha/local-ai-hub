@@ -1,5 +1,7 @@
-# Fixture 098
+# Case 098: isolated cross-interface lifecycle
 
-Připrav nový disposable root se samostatným `workspace`, `state` a `venv`, nainstaluj z offline wheelhouse pouze zamýšlený Hub. `workspace` musí být autorizovaný lokální Git root. Potom v interaktivním terminálu spusť `ROOT/venv/Scripts/python.exe -I run.py ROOT`; na Windows použij přesnou cestu k interpretu venv. Skript spustí izolovaný loopback supervisor, vytvoří jedinou Agent OS úlohu přes skutečné MCP stdio a získá stejné ID přes HTTP. V otevřeném dashboardu ověř Tasks, ID, stav a fázi; po kontrole ukonči Enterem. Pro pokračování existující úlohy použij `--task-id ID`, nikdy nevytvářej novou po nejasném výsledku.
+Prepare with `python prepare.py ABSOLUTE_NEW_ROOT --port HUB_PORT --source ABSOLUTE_HUB_SOURCE`. This reuses case 076 isolation and creates a fresh token in the sandbox config. Use a free non-production loopback port and an absolute new directory outside Git. The token is a local fixture secret; do not copy it into logs or evaluation results.
 
-Skript záměrně nevyrábí receipt. Pro dokončení scénáře je nutný skutečný autorizovaný producent validačního důkazu a shoda stavu/evidence ve všech vrstvách. Není prokázáno release acceptance ani kvalita modelu. State a venv slouží pouze tomuto scénáři; sandbox nesmí sdílet stav produkční instalace. MCP/HTTP na tomto explicitně izolovaném loopback sandboxu mají prázdný token.
+Start only the isolated supervisor with its explicit config and source, then verify its process identity, root, port, token authentication and separate state before handing it to a GPT-6 Luna evaluation chat. The `call_mcp.py` client accepts only coordination actions and requires the sandbox root. The dashboard and HTTP must connect to the same sandbox service and state. Stop only processes owned by this fixture and retain its evidence.
+
+The fixture does not create a successful verification receipt or guarantee that all lifecycle actions are exposed. Report unsupported operations and absent authentic producer evidence explicitly. Preparing this directory alone is not a smoke test or a PASS.

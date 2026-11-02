@@ -623,6 +623,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "automation": "browser_desktop_mutation",
         },
         allowed={
+            "benchmark": (),
             "submit": (
                 "job_action", "task", "context", "candidate", "complexity", "max_tokens",
                 "tasks", "profile", "root", "workspace", "timeout_seconds", "request_id",
@@ -2024,6 +2025,8 @@ def validate_operation_arguments(
     if isinstance(properties, dict):
         unknown = sorted(set(arguments) - set(properties))
         if unknown:
+            if tool == "local_ai_task" and action == "compress" and unknown[0] == "input":
+                return "unexpected argument for local_ai_task: input; use text for source and task for instructions"
             return f"unexpected argument for {tool}: {unknown[0]}"
 
     action_contract = contract["actions"][action]
@@ -2039,6 +2042,8 @@ def validate_operation_arguments(
             if len(scoped_names) == 1:
                 return f"{field} is only valid for action='{scoped_names[0]}'"
             return f"{field} is only valid for actions {scoped_names}"
+    if tool == "local_ai_coord" and action == "task_create" and arguments.get("scope") == "":
+        return "scope must use a canonical AgentScope value when supplied"
     if tool == "local_ai_repo" and action == "context":
         mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
         if mode != "adaptive":

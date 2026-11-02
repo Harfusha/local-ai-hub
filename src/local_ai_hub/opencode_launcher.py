@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .generator import generate_opencode_runtime_config
 from .opencode_models import ModelPreparationError, ensure_model, local_inventory
 from .opencode_provider_service import derive_provider_token
+from .opencode_boundary import derive_local_profile_token
 from .state_paths import configured_state_dir
 
 
@@ -18,11 +19,45 @@ class LaunchError(RuntimeError):
     """A local OpenCode launch or its provider cleanup was not confirmed."""
 
 
+# Runtime essentials only. Credential names are open-ended and cannot be
+# reliably removed using suffixes such as _TOKEN or _API_KEY.
+_LOCAL_ENVIRONMENT = frozenset({
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE",
+    "TEMP", "TMP", "TMPDIR", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "PUBLIC", "USERNAME", "USER",
+    "SHELL", "TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "PSMODULEPATH", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+})
+
+_PROFILE_BOOLEAN_TABLES = ("features", "code_intelligence", "commands", "coord", "coordination",
+                           "artifacts", "token_saving", "preprocessing", "async_jobs",
+                           "work_orchestrator", "speculative_lint", "monitoring")
+
+
+def _client_profile_config(cfg: dict, hub_port: int, *, state_dir: Path | None = None) -> str:
+    lines = ["[server]", f"port = {hub_port}"]
+    if state_dir is not None:
+        if not isinstance(state_dir, Path) or not state_dir.is_absolute():
+            raise ValueError("client state directory must be absolute")
+        lines.append(f"state_dir = {json.dumps(str(state_dir))}")
+    for section in _PROFILE_BOOLEAN_TABLES:
+        source = cfg.get(section)
+        if not isinstance(source, dict):
+            continue
+        entries = [(key, value) for key, value in source.items() if isinstance(key, str) and type(value) is bool]
+        if entries:
+            lines.extend(("", f"[{section}]"))
+            lines.extend(f"{json.dumps(key)} = {str(value).lower()}" for key, value in sorted(entries))
+    return "\n".join(lines) + "\n"
+
+
 def _run_owned_process(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float) -> int:
     """Run the interactive Windows CLI in a kill-on-close process tree."""
     if os.name != "nt":
         raise LaunchError("the experimental interactive launcher currently supports Windows only")
-    from .process_utils import _resume_suspended_process, assign_process_to_job, close_job_object, create_job_object_kill_on_close, terminate_job_object
+    from .process_utils import (_resume_suspended_process, assign_process_to_job, close_job_object,
+                                create_job_object_kill_on_close, terminate_job_object, wait_job_object_empty)
 
     job = create_job_object_kill_on_close()
     if not job:
@@ -39,7 +74,9 @@ def _run_owned_process(argv: list[str], *, cwd: Path, env: dict[str, str], timeo
         cleanup_confirmed = True
         try:
             if assigned:
-                cleanup_confirmed = bool(terminate_job_object(job))
+                terminated = bool(terminate_job_object(job))
+                empty = bool(wait_job_object_empty(job))
+                cleanup_confirmed = terminated and empty
             elif process is not None and process.poll() is None:
                 process.kill()
             if process is not None:
@@ -87,6 +124,9 @@ def launch_opencode(
     nonce = started["nonce"]
     try:
         provider_token = derive_provider_token(hub_token, nonce)
+        profile_token = derive_local_profile_token(hub_token, nonce)
+        if profile_token is None:
+            raise ValueError("invalid OpenCode profile credential")
     except ValueError:
         raise LaunchError("provider start was not confirmed; inspect provider status") from None
 
@@ -94,14 +134,17 @@ def launch_opencode(
     result = 1
     try:
         runtime = generate_opencode_runtime_config(cfg, install_dir, hub_python, model=model, provider_port=started["port"], hub_port=hub_port)
-        if isinstance(cfg.get("_config_path"), str) and cfg["_config_path"]:
-            runtime["mcp"]["servers"]["local-ai"]["environment"]["LOCAL_AI_CONFIG"] = cfg["_config_path"]
-        env = {key: value for key, value in os.environ.items()
-               if not key.upper().startswith("OPENCODE_") and not key.upper().endswith(("_API_KEY", "_TOKEN"))}
+        env = {key: value for key, value in os.environ.items() if key.upper() in _LOCAL_ENVIRONMENT}
         with tempfile.TemporaryDirectory(prefix="config-", dir=profile) as config_dir:
+            # Only non-secret transport settings go into the child profile.
+            # The owner configuration is never passed as the MCP config path.
+            profile_config = Path(config_dir) / "hub-client.toml"
+            profile_config.write_text(_client_profile_config(cfg, hub_port), encoding="utf-8")
+            runtime["mcp"]["servers"]["local-ai"]["environment"]["LOCAL_AI_CONFIG"] = str(profile_config)
             env.update({
                 "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG_CONTENT": json.dumps(runtime),
-                "OPENCODE_CONFIG_DIR": config_dir, "LOCAL_AI_HUB_TOKEN": hub_token,
+                "OPENCODE_DISABLE_MODELS_FETCH": "1", "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_CONFIG_DIR": config_dir, "LOCAL_AI_HUB_TOKEN": profile_token,
                 "LOCAL_AI_OPENCODE_PROVIDER_TOKEN": provider_token,
                 "XDG_CONFIG_HOME": config_dir, "XDG_DATA_HOME": str(profile / "data"),
                 "XDG_CACHE_HOME": str(profile / "cache"), "XDG_STATE_HOME": str(profile / "state"),

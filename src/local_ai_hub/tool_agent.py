@@ -254,7 +254,7 @@ class ToolAwareLocalAgent:
         try:
             record(action=f"tool-agent:{role}", model=model,
                    stage="model_inference_observed" if observed else "model_response_unverified",
-                   success=isinstance(response, dict) and not result.get("error"))
+                   success=isinstance(response, dict) and not result.get("error") and result.get("done_reason") != "length")
         except Exception:
             pass
 
@@ -584,6 +584,7 @@ class ToolAwareLocalAgent:
             "max_tokens": int(max_tokens), "max_model_steps": max_steps,
             "execution": execution_hint, "tool_capability": tool_capability,
             "tool_evidence_version": 2,
+            "tool_completion_version": 1,
         })
         wrapped_key = stable_hash({"tool-agent": cache_key})
 
@@ -673,6 +674,16 @@ class ToolAwareLocalAgent:
             max_calls = min(profile.max_tool_calls, self.max_calls) if profile else self.max_calls
             temperature = profile.temperature if profile else 0.2
 
+            def truncated(steps: int, response: dict[str, Any]) -> dict[str, Any]:
+                self.failures += 1
+                return {"success": False, "error": "local model output reached its token limit",
+                        "error_code": "model_output_truncated", "model": model,
+                        "output_truncated": True, "stop_reason": "length", "terminal": True,
+                        "retryable": False, "_cacheable": False,
+                        **({"_lah_backend_completed": True} if response.get("done") is True else {}),
+                        "tool_agent": {"role": role, "steps": steps, "tool_calls": call_count,
+                                       "tool_evidence": dict(tool_evidence), "workspace": workspace}}
+
             # Reserve the final model request for synthesis after the last tool step.
             for step in range(1 if direct else max(0, max_steps - 1)):
                 if stopped():
@@ -720,6 +731,8 @@ class ToolAwareLocalAgent:
                         "repetition_loop_detected": loop_detected,
                         "_lah_repetition_loop_detected": loop_detected,
                     }
+                if response.get("done_reason") == "length":
+                    return truncated(step + 1, response)
                 message = response.get("message", {}) if isinstance(response.get("message"), dict) else {}
                 calls = message.get("tool_calls", []) if isinstance(message, dict) else []
                 if not isinstance(calls, list):
@@ -822,6 +835,8 @@ class ToolAwareLocalAgent:
                 return cancelled()
             if "error" in response:
                 return {"success": False, "error": response["error"], "model": model}
+            if response.get("done_reason") == "length":
+                return truncated(max_steps, response)
             if not isinstance(response.get("message"), dict) or response["message"].get("tool_calls"):
                 return {"success": False, "error": "invalid final tool response", "model": model}
             content = str(response.get("message", {}).get("content", "")).strip()

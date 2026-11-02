@@ -1,5 +1,7 @@
 # T15 Command Concurrency and Performance Acceptance Matrix
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 Scope: T15 owns command-broker performance, cancellation, drainage, and concurrency changes in `src/local_ai_hub/commands.py`, `tests/test_command_concurrency_contract.py`, `tests/test_command_timeout_cache_contract.py`, `tests/test_mcp_response_budget.py`, and `tests/test_command_performance_acceptance.py`. T06/T07 retain `services.py`, `http_server.py`, and `test_command_transport.py`; T08 owns `agent_events.py`; T20 owns the master matrix. This matrix tracks T15 acceptance only. T06's active lease protects sandbox and exact-write-set rollback symbols in `commands.py` plus listed test paths; T15 performance edits stay disjoint.
 
 ## Initial T15 source snapshot (before commit `3ac4d67`)

@@ -7,7 +7,6 @@ from local_ai_hub.endpoint_stats import (
     EndpointStatsStore,
     calculate_percentiles,
     get_latency_bucket_index,
-    clean_project_root,
     get_registered_surface_catalog,
 )
 
@@ -20,6 +19,79 @@ def test_bucket_index():
     assert get_latency_bucket_index(500.0) == 7    # 500 - 1000ms
     assert get_latency_bucket_index(1200.0) == 8   # 1000 - 2500ms
     assert get_latency_bucket_index(70000.0) == 13 # >= 60000ms
+
+
+def test_endpoint_stats_read_failure_is_not_reported_as_zero(tmp_path, monkeypatch):
+    import sqlite3
+    store = EndpointStatsStore(tmp_path / "state")
+    def fail_connect():
+        raise sqlite3.OperationalError("unavailable")
+    monkeypatch.setattr(store, "_connect", fail_connect)
+    report = store.get_stats()
+    assert report["success"] is False
+    assert report["error"] == "endpoint stats unavailable"
+
+
+def test_exact_scopes_preserve_legacy_counts_and_event_dedup_after_restart(tmp_path):
+    import time
+    from contextlib import closing
+
+    state = tmp_path / "state"
+    store = EndpointStatsStore(state)
+    with closing(store._connect()) as con, con:
+        con.execute("INSERT INTO endpoint_stats(scope_root,item_type,item_name,calls,success_calls,b0) VALUES(?,?,?,?,?,?)",
+                    ("shared", "mcp", "tool", 1, 1, 1))
+        con.execute("INSERT INTO endpoint_call_ids(event_id,created_at) VALUES(?,?)", ("legacy-event", time.time()))
+
+    root = str(tmp_path / "a" / "shared")
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=1, root=root, event_id="legacy-event")
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=1, root=root, event_id="new-event")
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=1, root=root, event_id="new-event")
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=1, root="shared")
+
+    reopened = EndpointStatsStore(state)
+    assert reopened.get_stats(root=root, include_unused=False)["items"][0]["calls"] == 1
+    assert reopened.get_stats(root="legacy:shared", include_unused=False)["items"][0]["calls"] == 1
+    assert reopened.get_stats(include_unused=False)["items"][0]["calls"] == 3
+    assert reopened.get_stats(root="shared")["success"] is False
+
+
+def test_project_stats_disclose_basename_grouping_and_tool_call_semantics(tmp_path):
+    from contextlib import closing
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    store = EndpointStatsStore(tmp_path / "state")
+    with closing(store._connect()) as con, con:
+        con.execute("INSERT INTO endpoint_stats(scope_root,item_type,item_name,calls,success_calls,b0) VALUES(?,?,?,?,?,?)",
+                    ("shared", "mcp", "local_ai_task:review", 4, 4, 4))
+    store.record_call(item_type="mcp", item_name="local_ai_task:review", duration_ms=1,
+                      root="C:/one/shared")
+    store.record_call(item_type="mcp", item_name="local_ai_task:review", duration_ms=1,
+                      root="C:/two/shared")
+    report = store.get_stats(root="C:/one/shared", include_unused=False)
+    assert report["project_scope_precision"] == "exact_root"
+    assert report["items"][0]["calls"] == 1
+    other = store.get_stats(root="C:/two/shared", include_unused=False)
+    assert other["root"] != report["root"] and other["items"][0]["calls"] == 1
+    assert store.get_stats(root=report["root"], include_unused=False)["items"][0]["calls"] == 1
+    assert store.get_stats(root="c:/ONE/shared/../shared", include_unused=False)["root"] == report["root"]
+    legacy = store.get_stats(root="legacy:shared", include_unused=False)
+    assert legacy["project_scope_precision"] == "historical_basename"
+    assert legacy["items"][0]["calls"] == 4
+    global_report = store.get_stats(include_unused=False)
+    assert global_report["items"][0]["calls"] == 6
+    assert store.reset(root="C:/one/shared") is True
+    assert store.get_stats(root="C:/two/shared", include_unused=False)["items"][0]["calls"] == 1
+    assert store.get_stats(root="legacy:shared", include_unused=False)["items"][0]["calls"] == 4
+    assert store.get_stats(root="C:/one/shared", include_unused=False)["items"] == []
+    assert store.get_stats(root="shared", include_unused=False)["success"] is False
+    assert store.reset(root="shared") is False
+    assert store.reset(root="legacy:shared") is True
+    assert store.get_stats(root="C:/two/shared", include_unused=False)["items"][0]["calls"] == 1
+    assert 'id="epStatsScopeNotice"' in DASHBOARD_HTML
+    assert "historické" in DASHBOARD_HTML
+    assert "neprokazuje spuštění modelu" in DASHBOARD_HTML
+    assert "historickou skupinu" in DASHBOARD_HTML
 
 
 def test_percentile_calculation():
@@ -42,13 +114,6 @@ def test_percentile_calculation():
     assert 500.0 <= p99 <= 1000.0
 
 
-def test_clean_project_root():
-    assert clean_project_root("C:\\Users\\Adam\\my-project") == "my-project"
-    assert clean_project_root("/home/user/project/") == "project"
-    assert clean_project_root("all") == ""
-    assert clean_project_root(None) == ""
-
-
 def test_endpoint_stats_store_lifecycle(tmp_path: Path):
     store = EndpointStatsStore(tmp_path / "state")
 
@@ -64,8 +129,8 @@ def test_endpoint_stats_store_lifecycle(tmp_path: Path):
     global_stats = store.get_stats()
     assert global_stats["success"] is True
     assert global_stats["is_global"] is True
-    assert "project-a" in global_stats["projects"]
-    assert "project-b" in global_stats["projects"]
+    assert any(p.endswith(":project-a") for p in global_stats["projects"])
+    assert any(p.endswith(":project-b") for p in global_stats["projects"])
 
     items_by_name = {it["name"]: it for it in global_stats["items"]}
     assert "/api/search" in items_by_name
@@ -90,20 +155,20 @@ def test_endpoint_stats_store_lifecycle(tmp_path: Path):
     assert health_item["status"] == "unused"
 
     # Query project-a specific stats
-    proj_a_stats = store.get_stats(root="project-a")
+    proj_a_stats = store.get_stats(root="C:/repo/project-a")
     assert proj_a_stats["is_global"] is False
-    assert proj_a_stats["root"] == "project-a"
+    assert proj_a_stats["root"].endswith(":project-a")
     proj_a_items = {it["name"]: it for it in proj_a_stats["items"]}
     assert proj_a_items["/api/search"]["calls"] == 3
     assert proj_a_items["local_ai_repo:context"]["calls"] == 0
 
     # Reset project-a
-    assert store.reset(root="project-a") is True
-    after_reset_a = store.get_stats(root="project-a")
+    assert store.reset(root="C:/repo/project-a") is True
+    after_reset_a = store.get_stats(root="C:/repo/project-a")
     assert {it["name"]: it for it in after_reset_a["items"]}["/api/search"]["calls"] == 0
 
     # project-b still has its stats
-    proj_b_stats = store.get_stats(root="project-b")
+    proj_b_stats = store.get_stats(root="C:/repo/project-b")
     assert {it["name"]: it for it in proj_b_stats["items"]}["local_ai_repo:context"]["calls"] == 1
 
     # Global reset clears all

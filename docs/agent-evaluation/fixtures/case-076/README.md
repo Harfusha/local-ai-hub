@@ -1,0 +1,7 @@
+# Case 076: falsey values through isolated MCP
+
+Prepare a new directory outside any checkout with `python prepare.py ABSOLUTE_NEW_ROOT --port PORT --source ABSOLUTE_HUB_CHECKOUT`. Choose a free loopback port other than the production port. The directory contains a dedicated state directory, explicit config, workspace, exact JSON contract and stdio MCP client; it never uses the default Hub configuration.
+
+The operator starts `python -m local_ai_hub.supervisor --config ABSOLUTE_NEW_ROOT/config.toml` with `PYTHONPATH` pointing at the specified checkout's `src`, then verifies the supervisor, its Hub child, their identities and the chosen endpoint before handing the client to the tested chat. Direct `python -m local_ai_hub` is rejected by the current Hub because it requires an identity-verified supervisor. The source checkout may change concurrently: record its relevant revision and dirty state and do not claim candidate-bound proof unless its bytes are stable. Background preprocessing and model startup are disabled as configured. Send the catalog prompt and `workspace/zadani.md` to the agent, permitting `call_mcp.py` only for this isolated daemon. Record real responses and task identities; do not fabricate receipts or repeat uncertain mutations. Stop only the identity-verified owned supervisor and Hub after the run and preserve the state and logs.
+
+An isolated checkout or workspace alone is not isolated Hub state. No live deployment or full-suite acceptance follows from this fixture.

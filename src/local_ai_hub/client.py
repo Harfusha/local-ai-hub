@@ -189,9 +189,16 @@ class HubClient:
         endpoint = urlsplit(self.base_url)
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
-        self.api_token = str(self.config.get("security", {}).get("api_token", ""))
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
-        self.auto_start = bool(auto_start)
+        self.api_token = (os.environ.get("LOCAL_AI_HUB_TOKEN", "") if self.agent == "opencode-local"
+                          else str(self.config.get("security", {}).get("api_token", "")))
+        if self.agent == "opencode-local":
+            from .opencode_boundary import local_profile_config
+
+            self.config = local_profile_config(self.config, self.api_token)
+        # An isolated OpenCode client may connect only to its existing Hub.
+        # It must never start an unsandboxed replacement on connection failure.
+        self.auto_start = bool(auto_start) and self.agent != "opencode-local"
         self._inprocess_transport = inprocess_transport
         client_cfg = self.config.get("client", {})
         self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))

@@ -22,6 +22,15 @@ DEFAULT_MAX_BINARY_BYTES = 4_000_000
 DEFAULT_MAX_JSON_BYTES = 4_000_000
 _ARTIFACT_TABLE = "artifacts"
 _ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
+
+
+def _artifact_not_found(artifact_id: str) -> dict[str, Any]:
+    error = "artifact not found or expired"
+    if isinstance(artifact_id, str) and artifact_id.startswith("art_") and not re.fullmatch(r"art_[0-9a-f]{24}", artifact_id):
+        error += "; current artifact IDs use art_ followed by 24 lowercase hexadecimal characters; copy the exact ID from the originating response"
+    return {"success": False, "error": error, "artifact_id": artifact_id}
+
+
 _ARTIFACTS_SCHEMA_SQL = """CREATE TABLE artifacts (
     artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
     kind TEXT NOT NULL,
@@ -964,7 +973,7 @@ class ArtifactStore:
                 )
                 row = con.execute(query, (artifact_id, cutoff)).fetchone()
                 if row is None:
-                    return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+                    return _artifact_not_found(artifact_id)
                 rowid, kind, mime_type, text_type, paging_id, section_json, section_checksum = row
                 if mime_type:
                     return {"success": False, "error": "binary artifact requires binary retrieval"}
@@ -1104,7 +1113,7 @@ class ArtifactStore:
                 )
                 row = con.execute(query, (artifact_id, cutoff)).fetchone()
                 if row is None:
-                    return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+                    return _artifact_not_found(artifact_id)
                 rowid, kind, mime_type, text_type, paging_id, section_json, section_checksum = row
                 if mime_type:
                     return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}

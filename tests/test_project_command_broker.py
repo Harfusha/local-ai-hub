@@ -142,6 +142,33 @@ def test_resolve_project_command_uses_explicit_typed_alias_without_execution(
     assert executed is False
 
 
+def test_project_command_bypass_cache_runs_fresh_processes(tmp_path: Path, monkeypatch) -> None:
+    _write_project_command(tmp_path)
+    monkeypatch.setenv("T15_HOST_TOKEN", "host-secret")
+    broker = _broker(tmp_path)
+    original = broker._execute
+    calls = []
+    def track(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(broker, "_execute", track)
+    first = broker.run_project_command("check", str(tmp_path), bypass_cache=True)
+    second = broker.run_project_command("check", str(tmp_path), bypass_cache=True)
+    assert first["success"] is True and second["success"] is True, (first.get("error"), second.get("error"))
+    assert first["stdout"] == second["stdout"] == "env-ok\nno-arg\n"
+    assert calls == [True, True]
+
+
+def test_project_command_bypass_cache_does_not_override_broker_policy(tmp_path: Path, monkeypatch) -> None:
+    _write_project_command(tmp_path, argv=(sys.executable, "-c", "import time; print(time.time_ns())"))
+    monkeypatch.setenv("T15_HOST_TOKEN", "host-secret")
+    broker = _broker(tmp_path)
+    monkeypatch.setattr(broker, "_execute", lambda *_args, **_kwargs: pytest.fail("blocked command executed"))
+    result = broker.run_project_command("check", str(tmp_path), bypass_cache=True)
+    assert result["success"] is False
+    assert "blocked" in result.get("error", "")
+
+
 def test_run_project_command_executes_exact_argv_with_safe_env_reference(
     tmp_path: Path, monkeypatch
 ) -> None:

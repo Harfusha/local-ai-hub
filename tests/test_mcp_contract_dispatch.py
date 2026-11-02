@@ -48,6 +48,27 @@ def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatc
     assert calls == []
 
 
+def test_compress_input_error_points_to_canonical_text_without_dispatch(monkeypatch) -> None:
+    from local_ai_hub import mcp_server
+
+    calls: list[str] = []
+
+    async def fake_call_tool(name, arguments, *, convert_result=False):
+        calls.append(name)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    _content, payload = asyncio.run(mcp_server._compact_mcp_call_tool(
+        "local_ai_task", {"action": "compress", "task": "preserve facts", "input": "source"}
+    ))
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 400
+    assert "input" in payload["error"]
+    assert "text" in payload["error"]
+    assert calls == []
+
+
 def test_mcp_dispatch_rejects_artifact_list_get_fields_before_tool_call(monkeypatch) -> None:
     from local_ai_hub import mcp_server
 

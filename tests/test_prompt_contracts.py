@@ -1,6 +1,46 @@
 from local_ai_hub.prompt_contracts import build_prompt, capability_for
 
 
+def test_candidate_fast_model_has_own_conservative_advisory_scope():
+    candidate = capability_for("qwen3.5:4b-q4_K_M")
+    assert candidate.model == "qwen3.5:4b-q4_K_M"
+    assert "bounded_review" in candidate.can and "test_plan" in candidate.can
+    assert "apply_changes" in candidate.cannot
+    assert "security_decision" in candidate.cannot
+    assert "final_verification" in candidate.cannot
+    package = build_prompt(operation="review_diff", model="qwen3.5:4b-q4_K_M", task="Review this change")
+    assert package.capability.model == candidate.model
+    assert "bounded_review" in package.system
+
+
+def test_candidate_vision_model_keeps_identity_without_assuming_backend_support():
+    candidate = capability_for("gemma4:12b")
+    assert candidate.model == "gemma4:12b"
+    assert "visual_review" in candidate.can
+    assert "apply_changes" in candidate.cannot
+    assert "security_decision" in candidate.cannot
+    assert "final_verification" in candidate.cannot
+    package = build_prompt(operation="vision", model="gemma4:12b", task="Describe the UI")
+    assert package.capability.model == candidate.model
+    assert "visual_review" in package.system
+
+
+def test_candidate_code_models_preserve_security_and_write_boundaries():
+    for model in ("qwen3.5:9b-q4_K_M", "qwen2.5-coder:14b"):
+        candidate = capability_for(model)
+        assert candidate.model == model
+        assert "security_decision" in candidate.cannot
+        assert "apply_changes" in candidate.cannot
+        assert "final_verification" in candidate.cannot
+        package = build_prompt(operation="code", model=model, task="Propose a bounded diff")
+        assert "security_decision" in package.system
+        assert "apply_changes" in package.system
+    vision = capability_for("qwen3.5:9b-q4_K_M", role="vision")
+    assert "security_decision" in vision.cannot
+    assert "apply_changes" in vision.cannot
+    assert "final_verification" in vision.cannot
+
+
 def test_capability_matrix_distinguishes_all_configured_model_sizes():
     tiny = capability_for("qwen2.5-coder:0.5b")
     preprocessor = capability_for("qwen2.5-coder:1.5b")

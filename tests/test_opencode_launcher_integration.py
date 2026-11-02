@@ -65,6 +65,15 @@ def test_real_opencode_launcher_with_fake_backend(tmp_path, monkeypatch):
             self.send_header("Connection", "close")
             self.end_headers()
             common = {"id": "test", "object": "chat.completion.chunk", "created": 1, "model": "model-a"}
+            if behavior.get("invoke_verification") and "actual tool verification probe" in request_messages[-1] and "You name conversations" not in request_messages[-1] and body.get("tools") and not behavior.get("tool_invoked"):
+                behavior["tool_invoked"] = True
+                behavior["advertised_tools"] = [tool.get("function", {}).get("name") for tool in body["tools"]]
+                chunks = ({"index": 0, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_verify_1", "type": "function", "function": {"name": "goal_verify", "arguments": '{"alias":"test"}'}}]}, "finish_reason": None},
+                          {"index": 0, "delta": {}, "finish_reason": "tool_calls"})
+                for choice in chunks:
+                    self.wfile.write(("data: " + json.dumps({**common, "choices": [choice]}) + "\n\n").encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
             for choice in ({"index": 0, "delta": {"role": "assistant", "content": "All done."}, "finish_reason": None},
                            {"index": 0, "delta": {}, "finish_reason": "stop"}):
                 self.wfile.write(("data: " + json.dumps({**common, "choices": [choice]}) + "\n\n").encode())
@@ -83,6 +92,7 @@ def test_real_opencode_launcher_with_fake_backend(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "--quiet", str(project)], check=True, timeout=15, capture_output=True)
     (project / "test_failing.py").write_text("def test_expected_behavior():\n    assert 1 == 2\n", encoding="utf-8")
     (project / "test_passing.py").write_text("def test_success():\n    assert 1 == 1\n", encoding="utf-8")
+    (project / ".local-ai.toml").write_text('[commands]\ntest = "python -m pytest -q test_passing.py -p no:cacheprovider"\n', encoding="utf-8")
     failed_test = subprocess.run([sys.executable, "-m", "pytest", "-q", "test_failing.py"], cwd=project,
                                  capture_output=True, text=True, timeout=30)
     assert failed_test.returncode == 1 and "1 failed" in failed_test.stdout
@@ -158,7 +168,7 @@ import { readFileSync } from "node:fs";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const [step,end]=JSON.parse(readFileSync(0,"utf8")), id=step.data.sessionID, db=new Map();
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async()=>{}}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>({id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}})}};
 const controller=makeGoalController(ctx,{resolveRoot:async p=>p,
  getBoundTaskImpl:async()=>({success:true,task:{checkpoint:{phase:"work"}}}),completeTaskImpl:async()=>({success:false})});
 await controller.start(id,{goal:"Fix",taskId:"t",criteria:["pytest"]});
@@ -195,7 +205,7 @@ import goal from ''' + json.dumps((ROOT / "tools/opencode_goal/index.js").as_uri
 export default {id:goal.id,setup(ctx){
  const storage={...ctx.storage,set:async(key,value)=>{
    await ctx.storage.set(key,value)
-   if(key.startsWith("goal:") && ["FAILED","BLOCKED","DONE"].includes(value.status) && value.turns > 0) await fetch(ctx.options.signalURL)
+   if(key.startsWith("goal:") && ["FAILED","BLOCKED","DONE"].includes(value.status) && value.turns > 0 && !value.pendingOperation) await fetch(ctx.options.signalURL)
  }}
  return goal.setup(new Proxy(ctx,{get:(target,key)=>key==="storage"?storage:Reflect.get(target,key)}))
 }}
@@ -231,6 +241,74 @@ export default {id:goal.id,setup(ctx){
                     with urllib.request.urlopen(request, timeout=20) as response:
                         body = response.read()
                         return json.loads(body) if body else None
+                idempotency_session = post("/api/session", {})["data"]["id"]
+                prompt_id = "msg_1234567890abcdef1234567890abcdef"
+                prompt_payload = {"id": prompt_id, "text": "Unique idempotency probe", "delivery": "queue"}
+                first = post(f"/api/session/{idempotency_session}/prompt", prompt_payload)
+                post(f"/api/experimental/session/{idempotency_session}/wait", {})
+                second = post(f"/api/session/{idempotency_session}/prompt", prompt_payload)
+                post(f"/api/experimental/session/{idempotency_session}/wait", {})
+                assert first["data"]["id"] == prompt_id == second["data"]["id"]
+                assert len([message for message in request_messages if "Unique idempotency probe" in message
+                            and "You name conversations" not in message]) == 1
+                request = urllib.request.Request(f"http://127.0.0.1:{port}/api/session/{idempotency_session}/context",
+                    headers={"Authorization": "Basic " + auth})
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    context = json.load(response)["data"]
+                matching = [message for message in context if message.get("id") == prompt_id]
+                assert len(matching) == 1 and matching[0].get("text") == "Unique idempotency probe", context
+                assert matching[0].get("type") == "user", context
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/session/{idempotency_session}/message/{prompt_id}",
+                    headers={"Authorization": "Basic " + auth})
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    exact_message = json.load(response)["data"]
+                assert exact_message == matching[0]
+                try:
+                    post(f"/api/session/{idempotency_session}/prompt",
+                         {**prompt_payload, "text": "A different prompt using the same ID"})
+                except urllib.error.HTTPError as exc:
+                    assert 400 <= exc.code < 500
+                else:
+                    post(f"/api/experimental/session/{idempotency_session}/wait", {})
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    assert json.load(response)["data"] == exact_message
+                assert not any("A different prompt using the same ID" in message for message in request_messages)
+                matching_index = context.index(matching[0])
+                assert any(message.get("type") == "idle" and message.get("outcome") == "succeeded"
+                           for message in context[matching_index + 1:]), context
+                request = urllib.request.Request(f"http://127.0.0.1:{port}/api/session/{idempotency_session}",
+                    headers={"Authorization": "Basic " + auth})
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    session_info = json.load(response)["data"]
+                assert session_info.get("outcome") == "succeeded", session_info
+                recovery_session = post("/api/session", {})["data"]["id"]
+                recovery_id = "msg_9876543210abcdef9876543210abcdef"
+                recovery_text = ("Continue the goal: Fix\nTask ID: t\nAcceptance criteria:\n- pytest\n"
+                                 "Use goal_verify with a configured verification alias to obtain authentic Agent OS receipts; do not claim completion without evidence.")
+                post(f"/api/session/{recovery_session}/prompt", {"id": recovery_id, "text": recovery_text, "delivery": "queue"})
+                post(f"/api/experimental/session/{recovery_session}/wait", {})
+                def get_session_data(path):
+                    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"Authorization": "Basic " + auth})
+                    with urllib.request.urlopen(request, timeout=20) as response:
+                        return json.load(response)["data"]
+                recovery_info = get_session_data(f"/api/session/{recovery_session}")
+                recovery_context = get_session_data(f"/api/session/{recovery_session}/context")
+                recovery_script = r'''
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const {info,history,promptId}=JSON.parse(readFileSync(0,"utf8"));let prompts=0;
+let state={goal:"Fix",taskId:"t",criteria:["pytest"],root:info.location.directory,epoch:"epoch",
+ status:"BLOCKED",outcomeUnknown:true,pendingOperation:"prompt_admission",pendingPromptId:promptId};
+const ctx={storage:{get:async()=>structuredClone(state),set:async(_k,v)=>{state=structuredClone(v)}},
+ session:{get:async()=>info,context:async()=>history,prompt:async()=>{prompts++}}};
+const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+const result=await c.resume(info.id);assert.equal(result.status,"PAUSED");assert.equal(prompts,0);
+'''
+                subprocess.run(["node", "--input-type=module", "-e", recovery_script], cwd=ROOT,
+                               input=json.dumps({"info": recovery_info, "history": recovery_context, "promptId": recovery_id}),
+                               capture_output=True, text=True, check=True, timeout=15)
                 session = post("/api/session", {})["data"]["id"]
                 prior_requests = len(request_messages)
                 post(f"/api/session/{session}/command", {"name": "goal", "text": json.dumps({"goal":"persistent goal probe","criteria":["pytest passes"],"maxTurns":2})})
@@ -239,12 +317,36 @@ export default {id:goal.id,setup(ctx){
                                  if "Continue the goal: persistent goal probe" in message and "You name conversations" not in message]
                 assert len(goal_requests) == 2
                 goal_settled.clear()
+                behavior["invoke_verification"] = True
+                tool_session = post("/api/session", {})["data"]["id"]
+                post(f"/api/session/{tool_session}/command", {"name": "goal", "text": json.dumps({"goal":"actual tool verification probe","criteria":["test"],"maxTurns":1})})
+                assert goal_settled.wait(timeout=30), "goal verification did not settle"
+                tool_tasks = app.agent_tasks.list_tasks(query="actual tool verification probe")
+                assert len(tool_tasks) == 1 and behavior.get("tool_invoked")
+                if tool_tasks[0].status.value != "completed":
+                    raise AssertionError(json.dumps({"tools": behavior.get("advertised_tools"), "context": get_session_data(f"/api/session/{tool_session}/context")}))
+                assert "/api/agent-state/verification" in hub_requests
+                behavior["invoke_verification"] = False
+                goal_settled.clear()
                 goal_ready.clear()
                 behavior["wait_for_goal"] = True
                 success_session = post("/api/session", {})["data"]["id"]
+                behavior["success_session"] = success_session
                 post(f"/api/session/{success_session}/command", {"name": "goal", "text": json.dumps({"goal":"verified completion probe","criteria":["pytest passes"],"maxTurns":1})})
                 tasks = app.agent_tasks.list_tasks(query="verified completion probe")
                 assert len(tasks) == 1
+                forged = urllib.request.Request(
+                    f"http://127.0.0.1:{hub_port}/api/agent-state/verification",
+                    data=json.dumps({"action": "receipt", "root": str(project),
+                                     "receipt": {"task_id": tasks[0].task_id, "criterion": "pytest passes",
+                                                 "passed": True, "evidence_id": "nonexistent-evidence"}}).encode(),
+                    headers={"Content-Type": "application/json", "X-LocalAI-Token": env["LOCAL_AI_HUB_TOKEN"],
+                             "X-LocalAI-Agent": "cloud-agent"}, method="POST")
+                with pytest.raises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(forged, timeout=10)
+                assert rejected.value.code == 400
+                rejected.value.close()
+                assert app.agent_tasks.get(tasks[0].task_id).status.value != "completed"
                 receipt = app.commands.run("python -m pytest -q test_passing.py -p no:cacheprovider", str(project),
                                            timeout=30, task_id=tasks[0].task_id, criterion="pytest passes", bypass_cache=True)
                 proof = receipt.get("verification_receipt", {})
@@ -308,6 +410,43 @@ export default {id:goal.id,setup(ctx){
         successful = next(item for item in persisted if item["goal"] == "verified completion probe")
         assert successful["status"] == "DONE"
         assert app.agent_tasks.get(successful["taskId"]).status.value == "completed"
+        recovery = r'''
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import {getCompletedTask} from "./tools/opencode_goal/transport.js";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const {state,session,url,token}=JSON.parse(readFileSync(0,"utf8"));
+const result=await getCompletedTask(state,session,{baseURL:url,token});
+assert.equal(result.success,true);
+assert.equal(result.task.status,"completed");
+let stored={...state,status:"BLOCKED",turns:0,eventIds:[],pendingOperation:"task_complete",pendingEventId:"recovered-event",outcomeUnknown:true};
+let prompts=0;
+const ctx={storage:{get:async()=>structuredClone(stored),set:async(_k,v)=>{stored=structuredClone(v)}},
+ session:{get:async()=>({location:{directory:state.root}}),prompt:async p=>{prompts++;return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url,token}});
+const recovered=await controller.resume(session);
+assert.equal(recovered.status,"DONE");assert.deepEqual(recovered.eventIds,["recovered-event"]);assert.equal(prompts,0);
+'''
+        recovery_input = {"state": successful, "session": behavior["success_session"],
+                          "url": f"http://127.0.0.1:{hub_port}", "token": "x" * 40}
+        subprocess.run(["node", "--input-type=module", "-e", recovery], cwd=ROOT,
+                       input=json.dumps(recovery_input), capture_output=True, text=True, check=True, timeout=15)
+        stale_recovery = r'''
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import {getCompletedTask} from "./tools/opencode_goal/transport.js";
+const {state,session,url,token}=JSON.parse(readFileSync(0,"utf8"));
+const result=await getCompletedTask(state,session,{baseURL:url,token});
+assert.equal(result.success,false);
+'''
+        evidence_file = project / "test_passing.py"
+        original_evidence = evidence_file.read_bytes()
+        try:
+            evidence_file.write_bytes(original_evidence + b"\n# changed after verification\n")
+            subprocess.run(["node", "--input-type=module", "-e", stale_recovery], cwd=ROOT,
+                           input=json.dumps(recovery_input), capture_output=True, text=True, check=True, timeout=15)
+        finally:
+            evidence_file.write_bytes(original_evidence)
         restarted = next(item for item in persisted if item["goal"] == "restart goal probe")
         assert len(app.agent_tasks.list_tasks(query="restart goal probe")) == 1 and restarted["turns"] == 1
         assert restarted["status"] == "FAILED" and restarted["reason"] == "continuation limit reached"
@@ -318,7 +457,7 @@ import {readFileSync} from "node:fs";
 import {makeGoalController} from "./tools/opencode_goal/index.js";
 const {root,url,token}=JSON.parse(readFileSync(0,"utf8")),db=new Map(),prompts=[]; let committed=false;
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:root}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:root}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const fetchImpl=async (url,opts)=>{const response=await fetch(url,opts); if(JSON.parse(opts.body).action==="create"){
  const payload=await response.json(); committed=response.ok && payload.success===true;
  throw new Error("simulated lost response after server commit");} return response};
@@ -335,7 +474,7 @@ import {makeGoalController} from "./tools/opencode_goal/index.js";
 import {getBoundTask} from "./tools/opencode_goal/transport.js";
 const {root,url,token,state}=JSON.parse(readFileSync(0,"utf8")),db=new Map([["goal:recovery-session",state]]),prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:root}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:root}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url,token}});
 await controller.resume("recovery-session");
 if((await controller.status("recovery-session")).status!=="CONTINUE") {

@@ -47,7 +47,10 @@ def read_source_slice(
         try:
             relative = target.relative_to(root)
         except ValueError:
-            return failure("source path must be within the workspace")
+            return failure(
+                "source path must be within the workspace; if the source belongs to "
+                "a different authorized workspace, provide that workspace's absolute path as root"
+            )
         if not target.is_file():
             return failure("source path must name a regular file")
         path_before = target.stat()

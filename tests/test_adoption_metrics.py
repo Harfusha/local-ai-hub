@@ -18,7 +18,7 @@ def test_records_bucketed_daily_outcomes_and_reasons(tmp_path):
 
     store.record("local_ai_repo", "search", "repository", "used", duration_ms=18, output_size=80, now=now)
     store.record("local_ai_repo", "search", "repository", "blocked", fallback_reason="policy", duration_ms=310, output_size=1100, now=now)
-    store.record("local_ai_command", "run", "validation", "failed", fallback_reason="timeout", now=now)
+    store.record("local_ai_task", "review", "validation", "failed", fallback_reason="timeout", now=now)
     store.record_explicit_bypass("local_ai_repo", "search", "repository", reason="explicit_client_signal", now=now)
 
     report = store.report(days=7, now=now)

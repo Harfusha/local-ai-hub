@@ -16,6 +16,7 @@ dependencies = [
   "watchdog>=4,<7",
   "PyJWT[crypto]>=2.15.1,<3",
   "jsonschema>=4.18,<5",
+  "packaging>=24,<27",
 ]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -56,6 +57,9 @@ local_ai_hub = ["defaults.toml", "automation_browser.js"]
 
 [tool.setuptools.data-files]
 "browser_bridge" = ["browser_bridge/background.js", "browser_bridge/capture.js", "browser_bridge/manifest.json", "browser_bridge/README.md"]
+"tools/opencode_goal" = ["tools/opencode_goal/index.js", "tools/opencode_goal/core.js", "tools/opencode_goal/transport.js", "tools/opencode_goal/package.json"]
+"tools/opencode_mcp" = ["tools/opencode_mcp/index.js", "tools/opencode_mcp/package.json"]
+"tools" = ["tools/opencode_pipe_client.cjs", "tools/opencode_sandbox_bootstrap.cjs", "tools/opencode_stop_client.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -192,7 +192,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     work_delegation = ""
     if fs.work_orchestrator:
         work_delegation = (
-            '- `local_ai_work`: only for explicitly requested closed delegation; when profile `high` is active and task/model quality is evaluated, use bounded mode for suitable small tasks with exact allowed files, approved commands, explicit permissions, time budget and acceptance criteria. On Windows, bounded patch parent directories must already exist. A patch targeting mixed LF and CRLF within a single file fails visibly. The primary agent reviews the diff, test results and integration.'
+            '- `local_ai_work`: only for explicitly requested closed delegation; when profile `high` is active and task/model quality is evaluated, use bounded mode for suitable small tasks with exact allowed files, approved commands, explicit permissions, time budget and acceptance criteria. On Windows, bounded patch parent directories must already exist. A patch targeting mixed LF and CRLF within a single file fails visibly. The primary agent reviews the diff, test results and integration. For an order owned by the responding process, timed_out=true with in_progress=true is not a terminal result or permission to retry; cancellation is cooperative and another process may not observe the deadline. Treat output_truncated=true as an incomplete failure, not a usable patch. For `local_ai_coord` claim or release, omit the budget or use max_response_tokens >= 512; a smaller explicit budget rejects before mutation.'
         )
     work_owner_note = "The main agent owns task scope, permissions, diff and test review, and final integration. Never infer tool execution or test success from model prose; verify actual tool results or traces. Missing provenance is unknown."
     # Ownership & tiering bullets
@@ -609,9 +609,25 @@ Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_a
 Only when the user explicitly requests closed delegation, profile `high` is active, and task/model quality has been evaluated, submit suitable small work to `local_ai_work` with `mode="bounded"`, absolute root, task, acceptance criteria, exact `allowed_paths`, `approved_commands`, an explicit edit permission choice, test/build permissions, and finite `budget.max_seconds` and `max_steps`. Select work by measured quality and task risk; keep security and architecture decisions with the primary agent. The Hub retains broker authorization, leases and journaled patches. A successful bounded handoff has status `needs_agent`; the primary agent checks the diff, actual test results and integration and records its own review. Local verification is not final acceptance. Inspect handoff artifacts when needed.
 
 On Windows, bounded patch parent directories must already exist; a missing or unpinnable parent fails visibly. A patch targeting mixed LF and CRLF within a single file fails visibly. The Windows pin does not prove non-Windows race safety.
+For an order owned by the responding process, timed_out=true with in_progress=true is not a terminal result or permission to retry; cancellation is cooperative and another process may not observe the deadline.
+Treat output_truncated=true as an incomplete failure, not a usable patch.
+For `local_ai_coord` claim or release, omit the budget or use max_response_tokens >= 512; a smaller explicit budget rejects before mutation.
 
 `validation.receipt_status="not_recorded"` means the command outcome has no durable broker verification receipt; command success does not replace primary-agent review.
 `receipt_status="recorded_unmapped"` identifies an authentic broker receipt awaiting primary-agent review and mapping; it is not task completion. A later edit makes receipts from older mutation generations stale.
+After rollback, `receipt_status="stale"` and `stale_verification_receipts` preserve historical broker evidence, not current validation or task completion.
+Bounded `partial` and `needs_agent` artifacts contain validation and bounded accepted-patch previews; `truncated=true` means incomplete. Artifact failure is explicit. Independently inspect the workspace and actual tests.
+Cancellation during failure finalization retains rollback and task-barrier reconciliation status; failure artifact storage errors are explicit.
+If rollback loses its work-attempt fence, the superseded worker stops; the authoritative successor or fenced recovery owns the journal and task barrier.
+After safe recovery, interrupted bounded work reports `outcome_unknown=true` and requires primary review; it is never automatically requeued. A requested cancellation remains `cancelled`.
+`continue` rejects unknown bounded outcomes and unresolved task-barrier or rollback reconciliation; independently inspect and reconcile rather than replaying the same order.
+Bounded `continue` accepts a genuine clarification question, not a final review handoff or questionless recovery failure.
+Final bounded handoff requires a persisted artifact identifier; an unavailable artifact triggers failure and configured rollback or retained-workspace handling, not an accepted handoff.
+For bounded work, `local_exploration_status` reports the most conservative observed tool-inspection outcome; inspect the artifact for details. It is not task completion or model qualification.
+For routine bounded implementation delegation, require the relevant task-type cases and overall evaluation gate to pass; controlled evaluation runs follow `docs/agent-evaluation/local-model-gpu-scoring.md` in the Hub installation separately.
+The candidate `qwen3.5:4b-q4_K_M` and `gemma4:12b` prompt scopes are advisory only; they do not establish model quality, image or tool support, or permission to edit.
+Quantized and unmatched heavy or vision prompt profiles exclude security decisions, direct edits and final verification; scoped authorization remains authoritative.
+If rollback fails and receipt freshness cannot be established, `receipt_status="unknown"` and `uncertain_verification_receipts` require reconciliation, not acceptance.
 
 `task_barrier_error=finalization_event_lookup_timeout` with `task_barrier_status=pending_finalization` means recovery awaits its scheduled retry; it is not completion and must not be duplicated or forced.
 

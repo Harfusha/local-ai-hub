@@ -20,6 +20,62 @@ def _wire_measure(result) -> tuple[int, dict, dict | None]:
     return json_tokens(wire), json.loads(text), structured
 
 
+def test_lease_mutation_wire_budget_keeps_identity_and_outcome(tmp_path, monkeypatch):
+    lease_id = "lease_0123456789abcdef0123"
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda path, *_a, **_kw: (
+        {"success": True, "lease_id": lease_id, "expires_at": 1793613360.0}
+        if path.endswith("claim_batch") else {"success": True, "released_rows": 1}))
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kw: None)
+    common = {"root": str(tmp_path), "owner": "test-owner", "max_response_tokens": 512,
+              "response_profile": "minimal"}
+    for arguments in ({**common, "action": "claim", "paths": ["a.txt"], "purpose": "test"},
+                      {**common, "action": "release", "lease_id": lease_id}):
+        result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
+        tokens, parsed, structured = _wire_measure(result)
+        assert tokens <= 512
+        assert parsed == structured
+        assert parsed["response_budget"]["returned_tokens"] == tokens
+        assert parsed["mutation_applied"] is True
+        if arguments["action"] == "claim":
+            assert parsed["lease_id"] == lease_id
+        else:
+            assert parsed["released_rows"] == 1
+
+
+def test_admission_diagnostics_survive_minimal_mcp_wire(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *_a, **_kw: {
+        "success": False, "error": "insufficient VRAM for model admission", "retryable": True,
+        "last_admission_state": "rejected", "last_admission_reason": "vram_budget", "last_admission_model": "qwen2.5-coder:7b"})
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kw: None)
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_task", {"action": "second_opinion",
+        "task": "Check", "candidate": "A", "response_profile": "minimal", "max_response_tokens": 512}))
+    tokens, parsed, structured = _wire_measure(result)
+    assert tokens <= 512 and parsed == structured
+    assert parsed["success"] is False and parsed["retryable"] is True
+    assert parsed["last_admission_state"] == "rejected" and parsed["last_admission_reason"] == "vram_budget"
+    assert parsed["last_admission_model"] == "qwen2.5-coder:7b"
+
+
+def test_truncated_model_output_stays_failure_on_minimal_mcp_wire(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *_a, **_kw: {
+        "success": False, "error": "local model output reached its token limit", "terminal": True,
+        "retryable": False, "output_truncated": True, "stop_reason": "length", "text": "partial"})
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kw: None)
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_task", {"action": "delegate", "task": "Check",
+        "response_profile": "minimal", "max_response_tokens": 512}))
+    tokens, parsed, structured = _wire_measure(result)
+    assert tokens <= 512 and parsed == structured
+    assert parsed["success"] is False and parsed["output_truncated"] is True
+    assert parsed["stop_reason"] == "length" and parsed["retryable"] is False
+
+
 def test_live_mcp_budget_measures_final_envelope_and_accounting(monkeypatch) -> None:
     events = []
     monkeypatch.setattr(mcp_server, "CLIENT", mcp_server.HubClient(auto_start=False))

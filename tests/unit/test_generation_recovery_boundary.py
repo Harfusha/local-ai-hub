@@ -71,6 +71,24 @@ def test_recovered_context_provenance_survives_service_boundary_without_caching(
     service.semantic_cache.set.assert_not_called()
 
 
+def test_length_truncation_never_falls_back_or_populates_caches(tmp_path):
+    service, runtime = _service(tmp_path, {"done": True, "response": "partial", "done_reason": "length"})
+    cache = MagicMock()
+    cache.get.return_value = None
+    service.generation_cache.enabled = True
+    service.generation_cache.cache = cache
+    service.semantic_cache = MagicMock()
+    service.semantic_cache.get.return_value = (None, 0.0)
+    result = service._generate("requested", "prompt", "system", 64, 0.0, source="delegate:test", priority=5,
+                               use_cache=True, semantic_query="query")
+    assert result["success"] is False and result["output_truncated"] is True
+    assert runtime.calls == ["requested"]
+    cache.set.assert_not_called()
+    service.semantic_cache.set.assert_not_called()
+    service.stale_generation_cache.get.assert_not_called()
+    service.stale_generation_cache.set.assert_not_called()
+
+
 @pytest.mark.parametrize("state", [{"preempted": True}, {"timed_out": True}])
 def test_cancel_and_timeout_do_not_substitute_stale_response(tmp_path, state):
     service, runtime = _service(tmp_path, {"error": "provider stopped", **state})
@@ -89,7 +107,7 @@ def test_completion_contract_separates_legacy_exact_semantic_and_stale_cache_key
     def hash_with_legacy_entry(value):
         if isinstance(value, dict) and isinstance(value.get("execution"), dict) and "stream_completion_contract" in value["execution"]:
             scopes.append(dict(value["execution"]))
-            previous = {**value, "execution": {key: item for key, item in value["execution"].items() if key != "stream_completion_contract"}}
+            previous = {**value, "execution": {**value["execution"], "stream_completion_contract": 2}}
             old_key = original_hash(previous)
             obsolete = {"success": True, "text": "UNSAFE LEGACY", "model": "requested"}
             legacy[old_key] = obsolete
@@ -107,6 +125,6 @@ def test_completion_contract_separates_legacy_exact_semantic_and_stale_cache_key
     service.stale_generation_cache.get.side_effect = legacy.get
     result = service._generate("requested", "prompt", "system", 32, 0.0, source="delegate:test", priority=5,
                                semantic_query="query")
-    assert legacy and scopes and all(scope["stream_completion_contract"] == 2 for scope in scopes)
+    assert legacy and scopes and all(scope["stream_completion_contract"] == 3 for scope in scopes)
     assert result["text"] == "fresh" and runtime.calls == ["requested"]
     assert all(value["text"] == "UNSAFE LEGACY" for value in legacy.values())

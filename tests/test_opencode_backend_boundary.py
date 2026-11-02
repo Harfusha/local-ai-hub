@@ -6,6 +6,178 @@ from local_ai_hub import http_server
 from local_ai_hub.opencode_boundary import path_allowed, payload_allowed, generation_scope
 
 
+def test_scoped_token_forces_local_profile_and_cannot_authorize_other_routes(monkeypatch):
+    from local_ai_hub.opencode_boundary import derive_local_profile_token
+
+    master = "x" * 40
+    nonce = "n" * 32
+    scoped = derive_local_profile_token(master, nonce)
+    assert scoped != master
+    provider = SimpleNamespace(status=lambda: {"success": True, "state": "running", "nonce": nonce})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {"api_token": master}}, opencode_provider=provider))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = {"X-LocalAI-Token": scoped, "X-LocalAI-Agent": "cloud-agent"}
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.command = "POST"
+    handler.path = "/api/search"
+    assert handler._agent() == "opencode-local"
+    assert handler._authorized() is True
+    handler.headers = {"Authorization": f"Bearer {scoped}", "X-LocalAI-Agent": "cloud-agent"}
+    assert handler._agent() == "opencode-local"
+    assert handler._authorized() is True
+    handler.client_address = ("192.0.2.1", 12345)
+    assert handler._authorized() is False
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.command = "GET"
+    for path, expected in (("/api/live/status?light=1", True), ("/api/live/status", False),
+                           ("/api/live/status?light=1&detail=traces", False), ("/api/live/status?light=0", False)):
+        handler.path = path
+        assert handler._authorized() is expected
+    handler.command = "POST"
+    handler.path = "/api/task"
+    assert handler._authorized() is False
+    handler.path = "/api/search"
+    provider.status = lambda: {"success": True, "state": "running", "nonce": "z" * 32}
+    assert handler._authorized() is False
+    provider.status = lambda: {"success": True, "state": "stopped"}
+    assert handler._authorized() is False
+    handler.headers = {"X-LocalAI-Token": master, "X-LocalAI-Agent": "cloud-agent"}
+    assert handler._agent() == "cloud-agent"
+    assert handler._authorized() is True
+
+
+def test_local_client_never_falls_back_to_config_master_token(monkeypatch):
+    from local_ai_hub import client
+    from local_ai_hub.opencode_boundary import derive_local_profile_token
+
+    master = "x" * 40
+    source = {"server": {"port": 11435}, "security": {"api_token": master,
+              "supervisor_token": "supervisor-secret", "action_tokens": {"admin": "action-secret"}}, "client": {}}
+    monkeypatch.setattr(client, "load_config", lambda *_args, **_kwargs: source)
+    monkeypatch.setenv("LOCAL_AI_AGENT_PROFILE", "opencode-local")
+    monkeypatch.delenv("LOCAL_AI_HUB_TOKEN", raising=False)
+    local = client.HubClient(auto_start=False)
+    assert local.api_token == ""
+    assert local.config["security"]["api_token"] == ""
+    assert local.config["security"]["supervisor_token"] == ""
+    assert local.config["security"]["action_tokens"] == {}
+    assert source["security"]["api_token"] == master
+    monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", master)
+    with pytest.raises(ValueError, match="restricted"):
+        client.HubClient(auto_start=False)
+    scoped = derive_local_profile_token(master, "n" * 32)
+    monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", scoped)
+    local = client.HubClient(auto_start=False)
+    assert local.api_token == scoped and local.config["security"]["api_token"] == scoped
+    monkeypatch.setenv("LOCAL_AI_AGENT_PROFILE", "cloud-agent")
+    assert client.HubClient(auto_start=False).api_token == master
+
+
+def test_local_mcp_configuration_does_not_retain_owner_credentials(tmp_path):
+    import subprocess
+    import sys
+    from local_ai_hub.opencode_boundary import derive_local_profile_token
+
+    master = "m" * 40
+    scoped = derive_local_profile_token(master, "n" * 32)
+    config = tmp_path / "config.toml"
+    config.write_text(f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+                      f'[security]\napi_token = "{master}"\nsupervisor_token = "{"s" * 40}"\n'
+                      '[security.action_tokens]\n"test:write" = "action-secret-value"\n', encoding="utf-8")
+    env = dict(os.environ, LOCAL_AI_CONFIG=str(config), LOCAL_AI_AGENT_PROFILE="opencode-local",
+               LOCAL_AI_HUB_TOKEN=scoped)
+    script = '''
+import local_ai_hub.mcp_server as m
+for config in (m.CFG, m.CLIENT.config):
+    security = config["security"]
+    assert security["api_token"] == __import__("os").environ["LOCAL_AI_HUB_TOKEN"]
+    assert security["supervisor_token"] == ""
+    assert security["action_tokens"] == {}
+'''
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True,
+                            timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert result.returncode == 0, result.stderr
+
+
+def test_local_scope_blocks_direct_embedding_inference_before_coalescing():
+    from local_ai_hub.embeddings import EmbeddingModel
+
+    calls = []
+    model = EmbeddingModel.__new__(EmbeddingModel)
+    model._execution_local = SimpleNamespace()
+    model._encode_request_key = lambda texts, query: "key"
+    model.flight_group = SimpleNamespace(do=lambda *_args: (calls.append(True) or {"success": True, "embeddings": [[1.0]]}, False))
+    with generation_scope("opencode-local"):
+        result = model.encode(["text"])
+    assert result["error_code"] == "opencode_generation_disabled"
+    assert calls == []
+    with generation_scope("codex"):
+        assert model.encode(["text"])["success"] is True
+    assert calls == [True]
+
+
+def test_local_scope_does_not_submit_background_gpu_or_cpu_work(tmp_path):
+    from local_ai_hub.background_gpu import IdleGPUWorker
+
+    called = []
+    worker = IdleGPUWorker({"server": {"state_dir": str(tmp_path)}, "models": {"background_code": "model"}},
+                           SimpleNamespace(foreground_busy=lambda: False, foreground_idle_seconds=lambda: 999))
+    worker._acquire_session = lambda: called.append("gpu") or True
+    worker._acquire_cpu_session = lambda: called.append("cpu") or True
+    worker._generate_one = lambda *_a, **_kw: called.append("generate") or {"success": True}
+    try:
+        with generation_scope("opencode-local"):
+            results = worker.generate_many([{"prompt": "a"}, {"prompt": "b"}])
+        assert len(results) == 2
+        assert all(result["error_code"] == "opencode_generation_disabled" for result in results)
+        assert called == []
+    finally:
+        worker._executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_local_scope_cannot_start_background_sessions(tmp_path):
+    from local_ai_hub.background_gpu import IdleGPUWorker
+
+    called = []
+    config = {"server": {"state_dir": str(tmp_path)}, "models": {"background_code": "model"},
+              "background_gpu": {"enabled": True, "cpu_fallback_enabled": True}}
+    scheduler = SimpleNamespace(acquire_background_gpu=lambda _idle: called.append("gpu") or False)
+    worker = IdleGPUWorker(config, scheduler)
+    worker.cpu_runtime = SimpleNamespace(is_online=lambda: False, ensure_running=lambda: called.append("cpu") or False)
+    try:
+        with generation_scope("opencode-local"):
+            assert worker._acquire_session() is False
+            assert worker._acquire_cpu_session() is False
+        assert called == []
+    finally:
+        worker._executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_local_scope_rejects_scheduler_enqueue_before_preparation(tmp_path):
+    from local_ai_hub.scheduler import AffinityScheduler, QueueFullError
+
+    prepared = []
+    runtime = SimpleNamespace(loaded_model_details=lambda: [], prepare_model=lambda *_a, **_kw: prepared.append(True),
+                              loaded_model_inventory=lambda **_: {"complete": True, "backend_available": True,
+                                                                   "models": [], "errors": {}})
+    scheduler = AffinityScheduler(runtime, {"server": {"state_dir": str(tmp_path)}})
+    try:
+        with generation_scope("opencode-local"):
+            assert scheduler.prewarm("model") is False
+            assert scheduler.acquire_background_gpu(0) is False
+            with pytest.raises(QueueFullError) as exc:
+                scheduler.enqueue("model", source="test", execute=lambda: {"success": True})
+        assert exc.value.retryable is False
+        assert exc.value.admission["reason"] == "opencode_generation_disabled"
+        assert scheduler._pending == [] and prepared == []
+        with scheduler._cond:
+            scheduler._background_gpu_lease = True
+        with generation_scope("codex"):
+            assert scheduler.enqueue("model", source="test", execute=lambda: {"success": True})
+    finally:
+        scheduler.close()
+
+
 def test_local_repository_reads_do_not_reprioritize_preprocessing(tmp_path):
     from local_ai_hub.services import LocalAIServices
 

@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import json
+import hashlib
 import math
+import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -61,6 +64,10 @@ class EmbeddingModel:
         self._load_error_time: float = 0.0
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=90.0)
         state_dir = configured_state_dir(cfg)
+        raw_state_dir = server_cfg.get("state_dir")
+        self._gpu_reservation_path = (state_dir / "external-gpu-reservation"
+                                      if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip()
+                                      else None)
         self.cache = TieredCache(
             SQLiteCache(
                 state_dir / "cache.sqlite",
@@ -508,7 +515,12 @@ class EmbeddingModel:
         self, batch_texts: list[str], *, query: bool, priority: int
     ) -> tuple[list[list[float]] | None, str]:
         while True:
-            if self._model is None and not self._ensure_st_model(ollama_fallback=self.backend == "ollama"):
+            fenced = bool(getattr(self._execution_local, "ollama_gpu_fenced", False))
+            if fenced and self._model is not None and uses_torch_cuda(
+                self.active_backend or "sentence-transformers", self.active_device or self.device
+            ):
+                return None, self.active_backend or "sentence-transformers"
+            if self._model is None and not self._ensure_st_model(ollama_fallback=self.backend == "ollama" or fenced):
                 return None, self.active_backend or "sentence-transformers"
             model = self._model
             if model is None:
@@ -625,8 +637,50 @@ class EmbeddingModel:
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
         return embeddings.detach().cpu().numpy()
 
+    def _claim_embedding_gpu(self) -> str | bool | None:
+        path = getattr(self, "_gpu_reservation_path", None)
+        if path is None:
+            return None
+        digest = hashlib.sha256(os.urandom(32)).hexdigest()
+        try:
+            with path.open("xb") as stream:
+                stream.write(digest.encode("ascii"))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            # A partial write is deliberately left behind as an uncertain fence.
+            return False
+        return digest
+
+    def _release_embedding_gpu(self, digest: str) -> bool:
+        from .scheduler import _read_external_reservation
+
+        path = getattr(self, "_gpu_reservation_path", None)
+        for attempt in range(6):
+            if path is None or _read_external_reservation(path) != digest:
+                return False
+            try:
+                path.unlink()
+                return True
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 32 or attempt == 5:
+                    return False
+                time.sleep(0.01)
+        return False
+
     def _encode_ollama(self, texts: list[str]) -> list[list[float]] | None:
         """Call Ollama /api/embed on GPU."""
+        from .scheduler import _read_external_reservation
+
+        path = getattr(self, "_gpu_reservation_path", None)
+        local = getattr(self, "_execution_local", None)
+        inherited = getattr(local, "gpu_fence_digest", None) if local is not None else None
+        digest = inherited if inherited is not None else self._claim_embedding_gpu()
+        if digest is False or (inherited is not None and _read_external_reservation(path) != inherited):
+            if local is not None:
+                local.ollama_gpu_fenced = True
+            return None
+        confirmed = False
         try:
             req = urllib.request.Request(
                 f"{self.ollama_url}/api/embed",
@@ -637,22 +691,51 @@ class EmbeddingModel:
                 data = json.loads(resp.read().decode("utf-8"))
                 vectors = data.get("embeddings")
                 if isinstance(vectors, list) and len(vectors) == len(texts):
+                    confirmed = True
                     return vectors
         except Exception:
             return None
+        finally:
+            if not confirmed and path is not None:
+                if local is not None:
+                    local.ollama_gpu_fenced = True
+            if confirmed and isinstance(digest, str) and inherited is None:
+                self._release_embedding_gpu(digest)
         return None
 
     def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
+        from .opencode_boundary import generation_denial
+
+        if texts:
+            denied = generation_denial()
+            if denied is not None:
+                return denied
         self._execution_local.snapshot = None
-        request_key = self._encode_request_key(texts, query)
-        result, _coalesced = self.flight_group.do(
-            request_key,
-            lambda: self._encode_uncached(texts, query=query, priority=priority),
-        )
-        output = dict(result)
-        if isinstance(output.get("embeddings"), list):
-            output["embeddings"] = [list(vector) if isinstance(vector, (list, tuple)) else vector for vector in output["embeddings"]]
-        return output
+        self._execution_local.ollama_gpu_fenced = False
+        backend = getattr(self, "backend", "")
+        device = getattr(self, "device", None)
+        cuda_candidate = (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
+        cuda_loaded = uses_torch_cuda(getattr(self, "active_backend", None), getattr(self, "active_device", None))
+        digest = self._claim_embedding_gpu() if texts and (cuda_candidate or cuda_loaded) else None
+        if digest is False:
+            return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
+        self._execution_local.gpu_fence_digest = digest
+        confirmed = False
+        try:
+            request_key = self._encode_request_key(texts, query)
+            result, _coalesced = self.flight_group.do(
+                request_key,
+                lambda: self._encode_uncached(texts, query=query, priority=priority),
+            )
+            output = dict(result)
+            if isinstance(output.get("embeddings"), list):
+                output["embeddings"] = [list(vector) if isinstance(vector, (list, tuple)) else vector for vector in output["embeddings"]]
+            confirmed = output.get("success") is True and not self._execution_local.ollama_gpu_fenced
+            return output
+        finally:
+            self._execution_local.gpu_fence_digest = None
+            if confirmed and isinstance(digest, str):
+                self._release_embedding_gpu(digest)
 
     def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
         if not texts:

@@ -15,6 +15,26 @@ Follow [`docs/superpowers/specs/2026-10-07-simplified-worktree-integration.md`](
 
 Bounded work may return authentic broker test receipts as `recorded_unmapped`; this does not accept or complete the task. The primary agent reviews the diff, actual test results, integration, current repository revision and task mutation generation before independently mapping a receipt. A later patch makes earlier receipts stale; partial, missing or uncertain evidence never establishes completion.
 
+After rollback, `receipt_status="stale"` and `stale_verification_receipts` are historical broker evidence, not current validation or task completion.
+Bounded `partial` and `needs_agent` artifacts contain validation and bounded accepted-patch previews; `truncated=true` means incomplete. An unavailable artifact is an explicit error; independently inspect the workspace and actual tests.
+Cancellation during failure finalization retains rollback and task-barrier reconciliation status; failure artifact storage errors are explicit.
+If rollback loses its work-attempt fence, the superseded worker stops; the authoritative successor or fenced recovery owns the journal and task barrier.
+After safe recovery, interrupted bounded work reports `outcome_unknown=true` and requires primary review; it is never automatically requeued. A requested cancellation remains `cancelled`.
+
+For `local_ai_coord` claim or release, omit `max_response_tokens` or set at least 512. Smaller explicit budgets reject before mutation. A successful claim returns the exact `lease_id`; release returns `released_rows` and `mutation_applied`. An invalid returned identity or row count is an unknown outcome, not permission to retry.
+
+Backend `done_reason=length` produces `success=false`, `output_truncated=true` and `stop_reason=length`; partial text is not a complete answer or a usable bounded-work patch. Do not infer truncation solely from missing stop metadata or automatically retry it.
+
+For a bounded order still owned by the responding process, `timed_out=true` with `in_progress=true` means its deadline elapsed but the backend has not returned. This is not a terminal result or permission to retry; cancellation is cooperative. Another process may not observe this in-memory deadline.
+`continue` rejects unknown bounded outcomes and unresolved task-barrier or rollback reconciliation; independently inspect and reconcile rather than replaying the same order.
+Bounded `continue` accepts a genuine clarification question, not a final review handoff or questionless recovery failure.
+Final bounded handoff requires a persisted artifact identifier; an unavailable artifact triggers failure and configured rollback or retained-workspace handling, not an accepted handoff.
+For bounded work, `local_exploration_status` reports the most conservative observed tool-inspection outcome; inspect the artifact for details. It is not task completion or model qualification.
+For routine bounded implementation delegation, require the relevant task-type cases and overall evaluation gate to pass; controlled evaluation runs follow `docs/agent-evaluation/local-model-gpu-scoring.md` in the Hub installation separately.
+The candidate `qwen3.5:4b-q4_K_M` and `gemma4:12b` prompt scopes are advisory only; they do not establish model quality, image or tool support, or permission to edit.
+Quantized and unmatched heavy or vision prompt profiles exclude security decisions, direct edits and final verification; scoped authorization remains authoritative.
+If rollback fails and receipt freshness cannot be established, `receipt_status="unknown"` and `uncertain_verification_receipts` require reconciliation, not acceptance.
+
 Bounded handoff `validation.receipt_status="not_recorded"` means command success has no durable broker verification receipt; inspect the command results and diff and retain the primary review gate.
 
 `task_barrier_error=finalization_event_lookup_timeout` with `task_barrier_status=pending_finalization` is a visible recovery timeout awaiting the scheduled retry, not completion; retain primary review and do not duplicate recovery.

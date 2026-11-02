@@ -8,6 +8,17 @@ from local_ai_hub.work_orchestrator import _bounded_tool_qualification
 from tools.prepare_local_model_eval_fixture import _CASES
 
 
+def test_exploration_handoff_reports_non_success_if_any_inspection_fails():
+    from local_ai_hub.work_orchestrator import _local_exploration_status
+
+    assert _local_exploration_status([]) is None
+    assert _local_exploration_status([{"local_exploration": {"status": "completed"}},
+                                      {"local_exploration": {"status": "skipped"}}]) == "skipped"
+    assert _local_exploration_status([{"local_exploration": {"status": "unavailable"}},
+                                      {"local_exploration": {"status": "unknown"}}]) == "unknown"
+    assert _local_exploration_status([{"local_exploration": {"status": []}}]) == "unknown"
+
+
 def _fixture_digest(case):
     value = hashlib.sha256()
     for path, content in sorted(_CASES[case].items()):
@@ -188,6 +199,7 @@ def test_bounded_work_exploration_obeys_qualification_scope_and_budget(tmp_path,
         report = json.loads(artifacts.data[result["artifact_id"]]["text"])
         assert report["llm_calls"] <= budget["max_llm_calls"]
         inspection = next(step for step in report["steps"] if step["kind"] == "inspect")
+        assert result["local_exploration_status"] == inspection["local_exploration"]["status"]
         if scenario == "unknown":
             assert inspection["local_exploration"]["status"] == "unknown"
         if scenario == "uncertain_success":

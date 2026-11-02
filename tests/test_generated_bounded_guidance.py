@@ -19,7 +19,13 @@ def test_generated_guidance_preserves_qualified_bounded_handoff():
         assert "primary agent" in guidance
         assert "bounded patch parent directories must already exist" in guidance
         assert "mixed LF and CRLF within a single file" in guidance
+        assert "timed_out=true" in guidance and "in_progress=true" in guidance
+        assert "not a terminal result" in guidance
+        assert "max_response_tokens >= 512" in guidance
+        assert "output_truncated=true" in guidance
     assert 'receipt_status="recorded_unmapped"' in workflow
+    assert 'stale_verification_receipts' in workflow
+    assert 'uncertain_verification_receipts' in workflow
     assert "not task completion" in workflow
     assert "task_barrier_error=finalization_event_lookup_timeout" in workflow
     work_line = next(line for line in tools.splitlines() if line.startswith("- `local_ai_work`:"))

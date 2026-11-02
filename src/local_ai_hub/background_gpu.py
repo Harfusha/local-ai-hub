@@ -43,11 +43,12 @@ class IdleGPUWorker:
         self.start_failure_max_attempts = max(1, int(self.cfg.get("start_failure_max_attempts", 3)))
         self.endpoint = str(self.cfg.get("ollama_url", "http://127.0.0.1:11436")).rstrip("/")
         self._lock = threading.RLock()
-        self._setup_lock = threading.Lock()
+        self._setup_lock = threading.RLock()
         self._cancel = threading.Event()
         self._closed = False
         self._active = 0
         self._lease = False
+        self._stop_unconfirmed = False
         self._cpu_lease = False
         self._last_error: str | None = None
         self._retry_after = 0.0
@@ -126,6 +127,8 @@ class IdleGPUWorker:
             self._stats["start_failures"] += 1
 
     def _foreground_requested(self) -> bool:
+        if self._stop_unconfirmed:
+            return True
         if self.scheduler.foreground_busy():
             return True
         if self._cancel.is_set():
@@ -144,7 +147,11 @@ class IdleGPUWorker:
             self._last_error = None
 
     def _acquire_session(self) -> bool:
-        if self._closed or not self.enabled or not self.model or self._startup_circuit_open:
+        from .opencode_boundary import generation_denial
+
+        if generation_denial() is not None:
+            return False
+        if self._closed or not self.enabled or not self.model or self._startup_circuit_open or self._stop_unconfirmed:
             return False
         with self._lock:
             if time.monotonic() < self._retry_after:
@@ -210,10 +217,7 @@ class IdleGPUWorker:
                             f"limit {self.max_cpu_offload_fraction:.1%}"
                         )
                         self._retry_after = time.monotonic() + self.profile_retry_cooldown
-                    self.runtime.stop_managed_server()
-                    self.scheduler.release_background_gpu()
-                    with self._lock:
-                        self._lease = False
+                    self._stop_and_release_gpu()
                     return False
                 with self._lock:
                     self._stats["sessions"] += 1
@@ -225,14 +229,11 @@ class IdleGPUWorker:
                 self._cool_down_after_start_failure(str(exc))
                 with self._lock:
                     self._stats["failed"] += 1
-                self.runtime.stop_managed_server()
-                self.scheduler.release_background_gpu()
-                with self._lock:
-                    self._lease = False
+                self._stop_and_release_gpu()
                 return False
 
     def ready(self) -> bool:
-        if not self.enabled or not self.model or self._startup_circuit_open:
+        if not self.enabled or not self.model or self._startup_circuit_open or self._stop_unconfirmed:
             return False
         if self.scheduler.foreground_busy():
             return False
@@ -245,6 +246,10 @@ class IdleGPUWorker:
 
     def _acquire_cpu_session(self) -> bool:
         """Start the serial CPU fallback without reserving the foreground GPU."""
+        from .opencode_boundary import generation_denial
+
+        if generation_denial() is not None:
+            return False
         if self._closed or not self.cpu_fallback_enabled or not self.model:
             return False
         with self._setup_lock:
@@ -282,23 +287,38 @@ class IdleGPUWorker:
                 self._cpu_lease = True
             return True
 
-    def preempt_foreground(self) -> None:
+    def _stop_and_release_gpu(self) -> bool:
+        try:
+            stopped = self.runtime.stop_managed_server() is True
+        except Exception:
+            stopped = False
+        with self._lock:
+            self._stop_unconfirmed = not stopped
+            if not stopped:
+                self._last_error = "background server stop unconfirmed; GPU reservation retained"
+                return False
+            self._lease = False
+        self.scheduler.release_background_gpu()
+        return True
+
+    def preempt_foreground(self) -> bool:
         """Synchronously release VRAM for an arriving foreground request."""
         # A foreground submit may call this hook even when the idle worker has not
         # started. Do not leave a stale cancellation flag behind: that would keep
         # the worker disabled forever after the foreground request completes.
-        with self._lock:
-            leased = self._lease
-            active = self._active
-        if leased or active:
-            self._cancel.set()
-            # Killing only our dedicated managed server aborts all parallel disposable
-            # jobs at once and releases its runner/KV allocation deterministically.
-            self.runtime.stop_managed_server()
+        with self._setup_lock:
             with self._lock:
-                self._stats["preemptions"] += 1
-                self._lease = False
-            self.scheduler.release_background_gpu()
+                leased = self._lease
+                active = self._active
+            if leased or active:
+                self._cancel.set()
+                # Only confirmed termination permits the GPU reservation to release.
+                if self._stop_and_release_gpu():
+                    with self._lock:
+                        self._stats["preemptions"] += 1
+                    return True
+                return False
+            return True
 
     def _generate_one(
         self,
@@ -389,6 +409,11 @@ class IdleGPUWorker:
     def generate_many(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not tasks:
             return []
+        from .opencode_boundary import generation_denial
+
+        denial = generation_denial()
+        if denial is not None:
+            return [dict(denial) for _ in tasks]
         all_results: list[dict[str, Any]] = []
         batch_start = 0
         while batch_start < len(tasks):
@@ -492,10 +517,11 @@ class IdleGPUWorker:
     def close(self) -> None:
         self._closed = True
         self._cancel.set()
-        self.runtime.stop_managed_server()
-        self.cpu_runtime.stop_managed_server()
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        with self._lock:
-            self._lease = False
-            self._cpu_lease = False
-        self.scheduler.release_background_gpu()
+        with self._setup_lock:
+            self._stop_and_release_gpu()
+        try:
+            self.cpu_runtime.stop_managed_server()
+        finally:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            with self._lock:
+                self._cpu_lease = False

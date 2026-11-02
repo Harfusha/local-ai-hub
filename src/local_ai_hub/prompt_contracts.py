@@ -39,6 +39,15 @@ _CAPABILITIES = {
         "qwen2.5-coder:7b", "reasoning", ("bounded_review", "root_cause", "cross_file_reasoning", "test_plan", "patch_plan", "compare"),
         ("security_decision", "apply_changes", "final_verification"),
     ),
+    # Intended advisory scope only; this does not attest installed-model quality.
+    "qwen3.5:4b-q4_k_m": ModelCapability(
+        "qwen3.5:4b-q4_K_M", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
+        ("architecture", "security_decision", "high_risk_migration", "apply_changes", "final_verification"),
+    ),
+    "gemma4:12b": ModelCapability(
+        "gemma4:12b", "vision", ("visual_review", "visual_issue_list", "extract"),
+        ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"),
+    ),
     "qwen3-vl:4b": ModelCapability(
         "qwen3-vl:4b", "vision", ("visual_review", "visual_issue_list", "accessibility_observation", "extract"),
         ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"),
@@ -82,9 +91,9 @@ def capability_for(model: str, *, role: str = "") -> ModelCapability:
             return ModelCapability(known.model, known.tier, known.can + ("visual_review",), known.cannot)
         return known
     if "vl" in normalized or str(role).lower() == "vision":
-        return ModelCapability(model, "vision", ("visual_review", "visual_issue_list", "extract"), ("source_only_reasoning", "apply_changes"))
+        return ModelCapability(model, "vision", ("visual_review", "visual_issue_list", "extract"), ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"))
     if any(size in normalized for size in ("9b", "13b", "14b", "32b", "70b", "72b")):
-        return ModelCapability(model, "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "patch_plan", "compare"), ("apply_changes", "final_verification"))
+        return ModelCapability(model, "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "patch_plan", "compare"), ("security_decision", "apply_changes", "final_verification"))
     if "7b" in normalized:
         return _CAPABILITIES["qwen2.5-coder:7b"]
     if "3b" in normalized:

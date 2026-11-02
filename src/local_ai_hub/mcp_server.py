@@ -293,6 +293,10 @@ def _operational_mode_rejection(
 try:
     CLIENT = _build_mcp_client(CONFIG_PATH)
     CFG = load_config(CONFIG_PATH, probe_hardware=False)
+    if (os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT")) == "opencode-local":
+        from local_ai_hub.opencode_boundary import local_profile_config
+
+        CFG = local_profile_config(CFG, os.environ.get("LOCAL_AI_HUB_TOKEN", ""))
     atexit.register(CLIENT.close)
     FEATURES = FeatureSet.from_config(CFG)
     MCP_CFG = CFG.get("mcp", {})
@@ -320,7 +324,7 @@ except Exception as _init_exc:  # pragma: no cover
 
 
 def _timeout(kind: str) -> float:
-    defaults = {"quick": 180.0, "context": 600.0, "model": 1800.0, "long": 2400.0}
+    defaults = {"quick": 180.0, "context": 600.0, "model": 600.0, "long": 600.0}
     return max(1.0, float(MCP_CFG.get(f"{kind}_timeout_seconds", defaults[kind])))
 
 
@@ -493,6 +497,8 @@ def _desc_task() -> str:
     if LEAN_SCHEMAS:
         return (
             "Bounded local-model worker for semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression. "
+            "For compress, pass source in `text` and optional instructions in `task`; `max_tokens` targets generated output, `max_response_tokens` bounds the response envelope. "
+            "An empty active_model does not establish that no models are installed. "
             "Use deterministic/indexed tools for exact facts, symbols, diff and tests; they are not substitutes for these semantic tasks. "
             f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
@@ -510,6 +516,8 @@ def _desc_task() -> str:
         )
     return (
         f"Bounded local-model worker for the main agent."
+        " For compress, pass source in `text` and optional instructions in `task`; `max_tokens` targets generated output, `max_response_tokens` bounds the response envelope."
+        " An empty active_model does not establish that no models are installed."
         f" Route preprocessing through `{FEATURES.background_model}`, quick tasks through `{FEATURES.fast_model}`, complex tasks through `{FEATURES.smart_model}`, and the hardest reasoning through `{FEATURES.reasoning_model}`."
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
@@ -538,6 +546,7 @@ def _desc_repo() -> str:
         return (
             "Primary repository worker for repository navigation, symbols, and impact."
             " Local inference is disabled on this installation."
+            " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
             " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
             " Native fallback requires terminal=true and retryable=false."
@@ -547,6 +556,7 @@ def _desc_repo() -> str:
     if LEAN_SCHEMAS:
         return (
             "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Reuse fresh sufficient evidence; use bounded indexed/source lookup directly for exact facts. When non-trivial work lacks sufficient fresh evidence, adaptive context fuses deterministic/indexed evidence, Serena, bounded lexical search and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields require dashboard detailed diagnostics; extra_fields cannot enable them. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code, preprocess (idempotent registration of a stable repository root; do not force-refresh or poll)."
+            " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
             " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
         )
@@ -559,6 +569,7 @@ def _desc_repo() -> str:
     _ = " -> RAG" if FEATURES.rag else ""
     return (
         "Primary bounded repository worker for repository navigation, symbols, and impact."
+        " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
         " Reuse fresh evidence and bounded indexed/source lookup for exact facts; use adaptive context when non-trivial work lacks sufficient fresh evidence."
         f" Use the adaptive context orchestrator: deterministic, code_index, Serena, bounded lexical search, and RAG are fused when available;"
         " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
@@ -663,11 +674,18 @@ def _desc_coord() -> str:
 
 
 def _desc_work() -> str:
+    bounded = (
+        " For bounded mode, use only for explicit closed delegation when profile high is active and task-specific model quality is evaluated."
+        " Supply exact allowed files, approved commands, permissions, finite time and acceptance criteria."
+        " The primary agent must review the diff, actual tests and integration; a handoff is not task completion."
+        " For work owned by the responding process, timed_out=true with in_progress=true is not a terminal result or permission to retry; cancellation is cooperative."
+    )
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response. Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Actions: submit, status, wait, get, cancel, continue. Use when: the task can be delegated as a self-contained repository outcome. Skip when: work is micro-edits or live discussion."
+        return "Delegate closed, low-risk work with an aggregate-bounded handoff." + bounded + " Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Actions: submit, status, wait, get, cancel, continue. Use when: the task can be delegated as a self-contained repository outcome. Skip when: work is micro-edits or live discussion."
     return (
-        "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
+        "Delegate one closed, low-risk work item to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
+        + bounded + " "
         "Actions: submit, status, wait, get, cancel, continue. Common response controls: max_response_tokens, response_profile=minimal|compact|delta, reuse_key, extra_fields; work projection profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
         "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
@@ -969,6 +987,28 @@ def _reuse_state(key: str, value: Any) -> tuple[bool, Any]:
     while len(_REUSE_VALUES) > RESPONSE_REUSE_LIMIT:
         _REUSE_VALUES.popitem(last=False)
     return previous == digest, previous_value
+
+
+_CONTEXT_DELTA_BUDGET_ERROR = "Context delta exceeds response budget; request compact context or increase max_response_tokens"
+
+
+def _context_delta_budget_error(value: Any, requested: int, reuse_key: str) -> dict[str, Any]:
+    # A rejected delta was never delivered. Forget its snapshot so a later call
+    # cannot incorrectly tell the caller that it already has the new context.
+    if reuse_key:
+        _REUSE_DIGESTS.pop(reuse_key, None)
+        _REUSE_VALUES.pop(reuse_key, None)
+    result = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
+              "error": _CONTEXT_DELTA_BUDGET_ERROR}
+    if isinstance(value, dict):
+        for key in ("root", "request_id"):
+            if isinstance(value.get(key), str) and value[key]:
+                result[key] = value[key]
+    result["response_budget"] = {"requested_tokens": requested, "original_tokens": json_tokens(value),
+                                 "returned_tokens": 0, "truncated": True, "reused": False,
+                                 "unit": "estimated_tokens"}
+    return budget_response(result, max_tokens=requested, profile="compact", reuse_key=reuse_key,
+                           protected_keys=tuple(result), token_metadata=efficiency_metadata())
 
 
 def _code_index_page_with_prefix(
@@ -1472,6 +1512,7 @@ def _compact(
                 compacted[field] = raw_value[field]
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
+        expected_context_delta = None
         repeated, previous = _reuse_state(reuse_key, compacted)
         if profile == "delta" and previous is not None:
             if repeated and isinstance(compacted, dict):
@@ -1486,7 +1527,17 @@ def _compact(
                     compacted["delta"] = {"changed": {}, "added": {}, "removed": []}
                 compacted["unchanged"] = True
             elif not repeated:
-                compacted = delta_response(previous, compacted, result_id=result_id(compacted))
+                if task_kind == "context" and isinstance(previous, dict) and isinstance(compacted, dict):
+                    current = compacted
+                    previous_content = {key: value for key, value in previous.items() if key != "request_id"}
+                    current_content = {key: value for key, value in current.items() if key != "request_id"}
+                    compacted = delta_response(previous_content, current_content, result_id=result_id(current_content))
+                    if "request_id" in current:
+                        compacted["request_id"] = current["request_id"]
+                else:
+                    compacted = delta_response(previous, compacted, result_id=result_id(compacted))
+            if task_kind == "context" and isinstance(compacted, dict) and isinstance(compacted.get("delta"), dict):
+                expected_context_delta = copy.deepcopy(compacted["delta"])
         if task_kind == "coord" and isinstance(raw_value, dict) and isinstance(compacted, dict):
             if "checkpoint_sync" in raw_value:
                 compacted["checkpoint_sync"] = raw_value["checkpoint_sync"]
@@ -1512,6 +1563,21 @@ def _compact(
             protected_keys=protected_keys,
             token_metadata=efficiency_metadata(),
         )
+        if expected_context_delta is not None and (
+            not isinstance(compacted, dict) or compacted.get("delta") != expected_context_delta
+        ):
+            return _context_delta_budget_error(raw_value, requested, reuse_key)
+    if artifact_page and exact_artifact_text is not None and (
+        not isinstance(compacted, dict)
+        or compacted.get("text") != exact_artifact_text
+        or compacted.get("offset") != raw_value.get("offset")
+        or compacted.get("next_offset") != raw_value.get("next_offset")
+    ):
+        compacted = {
+            "success": False, "status_code": 413, "terminal": True, "retryable": False,
+            "error": "Reduce max_chars or increase max_response_tokens: artifact page exceeds response budget",
+            "artifact_id": raw_value["artifact_id"],
+        }
     if source_slice and raw_value.get("success") is True and isinstance(compacted, dict) and compacted.get("success") is True:
         if any(compacted.get(key) != raw_value.get(key) for key in SOURCE_SLICE_FIELDS):
             compacted = {
@@ -2165,6 +2231,11 @@ def _instrumented_tool():
             budget_rejection = _explicit_budget_rejection(arguments)
             if budget_rejection is not None:
                 return budget_rejection
+            if (fn.__name__ == "local_ai_coord" and arguments.get("action") in {"claim", "release"}
+                    and type(arguments.get("max_response_tokens")) is int
+                    and 0 < arguments["max_response_tokens"] < 512):
+                return {"success": False, "error": "lease mutation requires max_response_tokens >= 512",
+                        "operation_not_started": True}
             try:
                 mode_state_dir = configured_state_dir(CFG, create=False)
                 mode_snapshot = load_operational_mode(mode_state_dir)
@@ -2184,6 +2255,16 @@ def _instrumented_tool():
                 return mode_rejection
             if not detailed_diagnostics_enabled(CFG) and diagnostic_mcp_operation(fn.__name__, arguments):
                 return diagnostics_disabled_response()
+            if fn.__name__ == "local_ai_task" and arguments.get("action") == "benchmark":
+                validation_error = validate_operation_arguments(
+                    "local_ai_task", "benchmark", arguments, features=FEATURES,
+                )
+                if validation_error is not None:
+                    return contract_error(
+                        f"{validation_error}; benchmark runs the configured model suite with a fixed "
+                        "prompt and does not accept per-input model, prompt, or deadline options",
+                        status_code=400,
+                    )
             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
             response_profile = arguments.get("response_profile", "")
@@ -2427,6 +2508,23 @@ def local_ai_status(
     return _preserve_contract_state(status, result)
 
 
+def _batch_items_retained(original: Any, projected: Any) -> bool:
+    if not isinstance(original, list):
+        return True
+    return (
+        isinstance(projected, list) and len(projected) == len(original)
+        and all(
+            isinstance(before, dict) and isinstance(after, dict)
+            and all(after.get(key) == before[key] for key in (
+                "id", "success", "text", "result", "output", "error", "terminal", "retryable",
+                "artifact_id", "output_artifact_id", "evidence_id", "evidence_ids", "job_id",
+                "request_not_sent", "outcome_unknown", "in_progress", "cancelled",
+            ) if key in before)
+            for before, after in zip(original, projected)
+        )
+    )
+
+
 @mcp.tool()
 @_instrumented_tool()
 @_release_root_family_on_exit
@@ -2664,13 +2762,13 @@ def local_ai_task(
             "status",
             extra_fields=[*(extra_fields or []), "progress_percent", "current_stage", "progress_available"],
         )
-    # The static contract requires summary, evidence, analysis, limitations
-    # and next step. Requests below this floor routinely truncate after a
-    # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
-    # the task so callers keep the operation and receive a complete answer.
+    # Explicit short limits are allowed down to the receiving operation's floor.
+    # Compression uses a target with its own 128-token minimum.
     if action in {"delegate", "explore", "reason", "review", "second_opinion", "compress"}:
-        if max_tokens:
-            max_tokens = max(160, int(max_tokens))
+        output_floor = 128 if action == "compress" else 64
+        if max_tokens and (type(max_tokens) is not int or max_tokens < output_floor):
+            return {"success": False, "error": f"max_tokens must be at least {output_floor} when specified for {action}",
+                    "operation_not_started": True, "terminal": True, "retryable": False}
         if not task and prompt:
             task = prompt
         if not task and query:
@@ -2817,7 +2915,7 @@ def local_ai_task(
         candidate_input = candidate or prompt or context or code or ""
         return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
             "question": question_input, "candidate": candidate_input, "context": context if candidate_input != context else "", "max_tokens": max_tokens or 4096,
-            "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
+            "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model, "complexity": complexity,
             "changed_paths": changed_paths or [], "repository_revision": repository_revision,
             "evidence_ids": context_evidence_ids,
         }), task=task, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
@@ -2832,7 +2930,29 @@ def local_ai_task(
     if action == "route":
         return _compact(CLIENT.post("/api/route", {"text": context, "query": task, "delivery": delivery, "latency_budget_ms": latency_budget_ms}, timeout=_timeout("model")), "route")
     if action == "batch":
-        return _compact(CLIENT.post("/api/delegate/batch", {"tasks": tasks or [], "delivery": delivery, "latency_budget_ms": latency_budget_ms}, timeout=_timeout("long")), "delegate")
+        batch_payload = {"tasks": tasks or [], "delivery": delivery, "latency_budget_ms": latency_budget_ms}
+        requested, _, _, budget_enabled = _response_budget("batch", _CURRENT_RESPONSE_OPTIONS.get())
+        if budget_enabled:
+            batch_payload["response_budget_tokens"] = requested
+        batch_result = CLIENT.post("/api/delegate/batch", batch_payload, timeout=_timeout("long"))
+        projected = _compact(batch_result, "delegate")
+        budget = projected.get("response_budget") if isinstance(projected, dict) else None
+        lost_items = (isinstance(batch_result, dict) and isinstance(projected, dict)
+                      and not _batch_items_retained(batch_result.get("results"), projected.get("results")))
+        if (isinstance(budget, dict) and budget.get("rejected") is True) or lost_items:
+            if lost_items:
+                projected = {"success": False, "error": "batch result unavailable in bounded response",
+                             **({"request_id": batch_result["request_id"]} if isinstance(batch_result.get("request_id"), str) else {})}
+            if isinstance(batch_result, dict) and batch_result.get("request_not_sent") is True:
+                projected["request_not_sent"] = True
+            else:
+                # Dispatch already happened; a projection error is not a preflight refusal.
+                projected["outcome_unknown"] = True
+            if isinstance(batch_result, dict) and isinstance(batch_result.get("request_id"), str):
+                projected.setdefault("request_id", batch_result["request_id"])
+            if isinstance(batch_result, dict) and isinstance(batch_result.get("output_artifact_id"), str):
+                projected["output_artifact_id"] = batch_result["output_artifact_id"]
+        return projected
     if action == "benchmark":
         return _compact(CLIENT.post("/api/benchmark", {}, timeout=_timeout("long")), "status")
     if action == "hardware_benchmark":
@@ -3053,6 +3173,9 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     projected = _compact(safe_value, "context", extra_fields=extra_fields)
     if not isinstance(projected, dict):
         return projected
+    if projected.get("error") == _CONTEXT_DELTA_BUDGET_ERROR:
+        return projected
+    expected_context_delta = copy.deepcopy(projected.get("delta")) if isinstance(projected.get("delta"), dict) else None
 
     # Guard output is deterministic. Reattach its decision-grade fields after the
     # generic response budget so model/postprocess fields cannot replace them.
@@ -3124,7 +3247,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     # Without this, the final budget pass could return IDs/status while silently
     # dropping the context text needed by the next bounded agent step.
     for key in ("context", "query", "context_source", "estimated_tokens", "contract", "retrieval"):
-        if key == "context" and options.get("response_profile") == "delta" and projected.get("unchanged") is True:
+        if key == "context" and options.get("response_profile") == "delta" and expected_context_delta is not None:
             continue
         if key in safe_value and key not in authoritative:
             authoritative[key] = safe_value[key]
@@ -3168,7 +3291,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             key for key in (
                 "complete", "partial", "task_context", "task_context_artifact_id", "task_id", "next_action", "etag", "omitted_sections",
                 "stop_code", "degraded_reason", "context_truncated", "context_chars",
-                "requires_override", "requires_approval", "decision_recorded",
+                "requires_override", "requires_approval", "decision_recorded", "delta",
                 "decision_persisted", "task_status", "waiting", "unchanged", "reuse_pointer",
             ) if key in final
         )
@@ -3201,6 +3324,10 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             protected_keys=protected_context_keys,
             token_metadata=efficiency_metadata(),
         )
+        if expected_context_delta is not None and (
+            not isinstance(final, dict) or final.get("delta") != expected_context_delta
+        ):
+            return _context_delta_budget_error(safe_value, requested, reuse_key)
         budget_meta = final.get("response_budget") if isinstance(final, dict) else None
         if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
             budget_meta["returned_tokens"] = json_tokens(final)
@@ -5224,7 +5351,12 @@ def local_ai_coord(
         task_result = CLIENT.coord(
             **task_kwargs,
         )
-        return _compact(task_result, "task_memory")
+        task_projection = _compact(task_result, "task_memory")
+        if (action == "task_list" and isinstance(task_result, dict)
+                and task_result.get("success") is True and task_result.get("tasks") == []
+                and isinstance(task_projection, dict) and task_projection.get("success") is True):
+            task_projection["tasks"] = []
+        return task_projection
     if action.startswith("memory_"):
         if not key and name:
             key = name
@@ -5329,11 +5461,26 @@ def local_ai_coord(
             root=root,
         ), "status")
     if action == "claim":
-        return _compact(CLIENT.post("/api/leases/claim_batch", {
+        result = CLIENT.post("/api/leases/claim_batch", {
             "owner": owner, "root": root, "paths": paths or [], "ttl_seconds": 900 if ttl_seconds is None else ttl_seconds, "purpose": purpose,
-        }))
+        })
+        if isinstance(result, dict) and result.get("success") is True:
+            lease = result.get("lease_id")
+            if not isinstance(lease, str) or not re.fullmatch(r"lease_[0-9a-f]{20}", lease):
+                return _compact({"success": False, "mutation_applied": True, "outcome_unknown": True,
+                                 "error": "lease claim returned invalid lease identity"})
+            result = {key: result[key] for key in ("success", "lease_id", "expires_at") if key in result}
+            result["mutation_applied"] = True
+        return _compact(result)
     if action == "release":
-        return _compact(CLIENT.post("/api/leases/release", {"owner": owner, "lease_id": lease_id}))
+        result = CLIENT.post("/api/leases/release", {"owner": owner, "lease_id": lease_id})
+        if isinstance(result, dict) and result.get("success") is True:
+            rows = result.get("released_rows")
+            if type(rows) is not int or rows < 0:
+                return _compact({"success": False, "outcome_unknown": True,
+                                 "error": "lease release returned invalid row count"})
+            result = {"success": True, "released_rows": rows, "mutation_applied": rows > 0}
+        return _compact(result)
     if action == "renew":
         return _compact(CLIENT.post("/api/leases/renew", {"owner": owner, "lease_id": lease_id, "ttl_seconds": 900 if ttl_seconds is None else ttl_seconds}))
     if action == "leases":
@@ -5807,7 +5954,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                             **{
                                 key: value[key]
                                 for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
-                                            "mutation_applied", "operation_not_started",
+                                            "mutation_applied", "operation_not_started", "outcome_unknown",
+                                            "request_not_sent", "in_progress", "output_artifact_id",
                                             "review_scope_complete", "untracked_inventory_complete",
                                             "total_matches", "has_more", "offset", "limit",
                                             "task_context_artifact_id", "next_action")
@@ -5835,7 +5983,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                 key: trial[key]
                                                 for key in (
                                                     "evidence", "evidence_id", "evidence_ids",
-                                                    "mutation_applied", "operation_not_started",
+                                                    "mutation_applied", "operation_not_started", "outcome_unknown",
+                                                    "request_not_sent", "in_progress", "output_artifact_id",
                                                     "total_matches", "has_more", "offset", "limit",
                                                 )
                                                 if key in trial
@@ -5849,7 +5998,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                 key: trial[key]
                                                 for key in (
                                                     "status", "status_code", "terminal", "retryable",
-                                                    "mutation_applied", "operation_not_started",
+                                                    "mutation_applied", "operation_not_started", "outcome_unknown",
+                                                    "request_not_sent", "in_progress", "output_artifact_id",
                                                     "request_id", "execution_id",
                                                     "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
                                                     "total_matches", "has_more", "offset", "limit",
@@ -6295,7 +6445,73 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
 
     def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any:
         """Project again after pagination/accounting and measure the exact wire."""
+        def batch_recovery_wire(source: dict[str, Any]) -> Any:
+            artifact_id = source.get("output_artifact_id")
+            if not isinstance(artifact_id, str) or not artifact_id or source.get("request_not_sent") is True:
+                return None
+            requested, _, _, enabled = _response_budget("batch", {
+                "max_response_tokens": arguments.get("max_response_tokens", 0),
+                "response_profile": arguments.get("response_profile", ""),
+                "reuse_key": arguments.get("reuse_key", ""), "tool": name,
+            })
+            if not enabled:
+                return None
+            recover = {"success": False, "error": "batch result truncated", "outcome_unknown": True,
+                       "output_artifact_id": artifact_id}
+            if isinstance(source.get("request_id"), str):
+                recover["request_id"] = source["request_id"]
+            recover["response_budget"] = {"requested_tokens": requested, "returned_tokens": 0, "truncated": True}
+            text_value = {"outcome_unknown": True, "output_artifact_id": artifact_id}
+            content = [mcp_types.TextContent(type="text", text=json_dumps(text_value))]
+            wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+                    "structuredContent": recover, "isError": False}
+            for _ in range(16):
+                actual = json_tokens(wire)
+                recover["response_budget"]["returned_tokens"] = actual
+                if json_tokens(wire) == actual:
+                    break
+            return (content, recover) if json_tokens(wire) <= requested else None
+
+        if (name == "local_ai_task" and arguments.get("action") == "batch"
+                and isinstance(value, dict) and value.get("outcome_unknown") is True):
+            recovery = batch_recovery_wire(value)
+            if recovery is not None:
+                return recovery
         contents, structured = _build_mcp_budget_payload(name, arguments, value)
+        if (name == "local_ai_artifact" and arguments.get("action") == "get"
+                and isinstance(value, dict) and value.get("success") is True
+                and isinstance(value.get("text"), str)
+                and (not isinstance(structured, dict)
+                     or any(structured.get(key) != value.get(key) for key in ("text", "offset", "next_offset")))):
+            rejection = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
+                         "error": "Reduce max_chars or increase max_response_tokens: artifact page exceeds response budget",
+                         "artifact_id": value.get("artifact_id", "")}
+            return _build_mcp_budget_payload(name, arguments, rejection)
+        if name == "local_ai_task" and arguments.get("action") == "batch" and isinstance(value, dict):
+            original_items = value.get("results")
+            returned_items = structured.get("results") if isinstance(structured, dict) else None
+            if isinstance(original_items, list):
+                items_retained = _batch_items_retained(original_items, returned_items)
+                if not items_retained:
+                    rejection = {"success": False, "error": "batch result unavailable in bounded response"}
+                    if value.get("request_not_sent") is True:
+                        rejection["request_not_sent"] = True
+                    else:
+                        rejection["outcome_unknown"] = True
+                    if isinstance(value.get("request_id"), str):
+                        rejection["request_id"] = value["request_id"]
+                    if isinstance(value.get("output_artifact_id"), str):
+                        rejection["output_artifact_id"] = value["output_artifact_id"]
+                    recovery = batch_recovery_wire(rejection)
+                    if recovery is not None:
+                        return recovery
+                    requested, _, _, _ = _response_budget("batch", {
+                        "max_response_tokens": arguments.get("max_response_tokens", 0),
+                        "response_profile": arguments.get("response_profile", ""),
+                        "reuse_key": arguments.get("reuse_key", ""), "tool": name,
+                    })
+                    bounded = _mcp_bounded_error(rejection, requested)
+                    return bounded if bounded is not None else _build_mcp_budget_payload(name, arguments, rejection)
         if not isinstance(structured, dict):
             return contents, structured
         safe = project_agent_response(structured, enabled=detailed_diagnostics_enabled(CFG))

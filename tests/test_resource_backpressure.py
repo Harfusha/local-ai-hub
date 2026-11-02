@@ -58,6 +58,68 @@ def test_foreground_admission_is_degraded_under_resource_pressure(tmp_path) -> N
         scheduler.close()
 
 
+def test_foreground_vram_rejection_is_not_mislabeled_as_background():
+    scheduler = _scheduler(None, {"pressure_level": "nominal", "context_budget_factor": 1.0,
+                                  "throttle_background": False, "vram_total_mb": 8192,
+                                  "vram_available_mb": 512})
+    scheduler._model_vram_bytes = {"fast": 3 * 1024 * 1024 * 1024}
+    scheduler._active_model = None
+    scheduler.unload_others = False
+    executed = []
+    try:
+        with pytest.raises(QueueFullError) as exc_info:
+            scheduler.submit("fast", source="second-opinion", execute=lambda: executed.append(True), background=False)
+        assert exc_info.value.admission["reason"] == "vram_budget"
+        assert "VRAM" in str(exc_info.value) and "background" not in str(exc_info.value)
+        assert executed == []
+    finally:
+        scheduler.close()
+
+
+def test_async_vram_rejection_is_not_mislabeled_as_background():
+    scheduler = _scheduler(None, {"pressure_level": "nominal", "context_budget_factor": 1.0,
+                                  "throttle_background": False, "vram_total_mb": 8192,
+                                  "vram_available_mb": 0})
+    try:
+        with pytest.raises(QueueFullError) as exc_info:
+            scheduler.enqueue("fast", source="manual", execute=lambda: {"success": True}, background=False)
+        assert exc_info.value.admission["reason"] == "vram_budget"
+        assert "VRAM" in str(exc_info.value) and "background" not in str(exc_info.value)
+    finally:
+        scheduler.close()
+
+
+@pytest.mark.parametrize("changes,uncertain", [
+    ({}, False),
+    ({"_lah_backend_completed": False}, True),
+    ({"stop_reason": "other"}, True),
+    ({"outcome_unknown": True}, True),
+    ({"timed_out": True}, True),
+    ({"preempted": True}, True),
+    ({"cancelled": True}, True),
+    ({"cleanup_unconfirmed": True}, True),
+    ({"_lah_partial_response": True}, True),
+    ({"in_progress": True}, True),
+    ({"timed_out": "true"}, True),
+    ({"outcome_unknown": 1}, True),
+    ({"cleanup_unconfirmed": None}, True),
+    ({"error_code": "other"}, True),
+    ({"terminal": False}, True),
+    ({"retryable": True}, True),
+])
+def test_only_confirmed_length_completion_avoids_unknown_gpu_reservation(changes, uncertain):
+    scheduler = _scheduler(None)
+    response = {"success": False, "output_truncated": True, "stop_reason": "length",
+                "error_code": "model_output_truncated", "terminal": True, "retryable": False,
+                "_lah_backend_completed": True, **changes}
+    try:
+        result = scheduler.submit("fast", source="test", execute=lambda: response)
+        assert result["success"] is False
+        assert scheduler._internal_gpu_uncertain is uncertain
+    finally:
+        scheduler.close()
+
+
 def test_background_admission_rejects_critical_pressure() -> None:
     scheduler = _scheduler(
         None,
@@ -322,3 +384,25 @@ def test_async_worker_records_unknown_when_process_tree_cleanup_fails(tmp_path, 
         assert result["outcome_unknown"] is True
     finally:
         manager.close()
+
+
+def test_queued_status_identifies_external_gpu_reservation(tmp_path):
+    import time
+    from local_ai_hub.scheduler import Job
+
+    scheduler = _scheduler(tmp_path)
+    reservation = tmp_path / "external-gpu-reservation"
+    reservation.write_text("a" * 64, encoding="ascii")
+    scheduler._external_gpu_path = reservation
+    job = Job(id=1, model="fast", source="test", priority=5, execute=lambda: {})
+    try:
+        with scheduler._cond:
+            scheduler._pending.append(job)
+            queued = scheduler.status()["pending_jobs"][0]
+            scheduler._pending.remove(job)
+        assert queued["wait_reason"] == "gpu-reservation"
+        running = scheduler._job_public(job, time.monotonic(), state="running")
+        assert running["wait_reason"] != "gpu-reservation"
+        assert reservation.exists()
+    finally:
+        scheduler.close()

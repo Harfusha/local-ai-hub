@@ -435,6 +435,12 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <details id="controlMenu" class="control-menu">
       <summary>Controls</summary>
       <div class="control-popover">
+        <div class="tiny muted">API authentication</div>
+        <label class="tiny" for="dashboardApiToken">API token</label>
+        <input id="dashboardApiToken" type="password" aria-label="API token" autocomplete="off" spellcheck="false" placeholder="Token for this page only">
+        <button class="btn" id="dashboardAuthSet">Use token</button>
+        <button class="btn" id="dashboardAuthClear">Forget token</button>
+        <span class="tiny control-notice" id="dashboardAuthStatus" role="status" aria-live="polite">Token not set. Stored only in this page's memory.</span>
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
         <span class="tiny control-notice">Capture request details for troubleshooting. Off by default.</span>
@@ -650,6 +656,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <button class="btn warn" id="epStatsResetBtn" style="padding:4px 10px;font-size:11px">Resetovat</button>
       </div>
     </h2>
+    <p class="tiny muted" id="epStatsScopeNotice">Nové záznamy rozlišují kořeny projektů; historické skupiny podle názvu složky nelze zpětně rozdělit. Počet volání nástroje neprokazuje spuštění modelu.</p>
     <div style="padding:8px 14px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;font-size:11px;background:var(--panel2);align-items:center">
       <div class="subtabs" id="epStatsScopeTabs" style="margin:0;border:0;padding:0;gap:4px">
         <button class="subtab-btn active" id="epScopeActive" type="button" style="padding:3px 9px;font-size:11px">Aktivní (<span id="epCountActive">0</span>)</button>
@@ -1372,9 +1379,21 @@ function scopeAgentOsRequest(path,options={}){
   }
   return {path,options};
 }
+let dashboardApiToken='';
+function dashboardAuthenticatedHeaders(path,headers,token,baseUrl,secureContext){
+  const h=new Headers(headers||{}),target=new URL(path,baseUrl),base=new URL(baseUrl);
+  if(token&&secureContext&&target.origin===base.origin&&target.pathname.startsWith('/api/')&&!h.has('Authorization')){
+    h.set('Authorization','Bearer '+token);
+  }
+  return h;
+}
 async function apiFetch(path,opts={}){
   const scoped=scopeAgentOsRequest(path,opts);path=scoped.path;opts=scoped.options;
-  opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');opts.headers=h;
+  opts={...opts};
+  const h=typeof dashboardApiToken!=='undefined'&&dashboardApiToken
+    ?dashboardAuthenticatedHeaders(path,opts.headers,dashboardApiToken,location.href,window.isSecureContext)
+    :new Headers(opts.headers||{});
+  h.set('X-LocalAI-Client','dashboard');opts.headers=h;
   const request=async requestOpts=>{
     const next={...requestOpts},parentSignal=next.signal;let controller=null,timer=null,timedOut=false,abortParent=null;
     const cleanup=()=>{if(timer!==null){clearTimeout(timer);timer=null}if(abortParent)parentSignal.removeEventListener('abort',abortParent)};
@@ -5464,6 +5483,17 @@ function renderAgentOsLoadErrors(){
   });
 }
 
+$('dashboardAuthSet')?.addEventListener('click',()=>{
+  const input=$('dashboardApiToken'),status=$('dashboardAuthStatus');
+  if(!window.isSecureContext){if(status)status.textContent='Token requires a secure context (HTTPS or loopback).';return}
+  dashboardApiToken=input?.value.trim()||'';
+  if(input)input.value='';
+  if(status)status.textContent=dashboardApiToken?'Token set for this page. Refresh the current view.':'Token not set.';
+});
+$('dashboardAuthClear')?.addEventListener('click',()=>{
+  dashboardApiToken='';if($('dashboardApiToken'))$('dashboardApiToken').value='';
+  if($('dashboardAuthStatus'))$('dashboardAuthStatus').textContent='Token forgotten.';
+});
 $('agentOsRefresh')?.addEventListener('click',loadAgentOsView);
 $('agentOsRepoSelect')?.addEventListener('change',()=>{
   const val=$('agentOsRepoSelect').value;
@@ -5972,7 +6002,12 @@ async function loadEndpointStatsView() {
       const currentVal = projSelect.value;
       const opts = ['<option value="">Globální (Všechny projekty)</option>'];
       for (const p of res.projects) {
-        opts.push(`<option value="${esc(p)}"${p === currentVal ? ' selected' : ''}>${esc(p)}</option>`);
+        let label = p;
+        try {
+          if (p.startsWith('legacy:')) label = 'historické: ' + decodeURIComponent(p.slice(7));
+          else if (p.startsWith('root:')) { const parts = p.split(':'); label = decodeURIComponent(parts.slice(2).join(':')) + ' · ' + parts[1].slice(0, 8); }
+        } catch {}
+        opts.push(`<option value="${esc(p)}"${p === currentVal ? ' selected' : ''}>${esc(label)}</option>`);
       }
       projSelect.innerHTML = opts.join('');
     }
@@ -6263,7 +6298,7 @@ $('subtabEndpointStatsJump')?.addEventListener('click', () => {
 });
 $('epStatsResetBtn')?.addEventListener('click', async () => {
   const project = $('epStatsProjectSelect')?.value || '';
-  const label = project ? `projekt "${project}"` : 'VŠECHNY projekty globálně';
+  const label = project ? (project.startsWith('legacy:') ? 'historickou skupinu se stejným názvem složky' : 'vybraný kořen projektu') : 'VŠECHNY projekty globálně';
   if (!confirm(`Opravdu chcete resetovat dlouhodobé statistiky pro ${label}?`)) return;
   const res = await post('/api/telemetry/endpoint-stats/reset', { root: project });
   if (res && res.success) {

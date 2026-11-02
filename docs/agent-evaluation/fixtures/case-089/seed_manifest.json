@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "case_id": "089",
+  "fixture_revision": "case-089-independent-v1",
+  "entry_point": "prepare.py",
+  "workspace": "new isolated Git repository",
+  "expected_side_effects": "creates local baseline commit only",
+  "runtime_acceptance": false,
+  "limitations": "does not provide Agent OS task, receipts, or production Hub proof",
+  "seed_expectation": "existing list command works; CSV export is absent"
+}

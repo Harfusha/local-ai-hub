@@ -1074,12 +1074,14 @@ def test_task_second_opinion_accepts_question():
          patch.object(FEATURES, "tasks", True), \
          patch.object(FEATURES, "has_any_model", return_value=True):
         mc.post.return_value = {"success": True, "text": "verdict ok"}
-        res = local_ai_task(action="second_opinion", question="Is this secure?", candidate="def login(): ...")
+        res = local_ai_task(action="second_opinion", question="Is this secure?", candidate="def login(): ...", model="qwen2.5-coder:7b", complexity="fast")
         assert res.get("success") is True, f"second_opinion with question= failed: {res}"
         calls = [c for c in mc.post.call_args_list if "/api/second-opinion" in str(c)]
         assert len(calls) >= 1
         assert calls[0][0][1].get("question") == "Is this secure?"
         assert calls[0][0][1].get("candidate") == "def login(): ..."
+        assert calls[0][0][1].get("model") == "qwen2.5-coder:7b"
+        assert calls[0][0][1].get("complexity") == "fast"
 
 
 # ---------------------------------------------------------------------------

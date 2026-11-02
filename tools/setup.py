@@ -1135,6 +1135,38 @@ def _opencode_platform_supported() -> bool:
     return sys.platform == "win32" and platform.machine().lower() in {"amd64", "x86_64"}
 
 
+def stage_opencode_future_profile(
+    cfg: dict[str, Any], install_dir: Path, *, destination: Path, target: str,
+    model: str | None = None, allow_pull: bool = True,
+) -> dict[str, Any]:
+    """Stage files for future hardware without authorizing or selecting a runtime."""
+    from local_ai_hub.opencode_hardware import future_profile_candidates
+    from local_ai_hub.opencode_models import ModelPreparationError, ensure_model, local_inventory, local_pull
+
+    candidate = future_profile_candidates(target, model=model)[0]
+    if not _opencode_platform_supported():
+        raise ValueError("OpenCode staging currently supports Windows x64 only")
+    required_assets = (
+        "opencode_goal/index.js", "opencode_goal/core.js", "opencode_goal/transport.js", "opencode_goal/package.json",
+        "opencode_mcp/index.js", "opencode_mcp/package.json", "opencode_pipe_client.cjs",
+        "opencode_sandbox_bootstrap.cjs", "opencode_stop_client.ps1",
+    )
+    for asset in required_assets:
+        if not (install_dir / "tools" / asset).is_file():
+            raise ValueError(f"bundled OpenCode integration asset missing: {asset}")
+    executable = _opencode_install_module.install_windows_x64(destination)
+    origin = cfg.get("server", {}).get("ollama_url", "")
+    def pull_candidate(name: str) -> None:
+        ollama = find_ollama_executable()
+        if not ollama:
+            raise ModelPreparationError("Ollama executable unavailable")
+        local_pull(ollama, origin, name)
+    model_result = ensure_model(candidate, inventory=lambda: local_inventory(origin), pull=pull_candidate, allow_pull=allow_pull)
+    return {"complete": False, "runtime_verified": False, "admission": "unverified", "selected_model": None,
+            "target_profile": target, "candidate": candidate, "executable": str(executable), "model": model_result,
+            "pending": ["install target GPU and recheck hardware", "runtime, security and goal acceptance not verified"]}
+
+
 def prepare_opencode_components(
     cfg: dict[str, Any], install_dir: Path, hardware: dict[str, Any], *, destination: Path,
     requested: str = "auto", model: str | None = None, allow_pull: bool = True,
@@ -1367,7 +1399,10 @@ def main() -> int:
     parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
     parser.add_argument("--install-opencode-cli-only", action="store_true", help="Install the pinned Windows x64 OpenCode CLI only; this does not configure the local agent.")
+    parser.add_argument("--install-opencode-sandbox-only", action="store_true", help="Install the pinned Microsoft MXC executor only; this does not enable isolation.")
+    parser.add_argument("--opencode-sandbox-dir", type=Path, help="Destination for the pinned Microsoft MXC executor.")
     parser.add_argument("--with-opencode", action="store_true", help="Also prepare experimental OpenCode components; runtime acceptance remains required.")
+    parser.add_argument("--stage-opencode-profile", choices=["12gb", "16gb"], help="Stage files for a future GPU without authorizing model execution.")
     parser.add_argument("--opencode-dir", type=Path, help="Destination for the pinned OpenCode executable.")
     parser.add_argument("--inspect-opencode-hardware", action="store_true", help="Report candidate OpenCode GPU profiles without installing or running a model.")
     parser.add_argument("--opencode-profile", choices=["auto", "12gb", "16gb"], help="Requested profile for inspection or OpenCode preparation.")
@@ -1385,6 +1420,50 @@ def main() -> int:
     parser.add_argument("--superpowers-entrypoint", type=Path, help="Absolute Gemini CLI JavaScript entrypoint for a native Node launcher.")
     parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
     args = parser.parse_args()
+
+    if args.install_opencode_sandbox_only:
+        allowed = {"install_opencode_sandbox_only", "opencode_sandbox_dir"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("--install-opencode-sandbox-only cannot be combined with other setup modes")
+        if not _opencode_platform_supported():
+            log("OpenCode sandbox provisioning currently supports Windows x64 only.")
+            return 1
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if args.opencode_sandbox_dir is None and not local_appdata:
+            parser.error("--install-opencode-sandbox-only requires LOCALAPPDATA or --opencode-sandbox-dir")
+        spec = importlib.util.spec_from_file_location("_local_ai_hub_opencode_sandbox_install", Path(__file__).with_name("opencode_sandbox_install.py"))
+        if spec is None or spec.loader is None:
+            raise ImportError("could not load sibling opencode_sandbox_install.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        destination = args.opencode_sandbox_dir or Path(local_appdata) / "Programs" / "OpenCode-LocalAIHub" / "mxc" / module.VERSION
+        try:
+            executable = module.install_windows_x64(destination)
+        except module.InstallError as exc:
+            log(f"Sandbox provisioning failed: {exc}")
+            return 1
+        log(f"Verified sandbox executor installed: {executable}. OpenCode sandbox integration and acceptance remain incomplete.")
+        return 0
+    if args.opencode_sandbox_dir is not None:
+        parser.error("--opencode-sandbox-dir requires --install-opencode-sandbox-only")
+
+    if args.stage_opencode_profile is not None:
+        allowed = {"stage_opencode_profile", "config", "opencode_dir", "opencode_model", "skip_model_pull"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("--stage-opencode-profile cannot be combined with other setup modes")
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if args.opencode_dir is None and not local_appdata:
+            parser.error("--stage-opencode-profile requires LOCALAPPDATA or --opencode-dir")
+        _, cfg, install_dir = select_config_source(args.config)
+        destination = args.opencode_dir or Path(local_appdata) / "Programs" / "OpenCode-LocalAIHub" / _opencode_install_module.VERSION
+        try:
+            result = stage_opencode_future_profile(cfg, install_dir, destination=destination, target=args.stage_opencode_profile,
+                                                   model=args.opencode_model, allow_pull=not args.skip_model_pull)
+        except (_opencode_install_module.InstallError, RuntimeError, ValueError, OSError) as exc:
+            print(json.dumps({"success": False, "error": str(exc)}))
+            return 1
+        print(json.dumps({"success": True, **result}, ensure_ascii=False))
+        return 0
 
     if args.prepare_opencode_model is not None:
         allowed = {"prepare_opencode_model", "opencode_ollama_url", "skip_model_pull"}

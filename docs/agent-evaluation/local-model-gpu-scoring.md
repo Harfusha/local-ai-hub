@@ -48,6 +48,23 @@ where supported, with 128k experimental; record unsupported or unsafe
 configurations as NOT_RUN. Compare concurrency one and two plus background
 contention separately. Review the result before changing a default.
 
+The overall gate is necessary, but it does not qualify every kind of work.
+Before recommending a model for a particular role, require its corresponding
+cases to pass: R1 and R2 for diff review; T1 for test suggestions; D1 for
+failure diagnosis; C1, C2 and C3 for scoped repository tool use; I1 for the
+bounded implementation represented by that fixture; I2 for the bounded UI
+change represented by that fixture. Thus an I2 failure cannot be hidden by an
+8/9 overall result when considering UI work. An unrun, failed or unsupported
+case does not qualify its role, even if the overall gate passes. These few
+cases are necessary evidence, not proof for every task in the same category:
+the primary agent still judges each task's complexity, risk and boundaries,
+and reviews its actual diff, tests and integration.
+
+These are operator promotion and task-selection rules. The existing runtime
+qualification artifact independently gates read-only tool exploration; it does
+not automatically enforce this separate task-specific implementation scoring.
+Keep unavailable measurements and unverified model identity explicit.
+
 Write actual run evidence to a new dated result record with the template in
 `results.md`. Do not modify historical results or claim target-GPU acceptance
 from synthetic, mocked, or pre-upgrade evidence.

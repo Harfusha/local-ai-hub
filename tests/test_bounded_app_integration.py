@@ -6,6 +6,287 @@ from local_ai_hub.app import LocalAIApp
 from test_work_orchestrator import init_repo, wait_terminal
 
 
+@pytest.mark.parametrize("scenario", ["allowed", "denied", "qualified_tools", "unadvertised_tool", "handoff_storage_none", "handoff_storage_error", "handoff_keep"])
+def test_registered_mcp_http_bounded_patch_and_real_broker(tmp_path, monkeypatch, scenario):
+    import asyncio
+    from local_ai_hub import http_server, mcp_server
+    from local_ai_hub.client import HubClient
+
+    root = init_repo(tmp_path)
+    (root / "test_sample.py").write_text(
+        "from pathlib import Path\n\ndef test_change():\n    assert Path('a.txt').read_text().strip() == 'new'\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "isolated.toml"
+    config.write_text(
+        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+        + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
+        + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
+        + json.dumps(str(root)) + "]\n[work_orchestrator]\nenabled = true\n", encoding="utf-8",
+    )
+    app = LocalAIApp(str(config))
+    monkeypatch.setattr(http_server, "APP", app)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(config_path=str(config), auto_start=False)
+    client._http_port = server.server_address[1]
+    client.base_url = f"http://127.0.0.1:{client._http_port}"
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
+    if scenario in {"handoff_storage_none", "handoff_storage_error", "handoff_keep"}:
+        original_put = app.artifacts.put
+        def fail_handoff(text, *, kind, **kwargs):
+            if kind == "work-handoff":
+                if scenario in {"handoff_storage_none", "handoff_keep"}:
+                    return None
+                raise OSError("handoff storage unavailable")
+            return original_put(text, kind=kind, **kwargs)
+        monkeypatch.setattr(app.artifacts, "put", fail_handoff)
+    calls = []
+    tool_calls = []
+    model_requests = []
+
+    if scenario in {"qualified_tools", "unadvertised_tool"}:
+        from types import SimpleNamespace
+        from local_ai_hub.tool_agent import ToolAwareLocalAgent
+        from test_bounded_tool_qualification import _fixture
+
+        qualification_config, _, evidence, _, _ = _fixture()
+        app.work_orchestrator._tool_qualification_config = qualification_config
+        original_get = app.artifacts.get
+        def get_artifact(artifact_id, **kwargs):
+            if artifact_id in evidence:
+                return {"success": True, "artifact_id": artifact_id, "next_offset": None, **evidence[artifact_id]}
+            return original_get(artifact_id, **kwargs)
+        monkeypatch.setattr(app.artifacts, "get", get_artifact)
+
+        class Runtime:
+            def model_digest(self, model):
+                return "a" * 64
+            def request(self, endpoint, payload=None, **kwargs):
+                assert endpoint == "/api/show"
+                return {"capabilities": ["completion", "tools"]}
+            def request_interruptible(self, endpoint, payload, **kwargs):
+                model_requests.append(payload)
+                if len(model_requests) == 1:
+                    if scenario == "unadvertised_tool":
+                        return {"message": {"role": "assistant", "content": "", "tool_calls": [
+                            {"id": "bad-call", "function": {"name": "run_command", "arguments": {"command": "delete_all"}}}]}}
+                    return {"message": {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "call-1", "function": {"name": "repo_search", "arguments": {"query": "old"}}}]}}
+                assert any(m.get("role") == "tool" and "a.txt" in m.get("content", "") for m in payload["messages"])
+                return {"message": {"role": "assistant", "content": "inspection FACT-FROM-TOOL"}}
+
+        execution = SimpleNamespace(cache_scope=lambda: {"num_ctx": 16384})
+        monkeypatch.setattr(app.services, "runtime", Runtime())
+        monkeypatch.setattr(app.services, "model_policy", SimpleNamespace(
+            profile=lambda *a, **k: execution,
+            apply_payload=lambda model, payload, **kwargs: (payload, execution)))
+        monkeypatch.setattr(app.services, "scheduler", SimpleNamespace(submit=lambda model, execute, **kwargs: execute()))
+        agent = ToolAwareLocalAgent(app.config, app.services, app.preprocessor, SimpleNamespace(workspace_id=lambda value: "test"))
+        actual_execute_tool = agent._execute_tool
+        def observe_tool(name, args, bound_root, workspace):
+            result = actual_execute_tool(name, args, bound_root, workspace)
+            tool_calls.append((name, bound_root))
+            return result
+        agent._execute_tool = observe_tool
+        monkeypatch.setattr(app.services, "tool_agent", agent)
+
+    def delegate(*_args, **_kwargs):
+        calls.append(_args[0])
+        if len(calls) == 1:
+            steps = []
+            if scenario in {"qualified_tools", "unadvertised_tool"}:
+                steps.append({"id": "inspect", "kind": "inspect", "task": "find old", "depends_on": []})
+            steps.extend([
+                {"id": "edit", "kind": "edit", "task": "change", "depends_on": ["inspect"] if steps else []},
+                {"id": "validate", "kind": "validate", "task": "test", "depends_on": ["edit"]},
+            ])
+            return {"success": True, "text": json.dumps({"summary": "change", "steps": steps})}
+        return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}
+
+    monkeypatch.setattr(app.services, "delegate_repo", delegate)
+    monkeypatch.setattr(app.services, "second_opinion", lambda *_a, **_kw: {
+        "success": True, "text": json.dumps({"passed": True, "summary": "checked",
+        "criteria": [{"criterion": "test passes", "passed": True}], "risks": []})})
+
+    def call(arguments):
+        response = asyncio.run(mcp_server.mcp.call_tool("local_ai_work", arguments))
+        return response[1]
+
+    try:
+        submitted = call({"action": "submit", "root": str(root), "task": "change file",
+            "mode": "bounded", "acceptance_criteria": ["test passes"], "allowed_paths": ["test_sample.py" if scenario == "denied" else "a.txt"],
+            "approved_commands": ["python -m pytest -q test_sample.py"],
+            "permissions": {"edit": True, "tests": True, "build": True},
+            "budget": {"max_steps": 8, "max_seconds": 90, "max_llm_calls": 8},
+            "keep_failed_workspace": scenario == "handoff_keep"})
+        assert submitted["success"] is True, submitted
+        handoff = call({"action": "wait", "root": str(root), "work_id": submitted["work_id"],
+                        "timeout_seconds": 60, "response_profile": "standard"})
+        assert handoff["status"] == ("failed" if scenario in {"denied", "handoff_storage_none", "handoff_storage_error", "handoff_keep"} else "needs_agent"), handoff
+        assert handoff["success"] is False
+        report = json.loads(app.artifacts.get(handoff["artifact_id"], max_chars=30000)["text"])
+        if scenario not in {"denied", "handoff_storage_none", "handoff_storage_error", "handoff_keep"}:
+            assert handoff["requires_primary_review"] is True
+            assert report["validation"][0]["command"] == "python -m pytest -q test_sample.py"
+            assert report["validation"][0]["exit_code"] == 0
+        elif scenario == "denied":
+            assert report["validation"] == []
+        else:
+            assert report["validation"][0]["exit_code"] == 0
+            assert "handoff" in handoff["error"]
+        if scenario == "qualified_tools":
+            assert handoff["local_exploration_status"] == "completed"
+            assert tool_calls == [("repo_search", str(root))]
+            assert len(model_requests) == 2
+            assert "inspection FACT-FROM-TOOL" in calls[1]["context"]
+        if scenario == "unadvertised_tool":
+            assert handoff["local_exploration_status"] == "unavailable"
+            inspection = next(step for step in report["steps"] if step["kind"] == "inspect")
+            assert inspection["local_exploration"]["status"] == "unavailable"
+            assert tool_calls == []
+            minimal = call({"action": "get", "root": str(root), "work_id": submitted["work_id"],
+                            "response_profile": "minimal", "return_fields": ["summary"],
+                            "max_output_tokens": 128, "max_response_tokens": 256})
+            assert minimal["local_exploration_status"] == "unavailable", minimal
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == ("old" if scenario in {"denied", "handoff_storage_none", "handoff_storage_error"} else "new")
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        app.close()
+
+
+def test_mcp_claim_budget_preserves_real_lease_identity(tmp_path, monkeypatch):
+    import asyncio
+    from local_ai_hub import http_server, mcp_server
+    from local_ai_hub.client import HubClient
+
+    root = init_repo(tmp_path)
+    config = tmp_path / "isolated.toml"
+    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+        + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
+        + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
+        + json.dumps(str(root)) + "]\n", encoding="utf-8")
+    app = LocalAIApp(str(config))
+    monkeypatch.setattr(http_server, "APP", app)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(config_path=str(config), auto_start=False)
+    client._http_port = server.server_address[1]
+    client.base_url = f"http://127.0.0.1:{client._http_port}"
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
+    def call(arguments):
+        return asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))[1]
+    try:
+        common = {"root": str(root), "owner": "test-owner"}
+        denied = call({**common, "action": "claim", "paths": ["a.txt"], "purpose": "test",
+                       "max_response_tokens": 350})
+        assert denied["success"] is False and denied["operation_not_started"] is True, denied
+        claimed = call({**common, "action": "claim", "paths": ["a.txt"], "purpose": "test",
+                        "max_response_tokens": 512})
+        assert claimed["success"] is True and claimed["mutation_applied"] is True, claimed
+        assert claimed["lease_id"].startswith("lease_")
+        too_small = call({**common, "action": "release", "lease_id": claimed["lease_id"],
+                          "max_response_tokens": 350})
+        assert too_small["success"] is False and too_small["operation_not_started"] is True, too_small
+        released = call({**common, "action": "release", "lease_id": claimed["lease_id"],
+                         "max_response_tokens": 512})
+        assert released["success"] is True and released["released_rows"] == 1 and released["mutation_applied"] is True, released
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        app.close()
+
+
+def test_mcp_reports_active_bounded_deadline_without_terminal_handoff(tmp_path, monkeypatch):
+    import asyncio
+    import time as real_time
+    import local_ai_hub.work_orchestrator as work_module
+    from local_ai_hub import http_server, mcp_server
+    from local_ai_hub.client import HubClient
+
+    class Clock:
+        expired = False
+        def monotonic(self):
+            return real_time.monotonic() + (120 if self.expired else 0)
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    clock = Clock()
+    monkeypatch.setattr(work_module, "time", clock)
+    root = init_repo(tmp_path)
+    config = tmp_path / "isolated.toml"
+    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+        + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
+        + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
+        + json.dumps(str(root)) + "]\n[work_orchestrator]\nenabled = true\n", encoding="utf-8")
+    app = LocalAIApp(str(config))
+    monkeypatch.setattr(http_server, "APP", app)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(config_path=str(config), auto_start=False)
+    client._http_port = server.server_address[1]
+    client.base_url = f"http://127.0.0.1:{client._http_port}"
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
+    entered, release = threading.Event(), threading.Event()
+    def stalled(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(10)
+        return {"success": False, "error": "backend stopped"}
+    monkeypatch.setattr(app.services, "delegate_repo", stalled)
+    def call(arguments):
+        return asyncio.run(mcp_server.mcp.call_tool("local_ai_work", arguments))[1]
+
+    try:
+        submitted = call({"action": "submit", "root": str(root), "task": "change file", "mode": "bounded",
+            "acceptance_criteria": ["test passes"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "permissions": {"edit": True, "tests": True, "build": True},
+            "budget": {"max_steps": 8, "max_seconds": 60}})
+        assert submitted["success"] is True, submitted
+        assert entered.wait(10)
+        clock.expired = True
+        for action in ("status", "get", "wait"):
+            args = {"action": action, "root": str(root), "work_id": submitted["work_id"],
+                    "response_profile": "minimal", "max_response_tokens": 256}
+            if action == "wait":
+                args["timeout_seconds"] = 0
+            if action == "get":
+                args["return_fields"] = ["summary"]
+            result = call(args)
+            assert result["success"] is False and result["timed_out"] is True, result
+            assert result["in_progress"] is True and result["status"] == "planning", result
+        assert (root / "a.txt").read_text().strip() == "old"
+        release.set()
+        handoff = wait_terminal(app.work_orchestrator, submitted["work_id"], timeout=10)
+        assert handoff["status"] == "failed", handoff
+        assert (root / "a.txt").read_text().strip() == "old"
+    finally:
+        release.set()
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        app.close()
+
+
 def test_bounded_model_observation_does_not_infer_missing_identity():
     from local_ai_hub.work_orchestrator import _work_model_observation
 
@@ -84,6 +365,120 @@ def test_documented_i1_fixture_runs_approved_pytest_through_broker(tmp_path, mon
         assert all((root / name).read_text(encoding="utf-8") == updated[name] for name in updated)
     finally:
         app.close()
+
+
+def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
+    import difflib
+    import shutil
+    import subprocess
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+
+    from local_ai_hub.process_utils import hidden_run_kwargs
+    from tools.prepare_local_model_eval_fixture import prepare_fixture
+
+    candidates = [shutil.which("chromium"), shutil.which("google-chrome"),
+                  r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                  r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"]
+    browser = next((p for p in candidates if p and Path(p).is_file()), None)
+    if not browser:
+        pytest.skip("A Chromium-compatible browser is required for this UI integration test")
+
+    root = tmp_path / "fixture"
+    prepare_fixture(root, "I2")
+    before = (root / "index.html").read_text(encoding="utf-8")
+    after = ('<button id="toggle" aria-expanded="false">Details</button>\n'
+             '<div id="panel" hidden>Details text</div>\n<script>\n'
+             'const button = document.getElementById("toggle");\n'
+             'const panel = document.getElementById("panel");\n'
+             'button.onclick = () => {\n  const expanded = panel.hidden;\n'
+             '  panel.hidden = !expanded;\n  button.setAttribute("aria-expanded", String(expanded));\n'
+             '};\n</script>\n')
+    patch_text = "".join(difflib.unified_diff(before.splitlines(keepends=True),
+        after.splitlines(keepends=True), fromfile="a/index.html", tofile="b/index.html"))
+    probe = b'''<!doctype html><body data-result="pending"><iframe id="subject" src="/index.html"></iframe>
+<script>document.getElementById("subject").onload = function () {
+  try {
+    const d = this.contentDocument, b = d.getElementById("toggle"), p = d.getElementById("panel");
+    let ok = p.hidden && b.getAttribute("aria-expanded") === "false";
+    b.click(); ok = ok && !p.hidden && b.getAttribute("aria-expanded") === "true";
+    b.click(); ok = ok && p.hidden && b.getAttribute("aria-expanded") === "false";
+    document.body.dataset.result = ok ? "pass" : "fail";
+  } catch (e) { document.body.dataset.result = "error"; }
+};</script>'''
+
+    class Handler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/probe":
+                return super().do_GET()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(probe)))
+            self.end_headers()
+            self.wfile.write(probe)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def browser_result(profile):
+        result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
+            "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
+            "--user-data-dir=" + str(tmp_path / profile), "--virtual-time-budget=3000", "--dump-dom",
+            f"http://127.0.0.1:{server.server_address[1]}/probe"], capture_output=True,
+            text=True, timeout=30, **hidden_run_kwargs())
+        assert result.returncode == 0, result.stderr[-1000:]
+        return result.stdout
+
+    try:
+        assert 'data-result="fail"' in browser_result("baseline-browser")
+        config = tmp_path / "isolated.toml"
+        config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+            + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+            + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
+            + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
+            + json.dumps(str(root)) + "]\n", encoding="utf-8")
+        app = LocalAIApp(str(config))
+        try:
+            calls = []
+            def delegate(args, **_kwargs):
+                calls.append(args)
+                if len(calls) == 1:
+                    return {"success": True, "text": json.dumps({"summary": "fix toggle", "steps": [
+                        {"id": "edit", "kind": "edit", "task": "fix toggle", "depends_on": []},
+                        {"id": "validate", "kind": "validate", "task": "run tests", "depends_on": ["edit"]}]})}
+                return {"success": True, "text": patch_text}
+
+            monkeypatch.setattr(app.services, "delegate_repo", delegate)
+            monkeypatch.setattr(app.services, "second_opinion", lambda *_a, **_kw: {
+                "success": True, "text": json.dumps({"passed": True, "summary": "simulated review",
+                    "criteria": [{"criterion": "toggle works", "passed": True}], "risks": []})})
+            submitted = app.work_orchestrator.submit({"root": str(root), "task": "Fix the details toggle and aria-expanded",
+                "mode": "bounded", "acceptance_criteria": ["toggle works"], "allowed_paths": ["index.html"],
+                "approved_commands": ["python -m pytest -q tests/test_ui.py"],
+                "permissions": {"edit": True, "tests": True, "build": True},
+                "budget": {"max_steps": 8, "max_seconds": 90}})
+            assert submitted["success"] is True, submitted
+            handoff = wait_terminal(app.work_orchestrator, submitted["work_id"], timeout=60)
+            assert handoff["status"] == "needs_agent" and handoff["success"] is False, handoff
+            assert handoff["requires_primary_review"] is True
+            report = json.loads(app.artifacts.get(handoff["artifact_id"], max_chars=30000)["text"])
+            assert report["validation"][0]["exit_code"] == 0
+            assert (root / "index.html").read_text(encoding="utf-8") == after
+            assert 'data-result="pass"' in browser_result("patched-browser")
+            diff = subprocess.run(["git", "-C", str(root), "diff", "--name-only"],
+                                  capture_output=True, text=True, check=True, **hidden_run_kwargs())
+            assert diff.stdout.splitlines() == ["index.html"]
+        finally:
+            app.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_isolated_bounded_work_can_edit_small_ui_and_validate(tmp_path, monkeypatch):

@@ -69,6 +69,120 @@ def test_bounded_model_calls_receive_deadline_cancellation():
     assert seen == [event, event]
 
 
+def test_expired_deadline_is_visible_while_backend_is_still_running(tmp_path, monkeypatch):
+    import time as real_time
+    import local_ai_hub.work_orchestrator as work_module
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
+
+    class Clock:
+        expired = False
+        def monotonic(self):
+            return real_time.monotonic() + (120 if self.expired else 0)
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    clock = Clock()
+    monkeypatch.setattr(work_module, "time", clock)
+    entered, release = threading.Event(), threading.Event()
+    class NoncooperativePlanner(FakeServices):
+        def delegate_repo(self, args, **kwargs):
+            entered.set()
+            assert release.wait(10)
+            return super().delegate_repo(args)
+
+    root = init_repo(tmp_path)
+    services = NoncooperativePlanner("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    try:
+        submitted = wo.submit({"root": str(root), "task": "replace old with new", "mode": "bounded",
+            "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        assert entered.wait(10)
+        work_id = submitted["work_id"]
+        assert wo.status(work_id).get("timed_out") is not True
+        clock.expired = True
+        for result in (wo.status(work_id), wo.get(work_id, profile="minimal"),
+                       wo.get(work_id, return_fields=["summary"], max_output_tokens=64),
+                       wo.wait(work_id, timeout_seconds=0)):
+            assert result["status"] == "planning", result
+            assert result["timed_out"] is True and result["in_progress"] is True, result
+            assert result["success"] is False, result
+            from local_ai_hub.response_budget import budget_response
+            projected = budget_response(result, profile="minimal", max_tokens=128)
+            assert projected["timed_out"] is True and projected["in_progress"] is True, projected
+        assert (root / "a.txt").read_text().strip() == "old"
+        release.set()
+        handoff = wait_terminal(wo, work_id, timeout=8)
+        assert handoff["status"] == "failed", handoff
+        assert (root / "a.txt").read_text().strip() == "old"
+    finally:
+        release.set()
+        wo.close()
+
+
+@pytest.mark.parametrize("reason", ["budget", "review", "deadline"])
+def test_task_bound_rollback_closes_barrier_on_partial_or_review_handoff(tmp_path, monkeypatch, reason):
+    import json
+    import time as real_time
+    import local_ai_hub.work_orchestrator as work_module
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, owned_verification_context, wait_terminal
+
+    class Services(FakeServices):
+        def delegate_repo(self, args, **kwargs):
+            return super().delegate_repo(args)
+        def second_opinion(self, args, **kwargs):
+            if reason == "review":
+                return {"success": True, "text": json.dumps({"passed": False, "needs_agent": True,
+                        "summary": "needs a decision", "question": "Which option?", "risks": []})}
+            return super().second_opinion(args)
+
+    root = init_repo(tmp_path)
+    artifacts = FakeArtifacts()
+    services = Services("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    verification = owned_verification_context(tmp_path, root, artifacts, "bounded-task")
+    initial_generation = verification.task_store.get("bounded-task").checkpoint.state_data.get("mutation_generation", 0)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts,
+                          verification_store=verification)
+    if reason == "deadline":
+        class Clock:
+            offset = 0
+            def monotonic(self):
+                return real_time.monotonic() + self.offset
+            def __getattr__(self, name):
+                return getattr(real_time, name)
+        clock = Clock()
+        monkeypatch.setattr(work_module, "time", clock)
+        original_apply = wo._apply_patch
+        def apply_then_expire(*args, **kwargs):
+            result = original_apply(*args, **kwargs)
+            clock.offset = 120
+            return result
+        monkeypatch.setattr(wo, "_apply_patch", apply_then_expire)
+    try:
+        budget = {"max_steps": 8, "max_seconds": 60}
+        if reason == "budget":
+            budget["max_llm_calls"] = 2
+        submitted = wo.submit({"root": str(root), "task_id": "bounded-task", "task": "replace old with new",
+            "mode": "bounded", "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": budget,
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
+        assert handoff["status"] == {"budget": "partial", "review": "needs_agent", "deadline": "failed"}[reason], handoff
+        if reason == "deadline":
+            assert "work time budget exhausted" in handoff["error"]
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
+        task = verification.task_store.get("bounded-task")
+        assert "_pending_fenced_work" not in task.checkpoint.state_data
+        assert task.checkpoint.state_data["mutation_generation"] == initial_generation + 2
+        assert task.verification_receipts == {}
+        assert wo._load_journal(submitted["work_id"]) == []
+    finally:
+        wo.close()
+
+
 @pytest.mark.parametrize("paths,commands", [
     ([], ["python -m pytest"]),
     (["../outside"], ["python -m pytest"]),
@@ -598,21 +712,23 @@ def test_bounded_plan_rejects_malformed_model_response(tmp_path, response):
 
 
 @pytest.mark.parametrize("stage", ["edit", "repair", "review", "final"])
-@pytest.mark.parametrize("flag", ["outcome_unknown", "timed_out", "cancelled", "cleanup_unconfirmed", "_lah_partial_response", "preempted"])
-def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, flag):
+@pytest.mark.parametrize("flag,value", [(flag, True) for flag in
+    ("outcome_unknown", "timed_out", "cancelled", "cleanup_unconfirmed", "_lah_partial_response", "preempted", "output_truncated")]
+    + [("final_response_produced", False), ("final_response_status", "empty")])
+def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, flag, value):
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
 
     class UncertainModel(FakeServices):
         def delegate_repo(self, args, **kwargs):
             response = super().delegate_repo(args)
             if (stage == "edit" and self.delegate_calls > 1) or (stage == "repair" and self.delegate_calls > 2):
-                response[flag] = True
+                response[flag] = value
             return response
 
         def second_opinion(self, args, **kwargs):
             response = super().second_opinion(args)
             if stage == "review" or (stage == "final" and "FINAL WHOLE-TASK VERIFIER" in args.get("question", "")):
-                response[flag] = True
+                response[flag] = value
             return response
 
     root = init_repo(tmp_path)
@@ -992,6 +1108,239 @@ def test_cancel_during_local_edit_retains_observation_and_does_not_apply_late_pa
             assert report["cancelled_step"]["model_observations"][0]["identity_verified"] is False
         else:
             assert handoff["error"] == "cancellation step artifact unavailable"
+    finally:
+        wo.close()
+
+
+@pytest.mark.parametrize("planner_result", ["late_success", "cancelled", "exception"])
+@pytest.mark.parametrize("deadline_elapsed", [False, True])
+def test_cancel_during_planning_finishes_without_mutation(tmp_path, monkeypatch, planner_result, deadline_elapsed):
+    import time as real_time
+    import local_ai_hub.work_orchestrator as work_module
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
+
+    entered = threading.Event()
+
+    class Clock:
+        expired = False
+        def monotonic(self):
+            return real_time.monotonic() + (120 if self.expired else 0)
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+    clock = Clock()
+    monkeypatch.setattr(work_module, "time", clock)
+
+    class SlowPlanner(FakeServices):
+        def delegate_repo(self, args, *, cancel_event=None):
+            entered.set()
+            assert cancel_event is not None and cancel_event.wait(10)
+            if planner_result == "cancelled":
+                return {"success": False, "cancelled": True}
+            if planner_result == "exception":
+                raise RuntimeError("cancelled backend")
+            return super().delegate_repo(args)
+
+    root = init_repo(tmp_path)
+    services = SlowPlanner("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    try:
+        submitted = wo.submit({"root": str(root), "task": "replace old with new", "mode": "bounded",
+            "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        assert entered.wait(10)
+        clock.expired = deadline_elapsed
+        assert wo.cancel(submitted["work_id"])["success"] is True
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=8)
+        assert handoff["status"] == "cancelled", handoff
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
+        assert services.delegate_calls == (1 if planner_result == "late_success" else 0)
+    finally:
+        wo.close()
+
+
+def test_planning_deadline_is_not_misreported_as_backend_cancellation(tmp_path, monkeypatch):
+    import time as real_time
+    import local_ai_hub.work_orchestrator as work_module
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
+
+    class Clock:
+        expired = False
+        def monotonic(self):
+            return real_time.monotonic() + (120 if self.expired else 0)
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    clock = Clock()
+    monkeypatch.setattr(work_module, "time", clock)
+    class DeadlinePlanner(FakeServices):
+        def delegate_repo(self, args, **kwargs):
+            clock.expired = True
+            return {"success": False, "cancelled": True}
+
+    root = init_repo(tmp_path)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", DeadlinePlanner(""), None, FakeLeases(), FakeArtifacts())
+    try:
+        submitted = wo.submit({"root": str(root), "task": "change", "mode": "bounded",
+            "acceptance_criteria": ["change is correct"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=15)
+        assert handoff["status"] == "failed", handoff
+        assert "work time budget exhausted" in handoff["error"]
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
+    finally:
+        wo.close()
+
+
+def test_real_deadline_stops_late_planner_before_patch(tmp_path, monkeypatch):
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
+
+    class LateModel(FakeServices):
+        def delegate_repo(self, args, *, cancel_event=None):
+            assert cancel_event is not None and cancel_event.wait(35)
+            return super().delegate_repo(args)
+
+        def second_opinion(self, args, **kwargs):
+            return super().second_opinion(args)
+
+    root = init_repo(tmp_path)
+    services = LateModel("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
+    original_execute = wo._execute_fenced
+    applied = []
+    original_apply = wo._apply_patch
+
+    def delayed_execute(*args, **kwargs):
+        # The outer timer starts first; simulate a scheduler pause before work starts.
+        threading.Event().wait(0.5)
+        return original_execute(*args, **kwargs)
+
+    def observe_apply(*args, **kwargs):
+        applied.append(True)
+        return original_apply(*args, **kwargs)
+
+    monkeypatch.setattr(wo, "_execute_fenced", delayed_execute)
+    monkeypatch.setattr(wo, "_apply_patch", observe_apply)
+    try:
+        submitted = wo.submit({"root": str(root), "task": "change", "mode": "bounded",
+            "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 30},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=40)
+        assert handoff["status"] == "failed", handoff
+        assert "work time budget exhausted" in handoff["error"]
+        assert not applied
+        assert services.delegate_calls == 1
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
+    finally:
+        wo.close()
+
+
+def test_bounded_elapsed_time_includes_delay_after_deadline_starts(tmp_path, monkeypatch):
+    import json
+    import time as real_time
+    import local_ai_hub.work_orchestrator as work_module
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
+
+    class Clock:
+        offset = 0
+        def monotonic(self):
+            return real_time.monotonic() + self.offset
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    class Services(FakeServices):
+        def delegate_repo(self, args, **kwargs):
+            return super().delegate_repo(args)
+        def second_opinion(self, args, **kwargs):
+            return super().second_opinion(args)
+
+    clock = Clock()
+    monkeypatch.setattr(work_module, "time", clock)
+    root = init_repo(tmp_path)
+    artifacts = FakeArtifacts()
+    services = Services("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
+    original_execute = wo._execute_fenced
+    def delayed_execute(*args, **kwargs):
+        clock.offset = 3
+        return original_execute(*args, **kwargs)
+    monkeypatch.setattr(wo, "_execute_fenced", delayed_execute)
+    try:
+        submitted = wo.submit({"root": str(root), "task": "replace old with new", "mode": "bounded",
+            "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
+        assert handoff["status"] == "needs_agent", handoff
+        report = json.loads(artifacts.get(handoff["artifact_id"])["text"])
+        assert 3 <= report["elapsed_seconds"] < 15
+    finally:
+        wo.close()
+
+
+@pytest.mark.parametrize("contents", ["{}", "null", '"not-a-journal"', "0", "false"])
+def test_non_array_journal_is_corrupt_not_empty(tmp_path, contents):
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config
+
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    try:
+        path = wo._journal_path("journal-test")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+        assert wo._load_journal("journal-test") is None
+        assert path.read_text(encoding="utf-8") == contents
+    finally:
+        wo.close()
+
+
+def test_non_file_journal_is_corrupt_not_empty(tmp_path):
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config
+
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", FakeServices(""), None, FakeLeases(), FakeArtifacts())
+    try:
+        path = wo._journal_path("journal-test")
+        path.mkdir(parents=True)
+        assert wo._load_journal("journal-test") is None
+        assert path.is_dir()
+    finally:
+        wo.close()
+
+
+def test_planning_cancellation_preserves_corrupt_journal_for_recovery(tmp_path, monkeypatch):
+    from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo
+
+    entered, recovery_scheduled = threading.Event(), threading.Event()
+
+    class SlowPlanner(FakeServices):
+        def delegate_repo(self, args, *, cancel_event=None):
+            entered.set()
+            assert cancel_event is not None and cancel_event.wait(10)
+            return {"success": False, "cancelled": True}
+
+    root = init_repo(tmp_path)
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", SlowPlanner(""), None, FakeLeases(), FakeArtifacts())
+    try:
+        submitted = wo.submit({"root": str(root), "task": "change", "mode": "bounded",
+            "acceptance_criteria": ["change is correct"], "allowed_paths": ["a.txt"],
+            "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
+            "permissions": {"edit": True, "tests": True, "build": True}})
+        assert submitted["success"] is True
+        assert entered.wait(10)
+        journal = wo._journal_path(submitted["work_id"])
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text('{"corrupt": true}', encoding="utf-8")
+        monkeypatch.setattr(wo, "_schedule_recovery_retry", recovery_scheduled.set)
+        assert wo.cancel(submitted["work_id"])["success"] is True
+        assert recovery_scheduled.wait(10)
+        assert wo.get(submitted["work_id"])["status"] != "cancelled"
+        assert journal.read_text(encoding="utf-8") == '{"corrupt": true}'
+        assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
     finally:
         wo.close()
 

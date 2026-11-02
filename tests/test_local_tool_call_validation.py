@@ -206,6 +206,64 @@ def test_invalid_or_unadvertised_calls_are_rejected(value):
         ToolAwareLocalAgent._validated_call(value, ToolAwareLocalAgent._tools_for_role("critic"))
 
 
+@pytest.mark.parametrize("stage,expected_calls", [("tool_call", 0), ("direct_answer", 0), ("final_answer", 2)])
+@pytest.mark.parametrize("done", [True, False, None, 1])
+def test_tool_loop_rejects_backend_length_truncation(tmp_path, stage, expected_calls, done):
+    class Runtime:
+        def __init__(self): self.requests = 0
+        def request(self, endpoint, payload, timeout=None):
+            if endpoint == "/api/show":
+                return {"capabilities": ["completion", "tools"]}
+            self.requests += 1
+            if stage == "tool_call":
+                return {"done": done, "done_reason": "length", "message": {"tool_calls": [call("repo_search", {"query": "x"})]}}
+            if stage == "direct_answer":
+                return {"done": done, "done_reason": "length", "message": {"content": "partial"}}
+            if self.requests <= 2:
+                return {"message": {"tool_calls": [call("repo_search", {"query": str(self.requests)})]}}
+            return {"done": done, "done_reason": "length", "message": {"content": "partial"}}
+    runtime = Runtime()
+    execution = SimpleNamespace(cache_scope=lambda: {"num_ctx": 16384})
+    services = SimpleNamespace(model_policy=SimpleNamespace(profile=lambda *a, **k: execution,
+            apply_payload=lambda model, payload, **kwargs: (payload, execution)), runtime=runtime,
+        scheduler=SimpleNamespace(submit=lambda model, execute, **kwargs: execute()),
+        repo_tools=SimpleNamespace(_root=lambda root: root), _repo_cache_state=lambda root: {"fingerprint": "1"},
+        generation_cache=SimpleNamespace(get_or_compute=lambda key, compute: (compute(), False, False)))
+    preprocessor = SimpleNamespace(touch_if_registered=lambda root: None, context_revision=lambda root: "1",
+                                   compact_context=lambda *args: "")
+    agent = ToolAwareLocalAgent({"local_tools": {"bootstrap_deterministic_tools": False}}, services,
+                                preprocessor, SimpleNamespace(workspace_id=lambda root: "test"))
+    executed = []
+    agent._execute_tool = lambda *args: executed.append(args) or {"success": True}
+    result = agent.run("model", "critic", "review", str(tmp_path), 128, 5)
+    assert result["success"] is False and result["output_truncated"] is True, result
+    assert result["stop_reason"] == "length" and result["retryable"] is False
+    assert (result.get("_lah_backend_completed") is True) is (done is True)
+    assert len(executed) == expected_calls
+
+
+def test_tool_cache_key_excludes_old_completion_contract(tmp_path, monkeypatch):
+    import local_ai_hub.tool_agent as module
+    original_hash = module.stable_hash
+    seen = []
+    def observed_hash(value):
+        if isinstance(value, dict) and "tool_evidence_version" in value:
+            seen.append(value)
+        return original_hash(value)
+    monkeypatch.setattr(module, "stable_hash", observed_hash)
+    execution = SimpleNamespace(cache_scope=lambda: {"num_ctx": 16384})
+    services = SimpleNamespace(model_policy=SimpleNamespace(profile=lambda *a, **k: execution),
+        runtime=SimpleNamespace(request=lambda *a, **k: {"capabilities": ["tools"]}, model_digest=lambda model: "a" * 64),
+        repo_tools=SimpleNamespace(_root=lambda root: root), _repo_cache_state=lambda root: {"fingerprint": "1"},
+        generation_cache=SimpleNamespace(get_or_compute=lambda key, compute: ({"success": False}, False, False)))
+    preprocessor = SimpleNamespace(touch_if_registered=lambda root: None, context_revision=lambda root: "1")
+    agent = ToolAwareLocalAgent({}, services, preprocessor, SimpleNamespace(workspace_id=lambda root: "test"))
+    agent.run("model", "critic", "review", str(tmp_path), 128, 5)
+    assert len(seen) == 1 and seen[0]["tool_completion_version"] == 1
+    old = {key: value for key, value in seen[0].items() if key != "tool_completion_version"}
+    assert original_hash(old) != original_hash(seen[0])
+
+
 @pytest.mark.parametrize("name, expected_calls, success", [("repo_search", 1, True), ("rag_search", 0, False), (None, 0, False), ("overflow", 0, False), ("steps", 2, False), ("parent_two", 1, False), ("parent_one", 0, False), ("parent_denied", 0, False), ("duplicate", 1, False), ("unsupported", 0, True), ("unsupported_tool", 0, False), ("empty", 0, False), ("tool_failure", 1, False), ("tool_unknown", 1, False), ("tool_uncertain", 1, False), ("tool_conflict", 1, False)])
 def test_tool_loop_enforces_advertised_role_tools(tmp_path, name, expected_calls, success):
     class Runtime:
@@ -287,8 +345,10 @@ def test_model_response_telemetry_requires_real_generation_evidence():
     agent = ToolAwareLocalAgent({}, SimpleNamespace(telemetry=SimpleNamespace(record_stage=lambda **kw: events.append(kw))), None, None)
     agent._record_model_response("critic", "model", {"message": {"content": "secret"}})
     agent._record_model_response("critic", "model", {"eval_count": 3})
-    assert [event["stage"] for event in events] == ["model_response_unverified", "model_inference_observed"]
+    agent._record_model_response("critic", "model", {"eval_count": 3, "done_reason": "length"})
+    assert [event["stage"] for event in events] == ["model_response_unverified", "model_inference_observed", "model_inference_observed"]
     assert events[0]["success"] is True
+    assert events[2]["success"] is False
     assert "secret" not in str(events)
 
 

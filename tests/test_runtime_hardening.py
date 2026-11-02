@@ -36,8 +36,8 @@ class _OfflineRuntime:
     def ensure_running(self) -> bool:
         return False
 
-    def stop_managed_server(self) -> None:
-        pass
+    def stop_managed_server(self) -> bool:
+        return True
 
 
 def test_background_gpu_failed_start_enters_exponential_cooldown(tmp_path):

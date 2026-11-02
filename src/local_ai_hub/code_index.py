@@ -2828,6 +2828,11 @@ class CodeIndex:
                 "LEFT JOIN page ON 1=1 LEFT JOIN symbols ON symbols.rowid=page._rowid"
             )
             rows = con.execute(sql, [*candidate_args, limit, offset]).fetchall()
+            indexed_files_present = None
+            if not rows or int(rows[0]["_total_matches"]) == 0:
+                indexed_files_present = con.execute(
+                    "SELECT 1 FROM files WHERE root=? LIMIT 1", (resolved_root,)
+                ).fetchone() is not None
         total_matches = int(rows[0]["_total_matches"]) if rows else 0
         rows = [row for row in rows if row["_present"] is not None]
         candidate_truncated = False
@@ -2899,6 +2904,7 @@ class CodeIndex:
                 "returned_symbol_count": len(symbols),
                 "complete": False,
                 "scope": "indexed_symbol_candidates",
+                **({"indexed_files_present": indexed_files_present} if indexed_files_present is not None else {}),
             },
             "freshness": freshness,
             "truncated": truncated,

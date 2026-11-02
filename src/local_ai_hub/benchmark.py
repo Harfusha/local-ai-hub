@@ -251,6 +251,7 @@ class HardwareBenchmarkRunner:
         call_started_at = time.perf_counter()
         scheduler_result: Mapping[str, Any] = {}
         submit_error = ""
+        timeout_details: dict[str, Any] = {}
         server_config = self.config.get("server", {})
         server_config = server_config if isinstance(server_config, Mapping) else {}
         configured_timeout = server_config.get(
@@ -274,9 +275,40 @@ class HardwareBenchmarkRunner:
                 submit_error = "scheduler_invalid_result"
         except Exception as exc:
             submit_error = type(exc).__name__
+            if isinstance(exc, TimeoutError):
+                from .scheduler import SchedulerTimeoutError
+
+                timeout_details = {"timed_out": True}
+                if isinstance(exc, SchedulerTimeoutError):
+                    timeout_details["job_id"] = exc.job_id
+                    timeout_details["scheduler_state"] = exc.state
+                    if exc.state == "pending":
+                        timeout_details.update(request_not_sent=True, operation_not_started=True)
+                    else:
+                        timeout_details.update(outcome_unknown=True, retryable=False)
+                else:
+                    timeout_details.update(outcome_unknown=True, retryable=False)
             admission = getattr(exc, "admission", None)
             if isinstance(admission, Mapping):
                 scheduler_result = {"success": False, "admission": admission}
+        if not timeout_details and (scheduler_result.get("timed_out") is True
+                                    or scheduler_result.get("outcome_unknown") is True
+                                    or scheduler_result.get("in_progress") is True):
+            timeout_details = {
+                key: scheduler_result[key] for key in (
+                    "timed_out", "outcome_unknown", "request_not_sent", "operation_not_started",
+                    "in_progress", "retryable", "terminal",
+                ) if type(scheduler_result.get(key)) is bool
+            }
+            job_id = scheduler_result.get("job_id")
+            if (isinstance(job_id, str) and job_id) or (type(job_id) is int and job_id >= 0):
+                timeout_details["job_id"] = job_id
+            if (scheduler_result.get("outcome_unknown") is True or
+                    scheduler_result.get("in_progress") is True or
+                    (scheduler_result.get("timed_out") is True
+                     and scheduler_result.get("request_not_sent") is not True
+                     and scheduler_result.get("operation_not_started") is not True)):
+                timeout_details.update(outcome_unknown=True, retryable=False)
         call_finished_at = time.perf_counter()
 
         measurements: dict[str, Any] = {}
@@ -496,7 +528,8 @@ class HardwareBenchmarkRunner:
             if not submit_error:
                 submit_error = "quality_evaluator_failed"
 
-        success = bool(scheduler_result.get("success", bool(response_text))) and bool(response_text) and not submit_error
+        success = (bool(scheduler_result.get("success", bool(response_text))) and bool(response_text)
+                   and not submit_error and not timeout_details)
         if success:
             failure_code = None
         else:
@@ -553,6 +586,11 @@ class HardwareBenchmarkRunner:
         error = submit_error or str(scheduler_result.get("error", "") or "")
         if error:
             case_result["error"] = error
+        if timeout_details:
+            for key in ("quality_score_pct", "structured_json_valid", "quality_schema_pass",
+                        "quality_expected_match", "quality_paths_grounded"):
+                case_result.pop(key, None)
+            case_result.update(timeout_details)
 
         record: dict[str, Any] = {
             "record_type": "t12_case",
@@ -571,6 +609,11 @@ class HardwareBenchmarkRunner:
             "quality_expected_match": quality_expected_match,
             "quality_paths_grounded": quality_paths_grounded,
         })
+        if timeout_details:
+            for key in ("quality_score_pct", "structured_json_valid", "quality_schema_pass",
+                        "quality_expected_match", "quality_paths_grounded"):
+                record.pop(key, None)
+            record.update(timeout_details)
         self._persist_record(record)
         return case_result
 
@@ -608,14 +651,41 @@ class HardwareBenchmarkRunner:
                 scenario_args["resource_sampler"] = self.vram_balancer
             result = execute_scenario(**scenario_args)
         except Exception as exc:
-            return {"success": False, "error_type": type(exc).__name__}
+            failure = {"success": False, "error_type": type(exc).__name__}
+            if isinstance(exc, TimeoutError):
+                from .scheduler import SchedulerTimeoutError
+
+                failure["timed_out"] = True
+                if isinstance(exc, SchedulerTimeoutError):
+                    failure["job_id"] = exc.job_id
+                    if exc.state == "pending":
+                        failure.update(request_not_sent=True, operation_not_started=True)
+                    else:
+                        failure.update(outcome_unknown=True, retryable=False)
+                else:
+                    failure.update(outcome_unknown=True, retryable=False)
+            return failure
         if not isinstance(result, Mapping):
             return {"success": False, "error_type": "scenario_execution_failed"}
-        if result.get("success") is False:
+        if (result.get("outcome_unknown") is True or result.get("in_progress") is True
+                or (result.get("timed_out") is True
+                    and result.get("request_not_sent") is not True
+                    and result.get("operation_not_started") is not True)):
+            failure = {"success": False, "error_type": "scenario_outcome_unknown",
+                       "outcome_unknown": True, "retryable": False}
+            if isinstance(result.get("job_id"), str) or type(result.get("job_id")) is int:
+                failure["job_id"] = result["job_id"]
+            return failure
+        if result.get("success") is False or result.get("timed_out") is True:
             error_type = result.get("error_type")
             if not isinstance(error_type, str) or not error_type.isidentifier():
                 error_type = "scenario_execution_failed"
             report: dict[str, Any] = {"success": False, "error_type": error_type}
+            for field in ("timed_out", "request_not_sent", "operation_not_started"):
+                if result.get(field) is True:
+                    report[field] = True
+            if isinstance(result.get("job_id"), str) or type(result.get("job_id")) is int:
+                report["job_id"] = result["job_id"]
             missing_fields = result.get("missing_fields")
             if isinstance(missing_fields, list):
                 report["missing_fields"] = sorted({

@@ -239,3 +239,60 @@ def test_actual_mcp_call_and_http_report_count_once_without_inference(tmp_path, 
         server.server_close()
         http_server.APP = previous
         app.close()
+
+
+def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.client import HubClient
+
+    state = tmp_path / "state"
+    config = tmp_path / "config.toml"
+    config.write_text(f'[server]\nstate_dir = "{state.as_posix()}"\nauto_start_ollama = false\n'
+        '[ollama]\nenabled = false\n[smart_ollama]\nenabled = false\n'
+        '[observability]\nenabled = false\n[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false\n'
+        '[models]\nfast_code = "qwen2.5-coder:1.5b"\nheavy_code = "qwen2.5-coder:3b"\n'
+        'reasoning = "qwen2.5-coder:7b"\ngeneral = "qwen2.5-coder:1.5b"\n', encoding="utf-8")
+    app = LocalAIApp(str(config))
+    monkeypatch.setattr(http_server, "APP", app)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(config_path=str(config), auto_start=False)
+    client._http_port = server.server_address[1]
+    client.base_url = f"http://127.0.0.1:{client._http_port}"
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kw: None)
+    complexities = []
+    def classify(_task, _context, _task_type, complexity):
+        complexities.append(complexity)
+        return {"task_type": "reasoning", "complexity": "fast", "model": "qwen2.5-coder:3b"}
+    monkeypatch.setattr(app.services.router, "classify", classify)
+    calls = []
+    def generate(model, *_args, **_kwargs):
+        calls.append(model)
+        return {"success": True, "model": model, "text": "Synthetic response."}
+    monkeypatch.setattr(app.services, "_generate", generate)
+    try:
+        def call(model):
+            return asyncio.run(mcp_server.mcp.call_tool("local_ai_task", {"action": "second_opinion",
+                "task": "Check this conclusion", "candidate": "A bounded candidate", "model": model, "complexity": "fast",
+                "max_response_tokens": 1600}))[1]
+        allowed = call("qwen2.5-coder:7b")
+        assert allowed["success"] is True, allowed
+        assert calls == ["qwen2.5-coder:7b"]
+        refused = call("qwen2.5-coder:1.5b")
+        assert refused["success"] is False and "quality floor" in refused["error"], refused
+        assert calls == ["qwen2.5-coder:7b"]
+        assert complexities == ["fast", "fast"]
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        app.close()

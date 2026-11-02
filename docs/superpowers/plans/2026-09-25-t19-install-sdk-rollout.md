@@ -1,5 +1,7 @@
 # T19 Install, SDK, Docs, and Rollout Implementation Plan
 
+> Historical note: The command-tool instructions in this plan are obsolete. Use the current MCP schema and the host-native command tool for bounded validation. Historical steps and results below are retained as evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task by task. Steps use checkbox syntax for tracking.
 
 **Goal:** Satisfy every T19 acceptance criterion in the existing Hub quality/performance master plan, with current-source evidence and revision-bound receipts.

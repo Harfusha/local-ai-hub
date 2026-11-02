@@ -1189,7 +1189,7 @@ class LocalAIApp:
             # Runtime availability cannot silently grant later probes a fresh budget.
             status_probes = {
                 "accelerators": (lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
-                "telemetry.summary": (lambda: self.telemetry.summary(scope=scope, _flush=False), {}),
+                "telemetry.summary": (lambda: self.telemetry.summary(scope=scope, _flush=False, session_limit=5), {}),
                 "model_execution": (self.services.model_policy.summary, {}),
                 "ollama_profile": (self.runtime.managed_profile_status, {}),
                 "background_gpu": (self.background_gpu.status, {}),
@@ -1239,7 +1239,7 @@ class LocalAIApp:
                 lambda: accelerator_status(self.config),
                 _accelerator_status_fallback(self.config),
             )
-            telemetry_summary = read("telemetry.summary", lambda: self.telemetry.summary(scope=scope, _flush=False), {})
+            telemetry_summary = read("telemetry.summary", lambda: self.telemetry.summary(scope=scope, _flush=False, session_limit=5), {})
             model_execution = read("model_execution", self.services.model_policy.summary, {})
             ollama_profile = read("ollama_profile", self.runtime.managed_profile_status, {})
             background_gpu = read("background_gpu", self.background_gpu.status, {})

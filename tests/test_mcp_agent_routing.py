@@ -307,6 +307,145 @@ def test_disabled_descriptions_omit_local_routing_without_models(monkeypatch, le
 
 
 @pytest.mark.parametrize("lean", [True, False])
+def test_work_description_preserves_bounded_delegation_contract(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    description = local_ai_mcp._desc_work().lower()
+    assert "explicit" in description and "high" in description
+    assert "task-specific" in description and "quality" in description
+    assert "primary agent" in description and "review" in description
+    assert "timed_out=true" in description and "in_progress=true" in description
+    assert "not a terminal" in description
+
+
+@pytest.mark.parametrize("budget", [512, 700])
+def test_mcp_claim_budget_retains_applied_lease_identity(tmp_path, monkeypatch, budget):
+    import asyncio
+
+    lease_id = "lease_0123456789abcdef0123"
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {
+        "success": True, "lease_id": lease_id, "expires_at": 1793613360.3,
+        "paths": ["very-long-path/" * 100], "root": str(tmp_path)})
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kwargs: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "claim", "root": str(tmp_path), "owner": "test-owner",
+        "paths": ["a.txt"], "purpose": "test", "max_response_tokens": budget,
+        "response_profile": "minimal"}))[1]
+    assert result.get("lease_id") == lease_id, result
+    assert result["mutation_applied"] is True, result
+
+
+@pytest.mark.parametrize("budget", [128, 350, 511])
+def test_mcp_claim_small_budget_is_rejected_before_mutation(tmp_path, monkeypatch, budget):
+    import asyncio
+
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "claim", "root": str(tmp_path), "owner": "test-owner",
+        "paths": ["a.txt"], "purpose": "test", "max_response_tokens": budget}))[1]
+    assert result["success"] is False and result["operation_not_started"] is True, result
+    assert calls == []
+
+
+def test_mcp_claim_missing_identity_reports_unknown_outcome(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kwargs: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "claim", "root": str(tmp_path), "owner": "test-owner", "paths": ["a.txt"],
+        "purpose": "test", "max_response_tokens": 512}))[1]
+    assert result["success"] is False and result["mutation_applied"] is True, result
+    assert result["outcome_unknown"] is True, result
+
+
+@pytest.mark.parametrize("limit", [64, 128, 160])
+def test_mcp_preserves_explicit_local_output_limit(monkeypatch, limit):
+    import asyncio
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    def post(path, payload, **kwargs):
+        calls.append((path, payload))
+        return {"success": True, "text": "Synthetic response."}
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kw: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_task", {"action": "delegate",
+        "task": "Inspect this code", "max_tokens": limit, "max_response_tokens": 1200}))[1]
+    assert result["success"] is True, result
+    assert calls[0][1]["max_tokens"] == limit
+
+
+@pytest.mark.parametrize("limit", [-1, 32, 63])
+def test_mcp_rejects_subminimum_local_output_limit_before_inference(monkeypatch, limit):
+    import asyncio
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kw: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_task", {"action": "delegate",
+        "task": "Inspect this code", "max_tokens": limit, "max_response_tokens": 1200}))[1]
+    assert result["success"] is False and result["operation_not_started"] is True, result
+    assert calls == []
+
+
+def test_mcp_rejects_subminimum_compression_target(monkeypatch):
+    import asyncio
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_a, **_kw: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kw: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_task", {"action": "compress",
+        "context": "Some narrative", "max_tokens": 64, "max_response_tokens": 1200}))[1]
+    assert result["success"] is False and result["operation_not_started"] is True, result
+    assert calls == []
+
+
+@pytest.mark.parametrize("budget", [128, 350, 511])
+def test_mcp_release_small_budget_is_rejected_before_mutation(tmp_path, monkeypatch, budget):
+    import asyncio
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "release", "root": str(tmp_path), "owner": "test-owner", "lease_id": "lease_0123456789abcdef0123",
+        "max_response_tokens": budget}))[1]
+    assert result["success"] is False and result["operation_not_started"] is True, result
+    assert calls == []
+
+
+@pytest.mark.parametrize("rows", [0, 1])
+def test_mcp_release_preserves_actual_outcome(tmp_path, monkeypatch, rows):
+    import asyncio
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "released_rows": rows})
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kwargs: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "release", "root": str(tmp_path), "owner": "test-owner", "lease_id": "lease_0123456789abcdef0123",
+        "max_response_tokens": 512, "response_profile": "minimal"}))[1]
+    assert result["success"] is True and result["released_rows"] == rows, result
+    assert result["mutation_applied"] is (rows > 0), result
+
+
+@pytest.mark.parametrize("rows", [None, True, -1, "1"])
+def test_mcp_release_invalid_backend_result_is_unknown(tmp_path, monkeypatch, rows):
+    import asyncio
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "released_rows": rows})
+    monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kwargs: None)
+    result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_coord", {
+        "action": "release", "root": str(tmp_path), "owner": "test-owner", "lease_id": "lease_0123456789abcdef0123",
+        "max_response_tokens": 512}))[1]
+    assert result["success"] is False and result["outcome_unknown"] is True, result
+    assert "mutation_applied" not in result
+
+
+@pytest.mark.parametrize("lean", [True, False])
 def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean) -> None:
     monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
@@ -470,7 +609,7 @@ def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -
     assert "deterministic/indexed tools" in descriptions["task"]
     assert "task contracts" in descriptions["coord"]
     assert "checkpoints" in descriptions["coord"]
-    assert "verified handoff" in descriptions["work"]
+    assert "primary agent must review" in descriptions["work"]
     assert "micro-edits" in descriptions["work"]
     assert "live discussion" in descriptions["work"]
 

@@ -8,15 +8,15 @@ from typing import Any, Iterable
 
 
 _PROFILE_FIELDS: dict[str, tuple[str, ...] | None] = {
-    "minimal": ("success", "status", "work_id", "task_id", "handoff_id", "artifact_id", "error", "needs_agent", "requires_primary_review", "task_barrier_status", "task_barrier_error"),
+    "minimal": ("success", "status", "work_id", "task_id", "handoff_id", "artifact_id", "error", "needs_agent", "requires_primary_review", "outcome_unknown", "timed_out", "in_progress", "local_exploration_status", "rollback_status", "task_barrier_status", "task_barrier_error"),
     "compact": (
         "success", "status", "work_id", "task_id", "summary", "progress", "changed_files",
-        "validation", "risks", "needs_agent", "question", "handoff_id", "artifact_id", "available_details", "error", "requires_primary_review", "task_barrier_status", "task_barrier_error", "local_handoff",
+        "validation", "risks", "needs_agent", "question", "handoff_id", "artifact_id", "available_details", "error", "requires_primary_review", "outcome_unknown", "timed_out", "in_progress", "local_exploration_status", "rollback_status", "task_barrier_status", "task_barrier_error", "local_handoff",
     ),
     "standard": (
         "success", "status", "work_id", "task_id", "summary", "progress", "plan", "steps", "changed_files",
         "validation", "verification", "risks", "decisions", "needs_agent", "question", "handoff_id", "artifact_id",
-        "available_details", "error", "requires_primary_review", "task_barrier_status", "task_barrier_error", "local_handoff",
+        "available_details", "error", "requires_primary_review", "outcome_unknown", "timed_out", "in_progress", "local_exploration_status", "rollback_status", "task_barrier_status", "task_barrier_error", "local_handoff",
     ),
     "debug": None,
 }
@@ -73,7 +73,7 @@ def project_response(
     if fields:
         # Explicit projection is authoritative and may request fields outside the
         # profile's default surface. Profiles are defaults, not a second hidden deny-list.
-        always = {k for k in ("success", "status", "work_id", "task_id", "error", "needs_agent", "requires_primary_review", "task_barrier_status", "task_barrier_error") if k in canonical}
+        always = {k for k in ("success", "status", "work_id", "task_id", "error", "needs_agent", "requires_primary_review", "outcome_unknown", "timed_out", "in_progress", "local_exploration_status", "rollback_status", "task_barrier_status", "task_barrier_error") if k in canonical}
         selected = {k: canonical[k] for k in canonical if k in set(fields) | always}
     else:
         allowed = _PROFILE_FIELDS[profile]
@@ -128,7 +128,7 @@ def project_response(
     # Last-resort envelope: drop the least decision-critical fields until the
     # requested wire budget is met. Full data remains in the canonical result or
     # artifact, so this never destroys stored evidence.
-    protected = {"success", "status", "work_id", "task_id", "error", "needs_agent", "handoff_id", "artifact_id", "requires_primary_review", "task_barrier_status", "task_barrier_error"}
+    protected = {"success", "status", "work_id", "task_id", "error", "needs_agent", "handoff_id", "artifact_id", "requires_primary_review", "outcome_unknown", "timed_out", "in_progress", "local_exploration_status", "rollback_status", "task_barrier_status", "task_barrier_error"}
     drop_order = [
         "steps", "plan", "verification", "decisions", "available_details", "changed_files",
         "validation", "risks", "progress", "question", "summary",

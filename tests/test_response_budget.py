@@ -6,6 +6,24 @@ from local_ai_hub.response_budget import budget_response
 from local_ai_hub.token_accounting import json_tokens
 
 
+def test_applied_lease_claim_retains_exact_identity_under_budget():
+    source = {"success": True, "mutation_applied": True, "lease_id": "lease_0123456789abcdef",
+              "expires_at": 1793613360.3, "paths": ["very-long-path/" * 100], "request_id": "req_0123456789abcdef"}
+    result = budget_response(source, profile="minimal", max_tokens=350)
+    assert result["lease_id"] == source["lease_id"]
+    assert result["mutation_applied"] is True
+    assert json_tokens(result) <= 350
+
+
+def test_last_admission_reason_survives_minimal_projection():
+    source = {"success": False, "error": "insufficient VRAM", "retryable": True,
+              "last_admission_state": "rejected", "last_admission_reason": "vram_budget", "text": "x " * 2000}
+    result = budget_response(source, profile="minimal", max_tokens=256)
+    assert result["last_admission_state"] == "rejected"
+    assert result["last_admission_reason"] == "vram_budget"
+    assert result["success"] is False
+
+
 def _large_result() -> dict[str, object]:
     return {
         "success": True,

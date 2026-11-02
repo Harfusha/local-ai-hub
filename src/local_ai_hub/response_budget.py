@@ -19,10 +19,10 @@ from .token_accounting import json_tokens, token_efficiency_metadata
 
 LIFECYCLE_PROTECTED_KEYS = (
     "operation", "operation_id", "action", "status", "state", "accepted", "completed",
-    "job_id", "task_id", "work_id", "request_id", "execution_id", "in_progress",
+    "job_id", "task_id", "work_id", "lease_id", "released_rows", "last_admission_state", "last_admission_reason", "last_admission_model", "request_id", "execution_id", "in_progress",
     "request_not_sent", "outcome_unknown", "mutation_applied", "operation_not_started",
-    "complete", "partial", "cancel_requested",
-    "requires_primary_review", "task_barrier_status", "task_barrier_error",
+    "complete", "partial", "cancel_requested", "output_truncated", "stop_reason",
+    "requires_primary_review", "local_exploration_status", "rollback_status", "task_barrier_status", "task_barrier_error",
     "expires_at", "artifact_id", "output_artifact_id", "task_context_artifact_id",
     "local_diagnostic_status", "diagnostic_context_artifact_id", "local_diagnostic",
 )
@@ -97,7 +97,7 @@ _RESPONSE_PROTECTED_KEYS = (
 )
 _IDENTIFIER_KEYS = {
     "operation_id", "job_id", "output_artifact_id",
-    "artifact_id", "task_context_artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id",
+    "artifact_id", "task_context_artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id", "lease_id",
     "request_id", "execution_id",
     "delta_from", "since_hash", "reuse_key",
 }

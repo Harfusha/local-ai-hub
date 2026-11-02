@@ -12,6 +12,57 @@ from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
 from test_work_orchestrator import FakeArtifacts, FakeLeases, init_repo
 
 
+@pytest.mark.parametrize("result,allowed", [
+    ({"needs_agent": True, "question": "Clarify?"}, True),
+    ({"needs_agent": True, "question": "Clarify?", "task_barrier_status": "released"}, True),
+    ({"needs_agent": True, "error": "legacy recovery failed"}, False),
+    ({"needs_agent": True, "question": "Review the result", "handoff_id": "handoff-1"}, False),
+    ({"outcome_unknown": True}, False),
+    ({"outcome_unknown": "false"}, False),
+    ({"task_barrier_status": "pending_finalization"}, False),
+    ({"task_barrier_status": "reconciliation_required"}, False),
+    ({"rollback_status": "reconciliation_required"}, False),
+])
+def test_bounded_continue_rejects_ambiguous_handoff(tmp_path, monkeypatch, result, allowed):
+    root = init_repo(tmp_path)
+    orch = WorkOrchestrator({}, tmp_path / "state", object(), object(), FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(orch, "_ensure_workers", lambda: None)
+    try:
+        with closing(orch._connect()) as con:
+            con.execute("INSERT INTO work_orders VALUES (?,?,?,?,?,?,?,?,?)", (
+                "work-1", str(root), "change", "needs_agent", json.dumps({"mode": "bounded"}),
+                json.dumps(result), 0, time.time(), time.time()))
+        resumed = orch.continue_work("work-1", "answer")
+        assert resumed["success"] is allowed
+        assert orch._row("work-1")["state"] == ("queued" if allowed else "needs_agent")
+    finally:
+        orch.close()
+
+
+def test_bounded_continue_rejects_concurrently_changed_handoff(tmp_path, monkeypatch):
+    root = init_repo(tmp_path)
+    orch = WorkOrchestrator({}, tmp_path / "state", object(), object(), FakeLeases(), FakeArtifacts())
+    monkeypatch.setattr(orch, "_ensure_workers", lambda: None)
+    original_row = orch._row
+    try:
+        with closing(orch._connect()) as con:
+            con.execute("INSERT INTO work_orders VALUES (?,?,?,?,?,?,?,?,?)", (
+                "work-1", str(root), "change", "needs_agent", json.dumps({"mode": "bounded"}),
+                json.dumps({"needs_agent": True, "question": "Clarify?"}), 0, time.time(), time.time()))
+        def race(work_id):
+            stale = original_row(work_id)
+            with closing(orch._connect()) as con:
+                con.execute("UPDATE work_orders SET result_json=? WHERE work_id=?",
+                            (json.dumps({"outcome_unknown": True}), work_id))
+            return stale
+        monkeypatch.setattr(orch, "_row", race)
+        resumed = orch.continue_work("work-1", "answer")
+        assert resumed["success"] is False
+        assert original_row("work-1")["state"] == "needs_agent"
+    finally:
+        orch.close()
+
+
 @pytest.mark.parametrize("payload,task,expected", [
     ({}, None, False),
     ({"task_id": "task"}, None, True),
@@ -117,7 +168,8 @@ def test_empty_journal_with_pending_barrier_requires_agent(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("tampered", [False, True])
-def test_recovery_rolls_back_journal_and_closes_adopted_barrier(tmp_path, monkeypatch, tampered):
+@pytest.mark.parametrize("mode", ["bounded", "execute"])
+def test_recovery_rolls_back_journal_and_closes_adopted_barrier(tmp_path, monkeypatch, tampered, mode):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
     task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
@@ -138,7 +190,7 @@ def test_recovery_rolls_back_journal_and_closes_adopted_barrier(tmp_path, monkey
         orch.fencing_store.release(lease)
         with closing(orch._connect()) as con:
             con.execute("INSERT INTO work_orders VALUES (?,?,?,?,?,?,?,?,?)",
-                        ("work-1", str(root), "change", "executing", json.dumps({"task_id": "task"}),
+                        ("work-1", str(root), "change", "executing", json.dumps({"task_id": "task", "mode": mode}),
                          "{}", 0, time.time(), time.time()))
         journal = []
         orch._apply_patch(root, "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n",
@@ -149,16 +201,24 @@ def test_recovery_rolls_back_journal_and_closes_adopted_barrier(tmp_path, monkey
         orch.fencing_store.release_attempt(attempt)
         original_recover(orch)
         with closing(orch._connect()) as con:
-            row = con.execute("SELECT state FROM work_orders WHERE work_id='work-1'").fetchone()
+            row = con.execute("SELECT state,result_json FROM work_orders WHERE work_id='work-1'").fetchone()
         state = tasks.get(task.task_id).checkpoint.state_data
         assert state["mutation_generation"] == 3
         if tampered:
             assert row["state"] == "needs_agent"
+            if mode == "bounded":
+                result = json.loads(row["result_json"])
+                assert result["outcome_unknown"] is True
+                assert result["rollback_status"] == "reconciliation_required"
+                assert result["task_barrier_status"] == "reconciliation_required"
+                assert orch.continue_work("work-1", "continue")["success"] is False
             assert (root / "a.txt").read_text(encoding="utf-8").strip() == "foreign"
             assert "_pending_fenced_work" in state
             assert orch._load_journal("work-1")
         else:
-            assert row["state"] == "queued"
+            assert row["state"] == ("needs_agent" if mode == "bounded" else "queued")
+            if mode == "bounded":
+                assert json.loads(row["result_json"])["outcome_unknown"] is True
             assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
             assert "_pending_fenced_work" not in state
     finally:
@@ -201,7 +261,7 @@ def test_windows_recovery_blocks_junction_swap_during_restore(tmp_path, monkeypa
         orch.fencing_store.release(lease)
         with closing(orch._connect()) as con:
             con.execute("INSERT INTO work_orders VALUES (?,?,?,?,?,?,?,?,?)",
-                        ("work-1", str(root), "change", "executing", json.dumps({"task_id": "task"}),
+                        ("work-1", str(root), "change", "executing", json.dumps({"task_id": "task", "mode": "bounded"}),
                          "{}", 0, time.time(), time.time()))
         journal = []
         orch._apply_patch(root, "--- a/src/file.py\n+++ b/src/file.py\n@@ -1 +1 @@\n-old\n+new\n",
@@ -229,7 +289,7 @@ def test_windows_recovery_blocks_junction_swap_during_restore(tmp_path, monkeypa
         assert "_pending_fenced_work" not in tasks.get(task.task_id).checkpoint.state_data
         assert orch._load_journal("work-1") == []
         with closing(orch._connect()) as con:
-            assert con.execute("SELECT state FROM work_orders WHERE work_id='work-1'").fetchone()["state"] == "queued"
+            assert con.execute("SELECT state FROM work_orders WHERE work_id='work-1'").fetchone()["state"] == "needs_agent"
     finally:
         orch.close()
         if swapped:
@@ -281,8 +341,19 @@ def test_empty_journal_with_completed_rollback_is_reconciled(tmp_path, monkeypat
         orch.fencing_store.release_attempt(attempt)
         original_recover(orch)
         with closing(orch._connect()) as con:
-            row = con.execute("SELECT state FROM work_orders WHERE work_id='work-1'").fetchone()
-        assert row["state"] == ("needs_agent" if corrupt else "queued")
+            row = con.execute("SELECT state,result_json FROM work_orders WHERE work_id='work-1'").fetchone()
+        assert row["state"] == "needs_agent"
+        if not corrupt:
+            result = json.loads(row["result_json"])
+            assert result["outcome_unknown"] is True
+            assert result["requires_primary_review"] is True
+        else:
+            result = json.loads(row["result_json"])
+            assert result["outcome_unknown"] is True
+            assert result["task_barrier_status"] == "reconciliation_required"
+            resumed = orch.continue_work("work-1", "continue")
+            assert resumed["success"] is False
+            assert "_pending_fenced_work" in tasks.get(task.task_id).checkpoint.state_data
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
         assert ("_pending_fenced_work" in tasks.get(task.task_id).checkpoint.state_data) is corrupt
     finally:

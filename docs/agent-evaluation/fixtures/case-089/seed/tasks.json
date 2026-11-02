@@ -1,0 +1,5 @@
+[
+  {"id": "b", "name": "Příliš žluťoučký", "status": "open"},
+  {"id": "c", "name": "Done task", "status": "done"},
+  {"id": "a", "name": "Čerstvý úkol", "status": "open"}
+]

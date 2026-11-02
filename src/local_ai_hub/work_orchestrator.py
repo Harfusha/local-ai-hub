@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 _WORK_CANCEL_EVENT: ContextVar[threading.Event | None] = ContextVar("bounded_work_cancel_event", default=None)
+_WORK_DEADLINE: ContextVar[float | None] = ContextVar("bounded_work_deadline", default=None)
 
 
 class _FinalizationLookupTimeout(TimeoutError):
@@ -52,21 +53,67 @@ _UNCERTAIN_COMMAND_FLAGS = (
 )
 _UNCERTAIN_MODEL_FLAGS = (
     "timed_out", "cancelled", "preempted", "outcome_unknown", "in_progress",
-    "cleanup_unconfirmed", "_lah_partial_response",
+    "cleanup_unconfirmed", "_lah_partial_response", "output_truncated",
 )
+
+
+def _work_model_uncertainty(response: Any) -> str | None:
+    if not isinstance(response, dict):
+        return None
+    for flag in _UNCERTAIN_MODEL_FLAGS:
+        if response.get(flag, False) is not False:
+            return flag
+    if "final_response_produced" in response and response["final_response_produced"] is not True:
+        return "final_response_produced"
+    if "final_response_status" in response and response["final_response_status"] != "produced":
+        return "final_response_status"
+    return None
 
 
 def _certain_work_model_response(response: Any) -> bool:
     return (isinstance(response, dict) and response.get("success") is True
-            and all(response.get(flag, False) is False for flag in _UNCERTAIN_MODEL_FLAGS))
+            and _work_model_uncertainty(response) is None)
 
 
 def _work_model_response_error(response: Any, phase: str) -> str:
-    if isinstance(response, dict):
-        for flag in _UNCERTAIN_MODEL_FLAGS:
-            if response.get(flag, False) is not False:
-                return f"bounded {phase} returned uncertain response: {flag}"
+    reason = _work_model_uncertainty(response)
+    if reason is not None:
+        return f"bounded {phase} returned uncertain response: {reason}"
     return f"bounded {phase} returned an unsuccessful response"
+
+
+def _mark_rolled_back_validation_stale(validation: list[dict[str, Any]]) -> None:
+    for item in validation:
+        if isinstance(item, dict) and item.get("receipt_ids"):
+            item["receipt_status"] = "stale"
+
+
+def _usable_work_artifact_id(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip() and "\x00" not in value
+
+
+def _local_exploration_status(steps: list[dict[str, Any]]) -> str | None:
+    statuses = []
+    for step in steps:
+        if isinstance(step, dict) and "local_exploration" in step:
+            exploration = step["local_exploration"]
+            status = exploration.get("status") if isinstance(exploration, dict) else None
+            statuses.append(status if isinstance(status, str) and status in {"completed", "skipped", "unavailable", "unknown"} else "unknown")
+    return next((status for status in ("unknown", "unavailable", "skipped", "completed") if status in statuses), None)
+
+
+def _quarantine_failed_rollback_receipts(
+    validation: list[dict[str, Any]], receipts: list[dict[str, Any]], generation: int | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    for item in validation:
+        if item.get("receipt_ids"):
+            observed = item.get("task_mutation_generation")
+            item["receipt_status"] = ("stale" if generation is not None
+                and type(observed) is int and observed != generation else "unknown")
+    stale = [item for item in receipts if generation is not None
+             and type(item.get("mutation_generation")) is int and item["mutation_generation"] != generation]
+    uncertain = [item for item in receipts if item not in stale]
+    return stale, uncertain
 
 
 def _work_edit_context(fast: Any, previous_steps: list[dict[str, Any]], generation: int) -> str:
@@ -852,6 +899,7 @@ class WorkOrchestrator:
         self._wake = threading.Event()
         self._waiters: dict[str, threading.Event] = {}
         self._active_cancellations: dict[str, threading.Event] = {}
+        self._active_deadlines: dict[str, float] = {}
         self._workers: list[threading.Thread] = []
         self._lock = threading.RLock()
         self._recovery_timer: threading.Timer | None = None
@@ -969,12 +1017,21 @@ class WorkOrchestrator:
 
     def _load_journal(self, work_id: str) -> list[_JournalEntry] | None:
         path = self._journal_path(work_id)
-        if not path.is_file():
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
             return []
+        except OSError:
+            return None
+        if (not stat.S_ISREG(metadata.st_mode)
+                or getattr(metadata, "st_file_attributes", 0) & 0x400):
+            return None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, list):
+                raise ValueError("invalid work journal root")
             entries: list[_JournalEntry] = []
-            for item in raw if isinstance(raw, list) else []:
+            for item in raw:
                 if not isinstance(item, dict):
                     raise ValueError("invalid work journal entry")
                 rel = str(item.get("path", "")).replace("\\", "/")
@@ -1549,18 +1606,38 @@ class WorkOrchestrator:
                 with guard:
                     with closing(self._connect()) as con:
                         con.execute("BEGIN IMMEDIATE")
-                        if recovered:
+                        if recovered and isinstance(recovery_payload, dict) and recovery_payload.get("mode") == "bounded":
+                            current = con.execute(
+                                "SELECT cancel_requested FROM work_orders WHERE work_id=? AND state=?", (work_id, state)
+                            ).fetchone()
+                            cancelled = current is not None and bool(current["cancel_requested"])
+                            result = json_dumps({
+                                "summary": "interrupted bounded work recovered; primary review required",
+                                "error": "interrupted bounded work was not rerun; inspect the workspace and test evidence",
+                                "needs_agent": not cancelled, "requires_primary_review": True, "outcome_unknown": True,
+                            }, separators=(",", ":"))
+                            con.execute(
+                                "UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=? AND state=?",
+                                ("cancelled" if cancelled else "needs_agent", result, now, work_id, state),
+                            )
+                        elif recovered:
                             con.execute(
                                 "UPDATE work_orders SET state='queued',result_json='{}',updated_at=? WHERE work_id=? AND state=?",
                                 (now, work_id, state),
                             )
                         else:
-                            result = json_dumps({
+                            recovery_result = {
                                 "summary": "work order recovery failed",
                                 "error": ("task mutation barrier requires reconciliation; manual inspection required"
                                           if barrier_unresolved else "transaction journal could not be safely restored; manual inspection required"),
                                 "needs_agent": True,
-                            }, separators=(",", ":"))
+                            }
+                            if isinstance(recovery_payload, dict) and recovery_payload.get("mode") == "bounded":
+                                recovery_result.update({"outcome_unknown": True, "requires_primary_review": True,
+                                                        "rollback_status": "reconciliation_required"})
+                                if barrier_unresolved:
+                                    recovery_result["task_barrier_status"] = "reconciliation_required"
+                            result = json_dumps(recovery_result, separators=(",", ":"))
                             con.execute(
                                 "UPDATE work_orders SET state='needs_agent',result_json=?,updated_at=? WHERE work_id=? AND state=?",
                                 (result, now, work_id, state),
@@ -1841,6 +1918,30 @@ class WorkOrchestrator:
                             }
                         con.execute("COMMIT")
                         return self._canonical(existing)
+                    if mode == "bounded" and task_id and normalized_permissions["edit"]:
+                        task_store = getattr(self.verification_store, "task_store", None)
+                        if task_store is None:
+                            con.execute("ROLLBACK")
+                            return {"success": False, "error": "bounded work task store is unavailable", "terminal": True}
+                        try:
+                            from .agent_tasks import TaskStatus, _task_matches_scope, _task_scope_root
+
+                            record = task_store.get(task_id)
+                            valid_task = (
+                                record is not None
+                                and record.status is TaskStatus.ACTIVE
+                                and bool(str(record.owner or "").strip())
+                                and _task_matches_scope(record, str(root), task_id)
+                                and _task_scope_root(record) == str(root)
+                            )
+                        except Exception:
+                            con.execute("ROLLBACK")
+                            return {"success": False, "error": "bounded work task state lookup failed",
+                                    "operation_not_started": True, "retryable": True, "terminal": False}
+                        if not valid_task:
+                            con.execute("ROLLBACK")
+                            return {"success": False, "error": "bounded work requires an active task in the same repository",
+                                    "operation_not_started": True, "terminal": True}
                     pending = con.execute(
                         "SELECT COUNT(*) FROM work_orders WHERE state IN ('queued','planning','executing','integrating','verifying')"
                     ).fetchone()
@@ -1894,8 +1995,17 @@ class WorkOrchestrator:
                "status": str(row["state"]), "work_id": str(row["work_id"]), **result}
         if payload.get("mode") == "bounded" and str(row["state"]) in {"partial", "needs_agent", "failed", "cancelled"}:
             out["success"] = False
+        self._report_active_deadline(out, payload)
         out.setdefault("progress", result.get("progress", {}))
         return self._project(out, payload)
+
+    def _report_active_deadline(self, output: dict[str, Any], payload: dict[str, Any]) -> None:
+        if payload.get("mode") != "bounded" or output.get("status") in _TERMINAL:
+            return
+        with self._lock:
+            deadline = self._active_deadlines.get(str(output.get("work_id", "")))
+        if deadline is not None and time.monotonic() >= deadline:
+            output.update({"success": False, "timed_out": True, "in_progress": True})
 
     @staticmethod
     def _project(value: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -1922,6 +2032,7 @@ class WorkOrchestrator:
         output = {"success": success, "status": str(row["state"]), "work_id": work_id, **result}
         if payload.get("mode") == "bounded" and str(row["state"]) in {"partial", "needs_agent", "failed", "cancelled"}:
             output["success"] = False
+        self._report_active_deadline(output, payload)
         return self._project(output, payload)
 
     def wait(self, work_id: str, timeout_seconds: float = 90) -> dict[str, Any]:
@@ -1984,13 +2095,30 @@ class WorkOrchestrator:
             return {"success": False, "error": "work order not found", "work_id": work_id}
         if str(row["state"]) != "needs_agent":
             return {"success": False, "error": "work order is not waiting for agent input", "work_id": work_id}
-        payload = json.loads(str(row["payload_json"] or "{}")); payload["agent_answer"] = str(answer).strip()[:8000]
+        payload_json = str(row["payload_json"] or "{}")
+        result_json = str(row["result_json"] or "{}")
+        try:
+            payload = json.loads(payload_json)
+            previous_result = json.loads(result_json)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "work order handoff is invalid", "work_id": work_id}
+        if not isinstance(payload, dict) or not isinstance(previous_result, dict):
+            return {"success": False, "error": "work order handoff is invalid", "work_id": work_id}
+        if payload.get("mode") == "bounded":
+            if previous_result.get("outcome_unknown", False) is not False:
+                return {"success": False, "error": "work outcome is unknown; inspect and reconcile before any new task", "work_id": work_id, "outcome_unknown": True}
+            if (previous_result.get("task_barrier_status", "released") != "released"
+                    or previous_result.get("rollback_status", "clear") != "clear"):
+                return {"success": False, "error": "work handoff requires reconciliation before continuing", "work_id": work_id}
+            if previous_result.get("handoff_id") or not isinstance(previous_result.get("question"), str) or not previous_result["question"].strip():
+                return {"success": False, "error": "work handoff requires primary review, not continuation", "work_id": work_id}
+        payload["agent_answer"] = str(answer).strip()[:8000]
         if not payload["agent_answer"]:
             return {"success": False, "error": "answer is required", "work_id": work_id}
         with closing(self._connect()) as con:
             changed = con.execute(
-                "UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=? AND state='needs_agent' AND cancel_requested=0",
-                (json_dumps(payload, separators=(",", ":")), time.time(), work_id),
+                "UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=? AND state='needs_agent' AND cancel_requested=0 AND payload_json=? AND result_json=?",
+                (json_dumps(payload, separators=(",", ":")), time.time(), work_id, payload_json, result_json),
             ).rowcount
         if not changed:
             return {"success": False, "error": "work order state changed", "work_id": work_id}
@@ -2777,16 +2905,20 @@ class WorkOrchestrator:
             return
         deadline_timer = None
         context_token = None
+        deadline_token = None
         monitor_stop = None
         cancellation_monitor = None
         if payload.get("mode") == "bounded":
             cancel_event = threading.Event()
+            deadline_at = time.monotonic() + budget_seconds
             with self._lock:
                 self._active_cancellations[work_id] = cancel_event
+                self._active_deadlines[work_id] = deadline_at
             if self._cancelled(work_id):
                 cancel_event.set()
             context_token = _WORK_CANCEL_EVENT.set(cancel_event)
-            deadline_timer = threading.Timer(budget_seconds, cancel_event.set)
+            deadline_token = _WORK_DEADLINE.set(deadline_at)
+            deadline_timer = threading.Timer(max(0.0, deadline_at - time.monotonic()), cancel_event.set)
             deadline_timer.daemon = True
             deadline_timer.start()
             monitor_stop = threading.Event()
@@ -2807,7 +2939,10 @@ class WorkOrchestrator:
         try:
             self._execute_fenced(row, attempt, attempt_ttl)
         except LeaseLostError:
-            # A successor owns recovery and durable state transitions from here.
+            # Recovery must claim a fresh fence; if a successor is still active,
+            # the existing recovery path defers without touching its work.
+            self._recovery_retry_requested = True
+            self._schedule_recovery_retry()
             return
         except Exception as exc:
             try:
@@ -2836,6 +2971,9 @@ class WorkOrchestrator:
                 with self._lock:
                     if self._active_cancellations.get(work_id) is cancel_event:
                         self._active_cancellations.pop(work_id, None)
+                        self._active_deadlines.pop(work_id, None)
+            if deadline_token is not None:
+                _WORK_DEADLINE.reset(deadline_token)
             try:
                 self.fencing_store.release_attempt(attempt)
             except Exception:
@@ -2863,11 +3001,18 @@ class WorkOrchestrator:
         else:
             allowed_paths, approved_commands = None, []
         budget=payload["budget"]; llm_calls=0; replans=0; commands_run=0; journal: list[_JournalEntry]=[]; lease_ids=[]; changed=[]; step_results=[]; validation=[]
+        applied_patches: list[dict[str, Any]] = []
+        deadline_at = _WORK_DEADLINE.get() if mode == "bounded" else None
+        if deadline_at is None:
+            deadline_at = started + int(budget["max_seconds"])
+        elif mode == "bounded":
+            started = deadline_at - int(budget["max_seconds"])
         criteria = payload.get("acceptance_criteria") or []
         verification_receipts: list[Any] = []
         verification: dict[str, Any] = {}
         receipt_handoff_required = False
         handoff_committed = False
+        rollback_completed = False
         handoff_revision = ""
         mutation_generation = 0
         validated_generation = -1
@@ -2900,14 +3045,22 @@ class WorkOrchestrator:
                 return not isinstance(state, dict) or "_pending_fenced_work" in state
             except Exception:
                 return True
+        def current_task_generation() -> int | None:
+            try:
+                current = task_guard[0].get(task_guard[1]) if task_guard is not None else None
+                state = getattr(getattr(current, "checkpoint", None), "state_data", None)
+                generation = state.get("mutation_generation") if isinstance(state, dict) else None
+                return generation if type(generation) is int and generation >= 0 else None
+            except Exception:
+                return None
         def budget_ok() -> bool:
-            return (time.monotonic()-started)<int(budget["max_seconds"]) and llm_calls<int(budget["max_llm_calls"])
+            return time.monotonic() < deadline_at and llm_calls<int(budget["max_llm_calls"])
         def assert_active() -> None:
             if mode != "bounded":
                 return
             if self._cancelled(work_id):
                 raise InterruptedError("work order cancelled")
-            if time.monotonic() - started >= int(budget["max_seconds"]):
+            if time.monotonic() >= deadline_at:
                 raise TimeoutError("work time budget exhausted")
         def validation_commands() -> list[str]:
             if mode == "bounded":
@@ -2928,12 +3081,12 @@ class WorkOrchestrator:
             perms = payload.get("permissions", {})
             if not bool(perms.get("tests", True)) and not bool(perms.get("build", True)):
                 raise PermissionError("validation is required for mutating whole-task execution")
-            remaining = max(1, int(budget["max_seconds"] - (time.monotonic() - started)))
+            remaining = max(1, int(deadline_at - time.monotonic()))
             for command in validation_commands():
                 assert_active()
                 if mode == "bounded" and commands_run >= int(budget.get("max_commands", budget["max_steps"])):
                     raise RuntimeError("bounded work command budget exhausted")
-                remaining = int(budget["max_seconds"] - (time.monotonic() - started))
+                remaining = int(deadline_at - time.monotonic())
                 if remaining <= 0:
                     raise TimeoutError("work budget exhausted before validation")
                 evidence_type = classify_verification_command(command)
@@ -3073,14 +3226,30 @@ class WorkOrchestrator:
                 return False
             lease_ids.append(lease); changed.extend(x for x in paths if x not in changed)
             mutation_generation += 1
+            if mode == "bounded":
+                applied_patches.append({"patch": patch[:32768], "truncated": len(patch) > 32768, "generation": mutation_generation})
             return True
         if self._cancelled(work_id):
             self._set_terminal_if_active(work_id,"cancelled",{"summary":"cancelled before start"},attempt=attempt)
             return
         self._set_state(work_id,"planning",{"summary":"collecting context and planning","progress":{"phase":"planning","completed":0}},attempt=attempt)
-        context={"profile":self.services.repo_profile(root_s),"map":self.services.repo_map(root_s,80),"tests":self.services.test_matrix(root_s)}
-        plan=self._plan(root_s,task,payload,context); llm_calls+=1
-        assert_active()
+        try:
+            context={"profile":self.services.repo_profile(root_s),"map":self.services.repo_map(root_s,80),"tests":self.services.test_matrix(root_s)}
+            plan=self._plan(root_s,task,payload,context); llm_calls+=1
+            assert_active()
+        except Exception as exc:
+            # Planning precedes mutation. Only finalize directly when durable
+            # state also confirms there is no journal or unresolved task barrier.
+            cancelled = mode == "bounded" and self._cancelled(work_id)
+            if (cancelled
+                    and self._load_journal(work_id) == [] and not unresolved_task_barrier()):
+                if not self._set_terminal_if_active(work_id, "cancelled", {"summary": "cancelled during planning"}, attempt=attempt):
+                    self._recovery_retry_requested = True
+                    self._schedule_recovery_retry()
+                return
+            if mode == "bounded" and not cancelled and time.monotonic() >= deadline_at:
+                raise TimeoutError("work time budget exhausted") from exc
+            raise
         if bool(plan.get("needs_agent")):
             result={"summary":str(plan.get("summary",task))[:600],"needs_agent":True,"question":str(plan.get("question","Clarification required"))[:1200],"plan":plan}
             if not self._set_terminal_if_not_cancelled(work_id,"needs_agent",result,attempt=attempt):
@@ -3093,17 +3262,42 @@ class WorkOrchestrator:
                 raise InterruptedError("work order cancelled before completion")
             return
         self._set_state(work_id,"executing",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"progress":{"phase":"executing","completed":0,"total":len(plan["steps"]) }},attempt=attempt)
+        def attach_partial_artifact(result: dict[str, Any], kind: str) -> None:
+            exploration_status = _local_exploration_status(result.get("steps", []))
+            if exploration_status is not None:
+                result["local_exploration_status"] = exploration_status
+            report = {"original_task": task, **result, "applied_patches": applied_patches}
+            result["requires_primary_review"] = True
+            try:
+                artifact = self.artifacts.put(json_dumps(report, ensure_ascii=False, indent=2), kind=kind)
+                if not _usable_work_artifact_id(artifact):
+                    raise RuntimeError("artifact store returned no identifier")
+                result["artifact_id"] = artifact
+                result["available_details"] = ["plan", "steps", "validation", "applied_patches"]
+            except Exception:
+                result["error"] = "work handoff artifact unavailable"
+
         active_outcome = None
         try:
             for idx, step in enumerate(plan["steps"]):
                 attempt = self.fencing_store.renew_attempt(attempt, ttl_seconds=attempt_ttl)
                 if self._cancelled(work_id): raise InterruptedError("cancelled")
+                assert_active()
                 if not budget_ok():
                     kept = bool(payload.get("keep_failed_workspace"))
-                    rolled = self._rollback_transaction(work_id, root, journal, keep=kept, attempt=attempt)
+                    rolled = self._rollback_transaction(work_id, root, journal, keep=kept, attempt=attempt,
+                                                        task_guard=task_guard, allowed_paths=allowed_paths)
                     if rolled:
                         changed = []
+                        if mode == "bounded":
+                            rollback_completed = True
+                            _mark_rolled_back_validation_stale(validation)
                     result={"summary":"work budget exhausted" + ("; workspace rolled back" if rolled else ""),"plan":plan,"steps":step_results,"changed_files":changed,"rolled_back":rolled,"progress":{"completed":idx,"total":len(plan["steps"])}}
+                    if mode == "bounded":
+                        result["validation"] = validation
+                        if rolled and verification_receipts:
+                            result["stale_verification_receipts"] = [receipt.to_dict() for receipt in verification_receipts]
+                        attach_partial_artifact(result, "work-partial")
                     if not self._set_terminal_if_not_cancelled(work_id,"partial",result,attempt=attempt):
                         raise InterruptedError("work order cancelled before partial handoff")
                     return
@@ -3190,8 +3384,7 @@ class WorkOrchestrator:
                                             "status": "unknown" if isinstance(explored, dict) and explored.get("outcome_unknown") is True else "unavailable"
                                         }
                                         if isinstance(explored, dict):
-                                            reason = next((flag for flag in _UNCERTAIN_MODEL_FLAGS
-                                                           if explored.get(flag, False) is not False), None)
+                                            reason = _work_model_uncertainty(explored)
                                             if reason is not None:
                                                 outcome["local_exploration"]["reason"] = reason
                 elif kind == "edit":
@@ -3239,6 +3432,8 @@ class WorkOrchestrator:
                                 raise
                     lease_ids.append(lease); changed.extend(x for x in paths if x not in changed)
                     mutation_generation += 1
+                    if mode == "bounded":
+                        applied_patches.append({"patch": patch[:32768], "truncated": len(patch) > 32768, "generation": mutation_generation})
                     outcome.update({"files":paths,"patch_bytes":len(patch.encode('utf-8')),"attempts":retry_index+1})
                 elif kind == "validate":
                     perms = payload.get("permissions", {})
@@ -3269,10 +3464,18 @@ class WorkOrchestrator:
                             raise RuntimeError("bounded review returned invalid boolean result")
                         outcome["verification"]=parsed
                         if parsed.get("needs_agent"):
-                            rolled = self._rollback_transaction(work_id, root, journal, keep=False, attempt=attempt)
+                            rolled = self._rollback_transaction(work_id, root, journal, keep=False, attempt=attempt,
+                                                                task_guard=task_guard, allowed_paths=allowed_paths)
                             if rolled:
                                 changed = []
+                                if mode == "bounded":
+                                    rollback_completed = True
+                                    _mark_rolled_back_validation_stale(validation)
                             result={"summary":str(parsed.get("summary","needs agent")),"needs_agent":True,"question":str(parsed.get("question","Decision required")),"plan":plan,"steps":step_results+[outcome],"changed_files":changed,"validation":validation,"rolled_back":rolled}
+                            if mode == "bounded":
+                                if rolled and verification_receipts:
+                                    result["stale_verification_receipts"] = [receipt.to_dict() for receipt in verification_receipts]
+                                attach_partial_artifact(result, "work-needs-agent")
                             if not self._set_terminal_if_not_cancelled(work_id,"needs_agent",result,attempt=attempt):
                                 raise InterruptedError("work order cancelled before agent handoff")
                             return
@@ -3437,7 +3640,13 @@ class WorkOrchestrator:
                 changed = [str(x) for x in diff.get("changed_files", changed)] if isinstance(diff, dict) else changed
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
             artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),kind="work-handoff")
+            if mode == "bounded" and not _usable_work_artifact_id(artifact):
+                raise RuntimeError("bounded handoff artifact unavailable")
             handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification","verification_receipts"]}
+            if mode == "bounded":
+                exploration_status = _local_exploration_status(step_results)
+                if exploration_status is not None:
+                    handoff["local_exploration_status"] = exploration_status
             if mode == "bounded" or receipt_handoff_required:
                 current_validation = [item for item in validation if item.get("generation") == mutation_generation]
                 recorded_count = sum(item.get("receipt_status") == "recorded_unmapped" for item in current_validation)
@@ -3498,17 +3707,49 @@ class WorkOrchestrator:
         except InterruptedError:
             if handoff_committed:
                 return
-            rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")), attempt=attempt, task_guard=task_guard, allowed_paths=allowed_paths)
+            rollback_error = None
+            try:
+                rolled = True if mode == "bounded" and rollback_completed else self._rollback_transaction(
+                    work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")),
+                    attempt=attempt, task_guard=task_guard, allowed_paths=allowed_paths)
+            except LeaseLostError:
+                raise
+            except Exception as rollback_exc:
+                if mode != "bounded":
+                    raise
+                rolled = False
+                rollback_error = type(rollback_exc).__name__
             if rolled:
                 changed = []
+                if mode == "bounded":
+                    _mark_rolled_back_validation_stale(validation)
+            stale_receipts = [receipt.to_dict() for receipt in verification_receipts] if mode == "bounded" and rolled else []
+            uncertain_receipts = []
+            if mode == "bounded" and rollback_error:
+                stale_receipts, uncertain_receipts = _quarantine_failed_rollback_receipts(
+                    validation, [receipt.to_dict() for receipt in verification_receipts], current_task_generation())
             cancellation = {"summary":"work order cancelled" + ("; workspace rolled back" if rolled else ""),
                             "changed_files":changed,"rolled_back":rolled,
-                            "verification_receipts":[receipt.to_dict() for receipt in verification_receipts]}
+                            "verification_receipts":[] if stale_receipts or uncertain_receipts else [receipt.to_dict() for receipt in verification_receipts]}
+            if mode == "bounded":
+                exploration_status = _local_exploration_status(step_results + ([active_outcome] if isinstance(active_outcome, dict) else []))
+                if exploration_status is not None:
+                    cancellation["local_exploration_status"] = exploration_status
+            if rollback_error:
+                cancellation["rollback_status"] = "reconciliation_required"
             if unresolved_task_barrier():
                 cancellation["task_barrier_status"] = "reconciliation_required"
-            if mode == "bounded" and (validation or isinstance(active_outcome, dict)):
+            if mode == "bounded" and (validation or isinstance(active_outcome, dict) or rollback_error):
                 cancellation_report = {"validation": validation, "rolled_back": rolled}
                 available_details = []
+                if rollback_error:
+                    cancellation_report["rollback_error"] = rollback_error
+                if stale_receipts:
+                    cancellation_report["stale_verification_receipts"] = stale_receipts
+                    available_details.append("stale_verification_receipts")
+                if uncertain_receipts:
+                    cancellation_report["uncertain_verification_receipts"] = uncertain_receipts
+                    available_details.append("uncertain_verification_receipts")
                 if validation:
                     cancellation["validation"] = {"passed": False, "commands": len(validation)}
                     available_details.append("validation")
@@ -3524,7 +3765,7 @@ class WorkOrchestrator:
                         json_dumps(cancellation_report, ensure_ascii=False),
                         kind="work-cancellation",
                     )
-                    if isinstance(cancellation_artifact, str) and cancellation_artifact:
+                    if _usable_work_artifact_id(cancellation_artifact):
                         cancellation["artifact_id"] = cancellation_artifact
                         cancellation["available_details"] = available_details
                     else:
@@ -3536,25 +3777,67 @@ class WorkOrchestrator:
             if handoff_committed:
                 return
             rolled=False
+            rollback_error = None
             try:
-                rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")), attempt=attempt, task_guard=task_guard, allowed_paths=allowed_paths)
+                rolled = True if mode == "bounded" and rollback_completed else self._rollback_transaction(
+                    work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")),
+                    attempt=attempt, task_guard=task_guard, allowed_paths=allowed_paths)
                 if rolled:
                     changed=[]
-            except Exception:
-                pass
+                    if mode == "bounded":
+                        _mark_rolled_back_validation_stale(validation)
+            except LeaseLostError:
+                raise
+            except Exception as rollback_exc:
+                rollback_error = type(rollback_exc).__name__
             try:
                 failure_diff = self.services.repo_diff(root_s,"HEAD",False,6500)
             except Exception:
                 failure_diff = {"success": False, "error": "diff unavailable"}
             serialized_receipts = [receipt.to_dict() for receipt in verification_receipts]
+            stale_receipts = serialized_receipts if mode == "bounded" and rolled else []
+            uncertain_receipts = []
+            if mode == "bounded" and rollback_error:
+                stale_receipts, uncertain_receipts = _quarantine_failed_rollback_receipts(
+                    validation, serialized_receipts, current_task_generation())
+            if stale_receipts:
+                serialized_receipts = []
+            if uncertain_receipts:
+                serialized_receipts = []
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":failure_diff,"validation":validation,"verification":verification,"verification_receipts":serialized_receipts,"error":str(exc),"rolled_back":rolled,"llm_calls":llm_calls,"replans":replans}
+            if stale_receipts:
+                report["stale_verification_receipts"] = stale_receipts
+            if uncertain_receipts:
+                report["uncertain_verification_receipts"] = uncertain_receipts
+            if rollback_error:
+                report["rollback_error"] = rollback_error
             if mode == "bounded" and isinstance(active_outcome, dict):
                 failed_step = {"id": active_outcome["id"], "kind": active_outcome["kind"], "success": False}
                 if "model_observations" in active_outcome:
                     failed_step["model_observations"] = active_outcome["model_observations"]
                 report["failed_step"] = failed_step
-            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),kind="work-failure")
-            failure={"summary":"whole task failed" + (" and was rolled back" if rolled else ""),"error":str(exc)[:1200],"changed_files":changed,"validation":{"passed":False,"commands":len(validation)},"verification":verification,"verification_receipts":serialized_receipts,"artifact_id":artifact,"available_details":["plan","steps","validation","verification","verification_receipts","failure_report"]}
+            try:
+                artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),kind="work-failure")
+                if mode == "bounded" and not _usable_work_artifact_id(artifact):
+                    raise RuntimeError("artifact store returned no identifier")
+            except Exception:
+                if mode != "bounded":
+                    raise
+                artifact = None
+            failure_error = str(exc)[:1200]
+            if mode == "bounded" and not artifact:
+                failure_error = "failure artifact unavailable; original error: " + str(exc)[:1000]
+            failure={"summary":"whole task failed" + (" and was rolled back" if rolled else ""),"error":failure_error,"changed_files":changed,"validation":{"passed":False,"commands":len(validation)},"verification":verification,"verification_receipts":serialized_receipts,"artifact_id":artifact,"available_details":["plan","steps","validation","verification","verification_receipts","failure_report"] if artifact else []}
+            if mode == "bounded":
+                exploration_status = _local_exploration_status(step_results + ([active_outcome] if isinstance(active_outcome, dict) else []))
+                if exploration_status is not None:
+                    failure["local_exploration_status"] = exploration_status
+            if stale_receipts and artifact:
+                failure["available_details"].append("stale_verification_receipts")
+            if uncertain_receipts and artifact:
+                failure["available_details"].append("uncertain_verification_receipts")
+            if rollback_error:
+                failure["rollback_status"] = "reconciliation_required"
             if unresolved_task_barrier():
                 failure["task_barrier_status"] = "reconciliation_required"
             if (mode == "bounded" and self.local_diagnostic_dispatch and isinstance(artifact, str) and artifact
@@ -3568,7 +3851,9 @@ class WorkOrchestrator:
                     "instruction": "Inspect the failure artifact, select a narrow non-sensitive preview, and check backend availability before requesting advisory diagnosis.",
                 }
             if not self._fail_if_not_cancelled(work_id,failure,attempt=attempt):
-                self._set_terminal_if_active(work_id,"cancelled",{"summary":"work order cancelled during failure recovery" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled},attempt=attempt)
+                cancellation = {**failure, "summary": "work order cancelled during failure recovery" + ("; workspace rolled back" if rolled else ""), "rolled_back": rolled}
+                cancellation.pop("local_handoff", None)
+                self._set_terminal_if_active(work_id, "cancelled", cancellation, attempt=attempt)
         finally:
             for lid in lease_ids:
                 try: self.leases.release(owner=work_id, lease_id=lid)

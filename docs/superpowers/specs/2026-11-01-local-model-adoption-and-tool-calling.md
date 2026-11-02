@@ -12,11 +12,25 @@ The broker and both work modes must reject verification when timeout, cancellati
 
 If a bounded validation returns as the work order is cancelled or its deadline expires, retain the broker's actual result separately from the work outcome. A cancelled handoff links a bounded local validation artifact when persistence succeeds and explicitly reports an artifact persistence failure otherwise; neither case records a verification receipt or implies completion.
 
+If cancellation races with failure finalization, preserve any rollback reconciliation status, task barrier and available failure artifact in the cancelled handoff. An unavailable failure artifact is explicitly reported; it cannot establish success or discard a conflicting workspace or journal.
+
+When rollback loses the work-attempt fence, the superseded worker stops without writing a failure handoff or deciding terminal state. The authoritative successor or fenced recovery owns the remaining journal and task barrier.
+
+Fence loss schedules the existing deferred recovery. Recovery must acquire a fresh fence and defer while a successor is active. After a safe recovery, interrupted bounded work is not automatically requeued: it returns `needs_agent` with `outcome_unknown=true`, or `cancelled` if cancellation was requested. The primary agent must inspect the workspace and evidence; non-bounded recovery keeps its existing behavior.
+
+`continue` refuses a bounded handoff with unknown outcome, unresolved task barrier or rollback reconciliation. It compares the stored payload and result when requeuing an ordinary clarification, so a concurrent handoff change cannot authorize a stale continuation. An unknown outcome requires independent reconciliation, not replay of the same order.
+
+An unsuccessful bounded recovery explicitly reports unknown outcome and rollback reconciliation; an unresolved task barrier is also reported. `continue` only accepts an actual clarification question, not a final review handoff or a questionless recovery failure, including older stored handoffs without the newer status fields.
+
+A bounded final handoff requires a valid persisted artifact identifier before finalizing its work fence. Missing, invalid or failed artifact persistence enters the existing failure path, including configured rollback or explicit retained-workspace handling; any prior broker receipts are historical after rollback, and missing failure evidence is explicit.
+
 The existing repository delegation path passes the work order's supplied evidence together with retrieved repository context as untrusted context, and binds downstream model/project policy to the requested root. The model's existing prompt budget still applies; inclusion before generation is not proof that an arbitrarily large context fits the selected model.
 
 An edit step receives bounded prior inspection evidence as well as its own retrieved context. Inspection evidence carries the work-order mutation generation and is marked stale after a later edit; clipped sections are marked as truncated. These are data for the local model, never an extension of file, command or tool permissions.
 
 Completed bounded edit steps retain per-attempt model names and fallback flags only when explicitly reported by the service response. If a bounded step fails after it starts, the failure artifact records its ID, kind, `success=false`, and any model observations already obtained. Missing or malformed values remain null; a route or configuration value cannot fill them. Each observation has `identity_verified=false`: a reported name alone does not establish the serving backend, digest, live inference, model quality or benchmark eligibility.
+
+For a length-truncated generation, only an explicit boolean backend completion combined with the canonical terminal, non-retryable partial-result contract proves that this particular execution completed. The scheduler may release its reservation for that execution, while retaining it on timeout, cancellation, in-progress status, unconfirmed cleanup, partial transport or conflicting evidence. The output remains a failure and cannot be cached or accepted as a patch. Existing unknown reservations require independent reconciliation.
 
 ## Goal and boundaries
 
@@ -32,9 +46,23 @@ On Windows, bounded patch application additionally pins existing ancestor direct
 
 Patch preview and application preserve each existing file's uniform LF or CRLF line endings, including when different files in one patch use different endings. They use disposable Git attributes instead of changing repository configuration. A file that itself mixes LF and CRLF is rejected explicitly before patch application; it is not silently normalized.
 
-For a running bounded order, cancellation and its deadline signal the existing broker and model cancellation interfaces. Same-process cancellation signals directly; a bounded monitor observes durable cancellation from other processes. The broker terminates its subprocess on cancellation. When cancellation interrupts an active step, its available unverified model observations are retained in a cancellation artifact; artifact persistence failure is explicit. A late patch is not applied. For bounded planning, editing, repair and verification, a model response carrying timeout, cancellation, preemption, partial, in-progress or unknown-outcome flags is rejected even when it also claims success; the reported failure names the uncertainty. Optional tool exploration discards such output and records its reason. Cross-process notification is not instantaneous and backend cooperation remains necessary; the command retains its timeout.
+For a running bounded order, cancellation and its deadline signal the existing broker and model cancellation interfaces. The timer, admission checks, remaining command budget and elapsed-time report share one monotonic deadline established before the executor begins. Same-process cancellation signals directly; a bounded monitor observes durable cancellation from other processes. The broker terminates its subprocess on cancellation. When cancellation interrupts an active step, its available unverified model observations are retained in a cancellation artifact; artifact persistence failure is explicit. A late patch is not applied. For bounded planning, editing, repair and verification, a model response carrying timeout, cancellation, preemption, partial, in-progress or unknown-outcome flags is rejected even when it also claims success; the reported failure names the uncertainty. If optional final-response metadata is present, it must affirm that a final answer was produced; missing optional metadata is not invented. Optional tool exploration discards uncertain output and records its reason. Cross-process notification is not instantaneous and backend cooperation remains necessary; the command retains its timeout.
 
-The primary agent may choose small fixes, function changes, validation, tests and simple UI work based on task risk and measured model quality, not parameter count alone. The caller supplies an explicit task, acceptance criteria, exact allowed repository-relative files, exact approved validation commands, an explicit edit permission choice, test/build permissions and a finite budget. Validation-only orders can disable edits; create and delete default to disabled. An empty or invalid scope is rejected. Model output cannot extend the scope. Every patch, including repair, is checked before the existing lease, fence and journal apply path. Bounded patches reject binary, rename/copy and permission-change metadata and cannot create symlinks; normal new files require explicit create permission. Every executed validation command is chosen only from the caller's allowlist and still passes the existing command broker; model-planned or discovered commands do not grant permission. A timeout, cancellation, failed validation, unavailable backend or ambiguous output never becomes a successful handoff. The primary agent reviews the resulting diff, test evidence and integration. The mode is available on the existing work executor and does not imply hardware detection, model availability, tool-call proficiency or production quality. Activation and promotion require task-specific evaluation; physical 5070 Ti measurements are deferred.
+Cancellation during pre-mutation planning may finalize immediately only with the current work attempt fence, a confirmed empty journal and no unresolved task barrier. Invalid or non-file journal state is corrupt, not empty; retain it for fenced recovery rather than declaring cancellation complete. When the planner returns a cancellation error because its time budget elapsed, report the deadline as the cause; an explicit user cancellation retains precedence.
+
+For task-bound work, rollback after an exhausted model-call budget or an intermediate review requesting human input uses the same task mutation barrier and scoped writer fence as other rollback paths. A deadline reached between steps is an explicit timeout failure and follows the guarded rollback path; it is not reported merely as an unspecified partial result.
+
+When a bounded patch is rolled back, validation entries with broker receipts are marked `stale`; authentic receipts retained for inspection are separated as `stale_verification_receipts`, never presented as current verification. A needs-agent review handoff likewise marks its earlier validation entries stale. The primary agent must validate the resulting workspace independently.
+
+Bounded budget and review handoffs persist a local artifact containing validation and ordered previews of accepted patches, each capped at 32768 characters with an explicit truncation flag and mutation generation. These previews are historical evidence, not the current workspace diff. Artifact persistence failure is visible in the handoff and never implies completion; the primary agent independently reviews the workspace and test results.
+
+If rollback fails, report reconciliation required. Compare any recorded receipt generation with the current authoritative task generation: mismatches are stale; when freshness is unavailable or not established, mark it unknown and retain it only in `uncertain_verification_receipts`. Never present either category as current verification, and retain the conflicting file, journal and any existing task barrier for recovery.
+
+If this conflict occurs during explicit cancellation, the terminal status remains `cancelled` but also reports `rollback_status="reconciliation_required"`; preserve the conflicting workspace and journal, and quarantine earlier receipts by the same rules. Cancellation does not imply the rollback succeeded.
+
+If cancellation arrives after a guarded rollback has already completed but before its handoff is recorded, retain the completed-rollback state and stale evidence; do not run rollback a second time or report it as absent.
+
+The primary agent may choose small fixes, function changes, validation, tests and simple UI work based on task risk and measured model quality, not parameter count alone. The caller supplies an explicit task, acceptance criteria, exact allowed repository-relative files, exact approved validation commands, an explicit edit permission choice, test/build permissions and a finite budget. Validation-only orders can disable edits; create and delete default to disabled. An empty or invalid scope is rejected. Model output cannot extend the scope. Every patch, including repair, is checked before the existing lease, fence and journal apply path. Bounded patches reject binary, rename/copy and permission-change metadata and cannot create symlinks; normal new files require explicit create permission. Every executed validation command is chosen only from the caller's allowlist and still passes the existing command broker; model-planned or discovered commands do not grant permission. A timeout, cancellation, failed validation, unavailable backend or ambiguous output never becomes a successful handoff. While a backend remains active beyond the deadline, the owning process reports `timed_out=true` together with `in_progress=true`; it does not claim termination or permit retry. This observation is process-local and cancellation remains cooperative. The primary agent reviews the resulting diff, test evidence and integration. The mode is available on the existing work executor and does not imply hardware detection, model availability, tool-call proficiency or production quality. Activation and promotion require task-specific evaluation; physical 5070 Ti measurements are deferred.
 
 Submitting a bounded order requires the user's explicit request for closed
 delegation. An internally verified bounded order ends in `needs_agent`, retaining the patch
@@ -99,6 +127,74 @@ These are candidates, not an assertion of superiority, installation or full GPU 
 | general | `qwen3.5:9b-q4_K_M` | 32768 / 65536 |
 | vision | `gemma4:12b` | 16384 / 32768 |
 
+The 4B fast and Gemma vision candidates have explicit advisory prompt scopes
+instead of being mislabeled as the legacy 0.5B preprocessing model. Those
+static scopes are not evidence of model quality, installed availability,
+image support or native tool support, and grant no edit or security authority.
+Quantized or otherwise unmatched heavy and vision prompt profiles explicitly
+exclude security decisions, direct edits and final verification. These are
+prompt boundaries; the existing scoped authorization remains the enforcement.
+
+The following is an **inactive evaluation candidate**, not an instruction to
+replace the running configuration. It makes the candidate roles and tier limits
+concrete for the paired 5070 Ti evaluation. Existing configuration tables must
+be edited in place if a candidate is eventually approved; appending duplicate
+TOML tables is invalid. Preserve unrelated settings and explicit overrides.
+
+```toml
+[models]
+background_code = "qwen2.5-coder:3b"
+fast_code = "qwen3.5:4b-q4_K_M"
+heavy_code = "qwen3.5:9b-q4_K_M"
+reasoning = "qwen3.5:9b-q4_K_M"
+general = "qwen3.5:9b-q4_K_M"
+vision = "gemma4:12b"
+
+[model_execution.fast]
+context_tokens = 16384
+large_context_tokens = 32768
+max_context_tokens = 32768
+max_prompt_tokens = 28000
+parallel = 1
+
+[model_execution.smart]
+context_tokens = 32768
+large_context_tokens = 32768
+max_context_tokens = 65536
+max_prompt_tokens = 54000
+parallel = 1
+
+[model_execution.vision]
+context_tokens = 16384
+large_context_tokens = 32768
+max_context_tokens = 32768
+max_prompt_tokens = 28000
+parallel = 1
+```
+
+This fragment leaves the hardware profile, preprocessing, background tier,
+reserves, tool-exploration qualification and other settings unchanged. The
+`[models]` and `[model_execution.*]` entries are global overrides, not
+profile-specific settings: if installed, they also remain in force after a later
+profile change. Use an isolated evaluation configuration first and promote only
+with that effect understood. The
+policy still applies output and reserve limits, model/backend caps and VRAM
+admission; a configured ceiling does not establish effective context or VRAM
+fit. On the observed current configuration, explicit fast/smart tier overrides
+cap context at 32768 and the smart prompt at 24000; simply switching hardware
+does not remove those overrides. Recheck the live configuration after the GPU
+change and do not silently overwrite the user's later edits. One-at-a-time
+parallelism is the evaluation baseline, not a measured optimum.
+
+The observed user configuration separately sets
+`token_saving.default_repo_context_tokens=16000`, `max_local_input_tokens=64000`
+and `max_local_output_tokens=8192`. The first is the default budget for the
+repository context-pack path when the caller supplies no budget; it is not the
+model's context window. The local generation path also applies the input and
+output caps and the selected tier's prompt budget. Thus a 64k model ceiling does
+not imply that every task receives 64k of repository evidence. Request only the
+context needed, inspect truncation and recheck these user settings at evaluation.
+
 Do not alter preprocessing as a side effect. Test `qwen2.5-coder:14b`, Qwen 9B Q8, Qwen vision and `Nanbeige4.2-3B` as optional candidates only after source, backend compatibility, licensing and hardware checks. Nanbeige's published agent benchmarks do not demonstrate results in this Hub. `qwen3-coder:30b` and `gpt-oss:20b` are outside the preferred <=14B scope, not automatic defaults. A 128k context is an opt-in benchmark experiment, not a promised default.
 
 Set contexts by requested role and actual input/output needs, with explicit token reserve, true runtime budget, bounded parallelism and available VRAM. Resolve shared-model role collisions without selecting a vision policy merely because a text role shares the model. Show requested, selected and effective context, truncation and fallback; do not silently present capped or shortened input as complete. Use one foreground request as benchmark baseline, then measure parallel 2 and background interference; no claim that advertised 256k fits. Preserve safe VRAM checks and avoid GPU/CPU spill unless disclosed.
@@ -109,7 +205,19 @@ Background generation returns the prompt fitting estimate and truncation flag. F
 
 ## Adoption, instructions and telemetry
 
-First verify the dashboard against one controlled known MCP request, associated HTTP request and model inference. Report scope, lifetime/window, success, unavailable telemetry, source and identity; distinguish attempted, accepted, inferred, successful, skipped, timed out and failed. Counts must not double count tool calls and inferencing or imply useful output. Existing traces remain metadata-only; no prompts, source code or secrets by default. Attribute latency, queue time, effective context, truncation and skip reason. Report quality via human/test acceptance, not fabricated cost savings or unsupported causal claims. Any savings require existing baseline evidence contract.
+First verify the dashboard against one controlled known MCP request, associated HTTP request and model inference. Report scope, lifetime/window, success, unavailable telemetry, source and identity; distinguish attempted, accepted, inferred, successful, skipped, timed out and failed. Counts must not double count tool calls and inferencing or imply useful output. New endpoint statistics use hashed normalized absolute-root identities in a separate table; non-absolute or missing roots contribute only globally. Historical basename totals remain explicit `legacy:` groups, separate from exact roots, and cannot be assigned to individual roots without evidence. Global totals include both kinds; resetting a historical group affects the whole group. Source tests do not establish running-service or live dashboard attribution. Existing traces remain metadata-only; no prompts, source code or secrets by default. Attribute latency, queue time, effective context, truncation and skip reason. Report quality via human/test acceptance, not fabricated cost savings or unsupported causal claims. Any savings require existing baseline evidence contract.
+
+During a mixed-version transition, an older serving process can omit records written to the new table by another process. On 2026-11-02 this condition was observed: the old live API lacked the new precision field while the shared database already contained a new-table row. Do not treat its live totals or reset behavior as covering the new table until the actual serving process is upgraded and verified; preserve both tables and coordinate any restart with active work.
+
+The user-authorized restart on 2026-11-02 enabled the new live statistics projection. A scoped search observed matching one-call increments for MCP and HTTP. A separate second-opinion attempt was denied under resource pressure and did not produce an inference result. That attempt exposed an ignored explicit model argument; source now applies the existing configured-tier and quality-floor checks. After a subsequent restart, a distinct live preflight rejected an unconfigured model before inference. Accepted override behavior was verified with simulated generation; neither observation is model-quality or target-GPU proof.
+
+When scheduler admission rejects the last attempted model, generation failures may report its actual `last_admission_state`, `last_admission_reason` and `last_admission_model`. The fields remain absent when no valid scheduler admission was observed; they do not attest to inference or earlier attempts. Foreground VRAM rejection is not described as background throttling. These changes require source activation and do not change resource safeguards.
+
+When the backend explicitly reports `done_reason=length`, generation reports an unsuccessful partial response with `output_truncated=true`, preserves partial text when the response budget permits, and does not retry, fall back or cache it. Bounded work rejects an explicit truncation flag even with contradictory success. The completion-contract version separates new cache keys from previous entries without rewriting history. Missing stop metadata does not by itself establish truncation. The service was restarted after this source change; live backend truncation handling remains untested.
+
+The existing read-only tool loop applies the same fail-closed backend length rule before dispatching any selected tool and before accepting final synthesis. Its output is not cached, old tool-completion cache keys are segregated, and inference telemetry marks that response unsuccessful. This source change has not been activated; an unknown GPU outcome must be reconciled without a blind restart or repeated request.
+
+Subsequently, a fresh MCP adapter against the running 4060 Hub verified an explicit 64-token generation limit and a real backend `length` rejection (`req_f32cf7d6667e`). MCP generation actions no longer silently raise explicit limits from 64–159 to 160; nonzero limits below 64 reject before inference. Compression interprets the field as a target with a separate 128 minimum, not a strict output cap. Configured upper caps still apply. Existing MCP processes must reconnect to obtain the new input behavior; this is not 5070 Ti performance or quality evidence.
 
 Endpoint rows count the actual selected action. A bare tool row is an independent
 no-action count, not a rollup of the tool's action rows. Internal model inference
@@ -126,6 +234,14 @@ Offline tests cover routing and skip conditions; model-tool round trip and unsup
 
 On the installed 5070 Ti, with user-authorized models available, record GPU/driver/Ollama versions, active profile, RAM, selected model tags/digests and settings. Compare old and proposed profiles on a fixed task corpus including diff review, test suggestions, failure diagnosis, tool use and bounded implementation across small fixes, tests and simple UI changes. Measure evidence-grounded correctness, false findings, truncation, median and tail latency, queue time, tokens/s, peak VRAM, GPU residency and throughput at 16k/32k/64k (128k experimental), plus concurrency 1/2 and foreground/background contention. Define corpus and scoring before running; compare paired baseline and candidate. Reject any default with incorrect tool authority, material quality regression, unreported truncation/spill or unacceptable interactive latency. Report actual numbers, failed and skipped cases and environment; no fabricated acceptance or universal speed claims.
 
+The overall benchmark threshold does not qualify every task type. The operator
+must also require a pass on the relevant role-specific cases in
+`docs/agent-evaluation/local-model-gpu-scoring.md` before recommending that
+role or assigning its represented bounded work. An unrelated passing case
+cannot compensate for a failed UI, implementation, review, diagnosis or tool
+case. This is an operator/task-selection rule; the current read-only tool
+qualification gate does not enforce the separate implementation scores.
+
 ## Non-goals
 
 No unscoped repository writes, arbitrary model tool access, guaranteed context fit, runtime downloads, cloud replacement mandate, new telemetry exposing content, automatic hook enforcement, or retrospective claim that screenshot proves underuse. Embeddings/reranker changes, reindexing and GPU transcription are separate work.
@@ -137,7 +253,11 @@ The bounded work orchestrator can optionally invoke the existing read-only tool 
 
 The qualification artifact has kind `local-tool-qualification`, schema `local_tool_qualification.v1`, fields `model`, `model_digest`, `task_kind` (`repository_inspect`), `operator_reviewed` (true), `critical_failures` (0), and `cases` C1/C2/C3 each containing `status` (`PASS`) and a distinct `artifact_id`. Each referenced `local-model-tool-case` artifact must contain the corresponding complete raw harness result for the same model and digest, and its fixture SHA-256 must match the fixed content for that case. Corpus changes require updating the pinned digests and fresh evaluation; the regression tests bind the pins to the actual fixture content. Each case must report native tool capability without fallback; C1 and C3 must show a delivered search result, and the C3 result must contain the fixed injection fixture. These mechanical checks do not replace manual scoring. These records are operator attestations, not tamper-proof proof of evaluation. The operator can persist manually reviewed records using `python -m tools.qualify_local_tool_model --state-dir ABS_STATE_DIR --c1 C1.json --c2 C2.json --c3 C3.json --ollama-url LOOPBACK_URL --reviewed-all-pass`; use the flag only after scoring all cases PASS with zero critical failures. The command verifies the installed model digest, writes the four artifacts atomically, and does not change configuration. Real, manually scored records are still needed before activation; never treat synthetic tests or generated success flags as model qualification.
 
+I2 integration coverage uses an isolated fixture and synthetic model patch, then executes the page in headless Chromium to check initial visibility, both toggle transitions and `aria-expanded`. The broker runs the approved fixture test and the primary review gate remains mandatory. This test does not qualify an installed model or establish GPU performance.
+
 Inspection permits only repo search, code index, file slice and evidence retrieval under the existing authorized root; edits and commands remain with the existing bounded work machinery and explicit scope. The loop reserves its worst-case model-call budget and its output is untrusted context for the primary agent. Failure and uncertainty are reported; cancellation/deadline fencing and primary review still apply. Source integration does not restart or activate the installed Hub. GPU measurement remains deferred until the physical upgrade.
+
+Bounded handoffs expose `local_exploration_status` when tool inspection was attempted or skipped. Across multiple inspections it reports the most conservative observed state: `unknown`, `unavailable`, `skipped`, then `completed`. Details remain in the handoff artifact. This status does not establish task completion, actual model identity or quality qualification.
 
 
 ## Task-bound bounded mutation barrier

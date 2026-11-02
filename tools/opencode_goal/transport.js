@@ -12,11 +12,11 @@ function transport({ baseURL, token = "", actor = "opencode-local", fetchImpl = 
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error("invalid timeout")
   const headers = { "Content-Type": "application/json", "X-LocalAI-Agent": actor }
   if (token) headers["X-LocalAI-Token"] = token
-  async function request(path, payload, mutating) {
+  async function request(path, payload, mutating, requestId) {
     let reader
     try {
       const response = await fetchImpl(`${endpoint.origin}${path}`, {
-        method: "POST", headers, redirect: "error",
+        method: "POST", headers: requestId ? { ...headers, "X-LocalAI-Request-ID": requestId } : headers, redirect: "error",
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         body: JSON.stringify(payload),
       })
@@ -47,24 +47,53 @@ function transport({ baseURL, token = "", actor = "opencode-local", fetchImpl = 
   return { request, actor }
 }
 
+export async function runProjectCommand(state, sessionId, alias, requestId, options) {
+  validateBinding(state)
+  if (!/^[a-f0-9]{32}$/.test(requestId)) throw new Error("invalid request ID")
+  const client = transport({ ...options, timeoutMs: 60000 })
+  return client.request("/api/agent-state/verification", {
+    action: "project_command", root: state.root, task_id: state.taskId, session_id: sessionId, alias,
+  }, true, requestId)
+}
+
 export function validateTransportOptions(options) {
   transport(options)
 }
 
-/** Verify an existing task before it can be attached to a session. */
-export async function getBoundTask(state, sessionId, options) {
+async function readBoundTask(state, sessionId, options, statuses) {
   validateBinding(state)
   if (typeof sessionId !== "string" || !sessionId || sessionId !== sessionId.trim() || sessionId.includes("\0")) throw new Error("session ID is required")
   const { request, actor } = transport(options)
   const result = await request("/api/agent-state/tasks", {action: "get", root: state.root, task_id: state.taskId}, false)
   const task = result?.task
   const actual = task?.contract?.acceptance_criteria
-  if (result?.success !== true || task?.task_id !== state.taskId || !["planned", "active", "verifying"].includes(task?.status) ||
+  if (result?.success !== true || task?.task_id !== state.taskId || !statuses.includes(task?.status) ||
       task?.owner !== actor || task?.context?.session_id !== sessionId || task?.contract?.goal !== state.goal ||
       task?.checkpoint?.state_data?._agent_task_scope?.version !== 2 ||
       task?.checkpoint?.state_data?._agent_task_scope?.repo_root !== state.root ||
       !Array.isArray(actual) || actual.length !== state.criteria.length || !actual.every((item, i) => item === state.criteria[i])) {
     return {success: false, error: "existing task binding could not be verified"}
+  }
+  return result
+}
+
+/** Verify an existing task before it can be attached to a session. */
+export async function getBoundTask(state, sessionId, options) {
+  return readBoundTask(state, sessionId, options, ["planned", "active", "verifying"])
+}
+
+/** Reconcile a completed task only with its exact binding and fresh receipts. */
+export async function getCompletedTask(state, sessionId, options) {
+  const result = await readBoundTask(state, sessionId, options, ["completed"])
+  if (result?.success !== true) return result
+  const { request } = transport(options)
+  const check = await request("/api/agent-state/verification", {action: "completion", root: state.root, task_id: state.taskId}, false)
+  const verification = check?.completion
+  if (check?.success !== true || verification?.task_id !== state.taskId || verification.complete !== true ||
+      !Array.isArray(verification.satisfied_criteria) || !Array.isArray(verification.unsatisfied_criteria) ||
+      !Array.isArray(verification.stale_criteria) || verification.unsatisfied_criteria.length || verification.stale_criteria.length ||
+      !state.criteria.every(item => verification.satisfied_criteria.includes(item))) {
+    return {success: false, error: "completed task verification unavailable or stale"}
   }
   return result
 }
@@ -93,7 +122,7 @@ export async function createTask(state, sessionId, options) {
 /** Send a completion request only to the explicitly configured loopback Hub. */
 export async function completeTask(state, options) {
   validateBinding(state)
-  const { signal, sessionId, canCommit = async () => true, onMutationStart = () => {} } = options
+  const { signal, sessionId, canCommit = async () => true, onMutationStart = async () => true } = options
   if (typeof sessionId !== "string" || !sessionId || sessionId !== sessionId.trim() || sessionId.includes("\0")) throw new Error("session ID is required")
   const { request, actor } = transport(options)
   const check = await request("/api/agent-state/verification", { action: "completion", root: state.root, task_id: state.taskId }, false)
@@ -109,7 +138,9 @@ export async function completeTask(state, options) {
   if (signal?.aborted || await canCommit() !== true || signal?.aborted) {
     return { success: false, outcome_unknown: false, verification_unavailable: true, error: "Goal was interrupted before completion" }
   }
-  onMutationStart()
+  if (await onMutationStart() !== true || signal?.aborted) {
+    return { success: false, outcome_unknown: false, verification_unavailable: true, error: "Goal completion intent was not recorded" }
+  }
   const completed = await request("/api/agent-state/tasks", { action: "complete", root: state.root, task_id: state.taskId, expected_criteria: state.criteria, expected_binding: {goal: state.goal, session_id: sessionId} }, true)
   const task = completed?.task
   const actual = task?.contract?.acceptance_criteria

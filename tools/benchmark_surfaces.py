@@ -5460,6 +5460,13 @@ def _t12_number(value: Any) -> float | None:
         return None
     return float(value)
 
+def _t12_outcome_unconfirmed(result: dict) -> bool:
+    return (result.get("outcome_unknown") is True or result.get("in_progress") is True
+            or (result.get("timed_out") is True
+                and result.get("request_not_sent") is not True
+                and result.get("operation_not_started") is not True))
+
+
 def _t12_scenario_report(
     runner: Any,
     name: str,
@@ -5548,6 +5555,13 @@ def _t12_scenario_report(
         result = run_scenario(name=name, contract=contract)
     except Exception as exc:
         report.update(status="failed", error_type=type(exc).__name__)
+        if isinstance(exc, TimeoutError):
+            report.update(outcome_unknown=True, retryable=False)
+        return report
+    if isinstance(result, dict) and _t12_outcome_unconfirmed(result):
+        report.update(status="failed", outcome_unknown=True, retryable=False)
+        if isinstance(result.get("job_id"), str) or type(result.get("job_id")) is int:
+            report["job_id"] = result["job_id"]
         return report
     if not isinstance(result, dict) or result.get("success") is False:
         error_type = result.get("error_type") if isinstance(result, dict) else None
@@ -5731,8 +5745,15 @@ def _run_t12_matrix(
         for profile, cases in _T12_PROFILE_CORPUS.items()
     })
     task_roles: dict[str, Any] = {}
+    stop_info: dict[str, Any] | None = None
 
     for profile, cases in _T12_PROFILE_CORPUS.items():
+        if stop_info is not None:
+            task_roles[profile] = {
+                "status": "not_measured", "accepted": False, "contract_passed": False,
+                "missing_acceptance": ["prior_outcome_unknown"], "samples": [],
+            }
+            continue
         model_key = profile if profile in configured_models else _T12_PROFILE_MODEL_KEYS.get(profile, profile)
         model = configured_models.get(model_key)
         if not isinstance(model, str) or not model.strip():
@@ -5779,6 +5800,8 @@ def _run_t12_matrix(
         failed_runs = 0
 
         for case in cases:
+            if stop_info is not None:
+                break
             for repetition in range(repetitions):
                 call_started = time.perf_counter()
                 try:
@@ -5793,7 +5816,8 @@ def _run_t12_matrix(
                         result = inference_runner.run(
                             model=model, prompt=case["prompt"], num_tokens=case["num_tokens"],
                         )
-                    if not isinstance(result, dict) or result.get("success") is not True:
+                    if (not isinstance(result, dict) or result.get("success") is not True
+                            or result.get("timed_out") is True or _t12_outcome_unconfirmed(result)):
                         failed_runs += 1
                         failure_code = result.get("failure_code") if isinstance(result, dict) else None
                         if not isinstance(failure_code, str) or not failure_code.isidentifier():
@@ -5839,7 +5863,14 @@ def _run_t12_matrix(
                                 diagnostics["vram_estimate_source"] = estimate_source
                         if diagnostics:
                             failure_sample["diagnostics"] = diagnostics
+                        if isinstance(result, dict) and _t12_outcome_unconfirmed(result):
+                            stop_info = {"outcome_unknown": True, "retryable": False}
+                            if isinstance(result.get("job_id"), str) or type(result.get("job_id")) is int:
+                                stop_info["job_id"] = result["job_id"]
+                            failure_sample.update(stop_info)
                         samples.append(failure_sample)
+                        if stop_info is not None:
+                            break
                         continue
                 except Exception as exc:
                     failed_runs += 1
@@ -5847,6 +5878,10 @@ def _run_t12_matrix(
                         "case_id": case["case_id"], "repetition": repetition,
                         "status": "failed", "error_type": type(exc).__name__,
                     })
+                    if isinstance(exc, TimeoutError):
+                        stop_info = {"outcome_unknown": True, "retryable": False}
+                        samples[-1].update(stop_info)
+                        break
                     continue
                 outer_elapsed_ms = max(0.0, (time.perf_counter() - call_started) * 1000.0)
                 elapsed_ms = _t12_number(result.get("end_to_end_latency_ms"))
@@ -6111,13 +6146,22 @@ def _run_t12_matrix(
         }
         task_roles[profile] = profile_report
 
-    scenarios = {
-        name: _t12_scenario_report(
+    scenarios = {}
+    for name in _T12_SCENARIO_FIELDS:
+        if stop_info is not None:
+            scenarios[name] = {"status": "not_measured", "contract_passed": False,
+                               "accepted": False, "live_hardware": live_hardware,
+                               "reason": "prior_outcome_unknown"}
+            continue
+        scenario = _t12_scenario_report(
             inference_runner, name, concurrency_limit=concurrency_limit,
             quality_floor_pct=quality_floor_pct, live_hardware=live_hardware,
         )
-        for name in _T12_SCENARIO_FIELDS
-    }
+        scenarios[name] = scenario
+        if scenario.get("outcome_unknown") is True:
+            stop_info = {"outcome_unknown": True, "retryable": False}
+            if "job_id" in scenario:
+                stop_info["job_id"] = scenario["job_id"]
     contract_passed = (
         all(task_role.get("contract_passed") is True for task_role in task_roles.values())
         and all(scenario.get("contract_passed") is True for scenario in scenarios.values())
@@ -6125,6 +6169,7 @@ def _run_t12_matrix(
     accepted = bool(live_hardware and contract_passed)
     return {
         "run_id": f"t12-{uuid.uuid4().hex}",
+        **(stop_info or {}),
         "schema_version": "t12.v1",
         "status": "accepted" if accepted else ("contract_complete_fixture_only" if contract_passed else "incomplete"),
         "live_hardware": live_hardware,

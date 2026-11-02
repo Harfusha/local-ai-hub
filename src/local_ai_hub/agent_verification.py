@@ -736,12 +736,15 @@ def evaluate_completion_receipts(
             unsatisfied.append(criterion)
         elif not expected_owner or receipt.owner != expected_owner:
             unsatisfied.append(criterion)
-        elif active_verification_rules and (
-            not expected_revision
-            or str(getattr(receipt, "repository_revision", "") or "").strip() != expected_revision
-        ):
+        elif active_verification_rules and not expected_revision:
             unsatisfied.append(criterion)
-        elif mapped_receipt_ids is not None and mappings.get(criterion) != receipt.receipt_id:
+        elif (
+            mapped_receipt_ids is not None
+            and mappings.get(criterion) != receipt.receipt_id
+            and receipt.is_fresh(current_time)
+            and (not expected_revision or receipt.repository_revision == expected_revision)
+            and receipt.mutation_generation == expected_generation
+        ):
             unsatisfied.append(criterion)
         elif not _receipt_evidence_matches(
             receipt,
@@ -780,6 +783,8 @@ def evaluate_completion_receipts(
             stale.append(criterion)
         elif receipt.mutation_generation != expected_generation:
             stale.append(criterion)
+        elif mapped_receipt_ids is not None and mappings.get(criterion) != receipt.receipt_id:
+            unsatisfied.append(criterion)
         else:
             satisfied.append(criterion)
 

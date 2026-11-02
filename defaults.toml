@@ -616,6 +616,13 @@ ignore_dirs = [
 # One compact public MCP surface; Serena stay behind it by default.
 compact_max_text_chars = 6000
 compact_max_evidence = 16
+# MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
+# foreground tool should need an unbounded multi-hour socket wait.
+quick_timeout_seconds = 180
+context_timeout_seconds = 600
+model_timeout_seconds = 600
+long_timeout_seconds = 600
+host_tool_timeout_seconds = 900
 
 [mcp.response_budget]
 # Aggregate agent-facing budgets are enforced after semantic projection. Exact
@@ -626,13 +633,6 @@ max_tokens = 16000
 reuse_cache_size = 256
 ledger_size = 512
 tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 3200, local_ai_rag = 3000, local_ai_coord = 3200, local_ai_artifact = 4000, local_ai_work = 4000 }
-# MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
-# foreground tool should need an unbounded multi-hour socket wait.
-quick_timeout_seconds = 180
-context_timeout_seconds = 600
-model_timeout_seconds = 1800
-long_timeout_seconds = 2400
-host_tool_timeout_seconds = 2400
 
 [workflow]
 direct_repo_context_tokens = 3000

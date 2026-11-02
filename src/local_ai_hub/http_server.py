@@ -591,6 +591,10 @@ def _token_matches(supplied: str, expected: str) -> bool:
 
 
 def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    cached = getattr(_redact_config_secrets, "_cached", None)
+    config_stamp = (id(config), len(config), tuple(sorted(config.keys())))
+    if cached is not None and cached[0] == config_stamp:
+        return dict(cached[1])
     view = json.loads(json_dumps(config, default=str))
     if "_config_path" in view:
         view["_config_path"] = _safe_config_file_label(view["_config_path"])
@@ -613,6 +617,7 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
         security["action_tokens"] = "***configured***"
     if "users" in security:
         raise ValueError("security.users was removed; configuration projection requires canonical settings")
+    _redact_config_secrets._cached = (config_stamp, view)
     return view
 
 
@@ -1346,7 +1351,7 @@ _AGENT_TASK_ACTIONS = frozenset({
     "cleanup_worktree", "reap_expired", "curate_dataset", "budget_increase",
     "claim", "adopt", "repair_session",
 })
-_AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export", "native_receipt"})
+_AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export", "native_receipt", "project_command"})
 _AGENT_BLACKBOARD_RETIRED_FIELDS = frozenset({"key", "value", "approver", "sections", "record"})
 
 
@@ -1395,6 +1400,14 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
         self._rate_window: deque[float] = deque()
         self._rate_lock = threading.Lock()
         super().__init__(server_address, handler)
+
+    def get_request(self) -> tuple[Any, Any]:
+        sock, addr = super().get_request()
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except (OSError, AttributeError):
+            pass
+        return sock, addr
 
     def server_bind(self) -> None:
         host = str(self.server_address[0]) if isinstance(self.server_address, tuple) else ""
@@ -2584,7 +2597,35 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _agent(self) -> str:
+        if self._opencode_profile_credential():
+            return "opencode-local"
         return self.headers.get("X-LocalAI-Agent") or "generic"
+
+    def _opencode_profile_credential(self) -> bool:
+        from .opencode_boundary import derive_local_profile_token
+
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        supplied = self.headers.get("X-LocalAI-Token", "")
+        auth = self.headers.get("Authorization", "")
+        if isinstance(auth, str) and auth.lower().startswith("bearer "):
+            supplied = auth[7:].strip()
+        if not isinstance(supplied, str):
+            return False
+        pieces = supplied.split(".")
+        if len(pieces) != 3 or pieces[0] != "lahoc1":
+            return False
+        nonce = pieces[1]
+        expected = derive_local_profile_token(security.get("api_token", ""), nonce) if isinstance(security, dict) else None
+        if not expected or not _token_matches(supplied, expected):
+            return False
+        try:
+            provider = getattr(APP, "opencode_provider", None)
+            status = provider.status() if provider is not None else None
+        except Exception:
+            return False
+        return bool(isinstance(status, dict) and status.get("success") is True and status.get("state") == "running"
+                    and status.get("nonce") == nonce)
 
     def _authorization_permission(self) -> str:
         path = urlparse(str(getattr(self, "path", ""))).path
@@ -2656,13 +2697,21 @@ class Handler(BaseHTTPRequestHandler):
         if auth.lower().startswith("bearer "):
             supplied = auth[7:].strip()
         global_valid = _token_matches(supplied, expected)
+        profile_valid = self._opencode_profile_credential()
         supervisor_valid = _token_matches(supplied, supervisor_token)
         scoped = str(action_tokens.get(action, "")) if action else ""
         scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
-        matching_credentials = int(global_valid) + int(supervisor_valid) + int(scoped_valid)
+        matching_credentials = int(global_valid) + int(profile_valid) + int(supervisor_valid) + int(scoped_valid)
         if matching_credentials > 1:
             return False
         local_client = _is_loopback_client_address(getattr(self, "client_address", None))
+        if profile_valid:
+            path = urlparse(str(getattr(self, "path", ""))).path
+            method = str(getattr(self, "command", "GET")).upper()
+            admission_path = str(getattr(self, "path", "")) if path == "/api/live/status" else path
+            if not local_client or path.startswith("/api/opencode/provider/") or not _opencode_path_allowed("opencode-local", method, admission_path):
+                self._authorization_status = 403
+                return False
         if supervisor_valid:
             self._authorization_actor = "supervisor"
             self._authorization_permissions = frozenset({"admin:read", "admin:write"})
@@ -2683,7 +2732,7 @@ class Handler(BaseHTTPRequestHandler):
             self._authorization_permissions = frozenset({str(action)})
             self._authorization_status = 200
             return True
-        if global_valid:
+        if global_valid or profile_valid:
             grants = security.get("api_token_permissions", ["monitor", "read", "write", "admin"])
             allowed = {
                 "monitor": {"monitor", "read", "write", "admin"},
@@ -3040,6 +3089,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestBodyError("unknown task action")
             if path == "/api/agent-state/verification" and action not in _AGENT_VERIFICATION_ACTIONS:
                 raise RequestBodyError("unknown verification action")
+            if path == "/api/agent-state/verification" and action == "project_command":
+                if set(payload) != {"action", "root", "task_id", "session_id", "alias"}:
+                    raise RequestBodyError("project_command requires exactly root, task_id, session_id and alias")
+                for field in ("root", "task_id", "session_id", "alias"):
+                    required_text(field, maximum=4096 if field == "root" else 256)
             if path == "/api/agent-state/verification" and action == "completion" and "repository_revision" in payload:
                 revision = payload["repository_revision"]
                 if (
@@ -4133,7 +4187,8 @@ class Handler(BaseHTTPRequestHandler):
         self._handler_execution_started = time.perf_counter()
         parsed = urlparse(self.path)
         path = parsed.path
-        if not _opencode_path_allowed(self._agent(), "GET", path):
+        admission_path = self.path if path == "/api/live/status" else path
+        if not _opencode_path_allowed(self._agent(), "GET", admission_path):
             self._send(403, {"success": False, "error_code": "opencode_local_route_denied", "error": "route unavailable for opencode-local", "terminal": True, "retryable": False})
             return
         if not self._reject_identity_fields(query_params := parse_qs(parsed.query, keep_blank_values=True)):
@@ -5994,6 +6049,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/agent-state/verification" and not self._bind_task_payload(payload):
             return
+        if path == "/api/agent-state/verification" and payload.get("action") == "project_command":
+            request_id = self.headers.get("X-LocalAI-Request-ID", "")
+            if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
+                self._send(400, {"success": False, "error": "project_command requires a 32-character request id", "terminal": True, "retryable": False}); return
+            if not self._opencode_profile_credential():
+                self._send(403, {"success": False, "error_code": "opencode_profile_required", "terminal": True, "retryable": False}); return
+            recovery = getattr(APP, "recovery", None)
+            if not isinstance(recovery, RecoveryJournal):
+                self._send(503, {"success": False, "error_code": "request_journal_unavailable", "terminal": True, "retryable": False}); return
         if path == "/api/agent-state/incidents" and not self._bind_incident_payload(payload):
             return
         if path in {
@@ -6041,7 +6105,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/agent-state/verification":
             action = payload.get("action", "")
-            if action in {"receipt", "completion"}:
+            if action in {"receipt", "completion", "project_command"}:
                 receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
                 request_task_id = str(payload.get("task_id", "") or "").strip()
                 receipt_task_id = str(receipt.get("task_id", "") or "").strip()
@@ -7284,6 +7348,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "agent_verification", None) or not APP.agent_verification.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = payload.get("action", "")
+                if action == "project_command":
+                    from .opencode_verification import run_goal_project_verification
+
+                    result = run_goal_project_verification(
+                        APP.agent_tasks, APP.commands, root=payload["root"], task_id=payload["task_id"],
+                        session_id=payload["session_id"], alias=payload["alias"],
+                    )
+                    self._send(200, result); return
                 if action == "receipt":
                     rcpt_data = payload.get("receipt")
                     if not isinstance(rcpt_data, dict):

@@ -1086,21 +1086,20 @@ class TelemetryStore:
 
     def realtime_summary(self, *, scope: str = "process", light: bool = False) -> dict[str, Any]:
         with self._live_lock:
-            events = [dict(e) for e in self._live_events]
-        inference = [e for e in events if e.get("event_type") == "inference"]
-
-        # Only real application requests are published as request_start. Monitoring
-        # endpoints are excluded by the HTTP server/config and can never inflate this.
-        started: dict[str, dict[str, Any]] = {}
-        finished: set[str] = set()
-        for event in events:
-            request_id = str(event.get("request_id") or "")
-            if not request_id:
-                continue
-            if event.get("event_type") == "request_start":
-                started[request_id] = event
-            elif event.get("event_type") == "http":
-                finished.add(request_id)
+            window_events = len(self._live_events)
+            inference_count = 0
+            started: dict[str, dict[str, Any]] = {}
+            finished: set[str] = set()
+            for event in self._live_events:
+                if event.get("event_type") == "inference":
+                    inference_count += 1
+                request_id = str(event.get("request_id") or "")
+                if not request_id:
+                    continue
+                if event.get("event_type") == "request_start":
+                    started[request_id] = event
+                elif event.get("event_type") == "http":
+                    finished.add(request_id)
         now_wall = time.time()
         active_requests = []
         for request_id, event in started.items():
@@ -1124,8 +1123,8 @@ class TelemetryStore:
             "summary_cache_stale": bool(history.get("summary_cache_stale", False)),
             "scope": str(history.get("scope", scope) or scope),
             "process_started_at": history.get("process_started_at") if scope == "process" else None,
-            "window_events": len(events), "live_inference_events": len(inference),
-            "inference_events": int(history.get("events", len(inference)) or 0),
+            "window_events": window_events, "live_inference_events": inference_count,
+            "inference_events": int(history.get("events", inference_count) or 0),
             "cache_hits": int(history.get("cache_hits", 0) or 0),
             "cache_hit_rate": float(history.get("cache_hit_rate", 0.0) or 0.0),
             "generation_cache_hits": int(history.get("generation_cache_hits", history.get("cache_hits", 0)) or 0),
@@ -2056,7 +2055,7 @@ class TelemetryStore:
             refreshed["decision_grade"] = decision_grade
         return refreshed
 
-    def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True) -> dict[str, Any]:
+    def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True, session_limit: int = 10) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False}
         now = time.monotonic()
@@ -2365,7 +2364,7 @@ class TelemetryStore:
             "preprocessed_query_hits": prep_hits,
             "preprocessed_query_events": prep_events,
             "preprocessed_query_hit_rate": prep_hit_rate,
-            "sessions": self.sessions(days=int(days), limit=20),
+            "sessions": self.sessions(days=int(days), limit=max(1, min(int(session_limit), 20))),
             "cache_domains": cache_domains,
             "http_outcomes": http_outcomes,
             "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),

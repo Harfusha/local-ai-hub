@@ -348,6 +348,97 @@ def test_cancelled_scheduler_worker_without_cleanup_is_outcome_unknown():
     assert result.get("cancelled") is not True
 
 
+def test_generation_failure_retains_last_actual_scheduler_admission():
+    services = _offline_services()
+    services.runtime = type("OnlineRuntime", (), {"is_online": lambda self: True})()
+    class RejectingScheduler:
+        def __init__(self):
+            self.models = []
+        def submit(self, model, *_args, **_kwargs):
+            self.models.append(model)
+            raise QueueFullError("insufficient VRAM for model admission", admission={
+                "state": "rejected", "reason": "vram_budget", "retryable": True})
+    services.scheduler = RejectingScheduler()
+    result = services._generate("fast", "bounded request", "", 64, 0.0,
+                                source="second-opinion", priority=5)
+    assert result["success"] is False
+    assert result["last_admission_state"] == "rejected"
+    assert result["last_admission_reason"] == "vram_budget"
+    assert result["last_admission_model"] == services.scheduler.models[-1]
+
+
+def test_generation_does_not_invent_scheduler_admission():
+    services = _offline_services()
+    services.runtime = type("OnlineRuntime", (), {"is_online": lambda self: True})()
+    class BrokenScheduler:
+        def submit(self, *_args, **_kwargs):
+            raise RuntimeError("transport unavailable")
+    services.scheduler = BrokenScheduler()
+    result = services._generate("fast", "bounded request", "", 64, 0.0,
+                                source="second-opinion", priority=5)
+    assert result["success"] is False
+    assert not any(key.startswith("last_admission_") for key in result)
+
+
+def test_model_length_stop_is_partial_not_success_or_retry():
+    from contextlib import nullcontext
+    services = _offline_services()
+    calls = []
+    class Runtime:
+        def is_online(self): return True
+        def request(self, *_args, **_kwargs):
+            calls.append("request")
+            return {"response": "A partial answer", "done": True, "done_reason": "length"}
+    class Scheduler:
+        def submit(self, _model, *, execute, **_kwargs): return execute()
+    services.runtime = Runtime()
+    services.scheduler = Scheduler()
+    services.inference_admission = lambda _action: nullcontext(None)
+    result = services._generate("fast", "bounded request", "", 64, 0.0,
+                                source="delegate:general", priority=5)
+    assert result["success"] is False and result["output_truncated"] is True
+    assert result["stop_reason"] == "length" and result["text"] == "A partial answer"
+    assert result["terminal"] is True and result["retryable"] is False
+    assert result["_lah_backend_completed"] is True
+    assert result["_cacheable"] is False and calls == ["request"]
+
+
+@pytest.mark.parametrize("reason", ["stop", None])
+def test_model_normal_or_unreported_stop_does_not_invent_truncation(reason):
+    from contextlib import nullcontext
+    services = _offline_services()
+    class Runtime:
+        def is_online(self): return True
+        def request(self, *_args, **_kwargs):
+            return {"response": "Complete answer.", **({"done_reason": reason} if reason else {})}
+    class Scheduler:
+        def submit(self, _model, *, execute, **_kwargs): return execute()
+    services.runtime = Runtime()
+    services.scheduler = Scheduler()
+    services.inference_admission = lambda _action: nullcontext(None)
+    result = services._generate("fast", "bounded request", "", 64, 0.0,
+                                source="delegate:general", priority=5)
+    assert result["success"] is True and result.get("output_truncated") is not True
+
+
+@pytest.mark.parametrize("done", [None, False, 1, "true"])
+def test_length_without_boolean_completion_does_not_claim_backend_completed(done):
+    from contextlib import nullcontext
+    services = _offline_services()
+    class Runtime:
+        def is_online(self): return True
+        def request(self, *_args, **_kwargs): return {"response": "partial", "done_reason": "length", "done": done}
+    class Scheduler:
+        def submit(self, _model, *, execute, **_kwargs): return execute()
+    services.runtime = Runtime()
+    services.scheduler = Scheduler()
+    services.inference_admission = lambda _action: nullcontext(None)
+    result = services._generate("fast", "bounded request", "", 64, 0.0,
+                                source="delegate:general", priority=5)
+    assert result["success"] is False and result["output_truncated"] is True
+    assert result.get("_lah_backend_completed") is not True
+
+
 def test_generate_exposes_retryable_scheduler_timeout_metadata() -> None:
     services = _offline_services()
     services.runtime = type("OnlineRuntime", (), {"is_online": lambda self: True})()
@@ -438,6 +529,13 @@ def _scheduler_harness(*, max_queue: int = 4) -> AffinityScheduler:
     scheduler._foreground_preempt_hook = None
     scheduler._foreground_preempting = False
     scheduler._background_gpu_lease = False
+    scheduler._external_gpu_path = None
+    scheduler._external_gpu_token = None
+    scheduler._external_gpu_owned = False
+    scheduler._internal_gpu_digest = None
+    scheduler._internal_gpu_uncertain = False
+    scheduler._gpu_prepare_in_progress = False
+    scheduler._switch_not_started = False
     scheduler._foreground_generation = 0
     scheduler._last_foreground_activity = time.monotonic()
     scheduler._active_model = "model"

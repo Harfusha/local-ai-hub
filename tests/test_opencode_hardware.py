@@ -20,6 +20,17 @@ def test_auto_profiles_use_dedicated_gpu_memory_and_do_not_claim_admission():
     assert sixteen["reason"] == "runtime_validation_required"
 
 
+def test_nominal_5070_ti_capacity_remains_an_unverified_16gb_candidate():
+    result = inspect_opencode_hardware({"gpus": [gpu(16303, name="NVIDIA GeForce RTX 5070 Ti")]})
+    assert result["profile"] == "16gb"
+    assert result["candidates"][0] == "qwen2.5-coder:14b"
+    assert result["admission"] == "unverified" and result["runtime_verified"] is False
+    assert inspect_opencode_hardware({"gpus": [gpu(16255)]})["profile"] == "12gb"
+    assert inspect_opencode_hardware({"gpus": [gpu(12255)]})["profile"] == "unsupported"
+    with pytest.raises(ValueError):
+        inspect_opencode_hardware({"gpus": [gpu(16255)]}, requested="16gb")
+
+
 def test_insufficient_unknown_and_integrated_gpus_fail_closed():
     for hardware in ({}, {"gpus": [gpu(8192)]}, {"gpus": [gpu(16376, integrated=True)]}, {"gpus": [gpu("16376")]}, {"gpus": [gpu(True)]}, {"gpus": [gpu(16376, vendor="unknown")]}, {"gpus": [gpu(16376, vendor=[])]}):
         assert inspect_opencode_hardware(hardware)["profile"] == "unsupported"

@@ -1269,7 +1269,7 @@ class LocalAIServices:
         elif semantic_query:
             semantic_query = normalize_query(semantic_query)
 
-        execution_scope = {**execution_profile.cache_scope(), "stream_completion_contract": 2}
+        execution_scope = {**execution_profile.cache_scope(), "stream_completion_contract": 3}
         norm_context_fp = stable_hash(normalize_context_for_hash(semantic_context_fingerprint)) if semantic_context_fingerprint else "no-context"
         cache_key = generation_cache_key(
             model=model,
@@ -1526,6 +1526,14 @@ class LocalAIServices:
                     raw_text = response.get("response", "")
                     clean_text, parsed_thinking = postprocess_model_output(raw_text, role=role)
                     thinking = response.get("thinking") or parsed_thinking
+                    if response.get("done_reason") == "length":
+                        return {"success": False, "error": "local model output reached its token limit",
+                                "error_code": "model_output_truncated", "model": candidate_model,
+                                "requested_model": requested_model, "text": clean_text,
+                                "output_truncated": True, "stop_reason": "length",
+                                "final_response_produced": bool(clean_text.strip()), "final_response_status": "truncated",
+                                "terminal": True, "retryable": False, "_cacheable": False,
+                                **({"_lah_backend_completed": True} if response.get("done") is True else {})}
                     return {
                         "success": True, "model": candidate_model, "requested_model": requested_model,
                         "text": clean_text, "thinking": thinking,
@@ -1602,6 +1610,11 @@ class LocalAIServices:
                 if mode_pause_result is not None:
                     return mode_pause_result
                 retryable_error = retryable_error or bool(result.get("retryable", False))
+                if result.get("output_truncated") is True:
+                    self.breakers.success(breaker_key)
+                    self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate,
+                                                success=False, degraded=index > 0, error_type="model_output_truncated")
+                    return result
                 if result.get("success"):
                     self.breakers.success(breaker_key)
                     if candidate != requested_model:
@@ -1628,10 +1641,12 @@ class LocalAIServices:
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
                 self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")
                 attempt_failures.append({
+                    "model": candidate,
                     "error": attempt_error,
                     "error_type": str(result.get("error_type", "")),
                     "error_code": str(result.get("error_code", "")),
                     "retryable": bool(result.get("retryable", True)),
+                    "admission": result.get("admission") if isinstance(result.get("admission"), dict) else {},
                 })
                 errors.append(f"{candidate}: {attempt_error}")
                 if timeout_error:
@@ -1656,6 +1671,13 @@ class LocalAIServices:
             if attempt_failures:
                 failure["error_type"] = attempt_failures[-1]["error_type"]
                 failure["error_code"] = attempt_failures[-1]["error_code"]
+                last_admission = attempt_failures[-1].get("admission", {})
+                for key in ("state", "reason"):
+                    value = last_admission.get(key)
+                    if isinstance(value, str) and value and len(value) <= 80 and all(c.isalnum() or c == "_" for c in value):
+                        failure[f"last_admission_{key}"] = value
+                if "last_admission_state" in failure or "last_admission_reason" in failure:
+                    failure["last_admission_model"] = attempt_failures[-1]["model"]
             if retryable_error:
                 failure.update({"terminal": False, "retryable": True})
             if timeout_error:
@@ -2282,6 +2304,10 @@ class LocalAIServices:
             "reasoning",
             str(args.get("complexity", "auto")),
         )
+        try:
+            route = self.router.apply_model_override(route, str(args.get("model", "")))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         model = str(route["model"])
         package = build_prompt(
             operation="second_opinion",
@@ -3016,6 +3042,22 @@ class LocalAIServices:
 
         return {"success": True, "model": model, "backend": backend, "embeddings": vectors}
 
+    def _context_evidence_current(self, value: Any) -> bool:
+        if not isinstance(value, dict) or value.get("success") is False:
+            return True
+        evidence = value.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            return True
+        validate = getattr(getattr(self, "evidence_store", None), "validate_current", None)
+        if not callable(validate) or len(evidence) > 64:
+            return False
+        try:
+            return all(isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
+                       and bool(item["evidence_id"]) and validate(item["evidence_id"]) is True
+                       for item in evidence)
+        except Exception:
+            return False
+
     def _repo_cached(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
         # coalesced background computation. Treat that as a stale input, not a hub 500.
@@ -3046,6 +3088,16 @@ class LocalAIServices:
                 cache_reason = state.get("degraded_reason")
         except (FileNotFoundError, ValueError) as exc:
             return {"success": False, "stale_root": True, "error": str(exc), "error_type": type(exc).__name__, "operation": operation}
+        if operation in {"hybrid-context", "deterministic-context"} and not self._context_evidence_current(raw):
+            if hit or coalesced:
+                raw = compute()
+                hit = coalesced = False
+                cache_degraded = True
+                cache_reason = "stale_context_evidence"
+            if not self._context_evidence_current(raw):
+                return {"success": False, "terminal": True, "retryable": False, "stale": True,
+                        "root": root, "operation": operation,
+                        "error": "context source evidence is stale or cannot be verified"}
         if isinstance(raw, dict):
             result = copy.deepcopy(raw)
         elif raw is not None:
@@ -8469,7 +8521,7 @@ class LocalAIServices:
                     results[i] = {"success": False, "cancelled": True, "reason": "cancelled", "request_not_sent": True}
                     if isinstance(tasks[i], dict) and "id" in tasks[i]:
                         results[i]["id"] = tasks[i]["id"]
-        return {
+        batch_result = {
             "success": not was_cancelled and all(r["success"] is True for r in results.values()),
             **({"cancelled": True} if was_cancelled else {}),
             "input_count": input_count,
@@ -8478,6 +8530,35 @@ class LocalAIServices:
             "rejected_indices": [],
             "results": [results[i] for i in range(input_count)],
         }
+        response_limit = args.get("response_budget_tokens")
+        if type(response_limit) is int and response_limit >= 128:
+            from .agent_diagnostics import project_agent_response
+            from .token_accounting import json_tokens
+
+            # Artifacts can outlive the diagnostics toggle. Store only the
+            # normally visible projection, even if diagnostics are enabled now.
+            try:
+                safe_result = project_agent_response(batch_result, enabled=False)
+                item_fields = {
+                    "id", "success", "text", "result", "output", "error", "status", "status_code",
+                    "terminal", "retryable", "request_not_sent", "outcome_unknown", "in_progress",
+                    "cancelled", "timed_out", "partial", "degraded", "stale", "unsupported",
+                    "fallback_used", "warning", "warnings", "artifact_id", "output_artifact_id",
+                    "evidence_id", "evidence_ids", "request_id", "job_id", "context_id", "next_action",
+                }
+                safe_result["results"] = [
+                    {key: value for key, value in item.items() if key in item_fields}
+                    for item in safe_result["results"]
+                ]
+                if json_tokens(safe_result) * 2 + 256 > response_limit:
+                    batch_result["output_artifact_id"] = self.artifacts.put_json(
+                        safe_result, kind="batch-result",
+                    )
+            except Exception:
+                # The actual batch outcome remains authoritative; MCP must
+                # fail closed if it cannot deliver or recover those items.
+                batch_result["output_artifact_unavailable"] = True
+        return batch_result
 
     def optimize_databases(self) -> dict[str, Any]:
         """Checkpoint WAL files and run SQLite's optimize pragma for each store."""

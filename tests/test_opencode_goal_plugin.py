@@ -4,13 +4,382 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_goal_verification_transport_binds_request_and_session():
+    script = r'''
+import assert from "node:assert/strict";
+import {runProjectCommand} from "./tools/opencode_goal/transport.js";
+let sent;
+const result=await runProjectCommand({root:"C:/repo",taskId:"task",criteria:["test"]},"session","test","a".repeat(32),
+ {baseURL:"http://127.0.0.1:11435",token:"scoped",fetchImpl:async(url,opts)=>{
+  sent={url,opts};return new Response(JSON.stringify({success:true,verification_receipt:{evidence_id:"e"}}));
+ }});
+assert.equal(result.verification_receipt.evidence_id,"e");
+assert.equal(sent.opts.headers["X-LocalAI-Request-ID"],"a".repeat(32));
+assert.equal(sent.opts.headers["X-LocalAI-Token"],"scoped");
+assert.deepEqual(JSON.parse(sent.opts.body),{action:"project_command",root:"C:/repo",task_id:"task",session_id:"session",alias:"test"});
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_verification_tool_requires_shell_permission():
+    script = r'''
+import assert from "node:assert/strict";
+import plugin from "./tools/opencode_goal/index.js";
+let tool, requested, writes=0;
+const ctx={options:{hubURL:"http://127.0.0.1:11435"},
+ command:{transform:async f=>f({add:()=>{}})},tool:{transform:async f=>f({add:t=>{tool=t}})},
+ permission:{assert:async p=>{requested=p;throw new Error("denied")}},
+ storage:{get:async()=>null,set:async()=>{writes++}},
+ event:{subscribe:async function*(){await new Promise(()=>{})}}};
+const stop=await plugin.setup(ctx);
+assert.equal(tool.name,"goal_verify");
+await assert.rejects(tool.execute({alias:"test"},{sessionID:"s",agent:"reviewer",messageID:"m",id:"i"}),/denied/);
+assert.equal(requested.action,"shell");assert.equal(requested.sessionID,"s");assert.equal(writes,0);
+stop();
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_goal_verification_records_intent_and_blocks_uncertain_repeat():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const db=new Map(), calls=[];
+const initial={root:"C:/repo",taskId:"task",epoch:"epoch",status:"CONTINUE",goal:"Fix",criteria:["pytest"]};
+db.set("goal:s",initial);
+const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({id:"s",location:{directory:"C:/repo"}})}};
+const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),
+ runProjectCommandImpl:async(state,id,alias,requestId)=>{
+  calls.push({state,id,alias,requestId});
+  assert.equal(db.get("goal-verify:s").status,"pending");
+  return {success:false,outcome_unknown:true};
+ }});
+const result=await c.verifyProject("s","pytest");
+assert.equal(result.outcome_unknown,true);
+assert.match(calls[0].requestId,/^[a-f0-9]{32}$/);
+assert.equal(calls[0].state.taskId,"task");
+assert.equal(calls[0].id,"s");
+assert.equal((await c.verifyProject("s","pytest")).outcome_unknown,true);
+assert.equal(calls.length,1);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_pause_during_goal_verification_preserves_uncertainty():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const db=new Map([["goal:s",{root:"C:/repo",taskId:"task",epoch:"e",status:"CONTINUE",goal:"Fix",criteria:["test"]}]]);
+let started,release;const ready=new Promise(r=>started=r),wait=new Promise(r=>release=r);
+const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({location:{directory:"C:/repo"}})}};
+const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),
+ runProjectCommandImpl:async()=>{started();await wait;return {success:true}}});
+const call=c.verifyProject("s","test");await ready;await c.pause("s");release();
+assert.equal((await call).outcome_unknown,true);
+assert.equal((await c.status("s")).status,"PAUSED");
+assert.equal((await c.status("s")).outcomeUnknown,true);
+assert.equal(db.get("goal-verify:s").status,"pending");
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_cancelled_tool_keeps_verification_outcome_unknown():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const db=new Map([["goal:s",{root:"C:/repo",taskId:"task",epoch:"e",status:"CONTINUE",goal:"Fix",criteria:["test"]}]]);
+let started;const ready=new Promise(r=>started=r),abort=new AbortController();
+const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({location:{directory:"C:/repo"}})}};
+const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),
+ runProjectCommandImpl:async(_state,_id,_alias,_request,options)=>{started();await new Promise(r=>options.signal.addEventListener("abort",r,{once:true}));return {success:true}}});
+const call=c.verifyProject("s","test",abort.signal);await ready;abort.abort();
+assert.equal((await call).outcome_unknown,true);
+assert.equal(db.get("goal-verify:s").status,"pending");
+assert.equal((await c.verifyProject("s","test")).outcome_unknown,true);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_prompt_recovery_requires_matching_terminal_history_and_binding():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+for (const variant of ["valid","missing","wrong-text","foreign-user","unfinished","binding","busy","wrong-session","duplicate","failed","failed-first","interrupted-first","multiple-idles"]) {
+ const db=new Map();let submitted, calls=0, bound=true;
+ const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+  session:{get:async()=>({id:variant==="wrong-session"?"other":"s",location:{directory:"C:/repo"},
+   outcome:variant==="failed"?"failed":"succeeded",time:{busy:variant==="busy"?3:1,idle:2}}),
+   prompt:async p=>{calls++;submitted=p},context:async()=>{
+    if(variant==="missing")return [];
+    const msg={id:submitted.id,type:"user",text:variant==="wrong-text"?"different":submitted.text};
+    return [msg,...(variant==="duplicate"?[msg]:[]),...(variant==="foreign-user"?[{id:"foreign",type:"user",text:"other"}]:[]),
+     ...(["failed-first","interrupted-first","multiple-idles"].includes(variant)?[{id:"earlier-idle",type:"idle",outcome:variant==="failed-first"?"failed":variant==="interrupted-first"?"interrupted":"succeeded"}]:[]),
+     ...(variant==="unfinished"?[]:[{id:"idle-1",type:"idle",outcome:"succeeded"}])];
+   }}};
+ const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:bound})});
+ await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+ if(variant==="binding") bound=false;
+ const state=await c.resume("s");
+ assert.equal(state.status,variant==="valid"?"PAUSED":"BLOCKED",variant);
+ assert.equal(calls,1,variant);
+ if(variant==="valid")assert.equal(state.pendingOperation,undefined);
+}
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_pause_wins_during_prompt_history_recovery():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+let entered,release,submitted,calls=0;const started=new Promise(r=>entered=r),pending=new Promise(r=>release=r),db=new Map();
+const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({id:"s",location:{directory:"C:/repo"},outcome:"succeeded",time:{busy:1,idle:2}}),
+  prompt:async p=>{calls++;submitted=p},context:async()=>{entered();await pending;return [
+   {id:submitted.id,type:"user",text:submitted.text},{id:"idle-1",type:"idle",outcome:"succeeded"}]}}};
+const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+const recovery=c.resume("s");await started;await c.pause("s");release();await recovery;
+const state=await c.status("s");assert.equal(state.status,"PAUSED");
+assert.equal(state.pendingOperation,"prompt_admission");assert.equal(state.outcomeUnknown,true);assert.equal(calls,1);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_prompt_admission_requires_exact_acknowledgement():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+for (const variant of ["missing", "wrong-id", "wrong-session", "wrong-text", "valid"]) {
+ const db=new Map();
+ const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+  session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{
+   if(variant==="missing")return undefined;
+   return {id:variant==="wrong-id"?"msg_wrong":p.id,sessionID:variant==="wrong-session"?"other":p.sessionID,type:"user",
+    payload:{text:variant==="wrong-text"?"different prompt":p.text}};
+  }}};
+ const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+ await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+ const state=await c.status("s");
+ assert.equal(state.status,variant==="valid"?"CONTINUE":"BLOCKED",variant);
+ if(variant!=="valid") {assert.equal(state.outcomeUnknown,true);assert.equal(state.pendingOperation,"prompt_admission")}
+}
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_completed_task_recovery_requires_exact_binding_and_fresh_receipts():
+    script = r'''
+import assert from "node:assert/strict";
+import {getCompletedTask} from "./tools/opencode_goal/transport.js";
+const state={goal:"Fix",taskId:"t",root:"C:/repo",criteria:["pytest"]};
+const task={task_id:"t",status:"completed",owner:"opencode-local",context:{session_id:"s"},
+ contract:{goal:"Fix",acceptance_criteria:["pytest"]},checkpoint:{state_data:{_agent_task_scope:{version:2,repo_root:"C:/repo"}}}};
+let current=structuredClone(task), stale=false, calls=[];
+const options={baseURL:"http://127.0.0.1:11435",fetchImpl:async(url,req)=>{
+ calls.push([url,JSON.parse(req.body)]);
+ if(url.endsWith("/tasks"))return new Response(JSON.stringify({success:true,task:current}),{status:200});
+ return new Response(JSON.stringify({success:true,completion:{task_id:"t",complete:!stale,
+ satisfied_criteria:stale?[]:["pytest"],unsatisfied_criteria:[],stale_criteria:stale?["pytest"]:[]}}),{status:200});
+}};
+assert.equal((await getCompletedTask(state,"s",options)).success,true);
+assert.deepEqual(calls.map(item=>item[1].action),["get","completion"]);
+stale=true; assert.equal((await getCompletedTask(state,"s",options)).success,false);
+stale=false; current={...task,owner:"other"};
+assert.equal((await getCompletedTask(state,"s",options)).success,false);
+current={...task,status:"active"};
+assert.equal((await getCompletedTask(state,"s",options)).success,false);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_resume_reconciles_only_confirmed_completed_task():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const db=new Map();let confirmed=false,prompts=0;
+const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts++;return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
+const task={task_id:"t",status:"completed",contract:{acceptance_criteria:["pytest"]}};
+const options={resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),
+ getCompletedTaskImpl:async()=>confirmed?{success:true,task}:{success:false}};
+const controller=makeGoalController(ctx,options);
+await controller.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+const initial=await controller.status("s");
+db.set("goal:s",{...initial,status:"BLOCKED",pendingOperation:"task_complete",pendingEventId:"event-1",outcomeUnknown:true});
+await controller.resume("s");
+assert.equal((await controller.status("s")).status,"BLOCKED");
+confirmed=true;
+const recovered=await controller.resume("s");
+assert.equal(recovered.status,"DONE");
+assert.deepEqual(recovered.eventIds,["event-1"]);
+assert.equal(recovered.pendingOperation,undefined);
+assert.equal(prompts,1);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_pause_wins_during_completed_task_reconciliation():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+let entered, release; const started=new Promise(r=>entered=r), pending=new Promise(r=>release=r), db=new Map();
+const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>({id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}})}};
+const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),
+ getCompletedTaskImpl:async()=>{entered();await pending;return {success:true,task:{task_id:"t",status:"completed",contract:{acceptance_criteria:["pytest"]}}}}});
+await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+const initial=await c.status("s");
+db.set("goal:s",{...initial,status:"BLOCKED",pendingOperation:"task_complete",pendingEventId:"event-1",outcomeUnknown:true});
+const recovering=c.resume("s");await started;await c.pause("s");release();await recovering;
+const state=await c.status("s");assert.equal(state.status,"PAUSED");assert.equal(state.outcomeUnknown,true);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_task_completion_waits_for_recorded_intent():
+    script = r'''
+import assert from "node:assert/strict";
+import {completeTask} from "./tools/opencode_goal/transport.js";
+let entered, release, requests=[];
+const started=new Promise(r=>entered=r), pending=new Promise(r=>release=r);
+const state={goal:"Fix",taskId:"t",root:"C:/repo",criteria:["pytest"]};
+const options={baseURL:"http://127.0.0.1:11435",sessionId:"s",onMutationStart:async()=>{entered();return await pending},
+ fetchImpl:async url=>{requests.push(url);return new Response(JSON.stringify({success:true,completion:{task_id:"t",complete:true,
+ satisfied_criteria:["pytest"],unsatisfied_criteria:[],stale_criteria:[]}}),{status:200})}};
+const completing=completeTask(state,options);
+await started;
+assert.equal(requests.length,1);
+release(false);
+const result=await completing;
+assert.equal(result.success,false);
+assert.equal(result.outcome_unknown,false);
+assert.equal(requests.length,1);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_process_exit_during_task_completion_preserves_unknown_mutation(tmp_path):
+    storage_path = tmp_path / "goal.json"
+    prelude = r'''
+import assert from "node:assert/strict";
+import {readFile,writeFile} from "node:fs/promises";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const path=process.argv[1];
+const storage={get:async()=>{try{return JSON.parse(await readFile(path,"utf8"))}catch(e){if(e.code==="ENOENT")return undefined;throw e}},
+ set:async(_k,v)=>writeFile(path,JSON.stringify(v))};
+'''
+    first = prelude + r'''
+const ctx={storage,session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>({id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}})}};
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),
+ completeTaskImpl:async(_state,options)=>{assert.equal(await options.onMutationStart(),true);process.exit(19)}});
+await controller.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+await controller.settle({id:"event",type:"session.execution.succeeded",data:{sessionID:"s"}});
+'''
+    second = prelude + r'''
+let prompts=0;
+const ctx={storage,session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts++;return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+const state=await controller.resume("s");
+assert.equal(state.status,"BLOCKED");
+assert.equal(state.pendingOperation,"task_complete");
+assert.equal(state.outcomeUnknown,true);
+assert.equal(prompts,0);
+'''
+    first_result = subprocess.run(["node", "--input-type=module", "-e", first, str(storage_path)], cwd=ROOT,
+                                  capture_output=True, text=True, timeout=20, check=False)
+    assert first_result.returncode == 19, first_result.stderr
+    second_result = subprocess.run(["node", "--input-type=module", "-e", second, str(storage_path)], cwd=ROOT,
+                                   capture_output=True, text=True, timeout=20, check=False)
+    assert second_result.returncode == 0, second_result.stderr
+
+
+def test_process_exit_during_prompt_preserves_unknown_admission(tmp_path):
+    storage_path = tmp_path / "goal.json"
+    prelude = r'''
+import assert from "node:assert/strict";
+import {readFile, writeFile} from "node:fs/promises";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+const path=process.argv[1];
+const storage={get:async()=>{try{return JSON.parse(await readFile(path,"utf8"))}catch(e){if(e.code==="ENOENT")return undefined;throw e}},
+ set:async(_k,v)=>writeFile(path,JSON.stringify(v))};
+'''
+    first = prelude + r'''
+const ctx={storage,session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async()=>process.exit(17)}};
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+await controller.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
+'''
+    second = prelude + r'''
+let prompts=0;
+const ctx={storage,session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts++;return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+const state=await controller.resume("s");
+assert.equal(state.status,"BLOCKED");
+assert.equal(state.pendingOperation,"prompt_admission");
+assert.equal(state.outcomeUnknown,true);
+assert.match(state.pendingPromptId,/^msg_[a-f0-9]{32}$/);
+assert.equal(prompts,0);
+'''
+    first_result = subprocess.run(["node", "--input-type=module", "-e", first, str(storage_path)], cwd=ROOT,
+                                  capture_output=True, text=True, timeout=20, check=False)
+    assert first_result.returncode == 17, first_result.stderr
+    second_result = subprocess.run(["node", "--input-type=module", "-e", second, str(storage_path)], cwd=ROOT,
+                                   capture_output=True, text=True, timeout=20, check=False)
+    assert second_result.returncode == 0, second_result.stderr
+
+
+def test_prompt_intent_is_durable_before_admission_and_cleared_after_confirmation():
+    script = r'''
+import assert from "node:assert/strict";
+import {makeGoalController} from "./tools/opencode_goal/index.js";
+let entered, release, sent;
+const started = new Promise(r => entered = r), pending = new Promise(r => release = r), db = new Map();
+const ctx = {storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async input=>{sent=input;entered();await pending;return {id:input.id,sessionID:input.sessionID,type:"user",payload:{text:input.text}}}}};
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
+const start=controller.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]},"queue");
+await started;
+const recorded=await controller.status("s");
+assert.equal(recorded.status,"BLOCKED");
+assert.equal(recorded.pendingOperation,"prompt_admission");
+assert.equal(recorded.outcomeUnknown,true);
+assert.match(recorded.pendingPromptId,/^msg_[a-f0-9]{32}$/);
+assert.equal(recorded.pendingPromptId,sent.id);
+assert.equal(recorded.pendingDelivery,"queue");
+release(); await start;
+const complete=await controller.status("s");
+assert.equal(complete.status,"CONTINUE");
+assert.equal(complete.pendingOperation,undefined);
+assert.equal(complete.outcomeUnknown,undefined);
+assert.equal(complete.pendingPromptId,undefined);
+assert.equal(complete.pendingDelivery,undefined);
+'''
+    result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+
+
 def test_controllers_in_one_module_do_not_resume_same_goal_twice():
     script = r'''
 import assert from "node:assert/strict";
 import {makeGoalController} from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const options={resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})};
 const first=makeGoalController(ctx,options), second=makeGoalController(ctx,options);
 await first.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
@@ -28,7 +397,7 @@ import assert from "node:assert/strict";
 import {makeGoalController} from "./tools/opencode_goal/index.js";
 let release,entered; const pending=new Promise(r=>release=r),started=new Promise(r=>entered=r),db=new Map(),prompts=[];
 const ctx={storage:{get:async k=>structuredClone(db.get(k)),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p.sessionID)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p.sessionID);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const first=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
 const second=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>{entered();await pending;return {success:true}}});
 await first.start("first",{goal:"Fix",taskId:"a",criteria:["pytest"]});
@@ -47,7 +416,7 @@ import assert from "node:assert/strict";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const first=makeGoalController(ctx,{resolveRoot:async p=>p,createTaskImpl:async()=>({success:false})});
 await assert.rejects(first.start("s",{goal:"Fix",criteria:["pytest"]}));
 const pending=await first.status("s");
@@ -76,7 +445,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 let release, entered;
 const pending=new Promise(r=>release=r), started=new Promise(r=>entered=r), db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const first=makeGoalController(ctx,{resolveRoot:async p=>p,createTaskImpl:async()=>({success:false})});
 await assert.rejects(first.start("s",{goal:"Fix",criteria:["pytest"]}));
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>{entered();await pending;return {success:true}}});
@@ -95,7 +464,7 @@ import assert from "node:assert/strict";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[]; let checkpoint={phase:"editing",state_data:{progress:0}};
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true,task:{checkpoint}}),completeTaskImpl:async()=>({success:false})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 async function turn(n,snapshot="a".repeat(40)) {
@@ -119,7 +488,7 @@ import assert from "node:assert/strict";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map();
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async()=>{}}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>({id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}})}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true,task:{checkpoint:{phase:"work"}}}),completeTaskImpl:async()=>({success:false})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 function step(seq,snapshot="a".repeat(40)){c.observeStep({type:"session.step.ended",data:{sessionID:"s",snapshot},durable:{aggregateID:"s",seq}})}
@@ -140,7 +509,7 @@ import assert from "node:assert/strict";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p),context:async()=>[]}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}},context:async()=>[]}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),completeTaskImpl:async()=>({success:false})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 for(let i=0;i<3;i++) await c.settle({id:String(i),type:"session.execution.succeeded",data:{sessionID:"s"}});
@@ -159,7 +528,7 @@ import assert from "node:assert/strict";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 assert.equal(prompts.length,1);
@@ -180,7 +549,7 @@ import assert from "node:assert/strict";
 import plugin from "./tools/opencode_goal/index.js";
 let command;
 const ctx={options:{hubURL:"http://127.0.0.1:11435"},
- command:{transform:async f=>f({add:definition=>{command=definition}})},
+ tool:{transform:async f=>f({add:()=>{}})}, command:{transform:async f=>f({add:definition=>{command=definition}})},
  event:{subscribe:async function*(){}}, storage:{get:async()=>undefined,set:async()=>{}}, session:{}};
 const stop=await plugin.setup(ctx);
 await new Promise(resolve=>setImmediate(resolve));
@@ -198,7 +567,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 let release, entered;
 const pending=new Promise(r=>release=r), started=new Promise(r=>entered=r), db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>{entered();await pending;return {success:true}}});
 const starting=c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 await started; await c.eventStreamLost(); release(); await starting;
@@ -240,7 +609,7 @@ import assert from "node:assert/strict";
 import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 let valid=false;
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:valid})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
@@ -268,7 +637,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(), prompts=[]; let release,entered;
 const pending=new Promise(r=>release=r),started=new Promise(r=>entered=r);
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>{entered();await pending;return {success:true}}});
 const starting=c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 await started; await c.pause("s"); release(); await starting;
@@ -390,7 +759,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db = new Map(); const sent=[];
 const ctx = {
   storage: {get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
-  session: {get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>sent.push(p),context:async()=>[{type:"assistant",content:[{type:"text",text:"work"}]}]},
+  session: {get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{sent.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}},context:async()=>[{type:"assistant",content:[{type:"text",text:"work"}]}]},
 };
 const opts={resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),completeTaskImpl:async()=>({success:false,outcome_unknown:false})};
 let c=makeGoalController(ctx,opts);
@@ -418,7 +787,7 @@ assert.equal((await c.status("s")).status,"PAUSED");
 assert.equal(sent.length,3);
 await c.resume("s");
 let release2; let pending2 = new Promise(r=>release2=r);
-c=makeGoalController(ctx,{...opts,completeTaskImpl:async(_state,options)=>{options.onMutationStart(); await pending2; return {success:false,outcome_unknown:true}}});
+c=makeGoalController(ctx,{...opts,completeTaskImpl:async(_state,options)=>{await options.onMutationStart(); await pending2; return {success:false,outcome_unknown:true}}});
 const running=c.settle({id:"e4",type:"session.execution.succeeded",data:{sessionID:"s"}});
 await new Promise(r=>setTimeout(r,20));
 await c.settle({id:"interrupt",type:"session.execution.interrupted",data:{sessionID:"s"}});
@@ -452,7 +821,7 @@ import assert from "node:assert/strict";
 import plugin from "./tools/opencode_goal/index.js";
 let command; const messages=[];
 const ctx={options:{hubURL:"http://127.0.0.1:11435"},storage:{get:async()=>undefined},
-  command:{transform:async callback=>callback({add:value=>{command=value}})},
+  tool:{transform:async callback=>callback({add:()=>{}})}, command:{transform:async callback=>callback({add:value=>{command=value}})},
   session:{synthetic:async value=>messages.push(value)},
   event:{subscribe:async function*(){}}};
 await assert.rejects(plugin.setup({...ctx,options:{hubURL:"https://example.com"}}),/loopback/);
@@ -476,7 +845,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map(),prompts=[];let release,entered;
 const pending=new Promise(r=>release=r), started=new Promise(r=>entered=r);
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>{if(v.turns===1 && v.status==="CONTINUE"){entered();await pending}db.set(k,structuredClone(v))}},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p),context:async()=>[{type:"assistant",content:[{type:"text",text:"work"}]}]}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}},context:async()=>[{type:"assistant",content:[{type:"text",text:"work"}]}]}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),completeTaskImpl:async()=>({success:false})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 const settle=c.settle({id:"e",type:"session.execution.succeeded",data:{sessionID:"s"}});
@@ -497,7 +866,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map();let c;let prompts=0;
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
  session:{get:async()=>({location:{directory:"C:/repo"}}),context:async()=>[{type:"assistant",content:[{type:"text",text:"work"}]}],
- prompt:async()=>{prompts++;if(prompts===1)await c.settle({id:"early",type:"session.execution.succeeded",data:{sessionID:"s"}})}}};
+ prompt:async p=>{prompts++;if(prompts===1)await c.settle({id:"early",type:"session.execution.succeeded",data:{sessionID:"s"}});return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true}),completeTaskImpl:async()=>({success:false})});
 await c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 await new Promise(r=>setTimeout(r,30));
@@ -517,7 +886,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 const db=new Map();let release,entered;
 const pending=new Promise(r=>release=r),started=new Promise(r=>entered=r);
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
- session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async()=>{entered();await pending}}};
+ session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{entered();await pending;return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const c=makeGoalController(ctx,{resolveRoot:async p=>p,getBoundTaskImpl:async()=>({success:true})});
 const starting=c.start("s",{goal:"Fix",taskId:"t",criteria:["pytest"]});
 await started;await c.pause("s");release();assert.equal((await starting).status,"PAUSED");
@@ -538,7 +907,7 @@ import { makeGoalController } from "./tools/opencode_goal/index.js";
 import { createTask } from "./tools/opencode_goal/transport.js";
 const db=new Map(), prompts=[], calls=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
-  session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>prompts.push(p)}};
+  session:{get:async()=>({location:{directory:"C:/repo"}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const makeResult=(state,id)=>({success:true,task:{task_id:state.taskId,status:"planned",owner:"opencode-local",
   context:{session_id:id},contract:{goal:state.goal,acceptance_criteria:state.criteria},
   checkpoint:{state_data:{_agent_task_scope:{version:2,repo_root:state.root}}}}});
@@ -570,7 +939,7 @@ let releaseWrite;const writePending=new Promise(r=>releaseWrite=r);let enteredWr
 const writeStarted=new Promise(r=>enteredWrite=r);const db4=new Map(), prompts4=[];
 const ctx4={storage:{get:async k=>db4.get(k),set:async(k,v)=>{
   if(v.status==="CONTINUE" && db4.has(k)){enteredWrite();await writePending}db4.set(k,structuredClone(v))}},
-  session:{get:ctx.session.get,prompt:async p=>prompts4.push(p)}};
+  session:{get:ctx.session.get,prompt:async p=>{prompts4.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const racing=makeGoalController(ctx4,{resolveRoot:async p=>p,createTaskImpl:create});
 const racingStart=racing.start("s4",{goal:"Fix",criteria:["pytest passes"]});
 await writeStarted;const racingPause=racing.pause("s4");releaseWrite();
