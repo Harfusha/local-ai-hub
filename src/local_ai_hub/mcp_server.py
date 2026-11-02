@@ -5513,7 +5513,7 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "", root: str = "", workspace: str = "") -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "", root: str = "", workspace: str = "", expected_file_sha256: str = "") -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
@@ -5530,6 +5530,8 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
         eff_start = start_line if start_line > 1 else line_start
         eff_end = end_line if end_line > 0 else line_end
         if is_source_slices:
+            if offset or expected_file_sha256:
+                return {"success": False, "error": "source pagination requires a single path", "terminal": True, "retryable": False}
             results = []
             for item in slices[:16]:
                 if not isinstance(item, dict):
@@ -5541,7 +5543,8 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
                 results.append(read_source_slice(target_workspace, path=s_path, line_start=s_start, line_end=s_end, max_chars=s_chars))
             return _compact({"success": True, "slices": results, "count": len(results)}, "artifact")
         eff_chars = max(512, min(max_chars, 12000)) if max_chars else 4000
-        arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": eff_chars}
+        arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": eff_chars,
+                     "offset": offset, "expected_file_sha256": expected_file_sha256}
         error = validate_operation_arguments("local_ai_artifact", "source", arguments)
         if error is not None:
             return {"success": False, "error": error, "terminal": True, "retryable": False}

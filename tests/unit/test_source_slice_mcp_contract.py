@@ -77,6 +77,40 @@ def test_source_never_claims_trimmed_transport_text_is_exact(tmp_path, monkeypat
     assert payload["success"] is False or payload["text"] == "x" * 10000 + "\n"
 
 
+def test_source_paginates_long_unicode_line_and_fences_revisions(tmp_path, monkeypatch):
+    source = tmp_path / "plan.json"
+    original = '"' + ("Příliš dlouhý řádek 🐱 " * 700) + '"\n'
+    source.write_bytes(original.encode("utf-8"))
+    arguments = {"action": "source", "path": "plan.json", "line_start": 1, "line_end": 1,
+                 "max_chars": 4000, "max_response_tokens": 10000}
+    first, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", arguments)
+    assert first["success"] is True and first["next_offset"] is not None
+    digest = first["file_sha256"]
+    pages = [first["text"]]
+    offset = first["next_offset"]
+    missing_digest, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", {**arguments, "offset": offset})
+    assert missing_digest["success"] is False
+    while offset is not None:
+        page, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", {
+            **arguments, "offset": offset, "expected_file_sha256": digest,
+        })
+        assert page["success"] is True and page["file_sha256"] == digest
+        pages.append(page["text"])
+        offset = page["next_offset"]
+    assert "".join(pages) == original
+    source.write_bytes((original + "changed").encode("utf-8"))
+    changed, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", {
+        **arguments, "offset": first["next_offset"], "expected_file_sha256": digest,
+    })
+    assert changed["success"] is False
+    assert "text" not in changed
+    batch, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", {
+        "action": "source", "slices": [{"path": "plan.json", "line_start": 1, "line_end": 1}],
+        "offset": first["next_offset"], "expected_file_sha256": digest,
+    })
+    assert batch["success"] is False
+
+
 def test_source_file_and_line_bounds_are_explicit(tmp_path):
     source = tmp_path / "large.py"
     source.write_bytes(b"#" * (MAX_SOURCE_BYTES + 1))

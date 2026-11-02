@@ -1038,7 +1038,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "get": ("artifact_id", "offset", "max_chars", "section", "binary", "slices", "root", "workspace"),
                 "slice": ("artifact_id", "offset", "max_chars", "section", "binary", "slices", "root", "workspace"),
                 "list": (),
-                "source": ("path", "file", "line_start", "line_end", "start_line", "end_line", "max_chars", "slices", "root", "workspace"),
+                "source": ("path", "file", "line_start", "line_end", "start_line", "end_line", "max_chars", "offset", "expected_file_sha256", "slices", "root", "workspace"),
             },
             selector_required=False,
             properties={
@@ -1048,6 +1048,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "root": {"type": "string", "default": "."},
                 "workspace": {"type": "string", "default": ""},
                 "path": {"type": "string", "maxLength": 32768, "default": ""},
+                "expected_file_sha256": {"type": "string", "maxLength": 64, "default": ""},
                 "line_start": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1},
                 "line_end": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0},
                 "start_line": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1},

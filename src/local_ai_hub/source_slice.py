@@ -12,13 +12,14 @@ MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_LINES = 200
 SOURCE_SLICE_FIELDS = (
     "action", "path", "relative_path", "file_sha256", "line_start", "line_end",
-    "requested_line_end", "total_lines", "text", "truncated", "complete",
+    "requested_line_end", "total_lines", "text", "truncated", "complete", "offset", "next_offset",
 )
 
 
 def read_source_slice(
     workspace: str, path: str, *, line_start: int = 1,
-    line_end: int = 0, max_chars: int = 4000,
+    line_end: int = 0, max_chars: int = 4000, offset: int = 0,
+    expected_file_sha256: str = "",
 ) -> dict[str, Any]:
     """Return exact selected text with its full source digest, or a typed error."""
     def failure(message: str) -> dict[str, Any]:
@@ -36,6 +37,12 @@ def read_source_slice(
         return failure(f"source range must contain 1 through {MAX_SOURCE_LINES} lines")
     if type(max_chars) is not int or not 512 <= max_chars <= 12000:
         return failure("max_chars must be between 512 and 12000")
+    if type(offset) is not int or offset < 0:
+        return failure("offset must be a non-negative integer")
+    if not isinstance(expected_file_sha256, str):
+        return failure("expected_file_sha256 must be a string")
+    if offset and not expected_file_sha256:
+        return failure("expected_file_sha256 is required for a continuation")
     try:
         root = Path(workspace).resolve(strict=True)
         if not root.is_dir():
@@ -88,6 +95,9 @@ def read_source_slice(
     except (OSError, ValueError, RuntimeError) as exc:
         return failure(f"source read rejected: {type(exc).__name__}")
 
+    digest = hashlib.sha256(data).hexdigest()
+    if expected_file_sha256 and expected_file_sha256 != digest:
+        return failure("source revision changed; restart pagination")
     selected_parts: list[str] = []
     total_lines = 0
     selected_chars = 0
@@ -96,18 +106,21 @@ def read_source_slice(
         for total_lines, line in enumerate(stream, 1):
             if line_start <= total_lines <= requested_end:
                 selected_chars += len(line)
-                room = max_chars - sum(len(part) for part in selected_parts)
-                if room > 0:
-                    selected_parts.append(line[:room])
+                selected_parts.append(line)
     if line_start > total_lines and total_lines:
         return failure("line_start exceeds the source line count")
-    text = "".join(selected_parts)
-    truncated = len(text) != selected_chars
-    returned_end = line_start + len(text.splitlines()) - 1
+    selected = "".join(selected_parts)
+    if offset > selected_chars:
+        return failure("offset exceeds the selected source range")
+    text = selected[offset:offset + max_chars]
+    next_offset = offset + len(text) if offset + len(text) < selected_chars else None
+    truncated = offset != 0 or next_offset is not None
+    returned_end = line_start + selected[:offset].count("\n") + len(text.splitlines()) - 1
     return {
         "success": True, "action": "source", "path": str(target),
-        "relative_path": relative.as_posix(), "file_sha256": hashlib.sha256(data).hexdigest(),
+        "relative_path": relative.as_posix(), "file_sha256": digest,
         "line_start": line_start, "line_end": returned_end,
         "requested_line_end": requested_end, "total_lines": total_lines,
         "text": text, "truncated": truncated, "complete": not truncated,
+        "offset": offset, "next_offset": next_offset,
     }
