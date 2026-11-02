@@ -423,6 +423,7 @@ class RepoPlanWorkspace:
             "plan_id": plan_id,
             "task_id": clean_task_id,
             "file_revision": save_res["file_revision"],
+            "no_op": save_res["no_op"],
             "task": task,
         }
 

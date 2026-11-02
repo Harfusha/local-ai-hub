@@ -4699,8 +4699,10 @@ def local_ai_coord(
         metadata = operation_contract("local_ai_coord")["actions"][action]
         arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
         result = CLIENT.coord(action=action, **arguments)
-        if action == "plan_task_edit" and isinstance(result, dict) and result.get("success") is True:
-            result = {**result, "mutation_applied": True}
+        if action in {"plan_update", "plan_task_edit"} and isinstance(result, dict) and result.get("success") is True:
+            no_op = result.get("no_op")
+            if isinstance(no_op, bool):
+                result = {**result, "mutation_applied": not no_op}
         plan_extra = ["plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head", "board", "columns", "items", "tasks"]
         return _compact(
             result,

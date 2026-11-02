@@ -34,6 +34,44 @@ class CoordBackend:
         return self.response
 
 
+@pytest.mark.parametrize("action", ["plan_update", "plan_task_edit"])
+def test_plan_mutation_budget_reports_actual_write(monkeypatch, tmp_path, action):
+    from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_budget", title="Original", description="x" * 8000)
+    if action == "plan_task_edit":
+        created = workspace.edit_task("plan_budget", "task_one", title="Original", expected_revision=created["file_revision"])
+
+    class WorkspaceBackend:
+        def coord(self, action, **payload):
+            payload.pop("root", None)
+            if action == "plan_update":
+                return workspace.update_plan(**payload)
+            task_data = payload.pop("task_data")
+            return workspace.edit_task(**payload, **task_data)
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", WorkspaceBackend())
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({"tool": "local_ai_coord", "max_response_tokens": 180, "response_profile": "compact"})
+    try:
+        kwargs = {"action": action, "root": str(tmp_path), "plan_id": "plan_budget", "expected_revision": created["file_revision"]}
+        if action == "plan_update":
+            kwargs["title"] = "Updated"
+        else:
+            kwargs.update(task_id="task_one", task_data={"title": "Updated"})
+        changed = mcp_server.local_ai_coord(**kwargs)
+        assert changed["mutation_applied"] is True
+        persisted = workspace.get_plan("plan_budget")
+        assert (persisted["plan"]["title"] if action == "plan_update" else persisted["plan"]["tasks"]["task_one"]["title"]) == "Updated"
+        kwargs["expected_revision"] = persisted["file_revision"]
+        unchanged = mcp_server.local_ai_coord(**kwargs)
+        assert unchanged["mutation_applied"] is False
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+
 class ApiBackend:
     def __init__(self, response):
         self.response = response
