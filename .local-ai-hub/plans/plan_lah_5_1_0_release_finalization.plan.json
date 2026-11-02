@@ -228,9 +228,9 @@
       "depends_on": [],
       "description": "Dashboard od restartu při auditu vykázal 641 accounted calls, net cloud delta −420 918, estimated savings −$1,26, 0 generation hits, 3 repository hits a 0 local tokens avoided. Jde o signed odhad, nikoli fakturu ani automatický důkaz chyby; scope a počty se mohou mezitím změnit. Nejprve ověřit baseline_evidence_id, skutečné použití baseline, počet vstupních/výstupních tokenů, samostatné ceny, protocol/schema a local compute reuse, chybějící channel pokrytí i časové okno. Identifikovat nejdražší akce a duplicity pouze z autorizovaných metadat, ověřit dostupnost a konfiguraci modelů a důvody routing/fallback/queue. Porovnat párové identické úlohy s kvalitou, latencí a tokeny; nežměnit routing/modely bez dokladu a neklamně neprezentovat negativní saldo jako úsporu.",
       "kind": "code",
-      "next_action": "Hotovo: Zaporna bilance token_savings_delta_est overena jako smluvne validni signed hodnota dle Context Economy Contract.",
+      "next_action": "Ověřeno pouze to, že token_savings_delta_est může být záporný; to samo nesplňuje celé zadání. Zbývá ověřit baseline_evidence_id a skutečné baseline, vstupní/výstupní tokeny, ceny a pokrytí kanálů, náklady protokolu a časové okno; identifikovat příčiny routingu a fallbacku a provést párové porovnání s kvalitou a latencí nebo uvést konkrétní blocker. Nevydávat podepsanou hodnotu ani samotnou konfiguraci za důkaz úspory či použití lokálního modelu.",
       "title": "P2: ověřit zápornou bilanci a využití modelů",
-      "work_status": "done"
+      "work_status": "in_progress"
     },
     "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
       "acceptance_criteria": [
