@@ -36,6 +36,19 @@ def test_adoption_rejects_colliding_normalized_ids_before_creating_plan(workspac
     assert not (root / ".local-ai-hub" / "plans" / "plan_adopted.plan.json").exists()
 
 
+@pytest.mark.parametrize("item", [
+    {"item_id": "blank", "title": "  ", "status": "planned"},
+    {"item_id": "unknown", "title": "Legacy", "status": "unrecognized"},
+    {"item_id": "invalid", "title": "Legacy", "status": None},
+])
+def test_adoption_rejects_incomplete_or_unknown_items_without_partial_plan(workspace, item):
+    root, ws = workspace
+    items = [{"item_id": "valid", "title": "Valid", "status": "planned"}, item]
+    with pytest.raises(RepoPlanValidationError):
+        ws.adopt_legacy_board_items("plan_adopted", items)
+    assert not (root / ".local-ai-hub" / "plans" / "plan_adopted.plan.json").exists()
+
+
 def test_adoption_does_not_silently_skip_unrelated_existing_task(workspace):
     _root, ws = workspace
     plan = ws.create_plan("plan_adopted", "Existing")

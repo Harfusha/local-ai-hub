@@ -763,9 +763,12 @@ class RepoPlanWorkspace:
             if not isinstance(item_title, str) or not isinstance(item_id, str):
                 raise RepoPlanValidationError("legacy board item ID and title must be strings")
             if not item_title.strip():
-                continue
+                raise RepoPlanValidationError("legacy board item title must not be blank")
             if not item_id:
                 raise RepoPlanValidationError("legacy board item ID must not be empty")
+            status = item.get("status", "planned")
+            if not isinstance(status, str) or status.lower() not in {"planned", "in_progress", "active", "done", "blocked"}:
+                raise RepoPlanValidationError("legacy board item has an unsupported status")
             safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
             task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
             if not TASK_ID_REGEX.fullmatch(task_id):
@@ -796,8 +799,6 @@ class RepoPlanWorkspace:
         for item in board_items:
             item_id = item.get("item_id", "")
             title = item.get("title", "").strip()
-            if not title:
-                continue
 
             # Convert item_id to valid task_id
             safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
