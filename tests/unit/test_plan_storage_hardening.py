@@ -3,11 +3,12 @@ from __future__ import annotations
 import tempfile
 import base64
 import io
+import hashlib
 from pathlib import Path
 import pytest
 
 from local_ai_hub.repo_plan.schema_validation import MAX_PLAN_FILE_BYTES, RepoPlanConflictError, RepoPlanError, RepoPlanValidationError
-from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, RepoPlanStorage, compute_bytes_sha256
+from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, RepoPlanStorage, compute_bytes_sha256, compute_file_sha256
 
 
 def test_atomic_write_bytes_rejects_escaping_path() -> None:
@@ -65,6 +66,20 @@ def test_read_record_bounds_bytes_even_if_file_grows(tmp_path: Path, monkeypatch
     with pytest.raises(RepoPlanError, match="12 MiB"):
         RepoPlanStorage._read_record(record)
     assert reads == [limit + 1]
+
+
+def test_hash_large_target_without_unbounded_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "large.md"
+    payload = b"plan-data" * 300000
+    target.write_bytes(payload)
+    expected = hashlib.sha256(payload).hexdigest()
+
+    def forbid_full_read(_path: Path) -> bytes:
+        pytest.fail("target hashing must stream rather than read the entire file")
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_full_read)
+    assert compute_file_sha256(target) == expected
+    assert compute_file_sha256(tmp_path / "missing.md") == ""
 
 
 def test_request_replay_preserves_pending_request_with_missing_intent() -> None:

@@ -39,7 +39,11 @@ def compute_bytes_sha256(data: bytes) -> str:
 def compute_file_sha256(file_path: Path) -> str:
     if not file_path.exists() or not file_path.is_file():
         return ""
-    return compute_bytes_sha256(file_path.read_bytes())
+    digest = hashlib.sha256()
+    with file_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def get_git_context(repo_root: Path) -> tuple[str | None, str | None]:
