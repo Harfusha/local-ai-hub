@@ -283,9 +283,12 @@ class RepoPlanStorage:
 
     @staticmethod
     def _read_record(path: Path) -> dict[str, Any]:
-        if path.stat().st_size > 12 * 1024 * 1024:
+        max_record_bytes = 12 * 1024 * 1024
+        with path.open("rb") as stream:
+            raw = stream.read(max_record_bytes + 1)
+        if len(raw) > max_record_bytes:
             raise RepoPlanError("Operation record exceeds 12 MiB limit")
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
             raise RepoPlanError("Operation record must be an object")
         return data

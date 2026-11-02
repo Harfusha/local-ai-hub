@@ -6,7 +6,7 @@ import io
 from pathlib import Path
 import pytest
 
-from local_ai_hub.repo_plan.schema_validation import MAX_PLAN_FILE_BYTES, RepoPlanConflictError, RepoPlanValidationError
+from local_ai_hub.repo_plan.schema_validation import MAX_PLAN_FILE_BYTES, RepoPlanConflictError, RepoPlanError, RepoPlanValidationError
 from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, RepoPlanStorage, compute_bytes_sha256
 
 
@@ -42,6 +42,29 @@ def test_read_plan_bounds_bytes_before_rejecting_oversized_file(tmp_path: Path, 
     with pytest.raises(RepoPlanValidationError, match="maximum size"):
         RepoPlanStorage(tmp_path).read_plan_file("large.plan.json")
     assert reads == [MAX_PLAN_FILE_BYTES + 1]
+
+
+def test_read_record_bounds_bytes_even_if_file_grows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = tmp_path / "record.json"
+    record.write_bytes(b"{}")
+    limit = 12 * 1024 * 1024
+    reads: list[int] = []
+    original_open = Path.open
+
+    class ObservedStream(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            reads.append(size)
+            return super().read(size)
+
+    def open_observed(path: Path, *args, **kwargs):
+        if path == record and args == ("rb",):
+            return ObservedStream(b"x" * (limit + 2))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_observed)
+    with pytest.raises(RepoPlanError, match="12 MiB"):
+        RepoPlanStorage._read_record(record)
+    assert reads == [limit + 1]
 
 
 def test_request_replay_preserves_pending_request_with_missing_intent() -> None:
