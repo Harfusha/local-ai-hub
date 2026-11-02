@@ -40,7 +40,7 @@ def _client_profile_config(cfg: dict, hub_port: int, *, state_dir: Path | None =
     if state_dir is not None:
         if not isinstance(state_dir, Path) or not state_dir.is_absolute():
             raise ValueError("client state directory must be absolute")
-        lines.append(f"state_dir = {json.dumps(str(state_dir))}")
+        lines.append(f"state_dir = {json.dumps(str(state_dir), separators=(',', ':'))}")
     for section in _PROFILE_BOOLEAN_TABLES:
         source = cfg.get(section)
         if not isinstance(source, dict):
@@ -48,7 +48,7 @@ def _client_profile_config(cfg: dict, hub_port: int, *, state_dir: Path | None =
         entries = [(key, value) for key, value in source.items() if isinstance(key, str) and type(value) is bool]
         if entries:
             lines.extend(("", f"[{section}]"))
-            lines.extend(f"{json.dumps(key)} = {str(value).lower()}" for key, value in sorted(entries))
+            lines.extend(f"{json.dumps(key, separators=(',', ':'))} = {str(value).lower()}" for key, value in sorted(entries))
     return "\n".join(lines) + "\n"
 
 
@@ -142,7 +142,7 @@ def launch_opencode(
             profile_config.write_text(_client_profile_config(cfg, hub_port), encoding="utf-8")
             runtime["mcp"]["servers"]["local-ai"]["environment"]["LOCAL_AI_CONFIG"] = str(profile_config)
             env.update({
-                "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG_CONTENT": json.dumps(runtime),
+                "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG_CONTENT": json.dumps(runtime, separators=(",", ":")),
                 "OPENCODE_DISABLE_MODELS_FETCH": "1", "OPENCODE_DISABLE_AUTOUPDATE": "1",
                 "OPENCODE_CONFIG_DIR": config_dir, "LOCAL_AI_HUB_TOKEN": profile_token,
                 "LOCAL_AI_OPENCODE_PROVIDER_TOKEN": provider_token,

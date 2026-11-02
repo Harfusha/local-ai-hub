@@ -66,7 +66,12 @@ def generation_scope(agent: str):
 def scoped_http_request(handler):
     @wraps(handler)
     def guarded(self, *args, **kwargs):
-        with generation_scope(self._agent()):
+        try:
+            agent_fn = getattr(self, "_agent", None)
+            agent = agent_fn() if callable(agent_fn) else ""
+        except Exception:
+            agent = ""
+        with generation_scope(agent):
             return handler(self, *args, **kwargs)
     return guarded
 

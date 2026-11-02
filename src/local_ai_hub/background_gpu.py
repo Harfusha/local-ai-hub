@@ -339,7 +339,7 @@ class IdleGPUWorker:
         schema = task.get("schema")
         fixed_input_tokens = estimate_tokens(system)
         if schema is not None:
-            fixed_input_tokens += estimate_tokens(json.dumps(schema, ensure_ascii=False))
+            fixed_input_tokens += estimate_tokens(json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
         max_tokens = max(32, int(task.get("max_tokens", 320)))
         profile_hint = policy.profile(
             self.model,

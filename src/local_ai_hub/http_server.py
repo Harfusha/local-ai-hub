@@ -1517,6 +1517,23 @@ def _task_create_contract(payload: Mapping[str, Any]) -> GoalContract:
     })
 
 
+def _safe_agent(handler: Any) -> str:
+    agent_fn = getattr(handler, "_agent", None)
+    if callable(agent_fn):
+        try:
+            return agent_fn() or "generic"
+        except Exception:
+            pass
+    headers = getattr(handler, "headers", None)
+    if headers is not None and hasattr(headers, "get"):
+        return headers.get("X-LocalAI-Agent") or "generic"
+    return "generic"
+
+
+def _opencode_provider_start_mode_error(path: str, payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    return _http_mode_gate_error("POST", path, payload)
+
+
 class Handler(BaseHTTPRequestHandler):
     _ADMIN_ACTIONS = {
         "db.query": ({"GET", "POST"}, "/api/db/query", None),
@@ -2599,7 +2616,7 @@ class Handler(BaseHTTPRequestHandler):
     def _agent(self) -> str:
         if self._opencode_profile_credential():
             return "opencode-local"
-        return self.headers.get("X-LocalAI-Agent") or "generic"
+        return _safe_agent(self)
 
     def _opencode_profile_credential(self) -> bool:
         from .opencode_boundary import derive_local_profile_token
@@ -4188,7 +4205,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         admission_path = self.path if path == "/api/live/status" else path
-        if not _opencode_path_allowed(self._agent(), "GET", admission_path):
+        if not _opencode_path_allowed(_safe_agent(self), "GET", admission_path):
             self._send(403, {"success": False, "error_code": "opencode_local_route_denied", "error": "route unavailable for opencode-local", "terminal": True, "retryable": False})
             return
         if not self._reject_identity_fields(query_params := parse_qs(parsed.query, keep_blank_values=True)):
@@ -5582,7 +5599,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._require_authorized():
             return
-        if not _opencode_path_allowed(self._agent(), "POST", path):
+        if not _opencode_path_allowed(_safe_agent(self), "POST", path):
             self.close_connection = True
             self._send(403, {"success": False, "error_code": "opencode_local_route_denied", "error": "route unavailable for opencode-local", "terminal": True, "retryable": False})
             return
@@ -5992,7 +6009,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._request_root = str(payload["root"])
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-        if not _opencode_payload_allowed(self._agent(), path, payload):
+        if not _opencode_payload_allowed(_safe_agent(self), path, payload):
             self._send(403, {"success": False, "error_code": "opencode_local_action_denied", "error": "action unavailable for opencode-local", "terminal": True, "retryable": False})
             return
         if (
@@ -6220,7 +6237,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not callable(guard_factory):
                             self._send(503, {"success": False, "error": "mode admission guard unavailable", "terminal": True, "retryable": False}); return
                         with guard_factory():
-                            rejection = _http_mode_gate_error("POST", path, payload)
+                            rejection = _opencode_provider_start_mode_error(path, payload)
                             if rejection is not None:
                                 self._send(423, rejection); return
                             self._send(200, service.start(payload["model"])); return

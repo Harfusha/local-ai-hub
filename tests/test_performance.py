@@ -43,6 +43,9 @@ class Scheduler:
 
 
 class Runtime:
+    def model_digest(self, model):
+        return "0" * 64
+
     def request(self, path, payload):
         return {"message": {"content": '{"summary":"cached intelligence used","confidence":0.97}'}, "total_duration": 1}
 
