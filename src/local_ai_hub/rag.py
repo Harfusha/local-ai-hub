@@ -3467,13 +3467,53 @@ class RAGStore:
         return candidate
 
     @staticmethod
-    def _safe_open_diagram(path: Path) -> tuple[int, os.stat_result]:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
+    def _safe_open_diagram(root: Path, path: Path) -> tuple[int, os.stat_result]:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError as exc:
+            raise ValueError("diagram image must be inside the authorized repository root") from exc
+        if not parts or any(part in ("", ".", "..") for part in parts):
+            raise ValueError("diagram image path must identify a file inside the repository root")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if os.name == "nt":
+            # Windows' os.open follows junctions. Validate the final name of the
+            # opened handle before reading; a path-based recheck can race again.
+            fd = os.open(path, flags)
+        else:
+            if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
+                raise ValueError("secure diagram path traversal is unavailable")
+            directory_fd = os.open(root, flags | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                for part in parts[:-1]:
+                    next_fd = os.open(part, flags | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
+                    os.close(directory_fd)
+                    directory_fd = next_fd
+                fd = os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=directory_fd)
+            finally:
+                os.close(directory_fd)
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400):
                 raise ValueError("diagram image path must identify a regular file without symlinks or reparse points")
+            if os.name == "nt":
+                import ctypes
+                import msvcrt
+                from ctypes import wintypes
+
+                get_final = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+                get_final.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+                get_final.restype = wintypes.DWORD
+                buffer = ctypes.create_unicode_buffer(32768)
+                length = get_final(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0)
+                if not length or length >= len(buffer):
+                    raise ValueError("cannot verify opened diagram path")
+                actual = buffer.value
+                if actual.startswith("\\\\?\\UNC\\"):
+                    actual = "\\\\" + actual[8:]
+                elif actual.startswith("\\\\?\\"):
+                    actual = actual[4:]
+                if os.path.normcase(os.path.normpath(actual)) != os.path.normcase(os.path.normpath(str(path))):
+                    raise ValueError("opened diagram path differs from authorized path")
             return fd, st
         except Exception:
             try:
@@ -3670,7 +3710,7 @@ class RAGStore:
             try:
                 rag_cfg = self.config.get("rag", {})
                 max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
-                fd, st = self._safe_open_diagram(p_img)
+                fd, st = self._safe_open_diagram(root_path, p_img)
                 try:
                     svg_file = open(fd, "rb")
                 except BaseException:
@@ -3705,7 +3745,7 @@ class RAGStore:
                 }
         else:
             try:
-                fd, st = self._safe_open_diagram(p_img)
+                fd, st = self._safe_open_diagram(root_path, p_img)
                 os.close(fd)
                 file_size_kb = round(st.st_size / 1024, 1)
             except Exception as exc:
