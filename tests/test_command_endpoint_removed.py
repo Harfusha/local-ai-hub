@@ -61,6 +61,7 @@ def test_retired_command_http_paths_reject_before_auth_body_or_execution(monkeyp
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(services=SimpleNamespace()))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = path
+    handler.headers = {}
     handler._require_authorized = lambda: pytest.fail("retired route attempted authorization")
     handler._read_json = lambda: pytest.fail("retired route read request body")
     handler._begin_trace = lambda *args, **kwargs: pytest.fail("retired route started execution")

@@ -1,5 +1,9 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
+On POSIX, an already-open plan-write directory can be moved during a write; publication can then complete at its new location. Do not move the repository or its parent directories while plan or specification updates are running. This limitation does not permit symlink redirection or bypassing revision and writer-lease checks.
+
+When directory `flock` is unsupported, the Hub reports a warning and uses the existing file lock. Do not remove, rename, or replace lock files while Hub processes may write: doing so can split cooperating writers. During updates, finish or stop older writers before replacing the running Hub.
+
 Plan create, update, task edit, task delete, archive and legacy-board adoption report `mutation_applied` from the recorded write outcome when available; a replay can report the original write. A response-budget error with `mutation_applied=true` must not be treated as proof that the operation did not run. Adoption rejects colliding task identities; resolve the legacy IDs instead of retrying with a new key.
 
 For an exact `local_ai_artifact(action="source")` range, follow `next_offset` in Unicode characters using the same path and line range; supply the first page's `file_sha256` as `expected_file_sha256` on every continuation. A changed source rejects the continuation: discard pages and restart. A page with nonzero offset is not the complete range, even when `next_offset` is null.

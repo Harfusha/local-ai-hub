@@ -4,11 +4,41 @@ import tempfile
 import base64
 import io
 import hashlib
+import os
+from contextlib import contextmanager
 from pathlib import Path
 import pytest
 
 from local_ai_hub.repo_plan.schema_validation import MAX_PLAN_FILE_BYTES, RepoPlanConflictError, RepoPlanError, RepoPlanValidationError
 from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, RepoPlanStorage, compute_bytes_sha256, compute_file_sha256
+
+
+def test_recovery_guards_intents_directory_that_appears_after_initial_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = RepoPlanStorage(tmp_path)
+    storage.intents_dir.mkdir(parents=True)
+    original_exists = Path.exists
+    original_lock = storage._lock_storage
+    first = True
+
+    def appeared(path: Path) -> bool:
+        nonlocal first
+        if path == storage.intents_dir and first:
+            first = False
+            return False
+        return original_exists(path)
+
+    @contextmanager
+    def guarded_lock():
+        assert storage._storage_path_guard.active
+        with original_lock():
+            yield
+
+    monkeypatch.setattr(Path, "exists", appeared)
+    monkeypatch.setattr(storage, "_lock_storage", guarded_lock)
+    assert storage.recover_pending_intents() == []
+    assert not first
 
 
 def test_atomic_write_bytes_rejects_escaping_path() -> None:
@@ -39,7 +69,14 @@ def test_read_plan_bounds_bytes_before_rejecting_oversized_file(tmp_path: Path, 
             return ObservedStream(b"x" * (MAX_PLAN_FILE_BYTES + 2))
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", open_observed)
+    if os.name == "nt":
+        monkeypatch.setattr(Path, "open", open_observed)
+    else:
+        def fdopen_observed(descriptor: int, *_args, **_kwargs):
+            os.close(descriptor)
+            return ObservedStream(b"x" * (MAX_PLAN_FILE_BYTES + 2))
+
+        monkeypatch.setattr(os, "fdopen", fdopen_observed)
     with pytest.raises(RepoPlanValidationError, match="maximum size"):
         RepoPlanStorage(tmp_path).read_plan_file("large.plan.json")
     assert reads == [MAX_PLAN_FILE_BYTES + 1]
@@ -50,21 +87,20 @@ def test_read_record_bounds_bytes_even_if_file_grows(tmp_path: Path, monkeypatch
     record.write_bytes(b"{}")
     limit = 12 * 1024 * 1024
     reads: list[int] = []
-    original_open = Path.open
 
     class ObservedStream(io.BytesIO):
         def read(self, size: int = -1) -> bytes:
             reads.append(size)
             return super().read(size)
 
-    def open_observed(path: Path, *args, **kwargs):
-        if path == record and args == ("rb",):
-            return ObservedStream(b"x" * (limit + 2))
-        return original_open(path, *args, **kwargs)
+    def open_observed(descriptor: int, mode: str):
+        assert mode == "rb"
+        os.close(descriptor)
+        return ObservedStream(b"x" * (limit + 2))
 
-    monkeypatch.setattr(Path, "open", open_observed)
+    monkeypatch.setattr(os, "fdopen", open_observed)
     with pytest.raises(RepoPlanError, match="12 MiB"):
-        RepoPlanStorage._read_record(record)
+        RepoPlanStorage(tmp_path)._read_record(record)
     assert reads == [limit + 1]
 
 

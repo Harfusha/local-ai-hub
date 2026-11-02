@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from local_ai_hub.project_config import resolve_project_config
-from local_ai_hub.file_locks import exclusive_file_update
 
 from .models import PlanLifecycle
 from .schema_validation import (
@@ -31,7 +30,7 @@ from .schema_validation import (
     validate_plan_dict,
     validate_repo_path,
 )
-from .storage import OperationIntent, RepoPlanStorage, _pin_windows_write_directories, get_git_context
+from .storage import OperationIntent, RepoPlanStorage, _guard_storage_paths, get_git_context
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
@@ -39,11 +38,10 @@ _UNSET = object()
 
 @contextmanager
 def _workspace_storage_lock(storage):
-    with _pin_windows_write_directories(storage.repo_root, storage.intents_dir):
-        with _pin_windows_write_directories(storage.repo_root, storage._lock_path.parent):
-            storage._ensure_intents_dir()
-            with exclusive_file_update(storage._lock_path, reentrant=True):
-                yield
+    with _guard_storage_paths(storage):
+        storage._ensure_intents_dir()
+        with storage._lock_storage():
+            yield
 
 
 def _replayable_plan_edit(method):
@@ -70,12 +68,12 @@ def _replayable_plan_edit(method):
                 raise RepoPlanValidationError("Request identity must be finite JSON") from exc
             fingerprint = hashlib.sha256(identity).hexdigest()
             request_path = self.storage._request_path(key)
-            if request_path.exists():
+            if self.storage._record_exists(request_path):
                 record = self.storage._read_record(request_path)
                 stored = record.get("result")
                 if record.get("status") == "pending" and record.get("intent_id"):
                     intent_path = self.storage._intent_path(record["intent_id"])
-                    if not intent_path.exists():
+                    if not self.storage._record_exists(intent_path):
                         snapshot = record.get("reserved_intent")
                         snapshot_result = snapshot.get("result") if isinstance(snapshot, dict) else None
                         if (not isinstance(snapshot_result, dict)
@@ -113,7 +111,7 @@ def _replayable_plan_edit(method):
                     if not isinstance(intent_id, str) or not intent_id:
                         raise RepoPlanConflictError("Idempotent result has no verified intent")
                     intent_path = self.storage._intent_path(intent_id)
-                    if not intent_path.exists():
+                    if not self.storage._record_exists(intent_path):
                         raise RepoPlanConflictError("Idempotent result intent is missing")
                     intent = OperationIntent.from_dict(self.storage._read_record(intent_path))
                     if (intent.intent_id != intent_id or intent.idempotency_key != key
