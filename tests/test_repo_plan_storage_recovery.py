@@ -12,6 +12,7 @@ from threading import Event
 import pytest
 
 from local_ai_hub.repo_plan import RepoPlanConflictError, RepoPlanStorage
+from local_ai_hub.repo_plan.schema_validation import RepoPlanError, serialize_plan_json
 from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, compute_bytes_sha256
 from test_repo_plan_storage import create_sample_plan_dict
 
@@ -34,6 +35,32 @@ def test_missing_new_intent_recovers_from_durable_reservation(tmp_path, monkeypa
     outcomes = storage.recover_pending_intents(only_key="reserved", resume_unapplied=True)
     assert len(outcomes) == 1 and outcomes[0]["status"] == "completed"
     assert storage.read_plan_file(PLAN)[0]["id"] == "plan_sample"
+
+
+def test_maximum_target_bytes_fit_reservation_and_recover(tmp_path, monkeypatch):
+    storage = RepoPlanStorage(tmp_path)
+    plan = create_sample_plan_dict()
+    plan_bytes = serialize_plan_json(plan).encode("utf-8")
+    spec = "x" * (8 * 1024 * 1024 - len(plan_bytes))
+    original = storage._save_intent
+    monkeypatch.setattr(storage, "_save_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        storage.save_spec_and_plan(SPEC, spec, PLAN, plan, idempotency_key="max-size")
+    assert storage._request_path("max-size").stat().st_size < 12 * 1024 * 1024
+    monkeypatch.setattr(storage, "_save_intent", original)
+    outcomes = storage.recover_pending_intents(only_key="max-size", resume_unapplied=True)
+    assert len(outcomes) == 1 and outcomes[0]["status"] == "completed"
+    assert (tmp_path / SPEC).stat().st_size == len(spec)
+    assert storage.read_plan_file(PLAN)[0] == plan
+
+
+def test_oversized_reservation_fails_before_target_changes(tmp_path):
+    storage = RepoPlanStorage(tmp_path)
+    with pytest.raises(RepoPlanError, match="Operation record exceeds"):
+        storage.save_plan_file(PLAN, create_sample_plan_dict(), idempotency_key="oversized",
+                               client_request_fingerprint="client", client_response_data={"value": "x" * (12 * 1024 * 1024)})
+    assert not (tmp_path / PLAN).exists()
+    assert not storage._request_path("oversized").exists()
 
 
 def test_missing_intent_with_corrupt_snapshot_stays_blocked(tmp_path, monkeypatch):
