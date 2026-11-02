@@ -35,6 +35,7 @@ from .schema_validation import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_JOURNAL_RECORDS = 4096
 
 
 @contextmanager
@@ -383,7 +384,7 @@ class RepoPlanStorage:
     @_pin_windows_storage_paths
     def _save_request(self, key: str, data: dict[str, Any]) -> None:
         if key:
-            if not self._request_path(key).exists() and len(list(islice(self.intents_dir.glob("request_*.json"), 4096))) >= 4096:
+            if not self._request_path(key).exists() and len(list(islice(self.intents_dir.glob("request_*.json"), MAX_JOURNAL_RECORDS))) >= MAX_JOURNAL_RECORDS:
                 raise RepoPlanError("Idempotency record capacity reached; explicit archival required")
             self._atomic_record(self._request_path(key), data)
 
@@ -576,7 +577,7 @@ class RepoPlanStorage:
                 return result
             # No automatic retention eviction: retry keys never silently become reusable.
             # Capacity exhaustion is explicit; unresolved operations remain recoverable.
-            if len(list(islice(self.intents_dir.glob("*.intent.json"), 4096))) >= 4096:
+            if len(list(islice(self.intents_dir.glob("*.intent.json"), MAX_JOURNAL_RECORDS))) >= MAX_JOURNAL_RECORDS:
                 raise RepoPlanError("Operation intent capacity reached; explicit archival required")
             intent_id = f"intent_{uuid.uuid4().hex}"
             result["intent_id"] = intent_id
@@ -687,7 +688,7 @@ class RepoPlanStorage:
                 if not paths[0].exists():
                     self._restore_reserved_intent(only_key, request)
             else:
-                paths = islice(self.intents_dir.glob("*.intent.json"), 4096)
+                paths = islice(self.intents_dir.glob("*.intent.json"), MAX_JOURNAL_RECORDS)
             for path in paths:
                 try:
                     intent = OperationIntent.from_dict(self._read_record(path))

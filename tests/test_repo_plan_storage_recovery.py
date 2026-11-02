@@ -20,6 +20,39 @@ PLAN = ".local-ai-hub/plans/main.plan.json"
 SPEC = "docs/spec.md"
 
 
+def test_request_capacity_rejects_new_key_but_preserves_replay(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan import storage as storage_module
+
+    monkeypatch.setattr(storage_module, "MAX_JOURNAL_RECORDS", 2)
+    storage = RepoPlanStorage(tmp_path)
+    plan = create_sample_plan_dict()
+    first = storage.save_plan_file(PLAN, plan, expected_revision="", idempotency_key="first")
+    second = storage.save_plan_file(PLAN, plan, expected_revision=first["file_revision"], idempotency_key="second")
+    assert second["no_op"] is True
+    names_before = {p.name for p in storage.intents_dir.iterdir()}
+    with pytest.raises(RepoPlanError, match="Idempotency record capacity reached"):
+        storage.save_plan_file(PLAN, plan, expected_revision=first["file_revision"], idempotency_key="third")
+    assert storage.save_plan_file(PLAN, plan, expected_revision="", idempotency_key="first") == first
+    assert {p.name for p in storage.intents_dir.iterdir()} == names_before
+    assert storage.read_plan_file(PLAN)[1] == first["file_revision"]
+
+
+def test_intent_capacity_rejects_new_write_before_reservation(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan import storage as storage_module
+
+    monkeypatch.setattr(storage_module, "MAX_JOURNAL_RECORDS", 2)
+    storage = RepoPlanStorage(tmp_path)
+    plan = create_sample_plan_dict()
+    storage.save_plan_file(".local-ai-hub/plans/one.plan.json", plan)
+    storage.save_plan_file(".local-ai-hub/plans/two.plan.json", plan)
+    names_before = {p.name for p in storage.intents_dir.iterdir()}
+    with pytest.raises(RepoPlanError, match="Operation intent capacity reached"):
+        storage.save_plan_file(".local-ai-hub/plans/three.plan.json", plan, idempotency_key="third")
+    assert not (tmp_path / ".local-ai-hub/plans/three.plan.json").exists()
+    assert not storage._request_path("third").exists()
+    assert {p.name for p in storage.intents_dir.iterdir()} == names_before
+
+
 def test_missing_new_intent_recovers_from_durable_reservation(tmp_path, monkeypatch):
     storage = RepoPlanStorage(tmp_path)
     original = storage._save_intent
