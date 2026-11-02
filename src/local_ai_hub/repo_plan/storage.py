@@ -463,17 +463,35 @@ class RepoPlanStorage:
             self._save_request(intent.idempotency_key, {"payload_sha256": intent.payload_sha256,
                                                        "status": "completed", "result": intent.result})
 
-    def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None) -> list[dict[str, Any]]:
+    def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None,
+                                only_key: str | None = None,
+                                resume_unapplied: bool = False,
+                                expected_targets: dict[str, tuple[str, str]] | None = None) -> list[dict[str, Any]]:
         """Recover only verified partial saves; retain ambiguity for explicit reconciliation."""
+        if resume_unapplied and not only_key:
+            raise ValueError("resuming unapplied operations requires an explicit key")
         if not self.intents_dir.exists():
             return []
         self._ensure_intents_dir()
         outcomes = []
         with exclusive_file_update(self._lock_path):
-            for path in islice(self.intents_dir.glob("*.intent.json"), 4096):
+            if only_key:
+                request = self._read_record(self._request_path(only_key))
+                if request.get("status") != "pending":
+                    return []
+                paths = [self._intent_path(request["intent_id"])]
+            else:
+                paths = islice(self.intents_dir.glob("*.intent.json"), 4096)
+            for path in paths:
                 try:
                     intent = OperationIntent.from_dict(self._read_record(path))
-                    if intent.status != "pending":
+                    if only_key and (intent.idempotency_key != only_key or intent.payload_sha256 != request.get("payload_sha256")):
+                        raise RepoPlanError("Recovery request identity mismatch")
+                    if expected_targets is not None and (len(intent.targets) != len(expected_targets) or any(
+                            expected_targets.get(t.rel_path) != (t.expected_sha256, t.candidate_sha256)
+                            for t in intent.targets)):
+                        raise RepoPlanError("Recovery targets do not match the steering request")
+                    if intent.status != "pending" and not (only_key and intent.status == "completed"):
                         continue
                     self._assert_request_owned(intent)
                     if path != self._intent_path(intent.intent_id) or not intent.targets:
@@ -481,6 +499,15 @@ class RepoPlanStorage:
                     for target in intent.targets:
                         validate_repo_path(target.rel_path, repo_root=self.repo_root)
                     current = [compute_file_sha256(self.repo_root / target.rel_path) for target in intent.targets]
+                    if intent.status == "completed":
+                        if (intent.context != self._context() or not isinstance(intent.result, dict)
+                                or any(actual != target.candidate_sha256 for target, actual in zip(intent.targets, current))):
+                            raise RepoPlanConflictError("Completed intent cannot be acknowledged safely")
+                        self._check_fence(intent.context, lease_check_fn)
+                        self._save_request(only_key, {"payload_sha256": intent.payload_sha256,
+                                                      "status": "completed", "result": intent.result})
+                        outcomes.append({"intent_id": intent.intent_id, "resolution": "acknowledged", "status": "completed"})
+                        continue
                     if intent.context is not None and intent.context != self._context():
                         resolution, status = "context_changed", "reconciled"
                     elif all(actual == target.candidate_sha256 for target, actual in zip(intent.targets, current)):
@@ -492,7 +519,7 @@ class RepoPlanStorage:
                     elif any(actual not in (target.expected_sha256, target.candidate_sha256)
                              for target, actual in zip(intent.targets, current)):
                         resolution, status = "diverged", "reconciled"
-                    elif all(actual == target.expected_sha256 for target, actual in zip(intent.targets, current)):
+                    elif not resume_unapplied and all(actual == target.expected_sha256 for target, actual in zip(intent.targets, current)):
                         resolution, status = "unapplied_discarded", "aborted"
                     elif intent.context is None or any(target.candidate_base64 is None for target in intent.targets):
                         resolution, status = "recovery_material_missing", "pending"
