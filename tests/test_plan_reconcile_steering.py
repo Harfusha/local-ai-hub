@@ -1,4 +1,6 @@
 import hashlib
+import os
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +44,42 @@ def test_reconcile_steering_persists_spec_plan_and_task(test_environment):
     plan, _ = storage.read_plan_file(plan_path)
     assert plan["tasks"]["task_core"]["acceptance_criteria"] == ["Core module passes unit tests", "Updated requirement"]
     assert task_store.get("task_001").contract.acceptance_criteria == ("Core module passes unit tests", "Updated requirement")
+
+
+def test_pending_steering_growth_after_stat_has_bounded_read(test_environment, monkeypatch):
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
+                     spec_rel_path="docs/feature.md", spec_content="updated\n",
+                     acceptance_criteria=["Core module passes unit tests", "Updated requirement"],
+                     expected_revision=plan_rev,
+                     expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
+    agent_bridge.reconcile_task_steering(task_store, **arguments)
+    _, saved_revision = storage.read_plan_file(plan_path)
+    pending_dir = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    pending = pending_dir / (hashlib.sha256(b"task_001").hexdigest() + ".json")
+    pending.write_bytes(b" " * (1024 * 1024 + 1))
+    real_stat = Path.stat
+    real_read_text = Path.read_text
+
+    def stale_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path == pending:
+            values = list(result)
+            values[6] = 1
+            return os.stat_result(values)
+        return result
+
+    def guarded_read_text(path, *args, **kwargs):
+        if path == pending:
+            raise AssertionError("pending record must not be read without a bound")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stale_stat)
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    with pytest.raises(RuntimeError, match="size limit"):
+        agent_bridge.reconcile_task_steering(task_store, **arguments)
+    assert storage.read_plan_file(plan_path)[1] == saved_revision
 
 
 def test_service_reconcile_routes_to_real_persistence(test_environment):

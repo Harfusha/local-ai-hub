@@ -638,7 +638,11 @@ def reconcile_task_steering(
             if not pending_path.is_file() or pending_path.stat().st_size > 1024 * 1024:
                 raise RuntimeError("persisted steering reconciliation is pending without a safe retry record")
             with exclusive_file_update(pending_path):
-                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+                with pending_path.open("rb") as stream:
+                    pending_bytes = stream.read(1024 * 1024 + 1)
+                if len(pending_bytes) > 1024 * 1024:
+                    raise RuntimeError("pending reconciliation record exceeds size limit")
+                pending = json.loads(pending_bytes.decode("utf-8"))
                 if not isinstance(pending, dict):
                     raise ValueError("pending reconciliation record must be an object")
                 target_revision = pending.get("contract_revision")
