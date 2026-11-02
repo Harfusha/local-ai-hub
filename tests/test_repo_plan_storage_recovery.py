@@ -32,6 +32,25 @@ def test_plan_write_never_overwrites_or_deletes_existing_temp_file(tmp_path, mon
     assert not target.exists()
 
 
+@pytest.mark.parametrize("record_kind", ["intent", "request"])
+def test_journal_temp_collision_preserves_existing_file(tmp_path, monkeypatch, record_kind):
+    from local_ai_hub.repo_plan import storage as storage_module
+
+    storage = RepoPlanStorage(tmp_path)
+    storage.intents_dir.mkdir(parents=True)
+    token = "1234567890abcdef1234567890abcdef"
+    name = ".tmp_intent_test_123456" if record_kind == "intent" else f".tmp_{token}"
+    existing = storage.intents_dir / name
+    existing.write_bytes(b"preserve")
+    monkeypatch.setattr(storage_module.uuid, "uuid4", lambda: SimpleNamespace(hex=token))
+    with pytest.raises(FileExistsError):
+        if record_kind == "intent":
+            storage._save_intent(OperationIntent("intent_test", "save_plan", "", "payload", "owner", 1, "pending", []))
+        else:
+            storage._save_request("request", {"status": "pending"})
+    assert existing.read_bytes() == b"preserve"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
 def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
     root = tmp_path / "repo"
@@ -68,6 +87,45 @@ def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
     except OSError:
         pass  # A safe implementation may deny the attempted swap or write.
     assert swapped, "The controlled swap must be exercised"
+    assert sentinel.read_bytes() == b"unchanged"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
+def test_journal_write_resists_parent_junction_swap(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    parent = root / ".local-ai-hub" / "local" / "intents"
+    parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "intent_test.intent.json"
+    sentinel.write_bytes(b"unchanged")
+    junction = root / "staged-junction"
+    env = {**os.environ, "LAH_RACE_LINK": str(junction), "LAH_RACE_TARGET": str(outside)}
+    created = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "New-Item -ItemType Junction -Path $env:LAH_RACE_LINK -Target $env:LAH_RACE_TARGET | Out-Null"],
+        env=env, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if created.returncode or not junction.exists():
+        pytest.skip("Cannot create a Windows junction in this test environment")
+    original_mkdir = Path.mkdir
+    swapped = False
+
+    def swap_parent(path, *args, **kwargs):
+        nonlocal swapped
+        if path == parent and not swapped:
+            swapped = True
+            parent.rename(parent.with_name("old-intents"))
+            junction.rename(parent)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", swap_parent)
+    intent = OperationIntent("intent_test", "save_plan", "", "payload", "owner", 1, "pending", [])
+    try:
+        RepoPlanStorage(root)._save_intent(intent)
+    except OSError:
+        pass
+    assert swapped
     assert sentinel.read_bytes() == b"unchanged"
 
 

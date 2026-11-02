@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import base64
 import copy
+import functools
 import json
 import logging
 import os
 import subprocess
+import threading
 import time
 import uuid
 from itertools import islice
@@ -101,6 +103,23 @@ def _pin_windows_write_directories(root: Path, parent: Path):
     finally:
         for handle in reversed(handles):
             close(handle)
+
+
+def _pin_windows_storage_paths(method):
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if getattr(self._storage_path_guard, "active", False):
+            return method(self, *args, **kwargs)
+        if method.__name__ == "recover_pending_intents" and not self.intents_dir.exists():
+            return method(self, *args, **kwargs)
+        with _pin_windows_write_directories(self.repo_root, self.intents_dir):
+            with _pin_windows_write_directories(self.repo_root, self._lock_path.parent):
+                self._storage_path_guard.active = True
+                try:
+                    return method(self, *args, **kwargs)
+                finally:
+                    self._storage_path_guard.active = False
+    return wrapped
 
 
 def compute_bytes_sha256(data: bytes) -> str:
@@ -211,6 +230,7 @@ class RepoPlanStorage:
 
     def __init__(self, repo_root: str | Path, intents_dir: str | Path | None = None) -> None:
         self.repo_root = Path(repo_root).resolve()
+        self._storage_path_guard = threading.local()
         try:
             relative_intents_dir = (
                 ".local-ai-hub/local/intents" if intents_dir is None else os.fspath(intents_dir)
@@ -244,19 +264,22 @@ class RepoPlanStorage:
             raise RepoPlanError("Invalid operation intent identity")
         return self.intents_dir / f"{intent_id}.intent.json"
 
+    @_pin_windows_storage_paths
     def _save_intent(self, intent: OperationIntent) -> None:
         self._ensure_intents_dir()
         path = self._intent_path(intent.intent_id)
         raw = json.dumps(intent.to_dict(), indent=2, sort_keys=True)
         temp_path = self.intents_dir / f".tmp_{intent.intent_id}_{uuid.uuid4().hex[:6]}"
+        created = False
         try:
-            with open(temp_path, "wb") as f:
+            with open(temp_path, "xb") as f:
+                created = True
                 f.write(raw.encode("utf-8"))
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, path)
         finally:
-            if temp_path.exists():
+            if created and temp_path.exists():
                 try:
                     temp_path.unlink()
                 except OSError:
@@ -356,6 +379,7 @@ class RepoPlanStorage:
         digest = compute_bytes_sha256(key.encode("utf-8"))
         return self.intents_dir / f"request_{digest}.json"
 
+    @_pin_windows_storage_paths
     def _save_request(self, key: str, data: dict[str, Any]) -> None:
         if key:
             if not self._request_path(key).exists() and len(list(islice(self.intents_dir.glob("request_*.json"), 4096))) >= 4096:
@@ -378,14 +402,17 @@ class RepoPlanStorage:
         # Separate from target publication so tests/cancellation can interrupt targets only.
         raw = json.dumps(data, sort_keys=True).encode("utf-8")
         temporary = path.with_name(f".tmp_{uuid.uuid4().hex}")
+        created = False
         try:
-            with temporary.open("wb") as stream:
+            with temporary.open("xb") as stream:
+                created = True
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
         finally:
-            temporary.unlink(missing_ok=True)
+            if created:
+                temporary.unlink(missing_ok=True)
 
     def _request_replay(self, key: str, payload_sha: str) -> dict[str, Any] | None:
         if not key or not self._request_path(key).exists():
@@ -452,6 +479,18 @@ class RepoPlanStorage:
             raise RepoPlanConflictError("Operation targets must be distinct files")
         if sum(len(data) for _, data, _ in candidates) > 8 * 1024 * 1024:
             raise RepoPlanError("Recovery candidate exceeds 8 MiB operation limit")
+        return self._save_targets_pinned(operation, candidates, owner, key, lease_check_fn,
+                                         client_request_fingerprint=client_request_fingerprint,
+                                         client_plan_snapshot=client_plan_snapshot,
+                                         client_response_data=client_response_data)
+
+    @_pin_windows_storage_paths
+    def _save_targets_pinned(
+        self, operation: str, candidates: list[tuple[str, bytes, str | None]],
+        owner: str, key: str, lease_check_fn: Callable[[], bool] | None,
+        *, client_request_fingerprint: str = "", client_plan_snapshot: dict[str, Any] | None = None,
+        client_response_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self._ensure_intents_dir()
         # One physical-worktree lock covers revision checks, request keys, both targets,
         # and recovery. A custom intents directory must not create another lock domain.
@@ -539,6 +578,7 @@ class RepoPlanStorage:
             self._save_request(intent.idempotency_key, {"payload_sha256": intent.payload_sha256,
                                                        "status": "completed", "result": intent.result})
 
+    @_pin_windows_storage_paths
     def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None,
                                 only_key: str | None = None,
                                 resume_unapplied: bool = False,
