@@ -14,7 +14,7 @@
         "Upřesnění z chatu se promítne do globálního i projektového AGENTS.md: explicitní Local AI Hub, Superpowers a Caveman ultra; respektovat příkazy normal mode a stop caveman."
       ],
       "accountable_role": "Codex",
-      "blocker": "Antigravity shows baseline model quota reached until 2026-10-30 22:59:42; do not enable paid overages. The app is on Home, not the .local-ai-hub project, and no agent request can currently prove rule loading or a real Hub MCP call. Hub status is online but degraded (Ollama/preprocessing/telemetry probes timed out). Original task_f8d00ca6fd25 returns terminal 404 and its source worktree is absent; no duplicate or root substitution.",
+      "blocker": "Plan-bearing CI run 40846602356 is in progress; origin/master integration is pending. Antigravity actual agent-side usage is unverified while baseline quota is exhausted until 2026-10-30 22:59:42; do not enable paid overages. Original Agent OS task_f8d00ca6fd25 is missing (terminal 404) and its source worktree is absent. Preserve all other task and checkout changes.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -33,9 +33,9 @@
         }
       ],
       "depends_on": [],
-      "description": "Source commit 3802e55e is integrated into master; current master record commit 432fd061. Fresh clean-snapshot acceptance from git archive 432fd061: 46 passed in 31.49s; the Antigravity file has 11 tests covering clean/repeat install, user text and unmanaged skill preservation, checksum/download failures, timeout and opt-out. Global and project AGENTS activation rules, installed skill directories, and ~/.gemini/settings.json local-ai MCP entry were verified on disk. Antigravity opens, but Home is selected and the account reports baseline model quota exhausted; real instruction loading and an actual Hub MCP call remain unverified.",
+      "description": "The latest candidate package is now installed in the main Local AI Hub .venv from wheel SHA-256 cc525fcec0c2abf48366bac210ce6b2d5aefaada3aa088c2a9b8b93d848f6744; runtime package source matches candidate commits through c513adf6. Hub service stop/start succeeded; /health is healthy on 5.1.0 and local model routing is online. setup.py --generate-only ran with expected revision d3fc3a58. Both C:\\Users\\Adam\\.gemini\\settings.json and the Harfusha Antigravity profile mcp_config.json parse and contain local-ai. Global and project AGENTS files contain Local AI Hub, Superpowers, Caveman ultra, normal mode and stop caveman; required skills are present and modified/unmanaged trees were preserved. Hosted CI for d3fc3a58 passed; plan-bearing c513adf6 CI is in progress. Dashboard displays the selected release-install root and this existing plan. Actual Antigravity agent-side instruction loading and MCP invocation remain unverified because the baseline model quota is exhausted. Original task_f8d00ca6fd25 still returns terminal 404; no duplicate task was created.",
       "kind": "code",
-      "next_action": "After quota refresh or with operator-authorized non-paid model access, select the .local-ai-hub project in Antigravity and run a no-file/no-edit prompt. Verify global and project rule loading, Superpowers and Caveman ultra use, normal mode/stop caveman handling, and one authentic local-ai MCP status call; then update this existing task with evidence.",
+      "next_action": "After exact plan-bearing CI run 40846602356 succeeds and the candidate is integrated into origin/master, reopen Antigravity when baseline quota is available (or non-paid model access is operator-authorized). Select the .local-ai-hub project and issue a no-edit prompt; verify global/project rules, Superpowers and Caveman ultra behavior including normal mode/stop caveman, and one real local-ai MCP status call. Update this existing plan task with authentic evidence; never create a replacement task or synthetic receipt.",
       "title": "Automatic Antigravity setup",
       "work_phase": "verification",
       "work_status": "in_progress"
