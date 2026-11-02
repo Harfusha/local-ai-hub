@@ -584,8 +584,8 @@ class RepoPlanStorage:
             self._save_request(intent.idempotency_key, {"payload_sha256": intent.payload_sha256,
                                                        "status": "completed", "result": intent.result})
 
-    def _restore_reserved_intent(self, key: str, request: dict[str, Any]) -> None:
-        """Restore only a self-contained, fingerprint-bound reservation; legacy records stay blocked."""
+    def _validated_reserved_intent(self, key: str, request: dict[str, Any]) -> OperationIntent:
+        """Validate a self-contained, fingerprint-bound reservation."""
         snapshot, fingerprint = request.get("reserved_intent"), request.get("fingerprint")
         if not isinstance(snapshot, dict) or not isinstance(fingerprint, dict):
             raise RepoPlanConflictError("Missing intent has no durable reservation snapshot")
@@ -614,7 +614,11 @@ class RepoPlanStorage:
             total += len(data)
             if total > 8 * 1024 * 1024 or compute_bytes_sha256(data) != target.candidate_sha256:
                 raise RepoPlanConflictError("Missing intent reservation candidate mismatch")
-        self._save_intent(intent)
+        return intent
+
+    def _restore_reserved_intent(self, key: str, request: dict[str, Any]) -> None:
+        """Restore only verified new reservations; legacy records stay blocked."""
+        self._save_intent(self._validated_reserved_intent(key, request))
 
     @_pin_windows_storage_paths
     def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None,

@@ -88,6 +88,24 @@ def _replayable_plan_edit(method):
                     stored = intent.result
                 if not isinstance(stored, dict) or stored.get("client_request_fingerprint") != fingerprint:
                     raise RepoPlanConflictError("Idempotency key belongs to a different or unverified request")
+                if (record.get("status") == "pending" and record.get("intent_id")
+                        and intent.status == "pending" and isinstance(record.get("reserved_intent"), dict)):
+                    reserved = self.storage._validated_reserved_intent(key, record)
+                    if (intent.intent_id != reserved.intent_id or intent.operation != reserved.operation
+                            or intent.idempotency_key != reserved.idempotency_key
+                            or intent.payload_sha256 != reserved.payload_sha256 or intent.owner != reserved.owner
+                            or intent.created_at != reserved.created_at or intent.context != reserved.context
+                            or intent.git_branch != reserved.git_branch or intent.git_head != reserved.git_head
+                            or intent.result != reserved.result or len(intent.targets) != len(reserved.targets)
+                            or any(current.rel_path != prior.rel_path or current.expected_sha256 != prior.expected_sha256
+                                   or current.candidate_sha256 != prior.candidate_sha256
+                                   or current.candidate_base64 != prior.candidate_base64
+                                   or current.status not in {"pending", "confirmed"}
+                                   for current, prior in zip(intent.targets, reserved.targets))):
+                        raise RepoPlanConflictError("Pending intent no longer matches its reservation")
+                    outcomes = self.storage.recover_pending_intents(only_key=key, resume_unapplied=True)
+                    if len(outcomes) != 1 or outcomes[0].get("status") != "completed":
+                        raise RepoPlanConflictError("Idempotent operation requires reconciliation")
                 stored = self.storage._request_replay(key, record.get("payload_sha256"))
                 snapshot = stored.get("client_plan_snapshot")
                 if snapshot is None and stored.get("no_op") is False:

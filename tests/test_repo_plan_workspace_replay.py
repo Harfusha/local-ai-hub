@@ -60,6 +60,65 @@ def test_different_retry_cannot_resume_missing_intent(tmp_path, monkeypatch):
     assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
 
 
+@pytest.mark.parametrize("write_first", [False, True])
+def test_identical_retry_recovers_existing_pending_intent(tmp_path, monkeypatch, write_first):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._atomic_write_bytes
+
+    def interrupted(path, data):
+        if write_first:
+            original(path, data)
+        raise RuntimeError("interrupted publication")
+
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted publication"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", original)
+    result = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    assert result["success"] is True
+    assert workspace.get_plan("plan_replay")["plan"]["title"] == "First"
+    assert workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending") == result
+
+
+def test_retry_rejects_pending_intent_tampered_after_reservation(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan.storage import OperationIntent
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._atomic_write_bytes
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", lambda *_args: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", original)
+    request = workspace.storage._read_record(workspace.storage._request_path("pending"))
+    intent = OperationIntent.from_dict(workspace.storage._read_record(workspace.storage._intent_path(request["intent_id"])))
+    intent.targets[0].expected_sha256 = "0" * 64
+    workspace.storage._save_intent(intent)
+    with pytest.raises(RepoPlanConflictError, match="no longer matches"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
+
+
+def test_pending_retry_never_overwrites_an_intervening_edit(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._atomic_write_bytes
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", lambda *_args: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", original)
+    later = workspace.update_plan("plan_replay", title="Later", expected_revision=initial["file_revision"], idempotency_key="later")
+    with pytest.raises(RepoPlanConflictError, match="requires reconciliation"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    current = workspace.get_plan("plan_replay")
+    assert current["file_revision"] == later["file_revision"]
+    assert current["plan"]["title"] == "Later"
+
+
 def test_mcp_does_not_invent_mutation_outcome_without_storage_evidence(tmp_path, monkeypatch):
     from local_ai_hub import mcp_server
     class Backend:
