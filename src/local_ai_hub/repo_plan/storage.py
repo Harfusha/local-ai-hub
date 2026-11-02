@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import copy
 import json
 import logging
 import os
@@ -336,10 +337,13 @@ class RepoPlanStorage:
         self, rel_path: str, plan_dict: dict[str, Any], *,
         expected_revision: str | None = None, owner: str = "agent",
         idempotency_key: str = "", lease_check_fn: Callable[[], bool] | None = None,
+        client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
         return self._save_targets("save_plan", [(rel_path, serialize_plan_json(plan_dict).encode("utf-8"), expected_revision)],
-                                  owner, idempotency_key, lease_check_fn)
+                                  owner, idempotency_key, lease_check_fn,
+                                  client_request_fingerprint=client_request_fingerprint,
+                                  client_plan_snapshot=plan_dict if client_request_fingerprint else None)
 
     def save_spec_and_plan(
         self, spec_rel_path: str, spec_content: str, plan_rel_path: str,
@@ -356,6 +360,7 @@ class RepoPlanStorage:
     def _save_targets(
         self, operation: str, candidates: list[tuple[str, bytes, str | None]],
         owner: str, key: str, lease_check_fn: Callable[[], bool] | None,
+        *, client_request_fingerprint: str = "", client_plan_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         paths = [path for path, _, _ in candidates]
         if not isinstance(owner, str) or not owner or len(owner) > 256:
@@ -390,6 +395,9 @@ class RepoPlanStorage:
                                             candidate_base64=base64.b64encode(data).decode("ascii")))
             changed = [target.rel_path for target in targets if target.expected_sha256 != target.candidate_sha256]
             result: dict[str, Any] = {"success": True, "saved": True, "no_op": not changed, "changed_paths": changed}
+            if client_request_fingerprint:
+                result["client_request_fingerprint"] = client_request_fingerprint
+                result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
             if operation == "save_plan":
                 result["file_revision"] = targets[0].candidate_sha256
             else:

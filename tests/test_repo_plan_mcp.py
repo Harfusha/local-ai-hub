@@ -139,6 +139,7 @@ def test_plan_edit_small_budget_reports_applied_mutation(monkeypatch, tmp_path):
             calls.append(kwargs)
             return {"success": True, "file_revision": "a" * 64,
                     "plan_id": "plan-a", "task_id": "task-1",
+                    "no_op": False,
                     "task": {"description": "long " * 500}}
 
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
