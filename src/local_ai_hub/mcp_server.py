@@ -4704,11 +4704,26 @@ def local_ai_coord(
             if isinstance(no_op, bool):
                 result = {**result, "mutation_applied": not no_op}
         plan_extra = ["plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head", "board", "columns", "items", "tasks"]
-        return _compact(
+        projected = _compact(
             result,
             "coord" if action.startswith("plan_") or action == "plan_bind_task" else "status",
             plan_extra if action.startswith("plan_") else None,
         )
+        if action == "plan_get" and isinstance(result, dict) and result.get("success") is True:
+            if (not isinstance(projected, dict) or
+                (projected.get("success") is True and (
+                    projected.get("plan") != result.get("plan") or
+                    projected.get("file_revision") != result.get("file_revision") or
+                    not isinstance(result.get("plan"), dict) or
+                    not isinstance(result.get("file_revision"), str)
+                ))):
+                return _compact({
+                    "success": False,
+                    "error": "Plan response incomplete; request a larger budget or read the plan source in bounded slices.",
+                    "terminal": True,
+                    "retryable": False,
+                }, "coord")
+        return projected
     if changed_paths is not None and not paths:
         paths = changed_paths
     if (path or file) and not paths:

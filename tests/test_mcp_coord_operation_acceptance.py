@@ -34,6 +34,57 @@ class CoordBackend:
         return self.response
 
 
+@pytest.mark.parametrize("damage", ["missing_plan", "missing_revision", "partial_plan"])
+def test_plan_get_never_reports_success_for_partial_projection(monkeypatch, tmp_path, damage):
+    backend = CoordBackend({
+        "success": True,
+        "plan": {"id": "plan_x", "title": "Complete", "tasks": {"task_a": {"title": "A"}}},
+        "file_revision": "f" * 64,
+        "rel_path": ".local-ai-hub/plans/plan_x.plan.json",
+    })
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+    original = mcp_server.compact_result
+
+    def damaged_projection(value, **kwargs):
+        result = original(value, **kwargs)
+        if isinstance(result, dict) and "plan" in result:
+            result = dict(result)
+            if damage == "missing_plan":
+                result.pop("plan")
+            elif damage == "missing_revision":
+                result.pop("file_revision", None)
+            else:
+                result["plan"] = {"id": "plan_x"}
+        return result
+
+    monkeypatch.setattr(mcp_server, "compact_result", damaged_projection)
+    result = mcp_server.local_ai_coord(action="plan_get", root=str(tmp_path), plan_id="plan_x")
+    assert result["success"] is False
+    assert "incomplete" in result["error"].lower()
+
+
+@pytest.mark.parametrize("budget", [128, 256, 1000, 3000])
+def test_plan_get_wire_success_requires_complete_plan_and_revision(monkeypatch, tmp_path, budget):
+    plan = {"id": "plan_x", "description": "abcdefghij" * 400,
+            "tasks": {f"task_{i}": {"title": f"Task {i}"} for i in range(40)}}
+    revision = "f" * 64
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", CoordBackend({
+        "success": True, "plan": plan, "file_revision": revision,
+        "rel_path": ".local-ai-hub/plans/plan_x.plan.json",
+    }))
+    raw = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_get", "root": str(tmp_path), "plan_id": "plan_x",
+        "max_response_tokens": budget, "response_profile": "compact",
+    }))
+    content = raw[0][0] if isinstance(raw, tuple) else raw[0]
+    response = json.loads(content.text)
+    if response.get("success") is True:
+        assert response.get("plan") == plan
+        assert response.get("file_revision") == revision
+
+
 @pytest.mark.parametrize("action", ["plan_update", "plan_task_edit"])
 def test_plan_mutation_budget_reports_actual_write(monkeypatch, tmp_path, action):
     from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
