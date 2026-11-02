@@ -103,8 +103,49 @@ def test_corrupted_replay_snapshot_fails_closed(tmp_path):
     first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
     path = workspace.storage._request_path("key")
     record = workspace.storage._read_record(path)
-    record["result"]["client_plan_snapshot"]["title"] = "Forged"
-    workspace.storage._atomic_record(path, record)
-    with pytest.raises(RepoPlanConflictError, match="revision does not match"):
+    intent_path = workspace.storage._intent_path(record["result"]["intent_id"])
+    intent = workspace.storage._read_record(intent_path)
+    intent["targets"][0]["candidate_base64"] = "not-valid-base64"
+    workspace.storage._atomic_record(intent_path, intent)
+    with pytest.raises(RepoPlanConflictError, match="snapshot"):
         workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
     assert workspace.get_plan("plan_replay")["file_revision"] == first["file_revision"]
+
+
+def test_changed_replay_does_not_duplicate_snapshot_in_journal(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial", description="x" * 30000)
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    request_path = workspace.storage._request_path("key")
+    record = workspace.storage._read_record(request_path)
+    intent_path = workspace.storage._intent_path(record["result"]["intent_id"])
+    assert "client_plan_snapshot" not in record["result"]
+    assert request_path.stat().st_size + intent_path.stat().st_size < 2 * (workspace.plans_dir / "plan_replay.plan.json").stat().st_size
+    assert workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key") == first
+
+
+def test_missing_replay_intent_fails_closed(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    record = workspace.storage._read_record(workspace.storage._request_path("key"))
+    workspace.storage._intent_path(record["result"]["intent_id"]).unlink()
+    with pytest.raises(RepoPlanConflictError, match="intent"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    assert workspace.get_plan("plan_replay")["file_revision"] == first["file_revision"]
+
+
+def test_existing_inline_snapshot_record_still_replays(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    path = workspace.storage._request_path("key")
+    record = workspace.storage._read_record(path)
+    record["result"]["client_plan_snapshot"] = workspace.get_plan("plan_replay")["plan"]
+    workspace.storage._atomic_record(path, record)
+    workspace.storage._intent_path(record["result"]["intent_id"]).unlink()
+    replay = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    assert replay == first

@@ -397,7 +397,8 @@ class RepoPlanStorage:
             result: dict[str, Any] = {"success": True, "saved": True, "no_op": not changed, "changed_paths": changed}
             if client_request_fingerprint:
                 result["client_request_fingerprint"] = client_request_fingerprint
-                result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
+                if not changed:
+                    result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
             if operation == "save_plan":
                 result["file_revision"] = targets[0].candidate_sha256
             else:

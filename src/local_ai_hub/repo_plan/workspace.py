@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import base64
+import binascii
 import copy
 import functools
 import hashlib
@@ -22,6 +24,8 @@ from .schema_validation import (
     RepoPlanConflictError,
     RepoPlanNotFoundError,
     RepoPlanValidationError,
+    MAX_PLAN_FILE_BYTES,
+    parse_plan_json,
     serialize_plan_json,
     validate_plan_dict,
     validate_repo_path,
@@ -70,6 +74,34 @@ def _replayable_plan_edit(method):
                     raise RepoPlanConflictError("Idempotency key belongs to a different or unverified request")
                 stored = self.storage._request_replay(key, record.get("payload_sha256"))
                 snapshot = stored.get("client_plan_snapshot")
+                if snapshot is None and stored.get("no_op") is False:
+                    intent_id = stored.get("intent_id")
+                    if not isinstance(intent_id, str) or not intent_id:
+                        raise RepoPlanConflictError("Idempotent result has no verified intent")
+                    intent_path = self.storage._intent_path(intent_id)
+                    if not intent_path.exists():
+                        raise RepoPlanConflictError("Idempotent result intent is missing")
+                    intent = OperationIntent.from_dict(self.storage._read_record(intent_path))
+                    if (intent.intent_id != intent_id or intent.idempotency_key != key
+                            or intent.operation != "save_plan" or intent.status != "completed"
+                            or intent.context != context or intent.result != stored
+                            or intent.payload_sha256 != record.get("payload_sha256")
+                            or len(intent.targets) != 1):
+                        raise RepoPlanConflictError("Idempotent result intent is inconsistent")
+                    target = intent.targets[0]
+                    encoded = target.candidate_base64
+                    if (target.rel_path != self._plan_rel_path(values["plan_id"])
+                            or target.candidate_sha256 != stored.get("file_revision")
+                            or not isinstance(encoded, str)
+                            or len(encoded) > ((MAX_PLAN_FILE_BYTES + 2) // 3) * 4):
+                        raise RepoPlanConflictError("Idempotent plan snapshot is invalid")
+                    try:
+                        candidate = base64.b64decode(encoded, validate=True)
+                        if hashlib.sha256(candidate).hexdigest() != target.candidate_sha256:
+                            raise RepoPlanConflictError("Idempotent plan snapshot revision does not match")
+                        snapshot = parse_plan_json(candidate)
+                    except (binascii.Error, ValueError, RepoPlanValidationError) as exc:
+                        raise RepoPlanConflictError("Idempotent plan snapshot is invalid") from exc
                 if (not isinstance(snapshot, dict) or snapshot.get("id") != values["plan_id"]
                         or type(stored.get("no_op")) is not bool
                         or not isinstance(stored.get("file_revision"), str)):
