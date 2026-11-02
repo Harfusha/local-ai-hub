@@ -149,3 +149,26 @@ def test_existing_inline_snapshot_record_still_replays(tmp_path):
     workspace.storage._intent_path(record["result"]["intent_id"]).unlink()
     replay = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
     assert replay == first
+
+
+def test_delete_retry_does_not_delete_a_recreated_task(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    task = workspace.edit_task("plan_replay", "task_a", title="Old", expected_revision=created["file_revision"])
+    deleted = workspace.delete_task("plan_replay", "task_a", expected_revision=task["file_revision"], idempotency_key="delete")
+    recreated = workspace.edit_task("plan_replay", "task_a", title="New", expected_revision=deleted["file_revision"])
+    replay = workspace.delete_task("plan_replay", "task_a", expected_revision=task["file_revision"], idempotency_key="delete")
+    assert replay == deleted
+    assert workspace.get_plan("plan_replay")["file_revision"] == recreated["file_revision"]
+    assert workspace.get_plan("plan_replay")["plan"]["tasks"]["task_a"]["title"] == "New"
+
+
+def test_archive_retry_is_distinct_from_update_action(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    archived = workspace.archive_plan("plan_replay", expected_revision=created["file_revision"], idempotency_key="archive")
+    assert workspace.archive_plan("plan_replay", expected_revision=created["file_revision"], idempotency_key="archive") == archived
+    with pytest.raises(RepoPlanConflictError):
+        workspace.update_plan("plan_replay", lifecycle="archived", expected_revision=created["file_revision"], idempotency_key="archive")

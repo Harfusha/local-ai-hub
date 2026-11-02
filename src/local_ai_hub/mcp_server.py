@@ -4699,7 +4699,7 @@ def local_ai_coord(
         metadata = operation_contract("local_ai_coord")["actions"][action]
         arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
         result = CLIENT.coord(action=action, **arguments)
-        if action in {"plan_update", "plan_task_edit"} and isinstance(result, dict) and result.get("success") is True:
+        if action in {"plan_update", "plan_task_edit", "plan_task_delete", "plan_archive"} and isinstance(result, dict) and result.get("success") is True:
             no_op = result.get("no_op")
             if isinstance(no_op, bool):
                 result = {**result, "mutation_applied": not no_op}

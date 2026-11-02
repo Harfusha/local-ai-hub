@@ -12,7 +12,7 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
 
 
-@pytest.mark.parametrize("action", ["plan_update", "plan_task_edit"])
+@pytest.mark.parametrize("action", ["plan_update", "plan_task_edit", "plan_task_delete", "plan_archive"])
 def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, action):
     import local_ai_hub.repo_plan.workspace as workspace_module
     assert Path(workspace_module.__file__).resolve().is_relative_to(Path(__file__).resolve().parents[1] / "src")
@@ -29,7 +29,7 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     workspace = RepoPlanWorkspace(root)
     workspace.init_workspace()
     created = workspace.create_plan(plan_id="plan_replay", title="Initial")
-    if action == "plan_task_edit":
+    if action in {"plan_task_edit", "plan_task_delete"}:
         created = workspace.edit_task("plan_replay", "task_a", title="Initial", expected_revision=created["file_revision"])
     app = LocalAIApp(str(config))
     monkeypatch.setattr(http_server, "APP", app)
@@ -46,9 +46,14 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     if action == "plan_update":
         arguments["title"] = "First"
         different = {**arguments, "title": "Different"}
-    else:
+    elif action == "plan_task_edit":
         arguments.update(task_id="task_a", task_data={"title": "First"})
         different = {**arguments, "task_data": {"title": "Different"}}
+    elif action == "plan_task_delete":
+        arguments["task_id"] = "task_a"
+        different = {**arguments, "task_id": "task_b"}
+    else:
+        different = {**arguments, "owner": "different-owner"}
     try:
         _, first = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
         assert first["success"] is True, first

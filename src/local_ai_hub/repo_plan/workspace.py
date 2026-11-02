@@ -114,7 +114,9 @@ def _replayable_plan_edit(method):
                     raise RepoPlanConflictError("Idempotent plan snapshot revision does not match")
                 replay = {"success": True, "plan_id": values["plan_id"],
                           "file_revision": stored["file_revision"], "no_op": stored["no_op"]}
-                if method.__name__ == "edit_task":
+                if method.__name__ == "delete_task":
+                    replay["task_id"] = values["task_id"]
+                elif method.__name__ == "edit_task":
                     task_id = values["task_id"]
                     task = snapshot.get("tasks", {}).get(task_id)
                     if not isinstance(task, dict):
@@ -534,6 +536,7 @@ class RepoPlanWorkspace:
             "task": task,
         }
 
+    @_replayable_plan_edit
     def delete_task(
         self,
         plan_id: str,
@@ -541,6 +544,7 @@ class RepoPlanWorkspace:
         expected_revision: str | None = None,
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Delete a task from a plan file."""
         rel_path = self._plan_rel_path(plan_id)
@@ -576,28 +580,34 @@ class RepoPlanWorkspace:
             expected_revision=current_rev,
             owner=owner,
             idempotency_key=idempotency_key,
+            client_request_fingerprint=_client_request_fingerprint,
         )
         return {
             "success": True,
             "plan_id": plan_id,
             "task_id": task_id,
             "file_revision": save_res["file_revision"],
+            "no_op": save_res["no_op"],
         }
 
+    @_replayable_plan_edit
     def archive_plan(
         self,
         plan_id: str,
         expected_revision: str | None = None,
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Archive a plan file by setting its lifecycle to 'archived'."""
-        return self.update_plan(
+        return self.update_plan.__wrapped__(
+            self,
             plan_id=plan_id,
             lifecycle=PlanLifecycle.ARCHIVED.value,
             expected_revision=expected_revision,
             owner=owner,
             idempotency_key=idempotency_key,
+            _client_request_fingerprint=_client_request_fingerprint,
         )
 
     def validate_plan(self, plan_id: str) -> dict[str, Any]:
