@@ -9,7 +9,9 @@ import pytest
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext
 from local_ai_hub.repo_plan import agent_bridge
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
-from test_repo_plan_agent_os import create_initial_plan_file, test_environment
+from test_repo_plan_agent_os import create_initial_plan_file
+
+pytest_plugins = ("test_repo_plan_agent_os",)
 
 
 def test_pending_temp_collision_preserves_existing_file(test_environment, monkeypatch):
@@ -227,7 +229,7 @@ def test_oversized_recovery_payload_is_rejected_before_plan_or_spec_changes(test
     assert spec.read_bytes() == spec_before
 
 
-@pytest.mark.parametrize("crash_point", ["before_save", "after_spec", "before_ack", "before_contract", "before_binding"])
+@pytest.mark.parametrize("crash_point", ["before_save", "after_reservation", "after_spec", "before_ack", "before_contract", "before_binding"])
 def test_steering_intent_is_durable_before_writes_and_recovers(test_environment, monkeypatch, crash_point):
     from local_ai_hub.repo_plan.storage import RepoPlanStorage
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
@@ -242,6 +244,9 @@ def test_steering_intent_is_durable_before_writes_and_recovers(test_environment,
     if crash_point == "before_save":
         original = RepoPlanStorage.save_spec_and_plan
         monkeypatch.setattr(RepoPlanStorage, "save_spec_and_plan", lambda *_a, **_k: (_ for _ in ()).throw(SimulatedCrash()))
+    elif crash_point == "after_reservation":
+        original = RepoPlanStorage._save_intent
+        monkeypatch.setattr(RepoPlanStorage, "_save_intent", lambda *_a, **_k: (_ for _ in ()).throw(SimulatedCrash()))
     elif crash_point == "after_spec":
         original = RepoPlanStorage._atomic_write_bytes
         def crash_after_spec(store, path, data):
@@ -275,6 +280,10 @@ def test_steering_intent_is_durable_before_writes_and_recovers(test_environment,
         assert storage.read_plan_file(plan_path)[1] == plan_rev
         assert spec.read_text(encoding="utf-8") == "original\n"
         monkeypatch.setattr(RepoPlanStorage, "save_spec_and_plan", original)
+    elif crash_point == "after_reservation":
+        assert storage.read_plan_file(plan_path)[1] == plan_rev
+        assert spec.read_text(encoding="utf-8") == "original\n"
+        monkeypatch.setattr(RepoPlanStorage, "_save_intent", original)
     elif crash_point == "after_spec":
         assert storage.read_plan_file(plan_path)[1] == plan_rev
         assert spec.read_text(encoding="utf-8") == "updated\n"

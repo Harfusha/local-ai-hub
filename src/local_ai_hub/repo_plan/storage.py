@@ -401,6 +401,8 @@ class RepoPlanStorage:
     def _atomic_record(self, path: Path, data: dict[str, Any]) -> None:
         # Separate from target publication so tests/cancellation can interrupt targets only.
         raw = json.dumps(data, sort_keys=True).encode("utf-8")
+        if len(raw) > 12 * 1024 * 1024:
+            raise RepoPlanError("Operation record exceeds 12 MiB limit")
         temporary = path.with_name(f".tmp_{uuid.uuid4().hex}")
         created = False
         try:
@@ -534,7 +536,11 @@ class RepoPlanStorage:
             result["intent_id"] = intent_id
             intent = OperationIntent(intent_id, operation, key, payload_sha, owner, time.time(), "pending", targets,
                                      context["git_branch"], context["git_head"], context, result)
-            self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id})
+            snapshot = intent.to_dict()
+            snapshot_hash = compute_bytes_sha256(json.dumps(snapshot, sort_keys=True).encode("utf-8"))
+            self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id,
+                                     "reserved_intent": snapshot, "reserved_intent_sha256": snapshot_hash,
+                                     "fingerprint": fingerprint})
             self._save_intent(intent)
             for target, (_, data, _) in zip(targets, candidates):
                 self._check_fence(context, lease_check_fn)
@@ -578,6 +584,38 @@ class RepoPlanStorage:
             self._save_request(intent.idempotency_key, {"payload_sha256": intent.payload_sha256,
                                                        "status": "completed", "result": intent.result})
 
+    def _restore_reserved_intent(self, key: str, request: dict[str, Any]) -> None:
+        """Restore only a self-contained, fingerprint-bound reservation; legacy records stay blocked."""
+        snapshot, fingerprint = request.get("reserved_intent"), request.get("fingerprint")
+        if not isinstance(snapshot, dict) or not isinstance(fingerprint, dict):
+            raise RepoPlanConflictError("Missing intent has no durable reservation snapshot")
+        intent = OperationIntent.from_dict(snapshot)
+        expected_hash = compute_bytes_sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8"))
+        snapshot_hash = compute_bytes_sha256(json.dumps(snapshot, sort_keys=True).encode("utf-8"))
+        targets = fingerprint.get("targets")
+        if (request.get("reserved_intent_sha256") != snapshot_hash
+                or request.get("status") != "pending" or request.get("intent_id") != intent.intent_id
+                or request.get("payload_sha256") != expected_hash or intent.payload_sha256 != expected_hash
+                or intent.idempotency_key != key or intent.status != "pending" or not intent.targets
+                or fingerprint.get("operation") != intent.operation or fingerprint.get("owner") != intent.owner
+                or fingerprint.get("context") != intent.context or not isinstance(intent.context, dict)
+                or not isinstance(intent.result, dict) or not isinstance(targets, list)
+                or len(targets) != len(intent.targets)):
+            raise RepoPlanConflictError("Missing intent reservation identity mismatch")
+        total = 0
+        for recorded, target in zip(targets, intent.targets):
+            if (not isinstance(recorded, dict) or recorded.get("path") != target.rel_path
+                    or recorded.get("candidate") != target.candidate_sha256
+                    or recorded.get("expected") not in (None, target.expected_sha256)
+                    or not isinstance(target.candidate_base64, str)):
+                raise RepoPlanConflictError("Missing intent reservation target mismatch")
+            validate_repo_path(target.rel_path, repo_root=self.repo_root)
+            data = base64.b64decode(target.candidate_base64, validate=True)
+            total += len(data)
+            if total > 8 * 1024 * 1024 or compute_bytes_sha256(data) != target.candidate_sha256:
+                raise RepoPlanConflictError("Missing intent reservation candidate mismatch")
+        self._save_intent(intent)
+
     @_pin_windows_storage_paths
     def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None,
                                 only_key: str | None = None,
@@ -596,6 +634,8 @@ class RepoPlanStorage:
                 if request.get("status") != "pending":
                     return []
                 paths = [self._intent_path(request["intent_id"])]
+                if not paths[0].exists():
+                    self._restore_reserved_intent(only_key, request)
             else:
                 paths = islice(self.intents_dir.glob("*.intent.json"), 4096)
             for path in paths:

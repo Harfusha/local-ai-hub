@@ -19,6 +19,47 @@ PLAN = ".local-ai-hub/plans/main.plan.json"
 SPEC = "docs/spec.md"
 
 
+def test_missing_new_intent_recovers_from_durable_reservation(tmp_path, monkeypatch):
+    storage = RepoPlanStorage(tmp_path)
+    original = storage._save_intent
+
+    def crash_before_intent(_intent):
+        raise RuntimeError("interrupted after reservation")
+
+    monkeypatch.setattr(storage, "_save_intent", crash_before_intent)
+    with pytest.raises(RuntimeError, match="interrupted after reservation"):
+        storage.save_plan_file(PLAN, create_sample_plan_dict(), idempotency_key="reserved")
+    assert not (tmp_path / PLAN).exists()
+    monkeypatch.setattr(storage, "_save_intent", original)
+    outcomes = storage.recover_pending_intents(only_key="reserved", resume_unapplied=True)
+    assert len(outcomes) == 1 and outcomes[0]["status"] == "completed"
+    assert storage.read_plan_file(PLAN)[0]["id"] == "plan_sample"
+
+
+def test_missing_intent_with_corrupt_snapshot_stays_blocked(tmp_path, monkeypatch):
+    storage = RepoPlanStorage(tmp_path)
+    original = storage._save_intent
+    monkeypatch.setattr(storage, "_save_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        storage.save_plan_file(PLAN, create_sample_plan_dict(), idempotency_key="reserved")
+    monkeypatch.setattr(storage, "_save_intent", original)
+    request_path = storage._request_path("reserved")
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["reserved_intent"]["owner"] = "other"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    with pytest.raises(RepoPlanConflictError, match="reservation identity mismatch"):
+        storage.recover_pending_intents(only_key="reserved", resume_unapplied=True)
+    assert not (tmp_path / PLAN).exists()
+
+
+def test_missing_legacy_intent_without_snapshot_stays_blocked(tmp_path):
+    storage = RepoPlanStorage(tmp_path)
+    storage._ensure_intents_dir()
+    storage._save_request("legacy", {"status": "pending", "intent_id": "intent_missing", "payload_sha256": "old"})
+    with pytest.raises(RepoPlanConflictError, match="no durable reservation snapshot"):
+        storage.recover_pending_intents(only_key="legacy", resume_unapplied=True)
+
+
 def test_plan_write_never_overwrites_or_deletes_existing_temp_file(tmp_path, monkeypatch):
     from local_ai_hub.repo_plan import storage as storage_module
 
