@@ -1,6 +1,14 @@
 # Local AI Hub: current acceptance state
 
-## Current checkpoint — 2026-10-30 (`c2e2d5df`)
+## Current checkpoint — 2026-11-02 (`561d2163`)
+
+At this checkpoint the main checkout and `origin/master` point to `561d2163afce9c0f37ef6f2b112ce8481fca17ee`. The main checkout also contains uncommitted work owned by other active sessions. GitHub CI [run 41361614174](https://github.com/Harfusha/local-ai-hub/actions/runs/41361614174) failed: the matrix jobs stopped at `pyflakes`, the separate critical coverage cohort failed, and package/publish were skipped. Public annotations did not establish the coverage failure's cause.
+
+An isolated `codex/release-finalization-510` candidate contains a lint fix (`62b468b4`) and further plan-storage and diagram-ingestion repairs; it has not been integrated or pushed to master. The lint check passed at `62b468b4`; focused storage and Windows diagram tests passed for their respective candidates. Linux/macOS diagram traversal and the Windows final-symlink case remain unverified. The release plan is active and records the remaining work. Do not treat the earlier wheel, CI, runtime or benchmark evidence below as proof for the current candidate. Gemini live verification remains deferred by the operator.
+
+**Status: IN PROGRESS — MASTER CI FAILED; INTEGRATION, CURRENT-CANDIDATE VALIDATION AND RELEASE OPEN.**
+
+## Historical checkpoint — 2026-10-30 (`c2e2d5df`)
 
 The main checkout and `origin/master` are both at `c2e2d5df71cb60347c779c9c7cf97c1d7cfc09a6`. This commit contains Windows CI fixes for empty lock-file initialization races, Windows SQLite URI handling, and platform-specific test behavior. The focused local regression set passed 34 tests with 6 platform skips. GitHub CI run [#359](https://github.com/Harfusha/local-ai-hub/actions/runs/41065218813) passed critical coverage and showed 11/12 matrix jobs complete at this checkpoint; the final job and package/release follow-up are still pending. Release `v5.1.2` still points at older commit `d358e1b25c2ba4e489ed2c284cafccedc01d4b06`; it has not been retargeted or published. The changelog now records the CI fixes. The installed service has not yet been updated from the final release candidate. Gemini host verification remains deferred at the operator's request. Authentic broker receipts, current saved dashboard screenshot and the historical non-test-data isolation investigation remain open; no synthetic or native test output is represented as a broker receipt.
 
