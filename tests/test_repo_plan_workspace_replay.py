@@ -1,0 +1,360 @@
+from concurrent.futures import ThreadPoolExecutor
+import os
+from pathlib import Path
+
+import pytest
+
+from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
+from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory share-delete behavior")
+def test_workspace_pins_journal_parent_before_opening_lock(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    parent = workspace.storage.intents_dir
+    original_mkdir = Path.mkdir
+    attempted = False
+
+    def try_swap(path, *args, **kwargs):
+        nonlocal attempted
+        if path == parent and not attempted:
+            attempted = True
+            with pytest.raises(OSError):
+                parent.rename(parent.with_name("moved-intents"))
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", try_swap)
+    result = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pinned")
+    assert attempted and result["success"] is True
+
+
+def test_identical_retry_recovers_missing_intent_without_manual_reconciliation(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._save_intent
+    monkeypatch.setattr(workspace.storage, "_save_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
+    monkeypatch.setattr(workspace.storage, "_save_intent", original)
+    result = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    assert result["success"] is True
+    assert workspace.get_plan("plan_replay")["plan"]["title"] == "First"
+    assert workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved") == result
+
+
+def test_different_retry_cannot_resume_missing_intent(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._save_intent
+    monkeypatch.setattr(workspace.storage, "_save_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    monkeypatch.setattr(workspace.storage, "_save_intent", original)
+    with pytest.raises(RepoPlanConflictError):
+        workspace.update_plan("plan_replay", title="Different", expected_revision=initial["file_revision"], idempotency_key="reserved")
+    assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
+
+
+@pytest.mark.parametrize("write_first", [False, True])
+def test_identical_retry_recovers_existing_pending_intent(tmp_path, monkeypatch, write_first):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._atomic_write_bytes
+
+    def interrupted(path, data):
+        if write_first:
+            original(path, data)
+        raise RuntimeError("interrupted publication")
+
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted publication"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", original)
+    result = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    assert result["success"] is True
+    assert workspace.get_plan("plan_replay")["plan"]["title"] == "First"
+    assert workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending") == result
+
+
+def test_retry_rejects_pending_intent_tampered_after_reservation(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan.storage import OperationIntent
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._atomic_write_bytes
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", lambda *_args: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", original)
+    request = workspace.storage._read_record(workspace.storage._request_path("pending"))
+    intent = OperationIntent.from_dict(workspace.storage._read_record(workspace.storage._intent_path(request["intent_id"])))
+    intent.targets[0].expected_sha256 = "0" * 64
+    workspace.storage._save_intent(intent)
+    with pytest.raises(RepoPlanConflictError, match="no longer matches"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    assert workspace.get_plan("plan_replay")["file_revision"] == initial["file_revision"]
+
+
+def test_pending_retry_never_overwrites_an_intervening_edit(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original = workspace.storage._atomic_write_bytes
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", lambda *_args: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    monkeypatch.setattr(workspace.storage, "_atomic_write_bytes", original)
+    later = workspace.update_plan("plan_replay", title="Later", expected_revision=initial["file_revision"], idempotency_key="later")
+    with pytest.raises(RepoPlanConflictError, match="requires reconciliation"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="pending")
+    current = workspace.get_plan("plan_replay")
+    assert current["file_revision"] == later["file_revision"]
+    assert current["plan"]["title"] == "Later"
+
+
+def test_mcp_does_not_invent_mutation_outcome_without_storage_evidence(tmp_path, monkeypatch):
+    from local_ai_hub import mcp_server
+    class Backend:
+        def coord(self, **_kwargs):
+            return {"success": True, "plan_id": "plan_replay", "task_id": "task_a",
+                    "file_revision": "a" * 64, "task": {"title": "A"}}
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", Backend())
+    result = mcp_server.local_ai_coord(action="plan_task_edit", root=str(tmp_path),
+                                      plan_id="plan_replay", task_id="task_a", task_data={"title": "A"})
+    assert "mutation_applied" not in result
+
+
+@pytest.mark.parametrize("action", ["update", "edit"])
+def test_retry_returns_original_result_without_overwriting_later_change(tmp_path, action):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    if action == "edit":
+        created = workspace.edit_task("plan_replay", "task_a", title="Initial", expected_revision=created["file_revision"])
+        invoke = lambda: workspace.edit_task("plan_replay", "task_a", title="First", expected_revision=created["file_revision"], idempotency_key="first")
+    else:
+        invoke = lambda: workspace.update_plan("plan_replay", title="First", expected_revision=created["file_revision"], idempotency_key="first")
+    first = invoke()
+    later = workspace.update_plan("plan_replay", description="later", expected_revision=first["file_revision"])
+    replay = invoke()
+    assert replay == first
+    assert workspace.get_plan("plan_replay")["file_revision"] == later["file_revision"]
+    assert workspace.get_plan("plan_replay")["plan"]["description"] == "later"
+
+
+def test_reused_key_with_different_request_rejects(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="same")
+    with pytest.raises(RepoPlanConflictError):
+        workspace.update_plan("plan_replay", title="Other", expected_revision=initial["file_revision"], idempotency_key="same")
+
+
+def test_concurrent_identical_requests_are_replayed(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    def invoke(_):
+        return workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="same")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(invoke, range(2)))
+    assert results[0] == results[1]
+
+
+def test_noop_replay_retains_original_outcome_after_later_edit(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    noop = workspace.update_plan("plan_replay", title="Initial", expected_revision=initial["file_revision"], idempotency_key="noop")
+    assert noop["no_op"] is True
+    later = workspace.update_plan("plan_replay", title="Later", expected_revision=noop["file_revision"])
+    replay = workspace.update_plan("plan_replay", title="Initial", expected_revision=initial["file_revision"], idempotency_key="noop")
+    assert replay == noop
+    assert workspace.get_plan("plan_replay")["file_revision"] == later["file_revision"]
+
+
+def test_replay_after_crash_recovery_retains_original_result(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    original_complete = workspace.storage._complete_intent
+    monkeypatch.setattr(workspace.storage, "_complete_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="crash")
+    monkeypatch.setattr(workspace.storage, "_complete_intent", original_complete)
+    workspace.storage.recover_pending_intents()
+    replay = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="crash")
+    assert replay["plan"]["title"] == "First"
+    assert replay["file_revision"] == workspace.get_plan("plan_replay")["file_revision"]
+
+
+def test_legacy_record_without_client_identity_fails_closed(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    snapshot = workspace.get_plan("plan_replay")["plan"]
+    snapshot["title"] = "First"
+    workspace.storage.save_plan_file(".local-ai-hub/plans/plan_replay.plan.json", snapshot,
+                                     expected_revision=initial["file_revision"], idempotency_key="legacy")
+    with pytest.raises(RepoPlanConflictError, match="unverified request"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="legacy")
+
+
+def test_corrupted_replay_snapshot_fails_closed(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    path = workspace.storage._request_path("key")
+    record = workspace.storage._read_record(path)
+    intent_path = workspace.storage._intent_path(record["result"]["intent_id"])
+    intent = workspace.storage._read_record(intent_path)
+    intent["targets"][0]["candidate_base64"] = "not-valid-base64"
+    workspace.storage._atomic_record(intent_path, intent)
+    with pytest.raises(RepoPlanConflictError, match="snapshot"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    assert workspace.get_plan("plan_replay")["file_revision"] == first["file_revision"]
+
+
+def test_changed_replay_does_not_duplicate_snapshot_in_journal(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial", description="x" * 30000)
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    request_path = workspace.storage._request_path("key")
+    record = workspace.storage._read_record(request_path)
+    intent_path = workspace.storage._intent_path(record["result"]["intent_id"])
+    assert "client_plan_snapshot" not in record["result"]
+    assert request_path.stat().st_size + intent_path.stat().st_size < 2 * (workspace.plans_dir / "plan_replay.plan.json").stat().st_size
+    assert workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key") == first
+
+
+def test_missing_replay_intent_fails_closed(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    record = workspace.storage._read_record(workspace.storage._request_path("key"))
+    workspace.storage._intent_path(record["result"]["intent_id"]).unlink()
+    with pytest.raises(RepoPlanConflictError, match="intent"):
+        workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    assert workspace.get_plan("plan_replay")["file_revision"] == first["file_revision"]
+
+
+def test_existing_inline_snapshot_record_still_replays(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    initial = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    first = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    path = workspace.storage._request_path("key")
+    record = workspace.storage._read_record(path)
+    record["result"]["client_plan_snapshot"] = workspace.get_plan("plan_replay")["plan"]
+    workspace.storage._atomic_record(path, record)
+    workspace.storage._intent_path(record["result"]["intent_id"]).unlink()
+    replay = workspace.update_plan("plan_replay", title="First", expected_revision=initial["file_revision"], idempotency_key="key")
+    assert replay == first
+
+
+def test_delete_retry_does_not_delete_a_recreated_task(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    task = workspace.edit_task("plan_replay", "task_a", title="Old", expected_revision=created["file_revision"])
+    deleted = workspace.delete_task("plan_replay", "task_a", expected_revision=task["file_revision"], idempotency_key="delete")
+    recreated = workspace.edit_task("plan_replay", "task_a", title="New", expected_revision=deleted["file_revision"])
+    replay = workspace.delete_task("plan_replay", "task_a", expected_revision=task["file_revision"], idempotency_key="delete")
+    assert replay == deleted
+    assert workspace.get_plan("plan_replay")["file_revision"] == recreated["file_revision"]
+    assert workspace.get_plan("plan_replay")["plan"]["tasks"]["task_a"]["title"] == "New"
+
+
+def test_archive_retry_is_distinct_from_update_action(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_replay", title="Initial")
+    archived = workspace.archive_plan("plan_replay", expected_revision=created["file_revision"], idempotency_key="archive")
+    assert workspace.archive_plan("plan_replay", expected_revision=created["file_revision"], idempotency_key="archive") == archived
+    with pytest.raises(RepoPlanConflictError):
+        workspace.update_plan("plan_replay", lifecycle="archived", expected_revision=created["file_revision"], idempotency_key="archive")
+
+
+def test_create_retry_keeps_original_result_and_preserves_later_edits(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    first = workspace.create_plan(plan_id="plan_replay", title="Initial", idempotency_key="create")
+    assert first["no_op"] is False
+    later = workspace.update_plan("plan_replay", title="Later", expected_revision=first["file_revision"])
+    replay = workspace.create_plan(plan_id="plan_replay", title="Initial", idempotency_key="create")
+    assert replay == first
+    assert workspace.get_plan("plan_replay")["file_revision"] == later["file_revision"]
+    with pytest.raises(RepoPlanConflictError):
+        workspace.create_plan(plan_id="plan_replay", title="Different", idempotency_key="create")
+
+
+def test_create_reports_mutation_with_small_mcp_budget(tmp_path, monkeypatch):
+    import asyncio
+    from local_ai_hub import mcp_server
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    class Backend:
+        def coord(self, action, **payload):
+            assert action == "plan_create"
+            payload.pop("root")
+            return workspace.create_plan(**payload)
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", Backend())
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_create", "root": str(tmp_path), "plan_id": "plan_budget",
+        "title": "Budget", "description": "long description " * 500,
+        "idempotency_key": "budget", "max_response_tokens": 256,
+    }))
+    assert result.get("mutation_applied") is True
+    assert workspace.get_plan("plan_budget")["plan"]["title"] == "Budget"
+
+
+def test_adoption_retry_preserves_original_count_and_later_changes(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    items = [{"item_id": "item-a", "title": "Legacy"}]
+    first = workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    assert first["adopted_count"] == 1 and first["no_op"] is False
+    later = workspace.update_plan("plan_replay", description="Later", expected_revision=first["file_revision"])
+    replay = workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    assert replay == first
+    assert workspace.get_plan("plan_replay")["file_revision"] == later["file_revision"]
+    with pytest.raises(RepoPlanConflictError):
+        workspace.adopt_legacy_board_items("plan_replay", [{"item_id": "item-b", "title": "Other"}], idempotency_key="adopt")
+
+
+def test_adoption_crash_recovery_completes_new_plan_without_losing_items(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    items = [{"item_id": "item-a", "title": "Legacy"}]
+    original_complete = workspace.storage._complete_intent
+    monkeypatch.setattr(workspace.storage, "_complete_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    monkeypatch.setattr(workspace.storage, "_complete_intent", original_complete)
+    workspace.storage.recover_pending_intents()
+    result = workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    assert result["adopted_count"] == 1
+    assert workspace.get_plan("plan_replay")["plan"]["tasks"]["task_item-a"]["title"] == "Legacy"
+
+
+def test_adoption_rejects_corrupt_import_count(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    items = [{"item_id": "item-a", "title": "Legacy"}]
+    workspace.adopt_legacy_board_items("plan_replay", items)
+    workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="noop")
+    path = workspace.storage._request_path("noop")
+    record = workspace.storage._read_record(path)
+    record["result"]["client_response_data"]["adopted_count"] = 999
+    workspace.storage._atomic_record(path, record)
+    with pytest.raises(RepoPlanConflictError, match="adoption result"):
+        workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="noop")

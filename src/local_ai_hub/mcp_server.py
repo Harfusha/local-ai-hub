@@ -4826,14 +4826,31 @@ def local_ai_coord(
         metadata = operation_contract("local_ai_coord")["actions"][action]
         arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
         result = CLIENT.coord(action=action, **arguments)
-        if action == "plan_task_edit" and isinstance(result, dict) and result.get("success") is True:
-            result = {**result, "mutation_applied": True}
+        if action in {"plan_create", "plan_update", "plan_task_edit", "plan_task_delete", "plan_archive", "plan_adopt_legacy_board"} and isinstance(result, dict) and result.get("success") is True:
+            no_op = result.get("no_op")
+            if isinstance(no_op, bool):
+                result = {**result, "mutation_applied": not no_op}
         plan_extra = ["plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head", "board", "columns", "items", "tasks"]
-        return _compact(
+        projected = _compact(
             result,
             "coord" if action.startswith("plan_") or action == "plan_bind_task" else "status",
             plan_extra if action.startswith("plan_") else None,
         )
+        if action == "plan_get" and isinstance(result, dict) and result.get("success") is True:
+            if (not isinstance(projected, dict) or
+                (projected.get("success") is True and (
+                    projected.get("plan") != result.get("plan") or
+                    projected.get("file_revision") != result.get("file_revision") or
+                    not isinstance(result.get("plan"), dict) or
+                    not isinstance(result.get("file_revision"), str)
+                ))):
+                return _compact({
+                    "success": False,
+                    "error": "Plan response incomplete; request a larger budget or read the plan source in bounded slices.",
+                    "terminal": True,
+                    "retryable": False,
+                }, "coord")
+        return projected
     if changed_paths is not None and not paths:
         paths = changed_paths
     if (path or file) and not paths:
@@ -5643,7 +5660,7 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "", root: str = "", workspace: str = "") -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, start_line: int = 1, end_line: int = 0, id: str = "", file: str = "", root: str = "", workspace: str = "", expected_file_sha256: str = "") -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
@@ -5660,6 +5677,8 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
         eff_start = start_line if start_line > 1 else line_start
         eff_end = end_line if end_line > 0 else line_end
         if is_source_slices:
+            if offset or expected_file_sha256:
+                return {"success": False, "error": "source pagination requires a single path", "terminal": True, "retryable": False}
             results = []
             for item in slices[:16]:
                 if not isinstance(item, dict):
@@ -5671,7 +5690,8 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
                 results.append(read_source_slice(target_workspace, path=s_path, line_start=s_start, line_end=s_end, max_chars=s_chars))
             return _compact({"success": True, "slices": results, "count": len(results)}, "artifact")
         eff_chars = max(512, min(max_chars, 12000)) if max_chars else 4000
-        arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": eff_chars}
+        arguments = {"path": path, "line_start": eff_start, "line_end": eff_end, "max_chars": eff_chars,
+                     "offset": offset, "expected_file_sha256": expected_file_sha256}
         error = validate_operation_arguments("local_ai_artifact", "source", arguments)
         if error is not None:
             return {"success": False, "error": error, "terminal": True, "retryable": False}

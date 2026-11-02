@@ -1189,6 +1189,26 @@
         "action_literals": []
       }
     },
+    "GET /api/telemetry/endpoint-stats": {
+      "decision": "retain",
+      "role": "dashboard_aggregate",
+      "reason": "Operator dashboard endpoint statistics and project selection.",
+      "response_policy": "Preserve aggregate statistics and actionable status; detailed diagnostics remain subject to their existing gates.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": [
+          "available",
+          "items",
+          "projects",
+          "success"
+        ],
+        "response_producers": [
+          "local:stats"
+        ],
+        "action_literals": []
+      }
+    },
     "GET /api/telemetry/report": {
       "decision": "retain",
       "role": "dashboard_aggregate",
@@ -8258,6 +8278,106 @@
         "action_literals": []
       }
     },
+    "POST /api/opencode/provider/start": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Provider lifecycle start operation for the supervised OpenCode session.",
+      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_opencode_provider_start_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "state",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "local:current",
+          "local:rejection",
+          "service.start",
+          "service.status",
+          "service.wait"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/opencode/provider/status": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Provider lifecycle status operation for the supervised OpenCode session.",
+      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_opencode_provider_status_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "state",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "local:current",
+          "local:rejection",
+          "service.start",
+          "service.status",
+          "service.wait"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/opencode/provider/stop": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Provider lifecycle stop operation for the supervised OpenCode session.",
+      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_opencode_provider_stop_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "state",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "local:current",
+          "local:rejection",
+          "service.start",
+          "service.status",
+          "service.wait"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/opencode/provider/wait": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Provider lifecycle wait operation for the supervised OpenCode session.",
+      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_opencode_provider_wait_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "state",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "local:current",
+          "local:rejection",
+          "service.start",
+          "service.status",
+          "service.wait"
+        ],
+        "action_literals": []
+      }
+    },
     "POST /api/repo/affected_tests": {
       "decision": "retain",
       "role": "agent",
@@ -9357,6 +9477,24 @@
         "response_producers": [
           "APP.telemetry.get_timeline_page"
         ],
+        "action_literals": []
+      }
+    },
+    "POST /api/telemetry/endpoint-stats/reset": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Operator reset of dashboard endpoint statistics for a selected project.",
+      "response_policy": "Preserve reset outcome, project root and actionable status; retain existing authorization.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_telemetry_endpoint_stats_reset_1",
+        "literal_response_fields": [
+          "available",
+          "reset",
+          "root",
+          "success"
+        ],
+        "response_producers": [],
         "action_literals": []
       }
     },

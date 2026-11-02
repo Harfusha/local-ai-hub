@@ -28,8 +28,8 @@ from local_ai_hub.features import FeatureSet
 
 
 class TestSkillGeneration:
-    def test_default_skill_contains_all_core_components(self):
-        skill = generate_skill_markdown({})
+    def test_enabled_backend_skill_contains_all_core_components(self):
+        skill = generate_skill_markdown({"ollama": {"enabled": True}})
         assert "local_ai_repo" in skill
         assert "local_ai_command" not in skill
         assert "native command tool" in skill
@@ -63,6 +63,7 @@ class TestSkillGeneration:
 
     def test_skill_with_custom_models(self):
         cfg = {
+            "ollama": {"enabled": True},
             "models": {
                 "fast_code": "deepseek-coder:6.7b",
                 "heavy_code": "deepseek-coder:33b",
@@ -84,7 +85,7 @@ class TestSkillGeneration:
         assert features.general_model == "qwen2.5-coder:7b"
         assert features.smart_model == "qwen2.5-coder:7b"
         assert features.reasoning_model == "qwen3.5:9b"
-        assert "Local model inference is disabled" in skill
+        assert "local_ai_task" in skill
         assert "qwen2.5-coder:" not in policy
         assert "for ordinary local reasoning" not in skill
         assert "for ordinary local reasoning" not in policy
@@ -130,8 +131,9 @@ class TestSkillReferences:
         assert "preprocessing.md" not in refs
 
     def test_references_semantic_delegation_on_demand(self):
-        refs = generate_skill_references({})
-        skill = generate_skill_markdown({})
+        cfg = {"ollama": {"enabled": True}}
+        refs = generate_skill_references(cfg)
+        skill = generate_skill_markdown(cfg)
 
         for generated in (skill, refs["workflows.md"]):
             normalized = generated.lower()
@@ -141,7 +143,7 @@ class TestSkillReferences:
         assert "local_ai_status" in skill
 
     def test_references_gate_status_wording(self):
-        cfg = {"features": {"status": False}}
+        cfg = {"features": {"status": False}, "ollama": {"enabled": True}}
         refs = generate_skill_references(cfg)
         skill = generate_skill_markdown(cfg)
         policy = generate_global_policy(cfg)
@@ -169,7 +171,7 @@ class TestSkillReferences:
             assert "local_ai_task" not in generated
 
     def test_references_include_semantic_handoff_in_tools_card_when_enabled(self):
-        refs = generate_skill_references({})
+        refs = generate_skill_references({"ollama": {"enabled": True}})
 
         assert "semantic delegation is on-demand" in refs["tools.md"].lower()
         assert "never blocked by mandatory local handoffs" in refs["tools.md"].lower()
@@ -177,7 +179,7 @@ class TestSkillReferences:
 
 class TestGlobalPolicyGeneration:
     def test_policy_markers_and_content(self):
-        policy = generate_global_policy({})
+        policy = generate_global_policy({"ollama": {"enabled": True}})
         assert "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->" in policy
         assert "<!-- END LOCAL AI HUB TOOL POLICY -->" in policy
         assert "local_ai_repo" in policy
@@ -212,7 +214,7 @@ class TestGlobalPolicyGeneration:
         assert "no auto-commit" in policy
 
     def test_policy_semantic_delegation_on_demand(self):
-        policy = generate_global_policy({})
+        policy = generate_global_policy({"ollama": {"enabled": True}})
         normalized = policy.lower()
 
         assert "semantic delegation is on-demand" in normalized
@@ -253,12 +255,18 @@ class TestMcpSchemasGeneration:
             profile = schema["parameters"]["properties"]["response_profile"]
             assert "delta" in profile["enum"]
 
-    def test_default_schemas_contain_all_tools(self):
-        schemas = generate_mcp_tool_schemas({})
+    def test_enabled_backend_schemas_contain_all_tools(self):
+        schemas = generate_mcp_tool_schemas({"ollama": {"enabled": True}})
         assert set(schemas.keys()) == {
             "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
             "local_ai_coord", "local_ai_artifact", "local_ai_work",
         }
+
+    def test_empty_config_omits_backend_dependent_tools(self):
+        schemas = generate_mcp_tool_schemas({})
+        assert "local_ai_task" not in schemas
+        assert "local_ai_work" not in schemas
+        assert "local_ai_repo" in schemas
 
     def test_schemas_omit_disabled_tools(self):
         schemas = generate_mcp_tool_schemas({"features": {"rag": False, "tasks": False}})
@@ -301,7 +309,7 @@ class TestMcpSchemasGeneration:
         assert "dry_run" not in properties
 
     def test_schema_descriptions_include_enabled_semantic_handoff_contract(self):
-        schemas = generate_mcp_tool_schemas({})
+        schemas = generate_mcp_tool_schemas({"ollama": {"enabled": True}})
 
         for name in ("local_ai_repo", "local_ai_task"):
             normalized = schemas[name]["description"].lower()
@@ -309,7 +317,7 @@ class TestMcpSchemasGeneration:
             assert "never blocked by mandatory local handoffs" in normalized
 
     def test_schema_handoff_contract_respects_status_gate(self):
-        schemas = generate_mcp_tool_schemas({"features": {"status": False}})
+        schemas = generate_mcp_tool_schemas({"features": {"status": False}, "ollama": {"enabled": True}})
 
         for name in ("local_ai_repo", "local_ai_task"):
             description = schemas[name]["description"]
@@ -335,13 +343,14 @@ class TestMcpSchemasGeneration:
 class TestWriteAllGenerated:
     def test_writes_expected_tree(self, tmp_path: Path):
         cfg = {
+            "ollama": {"enabled": True},
             "models": {"fast_code": "test-model:7b"},
             "features": {"rag": False},
         }
         res = write_all_generated(cfg, tmp_path)
         assert len(res["skill"]) >= 4
         assert len(res["instructions"]) >= 1
-        assert len(res["mcp"]) == 2
+        assert len(res["mcp"]) == 3
         assert len(res["schemas"]) >= 5
 
         skill_md = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")

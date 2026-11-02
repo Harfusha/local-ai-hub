@@ -81,6 +81,7 @@ def _get_incidents(monkeypatch, store, query, *, allow_root=True):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_incidents=store))
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_: None)
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     handler.path = "/api/agent-state/incidents?" + urlencode(query)
     handler._reject_identity_fields = lambda _: True
     handler._require_authorized = lambda *args, **kwargs: True

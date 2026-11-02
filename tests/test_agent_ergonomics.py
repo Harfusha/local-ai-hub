@@ -1164,7 +1164,7 @@ def test_artifact_accepts_id_alias():
 
 def test_coord_accepts_path_and_file_for_single_path():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
-        mc.post.return_value = {"success": True, "lease_id": "L1"}
+        mc.post.return_value = {"success": True, "lease_id": "lease_0123456789abcdef0123"}
         res = local_ai_coord(action="claim", root="/repo", path="src/main.py", owner="agent")
         assert res.get("success") is True, f"claim with path= failed: {res}"
         calls = [c for c in mc.post.call_args_list if "/api/leases/claim_batch" in str(c)]

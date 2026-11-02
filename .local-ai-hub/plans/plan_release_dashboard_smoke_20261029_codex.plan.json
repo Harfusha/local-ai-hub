@@ -1,0 +1,26 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Temporary smoke for project-plan create, list, and task editing; archive after verification.",
+  "id": "plan_release_dashboard_smoke_20261029_codex",
+  "lifecycle": "archived",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_dashboard-8ae50b24-e8b6-46ea-9c06-d0d681e83a9a": {
+      "acceptance_criteria": [
+        "Edited task appears in selected plan",
+        "Edited fields survive board refresh"
+      ],
+      "accountable_role": "Codex smoke",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Edited through the dashboard. Verifies task title, description, and acceptance criteria persist after refresh.",
+      "kind": "code",
+      "next_action": "Refresh board, confirm edited fields persist, then archive smoke plan.",
+      "title": "CRUD smoke task (edited)",
+      "work_status": "planned"
+    }
+  },
+  "title": "Release dashboard CRUD smoke 2026-10-29"
+}

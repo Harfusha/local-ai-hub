@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote, unquote
 
-from .sqlite_support import connect_sqlite, is_busy_error
+from .sqlite_support import connect_sqlite
 
 
 LATENCY_BUCKET_LIMITS: tuple[float, ...] = (

@@ -56,8 +56,8 @@ def test_db_query_keeps_auth_mode_recovery_and_error_boundary_order() -> None:
     ]
     auth_line = next(line for line, name in calls if name == "_require_authorized")
     parse_line = max(line for line, name in calls if name == "_read_json")
-    mode_line = max(line for line, name in calls if name == "_http_mode_gate_error")
     dispatch_line = next(line for line, name in calls if name == "select_post_handler")
+    mode_line = max(line for line, name in calls if name == "_http_mode_gate_error" and line < dispatch_line)
     recovery_line = max(line for line, name in calls if name in {"_claim_recovery", "begin"} and line < dispatch_line)
     assert auth_line < parse_line < mode_line < recovery_line < dispatch_line
     assert "/api/db/query" in http_server.HTTP_MODE_GAMING_READ_POST_PATHS

@@ -1,11 +1,74 @@
 import hashlib
+import os
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext
 from local_ai_hub.repo_plan import agent_bridge
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError
-from test_repo_plan_agent_os import create_initial_plan_file, test_environment
+from test_repo_plan_agent_os import create_initial_plan_file
+
+pytest_plugins = ("test_repo_plan_agent_os",)
+
+
+def test_pending_temp_collision_preserves_existing_file(test_environment, monkeypatch):
+    root, storage, _, task_store, _, _, manager = test_environment
+    setup_bound_task(test_environment)
+    binding = manager.get_binding("task_001")
+    pending = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    pending.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(b"task_001").hexdigest() + ".json"
+    token = "1234567890abcdef1234567890abcdef"
+    existing = pending / f".{name}.{token}.tmp"
+    existing.write_bytes(b"preserve")
+    monkeypatch.setattr(agent_bridge.uuid, "uuid4", lambda: SimpleNamespace(hex=token))
+    with pytest.raises(FileExistsError):
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"reason": "new"})
+    assert existing.read_bytes() == b"preserve"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
+def test_pending_reconciliation_resists_parent_junction_swap(test_environment, monkeypatch, tmp_path):
+    root, storage, _, task_store, _, _, manager = test_environment
+    setup_bound_task(test_environment)
+    binding = manager.get_binding("task_001")
+    parent = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path.parent / (tmp_path.name + "-steering-outside")
+    outside.mkdir()
+    name = hashlib.sha256(b"task_001").hexdigest() + ".json"
+    sentinel = outside / name
+    sentinel.write_bytes(b"unchanged")
+    junction = root / "staged-steering-junction"
+    env = {**os.environ, "LAH_RACE_LINK": str(junction), "LAH_RACE_TARGET": str(outside)}
+    created = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "New-Item -ItemType Junction -Path $env:LAH_RACE_LINK -Target $env:LAH_RACE_TARGET | Out-Null"],
+        env=env, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if created.returncode or not junction.exists():
+        pytest.skip("Cannot create a Windows junction in this test environment")
+    original_mkdir = Path.mkdir
+    attempted = False
+
+    def swap_parent(path, *args, **kwargs):
+        nonlocal attempted
+        if path == parent and not attempted:
+            attempted = True
+            parent.rename(parent.with_name("old-pending"))
+            junction.rename(parent)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", swap_parent)
+    try:
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"reason": "new"})
+    except OSError:
+        pass
+    assert attempted
+    assert sentinel.read_bytes() == b"unchanged"
 
 
 def setup_bound_task(test_environment):
@@ -42,6 +105,199 @@ def test_reconcile_steering_persists_spec_plan_and_task(test_environment):
     plan, _ = storage.read_plan_file(plan_path)
     assert plan["tasks"]["task_core"]["acceptance_criteria"] == ["Core module passes unit tests", "Updated requirement"]
     assert task_store.get("task_001").contract.acceptance_criteria == ("Core module passes unit tests", "Updated requirement")
+
+
+def test_pending_steering_growth_after_stat_has_bounded_read(test_environment, monkeypatch):
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
+                     spec_rel_path="docs/feature.md", spec_content="updated\n",
+                     acceptance_criteria=["Core module passes unit tests", "Updated requirement"],
+                     expected_revision=plan_rev,
+                     expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
+    agent_bridge.reconcile_task_steering(task_store, **arguments)
+    _, saved_revision = storage.read_plan_file(plan_path)
+    pending_dir = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    pending = pending_dir / (hashlib.sha256(b"task_001").hexdigest() + ".json")
+    pending.write_bytes(b" " * (agent_bridge.MAX_PENDING_RECONCILIATION_BYTES + 1))
+    real_stat = Path.stat
+    real_read_text = Path.read_text
+
+    def stale_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path == pending:
+            values = list(result)
+            values[6] = 1
+            return os.stat_result(values)
+        return result
+
+    def guarded_read_text(path, *args, **kwargs):
+        if path == pending:
+            raise AssertionError("pending record must not be read without a bound")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stale_stat)
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    with pytest.raises(RuntimeError, match="size limit"):
+        agent_bridge.reconcile_task_steering(task_store, **arguments)
+    assert storage.read_plan_file(plan_path)[1] == saved_revision
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle path validation")
+def test_pending_read_rejects_handle_opened_outside_expected_path(tmp_path, monkeypatch):
+    expected = tmp_path / "pending.json"
+    outside = tmp_path / "outside.json"
+    expected.write_text("{}", encoding="utf-8")
+    outside.write_text("{}", encoding="utf-8")
+    real_open = os.open
+    opened = []
+
+    def swapped_open(path, flags, *args, **kwargs):
+        if Path(path) == expected:
+            descriptor = real_open(outside, flags, *args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_bridge.os, "open", swapped_open)
+    with pytest.raises(ValueError, match="opened pending reconciliation path"):
+        agent_bridge._read_pending_reconciliation(expected)
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO regression")
+def test_pending_read_rejects_fifo_without_waiting_for_writer(tmp_path):
+    fifo = tmp_path / "pending-fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="regular file"):
+        agent_bridge._read_pending_reconciliation(fifo)
+
+
+def test_pending_record_does_not_replace_unresolved_distinct_content(test_environment):
+    root, storage, _, _, _, _, _ = test_environment
+    binding = agent_bridge.TaskBinding(task_id="task_001", repo_root=str(root), plan_id="plan_a",
+                                       plan_task_id="task_a", plan_rel_path=".local-ai-hub/plans/plan_a.plan.json")
+    original = {"task_id": "task_001", "reason": "first clarification"}
+    path = agent_bridge._persist_pending_contract_reconciliation(storage, binding, original)
+    before = path.read_bytes()
+    assert agent_bridge._persist_pending_contract_reconciliation(storage, binding, original) == path
+    assert path.read_bytes() == before
+    with pytest.raises(RepoPlanConflictError, match="pending reconciliation"):
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {**original, "reason": "different"})
+    assert path.read_bytes() == before
+
+
+def test_oversized_pending_record_is_not_persisted(test_environment):
+    root, storage, _, _, _, _, _ = test_environment
+    binding = agent_bridge.TaskBinding(task_id="task_oversized", repo_root=str(root), plan_id="plan_a",
+                                       plan_task_id="task_a", plan_rel_path=".local-ai-hub/plans/plan_a.plan.json")
+    with pytest.raises(ValueError, match="size limit"):
+        agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"text": "x" * agent_bridge.MAX_PENDING_RECONCILIATION_BYTES})
+    path = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation" / (hashlib.sha256(b"task_oversized").hexdigest() + ".json")
+    assert not path.exists()
+
+
+def test_existing_pending_blocks_new_steering_before_plan_or_spec_changes(test_environment):
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    binding = agent_bridge.TaskBindingManager(root).get_binding("task_001")
+    agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"reason": "unfinished"})
+    spec_before = spec.read_bytes()
+    task_before = task_store.get("task_001")
+    with pytest.raises(RepoPlanConflictError, match="pending reconciliation"):
+        agent_bridge.reconcile_task_steering(
+            task_store, root=str(root), task_id="task_001", steering_id="new",
+            spec_rel_path="docs/feature.md", spec_content="changed\n",
+            acceptance_criteria=["New requirement"], expected_revision=plan_rev,
+            expected_spec_revision=hashlib.sha256(spec_before).hexdigest())
+    assert storage.read_plan_file(plan_path)[1] == plan_rev
+    assert spec.read_bytes() == spec_before
+    assert task_store.get("task_001").contract == task_before.contract
+
+
+def test_oversized_recovery_payload_is_rejected_before_plan_or_spec_changes(test_environment):
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    spec_before = spec.read_bytes()
+    criteria = [f"{index}:" + "\U0001f431" * 4000 for index in range(50)]
+    with pytest.raises(ValueError, match="size limit"):
+        agent_bridge.reconcile_task_steering(
+            task_store, root=str(root), task_id="task_001", steering_id="oversized",
+            spec_rel_path="docs/feature.md", spec_content="changed\n",
+            acceptance_criteria=criteria, expected_revision=plan_rev,
+            expected_spec_revision=hashlib.sha256(spec_before).hexdigest())
+    assert storage.read_plan_file(plan_path)[1] == plan_rev
+    assert spec.read_bytes() == spec_before
+
+
+@pytest.mark.parametrize("crash_point", ["before_save", "after_reservation", "after_spec", "before_ack", "before_contract", "before_binding"])
+def test_steering_intent_is_durable_before_writes_and_recovers(test_environment, monkeypatch, crash_point):
+    from local_ai_hub.repo_plan.storage import RepoPlanStorage
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    arguments = dict(root=str(root), task_id="task_001", steering_id="intent-test",
+                     spec_rel_path="docs/feature.md", spec_content="updated\n",
+                     acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
+                     expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    if crash_point == "before_save":
+        original = RepoPlanStorage.save_spec_and_plan
+        monkeypatch.setattr(RepoPlanStorage, "save_spec_and_plan", lambda *_a, **_k: (_ for _ in ()).throw(SimulatedCrash()))
+    elif crash_point == "after_reservation":
+        original = RepoPlanStorage._save_intent
+        monkeypatch.setattr(RepoPlanStorage, "_save_intent", lambda *_a, **_k: (_ for _ in ()).throw(SimulatedCrash()))
+    elif crash_point == "after_spec":
+        original = RepoPlanStorage._atomic_write_bytes
+        def crash_after_spec(store, path, data):
+            original(store, path, data)
+            if path == spec:
+                raise SimulatedCrash()
+        monkeypatch.setattr(RepoPlanStorage, "_atomic_write_bytes", crash_after_spec)
+    elif crash_point == "before_ack":
+        original = RepoPlanStorage._save_request
+        def crash_before_ack(store, key, data):
+            if data.get("status") == "completed" and key.startswith("steering_v2_"):
+                raise SimulatedCrash()
+            return original(store, key, data)
+        monkeypatch.setattr(RepoPlanStorage, "_save_request", crash_before_ack)
+    elif crash_point == "before_contract":
+        original = task_store.revise_contract
+        monkeypatch.setattr(task_store, "revise_contract", lambda *_a, **_k: (_ for _ in ()).throw(SimulatedCrash()))
+    else:
+        original = agent_bridge.TaskBindingManager._save
+        def crash_binding(manager, binding, **kwargs):
+            if binding.contract_revision == 2:
+                raise SimulatedCrash()
+            return original(manager, binding, **kwargs)
+        monkeypatch.setattr(agent_bridge.TaskBindingManager, "_save", crash_binding)
+
+    with pytest.raises(SimulatedCrash):
+        agent_bridge.reconcile_task_steering(task_store, **arguments)
+    pending = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation" / (hashlib.sha256(b"task_001").hexdigest() + ".json")
+    assert pending.is_file()
+    if crash_point == "before_save":
+        assert storage.read_plan_file(plan_path)[1] == plan_rev
+        assert spec.read_text(encoding="utf-8") == "original\n"
+        monkeypatch.setattr(RepoPlanStorage, "save_spec_and_plan", original)
+    elif crash_point == "after_reservation":
+        assert storage.read_plan_file(plan_path)[1] == plan_rev
+        assert spec.read_text(encoding="utf-8") == "original\n"
+        monkeypatch.setattr(RepoPlanStorage, "_save_intent", original)
+    elif crash_point == "after_spec":
+        assert storage.read_plan_file(plan_path)[1] == plan_rev
+        assert spec.read_text(encoding="utf-8") == "updated\n"
+        monkeypatch.setattr(RepoPlanStorage, "_atomic_write_bytes", original)
+    elif crash_point == "before_ack":
+        monkeypatch.setattr(RepoPlanStorage, "_save_request", original)
+    elif crash_point == "before_contract":
+        monkeypatch.setattr(task_store, "revise_contract", original)
+    else:
+        monkeypatch.setattr(agent_bridge.TaskBindingManager, "_save", original)
+    recovered = agent_bridge.reconcile_task_steering(task_store, **arguments)
+    assert recovered["success"] is True
+    assert task_store.get("task_001").contract.acceptance_criteria == ("Updated requirement",)
+    assert not pending.exists()
 
 
 def test_service_reconcile_routes_to_real_persistence(test_environment):
@@ -453,7 +709,7 @@ def test_recovery_retries_after_projection_record_write_failure(test_environment
         nonlocal pending_writes
         if "pending-contract-reconciliation" in str(destination):
             pending_writes += 1
-            if pending_writes == 2:
+            if pending_writes == 1:
                 raise OSError("injected retry record failure")
         return original_replace(source, destination)
 
@@ -528,7 +784,8 @@ def test_retry_rejects_tampered_pending_record_without_revising_task(test_enviro
 
 
 def test_same_criteria_does_not_fake_recovery_when_pending_record_is_missing(test_environment, monkeypatch):
-    root, _, task_store, _, plan_rev, spec = setup_bound_task(test_environment)
+    root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
+    original_spec = spec.read_bytes()
     criteria = list(task_store.get("task_001").contract.acceptance_criteria)
     arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
@@ -536,10 +793,12 @@ def test_same_criteria_does_not_fake_recovery_when_pending_record_is_missing(tes
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
     monkeypatch.setattr(task_store, "revise_contract", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("failed")))
     monkeypatch.setattr(agent_bridge, "_persist_pending_contract_reconciliation", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk failure")))
-    with pytest.raises(RuntimeError, match="retry record failed"):
+    with pytest.raises(RuntimeError, match="disk failure"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
-    with pytest.raises(RuntimeError, match="pending"):
+    with pytest.raises(RuntimeError, match="disk failure"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
+    assert storage.read_plan_file(plan_path)[1] == plan_rev
+    assert spec.read_bytes() == original_spec
     assert task_store.get("task_001").checkpoint.state_data.get("contract_revision", 1) == 1
 
 

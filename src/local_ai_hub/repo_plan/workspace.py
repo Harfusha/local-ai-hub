@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import logging
+import base64
+import binascii
 import copy
+import functools
+import hashlib
+import inspect
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +24,154 @@ from .schema_validation import (
     RepoPlanConflictError,
     RepoPlanNotFoundError,
     RepoPlanValidationError,
+    MAX_PLAN_FILE_BYTES,
+    parse_plan_json,
+    serialize_plan_json,
     validate_plan_dict,
     validate_repo_path,
 )
-from .storage import RepoPlanStorage, get_git_context
+from .storage import OperationIntent, RepoPlanStorage, _guard_storage_paths, get_git_context
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
+
+
+@contextmanager
+def _workspace_storage_lock(storage):
+    with _guard_storage_paths(storage):
+        storage._ensure_intents_dir()
+        with storage._lock_storage():
+            yield
+
+
+def _replayable_plan_edit(method):
+    """Serialize client identity checks with the underlying durable save."""
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        values = {name: value for name, value in bound.arguments.items()
+                  if name not in {"self", "_client_request_fingerprint"} and value is not _UNSET}
+        key = values.get("idempotency_key", "")
+        if not isinstance(key, str) or len(key) > 1024:
+            raise RepoPlanValidationError("Idempotency key must be a string of at most 1024 characters")
+        if not key:
+            return method(self, *args, **kwargs)
+        with _workspace_storage_lock(self.storage):
+            context = self.storage._context()
+            try:
+                identity = json.dumps({"method": method.__name__, "arguments": values, "context": context},
+                                      sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RepoPlanValidationError("Request identity must be finite JSON") from exc
+            fingerprint = hashlib.sha256(identity).hexdigest()
+            request_path = self.storage._request_path(key)
+            if self.storage._record_exists(request_path):
+                record = self.storage._read_record(request_path)
+                stored = record.get("result")
+                if record.get("status") == "pending" and record.get("intent_id"):
+                    intent_path = self.storage._intent_path(record["intent_id"])
+                    if not self.storage._record_exists(intent_path):
+                        snapshot = record.get("reserved_intent")
+                        snapshot_result = snapshot.get("result") if isinstance(snapshot, dict) else None
+                        if (not isinstance(snapshot_result, dict)
+                                or snapshot_result.get("client_request_fingerprint") != fingerprint):
+                            raise RepoPlanConflictError("Idempotent operation references a missing intent and requires reconciliation")
+                        outcomes = self.storage.recover_pending_intents(only_key=key, resume_unapplied=True)
+                        if len(outcomes) != 1 or outcomes[0].get("status") != "completed":
+                            raise RepoPlanConflictError("Idempotent operation requires reconciliation")
+                    intent = OperationIntent.from_dict(self.storage._read_record(intent_path))
+                    stored = intent.result
+                if not isinstance(stored, dict) or stored.get("client_request_fingerprint") != fingerprint:
+                    raise RepoPlanConflictError("Idempotency key belongs to a different or unverified request")
+                if (record.get("status") == "pending" and record.get("intent_id")
+                        and intent.status == "pending" and isinstance(record.get("reserved_intent"), dict)):
+                    reserved = self.storage._validated_reserved_intent(key, record)
+                    if (intent.intent_id != reserved.intent_id or intent.operation != reserved.operation
+                            or intent.idempotency_key != reserved.idempotency_key
+                            or intent.payload_sha256 != reserved.payload_sha256 or intent.owner != reserved.owner
+                            or intent.created_at != reserved.created_at or intent.context != reserved.context
+                            or intent.git_branch != reserved.git_branch or intent.git_head != reserved.git_head
+                            or intent.result != reserved.result or len(intent.targets) != len(reserved.targets)
+                            or any(current.rel_path != prior.rel_path or current.expected_sha256 != prior.expected_sha256
+                                   or current.candidate_sha256 != prior.candidate_sha256
+                                   or current.candidate_base64 != prior.candidate_base64
+                                   or current.status not in {"pending", "confirmed"}
+                                   for current, prior in zip(intent.targets, reserved.targets))):
+                        raise RepoPlanConflictError("Pending intent no longer matches its reservation")
+                    outcomes = self.storage.recover_pending_intents(only_key=key, resume_unapplied=True)
+                    if len(outcomes) != 1 or outcomes[0].get("status") != "completed":
+                        raise RepoPlanConflictError("Idempotent operation requires reconciliation")
+                stored = self.storage._request_replay(key, record.get("payload_sha256"))
+                snapshot = stored.get("client_plan_snapshot")
+                if snapshot is None and stored.get("no_op") is False:
+                    intent_id = stored.get("intent_id")
+                    if not isinstance(intent_id, str) or not intent_id:
+                        raise RepoPlanConflictError("Idempotent result has no verified intent")
+                    intent_path = self.storage._intent_path(intent_id)
+                    if not self.storage._record_exists(intent_path):
+                        raise RepoPlanConflictError("Idempotent result intent is missing")
+                    intent = OperationIntent.from_dict(self.storage._read_record(intent_path))
+                    if (intent.intent_id != intent_id or intent.idempotency_key != key
+                            or intent.operation != "save_plan" or intent.status != "completed"
+                            or intent.context != context or intent.result != stored
+                            or intent.payload_sha256 != record.get("payload_sha256")
+                            or len(intent.targets) != 1):
+                        raise RepoPlanConflictError("Idempotent result intent is inconsistent")
+                    target = intent.targets[0]
+                    encoded = target.candidate_base64
+                    if (target.rel_path != self._plan_rel_path(values["plan_id"])
+                            or target.candidate_sha256 != stored.get("file_revision")
+                            or not isinstance(encoded, str)
+                            or len(encoded) > ((MAX_PLAN_FILE_BYTES + 2) // 3) * 4):
+                        raise RepoPlanConflictError("Idempotent plan snapshot is invalid")
+                    try:
+                        candidate = base64.b64decode(encoded, validate=True)
+                        if hashlib.sha256(candidate).hexdigest() != target.candidate_sha256:
+                            raise RepoPlanConflictError("Idempotent plan snapshot revision does not match")
+                        snapshot = parse_plan_json(candidate)
+                    except (binascii.Error, ValueError, RepoPlanValidationError) as exc:
+                        raise RepoPlanConflictError("Idempotent plan snapshot is invalid") from exc
+                if (not isinstance(snapshot, dict) or snapshot.get("id") != values["plan_id"]
+                        or type(stored.get("no_op")) is not bool
+                        or not isinstance(stored.get("file_revision"), str)):
+                    raise RepoPlanConflictError("Idempotent result has no verified plan snapshot")
+                try:
+                    snapshot_digest = hashlib.sha256(serialize_plan_json(snapshot).encode("utf-8")).hexdigest()
+                except RepoPlanValidationError as exc:
+                    raise RepoPlanConflictError("Idempotent plan snapshot is invalid") from exc
+                if snapshot_digest != stored["file_revision"]:
+                    raise RepoPlanConflictError("Idempotent plan snapshot revision does not match")
+                replay = {"success": True, "plan_id": values["plan_id"],
+                          "file_revision": stored["file_revision"], "no_op": stored["no_op"]}
+                if method.__name__ == "adopt_legacy_board_items":
+                    response_data = stored.get("client_response_data")
+                    source_items = values.get("board_items")
+                    if source_items is None:
+                        source_items = values.get("legacy_items") or []
+                    if (not isinstance(response_data, dict)
+                            or type(response_data.get("adopted_count")) is not int
+                            or not isinstance(source_items, list)
+                            or not 0 <= response_data["adopted_count"] <= len(source_items)):
+                        raise RepoPlanConflictError("Idempotent adoption result is invalid")
+                    count = response_data["adopted_count"]
+                    replay.update(adopted_count=count, tasks_imported=count)
+                elif method.__name__ == "delete_task":
+                    replay["task_id"] = values["task_id"]
+                elif method.__name__ == "edit_task":
+                    task_id = values["task_id"]
+                    task = snapshot.get("tasks", {}).get(task_id)
+                    if not isinstance(task, dict):
+                        raise RepoPlanConflictError("Idempotent plan snapshot has no matching task")
+                    replay.update(task_id=task_id, task=copy.deepcopy(task))
+                else:
+                    replay["plan"] = copy.deepcopy(snapshot)
+                return replay
+            return method(self, *args, **kwargs, _client_request_fingerprint=fingerprint)
+
+    return wrapped
 
 DEFAULT_README_CONTENT = """# Local AI Hub Project Workspace
 
@@ -255,9 +402,11 @@ class RepoPlanWorkspace:
             "plan_id": plan_id,
             "file_revision": save_res["file_revision"],
             "rel_path": rel_path,
+            "no_op": save_res["no_op"],
             "plan": plan_dict,
         }
 
+    @_replayable_plan_edit
     def update_plan(
         self,
         plan_id: str,
@@ -270,6 +419,7 @@ class RepoPlanWorkspace:
         expected_revision: str | None = None,
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Update top-level plan metadata. Preserves plan identity and does NOT rename file on title change."""
         rel_path = self._plan_rel_path(plan_id)
@@ -294,6 +444,7 @@ class RepoPlanWorkspace:
             expected_revision=current_rev,
             owner=owner,
             idempotency_key=idempotency_key,
+            client_request_fingerprint=_client_request_fingerprint,
         )
         return {
             "success": True,
@@ -303,6 +454,7 @@ class RepoPlanWorkspace:
             "plan": plan_dict,
         }
 
+    @_replayable_plan_edit
     def edit_task(
         self,
         plan_id: str,
@@ -327,6 +479,7 @@ class RepoPlanWorkspace:
         expected_revision: str | None = None,
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Edit or create a task within a plan file using atomic save."""
         rel_path = self._plan_rel_path(plan_id)
@@ -417,15 +570,18 @@ class RepoPlanWorkspace:
             expected_revision=current_rev,
             owner=owner,
             idempotency_key=idempotency_key,
+            client_request_fingerprint=_client_request_fingerprint,
         )
         return {
             "success": True,
             "plan_id": plan_id,
             "task_id": clean_task_id,
             "file_revision": save_res["file_revision"],
+            "no_op": save_res["no_op"],
             "task": task,
         }
 
+    @_replayable_plan_edit
     def delete_task(
         self,
         plan_id: str,
@@ -433,6 +589,7 @@ class RepoPlanWorkspace:
         expected_revision: str | None = None,
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Delete a task from a plan file."""
         rel_path = self._plan_rel_path(plan_id)
@@ -468,28 +625,34 @@ class RepoPlanWorkspace:
             expected_revision=current_rev,
             owner=owner,
             idempotency_key=idempotency_key,
+            client_request_fingerprint=_client_request_fingerprint,
         )
         return {
             "success": True,
             "plan_id": plan_id,
             "task_id": task_id,
             "file_revision": save_res["file_revision"],
+            "no_op": save_res["no_op"],
         }
 
+    @_replayable_plan_edit
     def archive_plan(
         self,
         plan_id: str,
         expected_revision: str | None = None,
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Archive a plan file by setting its lifecycle to 'archived'."""
-        return self.update_plan(
+        return self.update_plan.__wrapped__(
+            self,
             plan_id=plan_id,
             lifecycle=PlanLifecycle.ARCHIVED.value,
             expected_revision=expected_revision,
             owner=owner,
             idempotency_key=idempotency_key,
+            _client_request_fingerprint=_client_request_fingerprint,
         )
 
     def validate_plan(self, plan_id: str) -> dict[str, Any]:
@@ -607,6 +770,7 @@ class RepoPlanWorkspace:
             "total_items": total_items,
         }
 
+    @_replayable_plan_edit
     def adopt_legacy_board_items(
         self,
         plan_id: str = "default",
@@ -615,19 +779,50 @@ class RepoPlanWorkspace:
         title: str = "",
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Adopt SQLite board items into a file-backed plan without deleting the originals."""
         items_to_adopt = board_items if board_items is not None else (legacy_items or [])
+        if not isinstance(items_to_adopt, list):
+            raise RepoPlanValidationError("legacy board items must be a list")
+        seen_ids: dict[str, tuple[str, dict[str, Any]]] = {}
+        serialized_items: dict[str, str] = {}
+        for item in items_to_adopt:
+            if not isinstance(item, dict):
+                raise RepoPlanValidationError("legacy board item must be an object")
+            item_id = item.get("item_id", "")
+            item_title = item.get("title", "")
+            if not isinstance(item_title, str) or not isinstance(item_id, str):
+                raise RepoPlanValidationError("legacy board item ID and title must be strings")
+            if not item_title.strip():
+                raise RepoPlanValidationError("legacy board item title must not be blank")
+            if not item_id:
+                raise RepoPlanValidationError("legacy board item ID must not be empty")
+            status = item.get("status", "planned")
+            if not isinstance(status, str) or status.lower() not in {"planned", "in_progress", "active", "done", "blocked"}:
+                raise RepoPlanValidationError("legacy board item has an unsupported status")
+            safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
+            task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
+            if not TASK_ID_REGEX.fullmatch(task_id):
+                raise RepoPlanValidationError("legacy board item ID cannot form a valid task ID")
+            previous = seen_ids.get(task_id)
+            if previous is not None and (previous[0] != item_id or previous[1] != item):
+                raise RepoPlanConflictError(f"Legacy board identity collision for task '{task_id}'")
+            seen_ids[task_id] = (item_id, item)
+            try:
+                serialized_items[task_id] = json.dumps(item, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RepoPlanValidationError("legacy board item must contain finite JSON data") from exc
         rel_path = self._plan_rel_path(plan_id)
         full_path = self.repo_root / rel_path
         if not full_path.exists():
-            self.create_plan(
-                plan_id=plan_id,
-                title=title or f"Plan {plan_id}",
-                description="Adopted from legacy board items",
-                owner=owner,
-            )
-        plan_dict, current_rev = self.storage.read_plan_file(rel_path)
+            self.init_workspace()
+            plan_dict = {"schema_version": 1, "id": plan_id, "title": title or f"Plan {plan_id}",
+                         "description": "Adopted from legacy board items", "lifecycle": "draft",
+                         "default_target_ref": "refs/heads/master", "spec_refs": [], "tasks": {}}
+            current_rev = ""
+        else:
+            plan_dict, current_rev = self.storage.read_plan_file(rel_path)
         board_items = items_to_adopt
 
         tasks = plan_dict.setdefault("tasks", {})
@@ -636,14 +831,20 @@ class RepoPlanWorkspace:
         for item in board_items:
             item_id = item.get("item_id", "")
             title = item.get("title", "").strip()
-            if not title:
-                continue
 
             # Convert item_id to valid task_id
             safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
             task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
+            marker = f"Adopted from board item {item_id}"
+            preserved_description = marker + "\nLegacy board item JSON:\n" + serialized_items[task_id]
 
             if task_id in tasks:
+                existing = tasks[task_id]
+                description = existing.get("description") if isinstance(existing, dict) else None
+                if description == marker:
+                    existing["description"] = preserved_description
+                elif description != preserved_description:
+                    raise RepoPlanConflictError(f"Legacy board identity collision for existing task '{task_id}'")
                 continue
 
             status = item.get("status", "planned").lower()
@@ -657,7 +858,7 @@ class RepoPlanWorkspace:
 
             tasks[task_id] = {
                 "title": title,
-                "description": f"Adopted from board item {item_id}",
+                "description": preserved_description,
                 "kind": "code",
                 "work_status": plan_status,
                 "depends_on": [],
@@ -676,6 +877,8 @@ class RepoPlanWorkspace:
             expected_revision=current_rev,
             owner=owner,
             idempotency_key=idempotency_key,
+            client_request_fingerprint=_client_request_fingerprint,
+            client_response_data={"adopted_count": adopted_count} if _client_request_fingerprint else None,
         )
         return {
             "success": True,
@@ -683,4 +886,5 @@ class RepoPlanWorkspace:
             "adopted_count": adopted_count,
             "tasks_imported": adopted_count,
             "file_revision": save_res["file_revision"],
+            "no_op": save_res["no_op"],
         }

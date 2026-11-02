@@ -6,7 +6,7 @@ import pytest
 @pytest.mark.parametrize("tool,action,required,excluded", [
     ("local_ai_repo", "context", "query", "task"),
     ("local_ai_repo", "solve", "task", "task_id"),
-    ("local_ai_coord", "memory_find", None, "limit"),
+    ("local_ai_coord", "memory_find", None, "ttl_seconds"),
 ])
 def test_action_guide_is_narrowed_from_the_canonical_contract(tool, action, required, excluded):
     import local_ai_hub.operation_contracts as module
@@ -43,6 +43,10 @@ def test_argument_hint_lists_only_fields_allowed_for_the_selected_action():
     hint = getattr(module, "operation_argument_hint", None)
     assert callable(hint)
     result = hint("local_ai_coord", "memory_find")
-    assert "limit" not in result["allowed_arguments"]
+    assert "limit" in result["allowed_arguments"]
+    assert "ttl_seconds" not in result["allowed_arguments"]
+    assert module.validate_operation_arguments(
+        "local_ai_coord", "memory_find", {"action": "memory_find", "limit": 3}
+    ) is None
     assert "required_arguments" in result
     assert "help_call" not in result

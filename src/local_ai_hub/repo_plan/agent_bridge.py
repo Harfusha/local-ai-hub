@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import functools
 import json
 import logging
 import os
 import re
+import stat
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,13 +29,119 @@ from .models import (
     TaskWorkStatus,
 )
 from .schema_validation import RepoPlanConflictError, RepoPlanNotFoundError, validate_repo_path
-from .storage import RepoPlanStorage, compute_file_sha256, get_git_context
+from .storage import (RepoPlanStorage, _atomic_write_posix, _open_posix_plan_directory,
+                      _pin_windows_write_directories, compute_file_sha256, get_git_context)
 
 logger = logging.getLogger(__name__)
+MAX_PENDING_RECONCILIATION_BYTES = 4 * 1024 * 1024
+_PENDING_PATH_GUARD = threading.local()
+
+
+@contextmanager
+def _pinned_pending_directory(root: Path, parent: Path):
+    if os.name != "nt":
+        current = getattr(_PENDING_PATH_GUARD, "parent", None)
+        if current is not None:
+            if current != parent or getattr(_PENDING_PATH_GUARD, "root", None) != root:
+                raise ValueError("nested pending reconciliation root differs")
+            yield
+            return
+        with _open_posix_plan_directory(root, parent) as descriptor:
+            _PENDING_PATH_GUARD.parent = parent
+            _PENDING_PATH_GUARD.root = root
+            _PENDING_PATH_GUARD.fd = descriptor
+            try:
+                yield
+            finally:
+                del _PENDING_PATH_GUARD.parent
+                del _PENDING_PATH_GUARD.root
+                del _PENDING_PATH_GUARD.fd
+        return
+    with _pin_windows_write_directories(root, parent):
+        parent.mkdir(parents=True, exist_ok=True)
+        yield
+
+
+def _pending_fd(path: Path) -> int | None:
+    if getattr(_PENDING_PATH_GUARD, "parent", None) == path.parent:
+        return getattr(_PENDING_PATH_GUARD, "fd", None)
+    return None
+
+
+def _pending_exists(path: Path) -> bool:
+    descriptor = _pending_fd(path)
+    if descriptor is None:
+        return path.exists() or path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+    try:
+        os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+@contextmanager
+def _pending_lock(path: Path, *, reentrant: bool = False):
+    descriptor = _pending_fd(path)
+    if descriptor is None:
+        with exclusive_file_update(path, reentrant=reentrant):
+            yield
+    else:
+        with exclusive_file_update(path, reentrant=reentrant, parent_fd=descriptor):
+            yield
+
+
+def _pending_unlink(path: Path) -> None:
+    descriptor = _pending_fd(path)
+    if descriptor is None:
+        path.unlink()
+    else:
+        os.unlink(path.name, dir_fd=descriptor)
 
 DISALLOWED_PASS_COMMANDS = frozenset({"echo pass", "echo ok", "echo true", "echo 1", "true", ":"})
 # We will define it as regex or set:
 DISALLOWED_COMMAND_REGEX = re.compile(r"^\s*(?:echo\s+pass|echo\s+ok|echo\s+true|echo\s+1|true|:)\s*$", re.IGNORECASE)
+
+
+def _read_pending_reconciliation(path: Path) -> bytes:
+    """Read a bounded regular file after checking its opened identity."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if os.name != "nt":
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+            raise ValueError("secure pending reconciliation read is unavailable")
+        flags |= os.O_NOFOLLOW | os.O_NONBLOCK
+    parent_fd = _pending_fd(path)
+    descriptor = os.open(path.name if parent_fd is not None else path, flags, dir_fd=parent_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("pending reconciliation record must be a regular file")
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            get_final = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+            get_final.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+            get_final.restype = wintypes.DWORD
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_final(msvcrt.get_osfhandle(descriptor), buffer, len(buffer), 0)
+            if not length or length >= len(buffer):
+                raise ValueError("cannot verify opened pending reconciliation path")
+            actual = buffer.value
+            if actual.startswith("\\\\?\\UNC\\"):
+                actual = "\\\\" + actual[8:]
+            elif actual.startswith("\\\\?\\"):
+                actual = actual[4:]
+            if os.path.normcase(os.path.normpath(actual)) != os.path.normcase(os.path.normpath(str(path))):
+                raise ValueError("opened pending reconciliation path differs from expected path")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            data = stream.read(MAX_PENDING_RECONCILIATION_BYTES + 1)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(data) > MAX_PENDING_RECONCILIATION_BYTES:
+        raise RuntimeError("pending reconciliation record exceeds size limit")
+    return data
 
 
 @dataclass
@@ -203,35 +313,60 @@ class TaskBindingManager:
 def _persist_pending_contract_reconciliation(
     storage: RepoPlanStorage, binding: TaskBinding, payload: dict[str, Any]
 ) -> Path:
+    pending_dir = storage.repo_root / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    with _pinned_pending_directory(storage.repo_root, pending_dir):
+        return _persist_pending_contract_reconciliation_pinned(storage, binding, payload)
+
+
+def _persist_pending_contract_reconciliation_pinned(
+    storage: RepoPlanStorage, binding: TaskBinding, payload: dict[str, Any]
+) -> Path:
     """Persist a safe, atomic local retry record when the task DB update fails."""
-    root = storage.repo_root.resolve(strict=True)
+    root = storage.repo_root.resolve(strict=True) if os.name == "nt" else storage.repo_root
     hub_dir = root / ".local-ai-hub"
     local_dir = hub_dir / "local"
     pending_dir = local_dir / "pending-contract-reconciliation"
-    for directory in (hub_dir, local_dir, pending_dir):
-        if directory.is_symlink():
-            raise ValueError("pending reconciliation path cannot traverse a symlink")
-    pending_dir.mkdir(parents=True, exist_ok=True)
-    resolved_pending = pending_dir.resolve(strict=True)
-    if not resolved_pending.is_relative_to(root):
-        raise ValueError("pending reconciliation path escapes repository root")
+    if os.name == "nt":
+        for directory in (hub_dir, local_dir, pending_dir):
+            if directory.is_symlink():
+                raise ValueError("pending reconciliation path cannot traverse a symlink")
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        resolved_pending = pending_dir.resolve(strict=True)
+        if not resolved_pending.is_relative_to(root):
+            raise ValueError("pending reconciliation path escapes repository root")
+    else:
+        resolved_pending = pending_dir
     # Task IDs are untrusted identifiers and never become path components.
     name = hashlib.sha256(binding.task_id.encode("utf-8")).hexdigest() + ".json"
-    target = resolved_pending / name
+    target = pending_dir / name
     encoded = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8")
-    with exclusive_file_update(target):
+    if len(encoded) > MAX_PENDING_RECONCILIATION_BYTES:
+        raise ValueError("pending reconciliation record exceeds size limit")
+    with _pending_lock(target, reentrant=True):
+        if target.is_symlink() or getattr(target, "is_junction", lambda: False)():
+            raise ValueError("pending reconciliation record cannot be a link")
+        if _pending_exists(target):
+            if _read_pending_reconciliation(target) == encoded:
+                return target
+            raise RepoPlanConflictError("a different pending reconciliation already exists")
+        if os.name != "nt":
+            descriptor = _pending_fd(target)
+            if descriptor is None:
+                raise ValueError("pending reconciliation directory is not pinned")
+            _atomic_write_posix(root, target, encoded, parent_fd=descriptor)
+            return target
         temporary = resolved_pending / f".{name}.{uuid.uuid4().hex}.tmp"
+        created = False
         try:
             with temporary.open("xb") as stream:
+                created = True
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
         finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+            if created:
+                temporary.unlink(missing_ok=True)
     return target
 
 
@@ -402,6 +537,27 @@ def sync_checkpoint_to_plan(
     )
 
 
+def _serialize_contract_reconciliation(method):
+    @functools.wraps(method)
+    def wrapped(storage, binding, *args, **kwargs):
+        name = hashlib.sha256(binding.task_id.encode("utf-8")).hexdigest() + ".json"
+        relative = f".local-ai-hub/local/pending-contract-reconciliation/{name}"
+        validate_repo_path(relative, repo_root=storage.repo_root)
+        target = storage.repo_root / relative
+        with _pinned_pending_directory(storage.repo_root, target.parent), _pending_lock(target, reentrant=True):
+            if _pending_exists(target):
+                pending = json.loads(_read_pending_reconciliation(target).decode("utf-8"))
+                key = pending.get("storage_idempotency_key") if isinstance(pending, dict) else None
+                if (not isinstance(pending, dict) or not kwargs.get("idempotency_key") or pending.get("client_request_key") != kwargs["idempotency_key"]
+                        or not isinstance(key, str) or not re.fullmatch(r"steering_v2_[0-9a-f]{32}", key)
+                        or storage._record_exists(storage._request_path(key))):
+                    raise RepoPlanConflictError("pending reconciliation must be resolved before a new clarification")
+                kwargs["_existing_pending"] = pending
+            return method(storage, binding, *args, **kwargs)
+    return wrapped
+
+
+@_serialize_contract_reconciliation
 def reconcile_contract_revision(
     storage: RepoPlanStorage,
     binding: TaskBinding,
@@ -416,6 +572,7 @@ def reconcile_contract_revision(
     expected_plan_revision: str | None = None,
     expected_spec_revision: str | None = None,
     clarification_id: str | None = None,
+    _existing_pending: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Persist an operator clarification into both the Git plan and real task contract."""
     if task_store is None:
@@ -479,11 +636,37 @@ def reconcile_contract_revision(
     # Update acceptance criteria
     task_data["acceptance_criteria"] = list(new_acceptance_criteria)
 
-    # Plan/spec become the durable user clarification before execution resumes.
+    from .schema_validation import serialize_plan_json
+
+    expected_spec_rev = None
     if spec_rel_path and spec_content is not None:
         spec_path = storage.repo_root / spec_rel_path
-        expected_spec_rev = (expected_spec_revision if expected_spec_revision is not None
-                             else compute_file_sha256(spec_path) if spec_path.exists() else "")
+        actual_spec_rev = compute_file_sha256(spec_path)
+        expected_spec_rev = expected_spec_revision if expected_spec_revision is not None else actual_spec_rev
+        if expected_spec_rev != actual_spec_rev:
+            raise RepoPlanConflictError("spec revision changed before reconciliation")
+    candidate_revision = hashlib.sha256(serialize_plan_json(plan_dict).encode("utf-8")).hexdigest()
+    projected_plan = json.loads(json.dumps(plan_dict))
+    project_checkpoint_fields(
+        projected_plan["tasks"][binding.plan_task_id], execution.status.value,
+        execution.checkpoint.phase, execution.checkpoint.next_action,
+        execution.checkpoint.blockers[0] if execution.checkpoint.blockers else "",
+    )
+    projected_revision = hashlib.sha256(serialize_plan_json(projected_plan).encode("utf-8")).hexdigest()
+    storage_key = (_existing_pending["storage_idempotency_key"] if _existing_pending
+                   else "steering_v2_" + uuid.uuid4().hex)
+    pending_payload = {
+        "task_id": binding.task_id, "plan_id": binding.plan_id, "plan_task_id": binding.plan_task_id,
+        "contract_revision": current_contract_revision + 1, "acceptance_criteria": new_acceptance_criteria,
+        "reason": reason, "plan_revision": candidate_revision, "error": "reconciliation pending",
+        "projection_base_plan": plan_dict, "projected_plan_revision": projected_revision,
+        "prior_plan_revision": current_rev, "storage_idempotency_key": storage_key,
+        "client_request_key": idempotency_key,
+    }
+    pending_path = _persist_pending_contract_reconciliation(storage, binding, pending_payload)
+
+    # Plan/spec become the durable user clarification before execution resumes.
+    if spec_rel_path and spec_content is not None:
         save_res = storage.save_spec_and_plan(
             spec_rel_path,
             spec_content,
@@ -492,7 +675,7 @@ def reconcile_contract_revision(
             expected_spec_rev=expected_spec_rev,
             expected_plan_rev=current_rev,
             owner=owner,
-            idempotency_key=idempotency_key,
+            idempotency_key=storage_key,
         )
     else:
         save_res = storage.save_plan_file(
@@ -500,7 +683,7 @@ def reconcile_contract_revision(
             plan_dict,
             expected_revision=current_rev,
             owner=owner,
-            idempotency_key=idempotency_key,
+            idempotency_key=storage_key,
         )
     try:
         revised = task_store.revise_contract(
@@ -511,19 +694,6 @@ def reconcile_contract_revision(
             expected_revision=current_contract_revision,
         )
     except Exception as exc:
-        payload = {"task_id": binding.task_id, "plan_id": binding.plan_id,
-                   "plan_task_id": binding.plan_task_id,
-                   "contract_revision": current_contract_revision + 1,
-                   "acceptance_criteria": new_acceptance_criteria,
-                   "reason": reason, "plan_revision": save_res.get("plan_revision", save_res.get("file_revision", "")),
-                   "error": str(exc)}
-        try:
-            _persist_pending_contract_reconciliation(storage, binding, payload)
-        except Exception as persist_exc:
-            raise RuntimeError(
-                "clarification is saved to the Git plan/spec, but both Agent OS reconciliation "
-                "and its local retry record failed"
-            ) from persist_exc
         raise RuntimeError(
             "clarification is saved to the Git plan/spec, but Agent OS contract reconciliation is pending"
         ) from exc
@@ -533,17 +703,10 @@ def reconcile_contract_revision(
     try:
         binding_manager._save(binding, task_store=task_store, check_plan_ownership=False)
     except Exception as exc:
-        payload = {"task_id": binding.task_id, "plan_id": binding.plan_id,
-                   "plan_task_id": binding.plan_task_id,
-                   "contract_revision": binding.contract_revision,
-                   "acceptance_criteria": new_acceptance_criteria,
-                   "reason": reason, "plan_revision": binding.adopted_plan_revision,
-                   "error": str(exc)}
-        try:
-            _persist_pending_contract_reconciliation(storage, binding, payload)
-        except Exception as persist_exc:
-            raise RuntimeError("contract was revised but binding and retry-record persistence failed") from persist_exc
         raise RuntimeError("contract was revised, but binding reconciliation is pending") from exc
+    if json.loads(_read_pending_reconciliation(pending_path).decode("utf-8")) != pending_payload:
+        raise RepoPlanConflictError("pending reconciliation record changed before completion")
+    _pending_unlink(pending_path)
     return save_res, binding.contract_revision
 
 
@@ -555,7 +718,6 @@ def reconcile_task_steering(
     """Reconcile an explicitly revision-bound operator clarification."""
     from local_ai_hub.agent_tasks import _task_scope_root
     from local_ai_hub.repository_scope import canonical_repository_root
-    from .workspace import RepoPlanWorkspace
 
     if type(root) is not str or not root:
         raise ValueError("root must be an explicit absolute path")
@@ -587,6 +749,22 @@ def reconcile_task_steering(
     if binding is None or not execution.context.session_id or binding.session_id != execution.context.session_id:
         raise ValueError("task must have a matching bound session")
 
+    pending_dir = Path(canonical) / ".local-ai-hub" / "local" / "pending-contract-reconciliation"
+    with _pinned_pending_directory(Path(canonical), pending_dir):
+        return _reconcile_task_steering_pinned(
+            task_store, canonical, task_id, steering_id, spec_rel_path, spec_content,
+            acceptance_criteria, expected_revision, expected_spec_revision, summary,
+            execution, manager, binding,
+        )
+
+
+def _reconcile_task_steering_pinned(
+    task_store, canonical, task_id, steering_id, spec_rel_path, spec_content,
+    acceptance_criteria, expected_revision, expected_spec_revision, summary,
+    execution, manager, binding,
+):
+    from .workspace import RepoPlanWorkspace
+
     payload = {"root": canonical, "task_id": task_id, "session_id": binding.session_id,
                "steering_id": steering_id, "spec_rel_path": spec_rel_path,
                "spec_sha256": hashlib.sha256(spec_content.encode("utf-8")).hexdigest(),
@@ -597,6 +775,40 @@ def reconcile_task_steering(
     prefix = "change_" + hashlib.sha256(steering_id.encode("utf-8")).hexdigest()[:20] + "_"
     change_base = prefix + fingerprint[:32] + "_r"
     storage = RepoPlanWorkspace(canonical).storage
+    pending_name = hashlib.sha256(task_id.encode("utf-8")).hexdigest() + ".json"
+    pending_rel = f".local-ai-hub/local/pending-contract-reconciliation/{pending_name}"
+    validate_repo_path(pending_rel, repo_root=Path(canonical))
+    pending_path = Path(canonical) / pending_rel
+    if _pending_exists(pending_path):
+        with _pending_lock(pending_path, reentrant=True):
+            pending = json.loads(_read_pending_reconciliation(pending_path).decode("utf-8"))
+            if not isinstance(pending, dict):
+                raise ValueError("pending reconciliation record must be an object")
+            if "client_request_key" in pending:
+                key = pending.get("storage_idempotency_key")
+                if (pending.get("client_request_key") != "steering_" + fingerprint
+                        or pending.get("task_id") != task_id or pending.get("plan_id") != binding.plan_id
+                        or pending.get("plan_task_id") != binding.plan_task_id
+                        or not isinstance(key, str) or not re.fullmatch(r"steering_v2_[0-9a-f]{32}", key)):
+                    raise RepoPlanConflictError("pending reconciliation belongs to another request")
+                request_path = storage._request_path(key)
+                if storage._record_exists(request_path):
+                    request = storage._read_record(request_path)
+                    if request.get("status") == "pending":
+                        from .schema_validation import serialize_plan_json
+
+                        baseline = pending.get("projection_base_plan")
+                        if (not isinstance(baseline, dict) or pending.get("prior_plan_revision") != expected_revision
+                                or hashlib.sha256(serialize_plan_json(baseline).encode("utf-8")).hexdigest() != pending.get("plan_revision")):
+                            raise RepoPlanConflictError("pending steering baseline does not match the request")
+                        targets = {spec_rel_path: (expected_spec_revision, payload["spec_sha256"]),
+                                   binding.plan_rel_path: (expected_revision, pending["plan_revision"])}
+                        outcomes = storage.recover_pending_intents(only_key=key, resume_unapplied=True,
+                                                                   expected_targets=targets)
+                        if len(outcomes) != 1 or outcomes[0].get("status") != "completed":
+                            raise RepoPlanConflictError("pending steering storage recovery requires intervention")
+                    elif request.get("status") != "completed":
+                        raise RepoPlanConflictError("pending steering storage request cannot be recovered")
     plan, current_revision = storage.read_plan_file(binding.plan_rel_path)
     task_data = plan.get("tasks", {}).get(binding.plan_task_id)
     if not isinstance(task_data, dict):
@@ -633,12 +845,13 @@ def reconcile_task_steering(
                 break
             if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)():
                 raise ValueError("pending reconciliation path contains a link")
-        if (pending_path.exists() or tuple(execution.contract.acceptance_criteria) != tuple(acceptance_criteria)
+        if (_pending_exists(pending_path) or tuple(execution.contract.acceptance_criteria) != tuple(acceptance_criteria)
                 or revision != binding.contract_revision or revision != intended_revision):
-            if not pending_path.is_file() or pending_path.stat().st_size > 1024 * 1024:
+            if not _pending_exists(pending_path):
                 raise RuntimeError("persisted steering reconciliation is pending without a safe retry record")
-            with exclusive_file_update(pending_path):
-                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            with _pending_lock(pending_path):
+                pending_bytes = _read_pending_reconciliation(pending_path)
+                pending = json.loads(pending_bytes.decode("utf-8"))
                 if not isinstance(pending, dict):
                     raise ValueError("pending reconciliation record must be an object")
                 target_revision = pending.get("contract_revision")
@@ -677,20 +890,29 @@ def reconcile_task_steering(
 
                 def save_pending() -> None:
                     encoded = json.dumps(pending, sort_keys=True, indent=2).encode("utf-8")
-                    if len(encoded) > 1024 * 1024:
+                    if len(encoded) > MAX_PENDING_RECONCILIATION_BYTES:
                         raise ValueError("pending reconciliation record exceeds size limit")
+                    if os.name != "nt":
+                        descriptor = _pending_fd(pending_path)
+                        if descriptor is None:
+                            raise ValueError("pending reconciliation directory is not pinned")
+                        _atomic_write_posix(Path(canonical), pending_path, encoded, parent_fd=descriptor)
+                        return
                     temporary = pending_path.parent / f".{pending_path.name}.{uuid.uuid4().hex}.tmp"
+                    created = False
                     try:
                         with temporary.open("xb") as stream:
+                            created = True
                             stream.write(encoded)
                             stream.flush()
                             os.fsync(stream.fileno())
                         os.replace(temporary, pending_path)
                     finally:
-                        temporary.unlink(missing_ok=True)
+                        if created:
+                            temporary.unlink(missing_ok=True)
 
                 # Serialize the fresh check and contract update with plan writers.
-                with exclusive_file_update(storage._lock_path, reentrant=True):
+                with storage._lock_storage():
                     latest_plan, latest_revision = storage.read_plan_file(binding.plan_rel_path)
                     latest_task = latest_plan.get("tasks", {}).get(binding.plan_task_id, {})
                     if (latest_revision != current_revision
@@ -742,7 +964,7 @@ def reconcile_task_steering(
                     binding.contract_revision = target_revision
                     binding.adopted_plan_revision = latest_revision
                     manager._save(binding, task_store=task_store, check_plan_ownership=False)
-                    pending_path.unlink()
+                    _pending_unlink(pending_path)
                 return {"success": True, "reused": True, "recovered": True,
                         "file_revision": latest_revision, "task_id": task_id,
                         "contract_revision": target_revision}

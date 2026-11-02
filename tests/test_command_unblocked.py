@@ -374,19 +374,19 @@ def test_error_distillation_on_command_failure(tmp_path):
     assert res["artifact_id"] == "artifact"
 
 
-def test_model_error_distiller_only_runs_when_parser_has_no_diagnostic(tmp_path):
+def test_model_error_distiller_requires_verified_diagnostic_context(tmp_path):
     broker = _default_broker(tmp_path)
     calls = []
     broker.set_error_distiller(lambda payload: calls.append(payload) or "local model summary")
 
-    # An empty pytest target is a classified validation that fails without a
-    # structured diagnostic, so the model distiller is eligible to run.
+    # Without a retrievable verified diagnostic artifact, no nested model call
+    # is authorized, even for an unsuccessful validation command.
     res = broker.run(f'"{sys.executable}" -m pytest -q', str(tmp_path))
 
     assert res["success"] is False
-    assert res["error_distillation"] == "local model summary"
-    assert res["error_distillation_source"] == "local_model"
-    assert len(calls) == 1
+    assert "no tests ran" in res["error_distillation"].lower()
+    assert res["error_distillation_source"] == "deterministic"
+    assert calls == []
 
 
 def test_model_error_distiller_skips_structured_parser_result(tmp_path):

@@ -85,14 +85,23 @@ def test_selftest_preserves_control_flow_exceptions(monkeypatch, capsys, error):
 def test_pytest_annotations_are_failure_only_and_count_bounded(monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setattr(ci_diagnostics, "_emitted", 0)
+    monkeypatch.setattr(ci_diagnostics, "_omitted_count", 0)
+    monkeypatch.setattr(ci_diagnostics, "_omitted_ids", [])
+    ci_diagnostics.pytest_sessionstart(None)
     passed = SimpleNamespace(failed=False, nodeid="passed", longreprtext="")
-    failed = SimpleNamespace(failed=True, nodeid="tests/test_example.py::test_failed", longreprtext="actual assertion")
     ci_diagnostics.pytest_runtest_logreport(passed)
-    for _ in range(ci_diagnostics.MAX_FAILURES + 3):
+    for index in range(ci_diagnostics.MAX_FAILURES + 3):
+        failed = SimpleNamespace(failed=True, nodeid=f"tests/test_example.py::test_failed_{index}", longreprtext="actual assertion")
         ci_diagnostics.pytest_runtest_logreport(failed)
+    ci_diagnostics.pytest_sessionfinish(None, 1)
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert len(lines) == ci_diagnostics.MAX_FAILURES
-    assert all("actual assertion" in line and "test_failed" in line for line in lines)
+    assert all("actual assertion" in line for line in lines[:-1])
+    assert "4 additional failed reports" in lines[-1]
+    assert "test_failed_9" in lines[-1] and "test_failed_12" in lines[-1]
+    ci_diagnostics.pytest_sessionstart(None)
+    ci_diagnostics.pytest_sessionfinish(None, 0)
+    assert capsys.readouterr().out == ""
 
 
 def test_pytest_annotation_starts_after_progress_line(monkeypatch, capsys):

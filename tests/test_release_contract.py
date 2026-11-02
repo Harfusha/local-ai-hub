@@ -54,6 +54,19 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         if path == ROOT / "tools" / "release_inventory.py":
             # OSV versions its external API independently of the Hub contract.
             text = text.replace("https://api.osv.dev/" + "v1" + "/querybatch", "OSV_QUERYBATCH")
+        if path in {ROOT / "src" / "local_ai_hub" / "opencode_provider_bridge.py",
+                    ROOT / "tests" / "test_opencode_provider_bridge.py",
+                    ROOT / "tests" / "test_opencode_provider_service.py",
+                    ROOT / "tests" / "test_opencode_real_ollama_source.py"}:
+            # The OpenAI-compatible upstream protocol is not the retired Hub API.
+            text = text.replace('/' + 'v1' + '/chat/completions', 'EXTERNAL_CHAT_ROUTE')
+            if path.parent == ROOT / "tests":
+                text = text.replace('/' + 'v1' + '/other', 'REJECTED_EXTERNAL_ROUTE')
+        if path.parent == ROOT / "docs" / "agent-evaluation" and path.name in {
+            "local-model-gpu-cases.md", "local-model-gpu-scoring.md",
+        }:
+            # The independent benchmark protocol has its own version numbering.
+            text = text.replace("Version " + "1.", "BENCHMARK_PROTOCOL_VERSION")
         for token in forbidden:
             assert token not in text, f"historical contract token {token!r} in {path.relative_to(ROOT)}"
 
@@ -97,7 +110,6 @@ def test_canonical_prompts_share_profile_and_installation_docs_own_standalone_se
     install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
     update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
     installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
-    sdk = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
     install_routing = next(
         line for line in install.splitlines()
         if line.startswith("Local model routing starts")
@@ -295,6 +307,10 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
+        if relative in {Path("docs/agent-evaluation/local-model-4060-smoke-2026-11-01.md"),
+                        Path("docs/agent-evaluation/local-model-gpu-cases.md")}:
+            # An explicitly labeled hardware measurement is not a personal path.
+            text = text.replace("RTX " + "4060", "RECORDED_GPU_MODEL")
         assert not any(token in text for token in forbidden), f"forbidden release token in {path.relative_to(ROOT)}"
 
 

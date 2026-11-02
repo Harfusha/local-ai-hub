@@ -1,5 +1,9 @@
 # Local AI Hub 5.1.0 — Release Evidence
 
+## Current evidence boundary — 2026-11-02
+
+Master `561d2163afce9c0f37ef6f2b112ce8481fca17ee` has failing [CI run 41361614174](https://github.com/Harfusha/local-ai-hub/actions/runs/41361614174); matrix tests stopped at `pyflakes`, critical coverage also failed, and package/publish were skipped. Isolated follow-up changes are not integrated or deployed. The 5.1.0-era wheels, benchmark, receipts and screenshots in the historical checkpoints below do not verify this master or its eventual release candidate. Fresh candidate-bound CI, wheel, runtime, dashboard and authentic receipt evidence remain required.
+
 ## Candidate checkpoint — 2026-10-30 (`5b0289af`)
 
 - Source revision `5b0289af4031e20bc9cde2fcdf292255ca50f476` includes the shared HTTP MCP transport and its reviewed response-producer inventory. Its clean Git archive passed `release_check.py --strict-tree`. A fresh wheel built from that archive had SHA-256 `eb6736b38cf17bea9e258769ff1deb866fe215b9aa1dc00ecd3989327c1cea2e`; installation and `wheel_smoke.py` passed in a new isolated virtual environment, with five compact tools and planner schema passing.

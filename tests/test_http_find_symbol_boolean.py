@@ -16,6 +16,7 @@ def test_get_find_symbol_parses_false_query_as_false(monkeypatch) -> None:
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
 
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     handler.path = "/api/code/find_symbol?root=C%3A%5Crepo&pattern=Button&include_body=false"
     handler.client_address = ("127.0.0.1", 1234)
     handler._require_authorized = lambda: True

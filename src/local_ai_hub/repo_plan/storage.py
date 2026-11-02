@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import copy
+import fnmatch
+import functools
 import json
 import logging
 import os
+import stat
 import subprocess
+import threading
 import time
 import uuid
 from itertools import islice
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +25,7 @@ from ..file_locks import exclusive_file_update
 from ..process_utils import clean_git_env, hidden_run_kwargs
 
 from .schema_validation import (
+    MAX_PLAN_FILE_BYTES,
     RepoPlanConflictError,
     RepoPlanError,
     RepoPlanValidationError,
@@ -29,6 +36,194 @@ from .schema_validation import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_JOURNAL_RECORDS = 4096
+
+
+@contextmanager
+def _open_posix_plan_directory(root: Path, parent: Path, *, create: bool = True, root_fd: int | None = None):
+    """Open each component without following links, relative to its parent fd."""
+    try:
+        parts = parent.relative_to(root).parts
+    except ValueError as exc:
+        raise RepoPlanValidationError("Write parent escapes repository root") from exc
+    if any(part in ("", ".", "..") for part in parts):
+        raise RepoPlanValidationError("Invalid plan directory component")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise RepoPlanValidationError("Secure directory operations unavailable")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    descriptors = []
+    try:
+        descriptors.append(os.open(root, flags) if root_fd is None else os.dup(root_fd))
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, dir_fd=descriptors[-1])
+                except FileExistsError:
+                    pass
+            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
+        yield descriptors[-1]
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _atomic_write_posix(
+    root: Path, target: Path, data: bytes, *, parent_fd: int | None = None, root_fd: int | None = None
+) -> None:
+    """Publish within an opened directory rather than re-resolving its pathname."""
+    directory = (_open_posix_plan_directory(root, target.parent, root_fd=root_fd)
+                 if parent_fd is None else nullcontext(parent_fd))
+    with directory as parent_fd:
+        try:
+            target_info = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(target_info.st_mode):
+                raise RepoPlanValidationError(f"Plan write target is a symlink: {target}")
+        temporary = f".tmp_{target.name}_{uuid.uuid4().hex}"
+        created = False
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                0o666,
+                dir_fd=parent_fd,
+            )
+            created = True
+            try:
+                stream = os.fdopen(descriptor, "wb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            created = False
+        finally:
+            if created:
+                try:
+                    os.unlink(temporary, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+
+
+@contextmanager
+def _pin_windows_write_directories(root: Path, parent: Path):
+    """Prevent replacement of each directory while publishing a Windows target."""
+    if os.name != "nt":
+        yield
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        parts = parent.relative_to(root).parts
+    except ValueError as exc:
+        raise RepoPlanValidationError("Write parent escapes repository root") from exc
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    get_info = kernel.GetFileInformationByHandleEx
+    get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    get_info.restype = wintypes.BOOL
+    final_path = kernel.GetFinalPathNameByHandleW
+    final_path.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    final_path.restype = wintypes.DWORD
+
+    class AttributeTag(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("tag", wintypes.DWORD)]
+
+    handles = []
+    try:
+        current = root
+        for index in range(len(parts) + 1):
+            if index:
+                current = current / parts[index - 1]
+                try:
+                    os.mkdir(current)
+                except FileExistsError:
+                    pass
+            # Omit FILE_SHARE_DELETE: open directory handles then fence rename/delete.
+            handle = create(str(current), 0x1 | 0x80, 0x1 | 0x2, None, 3, 0x02000000 | 0x00200000, None)
+            if handle == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(handle)
+            info = AttributeTag()
+            if not get_info(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if info.attributes & 0x400 or not info.attributes & 0x10:
+                raise RepoPlanValidationError(f"Plan write directory is a reparse point or not a directory: {current}")
+            if index == 0:
+                buffer = ctypes.create_unicode_buffer(32768)
+                length = final_path(handle, buffer, len(buffer), 0)
+                if not length or length >= len(buffer):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                actual = buffer.value
+                if actual.startswith("\\\\?\\UNC\\"):
+                    actual = "\\\\" + actual[8:]
+                elif actual.startswith("\\\\?\\"):
+                    actual = actual[4:]
+                if os.path.normcase(os.path.normpath(actual)) != os.path.normcase(os.path.normpath(str(root))):
+                    raise RepoPlanValidationError("Repository root changed during write")
+        yield
+    finally:
+        for handle in reversed(handles):
+            close(handle)
+
+
+@contextmanager
+def _guard_storage_paths(storage):
+    if getattr(storage._storage_path_guard, "active", False):
+        yield
+        return
+    if os.name != "nt":
+        with _open_posix_plan_directory(storage.repo_root, storage.repo_root, create=False) as root_fd:
+            with _open_posix_plan_directory(storage.repo_root, storage.intents_dir, root_fd=root_fd) as intents_fd:
+                with _open_posix_plan_directory(storage.repo_root, storage._lock_path.parent, root_fd=root_fd) as lock_fd:
+                    with ExitStack() as targets:
+                        guard = storage._storage_path_guard
+                        guard.active = True
+                        guard.root_fd = root_fd
+                        guard.intents_fd = intents_fd
+                        guard.lock_fd = lock_fd
+                        guard.target_stack = targets
+                        guard.target_fds = {}
+                        try:
+                            yield
+                        finally:
+                            del guard.root_fd
+                            del guard.intents_fd
+                            del guard.lock_fd
+                            del guard.target_stack
+                            del guard.target_fds
+                            guard.active = False
+        return
+    with _pin_windows_write_directories(storage.repo_root, storage.intents_dir):
+        with _pin_windows_write_directories(storage.repo_root, storage._lock_path.parent):
+            storage._storage_path_guard.active = True
+            try:
+                yield
+            finally:
+                storage._storage_path_guard.active = False
+
+
+def _pin_windows_storage_paths(method):
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if method.__name__ == "recover_pending_intents" and not self.intents_dir.exists():
+            return method(self, *args, **kwargs)
+        with _guard_storage_paths(self):
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 def compute_bytes_sha256(data: bytes) -> str:
@@ -38,7 +233,11 @@ def compute_bytes_sha256(data: bytes) -> str:
 def compute_file_sha256(file_path: Path) -> str:
     if not file_path.exists() or not file_path.is_file():
         return ""
-    return compute_bytes_sha256(file_path.read_bytes())
+    digest = hashlib.sha256()
+    with file_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def get_git_context(repo_root: Path) -> tuple[str | None, str | None]:
@@ -135,6 +334,7 @@ class RepoPlanStorage:
 
     def __init__(self, repo_root: str | Path, intents_dir: str | Path | None = None) -> None:
         self.repo_root = Path(repo_root).resolve()
+        self._storage_path_guard = threading.local()
         try:
             relative_intents_dir = (
                 ".local-ai-hub/local/intents" if intents_dir is None else os.fspath(intents_dir)
@@ -160,33 +360,137 @@ class RepoPlanStorage:
     def _ensure_intents_dir(self) -> None:
         validate_repo_path(self.intents_dir_rel, repo_root=self.repo_root)
         validate_repo_path(".local-ai-hub/local/repo-plan-storage", repo_root=self.repo_root)
+        if os.name != "nt":
+            if getattr(self._storage_path_guard, "active", False):
+                return
+            with _open_posix_plan_directory(self.repo_root, self.intents_dir):
+                pass
+            with _open_posix_plan_directory(self.repo_root, self._lock_path.parent):
+                pass
+            return
         self.intents_dir.mkdir(parents=True, exist_ok=True)
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def _lock_storage(self):
+        if os.name == "nt":
+            with exclusive_file_update(self._lock_path, reentrant=True):
+                yield
+            return
+        pinned_fd = getattr(self._storage_path_guard, "lock_fd", None)
+        if pinned_fd is not None:
+            with exclusive_file_update(self._lock_path, reentrant=True, parent_fd=pinned_fd):
+                yield
+            return
+        with _open_posix_plan_directory(self.repo_root, self._lock_path.parent, create=False) as parent_fd:
+            with exclusive_file_update(self._lock_path, reentrant=True, parent_fd=parent_fd):
+                yield
 
     def _intent_path(self, intent_id: str) -> Path:
         if not intent_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in intent_id):
             raise RepoPlanError("Invalid operation intent identity")
         return self.intents_dir / f"{intent_id}.intent.json"
 
+    def _record_exists(self, path: Path) -> bool:
+        pinned_fd = (getattr(self._storage_path_guard, "intents_fd", None)
+                     if path.parent == self.intents_dir else None)
+        if pinned_fd is None:
+            if os.name == "nt":
+                return path.exists()
+            try:
+                with _open_posix_plan_directory(self.repo_root, path.parent, create=False) as parent_fd:
+                    os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                return True
+            except FileNotFoundError:
+                return False
+        try:
+            os.stat(path.name, dir_fd=pinned_fd, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def _record_paths(self, pattern: str):
+        pinned_fd = getattr(self._storage_path_guard, "intents_fd", None)
+        if pinned_fd is None:
+            yield from self.intents_dir.glob(pattern)
+            return
+        with os.scandir(pinned_fd) as entries:
+            for entry in entries:
+                if fnmatch.fnmatchcase(entry.name, pattern):
+                    yield self.intents_dir / entry.name
+
+    @_pin_windows_storage_paths
     def _save_intent(self, intent: OperationIntent) -> None:
         self._ensure_intents_dir()
         path = self._intent_path(intent.intent_id)
         raw = json.dumps(intent.to_dict(), indent=2, sort_keys=True)
+        if os.name != "nt":
+            _atomic_write_posix(self.repo_root, path, raw.encode("utf-8"),
+                                parent_fd=getattr(self._storage_path_guard, "intents_fd", None))
+            return
         temp_path = self.intents_dir / f".tmp_{intent.intent_id}_{uuid.uuid4().hex[:6]}"
+        created = False
         try:
-            with open(temp_path, "wb") as f:
+            with open(temp_path, "xb") as f:
+                created = True
                 f.write(raw.encode("utf-8"))
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, path)
         finally:
-            if temp_path.exists():
+            if created and temp_path.exists():
                 try:
                     temp_path.unlink()
                 except OSError:
                     pass
 
     def _atomic_write_bytes(self, target_path: Path, data: bytes) -> None:
+        if os.name != "nt":
+            with self._target_directory(target_path.parent, create=True) as parent_fd:
+                _atomic_write_posix(self.repo_root, target_path, data, parent_fd=parent_fd)
+            return
+        with _pin_windows_write_directories(self.repo_root, target_path.parent):
+            self._atomic_write_bytes_pinned(target_path, data)
+
+    @contextmanager
+    def _target_directory(self, parent: Path, *, create: bool):
+        stack = getattr(self._storage_path_guard, "target_stack", None)
+        root_fd = getattr(self._storage_path_guard, "root_fd", None)
+        if stack is None:
+            with _open_posix_plan_directory(self.repo_root, parent, create=create, root_fd=root_fd) as fd:
+                yield fd
+            return
+        opened = self._storage_path_guard.target_fds
+        if parent not in opened:
+            opened[parent] = stack.enter_context(
+                _open_posix_plan_directory(self.repo_root, parent, create=create, root_fd=root_fd)
+            )
+        yield opened[parent]
+
+    def _target_sha256(self, rel_path: str) -> str:
+        """Read target bytes relative to the operation's opened repository root."""
+        target = self.repo_root / rel_path
+        if os.name == "nt":
+            return compute_file_sha256(target)
+        try:
+            with self._target_directory(target.parent, create=False) as parent_fd:
+                descriptor = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return ""
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RepoPlanValidationError(f"Plan target is not a regular file: {rel_path}")
+            digest = hashlib.sha256()
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = None
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _atomic_write_bytes_pinned(self, target_path: Path, data: bytes) -> None:
         """Write bytes to target_path using atomic replacement with Windows file-sharing retries."""
         resolved_root = self.repo_root.resolve()
         resolved_target = target_path.resolve()
@@ -207,9 +511,11 @@ class RepoPlanStorage:
             pass
         target_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = target_path.parent / f".tmp_{target_path.name}_{uuid.uuid4().hex[:8]}"
+        temp_created = False
 
         try:
-            with open(temp_path, "wb") as f:
+            with open(temp_path, "xb") as f:
+                temp_created = True
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
@@ -228,7 +534,7 @@ class RepoPlanStorage:
             if last_err is not None:
                 raise OSError(f"Failed to atomically write {target_path}: {last_err}") from last_err
         finally:
-            if temp_path.exists():
+            if temp_created and temp_path.exists():
                 try:
                     temp_path.unlink()
                 except OSError:
@@ -244,9 +550,26 @@ class RepoPlanStorage:
         if not full_path.exists():
             raise FileNotFoundError(f"Plan file not found: {rel_path}")
 
-        raw_bytes = full_path.read_bytes()
-        sha = compute_bytes_sha256(raw_bytes)
+        # Bound the read itself and avoid following a swapped final symlink on POSIX.
+        if os.name != "nt":
+            with self._target_directory(full_path.parent, create=False) as parent_fd:
+                descriptor = os.open(
+                    full_path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd
+                )
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise RepoPlanValidationError("Plan file must be a regular file")
+                with os.fdopen(descriptor, "rb") as stream:
+                    descriptor = None
+                    raw_bytes = stream.read(MAX_PLAN_FILE_BYTES + 1)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        else:
+            with full_path.open("rb") as stream:
+                raw_bytes = stream.read(MAX_PLAN_FILE_BYTES + 1)
         data = parse_plan_json(raw_bytes)
+        sha = compute_bytes_sha256(raw_bytes)
         validate_plan_dict(data, repo_root=self.repo_root)
         return data, sha
 
@@ -271,17 +594,70 @@ class RepoPlanStorage:
         digest = compute_bytes_sha256(key.encode("utf-8"))
         return self.intents_dir / f"request_{digest}.json"
 
+    @_pin_windows_storage_paths
     def _save_request(self, key: str, data: dict[str, Any]) -> None:
         if key:
-            if not self._request_path(key).exists() and len(list(islice(self.intents_dir.glob("request_*.json"), 4096))) >= 4096:
+            if not self._record_exists(self._request_path(key)) and len(list(islice(self._record_paths("request_*.json"), MAX_JOURNAL_RECORDS))) >= MAX_JOURNAL_RECORDS:
                 raise RepoPlanError("Idempotency record capacity reached; explicit archival required")
             self._atomic_record(self._request_path(key), data)
 
-    @staticmethod
-    def _read_record(path: Path) -> dict[str, Any]:
-        if path.stat().st_size > 12 * 1024 * 1024:
+    def _read_record(self, path: Path) -> dict[str, Any]:
+        max_record_bytes = 12 * 1024 * 1024
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            create = kernel.CreateFileW
+            create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                               wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            create.restype = wintypes.HANDLE
+            close = kernel.CloseHandle
+            close.argtypes = [wintypes.HANDLE]
+            close.restype = wintypes.BOOL
+            get_info = kernel.GetFileInformationByHandleEx
+            get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+            get_info.restype = wintypes.BOOL
+
+            class AttributeTag(ctypes.Structure):
+                _fields_ = [("attributes", wintypes.DWORD), ("tag", wintypes.DWORD)]
+
+            handle = create(str(path), 0x80000000, 0x1 | 0x2, None, 3, 0x00200000, None)
+            if handle == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                info = AttributeTag()
+                if not get_info(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if info.attributes & (0x400 | 0x10):
+                    raise RepoPlanError("Operation record cannot be a reparse point or directory")
+                descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+            except BaseException:
+                close(handle)
+                raise
+        else:
+            if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+                raise RepoPlanError("Secure operation record reads are unavailable")
+            pinned_fd = (getattr(self._storage_path_guard, "intents_fd", None)
+                         if path.parent == self.intents_dir else None)
+            directory = (_open_posix_plan_directory(self.repo_root, path.parent, create=False)
+                         if pinned_fd is None else nullcontext(pinned_fd))
+            with directory as parent_fd:
+                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RepoPlanError("Operation record must be a regular file with exactly one link")
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = None
+                raw = stream.read(max_record_bytes + 1)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if len(raw) > max_record_bytes:
             raise RepoPlanError("Operation record exceeds 12 MiB limit")
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
             raise RepoPlanError("Operation record must be an object")
         return data
@@ -289,36 +665,44 @@ class RepoPlanStorage:
     def _atomic_record(self, path: Path, data: dict[str, Any]) -> None:
         # Separate from target publication so tests/cancellation can interrupt targets only.
         raw = json.dumps(data, sort_keys=True).encode("utf-8")
+        if len(raw) > 12 * 1024 * 1024:
+            raise RepoPlanError("Operation record exceeds 12 MiB limit")
+        if os.name != "nt":
+            pinned_fd = (getattr(self._storage_path_guard, "intents_fd", None)
+                         if path.parent == self.intents_dir else None)
+            _atomic_write_posix(self.repo_root, path, raw, parent_fd=pinned_fd)
+            return
         temporary = path.with_name(f".tmp_{uuid.uuid4().hex}")
+        created = False
         try:
-            with temporary.open("wb") as stream:
+            with temporary.open("xb") as stream:
+                created = True
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
         finally:
-            temporary.unlink(missing_ok=True)
+            if created:
+                temporary.unlink(missing_ok=True)
 
     def _request_replay(self, key: str, payload_sha: str) -> dict[str, Any] | None:
-        if not key or not self._request_path(key).exists():
+        if not key or not self._record_exists(self._request_path(key)):
             return None
         record = self._read_record(self._request_path(key))
         if record.get("payload_sha256") != payload_sha:
             raise RepoPlanConflictError(f"Idempotency key '{key}' reused with different payload")
         if record.get("status") == "pending" and record.get("intent_id"):
             intent_path = self._intent_path(record["intent_id"])
-            if intent_path.exists():
+            if self._record_exists(intent_path):
                 intent = OperationIntent.from_dict(self._read_record(intent_path))
                 if (intent.status == "completed" and intent.payload_sha256 == payload_sha
                         and intent.idempotency_key == key and isinstance(intent.result, dict)):
                     record = {"payload_sha256": payload_sha, "status": "completed", "result": intent.result}
                     self._save_request(key, record)
             else:
-                try:
-                    self._request_path(key).unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return None
+                raise RepoPlanConflictError(
+                    "Idempotent operation references a missing intent and requires reconciliation"
+                )
         if record.get("status") != "completed" or not isinstance(record.get("result"), dict):
             raise RepoPlanConflictError("Idempotent operation remains pending or requires reconciliation")
         return record["result"]
@@ -327,10 +711,15 @@ class RepoPlanStorage:
         self, rel_path: str, plan_dict: dict[str, Any], *,
         expected_revision: str | None = None, owner: str = "agent",
         idempotency_key: str = "", lease_check_fn: Callable[[], bool] | None = None,
+        client_request_fingerprint: str = "",
+        client_response_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
         return self._save_targets("save_plan", [(rel_path, serialize_plan_json(plan_dict).encode("utf-8"), expected_revision)],
-                                  owner, idempotency_key, lease_check_fn)
+                                  owner, idempotency_key, lease_check_fn,
+                                  client_request_fingerprint=client_request_fingerprint,
+                                  client_plan_snapshot=plan_dict if client_request_fingerprint else None,
+                                  client_response_data=client_response_data)
 
     def save_spec_and_plan(
         self, spec_rel_path: str, spec_content: str, plan_rel_path: str,
@@ -347,6 +736,8 @@ class RepoPlanStorage:
     def _save_targets(
         self, operation: str, candidates: list[tuple[str, bytes, str | None]],
         owner: str, key: str, lease_check_fn: Callable[[], bool] | None,
+        *, client_request_fingerprint: str = "", client_plan_snapshot: dict[str, Any] | None = None,
+        client_response_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         paths = [path for path, _, _ in candidates]
         if not isinstance(owner, str) or not owner or len(owner) > 256:
@@ -359,10 +750,22 @@ class RepoPlanStorage:
             raise RepoPlanConflictError("Operation targets must be distinct files")
         if sum(len(data) for _, data, _ in candidates) > 8 * 1024 * 1024:
             raise RepoPlanError("Recovery candidate exceeds 8 MiB operation limit")
+        return self._save_targets_pinned(operation, candidates, owner, key, lease_check_fn,
+                                         client_request_fingerprint=client_request_fingerprint,
+                                         client_plan_snapshot=client_plan_snapshot,
+                                         client_response_data=client_response_data)
+
+    @_pin_windows_storage_paths
+    def _save_targets_pinned(
+        self, operation: str, candidates: list[tuple[str, bytes, str | None]],
+        owner: str, key: str, lease_check_fn: Callable[[], bool] | None,
+        *, client_request_fingerprint: str = "", client_plan_snapshot: dict[str, Any] | None = None,
+        client_response_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self._ensure_intents_dir()
         # One physical-worktree lock covers revision checks, request keys, both targets,
         # and recovery. A custom intents directory must not create another lock domain.
-        with exclusive_file_update(self._lock_path, reentrant=True):
+        with self._lock_storage():
             context = self._context()
             self._check_fence(context, lease_check_fn)
             fingerprint = {"operation": operation, "owner": owner, "context": context,
@@ -374,13 +777,19 @@ class RepoPlanStorage:
                 return replay
             targets = []
             for path, data, expected in candidates:
-                actual = compute_file_sha256(self.repo_root / path)
+                actual = self._target_sha256(path)
                 if expected is not None and expected != actual:
                     raise RepoPlanConflictError(f"Content revision conflict on {path}: expected {expected}, found {actual}")
                 targets.append(IntentTarget(path, actual, compute_bytes_sha256(data),
                                             candidate_base64=base64.b64encode(data).decode("ascii")))
             changed = [target.rel_path for target in targets if target.expected_sha256 != target.candidate_sha256]
             result: dict[str, Any] = {"success": True, "saved": True, "no_op": not changed, "changed_paths": changed}
+            if client_request_fingerprint:
+                result["client_request_fingerprint"] = client_request_fingerprint
+                if client_response_data is not None:
+                    result["client_response_data"] = copy.deepcopy(client_response_data)
+                if not changed:
+                    result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
             if operation == "save_plan":
                 result["file_revision"] = targets[0].candidate_sha256
             else:
@@ -390,56 +799,154 @@ class RepoPlanStorage:
                 return result
             # No automatic retention eviction: retry keys never silently become reusable.
             # Capacity exhaustion is explicit; unresolved operations remain recoverable.
-            if len(list(islice(self.intents_dir.glob("*.intent.json"), 4096))) >= 4096:
+            if len(list(islice(self._record_paths("*.intent.json"), MAX_JOURNAL_RECORDS))) >= MAX_JOURNAL_RECORDS:
                 raise RepoPlanError("Operation intent capacity reached; explicit archival required")
             intent_id = f"intent_{uuid.uuid4().hex}"
             result["intent_id"] = intent_id
             intent = OperationIntent(intent_id, operation, key, payload_sha, owner, time.time(), "pending", targets,
                                      context["git_branch"], context["git_head"], context, result)
+            snapshot = intent.to_dict()
+            snapshot_hash = compute_bytes_sha256(json.dumps(snapshot, sort_keys=True).encode("utf-8"))
+            self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id,
+                                     "reserved_intent": snapshot, "reserved_intent_sha256": snapshot_hash,
+                                     "fingerprint": fingerprint})
             self._save_intent(intent)
-            self._save_request(key, {"payload_sha256": payload_sha, "status": "pending", "intent_id": intent_id})
             for target, (_, data, _) in zip(targets, candidates):
                 self._check_fence(context, lease_check_fn)
                 validate_repo_path(target.rel_path, repo_root=self.repo_root)
-                if compute_file_sha256(self.repo_root / target.rel_path) != target.expected_sha256:
+                if self._target_sha256(target.rel_path) != target.expected_sha256:
                     raise RepoPlanConflictError(f"Content revision conflict before publish: {target.rel_path}")
                 if target.expected_sha256 != target.candidate_sha256:
                     self._atomic_write_bytes(self.repo_root / target.rel_path, data)
-                if compute_file_sha256(self.repo_root / target.rel_path) != target.candidate_sha256:
+                if self._target_sha256(target.rel_path) != target.candidate_sha256:
                     raise RepoPlanError(f"Stored byte verification failed: {target.rel_path}")
                 target.status = "confirmed"
                 self._save_intent(intent)
             self._check_fence(context, lease_check_fn)
             for target in targets:
-                if compute_file_sha256(self.repo_root / target.rel_path) != target.candidate_sha256:
+                if self._target_sha256(target.rel_path) != target.candidate_sha256:
                     raise RepoPlanConflictError(f"Content changed before acknowledgement: {target.rel_path}")
             self._complete_intent(intent)
             return result
 
+    def _assert_request_owned(self, intent: OperationIntent) -> None:
+        # Recovery must not replace a request that belongs to another intent or
+        # a different payload. A missing journal entry is not proof that an
+        # older operation never published its targets.
+        if intent.idempotency_key:
+            request_path = self._request_path(intent.idempotency_key)
+            if self._record_exists(request_path):
+                record = self._read_record(request_path)
+                if record.get("payload_sha256") != intent.payload_sha256:
+                    raise RepoPlanConflictError("Idempotency key belongs to a different payload")
+                if record.get("status") == "pending" and record.get("intent_id") != intent.intent_id:
+                    raise RepoPlanConflictError("Idempotency key belongs to a different intent")
+                if record.get("status") == "completed" and record.get("result") != intent.result:
+                    raise RepoPlanConflictError("Idempotency key already has a different result")
+                if record.get("status") not in ("pending", "completed"):
+                    raise RepoPlanConflictError("Idempotency record requires reconciliation")
     def _complete_intent(self, intent: OperationIntent) -> None:
+        self._assert_request_owned(intent)
         intent.status = "completed"
         self._save_intent(intent)
         if intent.result is not None:
             self._save_request(intent.idempotency_key, {"payload_sha256": intent.payload_sha256,
                                                        "status": "completed", "result": intent.result})
 
-    def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None) -> list[dict[str, Any]]:
+    def _validated_reserved_intent(self, key: str, request: dict[str, Any]) -> OperationIntent:
+        """Validate a self-contained, fingerprint-bound reservation."""
+        snapshot, fingerprint = request.get("reserved_intent"), request.get("fingerprint")
+        if not isinstance(snapshot, dict) or not isinstance(fingerprint, dict):
+            raise RepoPlanConflictError("Missing intent has no durable reservation snapshot")
+        intent = OperationIntent.from_dict(snapshot)
+        expected_hash = compute_bytes_sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8"))
+        snapshot_hash = compute_bytes_sha256(json.dumps(snapshot, sort_keys=True).encode("utf-8"))
+        targets = fingerprint.get("targets")
+        if (request.get("reserved_intent_sha256") != snapshot_hash
+                or request.get("status") != "pending" or request.get("intent_id") != intent.intent_id
+                or request.get("payload_sha256") != expected_hash or intent.payload_sha256 != expected_hash
+                or intent.idempotency_key != key or intent.status != "pending" or not intent.targets
+                or fingerprint.get("operation") != intent.operation or fingerprint.get("owner") != intent.owner
+                or fingerprint.get("context") != intent.context or not isinstance(intent.context, dict)
+                or not isinstance(intent.result, dict) or not isinstance(targets, list)
+                or len(targets) != len(intent.targets)):
+            raise RepoPlanConflictError("Missing intent reservation identity mismatch")
+        total = 0
+        for recorded, target in zip(targets, intent.targets):
+            if (not isinstance(recorded, dict) or recorded.get("path") != target.rel_path
+                    or recorded.get("candidate") != target.candidate_sha256
+                    or recorded.get("expected") not in (None, target.expected_sha256)
+                    or not isinstance(target.candidate_base64, str)):
+                raise RepoPlanConflictError("Missing intent reservation target mismatch")
+            validate_repo_path(target.rel_path, repo_root=self.repo_root)
+            data = base64.b64decode(target.candidate_base64, validate=True)
+            total += len(data)
+            if total > 8 * 1024 * 1024 or compute_bytes_sha256(data) != target.candidate_sha256:
+                raise RepoPlanConflictError("Missing intent reservation candidate mismatch")
+        return intent
+
+    def _restore_reserved_intent(self, key: str, request: dict[str, Any]) -> None:
+        """Restore only verified new reservations; legacy records stay blocked."""
+        self._save_intent(self._validated_reserved_intent(key, request))
+
+    @_pin_windows_storage_paths
+    def recover_pending_intents(self, *, lease_check_fn: Callable[[], bool] | None = None,
+                                only_key: str | None = None,
+                                resume_unapplied: bool = False,
+                                expected_targets: dict[str, tuple[str, str]] | None = None) -> list[dict[str, Any]]:
         """Recover only verified partial saves; retain ambiguity for explicit reconciliation."""
-        if not self.intents_dir.exists():
+        if resume_unapplied and not only_key:
+            raise ValueError("resuming unapplied operations requires an explicit key")
+        if getattr(self._storage_path_guard, "intents_fd", None) is None and not self.intents_dir.exists():
             return []
+        if not getattr(self._storage_path_guard, "active", False):
+            # The intents directory can appear after the decorator's initial
+            # absence check. Do not continue recovery without path guards.
+            with _guard_storage_paths(self):
+                return self.recover_pending_intents(
+                    lease_check_fn=lease_check_fn,
+                    only_key=only_key,
+                    resume_unapplied=resume_unapplied,
+                    expected_targets=expected_targets,
+                )
         self._ensure_intents_dir()
         outcomes = []
-        with exclusive_file_update(self._lock_path):
-            for path in islice(self.intents_dir.glob("*.intent.json"), 4096):
+        with self._lock_storage():
+            if only_key:
+                request = self._read_record(self._request_path(only_key))
+                if request.get("status") != "pending":
+                    return []
+                paths = [self._intent_path(request["intent_id"])]
+                if not self._record_exists(paths[0]):
+                    self._restore_reserved_intent(only_key, request)
+            else:
+                paths = islice(self._record_paths("*.intent.json"), MAX_JOURNAL_RECORDS)
+            for path in paths:
                 try:
                     intent = OperationIntent.from_dict(self._read_record(path))
-                    if intent.status != "pending":
+                    if only_key and (intent.idempotency_key != only_key or intent.payload_sha256 != request.get("payload_sha256")):
+                        raise RepoPlanError("Recovery request identity mismatch")
+                    if expected_targets is not None and (len(intent.targets) != len(expected_targets) or any(
+                            expected_targets.get(t.rel_path) != (t.expected_sha256, t.candidate_sha256)
+                            for t in intent.targets)):
+                        raise RepoPlanError("Recovery targets do not match the steering request")
+                    if intent.status != "pending" and not (only_key and intent.status == "completed"):
                         continue
+                    self._assert_request_owned(intent)
                     if path != self._intent_path(intent.intent_id) or not intent.targets:
                         raise RepoPlanError("Invalid pending intent identity or targets")
                     for target in intent.targets:
                         validate_repo_path(target.rel_path, repo_root=self.repo_root)
-                    current = [compute_file_sha256(self.repo_root / target.rel_path) for target in intent.targets]
+                    current = [self._target_sha256(target.rel_path) for target in intent.targets]
+                    if intent.status == "completed":
+                        if (intent.context != self._context() or not isinstance(intent.result, dict)
+                                or any(actual != target.candidate_sha256 for target, actual in zip(intent.targets, current))):
+                            raise RepoPlanConflictError("Completed intent cannot be acknowledged safely")
+                        self._check_fence(intent.context, lease_check_fn)
+                        self._save_request(only_key, {"payload_sha256": intent.payload_sha256,
+                                                      "status": "completed", "result": intent.result})
+                        outcomes.append({"intent_id": intent.intent_id, "resolution": "acknowledged", "status": "completed"})
+                        continue
                     if intent.context is not None and intent.context != self._context():
                         resolution, status = "context_changed", "reconciled"
                     elif all(actual == target.candidate_sha256 for target, actual in zip(intent.targets, current)):
@@ -451,7 +958,7 @@ class RepoPlanStorage:
                     elif any(actual not in (target.expected_sha256, target.candidate_sha256)
                              for target, actual in zip(intent.targets, current)):
                         resolution, status = "diverged", "reconciled"
-                    elif all(actual == target.expected_sha256 for target, actual in zip(intent.targets, current)):
+                    elif not resume_unapplied and all(actual == target.expected_sha256 for target, actual in zip(intent.targets, current)):
                         resolution, status = "unapplied_discarded", "aborted"
                     elif intent.context is None or any(target.candidate_base64 is None for target in intent.targets):
                         resolution, status = "recovery_material_missing", "pending"
@@ -468,14 +975,14 @@ class RepoPlanStorage:
                         for target, actual, data in zip(intent.targets, current, payloads):
                             self._check_fence(intent.context, lease_check_fn)
                             validate_repo_path(target.rel_path, repo_root=self.repo_root)
-                            if compute_file_sha256(self.repo_root / target.rel_path) != actual:
+                            if self._target_sha256(target.rel_path) != actual:
                                 raise RepoPlanConflictError("Recovery target changed during reconciliation")
                             if actual != target.candidate_sha256:
                                 self._atomic_write_bytes(self.repo_root / target.rel_path, data)
                             target.status = "confirmed"
                             self._save_intent(intent)
                         self._check_fence(intent.context, lease_check_fn)
-                        if not all(compute_file_sha256(self.repo_root / t.rel_path) == t.candidate_sha256 for t in intent.targets):
+                        if not all(self._target_sha256(t.rel_path) == t.candidate_sha256 for t in intent.targets):
                             raise RepoPlanConflictError("Recovery bytes changed before acknowledgement")
                         self._complete_intent(intent)
                         resolution, status = "forward_recovered", "completed"

@@ -143,7 +143,7 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
 
     assert handler.responses == [(200, {
         "success": True, "tasks": [], "total_count": 0, "active_count": 0,
-        "offset": 0, "limit": 100, "next_offset": 0, "has_more": False,
+        "offset": 0, "limit": 20, "next_offset": 0, "has_more": False,
     })]
 
 

@@ -43,7 +43,12 @@ def test_runtime_reset_serializes_before_waiting_update(tmp_path: Path, monkeypa
         def release(self):
             return self.lock.release()
 
-    lock_index = hash(os.path.normcase(str(target.resolve()))) % len(file_locks._LOCKS)
+    if os.name == "nt":
+        identity = os.path.normcase(str(target.resolve()))
+    else:
+        parent = target.parent.stat()
+        identity = (parent.st_dev, parent.st_ino, target.name)
+    lock_index = hash(identity) % len(file_locks._LOCKS)
     locks = list(file_locks._LOCKS)
     locks[lock_index] = ObservedRLock(locks[lock_index])
     monkeypatch.setattr(file_locks, "_LOCKS", tuple(locks))

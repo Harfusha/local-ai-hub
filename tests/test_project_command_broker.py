@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,27 @@ def _broker(state_root: Path) -> CommandBroker:
         },
     }
     return CommandBroker(config, _Artifacts(), RepoStateTracker(config))
+
+
+def test_pre_cancelled_request_never_fingerprints_or_launches(tmp_path: Path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    cancelled = threading.Event()
+    cancelled.set()
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("pre-cancelled requests must not be prepared or launched")
+
+    monkeypatch.setattr(broker, "_project_command_fingerprints", unexpected)
+    monkeypatch.setattr(subprocess, "Popen", unexpected)
+    result = broker.run(
+        "python -B -c pass", str(tmp_path), env={"LOCAL_AI_TEST": "value"},
+        request_cancel_event=cancelled,
+    )
+    assert result["success"] is False
+    assert result["cancelled"] is True
+    assert result["request_not_sent"] is True
+    assert result["terminal"] is True
+    assert result["retryable"] is False
 
 
 def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, monkeypatch) -> None:

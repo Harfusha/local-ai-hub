@@ -72,6 +72,7 @@ def test_features_coord_and_task_actions_include_new():
     features = FeatureSet({
         "features": {"tasks": True, "coord": True, "agent_os": True, "repo": True},
         "models": {"fast_code": "dummy"},
+        "ollama": {"enabled": True},
     })
     coord_acts = features.supported_coord_actions()
     assert "task_sync" in coord_acts
