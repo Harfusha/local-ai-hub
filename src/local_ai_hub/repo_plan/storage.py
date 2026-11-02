@@ -9,6 +9,7 @@ import functools
 import json
 import logging
 import os
+import stat
 import subprocess
 import threading
 import time
@@ -389,8 +390,53 @@ class RepoPlanStorage:
     @staticmethod
     def _read_record(path: Path) -> dict[str, Any]:
         max_record_bytes = 12 * 1024 * 1024
-        with path.open("rb") as stream:
-            raw = stream.read(max_record_bytes + 1)
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            create = kernel.CreateFileW
+            create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                               wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            create.restype = wintypes.HANDLE
+            close = kernel.CloseHandle
+            close.argtypes = [wintypes.HANDLE]
+            close.restype = wintypes.BOOL
+            get_info = kernel.GetFileInformationByHandleEx
+            get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+            get_info.restype = wintypes.BOOL
+
+            class AttributeTag(ctypes.Structure):
+                _fields_ = [("attributes", wintypes.DWORD), ("tag", wintypes.DWORD)]
+
+            handle = create(str(path), 0x80000000, 0x1 | 0x2, None, 3, 0x00200000, None)
+            if handle == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                info = AttributeTag()
+                if not get_info(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if info.attributes & (0x400 | 0x10):
+                    raise RepoPlanError("Operation record cannot be a reparse point or directory")
+                descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+            except BaseException:
+                close(handle)
+                raise
+        else:
+            if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+                raise RepoPlanError("Secure operation record reads are unavailable")
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RepoPlanError("Operation record must be a regular file with exactly one link")
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = None
+                raw = stream.read(max_record_bytes + 1)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         if len(raw) > max_record_bytes:
             raise RepoPlanError("Operation record exceeds 12 MiB limit")
         data = json.loads(raw.decode("utf-8"))

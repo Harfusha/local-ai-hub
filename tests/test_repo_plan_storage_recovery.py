@@ -87,6 +87,39 @@ def test_missing_legacy_intent_without_snapshot_stays_blocked(tmp_path):
         storage.recover_pending_intents(only_key="legacy", resume_unapplied=True)
 
 
+def test_journal_read_rejects_hardlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    storage = RepoPlanStorage(root)
+    storage._ensure_intents_dir()
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"status":"completed"}', encoding="utf-8")
+    path = storage._request_path("linked")
+    try:
+        os.link(outside, path)
+    except OSError as exc:
+        pytest.skip(f"Hard links unavailable: {exc}")
+    with pytest.raises(RepoPlanError, match="exactly one link"):
+        storage._read_record(path)
+    assert outside.read_text(encoding="utf-8") == '{"status":"completed"}'
+
+
+def test_journal_read_rejects_symlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    storage = RepoPlanStorage(root)
+    storage._ensure_intents_dir()
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"status":"completed"}', encoding="utf-8")
+    path = storage._request_path("linked")
+    try:
+        path.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"File symlinks unavailable: {exc}")
+    with pytest.raises((RepoPlanError, OSError)):
+        storage._read_record(path)
+
+
 def test_plan_write_never_overwrites_or_deletes_existing_temp_file(tmp_path, monkeypatch):
     from local_ai_hub.repo_plan import storage as storage_module
 
