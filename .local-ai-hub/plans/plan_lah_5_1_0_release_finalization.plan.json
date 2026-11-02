@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Dokončit a ověřit hlavní checkout a instalaci, integraci větví, CI, dashboard, MCP a publikaci odpovídajícího release; živý test Gemini je uživatelem odložen. Verzi release určit podle existujících tagů.",
   "id": "plan_lah_5_1_0_release_finalization",
-  "lifecycle": "completed",
+  "lifecycle": "active",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
@@ -17,9 +17,9 @@
       "depends_on": [],
       "description": "CI #369 pro 4014e925 FAILURE, package skipped; job https://github.com/Harfusha/local-ai-hub/actions/runs/41110250191/job/124250509542. Anotace ukazují nesoulad test_agent_ergonomics.py, test_mcp_coord_operation_acceptance.py a test_mcp_task_memory_adoption_wire.py. mcp_server.py:5004–5035 vyžaduje šest kanonických polí a neprázdné phase/next_action, ale některé fixture posílají pouze phase či legacy notes/state_data; tato příčina je zdrojově podložena pro tyto případy, ne automaticky pro celý job. Ověřit všechny selhávající případy zvlášť, zachovat současný veřejný kontrakt. Zejména pro 128/512 tokenů ověřit preflight s validním checkpointem, zachování mutation_applied a operation_not_started, skutečné eventy/stav úložiště a odpověď v textu i structuredContent. Opravit zastaralé fixture nebo skutečnou vadu v odpovědné vrstvě; cíleně ověřit, pushnout a zkontrolovat nové CI.",
       "kind": "code",
-      "next_action": "Hotovo: Fixture zarovnany s kanonickym 6-polovym checkpoint kontraktem; legacy flat parametry overeny jako odmitnute (HTTP 400). 210 testu proslo.",
+      "next_action": "Historické hlášení Gemini: fixture zarovnány s checkpoint kontraktem, 210 testů prošlo (bez čerstvého ověření). Nový CI 41361614174 pro 561d2163 selhal na pyflakes; package skipped. Oprava v commit 62b468b4, pyflakes src tools prošel v izolovaném worktree. Integrovat po uvolnění masteru, vyšetřit critical-coverage, provést cílené kontroly a ověřit nový CI.",
       "title": "P1: CI #369 selhává na checkpoint kontraktu",
-      "work_status": "done"
+      "work_status": "in_progress"
     },
     "task_audit_coord_plan_discoverability": {
       "acceptance_criteria": [
