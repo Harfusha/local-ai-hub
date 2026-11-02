@@ -12,6 +12,7 @@ import subprocess
 import time
 import uuid
 from itertools import islice
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -31,6 +32,75 @@ from .schema_validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _pin_windows_write_directories(root: Path, parent: Path):
+    """Prevent replacement of each directory while publishing a Windows target."""
+    if os.name != "nt":
+        yield
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        parts = parent.relative_to(root).parts
+    except ValueError as exc:
+        raise RepoPlanValidationError("Write parent escapes repository root") from exc
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    get_info = kernel.GetFileInformationByHandleEx
+    get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    get_info.restype = wintypes.BOOL
+    final_path = kernel.GetFinalPathNameByHandleW
+    final_path.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    final_path.restype = wintypes.DWORD
+
+    class AttributeTag(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("tag", wintypes.DWORD)]
+
+    handles = []
+    try:
+        current = root
+        for index in range(len(parts) + 1):
+            if index:
+                current = current / parts[index - 1]
+                try:
+                    os.mkdir(current)
+                except FileExistsError:
+                    pass
+            # Omit FILE_SHARE_DELETE: open directory handles then fence rename/delete.
+            handle = create(str(current), 0x1 | 0x80, 0x1 | 0x2, None, 3, 0x02000000 | 0x00200000, None)
+            if handle == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(handle)
+            info = AttributeTag()
+            if not get_info(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if info.attributes & 0x400 or not info.attributes & 0x10:
+                raise RepoPlanValidationError(f"Plan write directory is a reparse point or not a directory: {current}")
+            if index == 0:
+                buffer = ctypes.create_unicode_buffer(32768)
+                length = final_path(handle, buffer, len(buffer), 0)
+                if not length or length >= len(buffer):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                actual = buffer.value
+                if actual.startswith("\\\\?\\UNC\\"):
+                    actual = "\\\\" + actual[8:]
+                elif actual.startswith("\\\\?\\"):
+                    actual = actual[4:]
+                if os.path.normcase(os.path.normpath(actual)) != os.path.normcase(os.path.normpath(str(root))):
+                    raise RepoPlanValidationError("Repository root changed during write")
+        yield
+    finally:
+        for handle in reversed(handles):
+            close(handle)
 
 
 def compute_bytes_sha256(data: bytes) -> str:
@@ -193,6 +263,10 @@ class RepoPlanStorage:
                     pass
 
     def _atomic_write_bytes(self, target_path: Path, data: bytes) -> None:
+        with _pin_windows_write_directories(self.repo_root, target_path.parent):
+            self._atomic_write_bytes_pinned(target_path, data)
+
+    def _atomic_write_bytes_pinned(self, target_path: Path, data: bytes) -> None:
         """Write bytes to target_path using atomic replacement with Windows file-sharing retries."""
         resolved_root = self.repo_root.resolve()
         resolved_target = target_path.resolve()
@@ -213,9 +287,11 @@ class RepoPlanStorage:
             pass
         target_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = target_path.parent / f".tmp_{target_path.name}_{uuid.uuid4().hex[:8]}"
+        temp_created = False
 
         try:
-            with open(temp_path, "wb") as f:
+            with open(temp_path, "xb") as f:
+                temp_created = True
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
@@ -234,7 +310,7 @@ class RepoPlanStorage:
             if last_err is not None:
                 raise OSError(f"Failed to atomically write {target_path}: {last_err}") from last_err
         finally:
-            if temp_path.exists():
+            if temp_created and temp_path.exists():
                 try:
                     temp_path.unlink()
                 except OSError:

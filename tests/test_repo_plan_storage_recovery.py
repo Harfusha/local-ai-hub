@@ -4,6 +4,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
 from threading import Event
@@ -18,13 +19,20 @@ PLAN = ".local-ai-hub/plans/main.plan.json"
 SPEC = "docs/spec.md"
 
 
-class PlanWriteEscapedRoot(AssertionError):
-    pass
+def test_plan_write_never_overwrites_or_deletes_existing_temp_file(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan import storage as storage_module
+
+    target = tmp_path / "target"
+    existing = tmp_path / ".tmp_target_12345678"
+    existing.write_bytes(b"preserve")
+    monkeypatch.setattr(storage_module.uuid, "uuid4", lambda: SimpleNamespace(hex="12345678"))
+    with pytest.raises(FileExistsError):
+        RepoPlanStorage(tmp_path)._atomic_write_bytes(target, b"new")
+    assert existing.read_bytes() == b"preserve"
+    assert not target.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
-@pytest.mark.xfail(strict=True, raises=PlanWriteEscapedRoot,
-                   reason="known parent-directory junction race in plan writes")
 def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     parent = root / "docs"
@@ -60,8 +68,7 @@ def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
     except OSError:
         pass  # A safe implementation may deny the attempted swap or write.
     assert swapped, "The controlled swap must be exercised"
-    if sentinel.read_bytes() != b"unchanged":
-        raise PlanWriteEscapedRoot("plan write changed a file outside the repository")
+    assert sentinel.read_bytes() == b"unchanged"
 
 
 def test_fresh_instance_rejects_different_request_payload(tmp_path):
