@@ -62,9 +62,9 @@
       "depends_on": [],
       "description": "Pozorování: při velkém plánu kompaktní plan_get vrátil success=true bez plan a file_revision. Podobně plan_task_edit uložil mutaci, ale odpověděl max_response_tokens too small s mutation_applied=true; zásadní je nezopakovat již provedenou mutaci. Hypotéza: response_budget.py:400–416 ponechává při redukci jen keep_keys a protected_keys; vazbu na konkrétní MCP projekci a flag truncation nejprve reprodukovat, nepovažovat za prokázanou příčinu. Použít existující plán jako důkaz bez přepisu, dále izolovanou fixture pro malé a velké plány. Oprava musí zachovat success/error a přesný stav mutace, identitu plánu/revizi a dát explicitní omezení nebo podporovanou stránkovanou/artifact cestu k obsahu bez překročení rozpočtu. Ověřit get/list/board/edit včetně malých budgetů, CAS konfliktu a velkých dat, bez syntetických receiptů. Soubory: response_budget.py, mcp_server.py a příslušné coord tests; upřesnit po diagnostice.",
       "kind": "code",
-      "next_action": "Hotovo: Pridana plan pole do _COORD_PROTECTED_KEYS, _POINTER_KEYS i collection_keep; pri prekroceni budgetu vraci explicitni budget chybu s metadaty misto ticheho prazdneho tela; unit testy prosly.",
+      "next_action": "Prověřit reprodukci plan_update: skutečně změnil lifecycle navzdory chybě max_response_tokens too small bez mutation_applied. Workspace.update_plan vrací success/no_op, ale žádný mutation_applied; budget_rejection může zachovat pouze dodané pole. Ověřit celý řetězec MCP/HTTP a pravdivou sémantiku no-op/replay; opravit bez vytváření fiktivních potvrzení a pokrýt cíleným integračním testem. Neopakovat mutaci jen kvůli chybě projekce.",
       "title": "P1: plan_get ztrácí plán a revizi při limitu",
-      "work_status": "done"
+      "work_status": "in_progress"
     },
     "task_audit_plan_intent_capacity": {
       "acceptance_criteria": [
