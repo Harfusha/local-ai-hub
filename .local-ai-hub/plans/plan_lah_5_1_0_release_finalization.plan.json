@@ -92,9 +92,9 @@
       "depends_on": [],
       "description": "Zdrojová hypotéza na 4014e925: repo_plan/storage.py:378–384 validuje cestu a porovnává hash před _atomic_write_bytes; storage.py:193–205 poté vytvoří temp soubor v target_path.parent a os.replace používá cesty podle jména. Worktree lock/lease chrání spolupracující zapisovatele, ale z výřezu neplyne ochrana před nezávislou změnou parent na symlink/junction mezi validací a otevřením/replace. Není zatím doložena exploatace ani chyba v konkrétním prostředí. V izolovaném rootu vytvořit neškodný sentinel mimo testovací root a deterministicky změnit parent po poslední validaci před temp open, při replace a při potvrzení; ověřit že se mimo root nic nezmění. Pokrýt také intents/local lock cestu, restart recovery, konflikty a Windows reparse/junction; explicitně uvést skip při chybě oprávnění. Pokud se potvrdí, zvolit již existující bezpečný handle-based nebo jiný platformně správný mechanismus, zachovat atomicitu, revision, fencing, journaling a nepovolovat průchod přes reparse body. Nesahat na cizí soubory.",
       "kind": "code",
-      "next_action": "Hotovo: _atomic_write_bytes overuje striktni ohraniceni vuci repozitari a blokuje symlinky v rodicovskych slozkach; unit test prosel.",
+      "next_action": "Statická kontrola před otevřením temp souboru v storage._atomic_write_bytes neprokazuje ochranu při výměně rodičovského adresáře mezi resolve/is_symlink a open/os.replace; Windows junction také nelze z kontroly is_symlink vyloučit. Nebyla doložena exploatace. Připravit izolovanou deterministickou reprodukci, prověřit bezpečné handle-relative operace na Windows/POSIX a zamezit úniku bez přerušení podporovaných zápisů; cílené regresní testy na obou platformách. Do té doby neoznačovat za hotové.",
       "title": "P1: prověřit závod cesty při zápisu plánů",
-      "work_status": "done"
+      "work_status": "in_progress"
     },
     "task_audit_preprocessing_probe": {
       "acceptance_criteria": [
