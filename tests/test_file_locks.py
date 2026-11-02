@@ -2,10 +2,11 @@
 
 import os
 import subprocess
+import threading
 
 import pytest
 
-from local_ai_hub.file_locks import exclusive_file_update
+from local_ai_hub.file_locks import _open_lock_file, exclusive_file_update
 
 
 def test_lock_file_rejects_hardlink_without_modifying_target(tmp_path):
@@ -75,3 +76,51 @@ def test_open_windows_lock_cannot_be_renamed(tmp_path):
         with pytest.raises(OSError):
             lock.rename(tmp_path / "moved.lock")
     assert lock.is_file()
+
+
+def test_thread_contention_times_out_without_losing_owner(tmp_path):
+    path = tmp_path / "task"
+    ready = threading.Event()
+    release = threading.Event()
+
+    def owner():
+        with exclusive_file_update(path):
+            ready.set()
+            assert release.wait(5)
+
+    thread = threading.Thread(target=owner)
+    thread.start()
+    try:
+        assert ready.wait(5)
+        with pytest.raises(TimeoutError):
+            with exclusive_file_update(path, timeout=0.01):
+                pytest.fail("A second thread must not enter the lock")
+    finally:
+        release.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    with exclusive_file_update(path):
+        pass
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows descriptor contract")
+def test_windows_lock_file_rejects_parent_fd(tmp_path):
+    with pytest.raises(ValueError, match="parent_fd"):
+        _open_lock_file(tmp_path / "task.lock", parent_fd=1)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows lock contention")
+def test_windows_os_lock_timeout_closes_descriptor(tmp_path, monkeypatch):
+    import msvcrt
+
+    path = tmp_path / "task"
+    with monkeypatch.context() as patch:
+        def busy(*_args):
+            raise OSError("lock busy")
+
+        patch.setattr(msvcrt, "locking", busy)
+        with pytest.raises(TimeoutError):
+            with exclusive_file_update(path, timeout=0.03):
+                pytest.fail("A busy OS lock must not be acquired")
+    with exclusive_file_update(path):
+        pass
