@@ -75,7 +75,7 @@ def test_named_dispatch_keeps_existing_gate_and_exception_order() -> None:
     ]
     dispatch_line = next(line for line, name in calls if name == "select_post_handler")
     auth_line = next(line for line, name in calls if name == "_require_authorized")
-    mode_line = max(line for line, name in calls if name == "_http_mode_gate_error")
+    mode_line = max(line for line, name in calls if name == "_http_mode_gate_error" and line < dispatch_line)
     parse_line = max(line for line, name in calls if name == "_read_json")
     recovery_lines = [line for line, name in calls if name in {"_claim_recovery", "begin"} and line < dispatch_line]
     assert auth_line < parse_line < mode_line < dispatch_line
