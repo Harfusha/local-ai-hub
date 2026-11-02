@@ -4,6 +4,7 @@ import tempfile
 import os
 import stat
 import subprocess
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
@@ -149,3 +150,25 @@ def test_final_file_swap_cannot_ingest_external_svg(tmp_path: Path, monkeypatch:
     result = store.ingest_diagram(root=str(root), workspace="test", image_path=str(image))
     assert result["success"] is False
     assert published == []
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is POSIX-only")
+def test_fifo_diagram_open_rejects_without_waiting_for_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "diagram.svg"
+    os.mkfifo(fifo)
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(source_root) + os.pathsep + env.get("PYTHONPATH", "")
+    code = (
+        "import sys; from pathlib import Path; from local_ai_hub.rag import RAGStore\n"
+        "try:\n"
+        "    RAGStore._safe_open_diagram(Path(sys.argv[1]), Path(sys.argv[2]))\n"
+        "except ValueError:\n"
+        "    sys.exit(0)\n"
+        "sys.exit(2)\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(tmp_path), str(fifo)],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    assert completed.returncode == 0, completed.stderr

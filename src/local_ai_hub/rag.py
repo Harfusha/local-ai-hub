@@ -3480,7 +3480,8 @@ class RAGStore:
             # opened handle before reading; a path-based recheck can race again.
             fd = os.open(path, flags)
         else:
-            if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
+            if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
+                    or not hasattr(os, "O_NONBLOCK") or os.open not in os.supports_dir_fd):
                 raise ValueError("secure diagram path traversal is unavailable")
             directory_fd = os.open(root, flags | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
@@ -3488,7 +3489,9 @@ class RAGStore:
                     next_fd = os.open(part, flags | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
                     os.close(directory_fd)
                     directory_fd = next_fd
-                fd = os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=directory_fd)
+                # An attacker can replace the checked regular file with a FIFO;
+                # do not block waiting for its writer before fstat rejects it.
+                fd = os.open(parts[-1], flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
             finally:
                 os.close(directory_fd)
         try:
