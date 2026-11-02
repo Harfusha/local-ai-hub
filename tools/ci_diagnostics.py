@@ -15,6 +15,16 @@ MAX_MESSAGE_CHARS = 3000
 _ERROR_HEADER = "::error title=Local AI Hub CI failure::"
 _TRUNCATION_MARKER = "\n...[truncated]...\n"
 _emitted = 0
+_omitted_count = 0
+_omitted_ids: list[str] = []
+
+
+def pytest_sessionstart(session: Any) -> None:
+    """Reset state when pytest is invoked repeatedly in the same process."""
+    global _emitted, _omitted_count
+    _emitted = 0
+    _omitted_count = 0
+    _omitted_ids.clear()
 
 
 def _bounded_text(text: str) -> str:
@@ -80,9 +90,14 @@ def run_selftest(main_callable: Callable[[], int]) -> int:
 def pytest_runtest_logreport(report: Any) -> None:
     """Emit bounded annotations for failed pytest reports only."""
 
-    global _emitted
-    if (os.environ.get("GITHUB_ACTIONS") != "true"
-            or not getattr(report, "failed", False) or _emitted >= MAX_FAILURES):
+    global _emitted, _omitted_count
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not getattr(report, "failed", False):
+        return
+    if _emitted >= MAX_FAILURES - 1:
+        _omitted_count += 1
+        nodeid = str(getattr(report, "nodeid", ""))[:300]
+        if sum(map(len, _omitted_ids)) + len(nodeid) <= 2000:
+            _omitted_ids.append(nodeid)
         return
     _emitted += 1
     nodeid = getattr(report, "nodeid", "")
@@ -102,6 +117,13 @@ def pytest_runtest_logreport(report: Any) -> None:
         message += "\nCaptured stderr tail:\n" + stderr_tail
     print()  # Pytest may have just written a progress character without a newline.
     emit_error(message)
+
+
+def pytest_sessionfinish(session: Any, exitstatus: Any) -> None:
+    """Reserve the last annotation for identities beyond the detailed cap."""
+    if _omitted_count:
+        print()
+        emit_error(f"{_omitted_count} additional failed reports (bounded node IDs):\n" + "\n".join(_omitted_ids))
 
 
 def _cli() -> None:
