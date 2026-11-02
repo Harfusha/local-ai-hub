@@ -1,15 +1,14 @@
 """Persistent, unexpiring long-term telemetry for endpoints and MCP tools."""
 from __future__ import annotations
 
-import os
 import sqlite3
 import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
-from .sqlite_support import connect_sqlite, is_busy_error
+from .sqlite_support import connect_sqlite
 
 
 LATENCY_BUCKET_LIMITS: tuple[float, ...] = (

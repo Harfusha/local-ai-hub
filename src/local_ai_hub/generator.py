@@ -514,7 +514,6 @@ Do not fan out overlapping retrieval layers. Stop escalating when evidence is su
 def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     """Generate dynamic reference documents for skills/local-ai-orchestrator/references/."""
     fs = FeatureSet.from_config(cfg)
-    reasoning_tier = _reasoning_tier_label(cfg, fs)
     local_semantic_enabled = fs.tasks and fs.has_any_model()
     semantic_handoff = _semantic_handoff_contract(fs) if local_semantic_enabled else ""
     work_owner_note = "The main agent owns planning, edits, review, validation and final integration."
