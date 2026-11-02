@@ -1,7 +1,9 @@
 """Plan replay through registered MCP, real HTTP, and file-backed storage."""
 
 import asyncio
+import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,14 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     if action in {"plan_task_edit", "plan_task_delete"}:
         created = workspace.edit_task("plan_replay", "task_a", title="Initial", expected_revision=created["file_revision"])
     app = LocalAIApp(str(config))
+    if action == "plan_adopt_legacy_board":
+        board = app.services._ensure_board()
+        board._ensure_schema()
+        with closing(sqlite3.connect(board.db_path)) as connection, connection:
+            connection.executemany(
+                "INSERT INTO agent_board_items (item_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                [(f"legacy_{index}", f"Legacy {index}", "planned", 1.0, float(index)) for index in range(201)],
+            )
     monkeypatch.setattr(http_server, "APP", app)
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -59,6 +69,10 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
         _, first = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
         assert first["success"] is True, first
         assert first["mutation_applied"] is True
+        if action == "plan_adopt_legacy_board":
+            assert len(workspace.get_plan("plan_replay")["plan"]["tasks"]) == 201
+            with closing(sqlite3.connect(board.db_path)) as connection:
+                assert connection.execute("SELECT count(*) FROM agent_board_items").fetchone()[0] == 201
         later = workspace.update_plan("plan_replay", description="Later", expected_revision=first["file_revision"])
         _, replay = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
         assert replay["success"] is True, replay

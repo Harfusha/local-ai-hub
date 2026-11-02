@@ -1,6 +1,8 @@
 """Public planner regressions against real file-backed workspace operations."""
 
 from pathlib import Path
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,24 @@ def public_planner(tmp_path):
     services.config = {"server": {"state_dir": str(tmp_path / "state")},
                        "security": {"allowed_roots": [str(root)]}}
     return services, str(root)
+
+
+def test_adoption_rejects_over_capacity_before_any_plan_write(public_planner, tmp_path, monkeypatch):
+    from local_ai_hub.agent_board import BoardStore
+    services, root = public_planner
+    board = BoardStore(tmp_path / "legacy.db")
+    board._ensure_schema()
+    with closing(sqlite3.connect(board.db_path)) as connection, connection:
+        connection.executemany(
+            "INSERT INTO agent_board_items (item_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            [(f"legacy_{index}", f"Legacy {index}", "planned", 1.0, float(index)) for index in range(1001)],
+        )
+    monkeypatch.setattr(services, "_ensure_board", lambda: board)
+    with pytest.raises(RepoPlanConflictError, match="1000"):
+        services.plan_adopt_legacy_board(root=root, plan_id="plan_adopted", title="Adopted")
+    assert not (Path(root) / ".local-ai-hub/plans/plan_adopted.plan.json").exists()
+    with closing(sqlite3.connect(board.db_path)) as connection:
+        assert connection.execute("SELECT count(*) FROM agent_board_items").fetchone()[0] == 1001
 
 
 def test_real_public_plan_lifecycle(public_planner):

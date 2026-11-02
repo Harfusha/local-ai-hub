@@ -4889,7 +4889,11 @@ class LocalAIServices:
                                owner: str = "agent", idempotency_key: str = "") -> dict[str, Any]:
         arguments = dict(plan_id=plan_id, title=title, owner=owner, idempotency_key=idempotency_key)
         ws = self._plan_workspace(root, "plan_adopt_legacy_board", arguments)
-        items = self._ensure_board().item_list(limit=1000).get("items", [])
+        snapshot = self._ensure_board().items_for_adoption()
+        if snapshot.get("success") is not True:
+            from .repo_plan import RepoPlanConflictError
+            raise RepoPlanConflictError(str(snapshot.get("error") or "legacy board snapshot failed"))
+        items = snapshot["items"]
         return ws.adopt_legacy_board_items(board_items=items, **arguments)
 
     def plan_bind_task(self, root: str = "", task_id: str = "", plan_id: str = "",

@@ -161,6 +161,28 @@ class BoardStore:
             finally:
                 con.close()
 
+    def items_for_adoption(self) -> dict[str, Any]:
+        """Read one bounded snapshot; refuse truncation beyond plan capacity."""
+        self._ensure_schema()
+        with self._lock:
+            con = self._connect()
+            try:
+                con.row_factory = sqlite3.Row
+                rows = con.execute(
+                    "SELECT * FROM agent_board_items ORDER BY updated_at DESC, item_id ASC LIMIT 1001"
+                ).fetchall()
+                if len(rows) > 1000:
+                    return {"success": False, "error": "legacy board exceeds the 1000-item plan capacity"}
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    item["labels"] = json.loads(item.pop("labels_json", "[]"))
+                    item["details"] = json.loads(item.pop("details_json", "{}"))
+                    items.append(item)
+                return {"success": True, "items": items}
+            finally:
+                con.close()
+
     def summary(self) -> dict[str, Any]:
         self._ensure_schema()
         with self._lock:
