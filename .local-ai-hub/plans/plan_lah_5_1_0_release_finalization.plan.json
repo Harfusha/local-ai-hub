@@ -32,9 +32,9 @@
       "depends_on": [],
       "description": "Pozorování v aktivní relaci: popis local_ai_coord uvádí supported actions claim, release, memory_record/find, context_compile, task_create/checkpoint, ask a answer; volání plan_validate, plan_get, plan_task_edit a plan_board_view skutečně fungovala. mcp_server.py:618–621 záměrně sestavuje omezený seznam pro popis nástroje. To prokazuje rozdíl popisu a využitelných akcí v této konfiguraci, nikoli že všechny hosty plánové akce skrývají nebo že záměr nutně porušuje schéma. Agent, který se řídí pouze popisem, nemusí objevit Kanban a aktualizaci plánu; uživatelská žádost výslovně požaduje jejich používání. Porovnat účelné generované MCP schema/action enum, tool description a aktivní instrukce Codexu i Gemini, zjistit jak se plánové operace objeví v nové relaci. Pokud je mezera potvrzena, doplnit stručný trigger plan_list/get/board/edit nebo odkaz na schopnosti s minimálními náklady na tokeny; neslibovat nepodporované operace. Ověřit parity disabled/enabled feature flags, skutečné čtení/aktualizaci plánu a relativní velikost schema/promptu; nevyžadovat živé Gemini během odkladu.",
       "kind": "code",
-      "next_action": "Hotovo: Popis local_ai_coord rozesiren o planovaci akce (plan_list, plan_get, plan_board_view, plan_task_edit); test_coord_description_advertises_planning_actions_when_supported prosel.",
+      "next_action": "Popis local_ai_coord již uvádí plan_list, plan_get, plan_board_view a plan_task_edit; dříve prošel cílený test popisu. Akceptace dosud není doložena pro velké plány: běžící Hub odmítl plan_get pro tento plán i při požadovaném budgetu 30000 a plan_board_view při 4000. Zjistit příčinu, umožnit podporovaný omezený přístup se zachováním revize a identity nebo jasně dokumentovat ověřenou cestu přes source slices; ověřit feature flags, tokenový dopad, parity test a skutečné načtení v novém Codexu. Souběžní vlastníci upravují relevantní MCP a budget soubory.",
       "title": "P2: dostupné plánové operace chybí v popisu MCP",
-      "work_status": "done"
+      "work_status": "in_progress"
     },
     "task_audit_lease_drive_relative_root": {
       "acceptance_criteria": [
