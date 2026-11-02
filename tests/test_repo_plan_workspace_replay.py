@@ -205,3 +205,43 @@ def test_create_reports_mutation_with_small_mcp_budget(tmp_path, monkeypatch):
     }))
     assert result.get("mutation_applied") is True
     assert workspace.get_plan("plan_budget")["plan"]["title"] == "Budget"
+
+
+def test_adoption_retry_preserves_original_count_and_later_changes(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    items = [{"item_id": "item-a", "title": "Legacy"}]
+    first = workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    assert first["adopted_count"] == 1 and first["no_op"] is False
+    later = workspace.update_plan("plan_replay", description="Later", expected_revision=first["file_revision"])
+    replay = workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    assert replay == first
+    assert workspace.get_plan("plan_replay")["file_revision"] == later["file_revision"]
+    with pytest.raises(RepoPlanConflictError):
+        workspace.adopt_legacy_board_items("plan_replay", [{"item_id": "item-b", "title": "Other"}], idempotency_key="adopt")
+
+
+def test_adoption_crash_recovery_completes_new_plan_without_losing_items(tmp_path, monkeypatch):
+    workspace = RepoPlanWorkspace(tmp_path)
+    items = [{"item_id": "item-a", "title": "Legacy"}]
+    original_complete = workspace.storage._complete_intent
+    monkeypatch.setattr(workspace.storage, "_complete_intent", lambda _intent: (_ for _ in ()).throw(RuntimeError("crash")))
+    with pytest.raises(RuntimeError, match="crash"):
+        workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    monkeypatch.setattr(workspace.storage, "_complete_intent", original_complete)
+    workspace.storage.recover_pending_intents()
+    result = workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="adopt")
+    assert result["adopted_count"] == 1
+    assert workspace.get_plan("plan_replay")["plan"]["tasks"]["task_item-a"]["title"] == "Legacy"
+
+
+def test_adoption_rejects_corrupt_import_count(tmp_path):
+    workspace = RepoPlanWorkspace(tmp_path)
+    items = [{"item_id": "item-a", "title": "Legacy"}]
+    workspace.adopt_legacy_board_items("plan_replay", items)
+    workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="noop")
+    path = workspace.storage._request_path("noop")
+    record = workspace.storage._read_record(path)
+    record["result"]["client_response_data"]["adopted_count"] = 999
+    workspace.storage._atomic_record(path, record)
+    with pytest.raises(RepoPlanConflictError, match="adoption result"):
+        workspace.adopt_legacy_board_items("plan_replay", items, idempotency_key="noop")

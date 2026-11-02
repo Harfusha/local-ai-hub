@@ -338,12 +338,14 @@ class RepoPlanStorage:
         expected_revision: str | None = None, owner: str = "agent",
         idempotency_key: str = "", lease_check_fn: Callable[[], bool] | None = None,
         client_request_fingerprint: str = "",
+        client_response_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         validate_plan_dict(plan_dict, repo_root=self.repo_root)
         return self._save_targets("save_plan", [(rel_path, serialize_plan_json(plan_dict).encode("utf-8"), expected_revision)],
                                   owner, idempotency_key, lease_check_fn,
                                   client_request_fingerprint=client_request_fingerprint,
-                                  client_plan_snapshot=plan_dict if client_request_fingerprint else None)
+                                  client_plan_snapshot=plan_dict if client_request_fingerprint else None,
+                                  client_response_data=client_response_data)
 
     def save_spec_and_plan(
         self, spec_rel_path: str, spec_content: str, plan_rel_path: str,
@@ -361,6 +363,7 @@ class RepoPlanStorage:
         self, operation: str, candidates: list[tuple[str, bytes, str | None]],
         owner: str, key: str, lease_check_fn: Callable[[], bool] | None,
         *, client_request_fingerprint: str = "", client_plan_snapshot: dict[str, Any] | None = None,
+        client_response_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         paths = [path for path, _, _ in candidates]
         if not isinstance(owner, str) or not owner or len(owner) > 256:
@@ -397,6 +400,8 @@ class RepoPlanStorage:
             result: dict[str, Any] = {"success": True, "saved": True, "no_op": not changed, "changed_paths": changed}
             if client_request_fingerprint:
                 result["client_request_fingerprint"] = client_request_fingerprint
+                if client_response_data is not None:
+                    result["client_response_data"] = copy.deepcopy(client_response_data)
                 if not changed:
                     result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
             if operation == "save_plan":

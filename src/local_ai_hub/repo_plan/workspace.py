@@ -114,7 +114,19 @@ def _replayable_plan_edit(method):
                     raise RepoPlanConflictError("Idempotent plan snapshot revision does not match")
                 replay = {"success": True, "plan_id": values["plan_id"],
                           "file_revision": stored["file_revision"], "no_op": stored["no_op"]}
-                if method.__name__ == "delete_task":
+                if method.__name__ == "adopt_legacy_board_items":
+                    response_data = stored.get("client_response_data")
+                    source_items = values.get("board_items")
+                    if source_items is None:
+                        source_items = values.get("legacy_items") or []
+                    if (not isinstance(response_data, dict)
+                            or type(response_data.get("adopted_count")) is not int
+                            or not isinstance(source_items, list)
+                            or not 0 <= response_data["adopted_count"] <= len(source_items)):
+                        raise RepoPlanConflictError("Idempotent adoption result is invalid")
+                    count = response_data["adopted_count"]
+                    replay.update(adopted_count=count, tasks_imported=count)
+                elif method.__name__ == "delete_task":
                     replay["task_id"] = values["task_id"]
                 elif method.__name__ == "edit_task":
                     task_id = values["task_id"]
@@ -726,6 +738,7 @@ class RepoPlanWorkspace:
             "total_items": total_items,
         }
 
+    @_replayable_plan_edit
     def adopt_legacy_board_items(
         self,
         plan_id: str = "default",
@@ -734,19 +747,42 @@ class RepoPlanWorkspace:
         title: str = "",
         owner: str = "agent",
         idempotency_key: str = "",
+        _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Adopt SQLite board items into a file-backed plan without deleting the originals."""
         items_to_adopt = board_items if board_items is not None else (legacy_items or [])
+        if not isinstance(items_to_adopt, list):
+            raise RepoPlanValidationError("legacy board items must be a list")
+        seen_ids: dict[str, tuple[str, dict[str, Any]]] = {}
+        for item in items_to_adopt:
+            if not isinstance(item, dict):
+                raise RepoPlanValidationError("legacy board item must be an object")
+            item_id = item.get("item_id", "")
+            item_title = item.get("title", "")
+            if not isinstance(item_title, str) or not isinstance(item_id, str):
+                raise RepoPlanValidationError("legacy board item ID and title must be strings")
+            if not item_title.strip():
+                continue
+            if not item_id:
+                raise RepoPlanValidationError("legacy board item ID must not be empty")
+            safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
+            task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
+            if not TASK_ID_REGEX.fullmatch(task_id):
+                raise RepoPlanValidationError("legacy board item ID cannot form a valid task ID")
+            previous = seen_ids.get(task_id)
+            if previous is not None and (previous[0] != item_id or previous[1] != item):
+                raise RepoPlanConflictError(f"Legacy board identity collision for task '{task_id}'")
+            seen_ids[task_id] = (item_id, item)
         rel_path = self._plan_rel_path(plan_id)
         full_path = self.repo_root / rel_path
         if not full_path.exists():
-            self.create_plan(
-                plan_id=plan_id,
-                title=title or f"Plan {plan_id}",
-                description="Adopted from legacy board items",
-                owner=owner,
-            )
-        plan_dict, current_rev = self.storage.read_plan_file(rel_path)
+            self.init_workspace()
+            plan_dict = {"schema_version": 1, "id": plan_id, "title": title or f"Plan {plan_id}",
+                         "description": "Adopted from legacy board items", "lifecycle": "draft",
+                         "default_target_ref": "refs/heads/master", "spec_refs": [], "tasks": {}}
+            current_rev = ""
+        else:
+            plan_dict, current_rev = self.storage.read_plan_file(rel_path)
         board_items = items_to_adopt
 
         tasks = plan_dict.setdefault("tasks", {})
@@ -763,6 +799,9 @@ class RepoPlanWorkspace:
             task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
 
             if task_id in tasks:
+                existing = tasks[task_id]
+                if not isinstance(existing, dict) or existing.get("description") != f"Adopted from board item {item_id}":
+                    raise RepoPlanConflictError(f"Legacy board identity collision for existing task '{task_id}'")
                 continue
 
             status = item.get("status", "planned").lower()
@@ -795,6 +834,8 @@ class RepoPlanWorkspace:
             expected_revision=current_rev,
             owner=owner,
             idempotency_key=idempotency_key,
+            client_request_fingerprint=_client_request_fingerprint,
+            client_response_data={"adopted_count": adopted_count} if _client_request_fingerprint else None,
         )
         return {
             "success": True,
@@ -802,4 +843,5 @@ class RepoPlanWorkspace:
             "adopted_count": adopted_count,
             "tasks_imported": adopted_count,
             "file_revision": save_res["file_revision"],
+            "no_op": save_res["no_op"],
         }

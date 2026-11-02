@@ -27,6 +27,34 @@ def test_init_workspace(tmp_path):
     assert (tmp_path / ".local-ai-hub" / "plans").is_dir()
 
 
+def test_adoption_rejects_colliding_normalized_ids_before_creating_plan(workspace):
+    root, ws = workspace
+    items = [{"item_id": "a/b", "title": "First"}, {"item_id": "a?b", "title": "Second"}]
+    with pytest.raises(RepoPlanConflictError, match="collision"):
+        ws.adopt_legacy_board_items("plan_adopted", items)
+    assert not (root / ".local-ai-hub" / "plans" / "plan_adopted.plan.json").exists()
+
+
+def test_adoption_does_not_silently_skip_unrelated_existing_task(workspace):
+    _root, ws = workspace
+    plan = ws.create_plan("plan_adopted", "Existing")
+    ws.edit_task("plan_adopted", "task_a_b", title="Unrelated", expected_revision=plan["file_revision"])
+    before = ws.get_plan("plan_adopted")
+    with pytest.raises(RepoPlanConflictError, match="collision"):
+        ws.adopt_legacy_board_items("plan_adopted", [{"item_id": "a/b", "title": "Legacy"}])
+    assert ws.get_plan("plan_adopted")["file_revision"] == before["file_revision"]
+
+
+def test_adopting_same_legacy_item_twice_is_a_noop(workspace):
+    _root, ws = workspace
+    items = [{"item_id": "a/b", "title": "Legacy"}]
+    first = ws.adopt_legacy_board_items("plan_adopted", items)
+    second = ws.adopt_legacy_board_items("plan_adopted", items)
+    assert first["adopted_count"] == 1
+    assert second["adopted_count"] == 0
+    assert second["file_revision"] == first["file_revision"]
+
+
 @pytest.mark.parametrize("selected_plan", ["", "plan_bad"])
 def test_board_reports_unreadable_plan_instead_of_silent_empty_result(workspace, selected_plan):
     _root, ws = workspace

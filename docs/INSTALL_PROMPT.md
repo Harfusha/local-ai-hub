@@ -1,6 +1,6 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
-Plan create, update, task edit, task delete and archive report `mutation_applied` from the recorded write outcome when available; a replay can report the original write. A response-budget error with `mutation_applied=true` must not be treated as proof that the operation did not run.
+Plan create, update, task edit, task delete, archive and legacy-board adoption report `mutation_applied` from the recorded write outcome when available; a replay can report the original write. A response-budget error with `mutation_applied=true` must not be treated as proof that the operation did not run. Adoption rejects colliding task identities; resolve the legacy IDs instead of retrying with a new key.
 
 For an exact `local_ai_artifact(action="source")` range, follow `next_offset` in Unicode characters using the same path and line range; supply the first page's `file_sha256` as `expected_file_sha256` on every continuation. A changed source rejects the continuation: discard pages and restart. A page with nonzero offset is not the complete range, even when `next_offset` is null.
 

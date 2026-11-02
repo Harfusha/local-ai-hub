@@ -12,7 +12,7 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
 
 
-@pytest.mark.parametrize("action", ["plan_create", "plan_update", "plan_task_edit", "plan_task_delete", "plan_archive"])
+@pytest.mark.parametrize("action", ["plan_create", "plan_update", "plan_task_edit", "plan_task_delete", "plan_archive", "plan_adopt_legacy_board"])
 def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, action):
     import local_ai_hub.repo_plan.workspace as workspace_module
     assert Path(workspace_module.__file__).resolve().is_relative_to(Path(__file__).resolve().parents[1] / "src")
@@ -28,7 +28,7 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     )
     workspace = RepoPlanWorkspace(root)
     workspace.init_workspace()
-    created = None if action == "plan_create" else workspace.create_plan(plan_id="plan_replay", title="Initial")
+    created = None if action in {"plan_create", "plan_adopt_legacy_board"} else workspace.create_plan(plan_id="plan_replay", title="Initial")
     if action in {"plan_task_edit", "plan_task_delete"}:
         created = workspace.edit_task("plan_replay", "task_a", title="Initial", expected_revision=created["file_revision"])
     app = LocalAIApp(str(config))
@@ -44,7 +44,7 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
                  "idempotency_key": "http-retry"}
     if created is not None:
         arguments["expected_revision"] = created["file_revision"]
-    if action in {"plan_create", "plan_update"}:
+    if action in {"plan_create", "plan_update", "plan_adopt_legacy_board"}:
         arguments["title"] = "First"
         different = {**arguments, "title": "Different"}
     elif action == "plan_task_edit":
