@@ -52,7 +52,8 @@ def test_journal_temp_collision_preserves_existing_file(tmp_path, monkeypatch, r
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
-def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
+@pytest.mark.parametrize("phase", ["mkdir", "replace"])
+def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch, phase):
     root = tmp_path / "repo"
     parent = root / "docs"
     outside = tmp_path / "outside"
@@ -81,13 +82,31 @@ def test_plan_write_resists_parent_junction_swap(tmp_path, monkeypatch):
             junction.rename(parent)
         return original_mkdir(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "mkdir", swap_parent)
+    if phase == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", swap_parent)
+    else:
+        original_replace = os.replace
+
+        def swap_at_replace(source, destination):
+            nonlocal swapped
+            if Path(destination) == parent / "spec.md":
+                swapped = True
+                try:
+                    parent.rename(root / "old-docs")
+                    junction.rename(parent)
+                except OSError:
+                    pass
+            return original_replace(source, destination)
+
+        monkeypatch.setattr(os, "replace", swap_at_replace)
     try:
         storage._atomic_write_bytes(parent / "spec.md", b"changed")
     except OSError:
         pass  # A safe implementation may deny the attempted swap or write.
     assert swapped, "The controlled swap must be exercised"
     assert sentinel.read_bytes() == b"unchanged"
+    if phase == "replace":
+        assert (parent / "spec.md").read_bytes() == b"changed"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction reproduction")
@@ -127,6 +146,28 @@ def test_journal_write_resists_parent_junction_swap(tmp_path, monkeypatch):
         pass
     assert swapped
     assert sentinel.read_bytes() == b"unchanged"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory share-delete behavior")
+def test_plan_write_blocks_root_rename_during_publication(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    storage = RepoPlanStorage(root)
+    original_mkdir = Path.mkdir
+    attempted = False
+
+    def try_rename(path, *args, **kwargs):
+        nonlocal attempted
+        if path == root and not attempted:
+            attempted = True
+            with pytest.raises(OSError):
+                root.rename(tmp_path / "moved-repo")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", try_rename)
+    storage._atomic_write_bytes(root / "target", b"written")
+    assert attempted
+    assert (root / "target").read_bytes() == b"written"
 
 
 def test_fresh_instance_rejects_different_request_payload(tmp_path):
