@@ -141,7 +141,15 @@ def _role_stopped(role: str) -> bool:
         pid = int(pid_text)
     except ValueError:
         return False
-    return pid <= 0 or not pid_alive(pid)
+    if pid <= 0 or not pid_alive(pid):
+        return True
+    owner = _read_owner(role)
+    owner_pid = owner.get("pid") if isinstance(owner, dict) else None
+    return bool(
+        type(owner_pid) is int
+        and owner_pid == pid
+        and process_owner_state(owner, STATE, role) == "stale"
+    )
 
 
 def all_supervisor_pids() -> list[int]:
