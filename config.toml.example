@@ -96,7 +96,7 @@ allow_unknown = true
 [features]
 tasks = true              # local model inference worker (local_ai_task)
 vision = true             # image understanding/frontend review (set false to disable)
-local_diagnostic_dispatch = true  # bounded L1 failure diagnosis; direct non-mutating validation commands only
+local_diagnostic_dispatch = false # opt in to bounded local failure diagnosis
 enriched_search = true            # source-enriched repository search
 batch_replacement = true          # atomic repository batch replacement
 diagnostic_artifacts = true       # persist command diagnostic artifacts

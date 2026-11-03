@@ -14,6 +14,8 @@ from local_ai_hub.process_utils import hidden_run_kwargs
     ("C1", ("src/clamp.py",)),
     ("C2", ("src/clamp.py",)),
     ("C3", ("src/clamp.py",)),
+    ("A1", ("src/checkout.py", "src/pricing.py")),
+    ("A2", ("README.md", "src/dispatcher.py", "src/store.py")),
 ])
 def test_fixture_is_clean_disposable_git_repository(tmp_path, case, paths):
     target = tmp_path / case
@@ -54,6 +56,25 @@ def test_i1_baseline_test_fails_for_the_intended_behavior(tmp_path):
     assert result.returncode == 1
     assert "test_middle_value" in result.stdout
     assert "assert 10 == 5" in result.stdout
+
+
+def test_a1_fixture_has_a_grounded_cross_file_rate_unit_mismatch(tmp_path):
+    target = tmp_path / "A1"
+    prepare_fixture(target, "A1")
+    caller = (target / "src/checkout.py").read_text(encoding="utf-8")
+    callee = (target / "src/pricing.py").read_text(encoding="utf-8")
+    assert "tax_percent" in caller and "total_with_tax(lines, tax_percent)" in caller
+    assert "decimal fraction" in callee and "tax_rate" in callee
+
+
+def test_a2_fixture_exposes_delivery_retry_window_and_design_constraints(tmp_path):
+    target = tmp_path / "A2"
+    prepare_fixture(target, "A2")
+    dispatcher = (target / "src/dispatcher.py").read_text(encoding="utf-8")
+    store = (target / "src/store.py").read_text(encoding="utf-8")
+    readme = (target / "README.md").read_text(encoding="utf-8")
+    assert dispatcher.index("gateway.send") < dispatcher.index("store.mark_sent")
+    assert "def mark_sent" in store and "unique" in readme.lower()
 
 
 def test_fixture_ignores_git_environment_pointing_at_another_repository(tmp_path, monkeypatch):

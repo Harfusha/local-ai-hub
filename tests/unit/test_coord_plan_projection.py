@@ -53,3 +53,31 @@ def test_plan_get_budget_projection_does_not_silently_drop_body() -> None:
     else:
         assert "plan" in compacted
         assert "file_revision" in compacted
+
+
+def test_plan_task_edit_budget_rejection_keeps_mutation_ack_and_revision() -> None:
+    raw = {
+        "success": True,
+        "mutation_applied": True,
+        "plan_id": "plan_large",
+        "task_id": "task_large",
+        "file_revision": "revision-after-write",
+        "task": {
+            "title": "Large task",
+            "description": "description " * 3000,
+            "next_action": "next action " * 2000,
+            "acceptance_criteria": [f"criterion {i} " * 100 for i in range(10)],
+        },
+    }
+
+    compacted = mcp_server._compact(raw, "coord", extra_fields=[
+        "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch",
+        "git_head", "board", "columns", "items", "tasks",
+    ])
+
+    assert compacted["success"] is False
+    assert "budget" in compacted["error"].lower() or "too small" in compacted["error"].lower()
+    assert compacted["mutation_applied"] is True
+    assert compacted["task_id"] == "task_large"
+    assert compacted["plan_id"] == "plan_large"
+    assert compacted["file_revision"] == "revision-after-write"

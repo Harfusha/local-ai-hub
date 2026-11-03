@@ -126,3 +126,12 @@ def test_http_route_maps_to_least_privilege_permission(method, path, expected):
 def test_config_redaction_rejects_retired_users_by_presence(retired_value):
     with pytest.raises(ValueError, match="security.users was removed"):
         http_server._redact_config_secrets({"security": {"users": retired_value}})
+
+
+def test_config_redaction_cache_cannot_hide_retired_users_after_config_mutation():
+    config = {"security": {"api_token": "secret"}}
+    assert http_server._redact_config_secrets(config)["security"]["api_token"] == "***configured***"
+    config["security"]["users"] = False
+
+    with pytest.raises(ValueError, match="security.users was removed"):
+        http_server._redact_config_secrets(config)

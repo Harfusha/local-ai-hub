@@ -7,9 +7,20 @@ import json
 import pytest
 
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub import mcp_server
 
 
 PATH = "src/example.py"
+
+
+@pytest.fixture(autouse=True)
+def qualified_review_backend(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+
+
 CONTRADICTORY = json.dumps({"verdict": "pass", "findings": [
     {"citation": {"path": PATH, "line": 1}, "description": "Defect"},
 ]})

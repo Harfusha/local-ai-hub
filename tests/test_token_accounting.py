@@ -182,6 +182,7 @@ def test_telemetry_reports_cache_domains_separately(tmp_path: Path):
         store.record_http(action="/api/repo/code-index", cache_hit=True, cache_layer="workspace", success=True)
         store.record_http(action="/api/repo/search", cache_hit=False, cache_layer="workspace-miss", success=True)
         store.record_http(action="/api/agent-state/tasks", cache_hit=True, cache_layer="", success=True)
+        store.record_http(action="/api/command", cache_hit=True, cache_layer="command", success=True)
         assert store.flush()
 
         domains = store.summary(scope="process")["cache_domains"]
@@ -189,7 +190,25 @@ def test_telemetry_reports_cache_domains_separately(tmp_path: Path):
         assert domains["generation"] == {"events": 2, "hits": 1, "coalesced": 0, "hit_rate": 0.5}
         assert domains["repository"] == {"events": 2, "hits": 1, "coalesced": 0, "hit_rate": 0.5}
         assert domains["other"] == {"events": 1, "hits": 1, "coalesced": 0, "hit_rate": 1.0}
-        assert "command" not in domains
+        assert domains["command"] == {"events": 1, "hits": 1, "coalesced": 0, "hit_rate": 1.0}
+    finally:
+        store.close()
+
+
+def test_telemetry_exposes_semantic_and_single_flight_as_generation_subsets(tmp_path: Path):
+    store = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record(event_type="inference", action="review", cache_layer="semantic", cache_hit=True, success=True)
+        store.record(event_type="inference", action="review", cache_layer="single-flight", cache_hit=True, coalesced=True, success=True)
+        store.record(event_type="inference", action="review", cache_layer="exact", cache_hit=True, success=True)
+        store.record(event_type="inference", action="review", cache_layer="ollama", cache_hit=False, success=True)
+        store.record_http(action="/api/search", cache_layer="semantic", cache_hit=True, success=True)
+        assert store.flush()
+
+        summary = store.summary(scope="process")
+        assert summary["cache_domains"]["generation"]["events"] == 4
+        assert summary["cache_domains"]["generation"]["hits"] == 3
+        assert summary["cache_reuse_breakdown"] == {"semantic_hits": 1, "single_flight_waiters": 1}
     finally:
         store.close()
 

@@ -37,7 +37,7 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
-from .scheduler import SchedulerCancelledError
+from .scheduler import SchedulerCancelledError, SchedulerTimeoutError
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
@@ -4417,7 +4417,16 @@ class LocalAIServices:
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
         return self.deterministic_operation("ast-outline", root, {"path": path}, lambda: self.deterministic.ast_outline(root, path))
 
-    def batch_replace(self, root: str, edits: list[dict[str, Any]], dry_run: bool = False) -> dict[str, Any]:
+    def batch_replace(
+        self,
+        root: str,
+        edits: list[dict[str, Any]],
+        dry_run: bool = False,
+        *,
+        owner: str | None = None,
+        lease_id: str | None = None,
+        lease_store: Any | None = None,
+    ) -> dict[str, Any]:
         if not rollout_feature_enabled(self.config, "batch_replacement"):
             return {
                 "success": False,
@@ -4427,7 +4436,38 @@ class LocalAIServices:
             }
         if not self.deterministic:
             return {"success": False, "error": "deterministic engine disabled"}
-        return self.deterministic.batch_replace(root, edits, dry_run=dry_run)
+        if (owner is None) != (lease_id is None):
+            return {"success": False, "error": "owner and lease_id must be supplied together"}
+        owned_paths: list[str] = []
+        if owner is not None and lease_id is not None:
+            if (
+                not isinstance(owner, str) or not owner or owner != owner.strip() or "\x00" in owner
+                or not isinstance(lease_id, str) or not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id
+            ):
+                return {"success": False, "error": "invalid owner or lease_id"}
+            if lease_store is None or not callable(getattr(lease_store, "list", None)):
+                return {"success": False, "error": "lease store unavailable for owner verification"}
+            try:
+                leases = lease_store.list(root)
+            except Exception as exc:
+                return {"success": False, "error": f"unable to verify active lease: {type(exc).__name__}"}
+            root_path = Path(root).expanduser().resolve()
+            for lease in leases:
+                if not isinstance(lease, dict) or lease.get("owner") != owner or lease.get("lease_id") != lease_id:
+                    continue
+                lease_root = lease.get("root")
+                lease_path = lease.get("path")
+                if not isinstance(lease_root, str) or not isinstance(lease_path, str) or not lease_path:
+                    continue
+                try:
+                    if Path(lease_root).expanduser().resolve() != root_path:
+                        continue
+                    owned_paths.append(lease_path)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+            if not owned_paths:
+                return {"success": False, "error": "active lease not found for owner, lease_id, and repository root"}
+        return self.deterministic.batch_replace(root, edits, dry_run=dry_run, owned_paths=owned_paths)
 
     def refactor_impact(self, root: str, file_path: str, symbol: str) -> dict[str, Any]:
         return self.deterministic_operation("refactor-impact", root, {"file": file_path, "symbol": symbol}, lambda: self.deterministic.refactor_impact(root, file_path, symbol))
@@ -8774,17 +8814,36 @@ class LocalAIServices:
             c_exp = str(case.get("expected", ""))
             started = time.perf_counter()
             try:
-                response = self.runtime.request("/api/generate", {
+                request_payload = {
                     "model": requested_model,
                     "prompt": c_in,
                     "system": "Return the shortest correct answer containing the requested completion. Output only the answer; no greeting, explanation, or generic advice.",
                     "stream": False,
                     # Evaluation cases measure visible task output, not hidden
-                    # reasoning.  Without this, Qwen3.5 can consume the whole
+                    # reasoning. Without this, Qwen3.5 can consume the whole
                     # small eval budget in `thinking` and look like a bad model.
                     "think": False,
                     "options": {"num_predict": 128, "temperature": 0.0},
-                })
+                }
+
+                def execute_case() -> dict[str, Any]:
+                    return self.runtime.request("/api/generate", request_payload)
+
+                scheduler = getattr(self, "scheduler", None)
+                scheduler_submit = getattr(scheduler, "submit", None)
+                if callable(scheduler_submit):
+                    response = scheduler_submit(
+                        requested_model, source="eval_suite", execute=execute_case, priority=2,
+                    )
+                else:
+                    llama_config = getattr(self, "config", {}).get("llama_cpp", {})
+                    if isinstance(llama_config, dict) and llama_config.get("managed_with_ollama") is True:
+                        response = {
+                            "error": "Scheduler required for managed mixed model evaluation; preparation unavailable",
+                            "error_code": "scheduler_required",
+                        }
+                    else:
+                        response = execute_case()
                 response = response if isinstance(response, dict) else {"error": "runtime returned a non-object response"}
                 error = str(response.get("error", "") or "")
                 response_text = str(response.get("response", response.get("text", "")) or "")
@@ -8824,6 +8883,26 @@ class LocalAIServices:
                 }
                 if error:
                     result["error"] = error
+                for key in (
+                    "error_code", "job_id", "scheduler_state", "timed_out", "outcome_unknown",
+                    "wait_reason", "request_not_sent", "operation_not_started", "in_progress", "retryable", "terminal",
+                ):
+                    value = response.get(key)
+                    if key in {
+                        "timed_out", "outcome_unknown", "request_not_sent", "operation_not_started",
+                        "in_progress", "retryable", "terminal",
+                    } and type(value) is not bool:
+                        continue
+                    if key in {"error_code", "scheduler_state", "wait_reason"} and not isinstance(value, str):
+                        continue
+                    if key == "job_id" and not (
+                        isinstance(value, str) and value
+                    ) and not (
+                        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                    ):
+                        continue
+                    if key in response:
+                        result[key] = value
             except Exception as exc:
                 is_pass = False
                 execution_failures += 1
@@ -8840,6 +8919,19 @@ class LocalAIServices:
                     "response_preview_truncated": False,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
+                if isinstance(exc, TimeoutError):
+                    result["timed_out"] = True
+                    if isinstance(exc, SchedulerTimeoutError):
+                        result["job_id"] = exc.job_id
+                        result["scheduler_state"] = exc.state
+                        if isinstance(exc.wait_reason, str):
+                            result["wait_reason"] = exc.wait_reason
+                        if exc.state == "pending":
+                            result.update(request_not_sent=True, operation_not_started=True)
+                        else:
+                            result.update(outcome_unknown=True, retryable=False)
+                    else:
+                        result.update(outcome_unknown=True, retryable=False)
             results.append(result)
             if is_pass:
                 passed += 1

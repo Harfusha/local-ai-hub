@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from local_ai_hub.operation_contracts import OPERATION_CONTRACTS, operation_actions, operation_enabled
+from local_ai_hub.operation_contracts import (
+    HARDWARE_PROFILE_ORDER,
+    OPERATION_CONTRACTS,
+    capability_definition,
+    capability_minimum_profile,
+    capability_profile_available,
+    operation_actions,
+    operation_enabled,
+)
 
 
 def rollout_feature_enabled(config: dict[str, Any], name: str) -> bool:
@@ -35,7 +43,6 @@ class FeatureSet:
             return v if isinstance(v, dict) else {}
 
         ci = _tbl("code_intelligence")
-        srv = _tbl("server")
         feat = _tbl("features")
         mdl = _tbl("models")
         sub = _tbl("ollama_subagents")
@@ -46,8 +53,10 @@ class FeatureSet:
         art = _tbl("artifacts")
         prep = _tbl("preprocessing")
         work = _tbl("work_orchestrator")
+        hardware = _tbl("hardware")
         speculative = _tbl("speculative_lint")
         mon = _tbl("monitoring")
+        detected_hardware = _tbl("_hardware")
 
         # Primary tool toggles
         self.status: bool = bool(feat.get("status", True))
@@ -97,6 +106,28 @@ class FeatureSet:
         self.agent_os: bool = self.coord and bool(feat.get("agent_os", True))
         self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(mon.get("dashboard_enabled", True))
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
+        # load_config resolves auto-detection and overrides into `_hardware`.
+        # Prefer that effective profile; raw user config is a conservative
+        # fallback for isolated builders and hand-authored test fixtures.
+        profile = detected_hardware.get("profile", hardware.get("profile", "low"))
+        self.hardware_profile: str = profile if type(profile) is str and profile in HARDWARE_PROFILE_ORDER else "low"
+        self.bounded_work_tier: bool = capability_profile_available(
+            self.hardware_profile, capability_minimum_profile("local_ai_work", "submit")
+        )
+        self.local_semantic_analysis: bool = rollout_feature_enabled(clean_cfg, "local_semantic_analysis")
+        self.local_code_generation_qualified: bool = rollout_feature_enabled(clean_cfg, "local_code_generation")
+        self.local_automation_qualified: bool = rollout_feature_enabled(clean_cfg, "local_automation")
+        self.local_vision_qualified: bool = rollout_feature_enabled(clean_cfg, "local_vision") and self.vision
+        self.local_reranking_qualified: bool = rollout_feature_enabled(clean_cfg, "local_reranking")
+        self.bounded_work_qualified: bool = (
+            self.bounded_work_tier
+            and self.work_orchestrator
+            and rollout_feature_enabled(clean_cfg, "bounded_local_work")
+        )
+        self.search_summaries_opt_in: bool = rollout_feature_enabled(clean_cfg, "search_summaries")
+        self.search_summaries: bool = self.tasks and self.search_summaries_opt_in and capability_profile_available(
+            self.hardware_profile, capability_minimum_profile("local_ai_repo", "search_summaries")
+        )
 
         # Cost-bearing rollout capabilities start disabled. Use strict identity so
         # malformed config values cannot accidentally enable writes or persistence.
@@ -144,6 +175,45 @@ class FeatureSet:
         """True if any local-model execution is possible."""
         return (self.ollama or self.llama_cpp) and bool(self.fast_model)
 
+    def capability_status(self) -> dict[str, dict[str, Any]]:
+        """Return public, configuration-only capability decisions and reasons."""
+        declarations = {
+            "search_summaries": ("local_ai_repo", "search_summaries", self.tasks and self.search_summaries_opt_in),
+            "semantic_analysis": ("local_ai_task", "reason", self.tasks and self.local_semantic_analysis),
+            "repository_review": ("local_ai_repo", "review_diff", self.repo and self.tasks and self.local_semantic_analysis),
+            "cross_file_design": ("local_ai_repo", "solve", self.repo and self.tasks and self.local_semantic_analysis),
+            "vision": ("local_ai_task", "vision", self.tasks and self.local_vision_qualified),
+            "code_generation": ("local_ai_task", "scaffold", self.tasks and self.local_code_generation_qualified),
+            "automation": ("local_ai_task", "automation", self.tasks and self.local_automation_qualified),
+            "reranking": ("local_ai_rag", "rerank", self.rag and self.local_reranking_qualified),
+            "bounded_local_work": ("local_ai_work", "submit", self.bounded_work_qualified),
+        }
+        result: dict[str, dict[str, Any]] = {}
+        for capability_id, (tool, action, enabled) in declarations.items():
+            minimum = capability_minimum_profile(tool, action)
+            definition = capability_definition(tool, action)
+            tier_ok = capability_profile_available(self.hardware_profile, minimum)
+            usable = bool(enabled and tier_ok)
+            reason = None if usable else (
+                f"requires_{minimum}_profile" if not tier_ok else "qualification_or_feature_gate_disabled"
+            )
+            result[capability_id] = {
+                "available": usable,
+                "state": "profile_blocked" if not tier_ok else "enabled_by_operator" if enabled else "feature_disabled",
+                "minimum_profile": minimum,
+                "reason": reason,
+                "backend": definition.get("backend", "local_model"),
+                "feature_gate": definition.get("feature_gate"),
+                "provider_readiness": "not_checked",
+                "authority": definition.get("authority", "advisory"),
+                "quality_gate": definition.get("quality_gate", "task_specific_review"),
+            }
+        # High tier permits discovery of bounded work only. The existing work
+        # executor still enforces explicit permissions and task-quality gates.
+        if result["bounded_local_work"]["available"]:
+            result["bounded_local_work"]["reason"] = "task_quality_and_explicit_permissions_required"
+        return result
+
     @property
     def enabled_tools(self) -> list[str]:
         """List of MCP tools that are enabled in this configuration."""
@@ -179,7 +249,10 @@ class FeatureSet:
 
     def supported_work_actions(self) -> list[str]:
         """Return work-order actions from the shared operation registry."""
-        return list(operation_actions("local_ai_work", self)) if operation_enabled(self, "local_ai_work") else []
+        actions = list(operation_actions("local_ai_work", self)) if operation_enabled(self, "local_ai_work") else []
+        if not self.bounded_work_tier:
+            actions = [action for action in actions if action != "submit"]
+        return actions
 
     def supported_artifact_actions(self) -> list[str]:
         """Return artifact actions when their feature gate is active."""
@@ -220,16 +293,30 @@ class FeatureSet:
                 lines.append("- anti-pattern & incident tracking: `local_ai_coord(action=\"negative_knowledge_record\"|\"negative_knowledge_find\")`. Record failed approaches, error classes, and root causes to avoid repeating mistakes.")
         if self.rag:
             lines.append("- semantic retrieval after indexed paths are insufficient: `local_ai_rag`")
-        if self.tasks and self.has_any_model():
-            lines.append('- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`')
-        if self.work_orchestrator:
-            lines.append("- `local_ai_work`: only for explicitly requested closed delegation; use bounded mode for suitable small tasks with exact allowed paths, approved commands, permissions, time budget and acceptance criteria; the primary agent reviews diff, tests and integration")
+        task_actions = set(self.supported_task_actions())
+        semantic_actions = task_actions & {"delegate", "explore", "reason", "review", "second_opinion", "compress"}
+        if semantic_actions:
+            action_list = "|".join(f'"{action}"' for action in (
+                "delegate", "explore", "reason", "review", "second_opinion", "compress"
+            ) if action in semantic_actions)
+            lines.append(
+                f"- tier-available semantic actions only: `local_ai_task(action={action_list})`; deterministic/indexed evidence remains authoritative"
+            )
+        work_actions = set(self.supported_work_actions())
+        if self.work_orchestrator and "submit" in work_actions:
+            lines.append("- `local_ai_work(action=\"submit\")`: high/max profile only, after task-specific quality evaluation and explicit scope/permission checks; primary agent reviews diff, tests and integration")
+        elif self.work_orchestrator:
+            lines.append("- `local_ai_work`: existing work status, wait, get and cancel actions only; new work submission is unavailable at this profile")
         lines.extend(self.specialized_trigger_lines())
         return lines
 
     def specialized_trigger_lines(self) -> list[str]:
         """Feature-specific routes that are easy to miss from the compact tool names."""
         lines: list[str] = []
+        if self.repo and self.search_summaries:
+            lines.append(
+                "- optional, bounded local-model summary for repository search: `local_ai_repo(action=\"search\", summarize_results=true)`; exact results and pagination stay authoritative, summary is advisory and cites source paths."
+            )
         if self.code_intelligence and self.serena:
             lines.append(
                 "- symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available"
@@ -281,11 +368,17 @@ class FeatureSet:
             )
             lease_hint = " claim `local_ai_coord` leases for overlapping paths," if self.coord else ""
             contract_hint = " initialize an Agent OS contract," if self.agent_os else ""
-            lines.append(f'- Recipe — Change: gather indexed evidence,{contract_hint} use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')
+            repo_actions = set(self.supported_repo_actions())
+            analysis = '`local_ai_repo(action="solve")`' if "solve" in repo_actions else '`local_ai_repo(action="context")`'
+            lines.append(f"- Recipe — Change: gather indexed evidence,{contract_hint} use {analysis} when exposed,{lease_hint} then run indexed impact/review before validation.")
         if self.repo:
-            lines.append("- Recipe — Validate: run bounded repeatable commands with the host-native command tool; use `review_diff` or `security_audit` when relevant.")
+            review = "`review_diff` or `security_audit`" if "review_diff" in set(self.supported_repo_actions()) else "`security_audit`"
+            lines.append(f"- Recipe — Validate: run bounded repeatable commands with the host-native command tool; use {review} when relevant.")
         if self.tasks and self.has_any_model():
-            lines.append('- Recipe — Semantic work: actively use `local_ai_task` for code review (`action="review"`), second opinion on non-trivial logic (`action="second_opinion"`), exploration (`action="explore"`), and compressing noisy test outputs (`action="compress"`).')
+            available = set(self.supported_task_actions())
+            semantic = [action for action in ("review", "second_opinion", "explore", "reason", "compress") if action in available]
+            if semantic:
+                lines.append(f"- Recipe — Semantic work: use exposed `local_ai_task` actions ({'|'.join(semantic)}) after deterministic/indexed evidence.")
         if self.agent_os:
             receipt_part = "attach explicit verification receipts; "
             lines.append(f"- Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action=\"task_create\")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; {receipt_part}and verify completion (`verify_completion`) before closure.")
@@ -300,11 +393,16 @@ class FeatureSet:
         """Single-sentence selection guide for GLOBAL_POLICY and skills."""
         parts: list[str] = []
         if self.repo:
-            parts.append("`local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`)")
+            actions = set(self.supported_repo_actions())
+            review = "including `review_diff` and `security_audit`" if "review_diff" in actions else "including `security_audit`"
+            parts.append(f"`local_ai_repo` for bounded repository facts and checks ({review})")
         if self.tasks and self.has_any_model():
-            parts.append("`local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression")
-        if self.work_orchestrator:
+            actions = self.supported_task_actions()
+            parts.append(f"`local_ai_task` for exposed bounded local actions ({'|'.join(actions)})")
+        if self.work_orchestrator and "submit" in self.supported_work_actions():
             parts.append("`local_ai_work` only for explicitly requested closed delegation with primary-agent review")
+        elif self.work_orchestrator:
+            parts.append("`local_ai_work` for existing work status and recovery only")
         if self.rag:
             parts.append("`local_ai_rag` only after cheaper indexed evidence")
         if self.artifacts:

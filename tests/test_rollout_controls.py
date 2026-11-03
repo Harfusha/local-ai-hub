@@ -14,7 +14,7 @@ from local_ai_hub.services import LocalAIServices
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_defaults_enable_adoption_features() -> None:
+def test_defaults_enable_adoption_features_except_local_diagnostics() -> None:
     source_defaults = ROOT / "src" / "local_ai_hub" / "defaults.toml"
     defaults = tomllib.loads(source_defaults.read_text(encoding="utf-8"))
 
@@ -22,7 +22,7 @@ def test_defaults_enable_adoption_features() -> None:
     assert defaults["features"]["enriched_search"] is True
     assert defaults["features"]["batch_replacement"] is True
     assert defaults["features"]["diagnostic_artifacts"] is True
-    assert defaults["features"]["local_diagnostic_dispatch"] is True
+    assert defaults["features"]["local_diagnostic_dispatch"] is False
 
 
 def test_feature_opt_ins_fail_closed_for_malformed_values() -> None:

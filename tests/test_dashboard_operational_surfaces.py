@@ -34,6 +34,15 @@ def test_dashboard_has_live_detailed_telemetry_toggle():
     assert "tracePanel('raw','Raw',()=>traceRaw(detail),true)" in DASHBOARD_HTML
 
 
+def test_dashboard_reports_hardware_capability_states_without_claiming_readiness():
+    assert 'id="localCapabilityProfile"' in DASHBOARD_HTML
+    assert 'id="localCapabilityStates"' in DASHBOARD_HTML
+    assert "enabled_by_operator" in DASHBOARD_HTML
+    assert "provider_readiness" in DASHBOARD_HTML
+    assert "provider readiness and model quality are not inferred" in DASHBOARD_HTML
+    assert "q.gpu_admission_state" in DASHBOARD_HTML
+
+
 def test_operations_views_name_distinct_records_and_trace_availability() -> None:
     assert "Live scheduler work" in DASHBOARD_HTML
     assert "Request history" in DASHBOARD_HTML

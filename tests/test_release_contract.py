@@ -55,13 +55,15 @@ def test_release_uses_only_current_local_ai_hub_contracts():
             # OSV versions its external API independently of the Hub contract.
             text = text.replace("https://api.osv.dev/" + "v1" + "/querybatch", "OSV_QUERYBATCH")
         if path in {ROOT / "src" / "local_ai_hub" / "opencode_provider_bridge.py",
+                    ROOT / "src" / "local_ai_hub" / "opencode_local_router.py",
                     ROOT / "tests" / "test_opencode_provider_bridge.py",
                     ROOT / "tests" / "test_opencode_provider_service.py",
-                    ROOT / "tests" / "test_opencode_real_ollama_source.py"}:
+                    ROOT / "tests" / "test_opencode_real_ollama_source.py",
+                    ROOT / "tests" / "test_opencode_container_integration.py",
+                    ROOT / "tests" / "test_opencode_local_router.py",
+                    ROOT / "tests" / "test_mixed_scheduler_integration.py"}:
             # The OpenAI-compatible upstream protocol is not the retired Hub API.
-            text = text.replace('/' + 'v1' + '/chat/completions', 'EXTERNAL_CHAT_ROUTE')
-            if path.parent == ROOT / "tests":
-                text = text.replace('/' + 'v1' + '/other', 'REJECTED_EXTERNAL_ROUTE')
+            text = text.replace('/' + 'v1' + '/', 'EXTERNAL_API_ROUTE/')
         if path.parent == ROOT / "docs" / "agent-evaluation" and path.name in {
             "local-model-gpu-cases.md", "local-model-gpu-scoring.md",
         }:

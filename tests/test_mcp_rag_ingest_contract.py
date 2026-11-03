@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from local_ai_hub import mcp_server
 
 
@@ -66,3 +68,23 @@ def test_document_ingest_maps_explicit_content_on_first_call(monkeypatch, tmp_pa
         "title": "SDK guide",
         "metadata": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("profile", "qualified", "expected"),
+    [("low", True, False), ("balanced", False, False), ("balanced", True, True), ("high", True, True)],
+)
+def test_rag_search_only_requests_reranking_when_capability_is_available(
+    monkeypatch, tmp_path, profile, qualified, expected
+):
+    client = _CapturingClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", profile)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_reranking_qualified", qualified, raising=False)
+
+    result = mcp_server.local_ai_rag(action="search", root=str(tmp_path.resolve()), query="needle")
+
+    assert result["success"] is True
+    assert client.calls[0][0] == "/api/rag/search"
+    assert client.calls[0][1]["use_reranker"] is expected

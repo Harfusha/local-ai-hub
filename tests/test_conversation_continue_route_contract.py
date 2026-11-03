@@ -21,6 +21,8 @@ def production_hub(tmp_path, monkeypatch):
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
+        '[hardware]\nprofile = "balanced"\n'
+        '[features]\nlocal_semantic_analysis = true\n'
         '[security]\napi_token = "t13-test-service-token"\n'
         '[prewarm]\nenabled = false\n'
         '[preprocessing]\nenabled = false\n',

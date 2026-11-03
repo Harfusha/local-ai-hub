@@ -824,7 +824,7 @@ def test_t12_runtime_cancel_holds_admission_until_child_inference_exits() -> Non
         assert scenario_done.wait(2)
         assert scenario_result[0]["metrics"]["cancelled"] is True
         assert scenario_result[0]["metrics"]["cleanup_complete"] is True
-        assert next_inference_started.wait(1)
+        assert next_inference_started.wait(1), second_result
         next_thread.join(1)
         assert not next_thread.is_alive()
         assert second_result[0]["success"] is True

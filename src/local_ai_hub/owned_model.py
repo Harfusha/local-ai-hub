@@ -166,7 +166,7 @@ def _load(spec):
         except Exception:
             from pathlib import Path
             clean_name = str(model_name).replace("/", "--")
-            for base in (Path.home() / ".cache" / "huggingface" / "hub", Path("C:/Users/Adam/.cache/huggingface/hub")):
+            for base in (Path.home() / ".cache" / "huggingface" / "hub",):
                 hub_dir = base / f"models--{clean_name}" / "snapshots"
                 if hub_dir.is_dir():
                     for snapshot in hub_dir.iterdir():

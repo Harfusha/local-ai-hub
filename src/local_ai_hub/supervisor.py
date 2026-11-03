@@ -117,7 +117,7 @@ class Supervisor:
         self._mixed_cuda_worker.start()
 
     def _stop_mixed_cuda(self) -> None:
-        worker = self._mixed_cuda_worker
+        worker = getattr(self, "_mixed_cuda_worker", None)
         if worker is None:
             return
         self._stop_event.set()

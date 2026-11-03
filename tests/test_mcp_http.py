@@ -138,7 +138,15 @@ def test_profile_delegate_forwards_cancellation_to_generation():
                               temperature=0, advisory_only=True, declared_model="test",
                               model_fallback=False, model_fallback_reason="")
     service = LocalAIServices.__new__(LocalAIServices)
-    service.config = {}
+    service.config = {
+        "ollama": {"enabled": True},
+        "hardware": {"profile": "high"},
+        "features": {
+            "local_semantic_analysis": True,
+            "local_code_generation": True,
+            "local_vision": True,
+        },
+    }
     service.runtime = SimpleNamespace(installed_models=lambda: ["test"])
     service.profile_catalog = SimpleNamespace(
         enabled=True, resolve=lambda *a, **k: profile,
@@ -758,7 +766,15 @@ def test_real_delegate_operation_stops_on_hub_disconnect(monkeypatch, operation)
         except Exception as exc:
             errors.append(repr(exc))
             raise
-    app = SimpleNamespace(config={"server": {}, "security": {}, "debug_traces": {"enabled": False}},
+    app = SimpleNamespace(config={
+                              "server": {}, "security": {}, "debug_traces": {"enabled": False},
+                              "hardware": {"profile": "high"},
+                              "features": {
+                                  "local_semantic_analysis": True,
+                                  "local_code_generation": True,
+                                  "local_vision": True,
+                              },
+                          },
                           services=SimpleNamespace(delegate=observed_delegate, reason=observed_reason, review=observed_review,
                                                    second_opinion=observed_second_opinion, compress=observed_compress,
                                                    batch_delegate=service.batch_delegate, review_diff=service.review_diff,
@@ -857,7 +873,8 @@ def test_hub_http_half_close_does_not_cancel_unmarked_request(monkeypatch):
             cancelled.set()
         return {"success": True}
 
-    app = SimpleNamespace(config={"server": {}, "security": {}, "debug_traces": {"enabled": False}},
+    app = SimpleNamespace(config={"server": {}, "security": {}, "hardware": {"profile": "balanced"},
+                                  "features": {"local_semantic_analysis": True}, "debug_traces": {"enabled": False}},
                           services=SimpleNamespace(delegate=delegate), recovery=None)
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)

@@ -62,6 +62,7 @@ def test_goal_transport_creates_real_bound_task_without_warmup(monkeypatch, tmp_
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\nauto_start_ollama = false\n'
         '\n[agent_state]\nenabled = true\n[ollama]\nenabled = false\n'
+        '[hardware]\nprofile = "balanced"\n[features]\nlocal_semantic_analysis = true\n'
         '[llama_cpp]\nmode = "off"\n[preprocessing]\nenabled = false\ntask_context_warmup = true\n',
         encoding="utf-8",
     )

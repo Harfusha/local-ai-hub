@@ -104,3 +104,49 @@ the requested complexity before judging model quality.
 Hardware measurements with fewer than two generated tokens have no composite
 score. Missing models, provider errors and empty responses are failures with
 explicit diagnostics, never synthetic successful one-token measurements.
+
+## Hardware capability tiers
+
+The configured hardware profile is a capability ceiling. MCP action discovery,
+server-side action validation, generated trigger guidance and the brief status
+response use the same minimum-profile registry. Unknown profile names resolve
+to `low`; an unlisted future `local_ai_task` action is hidden until it receives
+an explicit tier policy. Provider/model availability, feature flags,
+authorization and quality evidence remain separate gates.
+
+| Profile | Exposed local-model capability classes |
+| --- | --- |
+| `cpu`, `integrated`, `low` | Deterministic/indexed operations; bounded compression, routing, evaluation and management actions. No semantic analysis promotion or work submission. |
+| `balanced` | Above, plus search summaries with `features.search_summaries=true` and optional RAG reranking with `features.local_reranking=true`; semantic analysis/review remains hidden until `features.local_semantic_analysis=true`. No bounded work submission, vision, scaffold or speculative draft. |
+| `high` | Above, plus semantic analysis with `features.local_semantic_analysis=true`; vision, code generation and browser automation each need their own default-off flags. Bounded work needs `features.bounded_local_work=true` and `mode="bounded"`, plus task quality, explicit permissions and primary-agent review. |
+| `max` | Same authority classes as `high`; performance limits and model routes require separate measurements. |
+
+`local_ai_status` reports the configured profile and configuration-level
+availability reasons for search summaries, semantic analysis and bounded work.
+Capability entries report `profile_blocked`, `feature_disabled` or
+`enabled_by_operator`; `provider_readiness="not_checked"` means status does not
+infer installed model, quality or live device use.
+An available bounded-work tier means only that the profile permits discovery;
+it does not mean a model passed evaluation or that a request is authorized.
+Job status, wait, result/get and cancellation remain available across profile
+downgrades, subject to existing ownership checks.
+
+Repository search summaries require the explicit
+`features.search_summaries=true` configuration and a per-call
+`summarize_results=true`. They remain disabled by default. Exact result rows and pagination remain authoritative;
+the model receives bounded source excerpts and returns a separate advisory
+summary with source references. A disabled tier, timeout or model error never
+replaces deterministic search output. This route is not a quality qualification
+or a claim of 5070 Ti use. See the capability inventory and plan for outstanding
+provider, latency, quality and hardware measurements.
+
+Semantic analysis, vision, code generation and bounded local work use separate
+default-off operator release flags: `features.local_semantic_analysis`,
+`features.local_vision`, `features.local_code_generation`,
+`features.local_automation`, `features.bounded_local_work` and
+`features.local_reranking`. RAG reranking is additionally limited to `balanced`
+or higher and uses the separately configured reranker backend/device. Enable
+each only after reviewing role-specific task evaluations. These flags do not
+establish model quality or availability. Embedding retrieval remains available
+according to its provider and device configuration; it does not imply LLM
+synthesis or GPU use.

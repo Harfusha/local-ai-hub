@@ -9,6 +9,8 @@ def isolated_task_context_transport(monkeypatch):
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
 
 
 def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):

@@ -16,6 +16,7 @@ from local_ai_hub.agent_memory import MemoryStore
 from local_ai_hub.commands import CommandBroker, _is_interactive_prompt, _BoundedStreamBuffer
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.doctor_support import install_git_precommit_hook, uninstall_git_precommit_hook
+from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.process_utils import list_git_worktrees, prune_git_worktrees, simulate_git_merge
 from local_ai_hub.rag import _python_ast_chunks
 from local_ai_hub.services import LocalAIServices, vram_priority
@@ -435,6 +436,96 @@ def test_eval_suite_checks_model_output_instead_of_expected_text():
     assert len(result["cases"][0]["response_sha256"]) == 64
 
 
+def test_eval_suite_uses_scheduler_for_managed_inference():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "candidate"}}
+    services.runtime = MagicMock()
+    services.runtime.request.return_value = {"response": "expected"}
+
+    class Scheduler:
+        def __init__(self):
+            self.calls = []
+
+        def submit(self, model, *, source, execute, priority, wait_timeout=None):
+            self.calls.append((model, source, priority))
+            return execute()
+
+    scheduler = Scheduler()
+    services.scheduler = scheduler
+
+    result = services.eval_suite({"cases": [{"id": "case", "input": "Return expected", "expected": "expected"}]})
+
+    assert result["summary"]["quality_pass_rate"] == 1.0
+    assert scheduler.calls == [("candidate", "eval_suite", 2)]
+    services.runtime.request.assert_called_once()
+
+
+def test_eval_suite_fails_closed_for_managed_mixed_route_without_scheduler():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {
+        "models": {"fast_code": "candidate"},
+        "llama_cpp": {"managed_with_ollama": True},
+    }
+    services.runtime = MagicMock()
+
+    result = services.eval_suite({"cases": [{"id": "case", "input": "Return expected", "expected": "expected"}]})
+
+    assert result["summary"]["execution_failures"] == 1
+    assert result["cases"][0]["status"] == "unavailable"
+    assert "Scheduler required" in result["cases"][0]["error"]
+    services.runtime.request.assert_not_called()
+
+
+@pytest.mark.parametrize("state", ["pending", "running"])
+def test_eval_suite_preserves_scheduler_timeout_identity(state):
+    from types import SimpleNamespace
+    from local_ai_hub.scheduler import SchedulerTimeoutError
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "candidate"}}
+    services.runtime = MagicMock()
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            raise SchedulerTimeoutError(SimpleNamespace(id=612), state, 0.1)
+
+    services.scheduler = Scheduler()
+    result = services.eval_suite({"cases": [{"id": "case", "input": "task", "expected": "ok"}]})
+    case = result["cases"][0]
+
+    assert case["timed_out"] is True
+    assert case["job_id"] == 612
+    if state == "pending":
+        assert case["request_not_sent"] is True
+        assert case["operation_not_started"] is True
+        assert case.get("outcome_unknown") is not True
+    else:
+        assert case["outcome_unknown"] is True
+        assert case["retryable"] is False
+    services.runtime.request.assert_not_called()
+
+
+def test_eval_suite_preserves_scheduler_returned_unknown_outcome():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "candidate"}}
+    services.runtime = MagicMock()
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            return {"success": False, "error": "scheduler outcome unknown", "timed_out": True,
+                    "outcome_unknown": True, "retryable": False, "job_id": 713}
+
+    services.scheduler = Scheduler()
+    result = services.eval_suite({"cases": [{"id": "case", "input": "task", "expected": "ok"}]})
+    case = result["cases"][0]
+
+    assert case["timed_out"] is True
+    assert case["outcome_unknown"] is True
+    assert case["retryable"] is False
+    assert case["job_id"] == 713
+    services.runtime.request.assert_not_called()
+
+
 def test_eval_suite_exposes_model_errors_without_hiding_them():
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"models": {"fast_code": "qwen3.5:9b"}}
@@ -591,6 +682,166 @@ def test_batch_replace_rejects_dirty_target_file(tmp_path):
     assert result["success"] is False
     assert "dirty" in result["error"]
     assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def _init_git_repo_with_file(tmp_path, contents: str) -> Path:
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.test"], cwd=str(tmp_path), capture_output=True, check=True)
+    target = tmp_path / "module.py"
+    target.write_text(contents, encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=str(tmp_path), capture_output=True, check=True)
+    return target
+
+
+def test_batch_replace_allows_clean_target_outside_dirty_hunk(tmp_path):
+    target = _init_git_repo_with_file(tmp_path, "value = 1\n\nother = 2\n")
+    target.write_text("value = 10\n\nother = 2\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "other = 2", "new": "other = 3"}],
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    assert target.read_text(encoding="utf-8") == "value = 10\n\nother = 3\n"
+
+
+def test_batch_replace_rejects_target_overlapping_unowned_dirty_hunk(tmp_path):
+    target = _init_git_repo_with_file(tmp_path, "value = 1\nother = 2\n")
+    target.write_text("value = 10\nother = 2\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "value = 10", "new": "value = 11"}],
+    )
+
+    assert result["success"] is False
+    assert "dirty" in result["error"].lower()
+    assert target.read_text(encoding="utf-8") == "value = 10\nother = 2\n"
+
+
+def test_batch_replace_treats_untracked_file_as_unowned_dirty_content(tmp_path):
+    _init_git_repo_with_file(tmp_path, "baseline = 1\n")
+    target = tmp_path / "new_module.py"
+    target.write_text("value = 10\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "new_module.py", "old": "value = 10", "new": "value = 11"}],
+    )
+
+    assert result["success"] is False
+    assert "dirty" in result["error"].lower()
+    assert target.read_text(encoding="utf-8") == "value = 10\n"
+
+
+def test_batch_replace_allows_overlapping_dirty_hunk_with_verified_owner_scope(tmp_path):
+    target = _init_git_repo_with_file(tmp_path, "value = 1\nother = 2\n")
+    target.write_text("value = 10\nother = 2\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "value = 10", "new": "value = 11"}],
+        owned_paths=["module.py"],
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    assert target.read_text(encoding="utf-8") == "value = 11\nother = 2\n"
+
+
+def test_batch_replace_service_forwards_only_matching_active_lease_scope(tmp_path):
+    class FakeLeaseStore:
+        def list(self, root):
+            assert root == str(tmp_path)
+            return [
+                {"lease_id": "lease_current", "owner": "execution-current", "root": str(tmp_path), "path": "src"},
+                {"lease_id": "lease_other", "owner": "execution-other", "root": str(tmp_path), "path": "tests"},
+            ]
+
+    class FakeDeterministic:
+        def __init__(self):
+            self.owned_paths = None
+
+        def batch_replace(self, root, edits, *, dry_run=False, owned_paths=None):
+            self.owned_paths = owned_paths
+            return {"success": True, "applied": False, "dry_run": dry_run}
+
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"batch_replacement": True}}
+    services.deterministic = FakeDeterministic()
+
+    result = services.batch_replace(
+        str(tmp_path),
+        [{"path": "src/module.py", "old": "before", "new": "after"}],
+        dry_run=True,
+        owner="execution-current",
+        lease_id="lease_current",
+        lease_store=FakeLeaseStore(),
+    )
+
+    assert result["success"] is True
+    assert services.deterministic.owned_paths == ["src"]
+
+
+def test_batch_replace_service_rejects_unmatched_claim_without_mutation(tmp_path):
+    class FakeLeaseStore:
+        def list(self, _root):
+            return [{"lease_id": "lease_current", "owner": "execution-current", "root": str(tmp_path), "path": "src"}]
+
+    class FakeDeterministic:
+        def batch_replace(self, *_args, **_kwargs):
+            pytest.fail("an unmatched owner/lease must never reach replacement")
+
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"batch_replacement": True}}
+    services.deterministic = FakeDeterministic()
+
+    result = services.batch_replace(
+        str(tmp_path),
+        [{"path": "src/module.py", "old": "before", "new": "after"}],
+        owner="execution-other",
+        lease_id="lease_current",
+        lease_store=FakeLeaseStore(),
+    )
+
+    assert result["success"] is False
+    assert "lease" in result["error"].lower()
+
+
+def test_batch_replace_service_allows_actual_owner_lease_for_overlapping_hunk(tmp_path):
+    target = _init_git_repo_with_file(tmp_path, "value = 1\nother = 2\n")
+    target.write_text("value = 10\nother = 2\n", encoding="utf-8")
+    lease_store = ScopeLeaseStore(tmp_path / "state")
+    claim = lease_store.claim(
+        owner="execution-current",
+        root=str(tmp_path),
+        paths=["module.py"],
+        ttl_seconds=900,
+        purpose="batch replacement acceptance test",
+    )
+    assert claim["success"] is True
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"batch_replacement": True}}
+    services.deterministic = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = services.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "value = 10", "new": "value = 11"}],
+        owner="execution-current",
+        lease_id=claim["lease_id"],
+        lease_store=lease_store,
+    )
+
+    assert result["success"] is True
+    assert target.read_text(encoding="utf-8") == "value = 11\nother = 2\n"
 
 
 def test_15_prompt_eval():

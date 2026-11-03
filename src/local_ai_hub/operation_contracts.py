@@ -112,6 +112,125 @@ def _action_contracts(
 
 
 _STATUS_ACTIONS = ("brief",)
+
+# Hardware suitability is a discovery/admission ceiling, independent from
+# provider health, feature flags, explicit permissions, and task-quality gates.
+# Keep action IDs here so MCP schemas and direct runtime validation share one
+# policy table. Unlisted operations retain their existing feature/authority
+# gates and are not made GPU-dependent by implication.
+HARDWARE_PROFILE_ORDER = ("cpu", "integrated", "low", "balanced", "high", "max")
+_HARDWARE_PROFILE_RANK = {name: rank for rank, name in enumerate(HARDWARE_PROFILE_ORDER)}
+CAPABILITY_REGISTRY = {
+    "repo.search_summary": {
+        "operations": (("local_ai_repo", "search_summaries"),), "minimum_profile": "balanced",
+        "backend": "local_model", "authority": "advisory", "quality_gate": "not_qualified_by_default",
+        "feature_gate": "search_summaries",
+        "unavailable_reason": "requires_balanced_profile_or_evaluated_backend",
+    },
+    "repo.diff_review": {
+        "operations": (("local_ai_repo", "review_diff"), ("local_ai_task", "review"), ("local_ai_task", "review_diff")), "minimum_profile": "balanced",
+        "backend": "local_model", "authority": "advisory", "quality_gate": "diff_review_evaluation",
+        "feature_gate": "local_semantic_analysis",
+        "unavailable_reason": "requires_balanced_profile_and_role_qualification",
+    },
+    "repo.solve": {
+        "operations": (("local_ai_repo", "solve"),), "minimum_profile": "high",
+        "backend": "local_model", "authority": "advisory", "quality_gate": "task_specific_evaluation",
+        "feature_gate": "local_semantic_analysis",
+        "unavailable_reason": "requires_high_profile_and_task_qualification",
+    },
+    "task.semantic_analysis": {
+        "operations": (("local_ai_repo", "delegate"),) + tuple(("local_ai_task", action) for action in (
+            "delegate", "explore", "reason", "review", "second_opinion", "continue", "batch", "submit"
+        )), "minimum_profile": "balanced", "backend": "local_model", "authority": "advisory",
+        "quality_gate": "task_specific_review", "feature_gate": "local_semantic_analysis",
+        "unavailable_reason": "requires_balanced_profile",
+    },
+    "task.vision": {
+        "operations": (("local_ai_task", "vision"),), "minimum_profile": "high",
+        "backend": "vision_model", "authority": "advisory", "quality_gate": "vision_role_evaluation",
+        "feature_gate": "local_vision",
+        "unavailable_reason": "requires_high_profile_and_vision_role_qualification",
+    },
+    "task.code_generation": {
+        "operations": tuple(("local_ai_task", action) for action in (
+            "complete_code", "scaffold", "speculative_draft", "speculative_lint"
+        )), "minimum_profile": "high", "backend": "local_model", "authority": "proposal",
+        "quality_gate": "task_specific_evaluation", "feature_gate": "local_code_generation",
+        "unavailable_reason": "requires_high_profile_and_task_qualification",
+    },
+    "task.automation": {
+        "operations": (("local_ai_task", "automation"),), "minimum_profile": "high",
+        "backend": "browser_automation", "authority": "explicitly_authorized_action",
+        "quality_gate": "automation_task_evaluation", "feature_gate": "local_automation",
+        "unavailable_reason": "requires_high_profile_and_automation_qualification",
+    },
+    "retrieval.reranking": {
+        # `rerank` is a capability mode of local_ai_rag:search, not a public
+        # selector. Keep retrieval available on lower tiers while gating only
+        # the optional cross-encoder stage.
+        "operations": (("local_ai_rag", "rerank"),), "minimum_profile": "balanced",
+        "backend": "reranker", "authority": "advisory_ranking",
+        "quality_gate": "reranker_task_evaluation", "feature_gate": "local_reranking",
+        "unavailable_reason": "requires_balanced_profile_and_reranker_qualification",
+    },
+    "work.bounded_submission": {
+        "operations": (("local_ai_work", "submit"),), "minimum_profile": "high",
+        "backend": "local_model", "authority": "bounded_mutation", "quality_gate": "implementation_case_and_overall_gate",
+        "feature_gate": "bounded_local_work",
+        "unavailable_reason": "requires_high_profile_task_qualification_and_explicit_permissions",
+    },
+}
+_CAPABILITY_BY_OPERATION = {
+    operation: capability_id
+    for capability_id, definition in CAPABILITY_REGISTRY.items()
+    for operation in definition["operations"]
+}
+_TASK_LOW_TIER_ACTIONS = frozenset({
+    "compress", "route", "benchmark", "hardware_benchmark", "evaluation_record",
+    "evaluation_report", "status", "wait", "result", "cancel", "transcribe",
+    "browser", "candidate_create", "candidate_promote", "eval_suite", "prompt_eval", "eval_drift",
+})
+_TASK_BALANCED_TIER_ACTIONS = frozenset({
+    "delegate", "explore", "reason", "review", "second_opinion", "continue", "batch",
+})
+
+
+def capability_minimum_profile(tool: str, action: str) -> str:
+    """Return the configured hardware ceiling for one operation action."""
+    if tool == "local_ai_task":
+        if action in _TASK_LOW_TIER_ACTIONS:
+            return "cpu"
+        if action in _TASK_BALANCED_TIER_ACTIONS:
+            return "balanced"
+        # Unknown/future semantic task actions require an explicit policy entry.
+        capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+        return str(CAPABILITY_REGISTRY[capability_id]["minimum_profile"]) if capability_id else "max"
+    capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+    if capability_id is None:
+        return "cpu"
+    return str(CAPABILITY_REGISTRY[capability_id]["minimum_profile"])
+
+
+def capability_definition(tool: str, action: str) -> dict[str, Any]:
+    """Return the shared policy definition for an operation, if tiered."""
+    capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+    definition = CAPABILITY_REGISTRY.get(capability_id) if capability_id else None
+    return deepcopy(definition) if isinstance(definition, dict) else {}
+
+
+def capability_feature_gate(tool: str, action: str) -> str | None:
+    """Return the explicit operator release flag for one capability, if any."""
+    gate = capability_definition(tool, action).get("feature_gate")
+    return gate if isinstance(gate, str) and gate else None
+
+
+def capability_profile_available(profile: Any, minimum_profile: str) -> bool:
+    """Fail closed for unknown profile names and compare known tier ceilings."""
+    if not isinstance(profile, str) or profile not in _HARDWARE_PROFILE_RANK:
+        profile = "cpu"
+    minimum = minimum_profile if minimum_profile in _HARDWARE_PROFILE_RANK else "max"
+    return _HARDWARE_PROFILE_RANK[profile] >= _HARDWARE_PROFILE_RANK[minimum]
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -446,7 +565,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "investigate": ("root", "query", "path", "include_code"),
             "secret_scan": ("root", "path", "staged"),
             "diagnose": ("root", "query"),
-            "search": ("root", "query", "path", "include_code", "path_hints", "limit", "offset"),
+            "search": ("root", "query", "path", "include_code", "path_hints", "limit", "offset", "summarize_results"),
             "code_index": ("root", "query", "limit", "offset", "include_code"),
             "semantic": ("root", "query", "path", "relation"),
             "intelligence": ("root", "query", "path", "relation"),
@@ -594,9 +713,14 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
         conditional_properties={
+            "search_summaries": {
+                "summarize_results": {"type": "boolean", "default": False},
+            },
             "batch_replacement": {
                 "dry_run": {"type": "boolean", "default": False},
                 "edits": {"type": "array", "items": {"type": "object"}},
+                "owner": {"type": "string"},
+                "lease_id": {"type": "string"},
             },
         },
     ),
@@ -1091,7 +1215,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_id": {"type": "string", "default": ""},
             "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
             "constraints": {"type": "array", "items": {"type": "string"}},
-            "mode": {"type": "string", "enum": ["execute", "bounded", "plan", "plan_only", "dry_run"], "default": "execute"},
+            "mode": {"type": "string", "enum": ["execute", "bounded", "plan", "plan_only", "dry_run"], "default": "bounded"},
             "allowed_paths": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
             "approved_commands": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
             "permissions": {"type": "object"},
@@ -1171,11 +1295,30 @@ def operation_actions(tool: str, features: Any = None) -> tuple[str, ...]:
         return ()
     if tool == "local_ai_status":
         return _STATUS_ACTIONS
-    return tuple(
+    actions = tuple(
         action
         for action in contract["action_order"]
         if _requirements_met(features, contract["actions"][action].get("requires", ()))
     )
+    if features is not None:
+        profile = getattr(features, "hardware_profile", "cpu")
+        actions = tuple(
+            action for action in actions
+            if capability_profile_available(profile, capability_minimum_profile(tool, action))
+        )
+        gate_attributes = {
+            "local_semantic_analysis": "local_semantic_analysis",
+            "local_vision": "local_vision_qualified",
+            "local_code_generation": "local_code_generation_qualified",
+            "local_automation": "local_automation_qualified",
+            "bounded_local_work": "bounded_work_qualified",
+        }
+        actions = tuple(
+            action for action in actions
+            if not (gate := capability_feature_gate(tool, action))
+            or bool(getattr(features, gate_attributes.get(gate, gate), False))
+        )
+    return actions
 
 
 def operation_metadata(tool: str) -> dict[str, Any]:
@@ -1313,6 +1456,9 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         then: dict[str, Any] = {}
         if required:
             then["required"] = list(dict.fromkeys((selector, *required)))
+        if tool == "local_ai_work" and action == "submit":
+            then.setdefault("required", []).append("mode")
+            then.setdefault("properties", {})["mode"] = {"type": "string", "enum": ["bounded"]}
         if disallowed:
             then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
         if not then:
@@ -1423,13 +1569,33 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
         return []
     return [{
         "type": "object",
-        "required": ["success", "version", "ollama_online", "active_model", "degraded"],
+        "required": ["success", "version", "ollama_online", "active_model", "degraded", "hardware_profile", "capabilities"],
         "properties": {
             "success": {"type": "boolean"},
             "version": {"type": ["string", "null"]},
             "ollama_online": {"type": ["boolean", "null"]},
             "active_model": {"type": ["string", "null"]},
             "degraded": {"type": "boolean"},
+            "hardware_profile": {"type": "string", "enum": list(HARDWARE_PROFILE_ORDER)},
+            "capabilities": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "required": ["available", "state", "minimum_profile", "reason", "backend", "feature_gate", "provider_readiness", "authority", "quality_gate"],
+                    "properties": {
+                        "available": {"type": "boolean"},
+                        "state": {"type": "string", "enum": ["profile_blocked", "feature_disabled", "enabled_by_operator"]},
+                        "minimum_profile": {"type": "string", "enum": list(HARDWARE_PROFILE_ORDER)},
+                        "reason": {"type": ["string", "null"]},
+                        "backend": {"type": "string"},
+                        "feature_gate": {"type": ["string", "null"]},
+                        "provider_readiness": {"type": "string", "const": "not_checked"},
+                        "authority": {"type": "string"},
+                        "quality_gate": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
             "vram_pressure": {"type": "string"},
             "context_budget_factor": {"type": "number"},
             "dependency_status": {"type": "object"},
@@ -1790,6 +1956,17 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             }
             for action, row in required_actions
         ]
+    if tool == "local_ai_work" and "submit" in available_actions:
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "submit"}},
+                "required": [selector_field],
+            },
+            "then": {
+                "required": ["mode"],
+                "properties": {"mode": {"type": "string", "const": "bounded"}},
+            },
+        })
     if tool == "local_ai_repo" and "hotspots" in available_actions:
         parameters.setdefault("allOf", []).append({
             "if": {
@@ -2021,6 +2198,8 @@ def validate_operation_arguments(
     if not isinstance(action, str) or action not in available_actions:
         supported = ", ".join(available_actions)
         return f"invalid action for {tool}: expected one of {supported}"
+    if tool == "local_ai_work" and action == "submit" and arguments.get("mode", "bounded") != "bounded":
+        return "local_ai_work submit requires mode='bounded'"
 
     properties = operation_parameters_schema(tool, features).get("properties", {})
     if isinstance(properties, dict):

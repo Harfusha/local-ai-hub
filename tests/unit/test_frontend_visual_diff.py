@@ -105,6 +105,8 @@ def test_mcp_adapter_routes_comparison_and_preserves_result(tmp_path, monkeypatc
     })
     monkeypatch.setattr(mcp_server.FEATURES, 'tasks', True)
     monkeypatch.setattr(mcp_server.FEATURES, 'vision', True)
+    monkeypatch.setattr(mcp_server.FEATURES, 'hardware_profile', 'high')
+    monkeypatch.setattr(mcp_server.FEATURES, 'local_vision_qualified', True)
     monkeypatch.setattr(mcp_server.FEATURES, 'has_any_model', lambda: True)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda _event: None)
     comparison = {'bytes_identical': False, 'baseline_sha256': 'a' * 64, 'candidate_sha256': 'b' * 64}

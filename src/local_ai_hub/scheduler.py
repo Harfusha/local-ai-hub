@@ -140,10 +140,11 @@ class SchedulerTimeoutError(TimeoutError):
     retryable response without pretending the work was cancelled.
     """
 
-    def __init__(self, job: Job, state: str, wait_timeout: float):
+    def __init__(self, job: Job, state: str, wait_timeout: float, *, wait_reason: str | None = None):
         self.job_id = job.id
         self.state = state
         self.wait_timeout = max(0.0, float(wait_timeout))
+        self.wait_reason = wait_reason
         self.retryable = True
         self.terminal = False
         self.error_code = "scheduler_caller_timeout"
@@ -891,7 +892,16 @@ class AffinityScheduler:
                         job.done.set()
                         state = "pending"
                         self._cond.notify_all()
-                raise SchedulerTimeoutError(job, state, effective_wait_timeout)
+                wait_reason = None
+                if state == "pending":
+                    try:
+                        wait_reason = self._job_public(job, time.monotonic(), state="queued").get("wait_reason")
+                    except Exception:
+                        wait_reason = None
+                raise SchedulerTimeoutError(
+                    job, state, effective_wait_timeout,
+                    wait_reason=wait_reason if isinstance(wait_reason, str) else None,
+                )
         queue_wait_ms = max(0.0, ((job.started_at or job.finished_at or time.monotonic()) - job.created_at) * 1000)
         service_ms = max(0.0, (job.finished_at - job.started_at) * 1000) if job.finished_at and job.started_at else 0.0
         if job.error:
@@ -1364,12 +1374,11 @@ class AffinityScheduler:
 
             if target_switch:
                 try:
-                    switched = self._perform_switch(
+                    self._perform_switch(
                         target_switch,
                         should_stop=lambda target=target_switch: not self._has_active_preparation_waiter(target),
                     )
                 except Exception as exc:
-                    switched = False
                     with self._cond:
                         if not bool(getattr(exc, "operation_not_started", False)):
                             self._internal_gpu_uncertain = True
@@ -1767,8 +1776,8 @@ class AffinityScheduler:
             job.finished_at = time.monotonic()
             with self._cond:
                 result = job.result if isinstance(job.result, dict) else {}
-                uncertainty_flags = ("outcome_unknown", "timed_out",
-                                     "cleanup_unconfirmed", "_lah_partial_response", "in_progress")
+                uncertainty_flags = ("outcome_unknown", "timed_out", "cleanup_unconfirmed",
+                                     "_lah_partial_response", "in_progress")
                 clean_cancel = (
                     (result.get("preempted") is True or result.get("cancelled") is True)
                     and not any(key in result and result[key] is not False for key in uncertainty_flags)
@@ -1776,6 +1785,7 @@ class AffinityScheduler:
                 )
                 uncertain = (bool(job.error)
                              or any(key in result and result[key] is not False for key in uncertainty_flags)
+                             or result.get("preempted") is True or result.get("cancelled") is True
                              or (result.get("output_truncated") is True and result.get("success") is not False))
                 failed = (result.get("success") is False or bool(result.get("error"))) and not clean_cancel
                 completed_at_limit = (result.get("_lah_backend_completed") is True
@@ -1783,8 +1793,10 @@ class AffinityScheduler:
                                       and result.get("stop_reason") == "length"
                                       and result.get("error_code") == "model_output_truncated"
                                       and result.get("terminal") is True and result.get("retryable") is False)
-                if execute_started and (uncertain or (failed and result.get("operation_not_started") is not True
-                                                       and not completed_at_limit)):
+                if execute_started and not clean_cancel and (
+                    uncertain
+                    or (failed and result.get("operation_not_started") is not True and not completed_at_limit)
+                ):
                     self._internal_gpu_uncertain = True
                 reprepare = (not uncertain and result.get("success") is False
                              and result.get("operation_not_started") is True
@@ -1845,6 +1857,18 @@ class AffinityScheduler:
             by_model: dict[str, int] = {}
             background_queued = 0
             now = time.monotonic()
+            if self._internal_gpu_uncertain:
+                gpu_admission_state = "outcome_unknown"
+            elif self._external_gpu_reserved():
+                gpu_admission_state = "external_reservation"
+            elif self._background_gpu_lease:
+                gpu_admission_state = "background_lease"
+            elif self._switching or self._gpu_prepare_in_progress:
+                gpu_admission_state = "preparing_model"
+            elif self._inflight:
+                gpu_admission_state = "inference_active"
+            else:
+                gpu_admission_state = "available"
             ordered_pending = sorted(self._pending, key=lambda j: (-j.priority, j.created_at))
             pending_jobs: list[dict[str, Any]] = []
             model_positions: dict[str, int] = {}
@@ -1863,6 +1887,7 @@ class AffinityScheduler:
                 "active_parallel_limit": self._active_parallel_limit(),
                 "global_parallel_limit": self.max_parallel,
                 "switching": self._switching,
+                "gpu_admission_state": gpu_admission_state,
                 "background_gpu_lease": self._background_gpu_lease,
                 "inflight": self._inflight,
                 "inflight_background": self._inflight_background,

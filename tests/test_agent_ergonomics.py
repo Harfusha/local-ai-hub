@@ -34,6 +34,22 @@ from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.response_budget import budget_response, json_tokens
 
 
+@pytest.fixture(autouse=True)
+def _qualified_local_capability_profile(monkeypatch):
+    """Model a configured high-profile installation for direct tool-contract tests."""
+    for name, value in {
+        "tasks": True,
+        "hardware_profile": "high",
+        "bounded_work_tier": True,
+        "local_semantic_analysis": True,
+        "local_vision_qualified": True,
+        "local_code_generation_qualified": True,
+        "local_automation_qualified": True,
+        "bounded_work_qualified": True,
+    }.items():
+        monkeypatch.setattr(FEATURES, name, value)
+
+
 def test_repo_tools_apply_patch_exact_crlf_and_whitespace(tmp_path: Path):
     """Point 4: Verify exact, CRLF-tolerant, and whitespace-tolerant patch behavior."""
     repo = tmp_path / "repo"
@@ -1511,7 +1527,7 @@ def test_status_rejects_action_aliases():
 # ---------------------------------------------------------------------------
 
 def test_work_accepts_id_alias_and_goal():
-    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "work_orchestrator", True):
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, patch.object(FEATURES, "work_orchestrator", True), patch.object(FEATURES, "bounded_work_tier", True):
         mc.post.return_value = {"success": True, "work_id": "W-123", "status": "running"}
         res_get = local_ai_work(action="get", id="W-123")
         assert res_get.get("success") is True, f"work get with id= failed: {res_get}"

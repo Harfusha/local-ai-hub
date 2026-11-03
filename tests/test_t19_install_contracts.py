@@ -159,7 +159,8 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
         "local_diagnostic_dispatch",
     )
     for feature in rollout_features:
-        assert defaults["features"][feature] is True
+        expected_default = feature != "local_diagnostic_dispatch"
+        assert defaults["features"][feature] is expected_default
         assert config["features"][feature] is defaults["features"][feature]
         assert all(f"`features.{feature}`" in prompt for prompt in prompts)
     for gate in (

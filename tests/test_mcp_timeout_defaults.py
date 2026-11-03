@@ -4,6 +4,15 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.config import ConfigError, load_config
+from local_ai_hub import mcp_server
+
+
+@pytest.fixture(autouse=True)
+def qualified_review_actions(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
 
 
 def test_mcp_timeout_defaults_are_in_the_consumed_section_and_user_override_wins(tmp_path):
@@ -192,6 +201,7 @@ def test_mcp_review_timeout_preserves_unknown_without_duplicate_dispatch(tmp_pat
     config = tmp_path / "client.toml"
     config.write_text(
         f'[server]\nport = {server.server_port}\nauto_start_ollama = false\n'
+        '[hardware]\nprofile = "balanced"\n[features]\nlocal_semantic_analysis = true\n'
         '[security]\napi_token = ""\n[mcp]\nlong_timeout_seconds = 1\n', encoding="utf-8"
     )
     env.update(LOCAL_AI_CONFIG=str(config), PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),

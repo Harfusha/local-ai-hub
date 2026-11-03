@@ -6,4 +6,4 @@ Call `local_ai_coord(action="context_compile")` for the task with a bounded `max
 
 Give a fresh isolated chat only the partial context and exact artifact ID, along with the catalog prompt. It must read only that artifact, reproduce the complete assignment without executing it, and preserve the identity exactly. Record the actual calls and compare the response to the original task, including any omission or retry.
 
-The 2026-11-02 fixture used root `C:\Users\Adam\Documents\local-ai-hub-eval\case-055-luna-20261102-001`, task `task_1a0f09082f80`, context `taskctx_65b4f599878804eb` and artifact `art_879818ca4c4b7f571b4aeffa`. These are run-specific, not reusable IDs.
+The 2026-11-02 fixture used root `<EVAL_ROOT>/case-055-luna-20261102-001`, task `task_1a0f09082f80`, context `taskctx_65b4f599878804eb` and artifact `art_879818ca4c4b7f571b4aeffa`. These are run-specific, not reusable IDs.

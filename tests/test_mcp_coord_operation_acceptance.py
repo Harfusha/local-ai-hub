@@ -85,6 +85,56 @@ def test_plan_get_wire_success_requires_complete_plan_and_revision(monkeypatch, 
         assert response.get("file_revision") == revision
 
 
+@pytest.mark.parametrize("budget", [1000, 3000])
+def test_large_plan_budget_error_preserves_recovery_identity(monkeypatch, tmp_path, budget):
+    plan = {"id": "plan_x", "description": "abcdefghij" * 10000, "tasks": {}}
+    revision = "f" * 64
+    rel_path = ".local-ai-hub/plans/plan_x.plan.json"
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", CoordBackend({
+        "success": True, "plan": plan, "file_revision": revision, "rel_path": rel_path,
+    }))
+
+    raw = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_get", "root": str(tmp_path), "plan_id": "plan_x",
+        "max_response_tokens": budget, "response_profile": "compact",
+    }))
+    content = raw[0][0] if isinstance(raw, tuple) else raw[0]
+    response = json.loads(content.text)
+    assert response["success"] is False
+    assert response["plan_id"] == "plan_x"
+    assert response["file_revision"] == revision
+    assert response["rel_path"] == rel_path
+    assert isinstance(raw, tuple)
+    assert raw[1]["plan_id"] == response["plan_id"]
+    assert raw[1]["file_revision"] == response["file_revision"]
+    assert raw[1]["rel_path"] == response["rel_path"]
+
+
+def test_large_plan_recovery_detects_revision_change_between_source_slices(monkeypatch, tmp_path):
+    from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    workspace.init_workspace()
+    created = workspace.create_plan(plan_id="plan_large", title="Large", description="abcdefghij" * 800)
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", CoordBackend(workspace.get_plan("plan_large")))
+    monkeypatch.setattr(mcp_server, "_workspace", str(tmp_path))
+    raw = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_get", "root": str(tmp_path), "plan_id": "plan_large",
+        "max_response_tokens": 1000, "response_profile": "compact",
+    }))
+    content = raw[0][0] if isinstance(raw, tuple) else raw[0]
+    response = json.loads(content.text)
+    assert response["success"] is False
+    assert response["file_revision"] == created["file_revision"]
+    first = mcp_server.local_ai_artifact(action="source", path=response["rel_path"], line_start=1, line_end=2)
+    assert first["file_sha256"] == response["file_revision"]
+    workspace.update_plan("plan_large", title="Updated", expected_revision=created["file_revision"])
+    second = mcp_server.local_ai_artifact(action="source", path=response["rel_path"], line_start=3, line_end=4)
+    assert second["file_sha256"] != response["file_revision"]
+
+
 @pytest.mark.parametrize("action", ["plan_update", "plan_task_edit"])
 def test_plan_mutation_budget_reports_actual_write(monkeypatch, tmp_path, action):
     from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
@@ -313,7 +363,7 @@ def test_local_ai_coord_memo_delete_is_private_and_never_dispatches(monkeypatch,
 def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     paths = ["tools/surface_inventory.py", "tests/test_surface_inventory.py"]
-    backend = ApiBackend({"success": True, "summary": "lease granted", "lease_id": "lease-42"})
+    backend = ApiBackend({"success": True, "lease_id": "lease_0123456789abcdef0123"})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
 
@@ -328,7 +378,8 @@ def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatc
         {},
     )]
     assert result["success"] is True
-    assert result["summary"] == "lease granted"
+    assert result["lease_id"] == "lease_0123456789abcdef0123"
+    assert result["mutation_applied"] is True
 
 
 @pytest.mark.parametrize("action", ["claim", "release", "renew", "leases"])
@@ -336,7 +387,8 @@ def test_registered_local_ai_coord_lease_actions_have_no_tenant_selector(monkeyp
     from local_ai_hub.features import FeatureSet
 
     root = str(tmp_path.resolve())
-    backend = ApiBackend({"success": True, "summary": "lease accepted"})
+    backend = ApiBackend({"success": True, "summary": "lease accepted",
+                          "lease_id": "lease_0123456789abcdef0123", "released_rows": 1})
     monkeypatch.setattr(mcp_server, "FEATURES", FeatureSet({"coord": True}))
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *args, **kwargs: None)
@@ -771,8 +823,11 @@ def test_local_ai_coord_relation_actions_are_private(monkeypatch):
 
 def test_local_ai_coord_release_forwards_lease_identity(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
+    backend.response = {"success": True, "released_rows": 1}
     result = mcp_server.local_ai_coord(action='release', owner="task-release", lease_id="lease-41")
     assert result["success"] is True
+    assert result["released_rows"] == 1
+    assert result["mutation_applied"] is True
     calls = backend.calls
     assert calls == [(
         "/api/leases/release", {"owner": "task-release", "lease_id": "lease-41"}, {}
@@ -1430,11 +1485,14 @@ def test_local_ai_coord_claim_forwards_owned_paths(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     paths = ["src/worker.py", "tests/test_worker.py"]
     backend = _prepare_coord_api(monkeypatch)
+    backend.response = {"success": True, "lease_id": "lease_0123456789abcdef0123"}
     result = mcp_server.local_ai_coord(
         action="claim", root=root, owner="execution-lease-worker", paths=paths,
         ttl_seconds=300, purpose="bounded worker edit",
     )
     assert result["success"] is True
+    assert result["lease_id"] == "lease_0123456789abcdef0123"
+    assert result["mutation_applied"] is True
     assert backend.calls == [(
         "/api/leases/claim_batch",
         {"owner": "execution-lease-worker", "root": root, "paths": paths, "ttl_seconds": 300,

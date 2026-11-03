@@ -1032,6 +1032,8 @@ class LocalAIApp:
                 },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
+                "hardware_profile": fs.hardware_profile,
+                "capabilities": fs.capability_status(),
                 "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
                 "runtime_profile": {

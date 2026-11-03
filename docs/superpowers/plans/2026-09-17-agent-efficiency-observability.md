@@ -48,10 +48,10 @@
 - Modify: `src/local_ai_hub/deterministic.py`, `src/local_ai_hub/repo_tools.py`
 - Test: `tests/test_new_capabilities_and_hardening.py`
 
-- [ ] Add failing tests for rejecting an exact replacement overlapping an unowned dirty Git hunk while permitting a clean-file replacement.
-- [ ] Run tests; confirm current atomic replacement has no hunk-ownership check.
-- [ ] Compute zero-context Git diff ranges before in-memory replacement and reject intersecting target ranges unless a matching active lease belongs to caller.
-- [ ] Run batch tests for atomic rollback, ambiguity, syntax, clean target, and dirty-hunk rejection.
+- [x] Add failing tests for rejecting an exact replacement overlapping an unowned dirty Git hunk while permitting a clean-file replacement.
+- [x] Run tests; confirm current atomic replacement has no hunk-ownership check.
+- [x] Compute zero-context Git diff ranges before in-memory replacement and reject intersecting target ranges unless a matching active lease belongs to caller.
+- [x] Run batch tests for atomic rollback, ambiguity, syntax, clean target, and dirty-hunk rejection.
 
 ### Task 4: Layered command failure distillation
 

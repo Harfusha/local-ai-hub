@@ -519,6 +519,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       <span class="tiny muted" id="featStatusText">Loading capability settings…</span>
     </div>
     <div id="featurePills" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    <div style="margin-top:14px"><div class="label" style="font-size:11.5px">Local-model capability tier</div><div class="tiny muted" id="localCapabilityProfile">Loading effective hardware profile…</div><div id="localCapabilityStates" class="kv" style="margin-top:8px"></div></div>
   </details>
 
   <div class="split" style="margin-top:12px">
@@ -4866,6 +4867,25 @@ function render(s){
     }
   })();
 
+  const capabilityProfile=$('localCapabilityProfile'),capabilityStates=$('localCapabilityStates');
+  if(capabilityProfile){
+    const profile=String(s.hardware_profile||s.hardware?.profile||'unknown');
+    capabilityProfile.textContent=`Effective profile: ${profile}. This is a configuration ceiling; provider readiness and model quality are not inferred here.`;
+  }
+  if(capabilityStates){
+    const capabilities=s.capabilities&&typeof s.capabilities==='object'?s.capabilities:{};
+    const labels={search_summaries:'Search summaries',semantic_analysis:'Semantic analysis',repository_review:'Repository review',cross_file_design:'Cross-file design',vision:'Vision',code_generation:'Code generation',automation:'Browser automation',bounded_local_work:'Bounded local work'};
+    capabilityStates.innerHTML=Object.entries(labels).map(([key,label])=>{
+      const item=capabilities[key];
+      if(!item)return `<div class="tiny muted">${esc(label)} · state unreported</div>`;
+      const state=String(item.state||'unknown'),reason=item.reason?String(item.reason):'';
+      const enabled=state==='enabled_by_operator',blocked=state==='profile_blocked'||state==='feature_disabled';
+      const stateClass=enabled?'warn-t':blocked?'muted':'muted';
+      const detail=[item.feature_gate?`features.${item.feature_gate}`:'',reason,`provider ${item.provider_readiness||'unknown'}`].filter(Boolean).join(' · ');
+      return `<div class="tiny ${stateClass}"><b>${esc(label)}</b> · ${esc(state)}${detail?` · ${esc(detail)}`:''}</div>`;
+    }).join('');
+  }
+
   if($('worktreeRoots'))$('worktreeRoots').innerHTML=[...new Set((p.projects||[]).map(project=>project.root).filter(Boolean))].sort().map(root=>`<option value="${esc(root)}"></option>`).join('');
   const repoSelect=$('agentOsRepoSelect');
   if(repoSelect){
@@ -4906,7 +4926,9 @@ function render(s){
   $('dollarsSavedSub').textContent=o.estimated_savings_pricing_mode==='incomplete'?'Known channel subtotals: input '+formatChannelSavings(inputSavedUsd,inputRate)+' · output '+formatChannelSavings(outputSavedUsd,outputRate)+' · historical channel costs unknown':o.estimated_savings_pricing_mode==='input_output'?'input '+formatChannelSavings(inputSavedUsd,inputRate)+' · output '+formatChannelSavings(outputSavedUsd,outputRate):'Cost unavailable';
   const qHitRate=(Number(o.preprocessed_query_hit_rate??0)*100).toFixed(1),ingReuse=(Number(p.ingestion_reuse_rate??0)*100).toFixed(1);
   $('cache').textContent=Number(generation.events??inference.events??o.events)>0?((o.generation_cache_hit_rate ?? o.cache_hit_rate ?? 0)*100).toFixed(1)+'%':'No samples';
-  $('cacheSub').textContent=n(generation.hits)+' generation · '+n(repository.hits)+' repository ('+qHitRate+'% index hit) · '+n(commandCache.hits)+' command hits · '+n(localComputeSaved)+' local tokens avoided';
+  const reuse=o.cache_reuse_breakdown||{};
+  const reuseDetail=Number.isFinite(reuse.semantic_hits)&&Number.isFinite(reuse.single_flight_waiters)?n(reuse.semantic_hits)+' semantic hits, '+n(reuse.single_flight_waiters)+' single-flight waiters':'reuse detail unavailable';
+  $('cacheSub').textContent=n(generation.hits)+' generation hits · generation requests: '+reuseDetail+' · '+n(repository.hits)+' repository ('+qHitRate+'% index hit) · '+n(commandCache.hits)+' command hits · '+n(localComputeSaved)+' local tokens avoided';
   $('latency').textContent=ms(agentHttp.p50_duration_ms)+' / '+ms(agentHttp.p95_duration_ms)+' / '+ms(agentHttp.p99_duration_ms);
   $('queueWait').textContent='local inference p95 '+ms(inference.p95_duration_ms)+' · avg queue wait '+ms(o.avg_queue_wait_ms);
   $('reliabilityValue').innerHTML=`<span class="${agentHttp.failures?'warn-t':'ok'}">${n(agentHttp.failures)} failures</span>`;
@@ -4978,7 +5000,7 @@ function render(s){
   if($('hotspots'))$('hotspots').innerHTML=hs.length?hs.map((x,i)=>`<div>${esc(x.type||'signal')}</div><div><span class="chip">${esc(x.signal||'')}</span> ${esc(x.value??x.value_ms??x.count??'')}</div>`).join(''):'<div>Status</div><div class="muted">No hotspot reported in available telemetry</div>';
 
   const recentRequests=o.recent_http||[],visibleJobs=workVisible(allJobs),visibleActive=workVisible(o.active_requests||[]),visibleRecent=filterRecentRequests(workVisible(recentRequests),recentRequests);
-  if($('queueSummary'))$('queueSummary').textContent=n(q.foreground_queued)+' fg + '+n(q.background_queued)+' bg queued · '+n(q.foreground_inflight)+' fg + '+n(q.inflight_background)+' bg running';
+  if($('queueSummary'))$('queueSummary').textContent=n(q.foreground_queued)+' fg + '+n(q.background_queued)+' bg queued · '+n(q.foreground_inflight)+' fg + '+n(q.inflight_background)+' bg running · GPU admission: '+esc(q.gpu_admission_state||'unknown');
   if($('workQueued'))$('workQueued').textContent=n((q.foreground_queued||0)+(q.background_queued||0));
   if($('workRunning'))$('workRunning').textContent=n((q.foreground_inflight||0)+(q.inflight_background||0));
   if($('workActive'))$('workActive').textContent=n((o.active_requests||[]).length);

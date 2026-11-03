@@ -48,6 +48,21 @@ def test_untyped_timeout_is_not_assumed_to_be_unsent(tmp_path):
     assert result.get("request_not_sent") is not True
 
 
+def test_hardware_benchmark_preserves_safe_scheduler_wait_reason(tmp_path):
+    class Scheduler:
+        def submit(self, *args, **kwargs):
+            error = SchedulerTimeoutError(SimpleNamespace(id=918), "pending", 0.1)
+            error.wait_reason = "gpu-reservation"
+            raise error
+
+    result = HardwareBenchmarkRunner(tmp_path / "benchmark.json", runtime=object(), scheduler=Scheduler()).run(
+        model="candidate", prompt="measure", num_tokens=2,
+    )
+
+    assert result["request_not_sent"] is True
+    assert result["wait_reason"] == "gpu-reservation"
+
+
 def test_scheduler_timeout_response_preserves_authentic_job_identity(tmp_path):
     class Scheduler:
         def submit(self, *args, **kwargs):

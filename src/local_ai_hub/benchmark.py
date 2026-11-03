@@ -282,6 +282,8 @@ class HardwareBenchmarkRunner:
                 if isinstance(exc, SchedulerTimeoutError):
                     timeout_details["job_id"] = exc.job_id
                     timeout_details["scheduler_state"] = exc.state
+                    if isinstance(exc.wait_reason, str):
+                        timeout_details["wait_reason"] = exc.wait_reason
                     if exc.state == "pending":
                         timeout_details.update(request_not_sent=True, operation_not_started=True)
                     else:
@@ -658,6 +660,8 @@ class HardwareBenchmarkRunner:
                 failure["timed_out"] = True
                 if isinstance(exc, SchedulerTimeoutError):
                     failure["job_id"] = exc.job_id
+                    if isinstance(exc.wait_reason, str):
+                        failure["wait_reason"] = exc.wait_reason
                     if exc.state == "pending":
                         failure.update(request_not_sent=True, operation_not_started=True)
                     else:
@@ -734,77 +738,169 @@ class HardwareBenchmarkRunner:
         generation_duration_ns: int | None = None
         load_duration_ns: int | None = None
         streaming = False
+        sampled_vram_bytes: list[int] = []
+        sampled_vram_lock = threading.Lock()
+        sampler_stop = threading.Event()
+        sampler_thread: threading.Thread | None = None
 
-        try:
-            if callable(getattr(self.runtime, "generate_stream", None)):
-                streaming = True
-                # Qwen reasoning models can spend the whole small benchmark budget
-                # in a hidden thinking stream.  Hardware routing needs visible
-                # generation latency, so explicitly disable thinking here.
-                for chunk in self.runtime.generate_stream(
-                    target_model,
-                    prompt,
-                    options={"num_predict": num_tokens, "think": False},
-                ):
-                    if isinstance(chunk, dict) and chunk.get("error"):
-                        return {"success": False, "model": target_model, "error": str(chunk["error"])}
-                    if isinstance(chunk, dict):
-                        load_duration = chunk.get("load_duration")
-                        if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
-                            load_duration_ns = int(load_duration)
-                        eval_count = chunk.get("eval_count")
-                        if isinstance(eval_count, (int, float)) and math.isfinite(eval_count) and eval_count > 0:
-                            tokens_count = int(eval_count)
-                            token_count_estimated = False
-                        eval_duration = chunk.get("eval_duration")
-                        if isinstance(eval_duration, (int, float)) and math.isfinite(eval_duration) and eval_duration > 0:
-                            generation_duration_ns = int(eval_duration)
-                        visible = str(chunk.get("response", chunk.get("text", "")) or "")
-                        response_text += visible
-                        thinking_chars += len(str(chunk.get("thinking", "") or ""))
-                    else:
-                        visible = str(chunk or "")
-                        response_text += visible
-                    if visible and first_token_time is None:
-                        first_token_time = time.perf_counter()
-                if not response_text and thinking_chars:
-                    return {
-                        "success": False,
-                        "model": target_model,
-                        "error": "benchmark produced thinking-only output",
-                        "measurement_warning": "thinking_only_output",
-                        "thinking_chars": thinking_chars,
-                    }
-            elif callable(getattr(self.runtime, "generate", None)):
-                res = self.runtime.generate(
-                    target_model,
-                    prompt,
-                    options={"num_predict": max(1, int(num_tokens)), "think": False},
-                )
-                if not isinstance(res, dict):
-                    return {"success": False, "model": target_model, "error": "benchmark runtime returned a non-object response"}
-                if res.get("error"):
-                    return {"success": False, "model": target_model, "error": str(res["error"])}
-                response_text = str(res.get("response", res.get("text", "")) or "")
-                thinking_chars = len(str(res.get("thinking", "") or ""))
-                tokens_count = int(res.get("eval_count", 0) or 0)
-                token_count_estimated = tokens_count <= 0
-                generation_duration_ns = int(res.get("eval_duration", 0) or 0) or None
-                load_duration = res.get("load_duration")
-                if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
-                    load_duration_ns = int(load_duration)
-                if not response_text:
-                    return {
-                        "success": False,
-                        "model": target_model,
-                        "error": "benchmark produced no visible output",
+        def sample_vram_once() -> None:
+            callback = getattr(self.vram_balancer, "sample_vram", None)
+            if not callable(callback):
+                return
+            try:
+                sample = callback()
+            except Exception:
+                return
+            if not isinstance(sample, Mapping):
+                return
+            used_mb = sample.get("vram_used_mb")
+            if (
+                isinstance(used_mb, bool)
+                or not isinstance(used_mb, (int, float))
+                or not math.isfinite(used_mb)
+                or used_mb < 0
+            ):
+                return
+            with sampled_vram_lock:
+                sampled_vram_bytes.append(int(round(float(used_mb) * 1024 * 1024)))
+
+        def sample_vram_loop() -> None:
+            while not sampler_stop.is_set():
+                sample_vram_once()
+                if sampler_stop.wait(0.1):
+                    return
+
+        def execute_generation() -> dict[str, Any]:
+            nonlocal sampler_thread
+            nonlocal first_token_time, tokens_count, token_count_estimated, response_text
+            nonlocal thinking_chars, generation_duration_ns, load_duration_ns, streaming
+            try:
+                if callable(getattr(self.vram_balancer, "sample_vram", None)):
+                    sampler_thread = threading.Thread(
+                        target=sample_vram_loop, name="hardware-benchmark-vram-sampler", daemon=True,
+                    )
+                    sampler_thread.start()
+                if callable(getattr(self.runtime, "generate_stream", None)):
+                    streaming = True
+                    # Keep reasoning work out of this short hardware measurement.
+                    for chunk in self.runtime.generate_stream(
+                        target_model,
+                        prompt,
+                        options={"num_predict": max(1, int(num_tokens)), "think": False},
+                    ):
+                        if isinstance(chunk, dict) and chunk.get("error"):
+                            return {"success": False, "error": str(chunk["error"])}
+                        if isinstance(chunk, dict):
+                            load_duration = chunk.get("load_duration")
+                            if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
+                                load_duration_ns = int(load_duration)
+                            eval_count = chunk.get("eval_count")
+                            if isinstance(eval_count, (int, float)) and math.isfinite(eval_count) and eval_count > 0:
+                                tokens_count = int(eval_count)
+                                token_count_estimated = False
+                            eval_duration = chunk.get("eval_duration")
+                            if isinstance(eval_duration, (int, float)) and math.isfinite(eval_duration) and eval_duration > 0:
+                                generation_duration_ns = int(eval_duration)
+                            visible = str(chunk.get("response", chunk.get("text", "")) or "")
+                            response_text += visible
+                            thinking_chars += len(str(chunk.get("thinking", "") or ""))
+                        else:
+                            visible = str(chunk or "")
+                            response_text += visible
+                        if visible and first_token_time is None:
+                            first_token_time = time.perf_counter()
+                    if not response_text and thinking_chars:
+                        return {"success": False, "error": "benchmark produced thinking-only output",
+                                "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
+                elif callable(getattr(self.runtime, "generate", None)):
+                    res = self.runtime.generate(
+                        target_model,
+                        prompt,
+                        options={"num_predict": max(1, int(num_tokens)), "think": False},
+                    )
+                    if not isinstance(res, dict):
+                        return {"success": False, "error": "benchmark runtime returned a non-object response"}
+                    if res.get("error"):
+                        return {"success": False, "error": str(res["error"])}
+                    response_text = str(res.get("response", res.get("text", "")) or "")
+                    thinking_chars = len(str(res.get("thinking", "") or ""))
+                    tokens_count = int(res.get("eval_count", 0) or 0)
+                    token_count_estimated = tokens_count <= 0
+                    generation_duration_ns = int(res.get("eval_duration", 0) or 0) or None
+                    load_duration = res.get("load_duration")
+                    if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
+                        load_duration_ns = int(load_duration)
+                    if not response_text:
+                        return {"success": False, "error": "benchmark produced no visible output",
+                                "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
+                                "thinking_chars": thinking_chars}
+                else:
+                    return {"success": False, "error": "Runtime does not support generation"}
+            except Exception as exc:
+                return {"success": False, "error": f"Benchmark generation failed: {exc}"}
+            finally:
+                sampler_stop.set()
+                if sampler_thread is not None:
+                    sampler_thread.join(timeout=0.5)
+            if not response_text:
+                return {"success": False, "error": "benchmark produced no visible output",
                         "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
-                        "thinking_chars": thinking_chars,
-                    }
-            else:
-                return {"success": False, "error": "Runtime does not support generation"}
-        except Exception as exc:
-            return {"success": False, "error": f"Benchmark generation failed: {exc}", "model": target_model}
+                        "thinking_chars": thinking_chars}
+            return {"success": True}
+
+        scheduler_result: Mapping[str, Any] = {}
+        scheduler_submit = getattr(self.scheduler, "submit", None)
+        if callable(scheduler_submit):
+            server_config = self.config.get("server", {})
+            server_config = server_config if isinstance(server_config, Mapping) else {}
+            try:
+                wait_timeout = max(0.05, min(120.0, float(server_config.get("request_timeout_seconds", 120.0))))
+                scheduler_limit = getattr(self.scheduler, "max_caller_wait_timeout", wait_timeout)
+                if isinstance(scheduler_limit, (int, float)) and not isinstance(scheduler_limit, bool):
+                    wait_timeout = min(wait_timeout, max(0.05, float(scheduler_limit)))
+            except (TypeError, ValueError, OverflowError):
+                wait_timeout = 30.0
+            try:
+                scheduled = scheduler_submit(
+                    target_model, source="benchmark", execute=execute_generation, priority=2,
+                    wait_timeout=wait_timeout,
+                )
+            except Exception as exc:
+                from .scheduler import SchedulerTimeoutError
+
+                result: dict[str, Any] = {"success": False, "model": target_model, "error": type(exc).__name__}
+                if isinstance(exc, TimeoutError):
+                    result.update(timed_out=True, outcome_unknown=True, retryable=False)
+                    if isinstance(exc, SchedulerTimeoutError):
+                        result["scheduler_state"] = exc.state
+                        if isinstance(exc.wait_reason, str):
+                            result["wait_reason"] = exc.wait_reason
+                        if exc.state == "pending":
+                            result.update(outcome_unknown=False, request_not_sent=True, operation_not_started=True)
+                        result["job_id"] = exc.job_id
+                return result
+            if not isinstance(scheduled, Mapping):
+                return {"success": False, "model": target_model, "error": "scheduler returned a non-object result"}
+            scheduler_result = scheduled
+            if scheduled.get("success") is not True:
+                result = {"success": False, "model": target_model,
+                          "error": str(scheduled.get("error", "benchmark inference was not admitted"))}
+                for key in ("error_code", "job_id", "admission", "admission_state", "timed_out",
+                            "outcome_unknown", "request_not_sent", "operation_not_started", "in_progress",
+                            "retryable", "terminal"):
+                    if key in scheduled:
+                        result[key] = scheduled[key]
+                return result
+        else:
+            llama_config = self.config.get("llama_cpp", {})
+            if isinstance(llama_config, Mapping) and llama_config.get("managed_with_ollama") is True:
+                return {"success": False, "model": target_model,
+                        "error": "Scheduler required for managed llama.cpp benchmark preparation"}
+            direct = execute_generation()
+            if direct.get("success") is not True:
+                return {"success": False, "model": target_model, **direct}
+
+        queue_wait_ms = scheduler_result.get("_lah_scheduler_queue_wait_ms")
 
         if not response_text:
             return {
@@ -869,6 +965,17 @@ class HardwareBenchmarkRunner:
         }
         if measurement_warning:
             record["measurement_warning"] = measurement_warning
+        if (
+            not isinstance(queue_wait_ms, bool)
+            and isinstance(queue_wait_ms, (int, float))
+            and math.isfinite(queue_wait_ms)
+            and queue_wait_ms >= 0
+        ):
+            record["queue_wait_ms"] = round(float(queue_wait_ms), 2)
+        with sampled_vram_lock:
+            if sampled_vram_bytes:
+                record["peak_vram_bytes"] = max(sampled_vram_bytes)
+                record["peak_vram_scope"] = "device_wide_sampled_during_inference"
 
         self._persist_record(record)
         return {"success": True, **record}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import pytest
 
@@ -22,7 +23,11 @@ def _active_task_mode(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_code_generation_qualified", True)
     monkeypatch.setattr(mcp_server.FEATURES, "vision", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_vision_qualified", True)
     snapshot = OperationalModeSnapshot("active", 1, None)
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
@@ -70,6 +75,12 @@ def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
 ):
     client = DummyClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_code_generation_qualified", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_vision_qualified", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
 
     result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_task", {"action": action, **canonical, **retired},
@@ -134,15 +145,10 @@ def test_registered_task_handler_dispatches_canonical_inputs(
 ):
     client = DummyClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
-
-    if action == "vision":
-        # The imported MCP action Literal is fixed at startup feature state; this fixture
-        # enables vision after import, so exercise the same handler without stale schema.
-        mcp_server.local_ai_task(action=action, **arguments)
-    else:
-        asyncio.run(mcp_server.mcp.call_tool(
-            "local_ai_task", {"action": action, **arguments},
-        ))
+    # MCP's registered Literal is a startup snapshot. Exercise handler mapping directly;
+    # live schema gating is covered by the MCP contract tests.
+    monkeypatch.setattr(mcp_server, "TaskAction", Literal[action])
+    mcp_server.local_ai_task(action=action, **arguments)
 
     assert len(client.calls) == 1
     assert client.calls[0][0] == path

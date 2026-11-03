@@ -98,6 +98,47 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     assert result["content"] == "value"
 
 
+def test_http_rag_search_cannot_bypass_reranker_capability_gate(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+
+    def search(query, **kwargs):
+        calls.append((query, kwargs))
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
+    monkeypatch.setattr(app.rag, "search", search)
+    monkeypatch.setitem(
+        app.config,
+        "features",
+        {**app.config.get("features", {}), "local_reranking": True},
+    )
+    monkeypatch.setitem(app.config, "hardware", {**app.config.get("hardware", {}), "profile": "low"})
+    monkeypatch.setitem(app.config, "_hardware", {"profile": "low"})
+    root = str(tmp_path.resolve())
+    payload = {
+        "root": root,
+        "workspace": "project:test",
+        "query": "needle",
+        "top_k": 6,
+        "use_reranker": True,
+    }
+    request = urllib_request.Request(
+        f"{base_url}/api/rag/search",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-LocalAI-Token": "acceptance-secret"},
+        method="POST",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert result["success"] is True
+    assert calls == [("needle", {"workspace": "project:test", "top_k": 6, "use_reranker": False})]
+
+
 def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
     running_http_hub, monkeypatch, tmp_path
 ):

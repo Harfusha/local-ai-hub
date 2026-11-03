@@ -10,6 +10,8 @@ def _activate_repo(monkeypatch):
     from local_ai_hub.operational_mode import OperationalModeSnapshot
 
     monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
     snapshot = OperationalModeSnapshot("active", 1, None)
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)

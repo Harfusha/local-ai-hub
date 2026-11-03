@@ -9,13 +9,23 @@ from local_ai_hub.operational_mode import OperationalModeSnapshot
 def test_status_readiness_matches_registered_output_contract(monkeypatch):
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server.CLIENT, "get", lambda _: {"success": True, "hub_online": True, "version": "test", "ollama_online": True, "scheduler": {}})
-    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", {"detail": "brief"}))[1]
+    result = asyncio.run(
+        mcp_server.mcp.call_tool("local_ai_status", {"detail": "brief", "max_response_tokens": 4096})
+    )[1]
     assert result["success"] is True
     assert validate_operation_output("local_ai_status", "brief", result) is None
 
 
 def test_readiness_requires_identity_but_not_optional_diagnostics():
-    result = {"success": True, "version": "test", "ollama_online": None, "active_model": None, "degraded": False}
+    result = {
+        "success": True,
+        "version": "test",
+        "ollama_online": None,
+        "active_model": None,
+        "degraded": False,
+        "hardware_profile": "low",
+        "capabilities": {},
+    }
     assert validate_operation_output("local_ai_status", "brief", result) is None
     for field in result:
         incomplete = {key: value for key, value in result.items() if key != field}

@@ -406,7 +406,11 @@ def test_local_ai_status_keeps_telemetry_timeout_visible_without_global_degraded
         "degraded": False,
         "dependency_status": {"telemetry.summary": telemetry_diagnostic},
     }
-    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(status=True))
+    monkeypatch.setattr(
+        mcp_server,
+        "FEATURES",
+        SimpleNamespace(status=True, hardware_profile="low", capability_status=lambda: {}),
+    )
     monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(get=lambda _path: status))
 
     result = mcp_server.local_ai_status()

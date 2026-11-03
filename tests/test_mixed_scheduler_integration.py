@@ -10,11 +10,12 @@ from unittest.mock import patch
 import pytest
 
 from local_ai_hub.ollama import OllamaRuntime
-from local_ai_hub.scheduler import AffinityScheduler
+from local_ai_hub.scheduler import AffinityScheduler, SchedulerTimeoutError
 
 
 @pytest.mark.parametrize("available_mb, admitted, resize, preloaded", [(6144, True, False, False), (256, False, False, False), (6144, True, True, False), (6144, True, False, True)])
-def test_scheduler_prepares_fallback_before_inference_and_releases_on_unload(tmp_path, available_mb, admitted, resize, preloaded):
+@pytest.mark.parametrize("client_path", ["runtime", "benchmark", "eval_suite"])
+def test_scheduler_prepares_fallback_before_inference_and_releases_on_unload(tmp_path, available_mb, admitted, resize, preloaded, client_path):
     state = {"loaded": resize or preloaded, "context": 512 if resize else 131072, "calls": [], "unprotected": False, "admission_loaded": []}
 
     class Handler(BaseHTTPRequestHandler):
@@ -82,20 +83,48 @@ def test_scheduler_prepares_fallback_before_inference_and_releases_on_unload(tmp
     try:
         with patch.object(runtime, "ensure_running", return_value=True):
             scheduler = AffinityScheduler(runtime, config)
-            result = scheduler.submit("candidate", source="test", wait_timeout=10, execute=lambda: runtime.request(
-                "/api/generate", {"model": "candidate", "prompt": "1+1", "stream": False}, timeout=5,
-            ))
+            if client_path == "benchmark":
+                from local_ai_hub.benchmark import HardwareBenchmarkRunner
+                result = HardwareBenchmarkRunner(
+                    tmp_path / "benchmark.json", runtime=runtime,
+                    vram_balancer=runtime.vram_balancer, config=config, scheduler=scheduler,
+                ).run(model="candidate", prompt="1+1", num_tokens=2)
+            elif client_path == "eval_suite":
+                from local_ai_hub.services import LocalAIServices
+                services = LocalAIServices.__new__(LocalAIServices)
+                services.config = config
+                services.runtime = runtime
+                services.scheduler = scheduler
+                result = services.eval_suite({
+                    "model": "candidate", "cases": [{"id": "case", "input": "1+1", "expected": "2"}],
+                })
+            else:
+                result = scheduler.submit("candidate", source="test", wait_timeout=10, execute=lambda: runtime.request(
+                    "/api/generate", {"model": "candidate", "prompt": "1+1", "stream": False}, timeout=5,
+                ))
             if not preloaded:
                 assert state["admission_loaded"] and not any(state["admission_loaded"])
             if not admitted:
-                assert result["_lah_scheduler_model_switch"]["post_unload_admission"]["state"] == "rejected"
+                if client_path == "benchmark":
+                    assert result["admission"]["vram_admission"] == "rejected"
+                elif client_path == "eval_suite":
+                    assert result["summary"]["execution_failures"] == 1
+                    assert result["cases"][0]["status"] == "error"
+                else:
+                    assert result["_lah_scheduler_model_switch"]["post_unload_admission"]["state"] == "rejected"
                 assert state["calls"] == []
                 assert runtime._mixed_fallback_guard is not None
                 assert not runtime._mixed_fallback_admitted
                 return
-            assert result["response"] == "2"
-            assert result["_lah_provider"] == "ollama"
-            if not preloaded:
+            if client_path == "benchmark":
+                assert result["success"] is True
+                assert result["tokens_per_second"] > 0
+            elif client_path == "eval_suite":
+                assert result["summary"]["quality_pass_rate"] == 1.0
+            else:
+                assert result["response"] == "2"
+                assert result["_lah_provider"] == "ollama"
+            if not preloaded and client_path == "runtime":
                 assert result["_lah_scheduler_model_switch"]["post_unload_admission"]["state"] == "admitted"
             assert [item.get("prompt") for item in state["calls"]] == (["1+1"] if preloaded else ["", "", "1+1"] if resize else ["", "1+1"])
             assert not state["unprotected"]
@@ -136,6 +165,32 @@ def test_scheduler_prepares_fallback_before_inference_and_releases_on_unload(tmp
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_scheduler_timeout_reports_gpu_reservation_wait_reason(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    runtime = OllamaRuntime(config)
+    scheduler = AffinityScheduler(runtime, config)
+    token = None
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        scheduler_state = scheduler.status()
+        assert scheduler_state["gpu_admission_state"] == "external_reservation"
+        assert token not in repr(scheduler_state)
+        with pytest.raises(SchedulerTimeoutError) as caught:
+            scheduler.submit(
+                "candidate", source="benchmark", execute=lambda: {"success": True}, wait_timeout=0.05,
+            )
+        assert caught.value.state == "pending"
+        assert caught.value.wait_reason == "gpu-reservation"
+    finally:
+        if token:
+            assert scheduler.release_external_gpu(token)
+        scheduler.close()
 
 
 @pytest.mark.parametrize("available_mb, outcome", [(6144, "success"), (256, "reject"), (6144, "partial")])

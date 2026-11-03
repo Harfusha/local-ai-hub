@@ -12,6 +12,12 @@ from local_ai_hub.services import LocalAIServices
 from local_ai_hub.repo_tools import RepositoryTools
 
 
+@pytest.fixture(autouse=True)
+def isolated_review_diff_environment(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+
+
 def test_review_diff_mcp_forwards_explicit_path(monkeypatch, tmp_path):
     calls = []
     client = mcp_server.HubClient(auto_start=False)

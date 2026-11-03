@@ -127,7 +127,7 @@ def test_background_generation_reserves_system_and_schema(monkeypatch):
         worker._generate_one({"prompt": "evidence " * 5000, "system": system,
                               "schema": schema, "max_tokens": 512}, preemptible=False)
     used = (estimate_tokens(captured["payload"]["prompt"]) + estimate_tokens(system)
-            + estimate_tokens(json.dumps(schema, ensure_ascii=False)))
+            + estimate_tokens(json.dumps(schema, ensure_ascii=False, separators=(",", ":"))))
     assert used + 512 + 2048 <= 8192
     assert captured["kwargs"]["input_tokens"] == used
     captured.clear()

@@ -198,6 +198,8 @@ def test_runtime_validation_uses_gate_selector_and_action_fields():
         code_intelligence=False,
         status=True,
         work_orchestrator=True,
+        hardware_profile="high",
+        bounded_work_qualified=True,
     )
 
     assert validate_operation_call("local_ai_repo", {"action": "search"}, features=features) is None
@@ -257,7 +259,13 @@ def test_registry_metadata_and_selector_schemas_cover_all_public_tools():
         "work_orchestrator": True,
         "preprocessing": True,
         "batch_replacement": True,
+        "local_semantic_analysis": True,
+        "local_vision": True,
+        "local_code_generation": True,
+        "local_automation": True,
+        "bounded_local_work": True,
     })
+    config["hardware"] = {"profile": "high"}
     config.update({
         "server": {"auto_start_ollama": True},
         "commands": {"enabled": True},
@@ -280,6 +288,30 @@ def test_registry_metadata_and_selector_schemas_cover_all_public_tools():
         assert schema["parameters"]["properties"][selector]["enum"] == list(contract["actions"])
 
 
+@pytest.mark.parametrize(
+    ("profile", "qualified", "expected"),
+    [("cpu", True, False), ("low", True, False), ("balanced", False, False),
+     ("balanced", True, True), ("high", True, True), ("max", True, True)],
+)
+def test_rag_reranking_capability_is_balanced_and_qualification_gated(profile, qualified, expected):
+    config = {
+        "features": {"rag": True, "local_reranking": qualified},
+        "hardware": {"profile": profile},
+        "server": {"auto_start_ollama": True},
+    }
+
+    feature_set = FeatureSet.from_config(config)
+    status = feature_set.capability_status()["reranking"]
+
+    assert status["available"] is expected
+    assert status["minimum_profile"] == "balanced"
+    assert "search" in feature_set.supported_rag_actions()
+    if not expected and profile in {"cpu", "low", "integrated"}:
+        assert status["reason"] == "requires_balanced_profile"
+    elif not expected:
+        assert status["reason"] == "qualification_or_feature_gate_disabled"
+
+
 def test_generated_parameters_are_registry_sourced_for_all_eight_tools():
     config = _config()
     config["features"].update({
@@ -295,10 +327,16 @@ def test_generated_parameters_are_registry_sourced_for_all_eight_tools():
         "work_orchestrator": True,
         "preprocessing": True,
         "batch_replacement": True,
+        "local_semantic_analysis": True,
+        "local_vision": True,
+        "local_code_generation": True,
+        "local_automation": True,
+        "bounded_local_work": True,
         "vision": True,
         "code_intelligence": True,
         "serena": True,
     })
+    config["hardware"] = {"profile": "high"}
     config.update({
         "server": {"auto_start_ollama": True},
         "commands": {"enabled": True},
@@ -314,7 +352,7 @@ def test_generated_parameters_are_registry_sourced_for_all_eight_tools():
 
     assert set(schemas) == set(OPERATION_CONTRACTS)
     for tool, schema in schemas.items():
-        assert schema["parameters"] == operation_parameters_schema(tool)
+        assert schema["parameters"] == operation_parameters_schema(tool, FeatureSet.from_config(config))
 
 
 def test_registry_schemas_keep_feature_filters_and_action_specific_requirements():
@@ -335,7 +373,9 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
         "vision": False,
         "code_intelligence": False,
         "serena": False,
+        "bounded_local_work": True,
     })
+    config["hardware"] = {"profile": "high"}
     config.update({
         "server": {"auto_start_ollama": True},
         "commands": {"enabled": True},
@@ -368,13 +408,14 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
 
     work_parameters = schemas["local_ai_work"]["parameters"]
     assert work_parameters["required"] == ["action"]
-    work_action_rules = {
-        row["if"]["properties"]["action"]["enum"][0]: row["then"]["required"]
-        for row in work_parameters["allOf"]
-    }
-    assert work_action_rules["submit"] == ["root", "task"]
-    assert work_action_rules["status"] == ["work_id"]
-    assert work_action_rules["continue"] == ["work_id", "answer"]
+    work_action_rules = {}
+    for row in work_parameters["allOf"]:
+        action_schema = row["if"]["properties"]["action"]
+        action = action_schema.get("const", action_schema.get("enum", [None])[0])
+        work_action_rules.setdefault(action, set()).update(row["then"].get("required", []))
+    assert work_action_rules["submit"] == {"root", "task", "mode"}
+    assert work_action_rules["status"] == {"work_id"}
+    assert work_action_rules["continue"] == {"work_id", "answer"}
 
 
 def test_status_uses_only_canonical_detail_schema():
@@ -968,7 +1009,9 @@ def test_output_validation_checks_shared_envelope_and_keeps_extra_payloads():
 
 def test_status_readiness_has_typed_identity_and_failure_contract():
     brief = {"success": True, "version": "1.0", "ollama_online": None,
-             "active_model": None, "degraded": False, "vram_pressure": "nominal"}
+             "active_model": None, "degraded": False, "vram_pressure": "nominal",
+             "hardware_profile": "low",
+             "capabilities": FeatureSet({"hardware": {"profile": "low"}}).capability_status()}
     assert validate_operation_output("local_ai_status", "brief", brief) is None
     assert validate_operation_output("local_ai_status", "brief", {**brief, "degraded": "false"}) is not None
     assert validate_operation_output("local_ai_status", "brief", {**brief, "active_model": 42}) is not None
@@ -1003,6 +1046,7 @@ def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
         if tool_name == "local_ai_task":
             monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
             monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+            monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
         mcp_server.mcp.tool()(getattr(mcp_server, tool_name))
         registered_tool = manager._tools[tool_name]
         monkeypatch.setattr(registered_tool, "is_async", True)
@@ -1087,8 +1131,13 @@ def test_registered_mcp_dispatch_accepts_handler_inputs(
             "coalesced_waiters": 0,
             "vram_pressure": "nominal",
             "context_budget_factor": 1.0,
+            "hardware_profile": "low",
+            "capabilities": FeatureSet({"hardware": {"profile": "low"}}).capability_status(),
         })
     calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
+    if tool_name == "local_ai_task" and arguments.get("action") == "reason":
+        monkeypatch.setattr(local_ai_mcp.FEATURES, "hardware_profile", "high")
+        monkeypatch.setattr(local_ai_mcp.FEATURES, "local_semantic_analysis", True)
     response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
 
     assert response[1]["success"] is True, response[1]
@@ -1204,7 +1253,9 @@ def test_registered_mcp_dispatch_rejects_non_object_output_without_replaying_han
 
 
 def test_status_brief_output_requires_identity_and_preserves_failures():
-    payload = {"success": True, "version": "1.0", "ollama_online": True, "active_model": None, "degraded": False}
+    payload = {"success": True, "version": "1.0", "ollama_online": True, "active_model": None, "degraded": False,
+               "hardware_profile": "low",
+               "capabilities": FeatureSet({"hardware": {"profile": "low"}}).capability_status()}
     schema = operation_output_schema("local_ai_status", "brief")
     assert schema["anyOf"]
     assert validate_operation_output("local_ai_status", "brief", payload) is None

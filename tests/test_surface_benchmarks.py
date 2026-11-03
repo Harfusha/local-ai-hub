@@ -1517,7 +1517,7 @@ def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     assert "total_memory_bytes" in result["metadata"]["platform"]
     assert result["metadata"]["synthetic_file_count"] == 12
     assert result["metadata"]["rag_chunk_count"] == 20
-    assert result["metadata"]["stage_repetitions"] == {"light": 3, "comparison": 2}
+    assert result["metadata"]["stage_repetitions"] == {"light": 3, "comparison": 2, "paired": 2}
     sqlite_index_stage = result["stages"]["hub_sqlite_index"]
     expected_sqlite_index_ids = {
         "cold": [
@@ -2844,7 +2844,7 @@ def test_cli_persists_and_reports_baseline_comparison(tmp_path: Path, capsys: py
     output = json.loads(capsys.readouterr().out)
     assert output["comparison"]["status"] == "inconclusive"
     assert exit_code == 2
-    assert output["metadata"]["stage_repetitions"] == {"light": 2, "comparison": 1}
+    assert output["metadata"]["stage_repetitions"] == {"light": 2, "comparison": 1, "paired": 1}
     assert Path(output["record_path"]).is_relative_to(state_dir)
 
 

@@ -41,6 +41,7 @@ _SAFE_HTTP_ROUTE_LABELS = frozenset(
     {
         "/slow", "/median", "/api/context/pack", "/api/debug-traces/{trace_id}",
         "/api/cross_repo_contract", "/api/ast_rename", "/api/repo/batch_replace", "/api/code_invariants",
+        "/api/command",
     }
     | set(TELEMETRY_SAFE_GET_ROUTE_LABELS)
     | set(GET_ROUTE_HANDLER_BOUNDARIES)
@@ -1136,6 +1137,7 @@ class TelemetryStore:
             "preprocessed_query_hit_rate": float(history.get("preprocessed_query_hit_rate", 0.0) or 0.0),
             "sessions": [] if light else history.get("sessions", []),
             "cache_domains": history.get("cache_domains", {}),
+            "cache_reuse_breakdown": history.get("cache_reuse_breakdown", {}),
             "http_outcomes": history.get("http_outcomes", {}),
             "net_cloud_token_delta_est": int(history.get("net_cloud_token_delta_est", 0) or 0),
             "cloud_token_overhead_est": int(history.get("cloud_token_overhead_est", 0) or 0),
@@ -2113,7 +2115,8 @@ class TelemetryStore:
                            WHEN cache_layer IN ('workspace','workspace-miss') THEN 'repository'
                            ELSE 'other'
                        END AS domain,
-                       COUNT(*),COALESCE(SUM(cache_hit),0),COALESCE(SUM(coalesced),0)
+                       COUNT(*),COALESCE(SUM(cache_hit),0),COALESCE(SUM(coalesced),0),
+                       COALESCE(SUM(CASE WHEN event_type='inference' AND cache_layer='semantic' AND cache_hit=1 THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? AND event_type IN ('inference','http')
                    GROUP BY domain ORDER BY domain""",
                 (cutoff,),
@@ -2276,8 +2279,10 @@ class TelemetryStore:
             decision_grade = self._decision_grade(con, cutoff)
         total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
         cache_domains: dict[str, dict[str, Any]] = {}
-        for domain, events, hits, coalesced in cache_domains_rows:
+        semantic_hits = 0
+        for domain, events, hits, coalesced, semantic in cache_domains_rows:
             count = int(events)
+            semantic_hits += int(semantic)
             cache_domains[str(domain)] = {
                 "events": count,
                 "hits": int(hits),
@@ -2368,6 +2373,10 @@ class TelemetryStore:
             "preprocessed_query_hit_rate": prep_hit_rate,
             "sessions": self.sessions(days=int(days), limit=max(1, min(int(session_limit), 20))),
             "cache_domains": cache_domains,
+            "cache_reuse_breakdown": {
+                "semantic_hits": semantic_hits,
+                "single_flight_waiters": cache_domains.get("generation", {}).get("coalesced", 0),
+            },
             "http_outcomes": http_outcomes,
             "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),
             "provider_cache_read_tokens": int(provider_cache_read_tokens),

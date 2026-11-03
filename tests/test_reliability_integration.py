@@ -113,7 +113,7 @@ class _FailingRuntime:
         raise RuntimeError("synthetic load failure")
 
 
-def test_model_prepare_failure_fails_queue_and_opens_fast_circuit(tmp_path: Path):
+def test_model_prepare_failure_fails_queue_and_retains_unknown_gpu_reservation(tmp_path: Path):
     config = {
         "scheduler": {
             "max_parallel": 1,
@@ -130,10 +130,12 @@ def test_model_prepare_failure_fails_queue_and_opens_fast_circuit(tmp_path: Path
         result = scheduler.submit("broken", source="test", execute=lambda: {"success": True}, wait_timeout=2)
         assert result["success"] is False
         assert "model preparation failed" in result["error"]
-        with pytest.raises(ModelUnavailableError):
-            scheduler.submit("broken", source="test", execute=lambda: {"success": True}, wait_timeout=1)
+        blocked = scheduler.submit("broken", source="test", execute=lambda: {"success": True}, wait_timeout=1)
+        assert blocked["error_code"] == "gpu_outcome_unknown"
+        assert blocked["outcome_unknown"] is True
+        assert scheduler._model_blocked_until["broken"] > time.monotonic()
         assert scheduler.status()["stats"]["model_switch_failures"] >= 1
-        assert scheduler.status()["stats"]["model_fast_rejections"] >= 1
+        assert scheduler._internal_gpu_uncertain is True
     finally:
         scheduler.close()
 
@@ -717,7 +719,11 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
-    cfg = {"ollama": {"enabled": True}}
+    cfg = {
+        "ollama": {"enabled": True},
+        "hardware": {"profile": "balanced"},
+        "features": {"local_semantic_analysis": True},
+    }
     policy = setup.build_global_policy(cfg)
     expected = (
         "Trigger map:",
@@ -726,7 +732,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         "exact source/evidence text: `local_ai_artifact`",
         "shared findings or overlapping edits: `local_ai_coord`",
         "semantic retrieval after indexed paths are insufficient: `local_ai_rag`",
-        'semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`',
+        'tier-available semantic actions only: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`; deterministic/indexed evidence remains authoritative',
         "Recipe — Explore:",
         "Recipe — Change:",
         "Recipe — Validate:",
@@ -775,10 +781,14 @@ def test_agent_policy_has_default_delegation_triggers():
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
-    cfg = {"ollama": {"enabled": True}}
+    cfg = {
+        "ollama": {"enabled": True},
+        "hardware": {"profile": "balanced"},
+        "features": {"local_semantic_analysis": True},
+    }
     expected = (
         "Direct ownership is the default.",
-        "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression.",
+        "Semantic delegation is on-demand and optional after deterministic/indexed evidence.",
         "Use native Codex subagents only for independent bounded implementation or an explicit user request.",
         "Do not duplicate tasks or chats.",
     )

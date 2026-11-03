@@ -137,3 +137,41 @@ def test_owned_model_rejects_oversized_input_before_pipe_write():
             process.request({"items": "x" * (2 * 1024 * 1024)}, timeout=1)
     finally:
         process.close()
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), True, 301])
+def test_owned_model_rejects_invalid_timeout_before_transport_use(timeout):
+    from local_ai_hub.owned_model import _ModelProcess
+
+    process = _ModelProcess.__new__(_ModelProcess)
+    with pytest.raises(ValueError, match="model timeout"):
+        process.request({"operation": "load"}, timeout=timeout)
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ("{'success': True, 'request_id': 999}", "identity mismatch"),
+        ("{'success': False, 'request_id': 1, 'error': 'worker refused'}", "worker refused"),
+    ],
+)
+def test_owned_model_rejects_bad_worker_response_and_reaps_child(response, message):
+    from local_ai_hub.owned_model import _ModelProcess
+
+    script = f"import json,sys,time;sys.stdin.readline();print(json.dumps({response}),flush=True);time.sleep(30)"
+    process = _ModelProcess([sys.executable, "-u", "-c", script])
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            process.request({"operation": "load"}, timeout=5)
+        assert process.process.poll() is not None
+    finally:
+        process.close()
+
+
+def test_owned_model_rejects_request_after_close():
+    from local_ai_hub.owned_model import _ModelProcess
+
+    process = _ModelProcess([sys.executable, "-u", "-c", "import time;time.sleep(30)"])
+    process.close()
+    with pytest.raises(RuntimeError, match="model process is closed"):
+        process.request({"operation": "load"}, timeout=1)

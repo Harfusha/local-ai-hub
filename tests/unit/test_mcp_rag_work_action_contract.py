@@ -11,7 +11,10 @@ def isolated_mcp_wrappers(monkeypatch):
     monkeypatch.setattr(
         mcp_server,
         "FEATURES",
-        FeatureSet({"features": {"rag": True, "work_orchestrator": True}}),
+        FeatureSet({
+            "hardware": {"profile": "high"},
+            "features": {"rag": True, "work_orchestrator": True, "bounded_local_work": True},
+        }),
     )
     monkeypatch.setattr(mcp_server, "configured_state_dir", lambda *args, **kwargs: ".")
     monkeypatch.setattr(

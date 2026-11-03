@@ -9959,14 +9959,35 @@ def test_{sym}_regression_edge_cases():
         root: str,
         edits: list[dict[str, Any]],
         dry_run: bool = False,
+        *,
+        owned_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Apply multiple surgical string replacements across one or more files atomically with rollback."""
         p_root = Path(self._root(root)).resolve()
         if not edits or not isinstance(edits, list):
             return {"success": False, "error": "edits must be a non-empty list of replacement operations"}
 
-        # 1. Validate edit structures and resolve target files
+        owned_scopes: list[Path] = []
+        for owned_path in owned_paths or []:
+            if not isinstance(owned_path, str) or not owned_path or owned_path != owned_path.strip() or "\x00" in owned_path:
+                return {"success": False, "applied": False, "error": "invalid verified lease path"}
+            scope = (p_root / owned_path).resolve()
+            if not scope.is_relative_to(p_root):
+                return {"success": False, "applied": False, "error": "verified lease path escapes project root"}
+            owned_scopes.append(scope)
+
+        def covered_by_verified_lease(target_path: Path) -> bool:
+            for scope in owned_scopes:
+                try:
+                    target_path.relative_to(scope)
+                    return True
+                except ValueError:
+                    continue
+            return False
+
+        # 1. Validate edit structures, resolve target files, and capture dirty hunks.
         resolved_files: dict[str, Path] = {}
+        dirty_hunks: dict[Path, list[tuple[int, int]] | None] = {}
         for idx, edit in enumerate(edits):
             if not isinstance(edit, dict):
                 return {"success": False, "error": f"edit #{idx} is not an object"}
@@ -9987,15 +10008,42 @@ def test_{sym}_regression_edge_cases():
                     ["git", "-C", str(p_root), "status", "--porcelain", "--", rel_candidate],
                     capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
                 )
-                if status.returncode == 0 and status.stdout.strip():
-                    return {
-                        "success": False,
-                        "applied": False,
-                        "error": f"refusing dirty target file: {p_str}",
-                        "path": p_str,
-                    }
-            except (OSError, subprocess.SubprocessError):
-                pass
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {"success": False, "applied": False, "error": f"unable to inspect Git status for {p_str}: {exc}", "path": p_str}
+            if status.returncode == 0 and status.stdout.strip():
+                if status.stdout.lstrip().startswith(b"??"):
+                    dirty_hunks[p_candidate] = [(1, 2**31 - 1)]
+                else:
+                    try:
+                        diff = subprocess.run(
+                            ["git", "-C", str(p_root), "diff", "--no-ext-diff", "--unified=0", "HEAD", "--", rel_candidate],
+                            capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
+                        )
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        return {"success": False, "applied": False, "error": f"unable to inspect Git diff for {p_str}: {exc}", "path": p_str}
+                    if diff.returncode != 0:
+                        return {"success": False, "applied": False, "error": f"Git diff failed for {p_str}: {diff.stderr.decode('utf-8', errors='replace')[:300]}", "path": p_str}
+                    ranges: list[tuple[int, int]] = []
+                    for diff_line in diff.stdout.decode("utf-8", errors="replace").splitlines():
+                        if not diff_line.startswith("@@") or " +" not in diff_line:
+                            continue
+                        new_range = diff_line.split(" +", 1)[1].split(" ", 1)[0]
+                        start_text, separator, count_text = new_range.partition(",")
+                        try:
+                            start_line = int(start_text)
+                            line_count = int(count_text) if separator else 1
+                        except ValueError:
+                            ranges = [(1, 2**31 - 1)]
+                            break
+                        # A deletion has no current-file line; its insertion point is protected.
+                        first = max(1, start_line)
+                        last = max(first, start_line + line_count - 1)
+                        ranges.append((first, last))
+                    dirty_hunks[p_candidate] = ranges or [(1, 2**31 - 1)]
+            elif status.returncode != 0:
+                stderr = status.stderr.decode("utf-8", errors="replace")
+                if "not a git repository" not in stderr.lower():
+                    return {"success": False, "applied": False, "error": f"Git status failed for {p_str}: {stderr[:300]}", "path": p_str}
             resolved_files[p_str] = p_candidate
 
         # 2. Read and backup all target files in memory
@@ -10030,6 +10078,19 @@ def test_{sym}_regression_edge_cases():
                     "error": f"edit #{idx}: target text found multiple times ({count}) in {p_str}. Must be unique.",
                     "path": p_str,
                 }
+            hunks = dirty_hunks.get(fpath)
+            if hunks is not None:
+                first_line = current_text.count("\n", 0, current_text.find(old_str)) + 1
+                end_offset = current_text.find(old_str) + len(old_str)
+                last_line = first_line + current_text.count("\n", current_text.find(old_str), end_offset)
+                if any(first_line <= dirty_end and last_line >= dirty_start for dirty_start, dirty_end in hunks):
+                    if not covered_by_verified_lease(fpath):
+                        return {
+                            "success": False,
+                            "applied": False,
+                            "error": f"refusing replacement overlapping unowned dirty hunk: {p_str}",
+                            "path": p_str,
+                        }
             file_contents[fpath] = current_text.replace(old_str, new_str, 1)
 
         # 4. Syntax preflight on modified Python files

@@ -35,6 +35,8 @@ def live_client(tmp_path, monkeypatch, request):
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
+        '[hardware]\nprofile = "balanced"\n'
+        '[features]\nlocal_semantic_analysis = true\n'
         '[security]\n'
         'api_token = "sdk-isolated-http-token-long"\n'
         'api_token_permissions = ["read", "write", "admin"]\n'

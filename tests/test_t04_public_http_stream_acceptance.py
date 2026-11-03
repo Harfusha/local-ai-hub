@@ -27,6 +27,7 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         config.write_text(
             f'[server]\nbind="127.0.0.1"\nport={server.server_address[1]}\n'
             f'state_dir="{(tmp_path / "state").as_posix()}"\nmax_stream_duration_seconds=5\n'
+            '[hardware]\nprofile="balanced"\n[features]\nlocal_semantic_analysis=true\n'
             f'[security]\napi_token="{token}"\n'
             f'allowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n',
             encoding="utf-8",

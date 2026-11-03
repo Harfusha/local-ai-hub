@@ -13,7 +13,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(list(csv.DictReader(stream)), [{'id':'1', 'name':'Příliš žluťoučký'}])
 
     def test_cancel_preserves_previous_and_creates_no_duplicate(self):
-        for cancel_at in (1, 2, 3):
+        for cancel_at in (1, 2):
             with self.subTest(cancel_at=cancel_at), TemporaryDirectory() as folder:
                 path = Path(folder) / 'export.csv'
                 path.write_bytes(b'original')

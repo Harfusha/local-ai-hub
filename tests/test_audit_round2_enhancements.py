@@ -70,9 +70,10 @@ def test_swarm_pubsub_publish_appends_to_state_store(tmp_path: Path):
 def test_features_coord_and_task_actions_include_new():
     """A4 & D1: features.py must declare all supported actions."""
     features = FeatureSet({
-        "features": {"tasks": True, "coord": True, "agent_os": True, "repo": True},
         "models": {"fast_code": "dummy"},
         "ollama": {"enabled": True},
+        "hardware": {"profile": "high"},
+        "features": {"tasks": True, "coord": True, "agent_os": True, "repo": True, "local_code_generation": True},
     })
     coord_acts = features.supported_coord_actions()
     assert "task_sync" in coord_acts

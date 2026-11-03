@@ -31,8 +31,10 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp
+from .features import FeatureSet
 from .http_transport import RequestHeadReader
 from .opencode_boundary import path_allowed as _opencode_path_allowed, payload_allowed as _opencode_payload_allowed, scoped_http_request as _opencode_scoped_http_request
+from .operation_contracts import capability_feature_gate, capability_minimum_profile, capability_profile_available
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TOTAL_BUDGET_SECONDS = 1.0
@@ -591,11 +593,15 @@ def _token_matches(supplied: str, expected: str) -> bool:
 
 
 def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    security_settings = config.get("security")
+    if isinstance(security_settings, dict) and "users" in security_settings:
+        raise ValueError("security.users was removed; configuration projection requires canonical settings")
+    serialized_config = json_dumps(config, default=str)
+    config_stamp = hashlib.sha256(serialized_config.encode("utf-8")).hexdigest()
     cached = getattr(_redact_config_secrets, "_cached", None)
-    config_stamp = (id(config), len(config), tuple(sorted(config.keys())))
     if cached is not None and cached[0] == config_stamp:
-        return dict(cached[1])
-    view = json.loads(json_dumps(config, default=str))
+        return json.loads(cached[1])
+    view = json.loads(serialized_config)
     if "_config_path" in view:
         view["_config_path"] = _safe_config_file_label(view["_config_path"])
     if "_runtime_override_path" in view:
@@ -615,9 +621,7 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
         }
     elif action_tokens:
         security["action_tokens"] = "***configured***"
-    if "users" in security:
-        raise ValueError("security.users was removed; configuration projection requires canonical settings")
-    _redact_config_secrets._cached = (config_stamp, view)
+    _redact_config_secrets._cached = (config_stamp, json_dumps(view, default=str))
     return view
 
 
@@ -685,6 +689,82 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
     if path == "/api/agent-state/blackboard" and action in {"get", "list", "read"}:
         return "gaming_read"
     return "gaming_read" if path in HTTP_MODE_GAMING_READ_POST_PATHS else "blocked"
+
+
+def _http_hardware_capability_error(
+    path: str, payload: Mapping[str, Any] | None, config: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Apply the shared hardware ceiling to direct HTTP semantic/write routes."""
+    action_by_path = {
+        "/api/solve/repo": ("local_ai_repo", "solve"),
+        "/api/review/diff": ("local_ai_repo", "review_diff"),
+        "/api/delegate/repo": ("local_ai_repo", "delegate"),
+        "/api/delegate": ("local_ai_task", "delegate"),
+        "/api/reason": ("local_ai_task", "reason"),
+        "/api/review": ("local_ai_task", "review"),
+        "/api/second-opinion": ("local_ai_task", "second_opinion"),
+        "/api/conversations/continue": ("local_ai_task", "continue"),
+        "/api/delegate/batch": ("local_ai_task", "batch"),
+        "/api/task/vision": ("local_ai_task", "vision"),
+        "/api/complete": ("local_ai_task", "complete_code"),
+        "/api/task/scaffold": ("local_ai_task", "scaffold"),
+        "/api/task/speculative_draft": ("local_ai_task", "speculative_draft"),
+        "/api/task/automation": ("local_ai_task", "automation"),
+    }
+    capability = action_by_path.get(path)
+    if path == "/api/async-jobs" and isinstance(payload, Mapping):
+        action = payload.get("action", "submit")
+        if action == "submit":
+            job_action = payload.get("job_action", "")
+            if job_action == "review_diff":
+                capability = ("local_ai_repo", "review_diff")
+            else:
+                capability = ("local_ai_task", job_action if isinstance(job_action, str) and job_action else "submit")
+    if path == "/api/work-orders" and isinstance(payload, Mapping):
+        if payload.get("action", "submit") == "submit":
+            if payload.get("mode") != "bounded":
+                return {
+                    "success": False, "unsupported": True,
+                    "error_code": "bounded_mode_required",
+                    "error": "work-order submit requires mode='bounded'",
+                    "terminal": True, "retryable": False, "status_code": 400,
+                }
+            capability = ("local_ai_work", "submit")
+    if capability is None:
+        return None
+    effective = (config or {}).get("_hardware", {})
+    hardware = effective if isinstance(effective, Mapping) and "profile" in effective else (config or {}).get("hardware", {})
+    profile = hardware.get("profile", "low") if isinstance(hardware, Mapping) else "low"
+    minimum = capability_minimum_profile(*capability)
+    requirement = f"the {minimum} profile or higher"
+    if minimum == "high":
+        requirement = "the high or max hardware profile"
+    if not capability_profile_available(profile, minimum):
+        return {
+            "success": False,
+            "unsupported": True,
+            "status_code": 403,
+            "error_code": "hardware_profile_too_low",
+            "error": f"{capability[0]} action '{capability[1]}' requires {requirement}",
+            "hardware_profile": profile if isinstance(profile, str) else "low",
+            "minimum_profile": minimum,
+            "terminal": True,
+            "retryable": False,
+        }
+    required_feature = capability_feature_gate(*capability)
+    features = (config or {}).get("features", {})
+    if required_feature and (not isinstance(features, Mapping) or features.get(required_feature) is not True):
+        return {
+            "success": False,
+            "unsupported": True,
+            "status_code": 403,
+            "error_code": "capability_feature_disabled",
+            "error": f"{capability[0]} action '{capability[1]}' requires features.{required_feature}=true",
+            "required_feature": required_feature,
+            "terminal": True,
+            "retryable": False,
+        }
+    return None
 
 
 def _operational_mode_api() -> Any:
@@ -2714,7 +2794,8 @@ class Handler(BaseHTTPRequestHandler):
         if auth.lower().startswith("bearer "):
             supplied = auth[7:].strip()
         global_valid = _token_matches(supplied, expected)
-        profile_valid = self._opencode_profile_credential()
+        profile_credential = getattr(self, "_opencode_profile_credential", None)
+        profile_valid = bool(profile_credential()) if callable(profile_credential) else False
         supervisor_valid = _token_matches(supplied, supervisor_token)
         scoped = str(action_tokens.get(action, "")) if action else ""
         scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
@@ -6038,6 +6119,13 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(status, mode_rejection)
             return
+        hardware_rejection = _http_hardware_capability_error(
+            path, payload if isinstance(payload, Mapping) else None,
+            getattr(APP, "config", {}),
+        )
+        if hardware_rejection is not None:
+            self._send(int(hardware_rejection.get("status_code", 403)), hardware_rejection)
+            return
         allowed_agent_state_post = {
             "/api/agent-state/memory",
             "/api/agent-state/tasks",
@@ -7919,7 +8007,14 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 edits = payload.get("edits") or payload.get("replacements") or []
                 dry_run = bool(payload.get("dry_run", False))
-                self._send(200, APP.services.batch_replace(root, edits if isinstance(edits, list) else [], dry_run=dry_run))
+                self._send(200, APP.services.batch_replace(
+                    root,
+                    edits if isinstance(edits, list) else [],
+                    dry_run=dry_run,
+                    owner=payload.get("owner"),
+                    lease_id=payload.get("lease_id"),
+                    lease_store=APP.leases,
+                ))
                 return
             if 'post_maintenance_optimize_db_1' in post_route_ids:
                 self._send(200, APP.services.optimize_databases())
@@ -8495,7 +8590,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not workspace:
                     self._send(400, {"success": False, "error": "workspace is required"}); return
                 APP.rag.require_workspace_root(workspace=workspace, root=payload["root"])
-                self._send(200, APP.rag.search(str(payload.get("query", "")), workspace=workspace, top_k=int(payload.get("top_k", 8)), use_reranker=bool(payload.get("use_reranker", True)))); return
+                try:
+                    reranking_available = FeatureSet(APP.config).capability_status().get("reranking", {}).get("available") is True
+                except Exception:
+                    reranking_available = False
+                use_reranker = payload.get("use_reranker") is True and reranking_available
+                self._send(200, APP.rag.search(str(payload.get("query", "")), workspace=workspace, top_k=int(payload.get("top_k", 8)), use_reranker=use_reranker)); return
             if 'post_speculative_draft_1' in post_route_ids:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
                 if connection is not None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -111,6 +112,114 @@ def test_benchmark_runner_does_not_treat_error_response_as_success(tmp_path: Pat
     assert result["model"] == "qwen3.5:9b"
     assert "404" in result["error"]
     assert not (tmp_path / "benchmarks.json").exists()
+
+
+def test_hardware_benchmark_uses_scheduler_for_model_preparation(tmp_path: Path) -> None:
+    class Runtime:
+        def generate_stream(self, model, prompt, options=None):
+            assert model == "candidate"
+            assert options == {"num_predict": 2, "think": False}
+            yield {"response": "ok", "eval_count": 2, "eval_duration": 1_000_000}
+
+    class Scheduler:
+        def __init__(self):
+            self.calls = []
+
+        def submit(self, model, *, source, execute, priority, wait_timeout):
+            self.calls.append((model, source, priority, wait_timeout))
+            result = execute()
+            result["_lah_scheduler_queue_wait_ms"] = 12.5
+            return result
+
+    scheduler = Scheduler()
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=scheduler,
+        config={"server": {"request_timeout_seconds": 8}},
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is True
+    assert scheduler.calls == [("candidate", "benchmark", 2, 8.0)]
+    assert result["queue_wait_ms"] == 12.5
+
+
+def test_managed_mixed_backend_benchmark_fails_closed_without_scheduler(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("benchmark must not bypass managed model preparation")
+
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=benchmarks_file,
+        runtime=Runtime(),
+        config={"llama_cpp": {"managed_with_ollama": True}},
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is False
+    assert "Scheduler required" in result["error"]
+    assert not benchmarks_file.exists()
+
+
+def test_hardware_benchmark_preserves_scheduler_admission_failure(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("rejected benchmark must not reach inference")
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            return {"success": False, "error": "model preparation required",
+                    "error_code": "model_preparation_required", "operation_not_started": True}
+
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=benchmarks_file,
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is False
+    assert result["error_code"] == "model_preparation_required"
+    assert result["operation_not_started"] is True
+    assert not benchmarks_file.exists()
+
+
+def test_hardware_benchmark_reports_peak_device_vram_during_generation(tmp_path: Path) -> None:
+    class Balancer:
+        def __init__(self):
+            self.samples = 0
+            self.sampled_twice = threading.Event()
+
+        def sample_vram(self):
+            self.samples += 1
+            if self.samples >= 3:
+                self.sampled_twice.set()
+            used = {1: 80, 2: 100, 3: 110}.get(self.samples, 90)
+            return {"vram_used_mb": used, "vram_total_mb": 16303}
+
+    class Runtime:
+        def generate_stream(self, model, prompt, options=None):
+            assert balancer.sampled_twice.wait(1.0)
+            yield {"response": "ok", "eval_count": 2, "eval_duration": 1_000_000}
+
+    balancer = Balancer()
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        vram_balancer=balancer,
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is True
+    assert result["peak_vram_bytes"] == 110 * 1024 * 1024
+    assert result["peak_vram_scope"] == "device_wide_sampled_during_inference"
 
 
 def test_benchmark_runner_reports_insufficient_sample_for_one_token_output(tmp_path: Path) -> None:

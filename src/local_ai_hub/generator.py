@@ -99,14 +99,26 @@ def _model_capability_guidance(cfg: dict[str, Any]) -> str:
 
 
 def _semantic_handoff_contract(fs: FeatureSet) -> str:
+    semantic_actions = (
+        {"delegate", "review"} if fs is None else
+        set(fs.supported_task_actions()) & {"delegate", "explore", "reason", "review", "second_opinion", "compress"}
+    )
+    selector = "|".join(
+        f'"{action}"' for action in ("delegate", "explore", "reason", "review", "second_opinion", "compress")
+        if action in semantic_actions
+    )
+    actionable_guidance = (
+        ' For non-trivial edits, request evidence-grounded local test suggestions and review the diff using `local_ai_task(action="review")` when suitable; use `local_ai_task(action="delegate")` for test suggestions.'
+        if {"delegate", "review"} <= semantic_actions
+        else " Local semantic actions may be unavailable at this profile."
+    )
     return (
-        "Semantic delegation is on-demand: after deterministic/indexed evidence, use `local_ai_task` "
-        "selectively for bounded generation, review, independent second opinions, test-log compression, "
-        "commit message generation, and drafting where helpful. Cloud reasoning and planning are never "
-        "blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact "
-        "facts, symbols, diff and tests. For non-trivial edits, request evidence-grounded local test suggestions and review the diff "
-        "using `local_ai_task(action=\"review\")` when a suitable local backend is available; use `local_ai_task(action=\"delegate\")` for test suggestions. Verify findings against source and tests. "
-        "Skip when unavailable, unsuitable or restricted, and continue with the primary agent."
+        "Semantic delegation is on-demand and optional after deterministic/indexed evidence. "
+        + (f"This profile advertises `local_ai_task(action={selector})`; " if selector else "No semantic task action is advertised at this profile; ")
+        + "cloud planning is never blocked by mandatory local handoffs. "
+        "Deterministic/indexed evidence is authoritative; the primary agent accepts."
+        + actionable_guidance
+        + " Actions unavailable under this profile are omitted."
     )
 
 
@@ -180,7 +192,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     # Delegation section
     if fs.tasks and fs.has_any_model():
         delegation_task = (
-            f"- Semantic delegation is on-demand: after deterministic/indexed evidence, {_semantic_handoff_contract(fs)} Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
+            f"- {_semantic_handoff_contract(fs)}"
             " Follow the active hardware profile and user overrides; verify model availability and select autonomy by task risk and measured quality."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
         )
@@ -190,9 +202,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
 
     work_delegation = ""
-    if fs.work_orchestrator:
+    if fs.work_orchestrator and "submit" in fs.supported_work_actions():
         work_delegation = (
-            '- `local_ai_work`: only for explicitly requested closed delegation; when profile `high` is active and task/model quality is evaluated, use bounded mode for suitable small tasks with exact allowed files, approved commands, explicit permissions, time budget and acceptance criteria. On Windows, bounded patch parent directories must already exist. A patch targeting mixed LF and CRLF within a single file fails visibly. The primary agent reviews the diff, test results and integration. For an order owned by the responding process, timed_out=true with in_progress=true is not a terminal result or permission to retry; cancellation is cooperative and another process may not observe the deadline. Treat output_truncated=true as an incomplete failure, not a usable patch. For `local_ai_coord` claim or release, omit the budget or use max_response_tokens >= 512; a smaller explicit budget rejects before mutation.'
+            '- `local_ai_work`: only for explicitly requested closed delegation after `features.bounded_local_work=true` and task/model quality evaluation; use `mode="bounded"` for suitable small tasks with exact allowed files, approved commands, explicit permissions, time budget and acceptance criteria. On Windows, bounded patch parent directories must already exist. A patch targeting mixed LF and CRLF within a single file fails visibly. The primary agent reviews the diff, test results and integration. For an order owned by the responding process, timed_out=true with in_progress=true is not a terminal result or permission to retry; cancellation is cooperative and another process may not observe the deadline. Treat output_truncated=true as an incomplete failure, not a usable patch. For `local_ai_coord` claim or release, omit the budget or use max_response_tokens >= 512; a smaller explicit budget rejects before mutation.'
         )
     work_owner_note = "The main agent owns task scope, permissions, diff and test review, and final integration. Never infer tool execution or test success from model prose; verify actual tool results or traces. Missing provenance is unknown."
     # Ownership & tiering bullets
@@ -254,7 +266,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         "Reuse fresh sufficient evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
     ]
     step_num = 2
-    if fs.repo:
+    if fs.repo and "solve" in fs.supported_repo_actions():
         repo_gate_lines.append(
             f'{step_num}. For non-trivial implementation or review without sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once with a stable absolute project root.'
             + (
@@ -289,18 +301,32 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         if fs.has_semantic():
             routing_lines.append(f'{r_idx}. `local_ai_repo(action="{fs.semantic_hint()}")` — language-aware relationships via Serena and AST code index.')
             r_idx += 1
-        routing_lines.append(f'{r_idx}. `local_ai_repo(action="context"|"solve")` — compact mixed evidence or bounded repository reasoning.')
+        context_actions = {"context", "solve"} & set(fs.supported_repo_actions())
+        if context_actions:
+            selector = "|".join(action for action in ("context", "solve") if action in context_actions)
+            routing_lines.append(f'{r_idx}. `local_ai_repo(action="{selector}")` — compact mixed evidence or bounded repository reasoning.')
+            r_idx += 1
+        review_actions = {"review_diff", "security_audit", "impact"} & set(fs.supported_repo_actions())
+        if review_actions:
+            selector = "|".join(action for action in ("review_diff", "security_audit", "impact") if action in review_actions)
+            routing_lines.append(f'{r_idx}. `local_ai_repo(action="{selector}")` — targeted checks after or around edits.')
+            r_idx += 1
         r_idx += 1
-        routing_lines.append(f'{r_idx}. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.')
-        r_idx += 1
-    if fs.work_orchestrator:
-        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit", mode="bounded")` — only for explicitly requested closed delegation after task/model quality evaluation; the primary agent reviews the diff, tests and integration.')
+    if fs.work_orchestrator and "submit" in fs.supported_work_actions():
+        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit", mode="bounded")` — only after features.bounded_local_work=true, explicit closed delegation and task/model quality evaluation; the primary agent reviews the diff, tests and integration.')
         r_idx += 1
     if fs.rag:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests. Specialized operations use the shared evidence-grounded prompt contract; weak output remains advisory with a warning.{_model_capability_guidance(cfg)}')
+        semantic_actions = set(fs.supported_task_actions()) & {
+            "delegate", "explore", "reason", "review", "second_opinion", "compress"
+        }
+        selector = "|".join(f'"{action}"' for action in (
+            "delegate", "explore", "reason", "review", "second_opinion", "compress"
+        ) if action in semantic_actions)
+        if selector:
+            routing_lines.append(f'{r_idx}. `local_ai_task(action={selector})` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests. Specialized operations use the shared evidence-grounded prompt contract; weak output remains advisory with a warning.{_model_capability_guidance(cfg)}')
         r_idx += 1
     if fs.artifacts:
         routing_lines.append(f'{r_idx}. `local_ai_artifact` — exact evidence/artifact slices only.')
@@ -526,12 +552,30 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     # tools.md
     tool_bullets: list[str] = []
     if fs.repo:
+        repo_actions = set(fs.supported_repo_actions())
         semantic_note = f", {fs.semantic_hint()}" if fs.has_semantic() else ""
-        tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}, context/solve" + (", preprocess" if fs.preprocessing else "") + ", impact, `review_diff`, `security_audit`, patch validation and repository checks.")
-    if fs.work_orchestrator:
-        tool_bullets.append("- `local_ai_work`: bounded implementation for explicit closed delegation with an active qualified high profile, caller-defined scope, permissions and limits; primary-agent review and integration remain required.")
+        analysis_note = ", context" + ("/solve" if "solve" in repo_actions else "")
+        review_note = ", review_diff" if "review_diff" in repo_actions else ""
+        tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}{analysis_note}" + (", preprocess" if fs.preprocessing else "") + ", impact" + review_note + ", security_audit, patch validation and repository checks.")
+    if fs.work_orchestrator and "submit" in fs.supported_work_actions():
+        tool_bullets.append("- `local_ai_work`: bounded implementation for explicit closed delegation after `features.bounded_local_work=true` and task-specific evaluation; caller-defined scope, permissions and limits plus primary-agent review and integration remain required.")
     if fs.tasks and fs.has_any_model():
-        tool_bullets.append("- `local_ai_task`: local-model semantic generation, reasoning, review, independent second opinions and compression; follow the active profile and user overrides and verify availability. Use deterministic/indexed tools for exact facts, symbols, diff and tests. `local_ai_repo(action=\"solve\")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.")
+        task_actions = fs.supported_task_actions()
+        if task_actions:
+            task_action_set = set(task_actions)
+            task_labels = []
+            if task_action_set & {"delegate", "explore", "reason"}:
+                task_labels.append("semantic generation")
+            if "review" in task_action_set:
+                task_labels.append("review")
+            if "second_opinion" in task_action_set:
+                task_labels.append("independent second opinions")
+            if "compress" in task_action_set:
+                task_labels.append("semantic compression")
+            label_note = ", including " + ", ".join(task_labels) if task_labels else ""
+            tool_bullets.append(f"- `local_ai_task`: exposed local actions ({'|'.join(task_actions)}){label_note}; follow the active profile and verify model availability. Use deterministic/indexed tools for exact facts, symbols, diff and tests.")
+    if fs.repo and "solve" in fs.supported_repo_actions():
+        tool_bullets.append("- `local_ai_repo(action=\"solve\")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.")
     if fs.rag:
         tool_bullets.append("- `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.")
     if fs.artifacts:
@@ -605,7 +649,7 @@ Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. I
 Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_artifact` for exact lines. Reuse cache/coalesced results, do not duplicate `in_progress` work, and make one bounded fallback when the hub is unavailable.
 """
     whole_task = ""
-    if fs.work_orchestrator:
+    if fs.work_orchestrator and "submit" in fs.supported_work_actions():
         whole_task = """
 ## Whole-task handoff
 
@@ -659,7 +703,7 @@ For an opted-in validation failure with `local_handoff`, inspect the referenced 
         else "Local AI Hub operates in deterministic/indexed mode (local inference disabled)"
     )
     agent_os_multi_agent_note = " Agent OS through `local_ai_coord` handles non-trivial multi-step, long-running, delegated, or acceptance-criteria work: create a task contract, checkpoint phases, and verify receipts before completion." if fs.agent_os else ""
-    whole_task_multi_agent_note = " For explicitly requested closed whole-task delegation, use `local_ai_work`; routine planning and integration stay with the main agent." if fs.work_orchestrator else ""
+    whole_task_multi_agent_note = " For explicitly requested closed whole-task delegation, use `local_ai_work`; routine planning and integration stay with the main agent." if (fs.work_orchestrator and "submit" in fs.supported_work_actions()) else ""
     coord_tools_guidance = ""
     if fs.coord:
         coord_tools_guidance = """
@@ -705,12 +749,20 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic delegation is on-demand and optional. "
-            "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, "
-            "and semantic compression. Use it only when an approved backend is available. Cloud reasoning and planning "
-            "are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact "
-            "facts, symbols, diff and tests. Local model routes follow the active hardware profile and user overrides; verify model availability before inference."
+            "\n- " + _semantic_handoff_contract(fs) + " Cloud planning is never blocked by mandatory local handoffs; deterministic/indexed "
+            "evidence governs facts, symbols, diffs and tests. Check model availability."
         )
+    if fs.work_orchestrator:
+        if "submit" in fs.supported_work_actions():
+            task_delegation += (
+                '\n- `local_ai_work(action="submit", mode="bounded")` is available on `high`/`max` only '
+                "after `features.bounded_local_work=true`, task-specific quality evaluation and explicit scope/permission checks; review its diff and tests."
+            )
+        else:
+            task_delegation += (
+                "\n- `local_ai_work` is limited to status, wait, get and cancel on this hardware profile; "
+                "new submissions remain disabled by the active profile or release gate."
+            )
 
     model_default = ""
     if fs.tasks and fs.has_any_model():
@@ -728,15 +780,17 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     if fs.repo:
         cmd_gate = " Use bounded host-native validation commands after fresh repository evidence exists."
         agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
-        task_review_hint = ' Actively use `local_ai_task(action="review"|"second_opinion")` for validation before finalizing.' if (fs.tasks and fs.has_any_model()) else ""
+        review_actions = {"review", "second_opinion"} & set(fs.supported_task_actions())
+        review_action_text = "|".join(sorted(review_actions))
+        task_review_hint = f' Actively use `local_ai_task(action="{review_action_text}")` for validation before finalizing.' if review_actions else ""
         repo_task_first = (
-            "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For simple facts use one focused `context`; for known names use `search` or `code_index`, compact by default. Avoid broad searches; inspect only exact candidates."
+            "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
             " For substantial work without fresh evidence, use adaptive `context` once with a stable root."
             + (' On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
-            ' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence'
-            f" and before native edits.{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
+            + (f' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
+            + f"{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
         )
 
     cmd_route_hint = "\nRun bounded validation commands with the agent host native command tool.\n"
@@ -756,17 +810,20 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
     )
     if fs.repo:
+        repo_action_list = [action for action in ("solve", "context", "search", "code_index", "review_diff", "security_audit") if action in fs.supported_repo_actions()]
         prioritization_bullets.append(
-            "> - **Repository & Code Search**: Call `local_ai_repo(action=\"solve\"|\"context\"|\"search\"|\"code_index\"|\"review_diff\"|\"security_audit\", root=\"...\")`. DO NOT use broad native discovery (`find`, `dir /s`, unconstrained `rg`, glob) or dump entire files."
+            "> - **Repository & Code Search**: Call an action advertised by the current local_ai_repo MCP schema with the project root. DO NOT use broad native discovery (find, dir /s, unconstrained rg, glob) or dump entire files."
         )
     if fs.agent_os or fs.coord:
         prioritization_bullets.append(
             "> - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...)`. Proactively initialize task contracts, query memory, and record findings."
         )
     if fs.tasks and fs.has_any_model():
-        prioritization_bullets.append(
-            "> - **Semantic Review & Second Opinion**: Actively call `local_ai_task(action=\"review\"|\"second_opinion\"|\"compress\")` before finalizing non-trivial edits."
-        )
+        task_action_list = [action for action in ("review", "second_opinion", "compress") if action in fs.supported_task_actions()]
+        if task_action_list:
+            prioritization_bullets.append(
+                f"> - **Semantic Review & Second Opinion**: Call `local_ai_task(action=\"{'|'.join(task_action_list)}\")` before finalizing non-trivial edits."
+            )
     prioritization_bullets.append(
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
@@ -830,6 +887,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.\n\n"
         + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
            "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "
+           "Non-overlapping dirty Git hunks may be preserved; overlapping edits require an active path lease claimed with the actual execution owner, then pass its exact `owner` and returned `lease_id`. "
            "The engine preflights all edits, rolls back write failures, and performs no auto-commit. "
            "Set `dry_run=false` only after review.\n\n" if fs.repo and fs.batch_replacement else "")
         + f"{fs.selection_guide()}\n"
@@ -1183,20 +1241,31 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
     """Generate high-priority instructions for Gemini / Antigravity MCP directory."""
-    return """# Local AI Hub MCP Instructions for Antigravity & Gemini
-
-Prioritize `local-ai` tools over native commands and raw file reading:
-- **Run commands, tests, lint, builds**: Use the agent host native command tool for bounded checks in the target repository.
-- **Search code & repository facts**: Call `local_ai_repo(action="search"|"code_index"|"context"|"solve", root="...")`. Avoid unconstrained directory dumping.
-- **Semantic code review & second opinions**: Call `local_ai_task(action="review"|"second_opinion"|"compress")`.
-- **Agent OS Lifecycle & durable memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion")`.
-- **Exact file slices & artifacts**: Call `local_ai_artifact(action="slice", path="...", line_start=..., line_end=...)`.
-
-When calling via `call_mcp_tool` (if tools are lazily loaded):
-- `ServerName`: "local-ai"
-- `ToolName`: exact tool name (e.g. "local_ai_repo")
-- `Arguments`: parameter dictionary (e.g. `{"action": "search", "query": "symbol", "root": "/absolute/project"}`)
-"""
+    fs = FeatureSet.from_config(cfg or {})
+    repo_actions = [action for action in ("search", "code_index", "context", "solve") if action in fs.supported_repo_actions()]
+    task_actions = [action for action in ("review", "second_opinion", "compress") if action in fs.supported_task_actions()]
+    lines = [
+        "# Local AI Hub MCP Instructions for Antigravity & Gemini",
+        "",
+        "Prioritize local-ai tools over native commands and raw file reading:",
+        "- **Run commands, tests, lint, builds**: Use the agent host native command tool for bounded checks in the target repository.",
+    ]
+    if repo_actions:
+        lines.append(f"- **Search code & repository facts**: Call an advertised local_ai_repo action ({'|'.join(repo_actions)}) with the project root. Avoid unconstrained directory dumping.")
+    if task_actions:
+        lines.append(f"- **Semantic code review & second opinions**: Call exposed local_ai_task actions ({'|'.join(task_actions)}).")
+    if fs.agent_os or fs.coord:
+        lines.append("- **Agent OS Lifecycle & durable memory**: Call local_ai_coord task, checkpoint and memory actions available in the current schema.")
+    if fs.artifacts:
+        lines.append("- **Exact file slices & artifacts**: Call local_ai_artifact actions available in the current schema.")
+    lines.extend([
+        "",
+        "When calling via call_mcp_tool (if tools are lazily loaded):",
+        '- ServerName: "local-ai"',
+        "- ToolName: exact tool name (e.g. local_ai_repo)",
+        '- Arguments: parameter dictionary (e.g. {"action": "search", "query": "symbol", "root": "/absolute/project"})',
+    ])
+    return "\n".join(lines) + "\n"
 
 def write_all_generated(
     cfg: dict[str, Any],

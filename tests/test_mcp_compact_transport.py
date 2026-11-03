@@ -14,6 +14,14 @@ import mcp.types as t
 from local_ai_hub.token_accounting import json_tokens
 
 
+@pytest.fixture(autouse=True)
+def qualified_semantic_actions(monkeypatch):
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+
 def test_plan_binding_recovery_state_survives_small_response_budget():
     token = local_ai_mcp._CURRENT_RESPONSE_OPTIONS.set({
         "max_response_tokens": 128, "response_profile": "minimal", "action": "plan_bind_task",
@@ -218,6 +226,8 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     config_path = tmp_path / "autostart.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {port}\nstate_dir = "{state_dir}"\n'
+        '[hardware]\nprofile = "balanced"\n'
+        '[features]\nlocal_semantic_analysis = true\n'
         "[client]\nstartup_wait_seconds = 15\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.2\n",
         encoding="utf-8",
     )

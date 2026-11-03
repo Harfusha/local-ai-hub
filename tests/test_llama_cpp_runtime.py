@@ -21,6 +21,26 @@ from local_ai_hub.llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_bac
 
 class LlamaCppRuntimeTests(unittest.TestCase):
     def _prepared_fallback(self, runtime):
+        port, _ = runtime.llama_cpp_managed._port_and_url()
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", port))
+            probe.close()
+        except OSError:
+            probe.close()
+            free_probe = socket.socket()
+            free_probe.bind(("127.0.0.1", 0))
+            free_port = free_probe.getsockname()[1]
+            free_probe.close()
+            port_patch = patch.object(
+                runtime.llama_cpp_managed,
+                "_port_and_url",
+                return_value=(free_port, f"http://127.0.0.1:{free_port}"),
+            )
+            port_patch.start()
+            self.addCleanup(port_patch.stop)
+            if "candidate" in runtime.config.get("llama_cpp", {}).get("models", {}):
+                runtime.config["llama_cpp"]["models"]["candidate"]["url"] = f"http://127.0.0.1:{free_port}"
         guard = runtime._reserve_mixed_cuda_endpoint()
         self.assertIsNotNone(guard)
         runtime._mixed_fallback_guard = guard
@@ -121,12 +141,16 @@ class LlamaCppRuntimeTests(unittest.TestCase):
 
         for fallback, expected in ((True, "ollama"), (False, "error")):
             with self.subTest(fallback=fallback), tempfile.TemporaryDirectory() as temp:
+                probe = socket.socket()
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+                probe.close()
                 runtime = OllamaRuntime({
                     "server": {"state_dir": temp, "ollama_url": "http://127.0.0.1:11434"},
                     "ollama": {"enabled": True, "request_attempts": 1},
                     "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True,
                                   "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
-                                  "fallback_to_ollama": fallback, "models": {"candidate": {"url": "http://127.0.0.1:12438"}}},
+                                  "fallback_to_ollama": fallback, "models": {"candidate": {"url": f"http://127.0.0.1:{port}"}}},
                 })
                 runtime.llama_cpp = SimpleNamespace(request_stream=lambda *args, **kwargs: None)
                 if fallback:

@@ -25,6 +25,23 @@ def test_admin_authorization_rejects_explicit_audit_queue_rejection(monkeypatch)
     assert handler.responses == [(503, {"success": False, "error": "admin audit unavailable", "retryable": True})]
 
 
+def test_authorization_rejects_malformed_security_configuration(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": "invalid"}))
+    handler = _handler("/api/config/update", "admin-token-long-enough")
+
+    assert handler._authorized() is False
+
+
+def test_authorization_rejects_duplicate_configured_credentials(monkeypatch):
+    token = "admin-token-long-enough"
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
+        "api_token": token, "supervisor_token": token,
+    }}))
+    handler = _handler("/api/config/update", token)
+
+    assert handler._authorized() is False
+
+
 def test_authorized_status_read_survives_disabled_audit_transport(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {"api_token": "admin-token-long-enough"}},

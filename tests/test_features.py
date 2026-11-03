@@ -18,8 +18,8 @@ from local_ai_hub.features import FeatureSet
 
 
 class TestFeatureSetDefaults:
-    def test_unconfigured_model_backend_is_off(self):
-        fs = FeatureSet({})
+    def test_explicitly_disabled_model_backend_is_off(self):
+        fs = FeatureSet({"ollama": {"enabled": False}})
         assert fs.serena is True
         assert not hasattr(fs, "codegraph")
         assert fs.rag is True
@@ -40,6 +40,93 @@ class TestFeatureSetDefaults:
 
     def test_has_any_model_true_when_ollama_on(self):
         assert FeatureSet({"ollama": {"enabled": True}}).has_any_model() is True
+
+
+@pytest.mark.parametrize(
+    ("profile", "can_submit"),
+    [("cpu", False), ("integrated", False), ("low", False), ("balanced", False), ("high", True), ("max", True)],
+)
+def test_bounded_work_submit_action_respects_hardware_profile(profile, can_submit):
+    fs = FeatureSet({"features": {"bounded_local_work": True}, "hardware": {"profile": profile}})
+
+    assert ("submit" in fs.supported_work_actions()) is can_submit
+
+
+def test_hardware_capabilities_use_detected_effective_profile():
+    fs = FeatureSet({"features": {"bounded_local_work": True}, "hardware": {"profile": "auto"}, "_hardware": {"profile": "high"}})
+
+    assert fs.hardware_profile == "high"
+    assert "submit" in fs.supported_work_actions()
+
+
+def test_search_summary_capability_starts_at_balanced():
+    low = FeatureSet({"features": {"search_summaries": True}, "hardware": {"profile": "low"}})
+    balanced = FeatureSet({"features": {"search_summaries": True}, "hardware": {"profile": "balanced"}})
+    opt_out = FeatureSet({"hardware": {"profile": "balanced"}})
+
+    assert low.search_summaries is False
+    assert balanced.search_summaries is True
+    assert opt_out.search_summaries is False
+    assert not any("summarize_results" in line for line in low.specialized_trigger_lines())
+    assert any("summarize_results" in line for line in balanced.specialized_trigger_lines())
+
+
+def test_local_task_actions_follow_hardware_tiers_and_unknown_fails_closed():
+    low = FeatureSet({"hardware": {"profile": "low"}}).supported_task_actions()
+    balanced = FeatureSet({"features": {"local_semantic_analysis": True}, "hardware": {"profile": "balanced"}}).supported_task_actions()
+    high = FeatureSet({"features": {"local_semantic_analysis": True, "local_vision": True, "local_code_generation": True, "local_automation": True}, "hardware": {"profile": "high"}}).supported_task_actions()
+    unknown = FeatureSet({"hardware": {"profile": "mystery"}})
+
+    assert "compress" in low
+    assert {"reason", "review", "second_opinion"}.isdisjoint(low)
+    assert {"reason", "review", "second_opinion"}.issubset(balanced)
+    assert "vision" not in balanced and "vision" in high
+    assert "automation" in high
+    assert "scaffold" not in balanced and "scaffold" in high
+    assert unknown.hardware_profile == "low"
+
+
+def test_capability_status_reports_profile_ceiling_and_non_quality_gates():
+    low = FeatureSet({"features": {"search_summaries": True}, "hardware": {"profile": "low"}}).capability_status()
+    balanced = FeatureSet({"features": {"search_summaries": True, "local_semantic_analysis": True}, "hardware": {"profile": "balanced"}}).capability_status()
+    high = FeatureSet({"features": {"bounded_local_work": True}, "hardware": {"profile": "high"}}).capability_status()
+
+    assert low["search_summaries"]["available"] is False
+    assert low["search_summaries"]["minimum_profile"] == "balanced"
+    assert low["search_summaries"]["reason"] == "requires_balanced_profile"
+    assert low["search_summaries"]["state"] == "profile_blocked"
+    assert low["search_summaries"]["authority"] == "advisory"
+    assert low["search_summaries"]["quality_gate"] == "not_qualified_by_default"
+    assert balanced["search_summaries"]["available"] is True
+    assert balanced["semantic_analysis"]["available"] is True
+    assert balanced["semantic_analysis"]["state"] == "enabled_by_operator"
+    assert balanced["semantic_analysis"]["provider_readiness"] == "not_checked"
+    assert balanced["semantic_analysis"]["feature_gate"] == "local_semantic_analysis"
+    assert balanced["bounded_local_work"]["reason"] == "requires_high_profile"
+    assert high["bounded_local_work"]["available"] is True
+    assert high["bounded_local_work"]["reason"] == "task_quality_and_explicit_permissions_required"
+
+
+def test_repository_semantic_actions_use_shared_tier_registry():
+    low = FeatureSet({"hardware": {"profile": "low"}}).supported_repo_actions()
+    balanced = FeatureSet({"features": {"local_semantic_analysis": True}, "hardware": {"profile": "balanced"}}).supported_repo_actions()
+    high = FeatureSet({"features": {"local_semantic_analysis": True}, "hardware": {"profile": "high"}}).supported_repo_actions()
+
+    assert {"investigate", "diagnose"}.issubset(low)
+    assert {"delegate", "review_diff", "solve"}.isdisjoint(low)
+    assert "review_diff" in balanced
+    assert "delegate" in balanced
+    assert "solve" not in balanced
+    assert "solve" in high
+
+
+def test_high_profile_does_not_promote_unqualified_capabilities():
+    fs = FeatureSet({"hardware": {"profile": "high"}})
+
+    assert {"reason", "review", "vision", "complete_code", "scaffold", "automation"}.isdisjoint(fs.supported_task_actions())
+    assert {"review_diff", "solve"}.isdisjoint(fs.supported_repo_actions())
+    assert "submit" not in fs.supported_work_actions()
+    assert fs.capability_status()["semantic_analysis"]["state"] == "feature_disabled"
 
 
 class TestVisionConfig:
@@ -188,8 +275,28 @@ class TestBuildGlobalPolicy:
         assert "check installed models before inference" in policy
 
     def test_task_absent_when_ollama_off(self):
-        cfg = {"server": {"auto_start_ollama": False}}
-        assert "local_ai_task" not in self.build(cfg)
+        cfg = {"ollama": {"enabled": False}, "server": {"auto_start_ollama": False}}
+        assert "Semantic delegation is on-demand and optional" not in self.build(cfg)
+
+    def test_work_submission_guidance_is_high_tier_only(self):
+        base = {
+            "ollama": {"enabled": True},
+            "commands": {"enabled": True},
+            "coord": {"enabled": True},
+            "work_orchestrator": {"enabled": True},
+        }
+        low = self.build({**base, "hardware": {"profile": "balanced"}})
+        high = self.build({**base, "features": {"bounded_local_work": True}, "hardware": {"profile": "high"}})
+
+        assert 'local_ai_work(action="submit"' not in low
+        assert 'local_ai_work(action="submit"' in high
+
+    def test_search_summary_guidance_is_profile_aware(self):
+        low = self.build({"hardware": {"profile": "low"}})
+        balanced = self.build({"features": {"search_summaries": True}, "hardware": {"profile": "balanced"}})
+
+        assert "summarize_results" not in low
+        assert "summarize_results" in balanced
 
 
 class TestRoutingEngineConfigModel:

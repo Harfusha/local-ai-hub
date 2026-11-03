@@ -209,3 +209,29 @@ from pathlib import Path
 def test_panel_exists():
     assert 'id="panel"' in Path("index.html").read_text(encoding="utf-8")
 ```
+
+## A1 — Find a cross-file unit mismatch
+
+Prepare a fresh fixture with `python tools/prepare_local_model_eval_fixture.py
+--case A1 --destination ABS_NEW_PATH`. Run the read-only repository solve
+against that fixture with this task: “Trace `checkout` into its pricing helper.
+Report only behavior supported by the files. Cite file, line and returned
+evidence ID. Explain the unit mismatch and compare the current 22,000-cent
+result with the intended 1,210-cent result for a 1,000-cent subtotal at 21
+percent. Do not edit files or claim tests were run.” The expected
+facts are in `src/checkout.py:3-5` and `src/pricing.py:1-4`.
+
+## A2 — Design retry-safe delivery
+
+Prepare a separate fresh fixture with `--case A2`. Run read-only repository
+solve with: “Propose a design for retry-safe invoice delivery that preserves
+`deliver_invoice` and makes no edits. Cite the source and constraint evidence
+IDs. Explain the crash/timeout window, the idempotency key, a durable outbox
+option, and one tradeoff of each. Do not claim an implementation or test pass.”
+The source flow is `src/dispatcher.py:1-4`; constraints are in `README.md:3-6`.
+
+For A1/A2, capture the exact fixture revision, root scope, output, evidence
+IDs, model digest, profile, context/output budgets, tool calls, elapsed time
+and unchanged Git status. These are advisory analysis cases, not bounded work
+orders. Mark unavailable, cancelled, truncated or unidentified-model runs
+NOT_RUN; do not qualify a route from fixture tests alone.

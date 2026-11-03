@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 from urllib.parse import quote, unquote
 
 from .sqlite_support import connect_sqlite
@@ -132,37 +132,68 @@ def get_registered_surface_catalog() -> list[dict[str, str]]:
         "/api/audit/tail", "/api/logs/tail", "/api/benchmark/summary",
         "/health", "/ready", "/dashboard"
     )
+    try:
+        from .http_route_registry import TELEMETRY_SAFE_GET_ROUTE_LABELS
+        for path in sorted(TELEMETRY_SAFE_GET_ROUTE_LABELS):
+            _add("endpoint", path)
+    except Exception:
+        pass
     for path in get_paths:
         _add("endpoint", path)
 
-    # MCP tools & common actions
-    mcp_items = (
-        "local_ai_status",
-        "local_ai_task",
-        "local_ai_task:review",
-        "local_ai_task:second_opinion",
-        "local_ai_task:explore",
-        "local_ai_task:reason",
-        "local_ai_task:compress",
-        "local_ai_repo",
-        "local_ai_repo:context",
-        "local_ai_repo:search",
-        "local_ai_repo:code_index",
-        "local_ai_repo:solve",
-        "local_ai_repo:review_diff",
-        "local_ai_repo:security_audit",
-        "local_ai_rag",
-        "local_ai_rag:query",
-        "local_ai_coord",
-        "local_ai_coord:task_create",
-        "local_ai_coord:task_checkpoint",
-        "local_ai_coord:memory_record",
-        "local_ai_coord:memory_find",
-        "local_ai_work",
-        "local_ai_artifact",
-    )
-    for m in mcp_items:
-        _add("mcp", m)
+    # MCP tools & registered actions
+    try:
+        from .operation_contracts import (
+            _ADOPTION_TOOL_NAMES,
+            _STATUS_ACTIONS,
+            _REPO_ACTIONS,
+            _TASK_ACTIONS,
+            _RAG_ACTIONS,
+            _COORD_ACTIONS,
+            _WORK_ACTIONS,
+            _ARTIFACT_ACTIONS,
+        )
+        tool_action_map = {
+            "local_ai_status": _STATUS_ACTIONS,
+            "local_ai_repo": _REPO_ACTIONS,
+            "local_ai_task": _TASK_ACTIONS,
+            "local_ai_rag": _RAG_ACTIONS,
+            "local_ai_coord": _COORD_ACTIONS,
+            "local_ai_work": _WORK_ACTIONS,
+            "local_ai_artifact": _ARTIFACT_ACTIONS,
+        }
+        for tool in _ADOPTION_TOOL_NAMES:
+            _add("mcp", tool)
+            for action in sorted(tool_action_map.get(tool, ())):
+                _add("mcp", f"{tool}:{action}")
+    except Exception:
+        mcp_items = (
+            "local_ai_status",
+            "local_ai_task",
+            "local_ai_task:review",
+            "local_ai_task:second_opinion",
+            "local_ai_task:explore",
+            "local_ai_task:reason",
+            "local_ai_task:compress",
+            "local_ai_repo",
+            "local_ai_repo:context",
+            "local_ai_repo:search",
+            "local_ai_repo:code_index",
+            "local_ai_repo:solve",
+            "local_ai_repo:review_diff",
+            "local_ai_repo:security_audit",
+            "local_ai_rag",
+            "local_ai_rag:query",
+            "local_ai_coord",
+            "local_ai_coord:task_create",
+            "local_ai_coord:task_checkpoint",
+            "local_ai_coord:memory_record",
+            "local_ai_coord:memory_find",
+            "local_ai_work",
+            "local_ai_artifact",
+        )
+        for m in mcp_items:
+            _add("mcp", m)
 
     return catalog
 
