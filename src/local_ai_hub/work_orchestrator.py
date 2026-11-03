@@ -2552,12 +2552,7 @@ class WorkOrchestrator:
             return postimages
 
     @staticmethod
-    def _rollback(root: Path, journal: list[_JournalEntry]) -> None:
-        with _pin_windows_work_directories(root, [entry.path for entry in journal]), _pin_windows_rollback_files(root, journal) as pinned:
-            WorkOrchestrator._rollback_pinned(root, journal, pinned)
-
-    @staticmethod
-    def _rollback_pinned(root: Path, journal: list[_JournalEntry], pinned: dict[str, tuple[int, int]]) -> None:
+    def _preflight_rollback(root: Path, journal: list[_JournalEntry]) -> dict[str, Path]:
         root = root.resolve()
         targets: dict[str, Path] = {}
         for entry in journal:
@@ -2592,6 +2587,24 @@ class WorkOrchestrator:
             if path.exists() and path.is_dir():
                 raise ValueError(f"rollback refused directory path: {entry.path}")
             targets[entry.path] = path
+        return targets
+
+    @staticmethod
+    def _rollback(root: Path, journal: list[_JournalEntry]) -> None:
+        targets = WorkOrchestrator._preflight_rollback(root, journal)
+        with _pin_windows_work_directories(root, [entry.path for entry in journal]), _pin_windows_rollback_files(root, journal) as pinned:
+            WorkOrchestrator._rollback_pinned(root, journal, pinned, targets=targets)
+
+    @staticmethod
+    def _rollback_pinned(
+        root: Path,
+        journal: list[_JournalEntry],
+        pinned: dict[str, tuple[int, int]],
+        targets: dict[str, Path] | None = None,
+    ) -> None:
+        if targets is None:
+            targets = WorkOrchestrator._preflight_rollback(root, journal)
+        root = root.resolve()
 
         simulated: dict[str, tuple[bool, bytes]] = {}
         restore: list[_JournalEntry] = []
@@ -3189,36 +3202,7 @@ class WorkOrchestrator:
                         owner=task_owner, root=root_s, criterion=run_criterion,
                         generation=mutation_generation,
                     )
-                    if receipt is None and command_id and command_revision and type(r.get("exit_code")) is int and r.get("exit_code") == 0:
-                        from .agent_verification import VerificationReceipt, criterion_evidence_type
-                        for accepted_criterion in applicable:
-                            proof = {
-                                "kind": "work_command_verification", "passed": True,
-                                "task_id": task_id, "owner": task_owner,
-                                "criterion": accepted_criterion, "command": command,
-                                "command_id": command_id, "repository_revision": command_revision,
-                                "mutation_generation": mutation_generation,
-                                "exit_code": r.get("exit_code"),
-                                "result": {"success": r.get("success") is True, "exit_code": r.get("exit_code")},
-                            }
-                            with self._state_attempt_guard(work_id, attempt):
-                                evidence_id = self.artifacts.put(
-                                    json_dumps(proof, ensure_ascii=False), kind="command_verification"
-                                )
-                                if not evidence_id:
-                                    raise RuntimeError("verification receipt evidence was not persisted")
-                                receipt = VerificationReceipt.create(
-                                    task_id=task_id, criterion=accepted_criterion, passed=True,
-                                    owner=task_owner, evidence_id=str(evidence_id), command_id=command_id,
-                                    repository_revision=command_revision,
-                                    mutation_generation=mutation_generation, evidence_type=criterion_evidence_type(accepted_criterion),
-                                    details={"command": command, "exit_code": r.get("exit_code")},
-                                )
-                                if self.verification_store is not None:
-                                    self.verification_store.record(receipt, update_task=False)
-                                verification_receipts.append(receipt)
-                                validation_entry.setdefault("receipt_ids", []).append(receipt.receipt_id)
-                    elif receipt is not None:
+                    if receipt is not None:
                         verification_receipts.append(receipt)
                         validation_entry.setdefault("receipt_ids", []).append(receipt.receipt_id)
                 elif mode == "bounded" and task_generation is not None:

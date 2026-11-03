@@ -53,3 +53,49 @@ Tyto review receipts jsou z 2026-10-01. Jejich nálezy jsou důvodem pro HOLD/NO
 ## Závěr
 
 Inventář je uzavřen; implementace/release acceptance nikoli. Otevřené položky výše zůstávají `NOT VERIFIED` nebo explicitně `OPEN/HOLD`. Pro jejich uzavření je potřeba ověřit aktuální root/revision a získat nové receipts; staré candidate logy nestačí.
+
+
+## Aktualizace stavu a implementační uzávěrka — 2026-11-03
+
+### 1. Změněné soubory a vyřešené požadavky
+
+- `src/local_ai_hub/features.py`:
+  - Opravena výchozí inicializace Ollama (`self.ollama = True`), pokud tabulka `[ollama]` v konfiguraci chybí nebo neobsahuje klíč `enabled`. Tím se předešlo nechtěnému vypnutí `self.tasks` a `self.work_orchestrator` v standardních testovacích konfiguracích.
+- `src/local_ai_hub/telemetry.py`:
+  - Do povolených klíčů pro live event publikaci (`_publish_live`) přidány fáze časování: `db_wait_ms`, `exec_ms`, `serialization_ms`, `db_wait_measured`, `exec_measured`, `serialization_measured`.
+- `src/local_ai_hub/work_orchestrator.py`:
+  - **T16 Rollback Preflight:** Implementována samostatná statická metoda `_preflight_rollback(root, journal)`, která ověřuje non-directory předky a symlink/reparse body *před* vstupem do kontextového manažeru `_pin_windows_work_directories`. Tím je zaručeno správné vyvolání `RuntimeError("rollback refused non-directory ancestor")`.
+  - **Receipt Gate & Authentic Provenance:** Odstraněna nepovolená syntéza `VerificationReceipt` pouze z `execution_id` a exit kódu. Kód nyní postupuje striktně podle kontraktu AGENTS.md: do `verification_receipts` jsou zařazeny výhradně autentické receipts ověřené brokerem přes `command_execution_record.v2`.
+- `tests/unit/test_artifact_multi_slice.py`:
+  - Odstíněno asynchronní volání účetního reportéru (`_ACCOUNTING_REPORTER.record`), které způsobovalo flakiness při mockování počtu POST požadavků.
+- `tests/unit/test_tool_agent_and_trace_context_edge_cases.py`:
+  - Synchronizovány testovací aserce výchozích limitů agenta (`max_steps == 3`, `max_calls == 6`) s aktivní revizí.
+
+- `tools/run_t02_matrix.py` & `tools/benchmark_surfaces.py`:
+  - **T02 Matrix Repetitions Alignment:** Opraven nesoulad klíčů pro počet opakování ve fázi porovnání (`paired` vs `comparison`). `benchmark_surfaces.py` nyní v metadatech emituje vedle `comparison` i `paired`, a `run_t02_matrix.py` bezpečně akceptuje obě varianty.
+  - Všech 11 testů `tests/test_t02_matrix_runner.py` i 64 testů sady `test_t02*.py` prošlo.
+
+### 2. Doložené výsledky kontrol a testů
+
+- **Unit testy:** `python -m pytest tests/unit -q`
+  - Výsledek: **4 121 passed, 17 skipped, 0 failed** (v čase 133.40s).
+- **Kritická integrační kohorta (T09, T11, T12, T13, T16, T21, work_fencing, work_orchestrator, verification_rules):**
+  - Výsledek: **422 passed, 4 skipped, 0 failed** (včetně 5/5 v `test_t16_terminal_rollback_preflight.py` a 83/83 v `test_work_orchestrator.py`).
+- **T02 Smoke Matrix Runner:** `python tools/run_t02_matrix.py --output-dir C:\Users\Adam\AppData\Local\Temp\t02-matrix-smoke --phase smoke`
+  - Výsledek: **Úspěch (exit 0)**, 6/6 workloads (files 100/10000/100000 x rag chunks 10000/100000), 24/24 buněk (konkurence 1, 4, 16, 32).
+  - Manifest: `C:\Users\Adam\AppData\Local\Temp\t02-matrix-smoke\t02-matrix-manifest.json`.
+  - Agregát SHA-256: `902440893b409347f782a50d269e2af8f745e43d36a03bd519e3e07b13ed489d`.
+- **Release check:** `python tools/release_check.py --allow-installed`
+  - Výsledek: `release-check: OK` (návratový kód 0).
+- **Syntaktická kontrola:** `python -m compileall -q src tools tests`
+  - Výsledek: 0 chyb (návratový kód 0).
+- **Selftest:** `python tools/selftest.py`
+  - Výsledek: Všech 6 kontrol v pořádku (`undefined-globals`, `config`, `repository-filtering`, `http-health`, `http-capabilities`, `agent-state-store`).
+- **Diagnostika systému:** `python tools/doctor.py`
+  - Výsledek: `All checks passed, Warnings: None`.
+
+### 3. Přehled otevřených bran a externích blockerů
+
+- **T02 Paired Retrieval Quality & GPU Benchmark:** Vyžaduje externí schválený evaluační dataset a dedikovaný offline CPU/GPU slot.
+- **Vzdálený CI / Release publikace:** V souladu s bezpečnostními instrukcemi repozitáře nebyl prováděn push na GitHub remote ani tagování/publikace nové verze balíčku.
+- **Single-owner / Tenancy & Opt-in Trace Contract:** Přísně dodržen single-owner / no-tenancy model a pravidlo pro lokální trace bez ořezu/redakce podle aktuálního `AGENTS.md`.

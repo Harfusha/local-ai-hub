@@ -38,6 +38,7 @@ def test_mcp_get_returns_disjoint_slices_in_one_post(tmp_path, monkeypatch) -> N
             payload["artifact_id"], slices=payload["slices"]
         )
 
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 
     actual = mcp_server.local_ai_artifact(

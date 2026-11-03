@@ -976,6 +976,8 @@ class TelemetryStore:
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
             "fingerprint", "retryable", "recovered", "name", "metrics_json",
             "preprocessed_hit", "root",
+            "db_wait_ms", "exec_ms", "serialization_ms",
+            "db_wait_measured", "exec_measured", "serialization_measured",
         }
         event = {k: v for k, v in payload.items() if k in allowed}
         event["kind"] = kind

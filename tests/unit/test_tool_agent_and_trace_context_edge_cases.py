@@ -65,8 +65,8 @@ def test_tool_aware_local_agent_init_defensive() -> None:
         DummyRag(),
     )
     assert agent.enabled is True
-    assert agent.max_steps == 4
-    assert agent.max_calls == 8
+    assert agent.max_steps == 3
+    assert agent.max_calls == 6
     assert agent.max_tool_chars == 6500
     assert agent.pre_context_chars == 2800
     assert agent.semantic_bypass_confidence == 0.94
@@ -90,7 +90,7 @@ def test_tool_aware_local_agent_init_defensive() -> None:
         DummyPreprocessor(),
         DummyRag(),
     )
-    assert agent2.max_steps == 4
+    assert agent2.max_steps == 3
     assert agent2.max_calls == 1  # clamped to min_val 1
     assert agent2.max_tool_chars == 6500
     assert agent2.pre_context_chars == 2800

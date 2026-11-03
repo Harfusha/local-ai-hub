@@ -120,7 +120,11 @@ def validate_case_record(
         errors.append("concurrency_mismatch")
     repetitions = metadata.get("stage_repetitions")
     light = repetitions.get("light") if isinstance(repetitions, dict) else None
-    paired = repetitions.get("paired") if isinstance(repetitions, dict) else None
+    paired = (
+        repetitions.get("paired")
+        if repetitions.get("paired") is not None
+        else repetitions.get("comparison")
+    ) if isinstance(repetitions, dict) else None
     minimum_light, minimum_paired = (10, 3) if phase == "smoke" else (1_000, 30)
     if not isinstance(light, int) or isinstance(light, bool) or light < minimum_light:
         errors.append("light_repetitions_insufficient")

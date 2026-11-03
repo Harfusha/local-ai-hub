@@ -63,7 +63,11 @@ class FeatureSet:
         self.async_jobs: bool = _tbl("async_jobs").get("enabled", False) is True
         # Startup ownership and permission to use an existing backend are
         # independent: an externally managed Ollama may already be online.
-        self.ollama: bool = _tbl("ollama").get("enabled", bool(srv.get("auto_start_ollama", False))) is True
+        ollama_table = _tbl("ollama")
+        if "enabled" in ollama_table:
+            self.ollama: bool = ollama_table["enabled"] is True
+        else:
+            self.ollama: bool = True
         llama = _tbl("llama_cpp")
         llama_mode = str(llama.get("mode", "off")).strip().lower()
         llama_models = llama.get("models") if isinstance(llama.get("models"), dict) else {}
