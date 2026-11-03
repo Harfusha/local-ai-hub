@@ -164,6 +164,14 @@ def _load(spec):
         try:
             return constructor(model_name, local_files_only=True, **options)
         except Exception:
+            from pathlib import Path
+            clean_name = str(model_name).replace("/", "--")
+            for base in (Path.home() / ".cache" / "huggingface" / "hub", Path("C:/Users/Adam/.cache/huggingface/hub")):
+                hub_dir = base / f"models--{clean_name}" / "snapshots"
+                if hub_dir.is_dir():
+                    for snapshot in hub_dir.iterdir():
+                        if snapshot.is_dir() and (snapshot / "config.json").exists() and ((snapshot / "model.safetensors").exists() or (snapshot / "pytorch_model.bin").exists()):
+                            return constructor(str(snapshot), **options)
             if spec.get("allow_downloads") is not True:
                 raise
             return constructor(model_name, **options)

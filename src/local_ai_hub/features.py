@@ -67,19 +67,9 @@ class FeatureSet:
         llama = _tbl("llama_cpp")
         llama_mode = str(llama.get("mode", "off")).strip().lower()
         llama_models = llama.get("models") if isinstance(llama.get("models"), dict) else {}
-        hardware = clean_cfg.get("_hardware", {}) if isinstance(clean_cfg.get("_hardware", {}), dict) else {}
-        gpus = hardware.get("gpus", []) if isinstance(hardware.get("gpus", []), list) else []
-        intel_gpu = any(
-            str(gpu.get("vendor", "")).lower() == "intel" or "intel" in str(gpu.get("name", "")).lower()
-            for gpu in gpus if isinstance(gpu, dict)
-        )
-        dedicated_other = any(
-            str(gpu.get("vendor", "")).lower() in {"amd", "nvidia"} and not bool(gpu.get("integrated"))
-            for gpu in gpus if isinstance(gpu, dict)
-        )
-        self.llama_cpp: bool = bool(llama_models) and (
-            llama_mode == "on" or (llama_mode == "auto" and intel_gpu and not dedicated_other)
-        )
+        # An explicitly configured external auto route is hardware independent;
+        # endpoint validity and health are checked by LlamaCppRouter at use time.
+        self.llama_cpp: bool = bool(llama_models) and llama_mode in {"on", "auto"}
         self.tasks: bool = (
             bool(feat.get("tasks", True))
             and bool(feat.get("local_models", True))

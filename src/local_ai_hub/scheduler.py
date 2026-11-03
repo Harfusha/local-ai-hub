@@ -1022,14 +1022,14 @@ class AffinityScheduler:
         """Atomically exclude external sessions while internal GPU work is active."""
         import secrets
 
-        if self._internal_gpu_uncertain:
+        if getattr(self, "_internal_gpu_uncertain", False):
             return False
-        path = self._external_gpu_path
+        path = getattr(self, "_external_gpu_path", None)
         if path is None:
             return True
-        if self._internal_gpu_digest:
+        if getattr(self, "_internal_gpu_digest", None):
             return _read_external_reservation(path) == self._internal_gpu_digest
-        if self._external_gpu_token:
+        if getattr(self, "_external_gpu_token", None):
             return False
         digest = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
         try:
@@ -1047,12 +1047,14 @@ class AffinityScheduler:
         return True
 
     def _release_internal_gpu(self) -> bool:
-        if self._internal_gpu_uncertain or self._gpu_prepare_in_progress:
+        if getattr(self, "_internal_gpu_uncertain", False) or getattr(self, "_gpu_prepare_in_progress", False):
             return False
-        digest = self._internal_gpu_digest
+        digest = getattr(self, "_internal_gpu_digest", None)
         if not digest:
             return True
-        path = self._external_gpu_path
+        path = getattr(self, "_external_gpu_path", None)
+        if path is None:
+            return True
         for attempt in range(6):
             if _read_external_reservation(path) != digest:
                 return False
@@ -1369,6 +1371,8 @@ class AffinityScheduler:
                 except Exception as exc:
                     switched = False
                     with self._cond:
+                        if not bool(getattr(exc, "operation_not_started", False)):
+                            self._internal_gpu_uncertain = True
                         for job in [j for j in self._pending if j.model == target_switch]:
                             self._pending.remove(job)
                             job.error = f"model preparation failed: {type(exc).__name__}"
@@ -1593,8 +1597,14 @@ class AffinityScheduler:
                     error = f"{type(exc).__name__}: {admission.get('reason', 'post-unload admission rejected')}"[:300]
                 elif bool(getattr(exc, "preparation_cancelled", False)):
                     cancelled = True
+                    if not bool(getattr(exc, "operation_not_started", False)):
+                        with self._cond:
+                            self._internal_gpu_uncertain = True
                 else:
                     error = f"{type(exc).__name__}: {exc}"[:300]
+                    if not bool(getattr(exc, "operation_not_started", False)):
+                        with self._cond:
+                            self._internal_gpu_uncertain = True
         if not cancelled and not error:
             observed_vram_bytes = self._observe_model_vram_bytes(
                 target,
@@ -1757,12 +1767,17 @@ class AffinityScheduler:
             job.finished_at = time.monotonic()
             with self._cond:
                 result = job.result if isinstance(job.result, dict) else {}
-                uncertainty_flags = ("outcome_unknown", "timed_out", "preempted", "cancelled",
+                uncertainty_flags = ("outcome_unknown", "timed_out",
                                      "cleanup_unconfirmed", "_lah_partial_response", "in_progress")
+                clean_cancel = (
+                    (result.get("preempted") is True or result.get("cancelled") is True)
+                    and not any(key in result and result[key] is not False for key in uncertainty_flags)
+                    and not bool(job.error)
+                )
                 uncertain = (bool(job.error)
                              or any(key in result and result[key] is not False for key in uncertainty_flags)
                              or (result.get("output_truncated") is True and result.get("success") is not False))
-                failed = result.get("success") is False or bool(result.get("error"))
+                failed = (result.get("success") is False or bool(result.get("error"))) and not clean_cancel
                 completed_at_limit = (result.get("_lah_backend_completed") is True
                                       and result.get("output_truncated") is True
                                       and result.get("stop_reason") == "length"

@@ -594,15 +594,19 @@ class OllamaRuntime:
             model = payload.get("model") if isinstance(payload, dict) else None
             # Only model preparation may reserve this port: it performs fresh
             # residency checks and VRAM admission before Ollama can load a runner.
-            return bool(self._mixed_fallback_model == model and self._mixed_fallback_guard is not None
-                        and self._mixed_fallback_admitted)
+            return bool(getattr(self, "_mixed_fallback_model", None) == model
+                        and getattr(self, "_mixed_fallback_guard", None) is not None
+                        and getattr(self, "_mixed_fallback_admitted", False))
 
-        mixed_lock = (self._mixed_provider_lock if isinstance(self.config.get("llama_cpp"), dict)
-                      and self.config["llama_cpp"].get("managed_with_ollama") is True else None)
+        config = getattr(self, "config", None)
+        llama_cfg = config.get("llama_cpp") if isinstance(config, dict) and isinstance(config.get("llama_cpp"), dict) else {}
+        mixed_provider_lock = getattr(self, "_mixed_provider_lock", None)
+        mixed_lock = (mixed_provider_lock if llama_cfg.get("managed_with_ollama") is True else None)
         acquired = False
         try:
             if mixed_lock is not None:
-                limit = time.monotonic() + max(0.05, float(timeout if timeout is not None else self.timeout))
+                default_timeout = getattr(self, "timeout", 300.0)
+                limit = time.monotonic() + max(0.05, float(timeout if timeout is not None else default_timeout))
                 if deadline is not None:
                     limit = min(limit, float(deadline))
                 while not acquired:
@@ -618,7 +622,7 @@ class OllamaRuntime:
                                                single_attempt=single_attempt, force_ollama=force_ollama,
                                                fallback_guard=reserve_cuda_endpoint)
             if (mixed_lock is not None and not force_ollama and isinstance(payload, dict)
-                    and payload.get("model") == self.config["llama_cpp"].get("managed_model_logical")
+                    and payload.get("model") == llama_cfg.get("managed_model_logical")
                     and isinstance(result, dict) and "error" not in result and "_lah_provider" not in result):
                 result = {**result, "_lah_provider": "ollama", "fallback_used": True}
         except Exception as exc:
