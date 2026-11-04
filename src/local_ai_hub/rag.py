@@ -978,8 +978,8 @@ class RAGStore:
             if gap.strip():
                 gaps.append(gap)
             gap_start = gap_end
-        if gaps:
-            chunks.extend(self._text_chunks("\n".join(gaps), size, overlap))
+        for gap in gaps:
+            chunks.extend(self._text_chunks(gap, size, overlap))
 
         return [c for c in chunks if c.strip()]
 
