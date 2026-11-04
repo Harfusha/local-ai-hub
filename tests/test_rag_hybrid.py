@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import errno
+import os
 import threading
 
 import pytest
@@ -98,6 +99,35 @@ def test_index_embeds_changed_chunks_without_undefined_text_list(tmp_path):
     assert result["embedded_chunks"] > 0
     assert len(store.services.calls) == 1
     assert store.services.calls[0]
+
+
+def test_index_rechecks_content_when_size_and_mtime_are_unchanged(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "same-stat-edit"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("def indexed_value(): return 'alpha'\n", encoding="utf-8")
+    first = store.index(str(root), workspace="same-stat-edit")
+    assert first["success"] is True
+
+    original_stat = source.stat()
+    source.write_text("def indexed_value(): return 'bravo'\n", encoding="utf-8")
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert source.stat().st_size == original_stat.st_size
+    assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    second = store.index(str(root), workspace="same-stat-edit")
+
+    assert second["success"] is True
+    assert second["changed_files"] == 1
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            ("same-stat-edit", "module.py"),
+        ).fetchall()
+    assert rows
+    assert "bravo" in " ".join(row[0] for row in rows)
+    assert "alpha" not in " ".join(row[0] for row in rows)
 
 
 def test_index_paths_step_sets_embedding_space_before_nonempty_records(tmp_path):

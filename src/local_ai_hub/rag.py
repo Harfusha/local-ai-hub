@@ -1684,13 +1684,42 @@ class RAGStore:
         deleted_paths = sorted(old_paths - current_paths)
         unchanged_paths: list[str] = []
         changed_paths: list[str] = []
+        rag_cfg = self.config.get("rag", {})
+        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
+        settings = project_context.settings if project_context is not None else None
+        if settings is not None and settings.max_file_size_bytes is not None:
+            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
+        verified_raw_by_path: dict[str, bytes] = {}
+        read_uncertain_paths: set[str] = set()
+        skipped = 0
+        read_files = 0
         for rel, (_path, mtime_ns, size) in current_meta.items():
             old = old_files.get(rel)
             if (
                 old and old["mtime_ns"] == mtime_ns and old["size"] == size
-                and rel not in uncertain_retry_paths
+                and rel not in uncertain_retry_paths and not embedding_space_changed
             ):
-                unchanged_paths.append(rel)
+                # Stat metadata can be preserved across edits. Verify the
+                # persisted content digest before trusting an indexed file.
+                try:
+                    raw = _read_bounded_file(_path, max_file_bytes)
+                    if raw is None:
+                        skipped += 1
+                        read_uncertain_paths.add(rel)
+                        unchanged_paths.append(rel)
+                        continue
+                    read_files += 1
+                    file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                except Exception:
+                    skipped += 1
+                    read_uncertain_paths.add(rel)
+                    unchanged_paths.append(rel)
+                    continue
+                if file_hash == old.get("content_hash"):
+                    unchanged_paths.append(rel)
+                else:
+                    changed_paths.append(rel)
+                    verified_raw_by_path[rel] = raw
             else:
                 changed_paths.append(rel)
         if embedding_space_changed:
@@ -1699,24 +1728,18 @@ class RAGStore:
 
         changed_records: list[dict[str, Any]] = []
         file_rows: list[tuple[str, int, int, str]] = []
-        read_uncertain_paths: set[str] = set()
-        skipped = 0
-        read_files = 0
         reused_chunks = 0
         changed_indices: list[int] = []
-        rag_cfg = self.config.get("rag", {})
         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
         near_duplicates_skipped = 0
-        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
-        settings = project_context.settings if project_context is not None else None
-        if settings is not None and settings.max_file_size_bytes is not None:
-            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
 
         for rel in changed_paths:
             path, mtime_ns, size = current_meta[rel]
             try:
-                raw = _read_bounded_file(path, max_file_bytes)
+                raw = verified_raw_by_path.pop(rel, None)
+                if raw is None:
+                    raw = _read_bounded_file(path, max_file_bytes)
                 if raw is None:
                     skipped += 1
                     read_uncertain_paths.add(rel)
