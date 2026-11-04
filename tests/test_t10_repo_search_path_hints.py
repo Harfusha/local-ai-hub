@@ -226,11 +226,11 @@ def test_repo_search_logs_preprocessor_candidate_failure_and_keeps_exact_fallbac
             raise PermissionError(f"private path: {tmp_path}")
 
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    (tmp_path / "src" / "button.py").write_text("needleSymbol button\n", encoding="utf-8")
     services = _search_service(tmp_path, FailingPreprocessor())
 
     with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
-        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+        result = services.repo_search(str(tmp_path), "needleSymbol", top_k=5, scope="task")
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
@@ -248,12 +248,12 @@ def test_repo_search_logs_deterministic_candidate_failure_and_keeps_exact_fallba
             raise PermissionError(f"private path: {tmp_path}")
 
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    (tmp_path / "src" / "button.py").write_text("needleSymbol button\n", encoding="utf-8")
     services = _search_service(tmp_path, _CandidatePreprocessor([]))
     services.deterministic = FailingDeterministicIndex()
 
     with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
-        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+        result = services.repo_search(str(tmp_path), "needleSymbol", top_k=5, scope="task")
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
@@ -262,27 +262,28 @@ def test_repo_search_logs_deterministic_candidate_failure_and_keeps_exact_fallba
     assert all(str(tmp_path) not in message for message in messages)
 
 
-def test_repo_search_logs_code_index_candidate_failure_and_keeps_exact_fallback(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_repo_search_skips_partial_code_index_for_natural_query_and_keeps_exact_search(
+    tmp_path: Path,
 ) -> None:
     class FailingCodeIndex:
-        @staticmethod
-        def related_paths(*_args, **_kwargs):
-            raise PermissionError(f"private path: {tmp_path}")
+        def __init__(self):
+            self.calls = 0
+
+        def related_paths(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("natural-language search must not scan the partial code index")
 
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
     services = _search_service(tmp_path, _CandidatePreprocessor([]))
-    services.code_index = FailingCodeIndex()
+    code_index = FailingCodeIndex()
+    services.code_index = code_index
 
-    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
-        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+    result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("CodeIndex candidate search skipped (PermissionError)" in message for message in messages)
-    assert all(str(tmp_path) not in message for message in messages)
+    assert code_index.calls == 0
 
 
 def test_repo_search_does_not_claim_progressive_disclosure_without_receipts(tmp_path: Path) -> None:

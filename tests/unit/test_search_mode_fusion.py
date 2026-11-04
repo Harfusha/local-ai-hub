@@ -373,6 +373,30 @@ def test_hybrid_requests_bounded_lexical_candidates_without_exact_corpus_count(m
     assert result["candidate_count"] == 2
 
 
+def test_rag_candidate_window_scales_with_requested_page(monkeypatch):
+    service = _service(monkeypatch, [{"path": "docs/install.md", "text": "installation"}])
+    calls = []
+
+    def rag(root, query, top_k):
+        calls.append(top_k)
+        return [{"path": "docs/install.md", "text": "installation"}], {
+            "success": True,
+            "index_state": "available",
+        }
+
+    monkeypatch.setattr(service, "_repo_rag_search", rag)
+    monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: {
+        "success": True,
+        "results": [],
+        "total_matches": 0,
+        "count_exact": False,
+    })
+
+    service.repo_search(".", "installation guide", search_mode="hybrid", limit=10)
+
+    assert calls == [20]
+
+
 def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):
     service = _service(monkeypatch, rag_meta={"success": False, "reason": "rag_index_missing"})
     calls = []

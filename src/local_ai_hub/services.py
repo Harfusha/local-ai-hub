@@ -3247,7 +3247,9 @@ class LocalAIServices:
 
         semantic_query, query_expansion_applied = expand_semantic_query(query)
         rag_rows, rag_meta = self._repo_rag_search(
-            root, semantic_query, max(page_limit + offset, 32)
+            root,
+            semantic_query,
+            max(page_limit + offset, min(32, page_limit * 2)),
         )
         search_cache = rag_meta.get("search_cache")
         search_cache_fields = {}

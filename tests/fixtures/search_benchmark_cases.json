@@ -64,9 +64,12 @@
       "id": "english-installation",
       "query": "Local AI Hub installation",
       "language": "en",
-      "expected_paths": ["docs/INSTALLATION.md"],
+      "expected_paths": ["docs/INSTALLATION.md", "CONTRIBUTING.md"],
       "negative": false,
-      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "# Installation"}]
+      "evidence": [
+        {"path": "docs/INSTALLATION.md", "anchor": "# Installation"},
+        {"path": "CONTRIBUTING.md", "anchor": "## Getting started"}
+      ]
     },
     {
       "id": "czech-index-budget",
