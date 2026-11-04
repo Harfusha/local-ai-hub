@@ -3576,25 +3576,32 @@ class CodeIndex:
             candidates = con.execute(
                 "SELECT f.root,f.path,COALESCE(f.size_bytes,0) AS size_bytes, "
                 "COALESCE(u.use_count,0) AS use_count, "
-                "COALESCE(u.last_used_at,f.updated_at,0) AS last_used_at, "
-                "(SELECT COUNT(*) FROM symbols s WHERE s.root=f.root AND s.path=f.path) AS symbols, "
-                "(SELECT COUNT(*) FROM refs r WHERE r.root=f.root AND r.path=f.path) AS refs, "
-                "(SELECT COUNT(*) FROM edges e WHERE e.root=f.root AND e.path=f.path) AS edges, "
-                "(SELECT COUNT(*) FROM symbol_trigrams t WHERE t.root=f.root AND t.path=f.path) AS trigrams "
+                "COALESCE(u.last_used_at,f.updated_at,0) AS last_used_at "
                 "FROM files f LEFT JOIN file_usage u ON u.root=f.root AND u.path=f.path "
-                "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC"
+                "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC "
+                "LIMIT ?",
+                (max_files,),
             ).fetchall()
             need = before["physical_bytes"] - limit
             for row in candidates:
                 if len(selected) >= max_files or estimated >= need:
                     break
-                selected.append((str(row["root"]), str(row["path"])))
+                root_path = str(row["root"])
+                file_path = str(row["path"])
+                counts = {
+                    table: int(con.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE root=? AND path=?",
+                        (root_path, file_path),
+                    ).fetchone()[0])
+                    for table in ("symbols", "refs", "edges", "symbol_trigrams")
+                }
+                selected.append((root_path, file_path))
                 estimated += (
                     max(1, int(row["size_bytes"]))
-                    + int(row["symbols"]) * 1024
-                    + int(row["refs"]) * 384
-                    + int(row["edges"]) * 384
-                    + int(row["trigrams"]) * 192
+                    + counts["symbols"] * 1024
+                    + counts["refs"] * 384
+                    + counts["edges"] * 384
+                    + counts["symbol_trigrams"] * 192
                     + 65536
                 )
             if not dry_run and selected:

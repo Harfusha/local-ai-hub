@@ -80,11 +80,30 @@ The separate synthetic holdout has seven cases (six positive); all six labeled p
 
 The live MCP diagnostic returned a stale/partial RAG index and
 `stale_or_denied_candidates`; reranking ran, but cannot repair missed
-candidate recall. A Czech setup query missed both manually labeled paths in
-the earlier live HTTP run. Added bounded Czech-to-English semantic expansion
-and preserved the original query for lexical matching. Focused
-search/RAG/canonical-input tests pass (99); release check passes. The synthetic
-service suite with 100 noise files retained recall@10 and MRR at 1.0, with
-per-query median latency 37.9–47.8 ms; it does not call semantic RAG and
-cannot demonstrate a Czech relevance gain. Live HTTP quality after this patch
-and index refresh remains unverified.
+candidate recall. The live HTTP rerun after reindex still returned 0/2 for
+Czech targets; subsequent RAG calls reported `embedding_space_mismatch` or
+`embedding_backend`, and hybrid degraded to lexical fallback. Reranking was
+configured, but was not used when embedding failed. High profile is active,
+the reranker is configured, and no model downloads occurred. Czech expansion
+is applied to RAG and bounded hybrid candidates; exact lexical mode is
+unchanged. The failed recall shows expansion alone is insufficient.
+
+The real HTTP exact-symbol case `max_index_bytes` returned both labeled paths
+(recall@10 1.0, MRR 1.0); cold latency was 3,192 ms and warm-cache latency
+256 ms. This is not a before/after comparison: an earlier direct MCP request
+was cancelled after exceeding 70 seconds. Natural-language lexical queries
+`Local AI Hub installation` and `Jak omezit velikost code indexu?` each
+missed all labeled targets (0/1 and 0/2) in the live run. Their cold latency
+was 4,388 ms and 3,341 ms; warm requests were 163 ms and 174 ms. These results
+show current quality limits on this small labeled set.
+
+The installed code-index DB measured 34,586,824,704 bytes, with zero-byte WAL
+and 32,768-byte SHM sidecar. Runtime logs repeatedly report the 512 MiB budget
+could not be enforced and skip startup auto-vacuum conversion for the oversized
+database. The eviction candidate query previously evaluated four correlated
+counts for every indexed file. It now limits candidate inventory to the
+configured batch, then counts child rows only for selected files. Synthetic
+storage benchmark released 7,053,312 bytes (16 files before, six evicted,
+hot file retained); this does not measure live DB reclaim. Focused search,
+RAG, demand and size-budget tests pass (59); release check passes. No live
+code-index cleanup has been run by this patch.

@@ -87,6 +87,35 @@ def test_code_index_budget_evicts_cold_rows_and_releases_sqlite_pages(tmp_path):
     index.close()
 
 
+def test_size_limit_dry_run_bounds_candidate_inventory(tmp_path, monkeypatch):
+    index, _root = _make_index(tmp_path)
+    original_connect = index._connect
+    candidate_limits = []
+
+    class RecordingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, sql, params=()):
+            if "FROM files f LEFT JOIN file_usage" in sql:
+                candidate_limits.append(params[-1] if params else None)
+            return self.connection.execute(sql, params)
+
+        def close(self):
+            self.connection.close()
+
+    monkeypatch.setattr(
+        index, "_connect",
+        lambda: RecordingConnection(original_connect()),
+    )
+
+    result = index.enforce_size_limit(max_bytes=1, dry_run=True, max_files=3)
+
+    assert result["success"] is True
+    assert candidate_limits == [3]
+    index.close()
+
+
 def test_stale_cleanup_only_prunes_paths_confirmed_stale_at_scan_time(tmp_path, monkeypatch):
     index, root = _make_index(tmp_path)
     (root / "module_7.py").unlink()
