@@ -533,6 +533,7 @@ def test_rag_candidates_are_checked_against_current_source_and_policy(tmp_path):
 
 def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):
     (tmp_path / "current.py").write_text("new source", encoding="utf-8")
+    (tmp_path / "private.py").write_text("private new source", encoding="utf-8")
 
     class FakeRag:
         def workspace_id(self, root): return "repo:test"
@@ -540,9 +541,13 @@ def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):
         def list_workspaces(self): return [{"workspace": "repo:test", "files": 1}]
         def revision(self, *, workspace): return "rev-1"
         def search(self, query, **kwargs):
-            return {"success": True, "index_revision": "rev-1", "results": [{"path": "current.py", "text": "removed source"}]}
+            return {"success": True, "index_revision": "rev-1", "results": [
+                {"path": "current.py", "chunk_no": 7, "text": "removed source"},
+                {"path": "private.py", "chunk_no": 11, "text": "private old source"},
+            ]}
         def project_context(self, root): return None
         def _project_path_decision(self, root, path, project_context, *, phase, size_bytes):
+            if path.name == "private.py": return False, "denied"
             return True, "text"
 
     service = object.__new__(LocalAIServices)
@@ -559,6 +564,9 @@ def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):
         "source_read_failed": 0,
         "fragment_mismatch": 1,
     }
+    assert meta["stale_candidate_details"] == [
+        {"path": "current.py", "reason": "fragment_mismatch", "chunk_no": 7}
+    ]
 
 
 def test_ast_chunk_module_context_is_verified_against_current_source(tmp_path):

@@ -3310,6 +3310,7 @@ class LocalAIServices:
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+                "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
                 "index_revision": rag_meta.get("index_revision"),
                 "query_expansion_applied": query_expansion_applied,
                 "degraded": bool(rag_meta.get("degraded")),
@@ -3332,6 +3333,7 @@ class LocalAIServices:
                 "candidate_freshness": rag_meta.get("candidate_freshness", "unknown"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+                "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
                 "lexical_total_matches": result.get("total_matches"),
                 "lexical_count_exact": result.get("count_exact") is True,
                 "rag_candidate_count": 0, "rag_candidate_count_exact": False,
@@ -3379,6 +3381,7 @@ class LocalAIServices:
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+                "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
                 "query_expansion_applied": query_expansion_applied,
                 "reranker": rag_meta.get("reranker", {}),
                 **search_cache_fields,
@@ -3402,6 +3405,7 @@ class LocalAIServices:
             "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
             "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
             "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+            "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
             "index_revision": rag_meta.get("index_revision"),
             "query_expansion_applied": query_expansion_applied,
             "degraded": bool(rag_meta.get("degraded")),
@@ -3455,6 +3459,7 @@ class LocalAIServices:
                 "source_read_failed": 0,
                 "fragment_mismatch": 0,
             }
+            stale_details: list[dict[str, Any]] = []
             source_cache: dict[str, tuple[str, int, int]] = {}
             seen_paths: set[str] = set()
             for candidate in raw.get("results", []):
@@ -3467,6 +3472,7 @@ class LocalAIServices:
                 if rel_path.is_absolute() or ".." in rel_path.parts:
                     continue
                 target = (base / rel_path).resolve(strict=True)
+                authorized_rel: str | None = None
                 try:
                     target.relative_to(base)
                     stat = target.stat()
@@ -3479,6 +3485,7 @@ class LocalAIServices:
                                                                phase="search", size_bytes=int(stat.st_size))
                     if not allowed or kind == "binary":
                         continue
+                    authorized_rel = target.relative_to(base).as_posix()
                     fragment = str(candidate.get("text") or "")
                     source_meta = source_cache.get(rel_key)
                     if source_meta is None:
@@ -3486,18 +3493,36 @@ class LocalAIServices:
                         after_stat = target.stat()
                         if (after_stat.st_mtime_ns, after_stat.st_size) != (stat.st_mtime_ns, stat.st_size):
                             stale += 1
-                            stale_reasons["source_changed_during_read"] += 1
+                            reason = "source_changed_during_read"
+                            stale_reasons[reason] += 1
+                            if len(stale_details) < 32:
+                                detail = {"path": authorized_rel, "reason": reason}
+                                if type(candidate.get("chunk_no")) is int:
+                                    detail["chunk_no"] = candidate["chunk_no"]
+                                stale_details.append(detail)
                             continue
                         source_meta = (source, int(after_stat.st_mtime_ns), int(after_stat.st_size))
                         source_cache[rel_key] = source_meta
                     source = source_meta[0]
                     if not fragment or not _rag_fragment_matches_source(fragment, source):
                         stale += 1
-                        stale_reasons["fragment_mismatch"] += 1
+                        reason = "fragment_mismatch"
+                        stale_reasons[reason] += 1
+                        if len(stale_details) < 32:
+                            detail = {"path": authorized_rel, "reason": reason}
+                            if type(candidate.get("chunk_no")) is int:
+                                detail["chunk_no"] = candidate["chunk_no"]
+                            stale_details.append(detail)
                         continue
                 except (OSError, ValueError):
                     stale += 1
-                    stale_reasons["source_read_failed"] += 1
+                    reason = "source_read_failed"
+                    stale_reasons[reason] += 1
+                    if authorized_rel is not None and len(stale_details) < 32:
+                        detail = {"path": authorized_rel, "reason": reason}
+                        if type(candidate.get("chunk_no")) is int:
+                            detail["chunk_no"] = candidate["chunk_no"]
+                        stale_details.append(detail)
                     continue
                 item = dict(candidate)
                 item["path"] = target.relative_to(base).as_posix()
@@ -3523,6 +3548,7 @@ class LocalAIServices:
                 "candidate_freshness": "partially_verified" if stale else "verified_against_current_sources",
                 "stale_candidate_count": stale,
                 "stale_candidate_reasons": stale_reasons,
+                "stale_candidate_details": stale_details,
                 "index_revision": raw.get("index_revision"), "degraded": degraded,
                 "degradation_reason": reason,
                 "search_cache": raw.get("search_cache") if isinstance(raw.get("search_cache"), dict) else {},
