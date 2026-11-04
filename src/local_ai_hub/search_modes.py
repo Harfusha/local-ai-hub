@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
@@ -28,6 +29,60 @@ def prefers_lexical_precision(query: str) -> bool:
         any(ch in value for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":"))
         or any(ch.islower() for ch in value) and any(ch.isupper() for ch in value)
     )
+
+
+_SEMANTIC_QUERY_TERMS = {
+    "jak": "how",
+    "nainstalovat": "install",
+    "instalace": "installation",
+    "instalovat": "install",
+    "nastavit": "configure",
+    "nastavení": "configuration",
+    "nastaveni": "configuration",
+    "omezit": "limit",
+    "omezení": "size limit",
+    "omezeni": "size limit",
+    "limit": "size",
+    "velikost": "size",
+    "velikosti": "size",
+    "soubor": "file",
+    "soubory": "files",
+    "hledání": "search",
+    "hledani": "search",
+    "vyhledávání": "search",
+    "vyhledavani": "search",
+    "kód": "code",
+    "kod": "code",
+    "indexu": "index",
+    "index": "index",
+}
+
+_CZECH_SEMANTIC_MARKERS = {
+    "jak", "nainstalovat", "instalace", "instalovat", "nastavit",
+    "nastavení", "nastaveni", "omezit", "omezení", "omezeni",
+    "velikost", "velikosti", "soubor", "soubory", "hledání", "hledani",
+    "vyhledávání", "vyhledavani", "kód", "kod", "indexu",
+}
+
+
+def expand_semantic_query(query: str) -> tuple[str, bool]:
+    """Append bounded English equivalents for common Czech search terms.
+
+    Exact lexical search keeps the original query. This expansion targets the
+    configured English embedding space and does not claim full translation.
+    """
+    if type(query) is not str or not query.strip():
+        return query, False
+    tokens = re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
+    if not _CZECH_SEMANTIC_MARKERS.intersection(tokens):
+        return query, False
+    translated = list(dict.fromkeys(
+        _SEMANTIC_QUERY_TERMS[token] for token in tokens
+        if token in _SEMANTIC_QUERY_TERMS
+    ))
+    if not translated:
+        return query, False
+    return f"{query.strip()} {' '.join(translated)}", True
 
 
 def _path_key(item: Mapping[str, Any]) -> tuple[str, str] | None:

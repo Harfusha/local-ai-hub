@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from local_ai_hub.search_modes import fuse_search_results, prefers_lexical_precision
+from local_ai_hub.search_modes import (
+    expand_semantic_query,
+    fuse_search_results,
+    prefers_lexical_precision,
+)
 from local_ai_hub.services import LocalAIServices
 
 
@@ -59,6 +63,32 @@ def test_symbol_like_hybrid_queries_put_exact_lexical_hits_first():
     assert prefers_lexical_precision("repo_search")
     assert prefers_lexical_precision("C++")
     assert not prefers_lexical_precision("Local AI Hub installation")
+
+
+def test_czech_semantic_query_gets_bounded_english_terms_without_changing_lexical_text():
+    original = "Jak nastavit limit code indexu?"
+    expanded, applied = expand_semantic_query(original)
+
+    assert applied is True
+    assert expanded == original + " how configure size index"
+    assert expand_semantic_query("repo_search") == ("repo_search", False)
+    assert expand_semantic_query("Local AI Hub installation")[1] is False
+    assert expand_semantic_query("How to set a size limit?")[1] is False
+
+
+def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatch):
+    service = _service(monkeypatch, [{"path": "docs/index.md", "text": "index"}])
+    calls = []
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda root, query, top_k: (calls.append(query) or [{"path": "docs/index.md", "text": "index"}],
+                                   {"success": True, "index_state": "available"}),
+    )
+
+    result = service.repo_search(".", "Jak nastavit limit code indexu?", search_mode="rag")
+
+    assert calls == ["Jak nastavit limit code indexu? how configure size index"]
+    assert result["query_expansion_applied"] is True
     fused, _ = fuse_search_results(
         [{"path": "src/repo_search.py"}],
         [{"path": "docs/unrelated.md"}],
@@ -71,34 +101,58 @@ def test_symbol_like_hybrid_queries_put_exact_lexical_hits_first():
 
 def test_lexical_search_uses_large_code_index_only_for_symbol_like_queries(tmp_path, monkeypatch):
     calls = []
+    source = tmp_path / "src" / "local_ai_hub" / "services.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def search_source(): pass\n", encoding="utf-8")
 
     class RepoTools:
         ignore_dirs = set()
 
-        def search(self, *_args, **_kwargs):
+        def search(self, *_args, **kwargs):
+            if kwargs.get("exact_count") is False:
+                return {"success": True, "results": [{"path": "src/local_ai_hub/services.py"}],
+                        "total_matches": None, "count_exact": False, "truncated": True,
+                        "has_more": True}
             return {"success": True, "results": [], "total_matches": 0, "count_exact": True}
 
-    class CodeIndex:
+    class CandidateIndex:
+        def __init__(self, source):
+            self.source = source
+
         def related_paths(self, root, query, limit):
-            calls.append(query)
+            calls.append((self.source, query))
+            return []
+
+        def candidate_paths(self, root, query, limit):
+            calls.append((self.source, query))
             return []
 
     service = object.__new__(LocalAIServices)
     service.config = {}
     service.repo_tools = RepoTools()
-    service.code_index = CodeIndex()
-    service.deterministic = None
-    service.preprocessor = None
+    service.code_index = CandidateIndex("code")
+    service.deterministic = CandidateIndex("deterministic")
+    service.preprocessor = CandidateIndex("preprocess")
     service.learner = None
     service.evidence_store = None
     monkeypatch.setattr(service, "_repo_cache_state", lambda _root: {})
     monkeypatch.setattr(service, "_repo_cached", lambda _op, _root, _params, compute: compute())
 
+    bounded = service._repo_search_lexical(
+        str(tmp_path), "Local AI Hub installation", exact_count=False
+    )
+    assert bounded["success"] is True
+    assert bounded["count_exact"] is False
+    assert bounded["total_matches"] is None
+    assert bounded["candidate_count"] == 1
+    assert calls == []
+
     service._repo_search_lexical(str(tmp_path), "Local AI Hub installation")
     assert calls == []
 
     service._repo_search_lexical(str(tmp_path), "repo_search")
-    assert calls == ["repo_search"]
+    assert calls == [("deterministic", "repo_search"), ("code", "repo_search"),
+                     ("preprocess", "repo_search")]
 
 
 def test_rag_mode_never_claims_exact_corpus_count(monkeypatch):
@@ -133,6 +187,25 @@ def test_hybrid_keeps_lexical_exact_count_separate_and_deduplicates(monkeypatch)
     merged = next(row for row in result["results"] if row["path"] == "src/a.py")
     assert merged["sources"] == ["lexical", "rag"]
     assert merged["text"] == "exact"
+
+
+def test_hybrid_requests_bounded_lexical_candidates_without_exact_corpus_count(monkeypatch):
+    service = _service(monkeypatch, [{"path": "docs/install.md", "text": "install"}])
+    calls = []
+
+    def lexical(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"success": True, "results": [{"path": "src/setup.py"}],
+                "total_matches": None, "count_exact": False, "truncated": True}
+
+    monkeypatch.setattr(service, "_repo_search_lexical", lexical)
+
+    result = service.repo_search(".", "Local AI Hub installation", search_mode="hybrid", limit=10)
+
+    assert calls[0]["exact_count"] is False
+    assert result["count_exact"] is False
+    assert result["total_matches"] is None
+    assert result["candidate_count"] == 2
 
 
 def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):

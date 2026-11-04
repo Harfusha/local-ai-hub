@@ -227,6 +227,32 @@ def test_semantic_only_search_skips_embedder_for_known_stale_index(tmp_path):
     assert store.services.calls == []
 
 
+def test_semantic_only_uses_runtime_identity_when_configured_digest_is_stale(tmp_path):
+    store = _store(tmp_path)
+    store.config["models"]["embedding_digest"] = "configured-digest"
+    store.services._active_cache_identity = "prior-runtime-identity"
+    store.services.embed = lambda texts, **_kwargs: {
+        "success": True, "embedding_space_id": "runtime-space",
+        "embeddings": [[1.0, 0.0] for _ in texts],
+    }
+    workspace = "runtime-space-match"
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (workspace, "target.py", 0, "target", "the target result", "[1.0,0.0]", "runtime-space"),
+        )
+        store._store_workspace_embedding_space(con, workspace, "runtime-space")
+        con.commit()
+
+    result = store._search_uncached("target query", workspace, top_k=2,
+                                    use_reranker=False, semantic_only=True)
+
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "target.py"
+    assert result.get("degraded") is not True
+
+
 def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
     store = _store(tmp_path)
     store.services.embed = lambda *_args, **_kwargs: {

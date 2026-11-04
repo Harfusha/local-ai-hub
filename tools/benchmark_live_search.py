@@ -217,6 +217,7 @@ def run(
                 "count_exact": last_result.get("count_exact"),
                 "total_matches": last_result.get("total_matches"),
                 "candidate_count": last_result.get("candidate_count"),
+                "query_expansion_applied": last_result.get("query_expansion_applied"),
                 "coverage_complete": last_result.get("coverage_complete"),
                 "index_state": last_result.get("index_state"),
                 "index_coverage": last_result.get("index_coverage"),

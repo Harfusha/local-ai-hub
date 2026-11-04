@@ -19,15 +19,14 @@
 - [ ] Measure and test incremental admission, one-hop limits, eviction,
   concurrent changes/removals, cache invalidation and real installation impact.
 
-Current implementation checkpoint: the new internal semantic-only RAG branch
-does not consult lexical FTS and has a distinct cache identity. File-level
-reciprocal-rank fusion is implemented separately but is not yet connected to
-the endpoint. The preprocessing RAG acknowledgement now checks the selected
-content hash and `needs_hash`, and lexical source indexing checks both the
-actual read hash and the latest file reference before publishing. Python AST
-chunking preserves previously omitted module and large-class text; existing
-RAG indexes still require a versioned, bounded reindex before this helps them.
-Do not present these internal pieces as completed HTTP/MCP search modes.
+Current implementation checkpoint: HTTP/MCP search exposes `lexical`, `rag`,
+and `hybrid`. RAG is semantic-only; hybrid fuses bounded lexical and semantic
+candidates by file with RRF and keeps counts approximate. Semantic candidates
+are checked against current authorized source files. Czech semantic queries
+now append bounded English equivalents for common terms; exact lexical
+matching retains the original query and responses report
+`query_expansion_applied`. Existing RAG indexes still need a versioned,
+bounded reindex to benefit from source/chunking changes.
 
 Runtime measurement: the active Hub reported high profile but CPU-only Torch
 in its own environment. A cached BGE reranker on CPU took 8.8–23.4 seconds
@@ -76,3 +75,16 @@ The separate synthetic holdout has seven cases (six positive); all six labeled p
 `python tools/benchmark_preprocess_demand.py --files 4096 --batch-size 64` placed a labeled hot file in batch 1 rather than batch 64 while still selecting 63 ordinary files in the first batch. Queue selection took 3.60 ms with demand hints versus a 2.39 ms baseline median; no model inference or full preprocessing ran. Learned hints are advisory, cached briefly, limited to four queries and 32 paths, and do not exclude regular work.
 
 `python tools/benchmark_http_search.py --suite holdout --repeats 3 --noise-files 100` launches an isolated CPU-profile supervisor and calls `/api/search` over loopback HTTP; preprocessing is disabled. Six labeled targets ranked first and the negative case returned no result. Cold requests were 172–315 ms; most warm requests were 92–131 ms, with two observed outliers of 1,316 ms and 2,150 ms. Three samples per query do not establish p95 or sustained performance. A separate live HTTP test verifies literal `C++` and a source edit before the fingerprint TTL expires. The operator's installed Hub is not restarted by either check.
+
+## Search continuation (2026-11-04)
+
+The live MCP diagnostic returned a stale/partial RAG index and
+`stale_or_denied_candidates`; reranking ran, but cannot repair missed
+candidate recall. A Czech setup query missed both manually labeled paths in
+the earlier live HTTP run. Added bounded Czech-to-English semantic expansion
+and preserved the original query for lexical matching. Focused
+search/RAG/canonical-input tests pass (99); release check passes. The synthetic
+service suite with 100 noise files retained recall@10 and MRR at 1.0, with
+per-query median latency 37.9–47.8 ms; it does not call semantic RAG and
+cannot demonstrate a Czech relevance gain. Live HTTP quality after this patch
+and index refresh remains unverified.

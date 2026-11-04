@@ -2985,9 +2985,13 @@ class RAGStore:
         # reject a stale vector space before loading or invoking the embedder.
         # This keeps a known-incompatible index from adding model latency to a
         # request that must degrade to lexical search anyway.
+        # Only an explicit service space is safe for an early reject. A cached
+        # backend identity can change when this request falls back at runtime.
+        active_embedding_identity = getattr(self.services, "space_id", None)
         if (
             semantic_only
             and stored_embedding_space
+            and active_embedding_identity
             and self._embedding_space_is_resolved()
             and self._embedding_space_id() != stored_embedding_space
         ):
@@ -3062,6 +3066,13 @@ class RAGStore:
             }
         query_vec = query_result["embeddings"][0]
         embedding_space = self._embedding_space_id(query_result)
+        if semantic_only and stored_embedding_space and embedding_space != stored_embedding_space:
+            return {
+                "success": True, "workspace": workspace, "results": [],
+                "degraded": True, "fallback": "embedding_space_mismatch",
+                "reason": "indexed vectors do not match the active query embedding space",
+                "reindex_required": True,
+            }
         embedding_space_resolved = self._embedding_space_is_resolved(query_result)
         stored_embedding_space: str | None = None
         stored_embedding_space_read = False

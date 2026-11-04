@@ -37,7 +37,12 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
-from .search_modes import canonical_search_mode, fuse_search_results, prefers_lexical_precision
+from .search_modes import (
+    canonical_search_mode,
+    expand_semantic_query,
+    fuse_search_results,
+    prefers_lexical_precision,
+)
 from .scheduler import SchedulerCancelledError, SchedulerTimeoutError
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
@@ -3187,7 +3192,10 @@ class LocalAIServices:
                     item["result_source"] = "lexical"
             return result
 
-        rag_rows, rag_meta = self._repo_rag_search(root, query, max(page_limit + offset, 32))
+        semantic_query, query_expansion_applied = expand_semantic_query(query)
+        rag_rows, rag_meta = self._repo_rag_search(
+            root, semantic_query, max(page_limit + offset, 32)
+        )
         if rag_meta.get("success") is not True:
             if mode == "hybrid":
                 result = self._repo_search_lexical(
@@ -3232,6 +3240,7 @@ class LocalAIServices:
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "index_revision": rag_meta.get("index_revision"),
+                "query_expansion_applied": query_expansion_applied,
                 "degraded": bool(rag_meta.get("degraded")),
                 "degradation_reason": rag_meta.get("degradation_reason"),
                 "reranker": rag_meta.get("reranker", {}),
@@ -3264,7 +3273,7 @@ class LocalAIServices:
         lexical_limit = min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
         lexical_result = self._repo_search_lexical(
             root, query, top_k, context_lines, enrich, path_hints, scope,
-            limit=lexical_limit, offset=0,
+            limit=lexical_limit, offset=0, exact_count=False,
         )
         if lexical_result.get("success") is not True:
             return {
@@ -3279,6 +3288,7 @@ class LocalAIServices:
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "query_expansion_applied": query_expansion_applied,
                 "reranker": rag_meta.get("reranker", {}),
             }
         fused, fusion_meta = fuse_search_results(
@@ -3298,6 +3308,7 @@ class LocalAIServices:
             "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
             "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
             "index_revision": rag_meta.get("index_revision"),
+            "query_expansion_applied": query_expansion_applied,
             "degraded": bool(rag_meta.get("degraded")),
             "degradation_reason": rag_meta.get("degradation_reason"),
             "reranker": rag_meta.get("reranker", {}),
@@ -3430,6 +3441,7 @@ class LocalAIServices:
         *,
         limit: int | None = None,
         offset: int = 0,
+        exact_count: bool = True,
     ) -> dict[str, Any]:
         page_limit = max(1, int(top_k)) if limit is None else limit
         bounds_error = pagination_bounds_error(page_limit, offset)
@@ -3452,6 +3464,7 @@ class LocalAIServices:
                 "feature": "enriched_search",
                 "error": "enriched search is disabled (features.enriched_search=false)",
             }
+        symbol_like_query = prefers_lexical_precision(query)
         # Search itself is case-insensitive and whitespace-tolerant. Use the same
         # canonical form for cache identity so equivalent agent queries reuse work.
         query = normalize_query(query, strip_punctuation=False).casefold()
@@ -3564,9 +3577,12 @@ class LocalAIServices:
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
-        # Local AI deterministic facts/symbols are the cheapest candidate source.
+        # Partial-index hints help exact symbol lookup, but they do not add
+        # completeness. Natural-language and hybrid search already have bounded
+        # source/RAG candidates, so avoid blocking them on broad index scans.
+        use_index_candidates = exact_count and symbol_like_query
         paths: list[str] = []
-        if self.deterministic is not None:
+        if use_index_candidates and self.deterministic is not None:
             try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
             except (OSError, sqlite3.Error, ValueError) as candidate_exc:
                 logger.debug(
@@ -3576,7 +3592,7 @@ class LocalAIServices:
         # The code index is a large, usage-driven cache. Its substring candidate
         # scans add no completeness for natural-language queries; source search
         # and the compact preprocessor indexes remain authoritative there.
-        if self.code_index is not None and prefers_lexical_precision(query):
+        if use_index_candidates and self.code_index is not None:
             try:
                 for p in self.code_index.related_paths(root, query, max(16, top_k * 3)):
                     if p not in paths: paths.append(p)
@@ -3588,7 +3604,7 @@ class LocalAIServices:
         # Warm preprocessing maintains FTS + semantic cards specifically so agents do
         # not need broad scans. Treat these only as candidates; exact source search
         # remains the fallback when a card/FTS hint produces no matches.
-        if self.preprocessor is not None:
+        if use_index_candidates and self.preprocessor is not None:
             try:
                 for p in self.preprocessor.candidate_paths(root, query, max(16, top_k * 3)):
                     if p not in paths:
@@ -3754,7 +3770,7 @@ class LocalAIServices:
                 git_inventory=file_inventory,
                 limit=page_limit,
                 offset=offset,
-                exact_count=True,
+                exact_count=exact_count,
                 force_include_paths=list(force_include_patterns),
                 path_priority=path_priority,
             )
@@ -3858,6 +3874,30 @@ class LocalAIServices:
                 and not isinstance(full_result.get("total_matches"), bool)
             )
             if not count_is_exact:
+                if not exact_count:
+                    candidate_page = allowed_results[:page_limit]
+                    result["results"] = candidate_page
+                    result["total_matches"] = None
+                    result["matches_count"] = None
+                    result["count_exact"] = False
+                    result["candidate_count"] = len(allowed_results)
+                    result["candidate_count_exact"] = False
+                    result["offset"] = offset
+                    result["limit"] = page_limit
+                    result["has_more"] = (
+                        True if full_result.get("has_more") or len(allowed_results) > page_limit
+                        else None
+                    )
+                    result["truncated"] = bool(full_result.get("truncated"))
+                    result["preprocessed_hit"] = bool(
+                        paths and any(str(item.get("path")) in set(paths) for item in candidate_page)
+                    )
+                    result["path_hint_usage"] = {
+                        "hint_used": hint_used,
+                        "fallback_used": hint_fallback_used,
+                        "hint_helped": None,
+                    }
+                    return result
                 return {
                     "success": False,
                     "error": "repository search could not produce an exact match count",
@@ -3953,6 +3993,7 @@ class LocalAIServices:
                 "scope": search_scope,
                 "config_digest": project_context.config_digest,
                 "path_hints_digest": request_hint_digest,
+                "exact_count": exact_count,
                 "force_include_patterns": list(force_include_patterns),
             },
             compute,

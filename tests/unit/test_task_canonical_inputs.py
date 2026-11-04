@@ -220,6 +220,14 @@ def test_task_action_contract_accepts_canonical_task_inputs_and_rejects_aliases(
         assert validate_operation_arguments("local_ai_task", action, {**canonical, **alias}) is not None
 
 
+def test_benchmark_ignores_empty_noncanonical_audio_default_but_rejects_value():
+    assert validate_operation_arguments("local_ai_task", "benchmark", {}) is None
+    assert validate_operation_arguments("local_ai_task", "benchmark", {"audio_path": ""}) is None
+    assert validate_operation_arguments(
+        "local_ai_task", "benchmark", {"audio_path": "clip.wav"},
+    ) is not None
+
+
 def test_candidate_action_schema_requires_canonical_inputs():
     assert validate_operation_arguments("local_ai_task", "candidate_create", {"candidate_data": {}}) is None
     assert validate_operation_arguments("local_ai_task", "candidate_create", {}) is not None

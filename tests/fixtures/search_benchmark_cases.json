@@ -66,6 +66,17 @@
       ]
     },
     {
+      "id": "czech-index-limit-setup",
+      "query": "Jak nastavit limit code indexu?",
+      "language": "cs",
+      "expected_paths": ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/CODE_INDEX.md", "anchor": "max_index_bytes"},
+        {"path": "src/local_ai_hub/code_index.py", "anchor": "def enforce_size_limit"}
+      ]
+    },
+    {
       "id": "english-hybrid-degradation",
       "query": "How does hybrid search handle an unavailable RAG index?",
       "language": "en",

@@ -2212,9 +2212,22 @@ def validate_operation_arguments(
     if tool == "local_ai_work" and action == "submit" and arguments.get("mode", "bounded") != "bounded":
         return "local_ai_work submit requires mode='bounded'"
 
+    scoped_fields = _ACTION_SCOPED_FIELDS.get(tool, {})
+
+    def is_empty_noncanonical_scoped_default(field: str) -> bool:
+        scoped_actions = scoped_fields.get(field, ())
+        return (
+            action not in scoped_actions
+            and field in arguments
+            and arguments[field] in (None, "")
+        )
+
     properties = operation_parameters_schema(tool, features).get("properties", {})
     if isinstance(properties, dict):
-        unknown = sorted(set(arguments) - set(properties))
+        unknown = sorted(
+            field for field in set(arguments) - set(properties)
+            if not is_empty_noncanonical_scoped_default(field)
+        )
         if unknown:
             if tool == "local_ai_task" and action == "compress" and unknown[0] == "input":
                 return "unexpected argument for local_ai_task: input; use text for source and task for instructions"
@@ -2224,11 +2237,14 @@ def validate_operation_arguments(
     allowed = action_contract.get("allowed")
     if allowed is not None:
         common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", contract["selector_field"]}
-        unexpected = sorted(set(arguments) - set(allowed) - common)
+        unexpected = sorted(
+            field for field in set(arguments) - set(allowed) - common
+            if not is_empty_noncanonical_scoped_default(field)
+        )
         if unexpected:
             return f"{unexpected[0]} is not valid for action='{action}'"
-    for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
-        if field in arguments and action not in scoped_actions:
+    for field, scoped_actions in scoped_fields.items():
+        if field in arguments and action not in scoped_actions and not is_empty_noncanonical_scoped_default(field):
             scoped_names = sorted(scoped_actions)
             if len(scoped_names) == 1:
                 return f"{field} is only valid for action='{scoped_names[0]}'"
