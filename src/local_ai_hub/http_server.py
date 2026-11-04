@@ -8596,7 +8596,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     reranking_available = False
                 use_reranker = payload.get("use_reranker") is True and reranking_available
-                self._send(200, APP.rag.search(str(payload.get("query", "")), workspace=workspace, top_k=int(payload.get("top_k", 8)), use_reranker=use_reranker)); return
+                self._send(200, APP.rag.search(
+                    str(payload.get("query", "")), workspace=workspace,
+                    top_k=int(payload.get("top_k", 8)), use_reranker=use_reranker,
+                    semantic_only=True,
+                )); return
             if 'post_speculative_draft_1' in post_route_ids:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
                 if connection is not None:

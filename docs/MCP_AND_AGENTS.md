@@ -53,6 +53,8 @@ If Serena is unavailable, the hub degrades to built-in indexes. Treat response s
 
 ## RAG document and diagram ingestion
 
+For `local_ai_rag(action="search")`, retrieval is semantic-only. It returns approximate candidate counts and incomplete coverage; use `local_ai_repo(action="search", search_mode="lexical")` for exact current-source counts and paging.
+
 For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. Success also returns `diagram_indexed` and the resolved image path.
 
 ## Cloud-agent request and delivery contract

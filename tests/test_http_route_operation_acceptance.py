@@ -136,7 +136,10 @@ def test_http_rag_search_cannot_bypass_reranker_capability_gate(
         result = json.loads(response.read().decode("utf-8"))
 
     assert result["success"] is True
-    assert calls == [("needle", {"workspace": "project:test", "top_k": 6, "use_reranker": False})]
+    assert calls == [(
+        "needle",
+        {"workspace": "project:test", "top_k": 6, "use_reranker": False, "semantic_only": True},
+    )]
 
 
 def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
