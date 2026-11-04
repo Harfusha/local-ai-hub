@@ -74,12 +74,21 @@ def expand_semantic_query(query: str) -> tuple[str, bool]:
     if type(query) is not str or not query.strip():
         return query, False
     tokens = re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
-    if not _CZECH_SEMANTIC_MARKERS.intersection(tokens):
+    token_set = set(tokens)
+    if not _CZECH_SEMANTIC_MARKERS.intersection(token_set):
         return query, False
     translated = list(dict.fromkeys(
         _SEMANTIC_QUERY_TERMS[token] for token in tokens
         if token in _SEMANTIC_QUERY_TERMS
     ))
+    has_index = bool({"index", "indexu"} & token_set)
+    has_size_limit = bool({
+        "limit", "omezit", "omezení", "omezeni",
+        "velikost", "velikosti",
+    } & token_set)
+    if has_index and has_size_limit:
+        translated.extend(("code_index", "max_index_bytes"))
+        translated = list(dict.fromkeys(translated))
     if not translated:
         return query, False
     return f"{query.strip()} {' '.join(translated)}", True
