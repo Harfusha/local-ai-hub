@@ -47,6 +47,9 @@ def test_live_benchmark_reports_progress_after_each_request(monkeypatch, capsys)
         "result_source": "lexical",
         "rag_search_skipped": True,
         "rag_skip_reason": "exact_lexical_precision",
+        "lexical_candidate_source": "preprocessed_index",
+        "lexical_preprocessed_candidate_count": 12,
+        "stale_candidate_count": 1,
     }))
     case = {"id": "progress-case", "query": "repo_search", "language": "en",
             "expected_paths": ["src/local_ai_hub/services.py"], "negative": False,
@@ -59,6 +62,9 @@ def test_live_benchmark_reports_progress_after_each_request(monkeypatch, capsys)
     assert row["result_source"] == "lexical"
     assert row["rag_search_skipped"] is True
     assert row["rag_skip_reason"] == "exact_lexical_precision"
+    assert row["lexical_candidate_source"] == "preprocessed_index"
+    assert row["lexical_preprocessed_candidate_count"] == 12
+    assert row["stale_candidate_count"] == 1
 
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
