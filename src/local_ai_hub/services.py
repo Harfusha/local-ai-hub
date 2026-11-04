@@ -3309,6 +3309,7 @@ class LocalAIServices:
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "index_revision": rag_meta.get("index_revision"),
                 "query_expansion_applied": query_expansion_applied,
                 "degraded": bool(rag_meta.get("degraded")),
@@ -3330,6 +3331,7 @@ class LocalAIServices:
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "unknown"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "lexical_total_matches": result.get("total_matches"),
                 "lexical_count_exact": result.get("count_exact") is True,
                 "rag_candidate_count": 0, "rag_candidate_count_exact": False,
@@ -3376,6 +3378,7 @@ class LocalAIServices:
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "query_expansion_applied": query_expansion_applied,
                 "reranker": rag_meta.get("reranker", {}),
                 **search_cache_fields,
@@ -3398,6 +3401,7 @@ class LocalAIServices:
             "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
             "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
             "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+            "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
             "index_revision": rag_meta.get("index_revision"),
             "query_expansion_applied": query_expansion_applied,
             "degraded": bool(rag_meta.get("degraded")),
@@ -3446,6 +3450,11 @@ class LocalAIServices:
             max_bytes = int(self.config.get("rag", {}).get("max_file_bytes", 2_000_000))
             valid: list[dict[str, Any]] = []
             stale = 0
+            stale_reasons = {
+                "source_changed_during_read": 0,
+                "source_read_failed": 0,
+                "fragment_mismatch": 0,
+            }
             source_cache: dict[str, tuple[str, int, int]] = {}
             seen_paths: set[str] = set()
             for candidate in raw.get("results", []):
@@ -3477,15 +3486,18 @@ class LocalAIServices:
                         after_stat = target.stat()
                         if (after_stat.st_mtime_ns, after_stat.st_size) != (stat.st_mtime_ns, stat.st_size):
                             stale += 1
+                            stale_reasons["source_changed_during_read"] += 1
                             continue
                         source_meta = (source, int(after_stat.st_mtime_ns), int(after_stat.st_size))
                         source_cache[rel_key] = source_meta
                     source = source_meta[0]
                     if not fragment or not _rag_fragment_matches_source(fragment, source):
                         stale += 1
+                        stale_reasons["fragment_mismatch"] += 1
                         continue
                 except (OSError, ValueError):
                     stale += 1
+                    stale_reasons["source_read_failed"] += 1
                     continue
                 item = dict(candidate)
                 item["path"] = target.relative_to(base).as_posix()
@@ -3510,6 +3522,7 @@ class LocalAIServices:
                 "index_coverage": "unknown_or_partial",
                 "candidate_freshness": "partially_verified" if stale else "verified_against_current_sources",
                 "stale_candidate_count": stale,
+                "stale_candidate_reasons": stale_reasons,
                 "index_revision": raw.get("index_revision"), "degraded": degraded,
                 "degradation_reason": reason,
                 "search_cache": raw.get("search_cache") if isinstance(raw.get("search_cache"), dict) else {},

@@ -554,6 +554,11 @@ def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):
     assert meta["degraded"] is True
     assert meta["index_state"] == "stale"
     assert meta["stale_candidate_count"] == 1
+    assert meta["stale_candidate_reasons"] == {
+        "source_changed_during_read": 0,
+        "source_read_failed": 0,
+        "fragment_mismatch": 1,
+    }
 
 
 def test_ast_chunk_module_context_is_verified_against_current_source(tmp_path):

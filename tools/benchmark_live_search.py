@@ -236,6 +236,7 @@ def run(
                 "index_state": last_result.get("index_state"),
                 "index_coverage": last_result.get("index_coverage"),
                 "stale_candidate_count": last_result.get("stale_candidate_count"),
+                "stale_candidate_reasons": last_result.get("stale_candidate_reasons"),
                 "degraded": last_result.get("degraded"),
                 "degradation_reason": last_result.get("degradation_reason"),
                 "reranker": last_result.get("reranker"),

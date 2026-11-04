@@ -50,6 +50,7 @@ def test_live_benchmark_reports_progress_after_each_request(monkeypatch, capsys)
         "lexical_candidate_source": "preprocessed_index",
         "lexical_preprocessed_candidate_count": 12,
         "stale_candidate_count": 1,
+        "stale_candidate_reasons": {"fragment_mismatch": 1},
     }))
     case = {"id": "progress-case", "query": "repo_search", "language": "en",
             "expected_paths": ["src/local_ai_hub/services.py"], "negative": False,
@@ -65,6 +66,7 @@ def test_live_benchmark_reports_progress_after_each_request(monkeypatch, capsys)
     assert row["lexical_candidate_source"] == "preprocessed_index"
     assert row["lexical_preprocessed_candidate_count"] == 12
     assert row["stale_candidate_count"] == 1
+    assert row["stale_candidate_reasons"] == {"fragment_mismatch": 1}
 
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
