@@ -172,6 +172,8 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
         (expanded, False, ("docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"))
     ]
     assert result["query_expansion_applied"] is True
+    assert result["lexical_candidate_source"] == "preprocessed_index"
+    assert result["lexical_preprocessed_candidate_count"] == 2
     fused, _ = fuse_search_results(
         [{"path": "src/repo_search.py"}],
         [{"path": "docs/unrelated.md"}],
