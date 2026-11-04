@@ -2187,6 +2187,7 @@ class RepositoryTools:
         self, root: str, query: str, limit: int = 12, context_lines: int | None = None,
         *, project_settings: Any | None = None,
         git_inventory: Any = _UNSET_GIT_INVENTORY,
+        candidate_paths: list[str] | tuple[str, ...] | None = None,
         offset: int = 0,
         exact_count: bool = False,
         force_include_paths: list[str] | tuple[str, ...] = (),
@@ -2194,6 +2195,12 @@ class RepositoryTools:
     ) -> dict[str, Any]:
         base = self._root(root)
         if exact_count:
+            if candidate_paths is not None:
+                return {
+                    "success": False, "root": str(base), "results": [],
+                    "error": "candidate_paths cannot be used for exact-count search",
+                    "terminal": True, "retryable": False,
+                }
             exact_limit = limit
             bounds_error = pagination_bounds_error(exact_limit, offset)
             if bounds_error:
@@ -2215,6 +2222,15 @@ class RepositoryTools:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                     "error": "offset must be a nonnegative integer", "root": str(base), "results": []}
+        if candidate_paths is not None:
+            if (not isinstance(candidate_paths, (list, tuple)) or not candidate_paths or len(candidate_paths) > 64
+                    or any(type(item) is not str or not item or "\x00" in item
+                           or Path(item).is_absolute() or ".." in Path(item.replace("\\", "/")).parts
+                           for item in candidate_paths)):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "candidate_paths must contain 1 to 64 safe relative paths",
+                        "root": str(base), "results": []}
+            git_inventory = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
         terms = self._terms(query)
         phrase = query.strip().lower()
         if not terms and phrase:
@@ -2246,6 +2262,10 @@ class RepositoryTools:
                 if len(project_candidates) >= candidate_limit + 1:
                     break
                 project_candidates.append(path)
+        elif candidate_paths is not None:
+            # This is an explicitly incomplete candidate set for hybrid search,
+            # never a source of exact lexical counts or complete-coverage claims.
+            project_candidates = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
         if project_candidates is None:
             candidates, accelerator_failed = self._ripgrep_candidates(
                 base, terms, candidate_limit + 1,

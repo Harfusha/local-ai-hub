@@ -3249,7 +3249,7 @@ class LocalAIServices:
         rag_rows, rag_meta = self._repo_rag_search(
             root,
             semantic_query,
-            max(page_limit + offset, min(32, page_limit * 2)),
+            max(32, page_limit),
         )
         search_cache = rag_meta.get("search_cache")
         search_cache_fields = {}
@@ -3344,9 +3344,24 @@ class LocalAIServices:
 
         lexical_limit = min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
         lexical_candidate_query = semantic_query if query_expansion_applied else query
+        lexical_candidate_paths = None
+        preprocessor = getattr(self, "preprocessor", None)
+        if not prefers_lexical_precision(query) and preprocessor is not None:
+            try:
+                candidates = preprocessor.candidate_paths(
+                    root, lexical_candidate_query, max(64, page_limit),
+                )
+                if candidates:
+                    lexical_candidate_paths = tuple(candidates[:64])
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "Preprocessing hybrid lexical candidates skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
         lexical_result = self._repo_search_lexical(
             root, lexical_candidate_query, top_k, context_lines, enrich, path_hints, scope,
             limit=lexical_limit, offset=0, exact_count=False,
+            candidate_paths=lexical_candidate_paths,
         )
         if lexical_result.get("success") is not True:
             return {
@@ -3375,6 +3390,7 @@ class LocalAIServices:
             "lexical_priority": prefers_lexical_precision(query),
             "lexical_total_matches": lexical_result.get("total_matches"),
             "lexical_count_exact": lexical_result.get("count_exact") is True,
+            "lexical_candidate_source": "preprocessed_fts" if lexical_candidate_paths else "current_source_scan",
             "rag_candidate_count": len(rag_rows), "rag_candidate_count_exact": False,
             "coverage_complete": False,
             "index_state": rag_meta.get("index_state", "unknown"),
@@ -3518,6 +3534,7 @@ class LocalAIServices:
         limit: int | None = None,
         offset: int = 0,
         exact_count: bool = True,
+        candidate_paths: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         page_limit = max(1, int(top_k)) if limit is None else limit
         bounds_error = pagination_bounds_error(page_limit, offset)
@@ -3768,6 +3785,8 @@ class LocalAIServices:
             # Hints enrich bounded targeted search; invalid policy never blocks normal search.
             hinted_search_paths = []
             hinted_force_include = False
+        if candidate_paths and hinted_search_paths:
+            candidate_paths = tuple(dict.fromkeys((*candidate_paths, *hinted_search_paths)))[:64]
         paths = list(dict.fromkeys([*hinted_search_paths, *paths]))
 
         def compute() -> dict[str, Any]:
@@ -3834,6 +3853,7 @@ class LocalAIServices:
                 root, query, context_lines=eff_ctx_lines,
                 project_settings=project_context.settings,
                 git_inventory=file_inventory,
+                candidate_paths=candidate_paths,
                 limit=page_limit,
                 offset=offset,
                 exact_count=exact_count,
@@ -3909,9 +3929,9 @@ class LocalAIServices:
                     for pattern in override_patterns
                 ),
             )
-            candidate_paths = [str(item["path"]) for item in override_order]
+            result_paths = [str(item["path"]) for item in override_order]
             configured_usage = project_context.prioritize_paths(
-                candidate_paths,
+                result_paths,
                 purpose="repository_search",
                 scope=search_scope,
                 repository_revision=repository_revision,

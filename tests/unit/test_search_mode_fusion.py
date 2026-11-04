@@ -6,6 +6,7 @@ from local_ai_hub.search_modes import (
     prefers_lexical_precision,
 )
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.repo_tools import RepositoryTools
 
 
 def _service(monkeypatch, rag_rows=None, rag_meta=None):
@@ -137,6 +138,14 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
     service = _service(monkeypatch, [{"path": "docs/CODE_INDEX.md", "text": "index budget"}])
     rag_calls = []
     lexical_calls = []
+    class Preprocessor:
+        def candidate_paths(self, root, query, limit):
+            assert root == "."
+            assert query.endswith("database storage eviction maximum bytes")
+            assert limit >= 64
+            return ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"]
+
+    service.preprocessor = Preprocessor()
     monkeypatch.setattr(
         service, "_repo_rag_search",
         lambda root, query, top_k: (rag_calls.append(query) or
@@ -146,7 +155,7 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
     monkeypatch.setattr(
         service, "_repo_search_lexical",
         lambda root, query, *args, **kwargs: (
-            lexical_calls.append((query, kwargs.get("exact_count"))) or
+            lexical_calls.append((query, kwargs.get("exact_count"), kwargs.get("candidate_paths"))) or
             {"success": True, "results": [{"path": "docs/CODE_INDEX.md", "text": "index budget"}],
              "count_exact": False, "total_matches": None, "truncated": True}
         ),
@@ -159,7 +168,9 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
         "database storage eviction maximum bytes"
     )
     assert rag_calls == [expanded]
-    assert lexical_calls == [(expanded, False)]
+    assert lexical_calls == [
+        (expanded, False, ("docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"))
+    ]
     assert result["query_expansion_applied"] is True
     fused, _ = fuse_search_results(
         [{"path": "src/repo_search.py"}],
@@ -373,7 +384,7 @@ def test_hybrid_requests_bounded_lexical_candidates_without_exact_corpus_count(m
     assert result["candidate_count"] == 2
 
 
-def test_rag_candidate_window_scales_with_requested_page(monkeypatch):
+def test_rag_candidate_window_is_stable_across_offsets(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/install.md", "text": "installation"}])
     calls = []
 
@@ -392,9 +403,40 @@ def test_rag_candidate_window_scales_with_requested_page(monkeypatch):
         "count_exact": False,
     })
 
-    service.repo_search(".", "installation guide", search_mode="hybrid", limit=10)
+    service.repo_search(".", "installation guide", search_mode="hybrid", limit=10, offset=0)
+    service.repo_search(".", "installation guide", search_mode="hybrid", limit=10, offset=20)
 
-    assert calls == [20]
+    assert calls == [32, 32]
+
+
+def test_preprocessed_lexical_candidates_bound_source_search(tmp_path):
+    selected = tmp_path / "src" / "selected.py"
+    unselected = tmp_path / "src" / "unselected.py"
+    selected.parent.mkdir()
+    selected.write_text("installation setup needle\n", encoding="utf-8")
+    unselected.write_text("installation setup needle\n", encoding="utf-8")
+    tools = RepositoryTools({})
+
+    result = tools.search(
+        str(tmp_path), "installation setup", limit=10, exact_count=False,
+        candidate_paths=["src/selected.py"],
+    )
+
+    assert result["success"] is True
+    assert {row["path"] for row in result["results"]} == {"src/selected.py"}
+    assert result.get("count_exact") is not True
+
+    exact = tools.search(
+        str(tmp_path), "installation setup", limit=10, exact_count=True,
+        candidate_paths=["src/selected.py"],
+    )
+    empty = tools.search(
+        str(tmp_path), "installation setup", limit=10, exact_count=False,
+        candidate_paths=[],
+    )
+    assert exact["success"] is False
+    assert "exact-count" in exact["error"]
+    assert empty["success"] is False
 
 
 def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):
