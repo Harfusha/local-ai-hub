@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from tools.benchmark_reranker import CASES, evaluate_ranking, validate_cases
+from tools.benchmark_reranker import CASES, cache_state, evaluate_ranking, validate_cases
 from tools import benchmark_reranker
 
 
@@ -15,6 +15,12 @@ def test_reranker_metrics_measure_order_and_relevance():
     assert result["precision_at_k"] == 0.5
     assert result["reciprocal_rank"] == 0.5
     assert result["ndcg_at_k"] == pytest.approx(1 / math.log2(3))
+
+
+def test_reranker_benchmark_distinguishes_full_warm_hits_from_mixed_calls():
+    assert cache_state({"cache_enabled": True, "cache_hits": 3, "computed": 0}, 3) == "warm_hit"
+    assert cache_state({"cache_enabled": True, "cache_hits": 1, "computed": 2}, 3) == "mixed_hit_and_inference"
+    assert cache_state({"cache_enabled": True, "cache_hits": 0, "computed": 3}, 3) == "inference_or_cold"
 
 
 def test_reranker_query_set_has_verified_english_and_czech_cases():
@@ -64,3 +70,52 @@ def test_benchmark_respects_disabled_active_reranker_config(monkeypatch):
 
     assert seen["enabled"] is False
     assert result["reranker_enabled"] is False
+    assert result["model_loaded_at_start"] is False
+    assert result["cases"][0]["samples"][0]["model_load_included"] is True
+
+
+def test_benchmark_measures_uncached_inference_then_cached_latency(monkeypatch):
+    calls = []
+
+    class Reranker:
+        def __init__(self, _config):
+            self.model_name = "test-reranker"
+            self.device = "cuda"
+            self.active_backend = "torch"
+            self.active_device = "cuda"
+            self.cache_enabled = True
+
+        def rerank(self, _query, documents, **_kwargs):
+            calls.append(self.cache_enabled)
+            return {
+                "success": True,
+                "results": [{"index": i, "score": float(len(documents) - i)} for i in range(len(documents))],
+                "cache_enabled": self.cache_enabled,
+                "cache_hits": len(documents) if self.cache_enabled else 0,
+                "computed": 0 if self.cache_enabled else len(documents),
+            }
+
+        def is_loaded(self):
+            return True
+
+        def is_enabled(self):
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(benchmark_reranker, "load_config", lambda *_args, **_kwargs: {
+        "hardware": {"profile": "high"}, "models": {}, "features": {"reranker": True},
+    })
+    monkeypatch.setattr(benchmark_reranker, "Reranker", Reranker)
+    monkeypatch.setattr(benchmark_reranker, "CASES", [CASES[0]])
+
+    result = benchmark_reranker.run(repeats=1)
+
+    assert calls == [False, True]
+    case = result["cases"][0]
+    assert case["inference_sample"]["cache_state"] == "bypassed_for_inference"
+    assert case["inference_sample"]["model_load_included"] is False
+    assert case["inference_sample"]["computed"] == len(CASES[0]["candidates"])
+    assert case["samples"][0]["cache_state"] == "warm_hit"
+    assert case["reranker_success"] is True

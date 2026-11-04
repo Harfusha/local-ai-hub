@@ -119,6 +119,23 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return ordered[max(0, math.ceil(percentile * len(ordered)) - 1)]
 
 
+def cache_state(result: dict[str, Any], document_count: int) -> str:
+    """Distinguish fully warm hits from partial-cache calls that still infer."""
+    if result.get("cache_enabled") is not True:
+        return "bypassed"
+    hits = result.get("cache_hits")
+    computed = result.get("computed")
+    if type(hits) is not int or type(computed) is not int:
+        return "unknown"
+    if hits == document_count and computed == 0:
+        return "warm_hit"
+    if hits > 0 and computed > 0:
+        return "mixed_hit_and_inference"
+    if hits > 0:
+        return "partial_hit"
+    return "inference_or_cold"
+
+
 def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
     if type(repeats) is not int or not 1 <= repeats <= 50:
         raise ValueError("repeats must be between 1 and 50")
@@ -132,6 +149,7 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
         models = config.setdefault("models", {})
         models["allow_hf_downloads"] = False
         reranker = Reranker(config)
+        model_loaded_at_start = reranker.is_loaded()
         rows: list[dict[str, Any]] = []
         for case in CASES:
             documents = [item["text"] for item in case["candidates"]]
@@ -139,19 +157,43 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
             baseline = evaluate_ranking(ids, case["relevant_ids"])
             samples: list[dict[str, Any]] = []
             last_ranked = ids
+            configured_cache = bool(getattr(reranker, "cache_enabled", True))
+            try:
+                reranker.cache_enabled = False
+                inference_model_load_included = not reranker.is_loaded()
+                inference_started = time.perf_counter()
+                inference_result = reranker.rerank(
+                    case["query"], documents, top_k=len(documents), priority=1
+                )
+                inference_ms = (time.perf_counter() - inference_started) * 1000
+            finally:
+                reranker.cache_enabled = configured_cache
+            inference_result = inference_result if isinstance(inference_result, dict) else {}
+            inference_rows = inference_result.get("results", [])
+            inference_valid = [
+                item for item in inference_rows
+                if isinstance(item, dict) and type(item.get("index")) is int
+            ]
+            inference_valid.sort(key=lambda item: -float(item.get("score", 0.0)))
+            last_ranked = [ids[item["index"]] for item in inference_valid if 0 <= item["index"] < len(ids)]
             for _ in range(repeats):
-                cache_hits_before = int(getattr(reranker, "_cache_hits", 0))
+                model_load_included = not reranker.is_loaded()
                 started = time.perf_counter()
                 result = reranker.rerank(case["query"], documents, top_k=len(documents), priority=1)
                 elapsed_ms = (time.perf_counter() - started) * 1000
-                cache_hit = int(getattr(reranker, "_cache_hits", 0)) > cache_hits_before
+                result = result if isinstance(result, dict) else {}
+                cache_hits = result.get("cache_hits")
+                computed = result.get("computed")
                 ranked_rows = result.get("results", []) if isinstance(result, dict) else []
                 valid = [item for item in ranked_rows if isinstance(item, dict) and type(item.get("index")) is int]
                 valid.sort(key=lambda item: -float(item.get("score", 0.0)))
                 last_ranked = [ids[item["index"]] for item in valid if 0 <= item["index"] < len(ids)]
                 samples.append({
                     "latency_ms": round(elapsed_ms, 3),
-                    "cache_state": "warm_hit" if cache_hit else "inference_or_cold",
+                    "cache_state": cache_state(result, len(documents)),
+                    "cache_hits": cache_hits,
+                    "computed": computed,
+                    "model_load_included": model_load_included,
                     "success": isinstance(result, dict) and result.get("success") is True,
                 })
             rows.append({
@@ -161,7 +203,17 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
                 "baseline": baseline,
                 "reranked_order": last_ranked,
                 "reranked": evaluate_ranking(last_ranked, case["relevant_ids"]),
-                "reranker_success": all(item["success"] for item in samples),
+                "inference_sample": {
+                    "latency_ms": round(inference_ms, 3),
+                    "cache_state": "bypassed_for_inference",
+                    "model_load_included": inference_model_load_included,
+                    "success": inference_result.get("success") is True,
+                    "computed": inference_result.get("computed"),
+                },
+                "reranker_success": (
+                    inference_result.get("success") is True
+                    and all(item["success"] for item in samples)
+                ),
                 "samples": samples,
                 "median_ms": statistics.median(item["latency_ms"] for item in samples),
                 "p95_ms": _percentile([item["latency_ms"] for item in samples], 0.95),
@@ -174,6 +226,7 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
             "requested_device": reranker.device,
             "active_backend": reranker.active_backend,
             "active_device": reranker.active_device,
+            "model_loaded_at_start": model_loaded_at_start,
             "model_downloads_allowed": False,
             "repeats": repeats,
             "cases": rows,
