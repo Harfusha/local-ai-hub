@@ -177,3 +177,12 @@ has not yet been restarted into the running Hub or evaluated in the live
 benchmark. The unrelated modifications in `operation_contracts.py` and
 `test_task_canonical_inputs.py` appeared during setup; they are preserved for
 review and are not included in this search fix commit.
+
+## Live checkpoint — 2026-11-04
+
+- Hub `5.1.3` online, profile `high`, active model `qwen3.5:9b-nvfp4`; reranker enabled and used by live search. Model downloads: none.
+- RAG index succeeded for the Local AI Hub root: 2,506 files, 18,859 chunks, 10 changed files, 90 newly embedded chunks, 385 reused chunks. This is an incremental result, not proof of exhaustive semantic coverage.
+- A four-query live sample (two HTTP requests per query/mode) found RAG recall@10 1.0 for installation and Czech index budget (MRR 1.0 and 0.333); exact `C++` recall 0; unknown-symbol negative correct. Hybrid recall@10 1.0 for installation and Czech index budget (MRR 0.333 and 0.2); exact and negative queries had no relevant result and took up to 10.42 s and 7.42 s respectively. RAG observed request times were 0.14–0.83 s; hybrid 0.26–10.42 s. Small sample; not a general-quality claim.
+- Several search responses still reported `index_state=stale`, `coverage_complete=false`, or `stale_or_denied_candidates` after indexing; cause remains under investigation. Search must continue to disclose that state.
+- Implemented a hybrid exact-symbol short-circuit: run current-source lexical search directly; skip RAG/reranker; expose `result_source`, skip reason, and lexical exact count. Focused tests and live post-restart latency verification remain.
+- GPU reservation release returned an output-contract error, but subsequent authoritative status reports `reservation_present=false`, `state=free`, `manual_intervention_required=false`. No second release call was made.

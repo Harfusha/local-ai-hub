@@ -3210,6 +3210,41 @@ class LocalAIServices:
                     item["result_source"] = "lexical"
             return result
 
+        if mode == "hybrid" and prefers_lexical_precision(query):
+            result = self._repo_search_lexical(
+                root, query, top_k, context_lines, enrich, path_hints, scope,
+                limit=page_limit, offset=offset,
+            )
+            succeeded = result.get("success") is True
+            lexical_count = result.get("total_matches")
+            lexical_count_exact = result.get("count_exact") is True
+            result.update({
+                "search_mode": "hybrid",
+                "result_source": "lexical",
+                "coverage_complete": succeeded,
+                "degraded": not succeeded,
+                "degradation_reason": None if succeeded else result.get("error", "lexical_search_unavailable"),
+                "index_state": "current_sources" if succeeded else "unavailable",
+                "candidate_freshness": "verified_against_current_sources" if succeeded else "unknown",
+                "lexical_total_matches": lexical_count,
+                "lexical_count_exact": lexical_count_exact,
+                "rag_candidate_count": 0,
+                "rag_candidate_count_exact": False,
+                "rag_search_skipped": True,
+                "rag_skip_reason": "exact_lexical_precision",
+                "reranker": {
+                    "requested": bool(self.config.get("features", {}).get("reranker", True)),
+                    "used": False,
+                    "degraded": not succeeded,
+                    "skipped_reason": "exact_lexical_precision",
+                },
+            })
+            for item in result.get("results", []) if succeeded else []:
+                if isinstance(item, dict):
+                    item["sources"] = ["lexical"]
+                    item["result_source"] = "lexical"
+            return result
+
         semantic_query, query_expansion_applied = expand_semantic_query(query)
         rag_rows, rag_meta = self._repo_rag_search(
             root, semantic_query, max(page_limit + offset, 32)

@@ -257,6 +257,11 @@ def test_unknown_symbol_does_not_surface_semantic_noise_in_hybrid(monkeypatch):
         "success": True, "results": [], "total_matches": None,
         "count_exact": False, "truncated": False,
     })
+    monkeypatch.setattr(
+        service,
+        "_repo_rag_search",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("RAG must be skipped")),
+    )
 
     result = service.repo_search(
         ".", "unknown_agent_symbol_2048", search_mode="hybrid", limit=10,
@@ -264,6 +269,42 @@ def test_unknown_symbol_does_not_surface_semantic_noise_in_hybrid(monkeypatch):
 
     assert result["results"] == []
     assert result["rag_candidate_count"] == 0
+    assert result["rag_search_skipped"] is True
+
+
+def test_hybrid_exact_symbol_uses_complete_lexical_path_without_rag(monkeypatch):
+    service = _service(monkeypatch)
+    lexical = {
+        "success": True,
+        "results": [{"path": "src/search.cpp", "text": "C++"}],
+        "total_matches": 7,
+        "count_exact": True,
+        "has_more": False,
+    }
+    monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: lexical)
+    monkeypatch.setattr(
+        service,
+        "_repo_rag_search",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("RAG must be skipped")),
+    )
+
+    result = service.repo_search(".", "C++", search_mode="hybrid", limit=5)
+
+    assert result["success"] is True
+    assert result["search_mode"] == "hybrid"
+    assert result["result_source"] == "lexical"
+    assert result["total_matches"] == 7
+    assert result["count_exact"] is True
+    assert result["coverage_complete"] is True
+    assert result["rag_search_skipped"] is True
+    assert result["rag_skip_reason"] == "exact_lexical_precision"
+    assert result["reranker"] == {
+        "requested": True,
+        "used": False,
+        "degraded": False,
+        "skipped_reason": "exact_lexical_precision",
+    }
+    assert result["results"][0]["sources"] == ["lexical"]
 
 
 def test_hybrid_keeps_lexical_exact_count_separate_and_deduplicates(monkeypatch):
