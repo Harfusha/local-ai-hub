@@ -7,6 +7,7 @@ import copy
 import errno
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -29,6 +30,7 @@ from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds
 from .sqlite_support import (
     connect_sqlite,
     ensure_incremental_vacuum,
+    incremental_vacuum,
     initialize_wal,
     is_busy_error,
     quick_sanity_check,
@@ -1079,6 +1081,7 @@ class CodeIndex:
         self.repo_tools = repo_tools
         self.db_path = Path(config["server"]["state_dir"]) / "code-index.sqlite3"
         self.parse_blob_max = int(config.get("code_index", {}).get("parse_blob_max_entries", 100000))
+        self.max_index_bytes = max(1, int(config.get("code_index", {}).get("max_index_bytes", 512 * 1024 * 1024)))
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._status_cache: dict[str, Any] = {}
@@ -1187,6 +1190,13 @@ class CodeIndex:
             size_bytes INTEGER,
             PRIMARY KEY(root, path)
         );
+        CREATE TABLE IF NOT EXISTS file_usage(
+            root TEXT NOT NULL,
+            path TEXT NOT NULL,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY(root, path)
+        );
         CREATE TABLE IF NOT EXISTS symbols(
             root TEXT,
             path TEXT,
@@ -1275,6 +1285,32 @@ class CodeIndex:
     def _init_db(self) -> None:
         with _code_index_initialization_lock(self.db_path):
             self._initialize_db()
+            # Converting a legacy database to INCREMENTAL auto-vacuum requires a
+            # full VACUUM. Do not make Hub startup attempt that conversion on an
+            # already oversized index: the bounded conversion can still hold a
+            # large database lock for seconds on every restart. Large legacy DBs
+            # remain usable; eviction reports that physical compaction needs a
+            # separately scheduled maintenance window.
+            try:
+                physical_bytes = sum(
+                    candidate.stat().st_size
+                    for candidate in (
+                        self.db_path,
+                        Path(str(self.db_path) + "-wal"),
+                        Path(str(self.db_path) + "-shm"),
+                    )
+                    if candidate.exists()
+                )
+                if physical_bytes > self.max_index_bytes:
+                    logging.getLogger(__name__).warning(
+                        "Skipping code-index auto-vacuum setup for oversized database (%s bytes)",
+                        physical_bytes,
+                    )
+                    return
+            except (OSError, sqlite3.Error, TypeError, ValueError):
+                # Keep the index available; normal database health checks report
+                # corruption separately and the bounded eviction path can retry.
+                return
             if not ensure_incremental_vacuum(self.db_path).get("success"):
                 logging.getLogger(__name__).warning("code-index database incremental vacuum setup incomplete")
 
@@ -1357,7 +1393,7 @@ class CodeIndex:
             con.execute("BEGIN IMMEDIATE")
             for path in paths:
                 con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (c_root, path))
-                for table in ("files", "symbols", "refs", "edges"):
+                for table in ("files", "symbols", "refs", "edges", "file_usage"):
                     con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (c_root, path))
             con.commit()
         self._status_cache.pop(c_root, None)
@@ -2139,7 +2175,7 @@ class CodeIndex:
         if not target.is_file():
             with self._lock, closing(self._connect()) as con:
                 con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (str(base), path))
-                for t in ("files", "symbols", "refs", "edges"):
+                for t in ("files", "symbols", "refs", "edges", "file_usage"):
                     con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
                 con.commit()
             self._advance_query_cache_generation()
@@ -3429,14 +3465,22 @@ class CodeIndex:
             pass
         return [path for path, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]]
 
-    def prune(self, root: str, current_paths: list[str]) -> dict[str, Any]:
+    def prune(
+        self, root: str, current_paths: list[str], *, stale_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Remove stale per-workspace index rows in one short transaction."""
         resolved_root = canonical_root(root)
         current = {self._norm_rel(p) for p in current_paths if self._norm_rel(p)}
+        stale_candidates = (
+            {self._norm_rel(p) for p in stale_paths if self._norm_rel(p)}
+            if stale_paths is not None else None
+        )
         try:
             with self._lock, closing(self._connect()) as con:
                 indexed = {self._norm_rel(str(r[0])) for r in con.execute("SELECT path FROM files WHERE root=?", (resolved_root,)).fetchall()}
                 stale = sorted(indexed - current)
+                if stale_candidates is not None:
+                    stale = [path for path in stale if path in stale_candidates]
                 if not stale:
                     return {"success": True, "root": resolved_root, "pruned": 0}
                 con.execute("BEGIN IMMEDIATE")
@@ -3444,12 +3488,327 @@ class CodeIndex:
                 con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", pairs)
                 for table in ("symbols", "refs", "edges", "files"):
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", pairs)
+                con.executemany("DELETE FROM file_usage WHERE root=? AND path=?", pairs)
                 con.commit()
             self._advance_query_cache_generation()
             self._status_cache.pop(resolved_root, None)
             return {"success": True, "root": resolved_root, "pruned": len(stale), "paths": stale[:100]}
         except sqlite3.DatabaseError as exc:
             return {"success": False, "root": resolved_root, "pruned": 0, "error": str(exc), "busy": is_busy_error(exc)}
+
+    def record_usage(self, root: str, paths: list[dict[str, Any]]) -> int:
+        """Persist bounded real-use counters supplied by the evidence store."""
+        resolved_root = canonical_root(root)
+        now = time.time()
+        rows: list[tuple[str, str, int, float]] = []
+        for item in paths[:256]:
+            if not isinstance(item, dict):
+                continue
+            path = self._norm_rel(str(item.get("path") or ""))
+            if not path:
+                continue
+            try:
+                uses = max(1, min(int(item.get("uses", 1)), 2_147_483_647))
+            except (TypeError, ValueError, OverflowError):
+                uses = 1
+            try:
+                last_used_at = float(item.get("last_used_at", now))
+            except (TypeError, ValueError, OverflowError):
+                last_used_at = now
+            if not math.isfinite(last_used_at) or last_used_at <= 0:
+                last_used_at = now
+            rows.append((resolved_root, path, uses, last_used_at))
+        if not rows:
+            return 0
+        with self._lock, closing(self._connect()) as con:
+            con.executemany(
+                "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(root,path) DO UPDATE SET "
+                "use_count=MAX(file_usage.use_count,excluded.use_count), "
+                "last_used_at=MAX(file_usage.last_used_at,excluded.last_used_at) "
+                "WHERE excluded.use_count>file_usage.use_count "
+                "OR excluded.last_used_at>file_usage.last_used_at",
+                rows,
+            )
+            con.commit()
+        return len(rows)
+
+    def measure_storage(self) -> dict[str, int]:
+        """Measure SQLite allocation, free pages, and current on-disk sidecars."""
+        with self._lock, closing(self._connect()) as con:
+            page_count = int(con.execute("PRAGMA page_count").fetchone()[0])
+            page_size = int(con.execute("PRAGMA page_size").fetchone()[0])
+            freelist_count = int(con.execute("PRAGMA freelist_count").fetchone()[0])
+            physical_bytes = sum(
+                path.stat().st_size for path in (
+                    self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm"),
+                ) if path.exists()
+            )
+        return {
+            "page_count": page_count,
+            "page_size": page_size,
+            "freelist_count": freelist_count,
+            "allocated_bytes": page_count * page_size,
+            "reusable_bytes": freelist_count * page_size,
+            "physical_bytes": physical_bytes,
+        }
+
+    def enforce_size_limit(
+        self, *, max_bytes: int | None = None, dry_run: bool = False, max_files: int = 128,
+    ) -> dict[str, Any]:
+        """Evict cold derived rows and reclaim SQLite pages in a bounded pass."""
+        limit = self.max_index_bytes if max_bytes is None else max_bytes
+        if type(limit) is not int or limit < 1:
+            return {"success": False, "error": "max_bytes must be a positive integer"}
+        if type(max_files) is not int or not 1 <= max_files <= 512:
+            return {"success": False, "error": "max_files must be between 1 and 512"}
+        before = self.measure_storage()
+        if before["physical_bytes"] <= limit:
+            return {
+                "success": True, "dry_run": dry_run, "within_budget": True,
+                "max_bytes": limit, "before": before, "after": before,
+                "evicted_paths": [], "estimated_reclaimable_bytes": 0,
+            }
+
+        selected: list[tuple[str, str]] = []
+        estimated = 0
+        with self._lock, closing(self._connect()) as con:
+            candidates = con.execute(
+                "SELECT f.root,f.path,COALESCE(f.size_bytes,0) AS size_bytes, "
+                "COALESCE(u.use_count,0) AS use_count, "
+                "COALESCE(u.last_used_at,f.updated_at,0) AS last_used_at, "
+                "(SELECT COUNT(*) FROM symbols s WHERE s.root=f.root AND s.path=f.path) AS symbols, "
+                "(SELECT COUNT(*) FROM refs r WHERE r.root=f.root AND r.path=f.path) AS refs, "
+                "(SELECT COUNT(*) FROM edges e WHERE e.root=f.root AND e.path=f.path) AS edges, "
+                "(SELECT COUNT(*) FROM symbol_trigrams t WHERE t.root=f.root AND t.path=f.path) AS trigrams "
+                "FROM files f LEFT JOIN file_usage u ON u.root=f.root AND u.path=f.path "
+                "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC"
+            ).fetchall()
+            need = before["physical_bytes"] - limit
+            for row in candidates:
+                if len(selected) >= max_files or estimated >= need:
+                    break
+                selected.append((str(row["root"]), str(row["path"])))
+                estimated += (
+                    max(1, int(row["size_bytes"]))
+                    + int(row["symbols"]) * 1024
+                    + int(row["refs"]) * 384
+                    + int(row["edges"]) * 384
+                    + int(row["trigrams"]) * 192
+                    + 65536
+                )
+            if not dry_run and selected:
+                con.execute("BEGIN IMMEDIATE")
+                for table in ("symbol_trigrams", "symbols", "refs", "edges", "file_usage", "files"):
+                    con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", selected)
+                con.commit()
+
+        if dry_run or not selected:
+            predicted_physical = max(0, before["physical_bytes"] - estimated)
+            return {
+                "success": True, "dry_run": dry_run,
+                "within_budget": predicted_physical <= limit, "max_bytes": limit,
+                "before": before, "after": before,
+                "evicted_paths": selected,
+                "estimated_reclaimable_bytes": estimated,
+                "predicted_physical_bytes": predicted_physical,
+            }
+
+        self._advance_query_cache_generation()
+        try:
+            with closing(self._connect()) as con:
+                auto_vacuum = int(con.execute("PRAGMA auto_vacuum").fetchone()[0])
+        except sqlite3.DatabaseError as exc:
+            auto_vacuum = 0
+            compact_error = type(exc).__name__
+        else:
+            compact_error = None
+
+        # Prefer bounded incremental reclamation. A full VACUUM is allowed only
+        # for databases no larger than the configured index budget; larger legacy
+        # databases would monopolize the writer lock and need explicit maintenance.
+        if before["physical_bytes"] <= self.max_index_bytes:
+            compact_deadline = time.monotonic() + 5.0
+            try:
+                with closing(self._connect()) as con:
+                    con.set_progress_handler(lambda: int(time.monotonic() >= compact_deadline), 2000)
+                    con.execute("VACUUM")
+                vacuum = {"success": True, "method": "bounded_vacuum"}
+            except sqlite3.DatabaseError as exc:
+                vacuum = {"success": False, "method": "bounded_vacuum", "error": type(exc).__name__}
+        elif auto_vacuum == 2:
+            vacuum = incremental_vacuum(
+                self.db_path, pages=65536, freelist_threshold=1, timeout_seconds=5.0,
+            )
+            vacuum["method"] = "incremental_vacuum"
+        else:
+            vacuum = {
+                "success": False,
+                "method": "skipped",
+                "reason": "large_legacy_database_requires_scheduled_compaction",
+            }
+        if compact_error:
+            vacuum["compaction_error"] = compact_error
+        try:
+            with closing(self._connect()) as con:
+                con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            pass
+        after = self.measure_storage()
+        return {
+            "success": bool(vacuum.get("success")),
+            "dry_run": False,
+            "within_budget": after["physical_bytes"] <= limit,
+            "max_bytes": limit,
+            "before": before,
+            "after": after,
+            "evicted_paths": selected,
+            "estimated_reclaimable_bytes": estimated,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "vacuum": vacuum,
+        }
+
+    def cleanup_stale_files(
+        self,
+        *,
+        dry_run: bool = True,
+        max_roots: int = 64,
+        max_paths_per_root: int = 20000,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        """Prune derived rows for missing source paths and empty inactive roots.
+
+        Active Git roots are skipped as a whole. For other roots, a source path
+        must still resolve to a file inside its owning root to remain indexed.
+        Shared parse blobs are never removed. Each root is committed separately,
+        making interrupted runs safe to repeat.
+        """
+        if type(dry_run) is not bool or type(compact) is not bool:
+            return {"success": False, "error": "dry_run and compact must be booleans"}
+        if type(max_roots) is not int or not 1 <= max_roots <= 128:
+            return {"success": False, "error": "max_roots must be between 1 and 128"}
+        if type(max_paths_per_root) is not int or not 1 <= max_paths_per_root <= 100000:
+            return {"success": False, "error": "max_paths_per_root must be between 1 and 100000"}
+
+        before = self.measure_storage()
+        with self._lock, closing(self._connect()) as con:
+            root_rows = con.execute(
+                "SELECT root,COUNT(*) AS file_count FROM files GROUP BY root ORDER BY root LIMIT ?",
+                (max_roots + 1,),
+            ).fetchall()
+        has_more_roots = len(root_rows) > max_roots
+        root_rows = root_rows[:max_roots]
+        plans: list[dict[str, Any]] = []
+        for root_row in root_rows:
+            root = str(root_row["root"])
+            base = Path(root).expanduser()
+            if not base.is_absolute() or "\x00" in root or base.is_symlink():
+                plans.append({"root": root, "skipped": True, "reason": "unsafe_root_path"})
+                continue
+            try:
+                base = base.resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                plans.append({"root": root, "skipped": True, "reason": "root_resolution_failed"})
+                continue
+            if any((ancestor / ".git").exists() for ancestor in (base, *base.parents)):
+                plans.append({"root": root, "skipped": True, "reason": "active_git_root"})
+                continue
+            with self._lock, closing(self._connect()) as con:
+                total = int(con.execute("SELECT COUNT(*) FROM files WHERE root=?", (root,)).fetchone()[0])
+                if total > max_paths_per_root:
+                    plans.append({
+                        "root": root, "skipped": True, "reason": "root_scan_limit",
+                        "file_count": total, "max_paths_per_root": max_paths_per_root,
+                    })
+                    continue
+                rows = con.execute(
+                    "SELECT path,size_bytes FROM files WHERE root=? ORDER BY path",
+                    (root,),
+                ).fetchall()
+            current_paths: list[str] = []
+            stale_paths: list[str] = []
+            logical_source_bytes = 0
+            for row in rows:
+                rel = str(row["path"] or "").replace("\\", "/")
+                rel_path = Path(rel)
+                if not rel or rel_path.is_absolute() or ".." in rel_path.parts or "\x00" in rel:
+                    stale_paths.append(rel)
+                    logical_source_bytes += max(0, int(row["size_bytes"] or 0))
+                    continue
+                target = base / rel_path
+                try:
+                    resolved_target = target.resolve(strict=True)
+                    resolved_target.relative_to(base)
+                    if not resolved_target.is_file() or target.is_symlink():
+                        raise ValueError("source path is not a confined regular file")
+                except (OSError, RuntimeError, ValueError):
+                    stale_paths.append(rel)
+                    logical_source_bytes += max(0, int(row["size_bytes"] or 0))
+                    continue
+                current_paths.append(rel)
+            plans.append({
+                "root": root, "skipped": False, "file_count": total,
+                "stale_file_count": len(stale_paths),
+                "logical_source_bytes": logical_source_bytes,
+                "current_file_count": len(current_paths),
+                "stale_paths": stale_paths,
+                "current_paths": current_paths,
+            })
+
+        target_plans = [item for item in plans if not item.get("skipped") and item.get("stale_file_count", 0)]
+        if dry_run:
+            return {
+                "success": True, "dry_run": True, "roots_scanned": len(root_rows),
+                "has_more_roots": has_more_roots, "roots": [
+                    {key: value for key, value in item.items() if key != "current_paths"}
+                    for item in plans
+                ],
+                "stale_root_count": len(target_plans),
+                "stale_file_count": sum(item["stale_file_count"] for item in target_plans),
+                "logical_source_bytes": sum(item["logical_source_bytes"] for item in target_plans),
+                "storage_before": before, "storage_after": before,
+                "currently_reusable_bytes": before["reusable_bytes"],
+                "parse_blobs_preserved": True,
+            }
+
+        pruned_roots: list[dict[str, Any]] = []
+        for item in target_plans:
+            result = self.prune(
+                str(item["root"]), list(item["current_paths"]),
+                stale_paths=list(item["stale_paths"]),
+            )
+            if not isinstance(result, dict) or result.get("success") is not True:
+                return {
+                    "success": False, "dry_run": False, "roots": pruned_roots,
+                    "failed_root": item["root"], "error": result.get("error", "root_prune_failed") if isinstance(result, dict) else "root_prune_failed",
+                    "storage_before": before, "storage_after": self.measure_storage(),
+                    "interrupted_safe_to_repeat": True,
+                }
+            pruned_roots.append({"root": item["root"], "pruned": int(result.get("pruned", 0))})
+
+        compaction: dict[str, Any] = {"success": True, "method": "not_requested"}
+        if compact and any(int(item["pruned"]) > 0 for item in pruned_roots):
+            compaction = incremental_vacuum(
+                self.db_path, pages=65536, freelist_threshold=1, timeout_seconds=5.0,
+            )
+            try:
+                with closing(self._connect()) as con:
+                    con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.DatabaseError as exc:
+                compaction["checkpoint_error"] = type(exc).__name__
+        after = self.measure_storage()
+        return {
+            "success": all(bool(item.get("success")) for item in (compaction,)),
+            "dry_run": False, "roots_scanned": len(root_rows),
+            "has_more_roots": has_more_roots, "roots_pruned": pruned_roots,
+            "files_pruned": sum(int(item["pruned"]) for item in pruned_roots),
+            "logical_source_bytes": sum(item["logical_source_bytes"] for item in target_plans),
+            "storage_before": before, "storage_after": after,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "freelist_bytes_released": max(0, before["reusable_bytes"] - after["reusable_bytes"]),
+            "compaction": compaction, "parse_blobs_preserved": True,
+            "interrupted_safe_to_repeat": True,
+        }
 
     def impact(self, root: str, changed_paths: list[str], max_symbols: int = 48, max_dependents: int = 30) -> dict[str, Any]:
         """Resolve changed symbols, dependents and likely tests from SQLite only."""

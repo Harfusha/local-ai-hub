@@ -1698,6 +1698,11 @@ def _compact(
             *(_COMPLEXITY_PROTECTED_KEYS if task_kind == "complexity" else ()),
             *(_TOPOLOGY_PROTECTED_KEYS if task_kind == "topology" else ()),
             *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} or page_key in {"callers", "callees", "implementations"} else ()),
+            *(('search_mode', 'result_source', 'count_exact', 'coverage_complete', 'index_state', 'index_coverage',
+               'candidate_freshness', 'stale_candidate_count', 'index_revision',
+               'lexical_total_matches', 'lexical_count_exact', 'lexical_priority', 'candidate_count', 'candidate_count_exact',
+               'rag_candidate_count', 'rag_candidate_count_exact', 'degraded', 'degradation_reason', 'reranker',
+               'sources') if task_kind == "search" else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
@@ -3600,6 +3605,7 @@ def _local_ai_repo_impl(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
+    search_mode: str = "hybrid",
     old_symbol: str | None = None,
     new_symbol: str | None = None,
     old_code: str | None = None,
@@ -3866,6 +3872,9 @@ def _local_ai_repo_impl(
             **({"owner": owner, "lease_id": lease_id} if owner is not None and lease_id is not None else {}),
         }, timeout=_timeout("quick")), "verify")
     if action == "search":
+        if type(search_mode) is not str or search_mode not in {"lexical", "rag", "hybrid"}:
+            return {"success": False, "error": "search_mode must be lexical, rag, or hybrid",
+                    "status_code": 400, "terminal": True, "retryable": False}
         if summarize_results and not getattr(FEATURES, "search_summaries", False):
             return {"success": False, "unsupported": True, "feature": "search_summaries",
                     "error": "AI search summaries require the balanced, high or max profile"}
@@ -3899,6 +3908,7 @@ def _local_ai_repo_impl(
             "enrich": enrich,
             "limit": limit if explicit_limit else 24,
             "offset": offset,
+            "search_mode": search_mode,
         }
         search_result = CLIENT.post("/api/search", search_payload, timeout=float(min(120, _timeout("quick"))), path_hints=normalized_hints or None)
         projected = _compact(search_result, "search", extra_fields=extra if extra else None)
@@ -4588,6 +4598,7 @@ def local_ai_repo(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
+    search_mode: str = "hybrid",
     old_symbol: str | None = None,
     new_symbol: str | None = None,
     old_code: str | None = None,
@@ -4742,6 +4753,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit,
         summarize_results=summarize_results, offset=offset,
+        search_mode=search_mode,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
         max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, file=file, owner=owner, lease_id=lease_id, **forward,
     )

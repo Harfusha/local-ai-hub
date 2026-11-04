@@ -629,6 +629,7 @@ def test_mcp_repo_search_passes_path_hints_to_client_keyword(monkeypatch) -> Non
                 "enrich": False,
                 "limit": 24,
                 "offset": 0,
+                "search_mode": "hybrid",
             },
             expected_hints,
         )

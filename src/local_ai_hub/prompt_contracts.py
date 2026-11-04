@@ -40,13 +40,9 @@ _CAPABILITIES = {
         ("security_decision", "apply_changes", "final_verification"),
     ),
     # Intended advisory scope only; this does not attest installed-model quality.
-    "qwen3.5:4b-q4_k_m": ModelCapability(
-        "qwen3.5:4b-q4_K_M", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
+    "qwen3.5:4b-nvfp4": ModelCapability(
+        "qwen3.5:4b-nvfp4", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
         ("architecture", "security_decision", "high_risk_migration", "apply_changes", "final_verification"),
-    ),
-    "gemma4:12b": ModelCapability(
-        "gemma4:12b", "vision", ("visual_review", "visual_issue_list", "extract"),
-        ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"),
     ),
     "qwen3-vl:4b": ModelCapability(
         "qwen3-vl:4b", "vision", ("visual_review", "visual_issue_list", "accessibility_observation", "extract"),

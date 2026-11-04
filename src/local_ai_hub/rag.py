@@ -2707,6 +2707,7 @@ class RAGStore:
             raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}))
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
+        result["index_revision"] = revision
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
 
@@ -2966,6 +2967,27 @@ class RAGStore:
     def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
+            stored_embedding_space = (
+                self._stored_workspace_embedding_space(con, workspace)
+                if semantic_only else None
+            )
+
+        # If both index and active embedder identities are already established,
+        # reject a stale vector space before loading or invoking the embedder.
+        # This keeps a known-incompatible index from adding model latency to a
+        # request that must degrade to lexical search anyway.
+        if (
+            semantic_only
+            and stored_embedding_space
+            and self._embedding_space_is_resolved()
+            and self._embedding_space_id() != stored_embedding_space
+        ):
+            return {
+                "success": True, "workspace": workspace, "results": [],
+                "degraded": True, "fallback": "embedding_space_mismatch",
+                "reason": "indexed vectors do not match the active query embedding space",
+                "reindex_required": True,
+            }
 
         def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]

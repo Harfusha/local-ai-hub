@@ -887,6 +887,9 @@ enabled = true
 max_query_results = 30
 # Content-addressed parser cache is shared across paths/worktrees.
 parse_blob_max_entries = 100000
+# Hard cap for the derived code-index SQLite database and its WAL/SHM sidecars.
+# Coldest/least-used files evict first; bounded SQLite compaction returns pages.
+max_index_bytes = 536870912
 
 [evidence]
 # Immutable exact source slices are addressed by compact IDs and fetched lazily.

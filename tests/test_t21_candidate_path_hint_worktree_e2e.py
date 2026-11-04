@@ -211,6 +211,7 @@ def test_registered_search_path_hints_use_candidate_worktree_config(
                 "enrich": False,
                 "limit": 24,
                 "offset": 0,
+                "search_mode": "hybrid",
                 "path_hints": [hint],
             }
         ]

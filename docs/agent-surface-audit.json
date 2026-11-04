@@ -1817,6 +1817,50 @@
         ]
       }
     },
+    "MCP local_ai_coord.gpu_reservation_release": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Generation-bound GPU reservation recovery requires explicit consent and an audit reason, and only releases an expired lease.",
+      "response_policy": "Preserve success, errors and generation; never expose the reservation digest or raw token. Unknown or active reservations fail closed.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.gpu_reservation_status": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Scoped GPU reservation status supports safe resource coordination without exposing reservation credentials.",
+      "response_policy": "Preserve reservation presence, state, expiry and manual-intervention requirement; never expose the reservation digest or raw token.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_coord.context_compile": {
       "decision": "retain",
       "role": "agent",

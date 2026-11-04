@@ -15,7 +15,7 @@ from .opencode_model_names import validate_local_model_name
 _CAPACITY_MB = {"12gb": 12 * 1024 - 32, "16gb": 16 * 1024 - 128}
 _CANDIDATES = {
     "12gb": ("qwen3.5:9b", "qwen2.5-coder:7b"),
-    "16gb": ("qwen2.5-coder:14b", "qwen3.5:9b", "gemma4:12b"),
+    "16gb": ("qwen3.5:9b-nvfp4", "qwen2.5-coder:7b", "qwen3.5:4b-nvfp4"),
 }
 
 

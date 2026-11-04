@@ -5,7 +5,7 @@ from local_ai_hub.opencode_hardware import future_profile_candidates, inspect_op
 
 def test_future_profile_candidates_do_not_change_hardware_admission():
     candidates = future_profile_candidates("16gb")
-    assert candidates[0] == "qwen2.5-coder:14b"
+    assert candidates[0] == "qwen3.5:9b-nvfp4"
     assert future_profile_candidates("12gb", model="custom:latest")[0] == "custom:latest"
     assert inspect_opencode_hardware({"gpus": [{"vendor": "nvidia", "vram_mb": 8192}]})["profile"] == "unsupported"
     with pytest.raises(ValueError):
@@ -26,11 +26,11 @@ def test_future_staging_is_explicitly_unverified(monkeypatch, tmp_path):
         asset.write_text("fixture", encoding="utf-8")
     monkeypatch.setattr(setup, "_opencode_platform_supported", lambda: True)
     monkeypatch.setattr(setup._opencode_install_module, "install_windows_x64", lambda path: path / "opencode.exe")
-    monkeypatch.setattr(models, "local_inventory", lambda origin: {"qwen2.5-coder:14b"})
+    monkeypatch.setattr(models, "local_inventory", lambda origin: {"qwen3.5:9b-nvfp4"})
     result = setup.stage_opencode_future_profile({"server": {"ollama_url": "http://127.0.0.1:11434"}}, tmp_path,
                                                  destination=tmp_path / "app", target="16gb", allow_pull=False)
     assert result["target_profile"] == "16gb"
-    assert result["candidate"] == "qwen2.5-coder:14b"
+    assert result["candidate"] == "qwen3.5:9b-nvfp4"
     assert result["runtime_verified"] is False and result["admission"] == "unverified"
     assert result["complete"] is False and result["selected_model"] is None
 

@@ -37,6 +37,7 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
+from .search_modes import canonical_search_mode, fuse_search_results, prefers_lexical_precision
 from .scheduler import SchedulerCancelledError, SchedulerTimeoutError
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
@@ -3138,6 +3139,275 @@ class LocalAIServices:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
     def repo_search(
+        self,
+        root: str,
+        query: str,
+        top_k: int = 12,
+        context_lines: int | None = None,
+        enrich: bool = False,
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+        scope: str = "repo_search",
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        search_mode: str = "lexical",
+    ) -> dict[str, Any]:
+        mode = canonical_search_mode(search_mode)
+        if mode is None:
+            return {
+                "success": False, "error": "search_mode must be lexical, rag, or hybrid",
+                "status_code": 400, "terminal": True, "retryable": False,
+                "search_mode": search_mode, "results": [], "total_matches": 0,
+                "count_exact": False, "has_more": False,
+            }
+        page_limit = max(1, int(top_k)) if limit is None else limit
+        bounds_error = pagination_bounds_error(page_limit, offset)
+        if bounds_error:
+            return {
+                "success": False, "error": bounds_error, "status_code": 400,
+                "root": root, "results": [], "total_matches": 0, "has_more": False,
+                "limit": page_limit if type(page_limit) is int and 1 <= page_limit <= MAX_PAGE_SIZE else None,
+                "offset": offset if type(offset) is int and 0 <= offset < MAX_PAGE_WINDOW else None,
+                "search_mode": mode,
+            }
+        if mode == "lexical":
+            result = self._repo_search_lexical(
+                root, query, top_k, context_lines, enrich, path_hints, scope,
+                limit=page_limit, offset=offset,
+            )
+            result.update({
+                "search_mode": "lexical", "result_source": "lexical",
+                "index_state": "current_sources" if result.get("success") is True else "unavailable",
+                "coverage_complete": result.get("success") is True,
+                "reranker": {"requested": False, "used": False, "degraded": False},
+            })
+            for item in result.get("results", []) if result.get("success") is True else []:
+                if isinstance(item, dict):
+                    item["sources"] = ["lexical"]
+                    item["result_source"] = "lexical"
+            return result
+
+        rag_rows, rag_meta = self._repo_rag_search(root, query, max(page_limit + offset, 32))
+        if rag_meta.get("success") is not True:
+            if mode == "hybrid":
+                result = self._repo_search_lexical(
+                    root, query, top_k, context_lines, enrich, path_hints, scope,
+                    limit=page_limit, offset=offset,
+                )
+                result.update({
+                    "search_mode": "hybrid", "result_source": "lexical_fallback",
+                    "coverage_complete": False, "degraded": True,
+                    "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
+                    "index_state": rag_meta.get("index_state", "unavailable"),
+                    "lexical_total_matches": result.get("total_matches"),
+                    "lexical_count_exact": result.get("count_exact") is True,
+                    "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
+                })
+                for item in result.get("results", []):
+                    if isinstance(item, dict):
+                        item["sources"] = ["lexical"]
+                        item["result_source"] = "lexical_fallback"
+                return result
+            return {
+                "success": False, "status_code": 503, "root": root,
+                "search_mode": "rag", "results": [], "total_matches": None,
+                "count_exact": False, "has_more": None, "offset": offset,
+                "limit": page_limit, "coverage_complete": False,
+                "degraded": True, "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
+                "index_state": rag_meta.get("index_state", "unavailable"),
+                "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
+            }
+
+        if mode == "rag":
+            rows = rag_rows[offset : offset + page_limit]
+            return {
+                "success": True, "root": root, "search_mode": "rag",
+                "result_source": "rag", "results": rows,
+                "total_matches": None, "count_exact": False,
+                "candidate_count": len(rag_rows), "candidate_count_exact": False,
+                "has_more": True if offset + len(rows) < len(rag_rows) else None,
+                "offset": offset, "limit": page_limit, "coverage_complete": False,
+                "index_state": rag_meta.get("index_state", "unknown"),
+                "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+                "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "index_revision": rag_meta.get("index_revision"),
+                "degraded": bool(rag_meta.get("degraded")),
+                "degradation_reason": rag_meta.get("degradation_reason"),
+                "reranker": rag_meta.get("reranker", {}),
+            }
+
+        if not rag_rows and rag_meta.get("degraded"):
+            result = self._repo_search_lexical(
+                root, query, top_k, context_lines, enrich, path_hints, scope,
+                limit=page_limit, offset=offset,
+            )
+            result.update({
+                "search_mode": "hybrid", "result_source": "lexical_fallback",
+                "coverage_complete": False, "degraded": True,
+                "degradation_reason": rag_meta.get("degradation_reason", "rag_backend_degraded"),
+                "index_state": rag_meta.get("index_state", "unknown"),
+                "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                "candidate_freshness": rag_meta.get("candidate_freshness", "unknown"),
+                "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "lexical_total_matches": result.get("total_matches"),
+                "lexical_count_exact": result.get("count_exact") is True,
+                "rag_candidate_count": 0, "rag_candidate_count_exact": False,
+                "reranker": rag_meta.get("reranker", {}),
+            })
+            for item in result.get("results", []):
+                if isinstance(item, dict):
+                    item["sources"] = ["lexical"]
+                    item["result_source"] = "lexical_fallback"
+            return result
+
+        lexical_limit = min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
+        lexical_result = self._repo_search_lexical(
+            root, query, top_k, context_lines, enrich, path_hints, scope,
+            limit=lexical_limit, offset=0,
+        )
+        if lexical_result.get("success") is not True:
+            return {
+                "success": True, "root": root, "search_mode": "hybrid",
+                "result_source": "rag_fallback", "results": rag_rows[offset:offset + page_limit],
+                "total_matches": None, "count_exact": False,
+                "candidate_count": len(rag_rows), "candidate_count_exact": False,
+                "has_more": None, "offset": offset, "limit": page_limit,
+                "coverage_complete": False, "degraded": True,
+                "degradation_reason": "lexical_backend_unavailable",
+                "index_state": rag_meta.get("index_state", "unknown"),
+                "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+                "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "reranker": rag_meta.get("reranker", {}),
+            }
+        fused, fusion_meta = fuse_search_results(
+            lexical_result.get("results", []), rag_rows, limit=page_limit, offset=offset,
+            lexical_first=prefers_lexical_precision(query),
+        )
+        return {
+            "success": True, "root": root, "search_mode": "hybrid",
+            "result_source": "hybrid", "results": fused, **fusion_meta,
+            "lexical_priority": prefers_lexical_precision(query),
+            "lexical_total_matches": lexical_result.get("total_matches"),
+            "lexical_count_exact": lexical_result.get("count_exact") is True,
+            "rag_candidate_count": len(rag_rows), "rag_candidate_count_exact": False,
+            "coverage_complete": False,
+            "index_state": rag_meta.get("index_state", "unknown"),
+            "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+            "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+            "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+            "index_revision": rag_meta.get("index_revision"),
+            "degraded": bool(rag_meta.get("degraded")),
+            "degradation_reason": rag_meta.get("degradation_reason"),
+            "reranker": rag_meta.get("reranker", {}),
+        }
+
+    def _repo_rag_search(self, root: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rag = getattr(self, "rag", None)
+        reranker_requested = bool(self.config.get("features", {}).get("reranker", True))
+        if rag is None or not self.config.get("features", {}).get("rag", True):
+            return [], {"success": False, "reason": "rag_disabled", "index_state": "unavailable",
+                        "reranker": {"requested": reranker_requested, "used": False,
+                                     "degraded": reranker_requested}}
+        try:
+            base = Path(root).expanduser().resolve(strict=True)
+            if not base.is_dir():
+                raise ValueError("repository root is not a directory")
+            workspace = rag.workspace_id(str(base))
+            rag.require_workspace_root(workspace=workspace, root=str(base))
+            use_reranker = reranker_requested
+            raw = rag.search(query, workspace=workspace, top_k=min(MAX_PAGE_SIZE, max(1, top_k)),
+                             use_reranker=use_reranker, semantic_only=True, priority=1)
+            if not isinstance(raw, dict) or raw.get("success") is not True:
+                raise RuntimeError("rag_search_failed")
+            raw_candidates = raw.get("results", [])
+            if not raw_candidates:
+                workspaces = {str(item.get("workspace")): item for item in rag.list_workspaces() if isinstance(item, dict)}
+                workspace_info = workspaces.get(workspace)
+                if not workspace_info or int(workspace_info.get("files", 0)) <= 0:
+                    return [], {"success": False, "reason": "rag_index_missing", "index_state": "missing",
+                                "reranker": {"requested": use_reranker, "used": False, "degraded": bool(use_reranker)}}
+            project_context = rag.project_context(base)
+            max_bytes = int(self.config.get("rag", {}).get("max_file_bytes", 2_000_000))
+            valid: list[dict[str, Any]] = []
+            stale = 0
+            source_cache: dict[str, tuple[str, int, int]] = {}
+            seen_paths: set[str] = set()
+            for candidate in raw.get("results", []):
+                if not isinstance(candidate, dict):
+                    continue
+                rel = candidate.get("path")
+                if type(rel) is not str or not rel or "\x00" in rel:
+                    continue
+                rel_path = Path(rel)
+                if rel_path.is_absolute() or ".." in rel_path.parts:
+                    continue
+                target = (base / rel_path).resolve(strict=True)
+                try:
+                    target.relative_to(base)
+                    stat = target.stat()
+                    if not target.is_file() or stat.st_size > max_bytes:
+                        continue
+                    rel_key = os.path.normcase(target.relative_to(base).as_posix())
+                    if rel_key in seen_paths:
+                        continue
+                    allowed, kind = rag._project_path_decision(base, target, project_context,
+                                                               phase="search", size_bytes=int(stat.st_size))
+                    if not allowed or kind == "binary":
+                        continue
+                    fragment = str(candidate.get("text") or "")
+                    source_meta = source_cache.get(rel_key)
+                    if source_meta is None:
+                        source = target.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                        after_stat = target.stat()
+                        if (after_stat.st_mtime_ns, after_stat.st_size) != (stat.st_mtime_ns, stat.st_size):
+                            stale += 1
+                            continue
+                        source_meta = (source, int(after_stat.st_mtime_ns), int(after_stat.st_size))
+                        source_cache[rel_key] = source_meta
+                    source = source_meta[0]
+                    if not fragment or fragment.replace("\r\n", "\n").replace("\r", "\n") not in source:
+                        stale += 1
+                        continue
+                except (OSError, ValueError):
+                    stale += 1
+                    continue
+                item = dict(candidate)
+                item["path"] = target.relative_to(base).as_posix()
+                item["sources"] = ["rag"]
+                item["result_source"] = "rag"
+                item["source_mtime_ns"] = source_meta[1]
+                item["source_size_bytes"] = source_meta[2]
+                valid.append(item)
+                seen_paths.add(rel_key)
+            degraded = bool(raw.get("degraded") or stale or raw.get("reindex_required"))
+            raw_fallbacks = raw.get("fallbacks", [])
+            if not isinstance(raw_fallbacks, list):
+                raw_fallbacks = []
+            reason = "stale_or_denied_candidates" if stale else (
+                raw.get("fallback") or (raw_fallbacks[0] if raw_fallbacks else None)
+            )
+            if raw.get("degraded") and not reason:
+                reason = "rag_backend_degraded"
+            return valid, {
+                "success": True,
+                "index_state": "stale" if (stale or raw.get("reindex_required")) else "available",
+                "index_coverage": "unknown_or_partial",
+                "candidate_freshness": "partially_verified" if stale else "verified_against_current_sources",
+                "stale_candidate_count": stale,
+                "index_revision": raw.get("index_revision"), "degraded": degraded,
+                "degradation_reason": reason,
+                "reranker": {"requested": use_reranker, "used": raw.get("reranked") is True,
+                             "degraded": bool(use_reranker and raw.get("reranked") is not True),
+                             "degradation_reasons": list(raw.get("fallbacks", [])) if isinstance(raw.get("fallbacks"), list) else []},
+            }
+        except Exception as exc:
+            return [], {"success": False, "reason": type(exc).__name__, "index_state": "unavailable",
+                        "reranker": {"requested": reranker_requested, "used": False,
+                                     "degraded": reranker_requested}}
+
+    def _repo_search_lexical(
         self,
         root: str,
         query: str,

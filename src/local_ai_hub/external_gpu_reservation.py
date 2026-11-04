@@ -152,11 +152,22 @@ class ExternalGpuReservationStore:
             return False
         with self._locked():
             record = self._read_unlocked()
+            metadata_orphan = False
+            if record is None:
+                # A previous consented cleanup may have removed the digest
+                # fence before failing to remove its metadata. Recover only
+                # that exact metadata-only state, with explicit generation
+                # consent and the same expiry check as a normal release.
+                if (self.path.exists() or self.path.is_symlink()
+                        or not self.metadata_path.exists() or self.metadata_path.is_symlink()):
+                    return False
+                record = self._read_metadata_unlocked()
+                metadata_orphan = record is not None
             if (record is None or record["generation"] != generation
                     or record["expires_at"] > self._clock()):
                 return False
             event = {
-                "action": "consented_release",
+                "action": "consented_release_recovery" if metadata_orphan else "consented_release",
                 "generation": generation,
                 "owner": record["owner"],
                 "reason": audit_reason.strip(),
@@ -166,19 +177,41 @@ class ExternalGpuReservationStore:
                 self._append_audit(event)
             except OSError:
                 return False
+            if metadata_orphan:
+                try:
+                    self.metadata_path.unlink()
+                except OSError:
+                    return False
+                return True
             return self._remove_unlocked(generation)
 
     def _read_unlocked(self) -> dict[str, Any] | None:
-        if self.path.is_symlink() or self.metadata_path.is_symlink():
+        if self.path.is_symlink():
+            return None
+        record = self._read_metadata_unlocked()
+        if record is None:
             return None
         try:
             with self.path.open("rb") as stream:
                 digest_bytes = stream.read(65)
-            with self.metadata_path.open("rb") as stream:
-                raw_bytes = stream.read(16_385)
-            if len(digest_bytes) > 64 or len(raw_bytes) > 16_384:
+            if len(digest_bytes) > 64:
                 return None
             digest = digest_bytes.decode("ascii")
+        except (OSError, UnicodeError):
+            return None
+        stored_digest = record["token_digest"]
+        if not hmac.compare_digest(digest, stored_digest) or not _DIGEST_RE.fullmatch(digest):
+            return None
+        return record
+
+    def _read_metadata_unlocked(self) -> dict[str, Any] | None:
+        if self.metadata_path.is_symlink():
+            return None
+        try:
+            with self.metadata_path.open("rb") as stream:
+                raw_bytes = stream.read(16_385)
+            if len(raw_bytes) > 16_384:
+                return None
             raw = raw_bytes.decode("utf-8")
             record = json.loads(raw)
         except (OSError, UnicodeError, json.JSONDecodeError):
@@ -187,10 +220,6 @@ class ExternalGpuReservationStore:
             return None
         stored_digest = record.get("token_digest")
         if not isinstance(stored_digest, str) or not _DIGEST_RE.fullmatch(stored_digest):
-            return None
-        if not isinstance(digest, str) or not hmac.compare_digest(digest, stored_digest):
-            return None
-        if not _DIGEST_RE.fullmatch(digest):
             return None
         if (not isinstance(record.get("generation"), str) or not record["generation"]
                 or not isinstance(record.get("owner"), str)

@@ -198,6 +198,23 @@ def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_
     assert result["fallback"] == "embedding_space_mismatch"
 
 
+def test_semantic_only_search_skips_embedder_for_known_stale_index(tmp_path):
+    store = _store(tmp_path)
+    store.services.space_id = "space-current"
+    workspace = "known-stale-space"
+    with closing(store._connect()) as con:
+        store._store_workspace_embedding_space(con, workspace, "space-old")
+        con.commit()
+
+    result = store._search_uncached("query", workspace, top_k=2, use_reranker=False, semantic_only=True)
+
+    assert result["success"] is True
+    assert result["results"] == []
+    assert result["fallback"] == "embedding_space_mismatch"
+    assert result["reindex_required"] is True
+    assert store.services.calls == []
+
+
 def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
     store = _store(tmp_path)
     store.services.embed = lambda *_args, **_kwargs: {

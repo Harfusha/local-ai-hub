@@ -3318,6 +3318,9 @@ class ProjectPreprocessor:
             from .code_index_demand import one_hop_python_imports
             neighbors = one_hop_python_imports(Path(root), seeds, set(allowed), self.repo_tools)
             refs = [(path, allowed[path]) for path in [*seeds, *neighbors]]
+            record_usage = getattr(self.code_index, "record_usage", None)
+            if callable(record_usage):
+                record_usage(root, [item for item in demand if isinstance(item, dict) and str(item.get("path", "")).replace("\\", "/") in seeds])
         except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
             logger.warning("Code-index demand selection unavailable (%s)", type(exc).__name__)
             self._set_project(root, phase="deterministic", last_error="code_index_demand_unavailable")
@@ -3333,6 +3336,11 @@ class ProjectPreprocessor:
         except Exception:
             pending = refs[:limit]
         if not pending:
+            enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
+            if callable(enforce_budget):
+                budget_result = enforce_budget()
+                if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
+                    logger.warning("Code-index size budget remains exceeded or could not be enforced")
             self._set_project(root, phase="deterministic")
             return True
 
@@ -3362,6 +3370,11 @@ class ProjectPreprocessor:
         with self._stats_lock:
             self._stats["code_index_files"] += progressed
         self._record_progress(root, len(pending))
+        enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
+        if callable(enforce_budget):
+            budget_result = enforce_budget()
+            if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
+                logger.warning("Code-index size budget remains exceeded or could not be enforced")
         if len(pending) < limit or files_processed == 0:
             self._set_project(root, phase="deterministic")
         return True

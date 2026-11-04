@@ -486,10 +486,16 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
 
     assert captured == {
         "path": "/api/search",
-        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False},
+        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False, "search_mode": "hybrid"},
         "timeout": 120,
         "path_hints": None,
     }
+
+    captured.clear()
+    local_ai_mcp._local_ai_repo_impl(
+        action="search", root="C:/repo", query="repo_search", search_mode="lexical",
+    )
+    assert captured["payload"]["search_mode"] == "lexical"
 
 
 @pytest.mark.parametrize(
@@ -545,6 +551,7 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
     assert item["additionalProperties"] is False
     context_schema = operation_input_schema("local_ai_repo", "context")
     search_schema = operation_input_schema("local_ai_repo", "search")
+    assert search_schema["properties"]["search_mode"]["enum"] == ["lexical", "rag", "hybrid"]
     context_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
     assert all(field in context_schema["properties"] for field in context_fields)
     assert all(field not in search_schema["properties"] for field in context_fields[1:])
@@ -558,6 +565,9 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
 
     valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
     assert validate_operation_arguments("local_ai_repo", "search", valid) is None
+    assert validate_operation_arguments("local_ai_repo", "search", {"search_mode": "hybrid"}) is None
+    assert validate_operation_arguments("local_ai_repo", "search", {"search_mode": "semantic"}) is not None
+    assert validate_operation_arguments("local_ai_repo", "context", {"search_mode": "hybrid"}) is not None
     context_hints = {
         "query": "Find authentication code",
         **valid,

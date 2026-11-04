@@ -463,8 +463,8 @@ enabled=true
         assert status == 200 and isinstance(live_status.get("observability"), dict), (status, live_status)
         assert "active_requests" in live_status["observability"], live_status
         assert "recent_http" in live_status["observability"], live_status
-        status, _, _ = _request(base+"/api/search", method="POST", body=json.dumps({"root":str(repo),"query":"test"}).encode(), headers={**auth,"Content-Type":"application/json"})
-        assert status == 200
+        status, search_headers, search_body = _request(base+"/api/search", method="POST", body=json.dumps({"root":str(repo),"query":"test"}).encode(), headers={**auth,"Content-Type":"application/json"})
+        assert status == 200, (search_headers, search_body)
         status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
         traces = json.loads(body)
         assert status == 200 and traces["success"] is True and traces["items"]

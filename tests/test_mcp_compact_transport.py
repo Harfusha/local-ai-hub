@@ -583,7 +583,7 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
     api_calls = [call for call in calls if call[0] != "/api/telemetry/tool-accounting"]
     assert api_calls == [(
         "/api/search",
-        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False, "limit": 24, "offset": 0},
+        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False, "limit": 24, "offset": 0, "search_mode": "hybrid"},
         120.0,
         [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
     )]

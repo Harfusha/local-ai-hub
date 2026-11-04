@@ -67,8 +67,15 @@ def test_preprocessing_indexes_used_files_and_one_hop_only(tmp_path):
     class Index:
         def __init__(self):
             self.pending = []
+            self.usage = []
+            self.budget_checks = 0
         def prune(self, root, paths):
             return {"success": True}
+        def record_usage(self, root, paths):
+            self.usage.extend((root, item) for item in paths)
+        def enforce_size_limit(self):
+            self.budget_checks += 1
+            return {"success": True, "within_budget": True}
         def files_needing_reindex(self, root, refs):
             return refs
         def update_files_batch(self, root, pending):
@@ -89,3 +96,5 @@ def test_preprocessing_indexes_used_files_and_one_hop_only(tmp_path):
     pre.services = SimpleNamespace(evidence_store=evidence)
     assert pre._step_code_index({"root": str(root), "generation": 1})
     assert {path for path, _ in pre.code_index.pending} == {"pkg/a.py", "pkg/b.py"}
+    assert [(root, item["path"]) for root, item in pre.code_index.usage] == [(str(root), "pkg/a.py")]
+    assert pre.code_index.budget_checks == 1

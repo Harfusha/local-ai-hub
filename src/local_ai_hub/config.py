@@ -102,12 +102,16 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
     if "scope" in data.get("rag", {}):
         raise ConfigError("rag.scope was removed; use actual workspace/repository scope")
+
+    code_index = data.get("code_index", {})
+    if isinstance(code_index, dict):
+        _number(code_index, "max_index_bytes", minimum=1_048_576, maximum=100 * 1024 * 1024 * 1024)
 
     for retired_key in ("max_queued_per_tenant", "max_inflight_per_tenant"):
         if retired_key in data.get("scheduler", {}):

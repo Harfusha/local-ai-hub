@@ -1,28 +1,36 @@
-from local_ai_hub.prompt_contracts import build_prompt, capability_for
+from local_ai_hub.prompt_contracts import build_prompt, capability_for, list_supported_models
 
 
 def test_candidate_fast_model_has_own_conservative_advisory_scope():
-    candidate = capability_for("qwen3.5:4b-q4_K_M")
-    assert candidate.model == "qwen3.5:4b-q4_K_M"
+    candidate = capability_for("qwen3.5:4b-nvfp4")
+    assert candidate.model == "qwen3.5:4b-nvfp4"
     assert "bounded_review" in candidate.can and "test_plan" in candidate.can
     assert "apply_changes" in candidate.cannot
     assert "security_decision" in candidate.cannot
     assert "final_verification" in candidate.cannot
-    package = build_prompt(operation="review_diff", model="qwen3.5:4b-q4_K_M", task="Review this change")
+    package = build_prompt(operation="review_diff", model="qwen3.5:4b-nvfp4", task="Review this change")
     assert package.capability.model == candidate.model
     assert "bounded_review" in package.system
 
 
-def test_candidate_vision_model_keeps_identity_without_assuming_backend_support():
-    candidate = capability_for("gemma4:12b")
-    assert candidate.model == "gemma4:12b"
+def test_supported_vision_model_keeps_identity_without_assuming_backend_support():
+    candidate = capability_for("qwen3-vl:4b")
+    assert candidate.model == "qwen3-vl:4b"
     assert "visual_review" in candidate.can
     assert "apply_changes" in candidate.cannot
     assert "security_decision" in candidate.cannot
     assert "final_verification" in candidate.cannot
-    package = build_prompt(operation="vision", model="gemma4:12b", task="Describe the UI")
+    package = build_prompt(operation="vision", model="qwen3-vl:4b", task="Describe the UI")
     assert package.capability.model == candidate.model
     assert "visual_review" in package.system
+
+
+def test_retired_model_tags_are_not_in_the_prompt_capability_registry():
+    supported = list_supported_models()
+
+    assert "qwen3.5:4b-nvfp4" in supported
+    assert "qwen3.5:4b-q4_K_M" not in supported
+    assert "gemma4:12b" not in supported
 
 
 def test_candidate_code_models_preserve_security_and_write_boundaries():

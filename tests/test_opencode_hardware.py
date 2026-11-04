@@ -13,7 +13,11 @@ def test_auto_profiles_use_dedicated_gpu_memory_and_do_not_claim_admission():
     assert twelve["profile"] == "12gb"
     assert sixteen["profile"] == "16gb"
     assert twelve["candidates"] == ["qwen3.5:9b", "qwen2.5-coder:7b"]
-    assert "qwen2.5-coder:14b" in sixteen["candidates"]
+    assert sixteen["candidates"] == [
+        "qwen3.5:9b-nvfp4",
+        "qwen2.5-coder:7b",
+        "qwen3.5:4b-nvfp4",
+    ]
     assert twelve["runtime_verified"] is False
     assert sixteen["selected_model"] is None
     assert sixteen["admission"] == "unverified"
@@ -23,7 +27,7 @@ def test_auto_profiles_use_dedicated_gpu_memory_and_do_not_claim_admission():
 def test_nominal_5070_ti_capacity_remains_an_unverified_16gb_candidate():
     result = inspect_opencode_hardware({"gpus": [gpu(16303, name="NVIDIA GeForce RTX 5070 Ti")]})
     assert result["profile"] == "16gb"
-    assert result["candidates"][0] == "qwen2.5-coder:14b"
+    assert result["candidates"][0] == "qwen3.5:9b-nvfp4"
     assert result["admission"] == "unverified" and result["runtime_verified"] is False
     assert inspect_opencode_hardware({"gpus": [gpu(16255)]})["profile"] == "12gb"
     assert inspect_opencode_hardware({"gpus": [gpu(12255)]})["profile"] == "unsupported"

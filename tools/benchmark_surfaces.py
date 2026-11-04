@@ -3855,6 +3855,7 @@ def run_benchmark(
                     "query": clean_query,
                     "top_k": 10,
                     "reranker": False,
+                    "semantic_only": False,
                     "scope_path": None,
                     "embedding_space": embedding_space if cache_identity_known else None,
                     "embedding_dimension": embedding_dimension,

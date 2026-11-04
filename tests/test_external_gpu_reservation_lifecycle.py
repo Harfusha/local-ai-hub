@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -90,6 +91,55 @@ def test_consent_release_requires_expired_idle_generation_and_audit_reason(tmp_p
     assert other.read() is None
 
 
+def test_consent_release_recovers_metadata_orphan_after_partial_cleanup(tmp_path, monkeypatch):
+    now = [100.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
+    )
+    lease = store.reserve(_digest("owner-token"), owner="session")
+    assert lease is not None
+    now[0] = 111.0
+
+    original_unlink = Path.unlink
+    failed = [False]
+
+    def fail_metadata_unlink_once(path, *args, **kwargs):
+        if path == store.metadata_path and not failed[0]:
+            failed[0] = True
+            raise OSError("simulated crash window after digest removal")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_metadata_unlink_once)
+    assert not store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="operator approved"
+    )
+    assert not store.path.exists()
+    assert store.metadata_path.exists()
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    assert store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="recover interrupted release"
+    )
+    assert not store.metadata_path.exists()
+
+
+def test_consent_release_keeps_malformed_metadata_orphan_fail_closed(tmp_path):
+    now = [100.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
+    )
+    lease = store.reserve(_digest("owner-token"), owner="session")
+    assert lease is not None
+    store.path.unlink()
+    store.metadata_path.write_text("{malformed", encoding="utf-8")
+    now[0] = 111.0
+
+    assert not store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="operator approved"
+    )
+    assert store.metadata_path.exists()
+
+
 def test_consent_release_of_active_lease_waits_for_expiry(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
@@ -165,4 +215,3 @@ def test_coordination_mcp_contract_exposes_status_and_consented_release():
         "consent": True,
         "audit_reason": "operator confirmed stale owner is gone",
     })
-

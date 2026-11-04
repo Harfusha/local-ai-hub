@@ -31,12 +31,10 @@ Cached fallback models remain eligible while downloads are disabled.
 | `qwen2.5-coder:1.5b` | preprocessing only | inference, code generation, reviews, reasoning, or edits |
 | `qwen2.5-coder:3b` | bounded review, test plans, simple patch plans, comparisons | architecture decisions, high-risk migrations, security decisions, edits |
 | `qwen2.5-coder:7b` | root-cause analysis, cross-file reasoning, diff review, patch/test plans | security decisions, final verification, edits |
-| `qwen3.5:4b-q4_K_M` | candidate for bounded advisory review, test plans, simple patch plans and comparisons | architecture or security decisions, high-risk migrations, edits, final verification |
-| `gemma4:12b` | candidate for advisory visual review, visual observations and extraction | source-only reasoning, security decisions, edits, final verification |
+| `qwen3.5:4b-nvfp4` | unqualified advisory candidate for bounded review, test plans, simple patch plans and comparisons | architecture or security decisions, high-risk migrations, edits, final verification, tool-use qualification |
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
 | `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review; quality-evaluated bounded implementation through `local_ai_work` | unscoped or unreviewed edits, security decisions, final verification |
 | `qwen3.5:9b-q4_K_M` | candidate for heavy reasoning, cross-file review and bounded patch plans | direct edits, security decisions, final verification |
-| `qwen2.5-coder:14b` | optional candidate for cross-file review and bounded patch plans | direct edits, security decisions, final verification |
 
 The candidate rows describe intended prompt scope, not measured quality,
 verified image support or a tool-calling grant. They await task-specific

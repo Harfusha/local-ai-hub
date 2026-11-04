@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -819,6 +820,11 @@ def test_code_index_phase_skips_ignored_refs_left_by_previous_inventory(tmp_path
     tools = RepositoryTools(cfg)
     code_index = _RecordingCodeIndex()
     pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), tools, code_index=code_index)
+    pre.services = SimpleNamespace(evidence_store=SimpleNamespace(
+        recent_paths=lambda _root, limit: [
+            {"path": "Assets/main.cs"}, {"path": "Library/generated.cs"},
+        ][:limit],
+    ))
     try:
         now = time.time()
         with closing(pre._connect()) as con:
