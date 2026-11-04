@@ -53,9 +53,12 @@
       "id": "exact-operator-cpp",
       "query": "C++",
       "language": "symbol",
-      "expected_paths": ["docs/INSTALL_PROMPT.md"],
+      "expected_paths": ["src/local_ai_hub/repo_tools.py", "docs/INSTALL_PROMPT.md"],
       "negative": false,
-      "evidence": [{"path": "docs/INSTALL_PROMPT.md", "anchor": "C++"}]
+      "evidence": [
+        {"path": "src/local_ai_hub/repo_tools.py", "anchor": "\".cpp\": \"C++\""},
+        {"path": "docs/INSTALL_PROMPT.md", "anchor": "C++"}
+      ]
     },
     {
       "id": "english-installation",
