@@ -130,6 +130,94 @@ def test_index_rechecks_content_when_size_and_mtime_are_unchanged(tmp_path):
     assert "alpha" not in " ".join(row[0] for row in rows)
 
 
+def test_index_rechunks_files_when_chunker_version_changes(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "chunker-version"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "chunker-version"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+
+    first = store.index(str(root), workspace=workspace)
+    assert first["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    monkeypatch.setattr(store, "_chunks", lambda *_args, **_kwargs: ["version two chunk"])
+    second = store.index(str(root), workspace=workspace)
+
+    assert second["success"] is True
+    assert second["changed_files"] == 1
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (workspace, "module.py"),
+        ).fetchall()
+    assert [row[0] for row in rows] == ["version two chunk"]
+
+
+def test_semantic_search_marks_old_chunker_index_as_incomplete(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "stale-chunker-index"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "stale-chunker-index"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+    assert store.index(str(root), workspace=workspace)["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    result = store.search(
+        "stable source", workspace=workspace, top_k=2,
+        use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"] is True
+    assert result["reindex_required"] is True
+    assert result["degraded"] is True
+    assert result["index_state"] == "stale"
+
+
+def test_semantic_backend_failure_preserves_chunker_stale_status(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "backend-failure-stale-chunker"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "backend-failure-stale-chunker"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+    assert store.index(str(root), workspace=workspace)["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    monkeypatch.setattr(
+        "local_ai_hub.opencode_boundary.generation_denial",
+        lambda: "backend unavailable",
+    )
+    result = store.search(
+        "stable source", workspace=workspace, top_k=2,
+        use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"] is True
+    assert result["reindex_required"] is True
+    assert result["degraded"] is True
+    assert result["index_state"] == "stale"
+
+
+def test_incremental_index_reports_full_rebuild_after_chunker_change(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "incremental-stale-chunker"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "incremental-stale-chunker"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+    assert store.index(str(root), workspace=workspace)["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    result = store.index_paths_step(str(root), workspace=workspace, paths=["module.py"])
+
+    assert result["success"] is True
+    assert result["reindex_required"] is True
+    assert result["processed_paths"] == ["module.py"]
+
+
 def test_index_paths_step_sets_embedding_space_before_nonempty_records(tmp_path):
     store = _store(tmp_path)
     root = tmp_path / "project-path-step"

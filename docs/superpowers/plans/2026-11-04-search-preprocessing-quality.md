@@ -251,3 +251,10 @@ review and are not included in this search fix commit.
 - Read-only runtime config reports `hardware.profile=high` and `features.local_reranking=true`. Doctor reports no warnings; active quick model is `qwen3.5:4b-nvfp4`, and configured `qwen3.5:9b-nvfp4` is installed. Live reranker was used.
 - Direct MCP RAG query `How do I install Local AI Hub from a fresh checkout?` returned `hybrid=false`, `reranked=true`, `degraded=false`, and `reindex_required=false`; `docs/PYTHON_SDK.md` ranked first. This verifies route semantics after restart, not broad relevance or the new chunker after reindex.
 - Code changes are active. The Python chunk fix still needs a fresh RAG rebuild to validate current chunks. The orphan GPU fence remains uncleared: before restart the Hub llama-server was alive and GPU use was 14,842 MiB; no fence-owner identity was established. Live SQLite eviction/physical compaction remains unverified.
+
+## Chunker revision invalidation — 2026-11-04
+
+- Source-only follow-up adds `RAG_CHUNKER_VERSION` in `rag_meta`. Full indexing rechunks unchanged files after a version bump and publishes the marker in the same SQLite transaction only after a complete, certain pass.
+- Demand-driven `index_paths_step` keeps indexing requested files during migration and reports `reindex_required=true` while legacy chunks remain. Semantic search cache keys include chunker revision; old workspaces report `degraded=true`, `index_state="stale"`, and `reindex_required=true`.
+- Four red/green tests cover full rechunking, stale search metadata during normal and failed-backend search, and continued incremental progress. Focused RAG/search/API suites passed **124 tests**, with one optional latency benchmark skipped. `release_check.py --allow-installed` and `git diff --check` passed.
+- These latest chunker-version changes are not yet installed or runtime-verified. The installed RAG workspace lacks the new marker; after activation it should report stale until a complete reindex succeeds. The GPU fence remains uncleared and still lacks proven owner identity.

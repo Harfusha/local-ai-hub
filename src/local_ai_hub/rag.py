@@ -40,6 +40,8 @@ from collections import OrderedDict
 
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
+# Increment when chunk boundaries or chunk extraction semantics change.
+RAG_CHUNKER_VERSION = "python-ast-contiguous-gaps-v2"
 # Approximate pruning stays opt-in until representative recall is validated.
 _CENTROID_FILTER_ENABLED = False
 _CENTROID_FILTER_MIN_CHUNKS = 10_000
@@ -1102,6 +1104,41 @@ class RAGStore:
         return "workspace_embedding_space:" + stable_hash({"workspace": workspace})
 
     @staticmethod
+    def _workspace_chunker_version_key(workspace: str) -> str:
+        return "workspace_chunker_version:" + stable_hash({"workspace": workspace})
+
+    def _stored_workspace_chunker_version(
+        self, con: sqlite3.Connection, workspace: str,
+    ) -> str | None:
+        row = con.execute(
+            "SELECT value FROM rag_meta WHERE key=?",
+            (self._workspace_chunker_version_key(workspace),),
+        ).fetchone()
+        return str(row[0]) if row is not None and row[0] else None
+
+    def _workspace_chunker_index_is_current(
+        self, con: sqlite3.Connection, workspace: str,
+    ) -> bool:
+        stored = self._stored_workspace_chunker_version(con, workspace)
+        if stored is not None:
+            return stored == RAG_CHUNKER_VERSION
+        has_files = con.execute(
+            "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,),
+        ).fetchone()
+        has_chunks = con.execute(
+            "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,),
+        ).fetchone()
+        return has_files is None and has_chunks is None
+
+    def _store_workspace_chunker_version(
+        self, con: sqlite3.Connection, workspace: str,
+    ) -> None:
+        con.execute(
+            "INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)",
+            (self._workspace_chunker_version_key(workspace), RAG_CHUNKER_VERSION),
+        )
+
+    @staticmethod
     def _workspace_index_generation_key(workspace: str) -> str:
         return "workspace_index_generation:" + stable_hash({"workspace": workspace})
 
@@ -1626,6 +1663,8 @@ class RAGStore:
                 "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE workspace=?",
                 (workspace,),
             ).fetchall()
+            stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
+        chunker_version_changed = stored_chunker_version != RAG_CHUNKER_VERSION
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
         persisted_spaces = {
             str(r[4]).strip()
@@ -1723,6 +1762,9 @@ class RAGStore:
             else:
                 changed_paths.append(rel)
         if embedding_space_changed:
+            unchanged_paths = []
+            changed_paths = sorted(current_meta)
+        elif chunker_version_changed:
             unchanged_paths = []
             changed_paths = sorted(current_meta)
 
@@ -1861,6 +1903,14 @@ class RAGStore:
                         changed_records[duplicate_idx]["embedding"] = embedding
                         changed_records[duplicate_idx]["embedding_space"] = batch_space
 
+        chunker_version_publishable = (
+            not chunker_version_changed
+            or (
+                not discovery_errors and not read_uncertain_paths and skipped == 0
+                and len(file_rows) == len(current_meta)
+            )
+        )
+
         # One transaction publishes all changed/deleted file state atomically.
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
@@ -1911,6 +1961,8 @@ class RAGStore:
                     ],
                 )
                 self._store_workspace_embedding_space(con, workspace, embedding_space)
+                if chunker_version_changed and chunker_version_publishable:
+                    self._store_workspace_chunker_version(con, workspace)
                 uncertainty_changed = self._update_workspace_read_uncertainty(
                     con, workspace,
                     uncertain_paths=read_uncertain_paths,
@@ -1952,6 +2004,7 @@ class RAGStore:
             "read_uncertain_paths": sorted(read_uncertain_paths),
             "near_duplicates_skipped": near_duplicates_skipped,
             "embedding_space_id": embedding_space,
+            "reindex_required": bool(chunker_version_changed and not chunker_version_publishable),
         }
 
 
@@ -2095,6 +2148,20 @@ class RAGStore:
                 )
             except ProjectPolicySyncError as exc:
                 return {"success": False, "error": str(exc), "retryable": exc.retryable}
+            with closing(self._connect()) as con:
+                stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
+                workspace_has_index = (
+                    con.execute(
+                        "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,),
+                    ).fetchone() is not None
+                    or con.execute(
+                        "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,),
+                    ).fetchone() is not None
+                )
+            chunker_reindex_required = (
+                workspace_has_index and stored_chunker_version != RAG_CHUNKER_VERSION
+            )
+            initialize_chunker_version = not workspace_has_index
             with closing(self._connect()) as con:
                 stored_space = self._stored_workspace_embedding_space(con, workspace)
                 legacy_rows = (
@@ -2439,6 +2506,8 @@ class RAGStore:
                     )
                     if embedding_space:
                         self._store_workspace_embedding_space(con, workspace, embedding_space)
+                    if initialize_chunker_version:
+                        self._store_workspace_chunker_version(con, workspace)
                     uncertainty_changed = self._update_workspace_read_uncertainty(
                         con, workspace,
                         uncertain_paths=read_uncertain_paths,
@@ -2468,6 +2537,7 @@ class RAGStore:
             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
             "reused_chunks": reused_chunks,
             "read_uncertain_paths": sorted(read_uncertain_paths),
+            "reindex_required": chunker_reindex_required,
         }
 
     def index_step(
@@ -2666,19 +2736,32 @@ class RAGStore:
 
         if generation_denial() is not None:
             if semantic_only:
-                return {"success": True, "workspace": workspace, "results": [], "degraded": True,
-                        "fallback": "embedding_backend", "reason": "generation_denied",
-                        "search_cache": {"hit": False, "coalesced": False}}
-            # Do not join another client's semantic singleflight or invoke an
-            # embedding provider: this request uses the existing lexical index.
-            result = self._search_uncached(clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True)
-            result["search_cache"] = {"hit": False, "coalesced": False}
+                result = {
+                    "success": True, "workspace": workspace, "results": [], "degraded": True,
+                    "fallback": "embedding_backend", "reason": "generation_denied",
+                    "search_cache": {"hit": False, "coalesced": False},
+                }
+            else:
+                # Do not join another client's semantic singleflight or invoke an
+                # embedding provider: this request uses the existing lexical index.
+                result = self._search_uncached(
+                    clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True,
+                )
+                result["search_cache"] = {"hit": False, "coalesced": False}
+            with closing(self._connect()) as con:
+                chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
+            if not chunker_index_current:
+                result["degraded"] = True
+                result["reindex_required"] = True
+                result["index_state"] = "stale"
+                result["stale_reason"] = "chunker_version_mismatch"
             return self._postprocess_search_payload(result, top_k)
         revision = self.revision(workspace=workspace)
         cache_identity_known = self._embedding_space_cache_identity_known()
         query_space = self._embedding_space_id()
         with closing(self._connect()) as con:
             generation = self._workspace_index_generation(con, workspace)
+            stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
         cache_dimension = self._embedding_dimension_cache_identity()
 
         def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
@@ -2686,6 +2769,8 @@ class RAGStore:
                 "workspace": workspace, "revision": revision, "generation": index_generation,
                 "query": clean_query, "top_k": top_k, "reranker": use_reranker, "semantic_only": semantic_only,
                 "scope_path": scope_path,
+                "chunker_version": RAG_CHUNKER_VERSION,
+                "stored_chunker_version": stored_chunker_version,
                 "embedding_space": space if cache_identity_known else None,
                 "embedding_dimension": dimension,
             })
@@ -2735,12 +2820,18 @@ class RAGStore:
             hit, coalesced = False, False
         with closing(self._connect()) as con:
             latest_generation = self._workspace_index_generation(con, workspace)
+            latest_chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
         if latest_generation != generation:
             raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}))
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
         result["index_revision"] = revision
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
+        if not latest_chunker_index_current:
+            result["degraded"] = True
+            result["reindex_required"] = True
+            result["index_state"] = "stale"
+            result["stale_reason"] = "chunker_version_mismatch"
         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
 
     @staticmethod
