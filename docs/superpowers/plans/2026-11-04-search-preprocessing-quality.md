@@ -244,3 +244,10 @@ review and are not included in this search fix commit.
 - `/api/rag/search`, used by MCP `local_ai_rag(action="search")`, previously called `RAGStore.search` with its hybrid default. This contradicted the documented semantic-only RAG mode. It now explicitly sets `semantic_only=True`; the HTTP regression test failed before the fix and passed after.
 - The combined HTTP/RAG/preprocessing focused set passed **40 tests** after this contract fix. `docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`, and `docs/MCP_AND_AGENTS.md` now describe direct RAG search as semantic-only with approximate candidates and incomplete coverage.
 - Runtime remains on the pre-fix installed code until safe activation and fresh index/search verification. Do not infer direct MCP quality from the separate `/api/search` benchmark.
+
+## Runtime activation — 2026-11-04
+
+- `python tools/setup.py --generate-only --skip-companion-skills` regenerated MCP schemas and instructions. The Hub restarted successfully; `hubctl status` reports v5.1.3 online, RTX 5070 Ti 15 GB, and seven installed models.
+- Read-only runtime config reports `hardware.profile=high` and `features.local_reranking=true`. Doctor reports no warnings; active quick model is `qwen3.5:4b-nvfp4`, and configured `qwen3.5:9b-nvfp4` is installed. Live reranker was used.
+- Direct MCP RAG query `How do I install Local AI Hub from a fresh checkout?` returned `hybrid=false`, `reranked=true`, `degraded=false`, and `reindex_required=false`; `docs/PYTHON_SDK.md` ranked first. This verifies route semantics after restart, not broad relevance or the new chunker after reindex.
+- Code changes are active. The Python chunk fix still needs a fresh RAG rebuild to validate current chunks. The orphan GPU fence remains uncleared: before restart the Hub llama-server was alive and GPU use was 14,842 MiB; no fence-owner identity was established. Live SQLite eviction/physical compaction remains unverified.
