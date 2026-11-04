@@ -130,7 +130,7 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
     assert [item["path"] for item in fused] == ["src/repo_search.py", "docs/unrelated.md"]
 
 
-def test_lexical_search_uses_large_code_index_only_for_symbol_like_queries(tmp_path, monkeypatch):
+def test_lexical_search_skips_large_code_index_candidate_scan(tmp_path, monkeypatch):
     calls = []
     source = tmp_path / "src" / "local_ai_hub" / "services.py"
     source.parent.mkdir(parents=True)
@@ -182,8 +182,7 @@ def test_lexical_search_uses_large_code_index_only_for_symbol_like_queries(tmp_p
     assert calls == []
 
     service._repo_search_lexical(str(tmp_path), "repo_search")
-    assert calls == [("deterministic", "repo_search"), ("code", "repo_search"),
-                     ("preprocess", "repo_search")]
+    assert calls == [("deterministic", "repo_search"), ("preprocess", "repo_search")]
 
 
 def test_rag_mode_never_claims_exact_corpus_count(monkeypatch):

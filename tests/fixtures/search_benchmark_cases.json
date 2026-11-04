@@ -23,6 +23,17 @@
       "evidence": [{"path": "src/local_ai_hub/repo_tools.py", "anchor": "def _exact_search_page"}]
     },
     {
+      "id": "exact-code-index-budget-symbol",
+      "query": "max_index_bytes",
+      "language": "symbol",
+      "expected_paths": ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/CODE_INDEX.md", "anchor": "max_index_bytes"},
+        {"path": "src/local_ai_hub/code_index.py", "anchor": "self.max_index_bytes"}
+      ]
+    },
+    {
       "id": "exact-rag-preprocess",
       "query": "_step_rag",
       "language": "symbol",

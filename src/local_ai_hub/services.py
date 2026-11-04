@@ -3590,18 +3590,8 @@ class LocalAIServices:
                     "Deterministic candidate search skipped (%s)",
                     type(candidate_exc).__name__,
                 )
-        # The code index is a large, usage-driven cache. Its substring candidate
-        # scans add no completeness for natural-language queries; source search
-        # and the compact preprocessor indexes remain authoritative there.
-        if use_index_candidates and self.code_index is not None:
-            try:
-                for p in self.code_index.related_paths(root, query, max(16, top_k * 3)):
-                    if p not in paths: paths.append(p)
-            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
-                logger.debug(
-                    "CodeIndex candidate search skipped (%s)",
-                    type(candidate_exc).__name__,
-                )
+        # Exact source search provides complete lexical counts. The partial
+        # code index may exceed tens of GiB and is not worth opening as a hint.
         # Warm preprocessing maintains FTS + semantic cards specifically so agents do
         # not need broad scans. Treat these only as candidates; exact source search
         # remains the fallback when a card/FTS hint produces no matches.
