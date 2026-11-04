@@ -126,3 +126,24 @@ database compaction and enforcement of the 512 MiB configured limit remain
 unproven; full VACUUM was not run. Latest runtime check reports Hub 5.1.3
 online, VRAM nominal, but `active_model=null`; the last installer doctor had
 reported high profile, RTX 5070 Ti 15 GB, and no warnings.
+
+## Natural-language RAG follow-up
+
+After the fresh index revision, direct RAG search for `Local AI Hub
+installation` still ranked `src/local_ai_hub.egg-info/top_level.txt` above the
+installation guide, and that request used the heuristic reranker fallback.
+Queries phrased as `How do I install Local AI Hub?` retrieved `CONTRIBUTING.md`,
+`docs/PYTHON_SDK.md`, and `docs/INSTALL_PROMPT.md`; `Hub installation setup
+bootstrap` retrieved `docs/INSTALLATION.md` first with the configured
+reranker. This isolates a vocabulary gap in the short natural query, rather
+than an absent document or stale index.
+
+Semantic expansion now adds bounded `install`, `setup`, `getting started`, and
+`bootstrap` terms for installation queries. The benchmark label for the
+English installation case now points to `docs/INSTALLATION.md`. Lexical mode
+continues to receive the original text. The focused search-mode suite passes
+18 tests. The synthetic holdout service benchmark (7 cases, 100 noise files,
+3 repeats) reports recall@10 and MRR 1.0; its median query latencies are
+40–45 ms, with one 81 ms outlier. This exercises lexical service retrieval,
+not live RAG or Hub transport. Re-run the labeled live RAG/hybrid benchmark
+after deploying this change; runtime quality and latency remain unverified.

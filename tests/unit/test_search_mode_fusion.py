@@ -72,8 +72,44 @@ def test_czech_semantic_query_gets_bounded_english_terms_without_changing_lexica
     assert applied is True
     assert expanded == original + " how configure size index code_index max_index_bytes"
     assert expand_semantic_query("repo_search") == ("repo_search", False)
-    assert expand_semantic_query("Local AI Hub installation")[1] is False
+    english, english_applied = expand_semantic_query("Local AI Hub installation")
+    assert english == "Local AI Hub installation install setup getting started bootstrap"
+    assert english_applied is True
+    assert expand_semantic_query("Jak instalace Local AI Hub?")[0].endswith(
+        "how installation install setup getting started bootstrap"
+    )
     assert expand_semantic_query("How to set a size limit?")[1] is False
+
+
+def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
+    service = _service(monkeypatch, [{"path": "docs/INSTALLATION.md", "text": "install"}])
+    rag_calls = []
+    lexical_calls = []
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda root, query, top_k: (rag_calls.append(query) or
+                                   [{"path": "docs/INSTALLATION.md", "text": "install"}],
+                                   {"success": True, "index_state": "current"}),
+    )
+    monkeypatch.setattr(
+        service, "_repo_search_lexical",
+        lambda root, query, *args, **kwargs: (
+            lexical_calls.append(query) or
+            {"success": True, "results": [{"path": "docs/INSTALLATION.md", "text": "install"}],
+             "count_exact": False, "total_matches": None}
+        ),
+    )
+
+    result = service.repo_search(".", "Local AI Hub installation", search_mode="hybrid")
+
+    assert rag_calls == ["Local AI Hub installation install setup getting started bootstrap"]
+    assert lexical_calls == ["Local AI Hub installation install setup getting started bootstrap"]
+    assert result["query_expansion_applied"] is True
+
+    lexical_calls.clear()
+    lexical = service.repo_search(".", "Local AI Hub installation", search_mode="lexical")
+    assert lexical_calls == ["Local AI Hub installation"]
+    assert lexical["search_mode"] == "lexical"
 
 
 def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatch):

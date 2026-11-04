@@ -64,23 +64,36 @@ _CZECH_SEMANTIC_MARKERS = {
     "vyhledávání", "vyhledavani", "kód", "kod", "indexu",
 }
 
+_INSTALLATION_SEMANTIC_MARKERS = {
+    "install", "installation", "installing", "setup", "bootstrap",
+}
+
 
 def expand_semantic_query(query: str) -> tuple[str, bool]:
-    """Append bounded English equivalents for common Czech search terms.
+    """Append bounded related terms for common natural-language searches.
 
-    Exact lexical search keeps the original query. This expansion targets the
-    configured English embedding space and does not claim full translation.
+    Exact lexical search keeps the original query. Czech terms target the
+    configured English embedding space; installation terms add common wording
+    used in setup and getting-started documentation.
     """
     if type(query) is not str or not query.strip():
         return query, False
     tokens = re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
     token_set = set(tokens)
     if not _CZECH_SEMANTIC_MARKERS.intersection(token_set):
-        return query, False
+        if not _INSTALLATION_SEMANTIC_MARKERS.intersection(token_set):
+            return query, False
+        return f"{query.strip()} install setup getting started bootstrap", True
     translated = list(dict.fromkeys(
         _SEMANTIC_QUERY_TERMS[token] for token in tokens
         if token in _SEMANTIC_QUERY_TERMS
     ))
+    if (
+        _INSTALLATION_SEMANTIC_MARKERS.intersection(token_set)
+        or {"install", "installation"}.intersection(translated)
+    ):
+        translated.extend(("install", "setup", "getting started", "bootstrap"))
+        translated = list(dict.fromkeys(translated))
     has_index = bool({"index", "indexu"} & token_set)
     has_size_limit = bool({
         "limit", "omezit", "omezení", "omezeni",

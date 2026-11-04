@@ -34,6 +34,17 @@ When inference or preprocessing is active, a gaming transition persists the mode
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
 
+Repository search accepts `lexical`, `rag`, and `hybrid` modes. Lexical mode
+keeps exact query text, exact match counts, and offset pagination. RAG returns
+bounded semantic candidates and never claims an exact corpus count; its current
+implementation combines embedding similarity with full-text candidates.
+Hybrid fuses those RAG candidates with a separate bounded lexical candidate
+set, deduplicates paths, and keeps exact lexical counts in
+`lexical_total_matches`. Natural-language semantic queries may receive bounded
+query expansion (including Czech-to-English terms and installation/setup
+synonyms); exact lexical queries are never rewritten. Responses report source,
+index coverage/freshness, degradation, and reranker state.
+
 `local_ai_repo(action="context")` and `POST /api/context/pack` share the adaptive-only context contract. For non-trivial work, pass `task_id` or `phase`, or `guarded: true`; this is default-on guidance for agent integrations. Omitted mode selects `adaptive`; other values reject before retrieval.
 
 Guarded request fields are `guarded`, `task_id`, `phase`, `focus`, `preload_profile`, `changed_paths`, `base`, `staged`, `since_hash`, `approval`, `override_reason`, and `token_budget`. Supported phases are `plan`, `edit`, `review`, `test`, and `handoff`. The response includes a bounded `adaptive_context_pack`/`context_pack`, `context_id`, `repo_revision`, `stale`, `evidence_ids`, `warnings`, `model_warnings`, and (when supplied) `delta_from`/`since_hash` metadata. A matching revision/hash may be reused as an unchanged delta pack; callers should keep the prior useful pack and avoid duplicate discovery.

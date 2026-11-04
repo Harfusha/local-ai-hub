@@ -61,9 +61,9 @@
       "id": "english-installation",
       "query": "Local AI Hub installation",
       "language": "en",
-      "expected_paths": ["docs/INSTALL_PROMPT.md"],
+      "expected_paths": ["docs/INSTALLATION.md"],
       "negative": false,
-      "evidence": [{"path": "docs/INSTALL_PROMPT.md", "anchor": "# Generic Agent Installation & Integration Prompt for Local AI Hub"}]
+      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "# Installation"}]
     },
     {
       "id": "czech-index-budget",
