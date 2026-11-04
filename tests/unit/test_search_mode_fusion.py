@@ -330,6 +330,30 @@ def test_hybrid_keeps_lexical_exact_count_separate_and_deduplicates(monkeypatch)
     assert merged["text"] == "exact"
 
 
+def test_rag_and_hybrid_expose_backend_search_cache_state(monkeypatch):
+    for mode in ("rag", "hybrid"):
+        service = _service(monkeypatch, [
+            {"path": "docs/install.md", "text": "installation setup instructions"},
+        ], {
+            "success": True,
+            "index_state": "available",
+            "search_cache": {"hit": True, "coalesced": False},
+        })
+        monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: {
+            "success": True,
+            "results": [{"path": "src/setup.py", "text": "setup"}],
+            "total_matches": 1,
+            "count_exact": True,
+        })
+
+        result = service.repo_search(
+            ".", "installation setup instructions", search_mode=mode, limit=5,
+        )
+
+        assert result["cache_hit"] is True
+        assert result["coalesced"] is False
+
+
 def test_hybrid_requests_bounded_lexical_candidates_without_exact_corpus_count(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/install.md", "text": "install"}])
     calls = []

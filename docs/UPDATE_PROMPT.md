@@ -798,3 +798,11 @@ The active hardware profile is a capability ceiling, not proof that a model is i
 ## Hybrid exact-symbol fast path
 
 When a `hybrid` query is a compact symbol or identifier recognized by `prefers_lexical_precision`, the Hub skips RAG and reranking and runs exhaustive lexical search against current authorized sources. The response keeps `search_mode="hybrid"`, reports `result_source="lexical"`, `rag_search_skipped=true`, and `rag_skip_reason="exact_lexical_precision"`; lexical counts and pagination remain exact. This is an intentional precision route, not backend degradation. If lexical search fails, the response reports degradation and unavailable current-source coverage.
+
+## Repository search modes
+
+`local_ai_repo(action="search")` defaults to `search_mode="hybrid"` for agent questions in natural language. `search_mode="lexical"` searches current authorized sources and provides exact lexical counts and paging. `search_mode="rag"` in this endpoint is semantic-only, with approximate candidate counts and incomplete coverage. `search_mode="hybrid"` fuses bounded lexical and semantic candidates, deduplicates files, and reports lexical counts separately from semantic candidate counts. Compact symbol-like hybrid queries use the exact lexical fast path described above. The separate direct `local_ai_rag(action="search")` currently reports `hybrid=true` and uses the RAG backend's hybrid retrieval; do not confuse it with repository search's semantic-only `rag` mode. Always inspect result source, freshness, coverage, reranker, and degradation metadata.
+
+## Semantic search cache metadata
+
+`search_mode="rag"` and ordinary `search_mode="hybrid"` responses expose `cache_hit` and `coalesced` when the RAG backend provides them. The live benchmark uses explicit `cache_hit` values to separate cold and warm samples; an absent value means cache state is unknown, not a miss.

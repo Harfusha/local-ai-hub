@@ -186,3 +186,14 @@ review and are not included in this search fix commit.
 - Several search responses still reported `index_state=stale`, `coverage_complete=false`, or `stale_or_denied_candidates` after indexing; cause remains under investigation. Search must continue to disclose that state.
 - Implemented a hybrid exact-symbol short-circuit: run current-source lexical search directly; skip RAG/reranker; expose `result_source`, skip reason, and lexical exact count. Focused tests and live post-restart latency verification remain.
 - GPU reservation release returned an output-contract error, but subsequent authoritative status reports `reservation_present=false`, `state=free`, `manual_intervention_required=false`. No second release call was made.
+
+## Post-implementation verification — 2026-11-04
+
+- Restart initially stopped Hub but returned `managed_ollama_stop_unverified`; `hubctl status` confirmed stopped, `service.py start` returned `started`, and MCP status then confirmed Hub `5.1.3`, profile `high`, Ollama online, VRAM `nominal`. Reranker remains operator-enabled.
+- The expired reranker fence release reported an MCP output-contract error, but a later authoritative reservation status showed `reservation_present=false`, `state=free`, and `manual_intervention_required=false`. No retry was made.
+- Post-restart live hybrid benchmark verified the exact-symbol fast path. `C++`: recall@10 1.0, MRR 1.0, exact count 30, cold 1,194 ms, warm 158/183 ms, `result_source=lexical`, `coverage_complete=true`, reranker requested but intentionally unused. Unknown symbol: zero matches, cold 1,115 ms, warm 190/196 ms, same explicit skip reason. Earlier pre-change hybrid samples reached 10,420 ms and 7,419 ms respectively; small, non-paired sample.
+- After prompt updates, RAG was indexed again: 2,506 files, 18,861 chunks, 5 changed files, 9 embedded chunks, 363 reused chunks. Natural-query search still reported `stale_or_denied_candidates` for installation and `index_state=stale` despite `reindex_required=false` from direct RAG search; root cause remains open.
+- Contract clarification: `local_ai_repo(search_mode="rag")` explicitly calls RAG semantic-only. Separate `local_ai_rag(action="search")` currently reports `hybrid=true` and uses backend hybrid retrieval.
+- Focused search/HTTP/MCP tests: 82 passed; release check passed. Synthetic code-index storage benchmark and broader active-worktree cleanup/physical SQLite shrink remain distinct, incomplete acceptance items.
+
+- The RAG backend already returns `search_cache.hit/coalesced`; repository search now preserves these fields so `/api/search` benchmarks can distinguish actual cold, warm, and coalesced retrieval. The benchmark fixture also records exact-symbol RAG skip metadata.

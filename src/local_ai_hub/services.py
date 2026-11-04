@@ -3249,6 +3249,13 @@ class LocalAIServices:
         rag_rows, rag_meta = self._repo_rag_search(
             root, semantic_query, max(page_limit + offset, 32)
         )
+        search_cache = rag_meta.get("search_cache")
+        search_cache_fields = {}
+        if isinstance(search_cache, dict):
+            if type(search_cache.get("hit")) is bool:
+                search_cache_fields["cache_hit"] = search_cache["hit"]
+            if type(search_cache.get("coalesced")) is bool:
+                search_cache_fields["coalesced"] = search_cache["coalesced"]
         if prefers_lexical_precision(query):
             literal = query.casefold()
             rag_rows = [
@@ -3284,6 +3291,7 @@ class LocalAIServices:
                 "degraded": True, "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
                 "index_state": rag_meta.get("index_state", "unavailable"),
                 "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
+                **search_cache_fields,
             }
 
         if mode == "rag":
@@ -3304,6 +3312,7 @@ class LocalAIServices:
                 "degraded": bool(rag_meta.get("degraded")),
                 "degradation_reason": rag_meta.get("degradation_reason"),
                 "reranker": rag_meta.get("reranker", {}),
+                **search_cache_fields,
             }
 
         if not rag_rows and rag_meta.get("degraded"):
@@ -3323,6 +3332,7 @@ class LocalAIServices:
                 "lexical_count_exact": result.get("count_exact") is True,
                 "rag_candidate_count": 0, "rag_candidate_count_exact": False,
                 "reranker": rag_meta.get("reranker", {}),
+                **search_cache_fields,
             })
             for item in result.get("results", []):
                 if isinstance(item, dict):
@@ -3351,6 +3361,7 @@ class LocalAIServices:
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "query_expansion_applied": query_expansion_applied,
                 "reranker": rag_meta.get("reranker", {}),
+                **search_cache_fields,
             }
         fused, fusion_meta = fuse_search_results(
             lexical_result.get("results", []), rag_rows, limit=page_limit, offset=offset,
@@ -3373,6 +3384,7 @@ class LocalAIServices:
             "degraded": bool(rag_meta.get("degraded")),
             "degradation_reason": rag_meta.get("degradation_reason"),
             "reranker": rag_meta.get("reranker", {}),
+            **search_cache_fields,
         }
 
     def _repo_rag_search(self, root: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -3481,6 +3493,7 @@ class LocalAIServices:
                 "stale_candidate_count": stale,
                 "index_revision": raw.get("index_revision"), "degraded": degraded,
                 "degradation_reason": reason,
+                "search_cache": raw.get("search_cache") if isinstance(raw.get("search_cache"), dict) else {},
                 "reranker": {"requested": use_reranker, "used": raw.get("reranked") is True,
                              "degraded": bool(use_reranker and raw.get("reranked") is not True),
                              "degradation_reasons": list(raw.get("fallbacks", [])) if isinstance(raw.get("fallbacks"), list) else []},
