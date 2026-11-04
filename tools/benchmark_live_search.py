@@ -224,6 +224,8 @@ def run(
                 "http_status": last_status,
                 "success": success,
                 "result_source": last_result.get("result_source"),
+                "rag_search_skipped": last_result.get("rag_search_skipped"),
+                "rag_skip_reason": last_result.get("rag_skip_reason"),
                 "count_exact": last_result.get("count_exact"),
                 "total_matches": last_result.get("total_matches"),
                 "candidate_count": last_result.get("candidate_count"),

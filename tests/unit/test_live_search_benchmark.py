@@ -44,14 +44,21 @@ def test_live_benchmark_reports_progress_after_each_request(monkeypatch, capsys)
     monkeypatch.setattr(benchmark_live_search, "_request", lambda *args: (200, {
         "success": True, "results": [{"path": "src/local_ai_hub/services.py"}],
         "cache_hit": False,
+        "result_source": "lexical",
+        "rag_search_skipped": True,
+        "rag_skip_reason": "exact_lexical_precision",
     }))
     case = {"id": "progress-case", "query": "repo_search", "language": "en",
             "expected_paths": ["src/local_ai_hub/services.py"], "negative": False,
             "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "def repo_search("}]}
 
-    benchmark_live_search.run(root=ROOT, modes=("lexical",), repeats=1, cases=[case], progress=True)
+    result = benchmark_live_search.run(root=ROOT, modes=("lexical",), repeats=1, cases=[case], progress=True)
 
     assert "lexical progress-case 1/1 HTTP 200" in capsys.readouterr().err
+    row = result["cases"][0]
+    assert row["result_source"] == "lexical"
+    assert row["rag_search_skipped"] is True
+    assert row["rag_skip_reason"] == "exact_lexical_precision"
 
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
