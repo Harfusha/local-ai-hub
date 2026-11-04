@@ -69,6 +69,24 @@ from .retrieval import (
 )
 
 
+def _rag_fragment_matches_source(fragment: str, source: str) -> bool:
+    """Verify indexed text while accounting for deterministic AST chunk wrappers."""
+    normalized_fragment = fragment.replace("\r\n", "\n").replace("\r", "\n")
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized_fragment in normalized_source:
+        return True
+    marker = "# [Module context]\n"
+    if not normalized_fragment.startswith(marker):
+        return False
+    _preamble, separator, body = normalized_fragment[len(marker):].partition("\n\n")
+    if not separator or not body:
+        return False
+    method_wrapper = re.search(r"(?m)^    # method [^\n]*\n", body)
+    if method_wrapper is not None:
+        body = body[method_wrapper.end():]
+    return bool(body) and body in normalized_source
+
+
 class _LinkedCancelEvent:
     """Combine a caller event with an async job callback across threads."""
 
@@ -3390,7 +3408,7 @@ class LocalAIServices:
                         source_meta = (source, int(after_stat.st_mtime_ns), int(after_stat.st_size))
                         source_cache[rel_key] = source_meta
                     source = source_meta[0]
-                    if not fragment or fragment.replace("\r\n", "\n").replace("\r", "\n") not in source:
+                    if not fragment or not _rag_fragment_matches_source(fragment, source):
                         stale += 1
                         continue
                 except (OSError, ValueError):

@@ -394,6 +394,44 @@ def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):
     assert meta["stale_candidate_count"] == 1
 
 
+def test_ast_chunk_module_context_is_verified_against_current_source(tmp_path):
+    source = (
+        "from pathlib import Path\n\n"
+        "class IndexBudget:\n"
+        "    def enforce(self):\n"
+        "        return Path('state.sqlite3')\n"
+    )
+    (tmp_path / "budget.py").write_text(source, encoding="utf-8")
+    ast_chunk = (
+        "# [Module context]\nfrom pathlib import Path\n\n"
+        "class IndexBudget:\n    # method enforce\n"
+        "    def enforce(self):\n        return Path('state.sqlite3')"
+    )
+
+    class FakeRag:
+        def workspace_id(self, root): return "repo:test"
+        def require_workspace_root(self, *, workspace, root): pass
+        def list_workspaces(self): return [{"workspace": "repo:test", "files": 1}]
+        def revision(self, *, workspace): return "rev-1"
+        def search(self, query, **kwargs):
+            return {"success": True, "index_revision": "rev-1", "results": [
+                {"path": "budget.py", "text": ast_chunk},
+            ]}
+        def project_context(self, root): return None
+        def _project_path_decision(self, root, path, project_context, *, phase, size_bytes):
+            return True, "text"
+
+    service = object.__new__(LocalAIServices)
+    service.config = {"features": {"rag": True, "reranker": False}, "rag": {"max_file_bytes": 1000}}
+    service.rag = FakeRag()
+
+    rows, meta = service._repo_rag_search(str(tmp_path), "index size", 8)
+
+    assert [row["path"] for row in rows] == ["budget.py"]
+    assert meta["stale_candidate_count"] == 0
+    assert meta["index_state"] == "available"
+
+
 def test_empty_rag_workspace_skips_embedding_search(tmp_path):
     calls = []
 
