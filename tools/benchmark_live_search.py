@@ -6,6 +6,7 @@ This sends bounded read-only search requests; it does not change Hub configurati
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import statistics
@@ -31,6 +32,15 @@ def load_cases() -> list[dict[str, Any]]:
     cases = data.get("cases")
     if not isinstance(cases, list):
         raise ValueError("benchmark cases must be a list")
+    for case in cases:
+        if isinstance(case, dict) and "query_b64" in case:
+            encoded = case.pop("query_b64")
+            if type(encoded) is not str:
+                raise ValueError("query_b64 must be a string")
+            try:
+                case["query"] = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("query_b64 must encode UTF-8 text") from exc
     return cases
 
 

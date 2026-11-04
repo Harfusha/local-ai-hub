@@ -97,7 +97,7 @@
     },
     {
       "id": "negative-unknown-symbol",
-      "query": "nonexistent_agent_symbol_20261104",
+      "query_b64": "bm9uZXhpc3RlbnRfYWdlbnRfc3ltYm9sXzIwMjYxMTA0",
       "language": "symbol",
       "expected_paths": [],
       "negative": true,

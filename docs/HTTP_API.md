@@ -44,6 +44,9 @@ set, deduplicates paths, and keeps exact lexical counts in
 query expansion (including Czech-to-English terms, installation/setup
 synonyms, and code-index storage/eviction terms); exact lexical queries are never rewritten. Responses report source,
 index coverage/freshness, degradation, and reranker state.
+For compact symbol-like queries, RAG candidates are retained only when the
+literal appears in the current source excerpt or path; hybrid keeps its
+lexical candidates ahead of semantic neighbors.
 
 `local_ai_repo(action="context")` and `POST /api/context/pack` share the adaptive-only context contract. For non-trivial work, pass `task_id` or `phase`, or `guarded: true`; this is default-on guidance for agent integrations. Omitted mode selects `adaptive`; other values reject before retrieval.
 

@@ -3214,6 +3214,13 @@ class LocalAIServices:
         rag_rows, rag_meta = self._repo_rag_search(
             root, semantic_query, max(page_limit + offset, 32)
         )
+        if prefers_lexical_precision(query):
+            literal = query.casefold()
+            rag_rows = [
+                row for row in rag_rows
+                if literal in str(row.get("text", "")).casefold()
+                or literal in str(row.get("path", "")).casefold()
+            ]
         if rag_meta.get("success") is not True:
             if mode == "hybrid":
                 result = self._repo_search_lexical(

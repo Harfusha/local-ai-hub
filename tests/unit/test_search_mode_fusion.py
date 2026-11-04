@@ -237,6 +237,35 @@ def test_rag_mode_never_claims_exact_corpus_count(monkeypatch):
     assert result["result_source"] == "rag"
 
 
+def test_symbol_like_rag_candidates_must_contain_exact_literal(monkeypatch):
+    service = _service(monkeypatch, [
+        {"path": "src/nearby.py", "text": "a semantically nearby parser"},
+        {"path": "docs/CXX.md", "text": "The C++ parser is supported."},
+    ])
+    result = service.repo_search(".", "C++", search_mode="rag", limit=10)
+
+    assert [row["path"] for row in result["results"]] == ["docs/CXX.md"]
+    assert result["result_source"] == "rag"
+    assert result["count_exact"] is False
+
+
+def test_unknown_symbol_does_not_surface_semantic_noise_in_hybrid(monkeypatch):
+    service = _service(monkeypatch, [
+        {"path": "src/nearby.py", "text": "a semantically nearby parser"},
+    ])
+    monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: {
+        "success": True, "results": [], "total_matches": None,
+        "count_exact": False, "truncated": False,
+    })
+
+    result = service.repo_search(
+        ".", "unknown_agent_symbol_2048", search_mode="hybrid", limit=10,
+    )
+
+    assert result["results"] == []
+    assert result["rag_candidate_count"] == 0
+
+
 def test_hybrid_keeps_lexical_exact_count_separate_and_deduplicates(monkeypatch):
     service = _service(monkeypatch, [
         {"path": "src/a.py", "text": "semantic"},

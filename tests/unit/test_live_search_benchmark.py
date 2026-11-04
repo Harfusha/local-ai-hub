@@ -15,6 +15,8 @@ def test_live_query_set_is_independent_bilingual_and_source_anchored():
     assert any(case["language"] == "en" for case in cases)
     assert any(case["query"] == "repo_search" for case in cases)
     assert any(case["negative"] for case in cases)
+    negative = next(case for case in cases if case["id"] == "negative-unknown-symbol")
+    assert negative["query"] not in benchmark_live_search.CASE_FILE.read_text(encoding="utf-8")
 
 
 def test_live_query_labels_reject_broken_source_anchors():
