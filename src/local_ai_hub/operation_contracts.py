@@ -2213,16 +2213,22 @@ def validate_operation_arguments(
         return "local_ai_work submit requires mode='bounded'"
 
     scoped_fields = _ACTION_SCOPED_FIELDS.get(tool, {})
+    properties = operation_parameters_schema(tool, features).get("properties", {})
 
     def is_empty_noncanonical_scoped_default(field: str) -> bool:
         scoped_actions = scoped_fields.get(field, ())
-        return (
-            action not in scoped_actions
-            and field in arguments
-            and arguments[field] in (None, "")
-        )
+        if action in scoped_actions or field not in arguments:
+            return False
+        value = arguments[field]
+        if field in scoped_fields and value in (None, ""):
+            return True
+        if tool == "local_ai_task" and action == "benchmark" and isinstance(properties, dict):
+            schema = properties.get(field)
+            if isinstance(schema, dict) and "default" in schema:
+                default = schema["default"]
+                return type(value) is type(default) and value == default
+        return False
 
-    properties = operation_parameters_schema(tool, features).get("properties", {})
     if isinstance(properties, dict):
         unknown = sorted(
             field for field in set(arguments) - set(properties)

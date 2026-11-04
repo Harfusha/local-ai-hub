@@ -100,7 +100,10 @@ def expand_semantic_query(query: str) -> tuple[str, bool]:
         "velikost", "velikosti",
     } & token_set)
     if has_index and has_size_limit:
-        translated.extend(("code_index", "max_index_bytes"))
+        translated.extend((
+            "code_index", "max_index_bytes", "database", "storage",
+            "eviction", "maximum bytes",
+        ))
         translated = list(dict.fromkeys(translated))
     if not translated:
         return query, False

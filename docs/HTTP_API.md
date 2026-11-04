@@ -41,8 +41,8 @@ implementation combines embedding similarity with full-text candidates.
 Hybrid fuses those RAG candidates with a separate bounded lexical candidate
 set, deduplicates paths, and keeps exact lexical counts in
 `lexical_total_matches`. Natural-language semantic queries may receive bounded
-query expansion (including Czech-to-English terms and installation/setup
-synonyms); exact lexical queries are never rewritten. Responses report source,
+query expansion (including Czech-to-English terms, installation/setup
+synonyms, and code-index storage/eviction terms); exact lexical queries are never rewritten. Responses report source,
 index coverage/freshness, degradation, and reranker state.
 
 `local_ai_repo(action="context")` and `POST /api/context/pack` share the adaptive-only context contract. For non-trivial work, pass `task_id` or `phase`, or `guarded: true`; this is default-on guidance for agent integrations. Omitted mode selects `adaptive`; other values reject before retrieval.

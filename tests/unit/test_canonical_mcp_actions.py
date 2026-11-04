@@ -58,7 +58,8 @@ def test_registered_repo_tool_rejects_alias_before_client_call(monkeypatch):
 
     result = mcp_server.local_ai_repo(action="sec", root="/repo")
 
-    assert calls == []
+    repo_calls = [call for call in calls if call[0][0] != "/api/telemetry/tool-accounting"]
+    assert repo_calls == []
     assert result["status_code"] == 400
     assert result["terminal"] is True
     assert result["retryable"] is False

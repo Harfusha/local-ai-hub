@@ -70,7 +70,10 @@ def test_czech_semantic_query_gets_bounded_english_terms_without_changing_lexica
     expanded, applied = expand_semantic_query(original)
 
     assert applied is True
-    assert expanded == original + " how configure size index code_index max_index_bytes"
+    assert expanded == (
+        original + " how configure size index code_index max_index_bytes "
+        "database storage eviction maximum bytes"
+    )
     assert expand_semantic_query("repo_search") == ("repo_search", False)
     english, english_applied = expand_semantic_query("Local AI Hub installation")
     assert english == "Local AI Hub installation install setup getting started bootstrap"
@@ -124,7 +127,8 @@ def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatc
     result = service.repo_search(".", "Jak nastavit limit code indexu?", search_mode="rag")
 
     assert calls == [
-        "Jak nastavit limit code indexu? how configure size index code_index max_index_bytes"
+        "Jak nastavit limit code indexu? how configure size index code_index max_index_bytes "
+        "database storage eviction maximum bytes"
     ]
     assert result["query_expansion_applied"] is True
 
@@ -151,7 +155,8 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
     result = service.repo_search(".", "Jak nastavit limit code indexu?", search_mode="hybrid")
 
     expanded = (
-        "Jak nastavit limit code indexu? how configure size index code_index max_index_bytes"
+        "Jak nastavit limit code indexu? how configure size index code_index max_index_bytes "
+        "database storage eviction maximum bytes"
     )
     assert rag_calls == [expanded]
     assert lexical_calls == [(expanded, False)]

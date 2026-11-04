@@ -1,5 +1,14 @@
 # Agent prompt evaluation results
 
+### 007 — RTX 5070 Ti hardware smoke, 2026-11-04
+
+Purpose: bounded inference and telemetry smoke through `local_ai_task(action="hardware_benchmark")`; not a paired task-quality evaluation. Exact prompt for accepted runs: `Return exactly this text: GPU-BENCHMARK-OK`. Fixture: not applicable. Hub reported v5.1.3, Ollama online. Model digests and effective profile were not returned. Do not infer task-quality, role qualification, or 9b readiness from these measurements.
+
+- **qwen3.5:4b-nvfp4 — run completed, quality NOT_RUN:** request `req_072480ad0be4`; output `GPU-BENCHMARK-OK`; TTFT 433.3 ms; generation 433.3 ms; 6 backend-counted tokens; 13.85 tokens/s; queue wait 149.61 ms; sampled device-wide peak 9,463,398,400 bytes; reported VRAM total 16,303 MB, used 9,025 MB initially and finally; dynamic context reported 32,768 tokens. No load duration was returned.
+- **qwen2.5-coder:7b — run completed, quality NOT_RUN:** request `req_8975bdbd8d81`; output `GPU-BENCHMARK-OK`; TTFT 6,412.24 ms; generation 51.41 ms; 6 backend-counted tokens; 116.7 tokens/s; queue wait 3,757.11 ms; load duration 2,448.4 ms; sampled device-wide peak 16,477,323,264 bytes; reported VRAM total 16,303 MB, used 9,029 MB initially and 8,733 MB finally; dynamic context reported 32,768 tokens. Peak sample exceeds the reported total VRAM, so peak-VRAM telemetry requires reconciliation before it can support capacity thresholds.
+- **qwen3.5:9b-nvfp4 — NOT_RUN:** request `req_ff950a1464e6`, job `3`; admission rejected with `target_vram_estimate_unavailable`, `vram_estimate_source=unknown`, despite nominal pressure. No inference or quality result.
+- The accepted smoke calls confirm the named models generated output while the tool sampled an RTX 5070 Ti. They do not establish model digest, paired baseline, 20 warm repetitions, cold/warm distribution, context stress, concurrency, low-memory recovery or any fixed scoring case. R1/R2/T1/D1/C1–C3/I1/I2 and long-search summary, cross-file analysis, review and vision quality are all **NOT_RUN**. No promotion decision.
+
 ### 001–006 — opakování GPT-6 Luna, 2026-11-02
 
 Samostatné projectless chaty, explicitní model `gpt-6-luna`, původní prompty bez dodaných fixture; výstup a volání ověřeny v záznamu každého chatu. Hub se v těchto základních případech neměl používat a jeho funkčnost není jejich výsledkem.

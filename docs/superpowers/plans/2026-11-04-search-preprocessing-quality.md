@@ -147,3 +147,33 @@ continues to receive the original text. The focused search-mode suite passes
 40–45 ms, with one 81 ms outlier. This exercises lexical service retrieval,
 not live RAG or Hub transport. Re-run the labeled live RAG/hybrid benchmark
 after deploying this change; runtime quality and latency remain unverified.
+
+The committed installation-query fix was installed into the editable Hub
+package and the Hub was restarted. The first full setup pass stopped after
+package installation because the existing Codex Superpowers plugin required
+review. A supported `--generate-only --skip-companion-skills` pass refreshed
+MCP, schemas and instructions without replacing that plugin; the Hub was
+started and verified online on high profile. No model was downloaded. The
+GPU reservation check returned `state=free`, so no orphan fence was archived
+or cleared.
+
+After a fresh RAG index run (2,506 files; 34 changed; 18 embedded chunks), the
+live HTTP benchmark over two samples per query reported RAG recall@10 1.0 for
+English installation (MRR 1.0), and 0.0 for Czech code-index size. Hybrid
+reported English recall 1.0 (MRR 0.333) and Czech recall 0.0. Requests marked
+the index stale with three rejected candidates despite successful reranking;
+RAG median latency was 259–345 ms and hybrid 894–1,375 ms. The benchmark's
+HTTP response has no cache-hit field, so cold/warm splits were unavailable.
+This live evidence shows the install expansion helps candidate recall but
+the size-query expansion still needs work.
+
+An isolated live RAG probe with additional bounded terms `database storage
+eviction maximum bytes` returned `docs/CODE_INDEX.md` and
+`src/local_ai_hub/code_index.py` among its top three candidates, while the
+benchmark script and fusion test also ranked highly. Those terms are now added
+to Czech index-size query expansion and covered by unit tests (70 passed,
+including the concurrently present task-input change). This latest expansion
+has not yet been restarted into the running Hub or evaluated in the live
+benchmark. The unrelated modifications in `operation_contracts.py` and
+`test_task_canonical_inputs.py` appeared during setup; they are preserved for
+review and are not included in this search fix commit.
