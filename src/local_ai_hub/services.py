@@ -3271,8 +3271,9 @@ class LocalAIServices:
             return result
 
         lexical_limit = min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
+        lexical_candidate_query = semantic_query if query_expansion_applied else query
         lexical_result = self._repo_search_lexical(
-            root, query, top_k, context_lines, enrich, path_hints, scope,
+            root, lexical_candidate_query, top_k, context_lines, enrich, path_hints, scope,
             limit=lexical_limit, offset=0, exact_count=False,
         )
         if lexical_result.get("success") is not True:

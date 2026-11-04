@@ -89,6 +89,33 @@ def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatc
 
     assert calls == ["Jak nastavit limit code indexu? how configure size index"]
     assert result["query_expansion_applied"] is True
+
+
+def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical_mode(monkeypatch):
+    service = _service(monkeypatch, [{"path": "docs/CODE_INDEX.md", "text": "index budget"}])
+    rag_calls = []
+    lexical_calls = []
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda root, query, top_k: (rag_calls.append(query) or
+                                   [{"path": "docs/CODE_INDEX.md", "text": "index budget"}],
+                                   {"success": True, "index_state": "available"}),
+    )
+    monkeypatch.setattr(
+        service, "_repo_search_lexical",
+        lambda root, query, *args, **kwargs: (
+            lexical_calls.append((query, kwargs.get("exact_count"))) or
+            {"success": True, "results": [{"path": "docs/CODE_INDEX.md", "text": "index budget"}],
+             "count_exact": False, "total_matches": None, "truncated": True}
+        ),
+    )
+
+    result = service.repo_search(".", "Jak nastavit limit code indexu?", search_mode="hybrid")
+
+    expanded = "Jak nastavit limit code indexu? how configure size index"
+    assert rag_calls == [expanded]
+    assert lexical_calls == [(expanded, False)]
+    assert result["query_expansion_applied"] is True
     fused, _ = fuse_search_results(
         [{"path": "src/repo_search.py"}],
         [{"path": "docs/unrelated.md"}],
