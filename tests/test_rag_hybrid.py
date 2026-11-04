@@ -73,6 +73,18 @@ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):
     assert search_res.get("hybrid") is True
 
 
+def test_workspace_chunk_presence_is_indexed_and_fast_to_check(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "chunk-presence"
+    root.mkdir()
+    workspace = store.workspace_id(str(root))
+
+    assert store.has_workspace_chunks(workspace=workspace) is False
+    (root / "module.py").write_text("def indexed_function(): return 1\n", encoding="utf-8")
+    assert store.index_step(str(root), max_files=10)["success"] is True
+    assert store.has_workspace_chunks(workspace=workspace) is True
+
+
 def test_index_embeds_changed_chunks_without_undefined_text_list(tmp_path):
     store = _store(tmp_path)
     root = tmp_path / "project-index"

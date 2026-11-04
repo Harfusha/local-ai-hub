@@ -3317,17 +3317,28 @@ class LocalAIServices:
             workspace = rag.workspace_id(str(base))
             rag.require_workspace_root(workspace=workspace, root=str(base))
             use_reranker = reranker_requested
+            has_chunks = getattr(rag, "has_workspace_chunks", None)
+            if callable(has_chunks):
+                workspace_indexed = has_chunks(workspace=workspace)
+            else:
+                workspaces = {
+                    str(item.get("workspace")): item
+                    for item in rag.list_workspaces() if isinstance(item, dict)
+                }
+                workspace_info = workspaces.get(workspace)
+                workspace_indexed = bool(
+                    workspace_info and int(workspace_info.get("files", 0)) > 0
+                )
+            if not workspace_indexed:
+                return [], {
+                    "success": False, "reason": "rag_index_missing", "index_state": "missing",
+                    "reranker": {"requested": use_reranker, "used": False,
+                                 "degraded": bool(use_reranker)},
+                }
             raw = rag.search(query, workspace=workspace, top_k=min(MAX_PAGE_SIZE, max(1, top_k)),
                              use_reranker=use_reranker, semantic_only=True, priority=1)
             if not isinstance(raw, dict) or raw.get("success") is not True:
                 raise RuntimeError("rag_search_failed")
-            raw_candidates = raw.get("results", [])
-            if not raw_candidates:
-                workspaces = {str(item.get("workspace")): item for item in rag.list_workspaces() if isinstance(item, dict)}
-                workspace_info = workspaces.get(workspace)
-                if not workspace_info or int(workspace_info.get("files", 0)) <= 0:
-                    return [], {"success": False, "reason": "rag_index_missing", "index_state": "missing",
-                                "reranker": {"requested": use_reranker, "used": False, "degraded": bool(use_reranker)}}
             project_context = rag.project_context(base)
             max_bytes = int(self.config.get("rag", {}).get("max_file_bytes", 2_000_000))
             valid: list[dict[str, Any]] = []
@@ -3562,7 +3573,10 @@ class LocalAIServices:
                     "Deterministic candidate search skipped (%s)",
                     type(candidate_exc).__name__,
                 )
-        if self.code_index is not None:
+        # The code index is a large, usage-driven cache. Its substring candidate
+        # scans add no completeness for natural-language queries; source search
+        # and the compact preprocessor indexes remain authoritative there.
+        if self.code_index is not None and prefers_lexical_precision(query):
             try:
                 for p in self.code_index.related_paths(root, query, max(16, top_k * 3)):
                     if p not in paths: paths.append(p)

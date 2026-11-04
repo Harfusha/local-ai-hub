@@ -740,6 +740,15 @@ class RAGStore:
     def workspace_id(root: str) -> str:
         return canonical_workspace_id(root)
 
+    def has_workspace_chunks(self, *, workspace: str) -> bool:
+        """Return whether a workspace has semantic chunks before model work."""
+        if type(workspace) is not str or not workspace:
+            return False
+        with closing(self._connect()) as con:
+            return con.execute(
+                "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone() is not None
+
     def project_config_api(self) -> Any | None:
         """Load project policy lazily so shared revisions without the API still work."""
         try:

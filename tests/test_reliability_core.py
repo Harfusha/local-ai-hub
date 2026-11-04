@@ -463,7 +463,7 @@ enabled=true
         assert status == 200 and isinstance(live_status.get("observability"), dict), (status, live_status)
         assert "active_requests" in live_status["observability"], live_status
         assert "recent_http" in live_status["observability"], live_status
-        status, search_headers, search_body = _request(base+"/api/search", method="POST", body=json.dumps({"root":str(repo),"query":"test"}).encode(), headers={**auth,"Content-Type":"application/json"})
+        status, search_headers, search_body = _request(base+"/api/search", method="POST", body=json.dumps({"root":str(repo),"query":"test","search_mode":"lexical"}).encode(), headers={**auth,"Content-Type":"application/json"})
         assert status == 200, (search_headers, search_body)
         status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
         traces = json.loads(body)
@@ -504,7 +504,7 @@ enabled=true
             ("/api/repo/map", {"root":str(repo),"max_symbols":20}),
             ("/api/repo/code-index", {"root":str(repo),"query":"SampleService","limit":10}),
             ("/api/repo/deterministic", {"root":str(repo),"query":"project dependencies","limit":10}),
-            ("/api/search", {"root":str(repo),"query":"SampleService","top_k":5}),
+            ("/api/search", {"root":str(repo),"query":"SampleService","top_k":5,"search_mode":"lexical"}),
             ("/api/context/pack", {"root":str(repo),"query":"SampleService","max_tokens":512}),
             ("/api/code/ast_outline", {"root":str(repo),"path":"main.py"}),
             ("/api/test_matrix", {"root":str(repo)}),

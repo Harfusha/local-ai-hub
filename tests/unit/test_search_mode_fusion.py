@@ -69,6 +69,38 @@ def test_symbol_like_hybrid_queries_put_exact_lexical_hits_first():
     assert [item["path"] for item in fused] == ["src/repo_search.py", "docs/unrelated.md"]
 
 
+def test_lexical_search_uses_large_code_index_only_for_symbol_like_queries(tmp_path, monkeypatch):
+    calls = []
+
+    class RepoTools:
+        ignore_dirs = set()
+
+        def search(self, *_args, **_kwargs):
+            return {"success": True, "results": [], "total_matches": 0, "count_exact": True}
+
+    class CodeIndex:
+        def related_paths(self, root, query, limit):
+            calls.append(query)
+            return []
+
+    service = object.__new__(LocalAIServices)
+    service.config = {}
+    service.repo_tools = RepoTools()
+    service.code_index = CodeIndex()
+    service.deterministic = None
+    service.preprocessor = None
+    service.learner = None
+    service.evidence_store = None
+    monkeypatch.setattr(service, "_repo_cache_state", lambda _root: {})
+    monkeypatch.setattr(service, "_repo_cached", lambda _op, _root, _params, compute: compute())
+
+    service._repo_search_lexical(str(tmp_path), "Local AI Hub installation")
+    assert calls == []
+
+    service._repo_search_lexical(str(tmp_path), "repo_search")
+    assert calls == ["repo_search"]
+
+
 def test_rag_mode_never_claims_exact_corpus_count(monkeypatch):
     service = _service(monkeypatch, [{"path": "src/a.py", "text": "meaning"}])
     result = service.repo_search(".", "installation", search_mode="rag", limit=5)
@@ -216,3 +248,38 @@ def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):
     assert meta["degraded"] is True
     assert meta["index_state"] == "stale"
     assert meta["stale_candidate_count"] == 1
+
+
+def test_empty_rag_workspace_skips_embedding_search(tmp_path):
+    calls = []
+
+    class EmptyRag:
+        def workspace_id(self, root):
+            return "repo:empty"
+
+        def require_workspace_root(self, *, workspace, root):
+            assert workspace == "repo:empty"
+            assert root == str(tmp_path)
+
+        def list_workspaces(self):
+            return []
+
+        def has_workspace_chunks(self, *, workspace):
+            assert workspace == "repo:empty"
+            return False
+
+        def search(self, query, **kwargs):
+            calls.append((query, kwargs))
+            return {"success": True, "results": []}
+
+    service = object.__new__(LocalAIServices)
+    service.config = {"features": {"rag": True, "reranker": True}}
+    service.rag = EmptyRag()
+
+    rows, meta = service._repo_rag_search(str(tmp_path), "installation", 8)
+
+    assert rows == []
+    assert calls == []
+    assert meta["success"] is False
+    assert meta["reason"] == "rag_index_missing"
+    assert meta["index_state"] == "missing"

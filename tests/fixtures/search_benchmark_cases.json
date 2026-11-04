@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "case_set": "agent-search-manual-2026-11-04-v1",
+  "labeling": "Expected paths are manually judged relevant targets, not exhaustive corpus truth. Source anchors verify labels against this checkout.",
+  "cases": [
+    {
+      "id": "exact-repo-search",
+      "query": "repo_search",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/services.py", "src/local_ai_hub/mcp_server.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "src/local_ai_hub/services.py", "anchor": "def repo_search("},
+        {"path": "src/local_ai_hub/mcp_server.py", "anchor": "repo_search"}
+      ]
+    },
+    {
+      "id": "exact-page-symbol",
+      "query": "_exact_search_page",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/repo_tools.py", "anchor": "def _exact_search_page"}]
+    },
+    {
+      "id": "exact-rag-preprocess",
+      "query": "_step_rag",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/preprocess.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/preprocess.py", "anchor": "def _step_rag"}]
+    },
+    {
+      "id": "exact-pagination",
+      "query": "pagination_bounds_error",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/search_pagination.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/search_pagination.py", "anchor": "def pagination_bounds_error"}]
+    },
+    {
+      "id": "exact-operator-cpp",
+      "query": "C++",
+      "language": "symbol",
+      "expected_paths": ["docs/INSTALL_PROMPT.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALL_PROMPT.md", "anchor": "C++"}]
+    },
+    {
+      "id": "english-installation",
+      "query": "Local AI Hub installation",
+      "language": "en",
+      "expected_paths": ["docs/INSTALL_PROMPT.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALL_PROMPT.md", "anchor": "# Generic Agent Installation & Integration Prompt for Local AI Hub"}]
+    },
+    {
+      "id": "czech-index-budget",
+      "query": "Jak omezit velikost code indexu?",
+      "language": "cs",
+      "expected_paths": ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/CODE_INDEX.md", "anchor": "max_index_bytes"},
+        {"path": "src/local_ai_hub/code_index.py", "anchor": "self.max_index_bytes"}
+      ]
+    },
+    {
+      "id": "english-hybrid-degradation",
+      "query": "How does hybrid search handle an unavailable RAG index?",
+      "language": "en",
+      "expected_paths": ["src/local_ai_hub/services.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "lexical_fallback"}]
+    },
+    {
+      "id": "negative-unknown-symbol",
+      "query": "nonexistent_agent_symbol_20261104",
+      "language": "symbol",
+      "expected_paths": [],
+      "negative": true,
+      "evidence": []
+    }
+  ]
+}
