@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import threading
 import time
 from collections.abc import Mapping
@@ -13,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .external_gpu_reservation import ExternalGpuReservationStore
 from .model_policy import ModelExecutionPolicy
 from .trace_context import observer
 
@@ -261,11 +263,18 @@ class AffinityScheduler:
         server_cfg = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
         raw_state_dir = server_cfg.get("state_dir")
         self._external_gpu_path = None
+        self._external_gpu_store = None
         if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip():
             from .state_paths import configured_state_dir
             self._external_gpu_path = configured_state_dir(config) / "external-gpu-reservation"
+            self._external_gpu_store = ExternalGpuReservationStore(self._external_gpu_path)
         self._external_gpu_token = _read_external_reservation(self._external_gpu_path) if self._external_gpu_path else None
         self._external_gpu_owned = False
+        self._external_gpu_generation: str | None = None
+        if self._external_gpu_store is not None:
+            reservation = self._external_gpu_store.read()
+            if reservation is not None and reservation.get("token_digest") == self._external_gpu_token:
+                self._external_gpu_generation = reservation.get("generation")
         self._internal_gpu_digest: str | None = None
         self._internal_gpu_uncertain = False
         self._gpu_prepare_in_progress = False
@@ -1019,10 +1028,23 @@ class AffinityScheduler:
         """Observe an external reservation created by another scheduler instance."""
         if getattr(self, "_internal_gpu_uncertain", False):
             return True
-        if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
-            return True
+        store = getattr(self, "_external_gpu_store", None)
+        reaped = False
+        if store is not None:
+            try:
+                reaped = store.reap_expired()
+            except OSError:
+                return True
         path = getattr(self, "_external_gpu_path", None)
         current = _read_external_reservation(path) if path else None
+        if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
+            if current is not None:
+                return True
+            if not reaped:
+                return True
+            self._external_gpu_token = None
+            self._external_gpu_generation = None
+            self._external_gpu_owned = False
         if getattr(self, "_external_gpu_token", None):
             self._external_gpu_token = current
         owned = getattr(self, "_internal_gpu_digest", None)
@@ -1042,6 +1064,12 @@ class AffinityScheduler:
         if getattr(self, "_external_gpu_token", None):
             return False
         digest = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+        store = getattr(self, "_external_gpu_store", None)
+        if store is not None:
+            if not store.claim_internal(digest):
+                return False
+            self._internal_gpu_digest = digest
+            return True
         try:
             with path.open("xb") as stream:
                 stream.write(digest.encode("ascii"))
@@ -1064,6 +1092,13 @@ class AffinityScheduler:
             return True
         path = getattr(self, "_external_gpu_path", None)
         if path is None:
+            return True
+        store = getattr(self, "_external_gpu_store", None)
+        if store is not None:
+            if not store.release_internal(digest):
+                return False
+            self._internal_gpu_digest = None
+            self._cond.notify_all()
             return True
         for attempt in range(6):
             if _read_external_reservation(path) != digest:
@@ -1172,6 +1207,16 @@ class AffinityScheduler:
                 return None
             token = secrets.token_urlsafe(32)
             digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            store = getattr(self, "_external_gpu_store", None)
+            if store is not None:
+                record = store.reserve(digest, owner=f"hub-pid:{os.getpid()}")
+                if record is None:
+                    return None
+                self._external_gpu_token = digest
+                self._external_gpu_generation = record["generation"]
+                self._external_gpu_owned = True
+                self._cond.notify_all()
+                return token
             try:
                 with self._external_gpu_path.open("xb") as stream:
                     stream.write(digest.encode("ascii"))
@@ -1199,6 +1244,21 @@ class AffinityScheduler:
             digest = hashlib.sha256(token.encode("ascii")).hexdigest()
             if not secrets.compare_digest(current, digest) or _read_external_reservation(self._external_gpu_path) != current:
                 return False
+            store = getattr(self, "_external_gpu_store", None)
+            if store is not None:
+                generation = getattr(self, "_external_gpu_generation", None)
+                if generation is None:
+                    reservation = store.read()
+                    if reservation is not None and secrets.compare_digest(reservation["token_digest"], current):
+                        generation = reservation["generation"]
+                if not generation or not store.release(current, generation):
+                    return False
+                self._external_gpu_token = None
+                self._external_gpu_generation = None
+                self._external_gpu_owned = False
+                self._last_foreground_activity = time.monotonic()
+                self._cond.notify_all()
+                return True
             for attempt in range(6):
                 try:
                     self._external_gpu_path.unlink()
@@ -1216,6 +1276,35 @@ class AffinityScheduler:
             self._last_foreground_activity = time.monotonic()
             self._cond.notify_all()
             return True
+
+    def renew_external_gpu(self, token: str, *, state: str = "idle") -> bool:
+        if not isinstance(token, str) or not token.isascii():
+            return False
+        with self._cond:
+            store = getattr(self, "_external_gpu_store", None)
+            current = getattr(self, "_external_gpu_token", None)
+            generation = getattr(self, "_external_gpu_generation", None)
+            if store is None or current is None or not generation:
+                return False
+            digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            if not secrets.compare_digest(current, digest):
+                return False
+            return store.renew(digest, generation, state=state)
+
+    def release_expired_external_gpu(self, generation: str, *, consent: bool, audit_reason: str) -> bool:
+        """Release an expired idle lease after explicit operator consent."""
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None:
+            return False
+        released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
+        if released:
+            with self._cond:
+                if getattr(self, "_external_gpu_generation", None) == generation:
+                    self._external_gpu_generation = None
+                    self._external_gpu_token = None
+                    self._external_gpu_owned = False
+                self._cond.notify_all()
+        return released
 
     def release_background_gpu(self) -> None:
         with self._cond:
@@ -1778,8 +1867,12 @@ class AffinityScheduler:
                 result = job.result if isinstance(job.result, dict) else {}
                 uncertainty_flags = ("outcome_unknown", "timed_out", "cleanup_unconfirmed",
                                      "_lah_partial_response", "in_progress")
+                # An explicit cancel/preempt result is clean only after the execute
+                # callback returns, with no uncertainty flags or worker exception.
+                # Ambiguous or incomplete backend cleanup remains fail-closed.
                 clean_cancel = (
                     (result.get("preempted") is True or result.get("cancelled") is True)
+                    and result.get("output_truncated") is not True
                     and not any(key in result and result[key] is not False for key in uncertainty_flags)
                     and not bool(job.error)
                 )

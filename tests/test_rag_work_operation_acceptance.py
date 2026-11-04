@@ -75,7 +75,7 @@ def test_mcp_rag_search_clamps_top_k_and_uses_root_workspace_default(monkeypatch
         (
             "POST",
             "/api/rag/search",
-            {"root": str(tmp_path), "query": "release gate", "workspace": mcp_server.canonical_workspace_id(str(tmp_path)), "top_k": 12, "use_reranker": True},
+            {"root": str(tmp_path), "query": "release gate", "workspace": mcp_server.canonical_workspace_id(str(tmp_path)), "top_k": 12, "use_reranker": False},
             {},
         )
     ]

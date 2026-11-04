@@ -219,6 +219,11 @@ def validate_config(data: dict[str, Any]) -> None:
         backend = llama_cpp.get("backend", "auto")
         if not isinstance(backend, str) or backend not in {"auto", "cuda"}:
             raise ConfigError("llama_cpp.backend must be auto or cuda")
+        cache_types = {"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+        for cache_key in ("cache_type_k", "cache_type_v"):
+            cache_type = llama_cpp.get(cache_key)
+            if cache_type is not None and (not isinstance(cache_type, str) or cache_type not in cache_types):
+                raise ConfigError(f"llama_cpp.{cache_key} must be a supported llama.cpp KV cache type")
         if "managed_model_sha256" in llama_cpp:
             digest = llama_cpp["managed_model_sha256"]
             if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):

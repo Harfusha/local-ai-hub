@@ -338,6 +338,15 @@ class LlamaCppManagedRuntime:
     def _write_preset(self, device: str | None = None) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         _, aliases = self._configured_routes()
+        cache_types = {"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+        cache_options: list[str] = []
+        for key, option in (("cache_type_k", "cache-type-k"), ("cache_type_v", "cache-type-v")):
+            value = self.llama_config.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, str) or value not in cache_types:
+                raise ValueError(f"Invalid llama.cpp {option} cache type")
+            cache_options.append(f"{option} = {value}")
         configured_models = self.llama_config.get("models", {})
         if self.managed_model_sha256 is not None and self.llama_config.get("managed_model_logical") is None and isinstance(configured_models, dict):
             logical_models = [name for name, entry in configured_models.items() if isinstance(entry, dict) and "vl" not in str(name).lower()]
@@ -347,6 +356,7 @@ class LlamaCppManagedRuntime:
         sections = ["version = 1", "", "[*]", "n-gpu-layers = 99"]
         if device is not None:
             sections.append(f"device = {device}")
+        sections.extend(cache_options)
         sections.extend(["models-max = 1", ""])
         default_alias = aliases[0][0]
         configured = self.llama_config.get("models", {})

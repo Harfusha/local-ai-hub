@@ -3063,13 +3063,27 @@ class LocalAIServices:
         # coalesced background computation. Treat that as a stale input, not a hub 500.
         try:
             self._touch_project(root)
-            state = self._repo_cache_state(root) or {}
+            tracker = getattr(self, "repo_state", None)
+            if operation == "search" and tracker is not None:
+                # Exact counts cover the whole repository, including files not
+                # present in the previous page. A TTL-cached fingerprint cannot
+                # prove that no new match appeared since the previous request.
+                state = tracker.fingerprint(root, force=True) or {}
+            else:
+                state = self._repo_cache_state(root) or {}
             fingerprint = state.get("fingerprint")
-            if not isinstance(fingerprint, str) or not fingerprint.strip():
+            changed_files = state.get("changed_files")
+            search_state_incomplete = operation == "search" and (
+                bool(state.get("degraded") or state.get("stale") or state.get("truncated"))
+                or bool(params.get("force_include_patterns"))
+                or (isinstance(changed_files, int) and not isinstance(changed_files, bool)
+                    and changed_files > getattr(tracker, "max_changed_paths", changed_files))
+            )
+            if not isinstance(fingerprint, str) or not fingerprint.strip() or search_state_incomplete:
                 raw = compute()
                 hit = coalesced = False
                 cache_degraded = True
-                cache_reason = "missing_or_invalid_fingerprint"
+                cache_reason = "incomplete_search_fingerprint" if search_state_incomplete else "missing_or_invalid_fingerprint"
             else:
                 # Physical-root identity isolates clean clones with otherwise
                 # identical fingerprints while collapsing lexical aliases.
@@ -3159,7 +3173,7 @@ class LocalAIServices:
             }
         # Search itself is case-insensitive and whitespace-tolerant. Use the same
         # canonical form for cache identity so equivalent agent queries reuse work.
-        query = normalize_query(query).casefold()
+        query = normalize_query(query, strip_punctuation=False).casefold()
         eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
         from .project_config import (
             PathHint,
@@ -3550,10 +3564,9 @@ class LocalAIServices:
             hint_fallback_used = (
                 configured_usage.fallback_used or request_usage.fallback_used
             ) and not hint_used
-            path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
-            allowed_results.sort(
-                key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
-            )
+            # The exact search has already applied path priorities before
+            # pagination. Reordering this page by path groups duplicate hits
+            # and destroys score order and consistency across page boundaries.
             result = dict(full_result)
             count_is_exact = (
                 full_result.get("count_exact") is True
@@ -3652,9 +3665,11 @@ class LocalAIServices:
                 "offset": offset,
                 "ci": paths[:24],
                 "ctx": eff_ctx_lines,
+                "enrich": enrich,
                 "scope": search_scope,
                 "config_digest": project_context.config_digest,
                 "path_hints_digest": request_hint_digest,
+                "force_include_patterns": list(force_include_patterns),
             },
             compute,
         )

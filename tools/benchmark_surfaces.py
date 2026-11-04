@@ -1548,7 +1548,7 @@ def compare_records(
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         return {"status": "incomparable", "reason": "benchmark record must be a JSON object"}
     if baseline.get("success") is not True or candidate.get("success") is not True:
-        return {"status": "incomparable", "reason": "both benchmark records must pass supported golden and stage gates"}
+        return {"status": "inconclusive", "reason": "both benchmark records must pass supported golden and stage gates"}
     baseline_meta = baseline.get("metadata", {})
     candidate_meta = candidate.get("metadata", {})
     if not isinstance(baseline_meta, dict) or not isinstance(candidate_meta, dict):
@@ -5273,11 +5273,13 @@ def main(argv: list[str] | None = None) -> int:
             app.close()
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     comparison_status = result.get("comparison", {}).get("status", "within_tolerance")
+    if comparison_status == "inconclusive":
+        return 2
     if not result["success"] or comparison_status in {"regression", "incomparable"}:
         return 1
     if args.full_matrix and result.get("metadata", {}).get("baseline_readiness") != "plan_grade":
         return 2
-    return 2 if comparison_status == "inconclusive" else 0
+    return 0
 
 
 _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {

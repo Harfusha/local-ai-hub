@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import threading
@@ -52,6 +53,10 @@ class Reranker:
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=60.0)
+        self._gpu_reservation_path = configured_state_dir(cfg) / "external-gpu-reservation"
+        from .external_gpu_reservation import ExternalGpuReservationStore
+
+        self._gpu_reservation_store = ExternalGpuReservationStore(self._gpu_reservation_path)
         self.cache_enabled = bool(cache_cfg.get("reranker", True))
         self.cache = TieredCache(
             SQLiteCache(
@@ -233,6 +238,7 @@ class Reranker:
         while True:
             if not self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
                 return None
+
             if self._model is None:
                 continue
             try:
@@ -254,7 +260,88 @@ class Reranker:
                         continue
                 return None
 
+    def _needs_cuda_admission(self) -> bool:
+        if uses_torch_cuda(self.active_backend, self.active_device):
+            return True
+        if self.active_backend is not None:
+            return False
+        return any(uses_torch_cuda(backend, device) for backend, device in self._candidate_specs())
+
+    def _claim_gpu_reservation(self) -> tuple[str, str] | bool:
+        store = getattr(self, "_gpu_reservation_store", None)
+        if store is None:
+            return False
+        digest = hashlib.sha256(os.urandom(32)).hexdigest()
+        try:
+            record = store.reserve(
+                digest,
+                owner=f"reranker:{os.getpid()}:{threading.get_ident()}",
+            )
+            generation = record.get("generation") if isinstance(record, dict) else None
+            if not isinstance(generation, str) or not generation:
+                return False
+            if not store.renew(digest, generation, state="active"):
+                return False
+        except (OSError, ValueError):
+            return False
+        return digest, generation
+
+    def _release_gpu_reservation(self, reservation: tuple[str, str]) -> bool:
+        store = getattr(self, "_gpu_reservation_store", None)
+        if store is None:
+            return False
+        digest, generation = reservation
+        try:
+            return bool(
+                store.renew(digest, generation, state="idle")
+                and store.release(digest, generation)
+            )
+        except (OSError, ValueError):
+            return False
+
     def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_k: int | None = None,
+        priority: int = 3,
+        allow_cpu_fallback: bool = True,
+    ) -> dict[str, Any]:
+        if not self.enabled or not documents or not isinstance(documents, (list, tuple)):
+            return self._rerank_without_admission(
+                query,
+                documents,
+                top_k=top_k,
+                priority=priority,
+                allow_cpu_fallback=allow_cpu_fallback,
+            )
+        reservation = self._claim_gpu_reservation() if self._needs_cuda_admission() else None
+        if reservation is False:
+            return {
+                "success": False,
+                "error_code": "gpu_reserved",
+                "error": "GPU admission is unavailable",
+                "retryable": True,
+                "results": [],
+            }
+        result: dict[str, Any] | None = None
+        try:
+            result = self._rerank_without_admission(
+                query,
+                documents,
+                top_k=top_k,
+                priority=priority,
+                allow_cpu_fallback=allow_cpu_fallback,
+            )
+            return result
+        finally:
+            # Reranking is synchronous: once this call returns or raises, the
+            # GPU work is no longer in flight. Keep the reservation fail-closed
+            # only for a hung process, which never reaches this finally block.
+            if isinstance(reservation, tuple):
+                self._release_gpu_reservation(reservation)
+
+    def _rerank_without_admission(
         self,
         query: str,
         documents: list[str],

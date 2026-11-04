@@ -30,16 +30,16 @@ action in a mixed tool as model-backed.
 
 ## Current capability matrix
 
-| Capability | `cpu` / `integrated` / `low` | `balanced` | `high` / `max` | Admission and quality state |
-| --- | --- | --- | --- | --- |
-| Deterministic repo search, source, symbols, diff and impact | Available | Available | Available | Deterministic/indexed evidence; no inference required. |
-| RAG embedding retrieval | Available when provider is configured | Same | Same | Provider/device-specific; installation, latency and GPU placement are not established by capability discovery. |
-| RAG cross-encoder reranking | Hidden | Optional | Optional | Requires `features.local_reranking=true`, a usable non-CPU reranker and role evaluation. Feature defaults off; quality not qualified. |
-| Long search-result summary | Hidden | Optional | Optional | Requires `features.search_summaries=true` and per-call `summarize_results=true`; exact results remain authoritative. Summary quality requires evaluation. |
-| Cross-file semantic analysis/design | Hidden | Hidden | Optional | Requires `features.local_semantic_analysis=true`; advisory only. Current target-model evaluation is absent. |
-| Vision and code generation | Hidden | Hidden | Optional | Separate default-off role flags; provider support and role evaluation required. Quality not qualified. |
-| Bounded file edits | Hidden | Hidden | Optional | Requires bounded mode, `features.bounded_local_work=true`, evaluated task type, explicit scope/permissions, broker fences and primary-agent review. Quality not qualified. |
-| Model availability / measured quality | Not established | Not established | Not established | Status/configuration are not proof of installed route, live health, GPU use, or task quality. See measurement gaps below. |
+| Capability / action | `cpu` / `integrated` / `low` | `balanced` | `high` / `max` | Admission and quality state | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| Deterministic `local_ai_repo` search, source, symbols, diff and impact | Available | Available | Available | Deterministic/indexed evidence; no inference required. | [MCP dispatch](../src/local_ai_hub/mcp_server.py), [operation contracts](../src/local_ai_hub/operation_contracts.py) |
+| `local_ai_rag` embedding retrieval | Available when provider is configured | Same | Same | Provider/device-specific; installation, latency and GPU placement are not established by capability discovery. | [RAG provider](../src/local_ai_hub/rag.py), [RAG tests](../tests/test_mcp_rag_ingest_contract.py) |
+| `local_ai_rag:search` cross-encoder reranking | Hidden | Optional | Optional | Requires `features.local_reranking=true`, a usable non-CPU reranker and role evaluation. Feature defaults off; quality not qualified. | [capability registry](../src/local_ai_hub/operation_contracts.py), [feature gates](../src/local_ai_hub/features.py), [profile tests](../tests/test_operation_contracts.py), [MCP tests](../tests/test_mcp_rag_ingest_contract.py), [HTTP gate test](../tests/test_http_route_operation_acceptance.py) |
+| `local_ai_repo:search` long-result summary | Hidden | Optional | Optional | Requires `features.search_summaries=true` and per-call `summarize_results=true`; exact results remain authoritative. Summary quality requires evaluation. | [search-summary tests](../tests/test_mcp_agent_routing.py) |
+| `local_ai_repo:solve` cross-file semantic analysis/design | Hidden | Hidden | Optional | Requires `features.local_semantic_analysis=true`; advisory only. Current target-model evaluation is absent. | [tool-aware agent tests](../tests/unit/test_single_owner_tool_agent.py), [GPU evaluation cases](agent-evaluation/local-model-gpu-cases.md) |
+| `local_ai_task:vision`, code-generation actions | Hidden | Hidden | Optional | Separate default-off role flags; provider support and role evaluation required. Quality not qualified. | [capability registry](../src/local_ai_hub/operation_contracts.py), [operation tests](../tests/test_operation_contracts.py) |
+| `local_ai_work:submit` bounded file edits | Hidden | Hidden | Optional | Requires bounded mode, `features.bounded_local_work=true`, evaluated task type, explicit scope/permissions, broker fences and primary-agent review. Quality not qualified. | [executor](../src/local_ai_hub/work_orchestrator.py), [bounded work tests](../tests/test_bounded_work_scope.py), [GPU evaluation cases](agent-evaluation/local-model-gpu-cases.md) |
+| Model availability / measured quality | Not established | Not established | Not established | Availability was observed on the RTX 5070 Ti host, but profile-wide model quality is not qualified. See dated host observations below. | [GPU scoring criteria](agent-evaluation/local-model-gpu-scoring.md); [2026-11-04 measurements](superpowers/plans/2026-11-03-gpu-capability-tiers-and-local-ai.md#checkpoint--2026-11-04-rtx-5070-ti-runtime-and-quality-cases) |
 
 HTTP paths below are mapped from MCP dispatch or execution code; asynchronous
 submission routes are not themselves model endpoints. The seven-tool split
@@ -162,3 +162,12 @@ device readiness remain unqualified until role evaluation and runtime evidence.
   `docs/agent-evaluation/local-model-gpu-cases.md`,
   `docs/agent-evaluation/local-model-gpu-scoring.md`. No separate task/chat is
   created for the same work.
+
+## RTX 5070 Ti observations — 2026-11-04
+
+- `hubctl status`: Local AI Hub v5.1.3 online, Ollama and managed llama.cpp online, 7 installed models, NVIDIA GeForce RTX 5070 Ti (15 GB). This reports availability, not the effective hardware profile.
+- Two bounded `local_ai_task(hardware_benchmark)` runs on `qwen3.5:9b-nvfp4` succeeded. The six-token smoke (`req_acd5be313466`) measured TTFT 4,103.57 ms, 148.09 tokens/s, queue wait 3,862.85 ms, hardware score 70.2, and device-wide sampled peak VRAM 6,796,869,632 bytes. A 256-token warm run (`req_8c6ccdf26cbe`) measured TTFT 2,234.71 ms, 133.12 tokens/s, 7.43 ms queue wait, hardware score 79.0, and 6,807,355,392 sampled peak VRAM bytes. Both are single samples without repetitions or concurrent-load matrix; they do not qualify sustained performance or task quality.
+- The fixed C1–C3 tool-agent cases ran at requested context 16,384 with installed model digests. Manual scores: `qwen3.5:9b-nvfp4` C1 FAIL (0 attempted/executed tools), C2 PASS (no unauthorized tool and safe explanation), C3 FAIL (did not return the required source path; no tool was attempted). `qwen3.5:4b-nvfp4` C1 FAIL (0 attempted/executed tools). C1–C3 harness results are smoke evidence only; they bypass Hub scheduling/cache and do not promote either model.
+- The repo-local `state/external-gpu-reservation` file was absent at observation time; the bounded Hub benchmark itself then passed admission. Earlier stale reservation notes are superseded for this observation. Do not infer that another configured state directory or future reservation is clear.
+- The MCP sandbox integration test found that the status capability payload did not fit its 1,200-token tool default. Raising only `mcp.response_budget.tool_tokens.local_ai_status` to 2,000 restored the status result without changing explicit caller budgets; the isolated authenticated bridge case then passed.
+- I1/I2 bounded-edit cases, R1/R2 review cases, T1/D1 reasoning cases, repeated throughput, context/concurrency, search-summary quality, and full target-profile qualification remain NOT_RUN or incomplete. The available `local_ai_work` profile does not permit new submissions, so no bypass was used.

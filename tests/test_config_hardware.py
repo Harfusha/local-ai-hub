@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from local_ai_hub.config import ConfigError, load_config
-from local_ai_hub.hardware import PROFILE_OVERRIDES, choose_profile
+from local_ai_hub.config import ConfigError, load_config, validate_config
+from local_ai_hub.hardware import PROFILE_OVERRIDES, choose_profile, profile_overrides
 
 
 @pytest.mark.parametrize("probe_hardware,auto_tune", [(False, False), (True, False), (False, True), (True, True)])
@@ -82,6 +82,36 @@ def test_profile_selection_thresholds():
     assert choose_profile([{"vendor": "nvidia", "vram_mb": 16 * 1024}], 32, "auto") == "high"
     assert choose_profile([{"vendor": "nvidia", "vram_mb": 24 * 1024}], 64, "auto") == "max"
     assert choose_profile([{"vendor": "apple", "unified_memory_mb": 32 * 1024}], 32, "auto") == "high"
+
+
+@pytest.mark.parametrize("profile", ("high", "max"))
+def test_16gb_nvidia_profiles_bound_parallelism_and_admit_cuda_retrieval(profile: str):
+    overrides = profile_overrides(
+        profile,
+        {"gpus": [{"vendor": "nvidia", "vram_mb": 16_303}], "ram": {"total_gb": 32}},
+    )
+
+    assert overrides["scheduler"]["max_parallel"] == 2
+    assert overrides["ollama"]["num_parallel"] == 2
+    assert overrides["ollama"]["kv_cache_type"] == "q8_0"
+    assert overrides["llama_cpp"]["cache_type_k"] == "q8_0"
+    assert overrides["llama_cpp"]["cache_type_v"] == "q8_0"
+    assert overrides["models"]["embedding_device"] == "cuda"
+    assert overrides["models"]["reranker_device"] == "cuda"
+    assert overrides["model_execution"]["smart"]["context_tokens"] == 65_536
+    assert overrides["model_execution"]["smart"]["parallel"] == 1
+
+
+@pytest.mark.parametrize("key", ("cache_type_k", "cache_type_v"))
+def test_config_rejects_unknown_llama_cpp_kv_cache_type(key: str):
+    with pytest.raises(ConfigError, match=f"llama_cpp\\.{key}"):
+        validate_config({"llama_cpp": {key: "q9_0"}})
+
+
+def test_high_profile_without_nvidia_does_not_force_cuda_retrieval():
+    overrides = profile_overrides("high", {"gpus": [], "ram": {"total_gb": 32}})
+    assert "embedding_device" not in overrides["models"]
+    assert "reranker_device" not in overrides["models"]
 
 
 def test_security_validation_refuses_unconfigured_remote_bind(tmp_path: Path):

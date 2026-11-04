@@ -1360,6 +1360,7 @@ class CodeIndex:
                 for table in ("files", "symbols", "refs", "edges"):
                     con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (c_root, path))
             con.commit()
+        self._status_cache.pop(c_root, None)
         self._advance_query_cache_generation()
 
     def _parse_python(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -3796,6 +3797,7 @@ class CodeIndex:
             "changed_files_count": len(changed),
             "coverage": {
                 "complete": indexed_count == len(changed) and not truncated,
+                "scope": "indexed_changed_files_and_candidates",
                 "changed_files_count": len(changed),
                 "indexed_changed_files": indexed_count,
                 "changed_file_ratio": round(changed_file_coverage, 3),
@@ -3809,7 +3811,10 @@ class CodeIndex:
             "truncated": truncated,
             "truncation": truncation,
             "graph_complete": False,
-            "dependency_graph_complete": not truncated,
+            # A non-truncated scan of indexed rows says nothing about files
+            # outside this partial index.
+            "dependency_graph_complete": False,
+            "indexed_candidate_graph_complete": not truncated,
         }
         self._impact_result_l1.set(cache_key, result)
         return result

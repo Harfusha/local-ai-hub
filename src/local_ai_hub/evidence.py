@@ -137,6 +137,22 @@ class EvidenceStore:
             return None
         return eid
 
+    def recent_paths(self, root: str, *, limit: int = 128) -> list[dict[str, Any]]:
+        """Return bounded, root-scoped usage metadata without source text."""
+        if not isinstance(root, str) or not root or root != root.strip():
+            raise ValueError("root must be a non-empty canonical string")
+        if type(limit) is not int or not 1 <= limit <= 256:
+            raise ValueError("limit must be an integer between 1 and 256")
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                "SELECT path, SUM(hits) AS uses, MAX(accessed_at) AS last_used "
+                "FROM evidence WHERE root=? GROUP BY path "
+                "ORDER BY last_used DESC, uses DESC, path ASC LIMIT ?",
+                (root, limit),
+            ).fetchall()
+        return [{"path": str(row["path"]), "uses": int(row["uses"]),
+                 "last_used": float(row["last_used"])} for row in rows]
+
     def put_many(self, root: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not items or not isinstance(items, (list, tuple)):
             return []

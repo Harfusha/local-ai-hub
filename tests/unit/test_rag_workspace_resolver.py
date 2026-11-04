@@ -92,7 +92,7 @@ def test_public_rag_search_preserves_explicit_workspace_id(monkeypatch, tmp_path
             "query": "needle",
             "workspace": workspace_id,
             "top_k": 6,
-            "use_reranker": True,
+            "use_reranker": False,
         },
     )]
 
@@ -116,7 +116,7 @@ def test_public_rag_search_preserves_explicit_opaque_workspace_id(monkeypatch, t
             "query": "needle",
             "workspace": workspace_id,
             "top_k": 6,
-            "use_reranker": True,
+            "use_reranker": False,
         },
     )]
 

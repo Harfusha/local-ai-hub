@@ -925,17 +925,25 @@ class RAGStore:
         preamble_header = f"# [Module context]\n{preamble}\n\n" if preamble else ""
 
         chunks: list[str] = []
+        covered = [False] * len(lines)
+
+        def mark_covered(node: Any) -> None:
+            for index in range(node.lineno - 1, node.end_lineno):
+                covered[index] = True
+
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 block = "".join(lines[node.lineno - 1 : node.end_lineno]).strip()
                 full_chunk = f"{preamble_header}{block}" if preamble_header and not block.startswith(preamble[:50]) else block
                 if len(full_chunk) <= size:
                     chunks.append(full_chunk)
+                    mark_covered(node)
                 else:
                     if isinstance(node, ast.ClassDef):
                         cls_header = f"class {node.name}:\n"
                         for item in node.body:
                             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                mark_covered(item)
                                 m_block = "".join(lines[item.lineno - 1 : item.end_lineno]).strip()
                                 sub = f"{preamble_header}{cls_header}    # method {item.name}\n{m_block}"
                                 if len(sub) <= size:
@@ -943,7 +951,26 @@ class RAGStore:
                                 else:
                                     chunks.extend(self._text_chunks(sub, size, overlap))
                     else:
+                        mark_covered(node)
                         chunks.extend(self._text_chunks(full_chunk, size, overlap))
+
+        # Definitions are not the whole module: retain constants, docstrings,
+        # decorators, top-level statements and non-method class members too.
+        gaps: list[str] = []
+        gap_start = 0
+        while gap_start < len(lines):
+            if covered[gap_start]:
+                gap_start += 1
+                continue
+            gap_end = gap_start + 1
+            while gap_end < len(lines) and not covered[gap_end]:
+                gap_end += 1
+            gap = "".join(lines[gap_start:gap_end])
+            if gap.strip():
+                gaps.append(gap)
+            gap_start = gap_end
+        if gaps:
+            chunks.extend(self._text_chunks("\n".join(gaps), size, overlap))
 
         return [c for c in chunks if c.strip()]
 
@@ -2601,11 +2628,15 @@ class RAGStore:
             result["deterministic_postprocess"] = {"deduplicated": removed}
         return result
 
-    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
+    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, semantic_only: bool = False) -> dict[str, Any]:
         clean_query = normalize_query(query)
         from .opencode_boundary import generation_denial
 
         if generation_denial() is not None:
+            if semantic_only:
+                return {"success": True, "workspace": workspace, "results": [], "degraded": True,
+                        "fallback": "embedding_backend", "reason": "generation_denied",
+                        "search_cache": {"hit": False, "coalesced": False}}
             # Do not join another client's semantic singleflight or invoke an
             # embedding provider: this request uses the existing lexical index.
             result = self._search_uncached(clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True)
@@ -2621,7 +2652,7 @@ class RAGStore:
         def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
             return stable_hash({
                 "workspace": workspace, "revision": revision, "generation": index_generation,
-                "query": clean_query, "top_k": top_k, "reranker": use_reranker,
+                "query": clean_query, "top_k": top_k, "reranker": use_reranker, "semantic_only": semantic_only,
                 "scope_path": scope_path,
                 "embedding_space": space if cache_identity_known else None,
                 "embedding_dimension": dimension,
@@ -2634,11 +2665,11 @@ class RAGStore:
             if deadline is not None or cancel_event is not None:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    deadline=deadline, cancel_event=cancel_event,
+                    deadline=deadline, cancel_event=cancel_event, **({"semantic_only": True} if semantic_only else {}),
                 )
             else:
                 raw_result = self._search_uncached(
-                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}),
                 )
             observed_identity["space"] = self._embedding_space_id()
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
@@ -2659,21 +2690,21 @@ class RAGStore:
                 key = cache_key(str(actual_space) if actual_space else None, actual_dimension, generation)
                 computed_raw = raw
                 raw, hit, coalesced = self.search_flight.get_or_compute(key, lambda: computed_raw)
-            if isinstance(raw, dict) and raw.get("retrieval_mode") == "lexical_fallback":
+            if isinstance(raw, dict) and (raw.get("retrieval_mode") == "lexical_fallback" or raw.get("fallback") == "embedding_backend"):
                 self.search_flight.cache.delete(key)
         else:
             if deadline is not None or cancel_event is not None:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    deadline=deadline, cancel_event=cancel_event,
+                    deadline=deadline, cancel_event=cancel_event, **({"semantic_only": True} if semantic_only else {}),
                 )
             else:
-                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
+                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}))
             hit, coalesced = False, False
         with closing(self._connect()) as con:
             latest_generation = self._workspace_index_generation(con, workspace)
         if latest_generation != generation:
-            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
+            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}))
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
@@ -2932,7 +2963,7 @@ class RAGStore:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False) -> dict[str, Any]:
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
 
@@ -2964,6 +2995,9 @@ class RAGStore:
             if not valid_query_vector:
                 query_result = {**query_result, "success": False, "error": "invalid_query_embedding"}
         if not query_result.get("success"):
+            if semantic_only:
+                return {"success": True, "workspace": workspace, "results": [], "degraded": True,
+                        "fallback": "embedding_backend", "reason": str(query_result.get("error", "embedder_unavailable"))}
             lexical_backend = "fts5"
             candidates = visible(self._search_fts_candidates(
                 query, workspace, max(16, top_k * 2), scope_path,
@@ -3243,7 +3277,7 @@ class RAGStore:
         ]
 
         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
-        fts_candidates = visible(self._search_fts_candidates(
+        fts_candidates = [] if semantic_only else visible(self._search_fts_candidates(
             query, workspace, 16, scope_path, embedding_space, uncertain_paths
         ))
 

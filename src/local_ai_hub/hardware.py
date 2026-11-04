@@ -489,7 +489,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "vision": "qwen3.5:9b",
         },
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
         "background_gpu": {"parallel": 2, "file_batch_size": 2, "module_batch_size": 2},
         "cpu_retrieval": {"embedding_batch_size": 12, "reranker_batch_size": 4},
     },
@@ -502,10 +502,17 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },
-        "scheduler": {"max_parallel": 3},
-        "ollama": {"num_parallel": 3},
-        "background_gpu": {"parallel": 3, "file_batch_size": 3, "module_batch_size": 3},
+        "scheduler": {"max_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
+        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+        "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+            "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+        },
     },
     "max": {
         "models": {
@@ -516,10 +523,17 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },
-        "scheduler": {"max_parallel": 4},
-        "ollama": {"num_parallel": 4},
-        "background_gpu": {"parallel": 4, "file_batch_size": 4, "module_batch_size": 4},
+        "scheduler": {"max_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
+        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+        "background_gpu": {"parallel": 6, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+            "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+        },
     },
 }
 
@@ -570,6 +584,21 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         for gpu in gpus
     )
     has_npu = bool(detected.get("npus"))
+    nvidia_vram = max(
+        (
+            gpu.get("vram_mb", 0)
+            for gpu in gpus
+            if (
+                "nvidia" in str(gpu.get("vendor", "")).lower()
+                or "nvidia" in str(gpu.get("name", "")).lower()
+            )
+            and isinstance(gpu.get("vram_mb", 0), int)
+            and not isinstance(gpu.get("vram_mb", 0), bool)
+        ),
+        default=0,
+    )
+    if profile_name in {"high", "max"} and nvidia_vram >= 15 * 1024:
+        result = _deep_merge_dict(result, {"models": {"embedding_device": "cuda", "reranker_device": "cuda"}})
     if has_npu or (profile_name in ("integrated", "cpu") and intel_integrated):
         # Retrieval models are small enough to be useful on Intel/AMD NPU/iGPU while
         # leaving the shared-memory LLM lane serial and conservative. Runtime

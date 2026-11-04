@@ -45,6 +45,84 @@ def test_unknown_backend_outcome_never_releases_or_accepts_more_work(scheduler):
     assert scheduler.foreground_busy()
 
 
+def test_idle_timeout_releases_and_next_request_reacquires(scheduler, monkeypatch):
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback, args=()):
+            self.delay, self.callback, self.args, self.cancelled = delay, callback, args, False
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            if not self.cancelled:
+                self.callback(*self.args)
+
+    monkeypatch.setattr("local_ai_hub.opencode_inference_session.threading.Timer", Timer)
+    session = ExternalInferenceSession.open(scheduler, "model-a", idle_timeout_seconds=60)
+    assert timers[-1].delay == 60
+    timers[-1].fire()
+    assert not scheduler.foreground_busy()
+    request = session.start_request("model-a")
+    assert scheduler.foreground_busy()
+    session.finish_request(request, terminal_confirmed=True)
+    timers[-1].fire()
+    assert not scheduler.foreground_busy()
+    session.close()
+
+
+def test_idle_timeout_never_releases_running_or_uncertain_request(scheduler, monkeypatch):
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback, args=()):
+            self.callback, self.args = callback, args
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr("local_ai_hub.opencode_inference_session.threading.Timer", Timer)
+    session = ExternalInferenceSession.open(scheduler, "model-a", idle_timeout_seconds=60)
+    request = session.start_request("model-a")
+    timers[0].callback(*timers[0].args)
+    assert scheduler.foreground_busy()
+    session.finish_request(request, terminal_confirmed=False)
+    timers[0].callback(*timers[0].args)
+    assert scheduler.foreground_busy()
+
+
+def test_idle_timeout_release_failure_keeps_session_fenced(scheduler, monkeypatch):
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback, args=()):
+            self.callback, self.args = callback, args
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr("local_ai_hub.opencode_inference_session.threading.Timer", Timer)
+    session = ExternalInferenceSession.open(scheduler, "model-a", idle_timeout_seconds=60)
+    monkeypatch.setattr(scheduler, "release_external_gpu", lambda _token: False)
+    timers[0].callback(*timers[0].args)
+    assert scheduler.foreground_busy()
+    with pytest.raises(InferenceSessionError):
+        session.start_request("model-a")
+
+
 def test_concurrent_requests_have_only_one_winner(scheduler):
     session = ExternalInferenceSession.open(scheduler, "model-a")
     barrier, results = threading.Barrier(3), []

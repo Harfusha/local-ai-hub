@@ -126,6 +126,22 @@ availability reasons for search summaries, semantic analysis and bounded work.
 Capability entries report `profile_blocked`, `feature_disabled` or
 `enabled_by_operator`; `provider_readiness="not_checked"` means status does not
 infer installed model, quality or live device use.
+
+On `high`/`max`, a detected NVIDIA adapter with at least 15 GiB selects CUDA for
+embedding and reranker placement, sets Ollama and managed llama.cpp K/V cache
+types to `q8_0`, and caps both the scheduler and Ollama at two parallel requests.
+The smart role receives a 65,536-token context ceiling; background GPU preprocessing uses larger bounded
+batches and prioritizes recently accessed files. CUDA embedding and reranking
+claim the shared external GPU reservation for execution and fail closed with a
+retryable admission error when another owner holds it. These are configuration
+and source-level guarantees; they do not prove general model availability,
+quality, live reload, sustained throughput, or RTX 5070 Ti acceptance. Two
+2026-11-04 `qwen3.5:9b-nvfp4` smoke samples measured 148.09 tokens/s over six
+tokens and 133.12 tokens/s over 256 tokens; these are not sustained-performance
+qualification. The local reranker feature remains
+default-off pending role evaluation. Managed llama.cpp still selects one
+configured managed logical model per installation configuration.
+
 An available bounded-work tier means only that the profile permits discovery;
 it does not mean a model passed evaluation or that a request is authorized.
 Job status, wait, result/get and cancellation remain available across profile

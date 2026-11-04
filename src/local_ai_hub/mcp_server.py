@@ -2381,7 +2381,7 @@ def _instrumented_tool():
             budget_rejection = _explicit_budget_rejection(arguments)
             if budget_rejection is not None:
                 return budget_rejection
-            if (fn.__name__ == "local_ai_coord" and arguments.get("action") in {"claim", "release"}
+            if (fn.__name__ == "local_ai_coord" and arguments.get("action") in {"claim", "release", "gpu_reservation_release"}
                     and type(arguments.get("max_response_tokens")) is int
                     and 0 < arguments["max_response_tokens"] < 512):
                 return {"success": False, "error": "lease mutation requires max_response_tokens >= 512",
@@ -2401,7 +2401,10 @@ def _instrumented_tool():
                 requires_heavy_work=requires_heavy_work,
             )
             operator_status = fn.__name__ == "local_ai_status" and not requires_heavy_work
-            if mode_rejection is not None and not operator_status:
+            reservation_control = (fn.__name__ == "local_ai_coord" and arguments.get("action") in {
+                "gpu_reservation_status", "gpu_reservation_release",
+            })
+            if mode_rejection is not None and not operator_status and not reservation_control:
                 return mode_rejection
             if not detailed_diagnostics_enabled(CFG) and diagnostic_mcp_operation(fn.__name__, arguments):
                 return diagnostics_disabled_response()
@@ -2636,6 +2639,16 @@ def local_ai_status(
         return contract_error("live status endpoint returned an invalid payload", status_code=502)
     scheduler = status.get("scheduler")
     scheduler = scheduler if isinstance(scheduler, dict) else {}
+    raw_capabilities = FEATURES.capability_status()
+    capabilities = {
+        str(name): {
+            key: item[key]
+            for key in ("available", "state", "minimum_profile", "reason", "feature_gate", "provider_readiness")
+            if key in item
+        }
+        for name, item in raw_capabilities.items()
+        if isinstance(name, str) and isinstance(item, dict)
+    } if isinstance(raw_capabilities, dict) else {}
     result: dict[str, Any] = {
         "success": bool(status.get("hub_online", False)),
         "version": status.get("version"),
@@ -2643,7 +2656,7 @@ def local_ai_status(
         "active_model": scheduler.get("active_model"),
         "degraded": status.get("degraded") is True,
         "hardware_profile": FEATURES.hardware_profile,
-        "capabilities": FEATURES.capability_status(),
+        "capabilities": capabilities,
     }
     vram = status.get("vram_balancer")
     if isinstance(vram, dict):
@@ -4842,7 +4855,9 @@ def local_ai_rag(
     if action == "index":
         return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
     if action == "search":
-        reranking = FEATURES.capability_status().get("reranking", {})
+        capability_status = getattr(FEATURES, "capability_status", None)
+        capabilities = capability_status() if callable(capability_status) else {}
+        reranking = capabilities.get("reranking", {}) if isinstance(capabilities, dict) else {}
         use_reranker = isinstance(reranking, dict) and reranking.get("available") is True
         return _compact(CLIENT.post("/api/rag/search", {
             "root": root, "query": query, "workspace": effective_workspace,
@@ -4919,6 +4934,9 @@ def local_ai_coord(
     budget: dict[str, Any] | None = None,
     status: str = "",
     reason: str = "",
+    generation: str = "",
+    consent: bool = False,
+    audit_reason: str = "",
     record: dict[str, Any] | None = None,
     record_id: str = "",
     criterion: str = "",
@@ -5025,9 +5043,39 @@ def local_ai_coord(
     spec_content: str = "",
     expected_spec_revision: str = "",
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
+    """Coordination for Hub work plus GPU reservation controls. `gpu_reservation_status` reports the owner, generation and expiry. `gpu_reservation_release` requires explicit consent, that generation and an audit reason, and only releases an expired lease. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
+    if action in {"gpu_reservation_status", "gpu_reservation_release"}:
+        supplied = {"action": action}
+        if action == "gpu_reservation_release":
+            supplied.update(generation=generation, consent=consent, audit_reason=audit_reason)
+        contract_error_value = validate_operation_arguments("local_ai_coord", action, supplied)
+        if contract_error_value:
+            return contract_error(contract_error_value, status_code=400)
+        from .external_gpu_reservation import ExternalGpuReservationStore
+        from .state_paths import configured_state_dir
+
+        state_dir = configured_state_dir(load_config())
+        store = ExternalGpuReservationStore(state_dir / "external-gpu-reservation")
+        if action == "gpu_reservation_status":
+            record = store.read()
+            if record is None:
+                present = (state_dir / "external-gpu-reservation").exists()
+                return {"success": True, "reservation_present": present,
+                        "state": "unknown" if present else "free",
+                        "manual_intervention_required": present}
+            return {"success": True, "reservation_present": True,
+                    "generation": record["generation"], "owner": record["owner"],
+                    "state": record["state"], "created_at": record["created_at"],
+                    "expires_at": record["expires_at"],
+                    "expired": record["expires_at"] <= time.time()}
+        if type(consent) is not bool or not consent or not generation or not audit_reason.strip():
+            return {"success": False, "operation_not_started": True,
+                    "error": "gpu reservation release requires consent=true, generation, and audit_reason"}
+        released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
+        return {"success": released, "mutation_applied": released,
+                "generation": generation, "error": None if released else "lease is missing, active, unexpired, or changed"}
     if isinstance(action, str) and action.startswith("plan_"):
         # Preserve omission versus explicit null; do not inject other actions' defaults.
         options = _CURRENT_RESPONSE_OPTIONS.get() or {}

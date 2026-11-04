@@ -45,9 +45,9 @@ def test_mcp_get_returns_disjoint_slices_in_one_post(tmp_path, monkeypatch) -> N
         action="slice", artifact_id=artifact_id, slices=requested
     )
 
-    assert len(posts) == 1
-    assert posts[0][0] == "/api/artifact/get"
-    assert posts[0][1]["slices"] == requested
+    artifact_posts = [post for post in posts if post[0] == "/api/artifact/get"]
+    assert len(artifact_posts) == 1
+    assert artifact_posts[0][1]["slices"] == requested
     assert actual["slices"] == [
         {"offset": 10, "text": text[10:50]},
         {"offset": 200, "text": text[200:250]},

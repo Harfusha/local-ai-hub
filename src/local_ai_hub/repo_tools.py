@@ -1241,7 +1241,7 @@ class RepositoryTools:
 
     def _git_grep_command(self, base: Path, terms: list[str], max_matches: int) -> list[str]:
         cmd = [
-            "git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name", "--untracked",
+            "git", "-C", str(base), "grep", "-n", "-I", "-i", "-F", "--no-color", "--full-name", "--untracked",
             "-m", str(max(1, min(8, self.max_snippets_per_file * 2))),
         ]
         for term in terms[: self.max_search_terms]:
@@ -1294,7 +1294,7 @@ class RepositoryTools:
 
         deadline = time.monotonic() + self.ripgrep_timeout
         for batch in batches:
-            cmd = [self._rg, "--json", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
+            cmd = [self._rg, "--json", "--fixed-strings", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
             for term in terms[:12]:
                 cmd.extend(["-e", term])
             if batch is None:
@@ -1723,6 +1723,12 @@ class RepositoryTools:
         """Count every eligible result while retaining only the requested prefix."""
         terms = self._terms(query)
         phrase = query.strip().lower()
+        if not terms and phrase:
+            terms = [phrase]
+        declaration_pattern = (
+            re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([^\W\d]\w*)\b")
+            if phrase.isidentifier() else None
+        )
         if not terms and not phrase:
             return {
                 "success": True, "root": str(base), "results": [], "terms": [],
@@ -1763,6 +1769,21 @@ class RepositoryTools:
             # pass can inspect the repository's eligible files.
             for d in sorted(self.ignore_dirs):
                 rg_cmd.extend(["-g", f"!**/{d}/**"])
+            # Only translate literal, root-relative directory exclusions. More
+            # expressive project patterns retain their existing post-filtering;
+            # guessing glob equivalence here could hide eligible matches.
+            project_excludes = getattr(project_settings, "exclude_paths", ())
+            # Project globs are case-sensitive on POSIX, while this ripgrep
+            # invocation uses case-insensitive globs for built-in ignores.
+            if os.name == "nt" and isinstance(project_excludes, (list, tuple)):
+                for pattern in project_excludes:
+                    if not isinstance(pattern, str) or not re.fullmatch(
+                        r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/\*\*", pattern
+                    ):
+                        continue
+                    if any(part in {".", ".."} for part in pattern[:-3].split("/")):
+                        continue
+                    rg_cmd.extend(["-g", f"!{pattern}"])
             if configured_state_relative and configured_state_relative.parts and all(
                 not any(char in part for char in "*?[]{}")
                 for part in configured_state_relative.parts
@@ -1932,12 +1953,20 @@ class RepositoryTools:
                 for filename in filenames:
                     yield Path(directory) / filename
 
+        priority_path: str | None = None
+        cached_priority = (0, 0, 0)
+
         class _WorstFirst:
             __slots__ = ("rank", "item")
 
             def __init__(self, item: dict[str, Any]) -> None:
+                nonlocal priority_path, cached_priority
                 self.item = item
-                priority = path_priority(str(item["path"])) if path_priority else (0, 0, 0)
+                relative = str(item["path"])
+                if relative != priority_path:
+                    cached_priority = path_priority(relative) if path_priority else (0, 0, 0)
+                    priority_path = relative
+                priority = cached_priority
                 self.rank = (
                     *priority, -float(item["score"]),
                     str(item["path"]), int(item["start_line"]),
@@ -2036,7 +2065,9 @@ class RepositoryTools:
                     }
 
                 path_lower = rel.lower()
+                path_score = sum(1 for term in terms if term in path_lower) * 2
                 file_best: list[Any] = []
+                file_matched_terms: set[str] = set()
                 current_bucket: int | None = None
                 bucket_best: dict[str, Any] | None = None
 
@@ -2053,13 +2084,18 @@ class RepositoryTools:
                     matched = [term for term in terms if term in low]
                     if not matched:
                         continue
+                    file_matched_terms.update(matched)
                     score = float(
                         len(matched) * 3
-                        + sum(1 for term in terms if term in path_lower) * 2
+                        + path_score
                         + sum(min(low.count(term), 3) * 0.5 for term in matched)
                     )
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
+                    if declaration_pattern is not None:
+                        declaration = declaration_pattern.match(line)
+                        if declaration is not None and declaration.group(1).lower() == phrase:
+                            score += 6
                     start = max(0, idx - snippet_lines)
                     end = min(len(lines), idx + snippet_lines + 1)
                     hit = {
@@ -2076,8 +2112,10 @@ class RepositoryTools:
                         bucket_best = hit
                 finish_bucket()
                 total_matches += len(file_best)
+                coverage_bonus = max(0, len(file_matched_terms) - 1) * 2.0
                 for entry in file_best:
                     hit = entry.item
+                    hit["score"] += coverage_bonus
                     retain(global_best, {
                         key: hit[key]
                         for key in ("path", "start_line", "end_line", "score", "file_sha256")
@@ -2179,6 +2217,8 @@ class RepositoryTools:
                     "error": "offset must be a nonnegative integer", "root": str(base), "results": []}
         terms = self._terms(query)
         phrase = query.strip().lower()
+        if not terms and phrase:
+            terms = [phrase]
         if not terms and not phrase:
             return {
                 "success": True, "root": str(base), "results": [],

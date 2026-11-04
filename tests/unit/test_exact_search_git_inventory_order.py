@@ -109,3 +109,20 @@ def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_pat
     assert result["total_matches"] == 2
     assert result["scanned_files"] == 2
     assert {item["path"] for item in result["results"]} == {"match.py", ".venv/forced.py"}
+
+
+def test_exact_search_computes_path_priority_once_per_matching_file(tmp_path):
+    path = tmp_path / "many.py"
+    path.write_text("".join(f"needle_{index} = 1\n" for index in range(80)), encoding="utf-8")
+    calls = []
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+
+    def priority(relative):
+        calls.append(relative)
+        return (0, 0, 0)
+
+    result = tools.search(str(tmp_path), "needle", limit=10, exact_count=True, path_priority=priority)
+
+    assert result["success"] is True
+    assert result["total_matches"] > 1
+    assert calls == ["many.py"]

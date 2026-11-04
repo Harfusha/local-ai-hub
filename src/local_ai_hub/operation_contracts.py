@@ -255,7 +255,7 @@ _TASK_ACTIONS = (
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
-_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
+_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
@@ -847,6 +847,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     "local_ai_coord": _tool_contract(
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
+            "gpu_reservation_status",
             "leases", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
             "wait_for_event", "semaphore_status", "board_item_get", "board_item_list", "board_summary", "milestone_status", "session_briefing",
@@ -901,6 +902,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("root", "name"),
             "session_briefing": ("root", "session_id", "include"),
             "task_claim": ("root", "task_id", "owner"),
+            "gpu_reservation_status": (),
+            "gpu_reservation_release": ("generation", "consent", "audit_reason"),
             "task_create": ("root", "task_id", "goal", "task", "paths", "contract", "scope", "acceptance_criteria", "criteria", "title", "description", "path", "file"),
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
@@ -956,6 +959,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("name",),
             "task_claim": ("task_id",),
             "record_native_receipt": ("task_id", "criterion", "command_id"),
+            "gpu_reservation_release": ("generation", "consent", "audit_reason"),
         },
         non_empty={
             "ask": ("root", "session_id"),
@@ -986,6 +990,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("name",),
             "task_claim": ("task_id",),
             "record_native_receipt": ("task_id", "criterion", "command_id"),
+            "gpu_reservation_release": ("generation", "audit_reason"),
             "plan_init": ("root",),
             "plan_list": ("root",),
             "plan_get": ("root", "plan_id"),
@@ -1024,11 +1029,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
                 "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id",
                 "repository_revision", "phase", "preload_profile", "since_hash",
-                "question_id", "question", "answer", "state_revision",
+                "question_id", "question", "answer", "state_revision", "generation", "audit_reason",
                 "name", "item_id", "title", "priority", "assignee", "milestone", "linked_task_id",
                 "target_date", "description", "purpose", "owner", "resource", "notes",
                 "plan_id", "idempotency_key", "plan_task_id", "steering_id", "spec_rel_path", "spec_content", "expected_spec_revision", "accountable_role",
             )},
+            "consent": {"type": "boolean", "default": False},
             "expected_revision": {"type": "string", "minLength": 1},
             "lifecycle": {"type": "string", "enum": ["draft", "active", "paused", "completed", "cancelled", "archived"]},
             "default_target_ref": {"type": ["string", "null"]},
