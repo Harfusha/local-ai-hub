@@ -1,11 +1,13 @@
 from local_ai_hub.evidence import EvidenceStore
 from local_ai_hub.code_index_demand import one_hop_python_imports
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.preprocess import ProjectPreprocessor
 from contextlib import closing
 from types import SimpleNamespace
 import sqlite3
 import threading
+import hashlib
 
 
 def test_evidence_demand_is_root_scoped_and_counts_real_usage(tmp_path):
@@ -98,3 +100,24 @@ def test_preprocessing_indexes_used_files_and_one_hop_only(tmp_path):
     assert {path for path, _ in pre.code_index.pending} == {"pkg/a.py", "pkg/b.py"}
     assert [(root, item["path"]) for root, item in pre.code_index.usage] == [(str(root), "pkg/a.py")]
     assert pre.code_index.budget_checks == 1
+
+
+def test_existing_only_reindex_selection_does_not_admit_new_paths(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    indexed = root / "used.py"
+    unindexed = root / "new.py"
+    indexed.write_text("def used(): return 1\n", encoding="utf-8")
+    unindexed.write_text("def new(): return 1\n", encoding="utf-8")
+    code_index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}}, RepositoryTools({})
+    )
+    first_hash = hashlib.sha256(indexed.read_bytes()).hexdigest()
+    assert code_index.update_file(str(root), "used.py", first_hash)["success"] is True
+
+    pending = code_index.files_needing_reindex(
+        str(root), [("used.py", "changed-hash"), ("new.py", "new-hash")],
+        only_existing=True,
+    )
+
+    assert pending == [("used.py", "changed-hash")]

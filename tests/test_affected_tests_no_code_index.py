@@ -1,10 +1,12 @@
 from pathlib import Path
+from contextlib import closing
 
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
 
 
-def test_affected_tests_include_transitive_importers_without_code_index(tmp_path: Path) -> None:
+def test_affected_tests_without_index_do_not_persist_full_project(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
@@ -25,6 +27,14 @@ def test_affected_tests_include_transitive_importers_without_code_index(tmp_path
     result = engine.affected_tests(str(tmp_path), changed_paths=["src/shared.py"])
 
     assert result["success"] is True
-    assert {"tests/test_shared.py", "tests/test_core.py", "tests/test_app.py"}.issubset(
-        set(result["test_files"])
-    )
+    assert "tests/test_shared.py" in result["test_files"]
+    assert "tests/test_core.py" not in result["test_files"]
+    assert "tests/test_app.py" not in result["test_files"]
+    assert result["selection_complete"] is False
+
+    assert isinstance(engine.code_index, CodeIndex)
+    index = engine.code_index
+    with closing(index._connect()) as con:
+        indexed = con.execute("SELECT COUNT(*) FROM files WHERE root=?", (str(tmp_path),)).fetchone()[0]
+    index.close()
+    assert indexed == 0

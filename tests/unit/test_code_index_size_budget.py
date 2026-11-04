@@ -64,6 +64,35 @@ def test_code_index_budget_dry_run_is_read_only_and_orders_cold_files(tmp_path):
     index.close()
 
 
+def test_code_index_reclaims_freelist_before_evicting_live_files(tmp_path):
+    index, root = _make_index(tmp_path)
+    removed = root / "module_7.py"
+    removed.unlink()
+    assert index.update_file(str(root), "module_7.py")["success"]
+    before = index.measure_storage()
+    assert before["reusable_bytes"] > 0
+    live_bytes = before["physical_bytes"] - before["reusable_bytes"]
+    index.max_index_bytes = 1
+
+    dry_run = index.enforce_size_limit(max_bytes=live_bytes, dry_run=True)
+
+    assert dry_run["success"] is True
+    assert dry_run["evicted_paths"] == []
+    assert dry_run["within_budget"] is True
+    assert index.measure_storage()["physical_bytes"] == before["physical_bytes"]
+
+    result = index.enforce_size_limit(max_bytes=live_bytes)
+
+    assert result["success"] is True
+    assert result["evicted_paths"] == []
+    assert result["physical_bytes_released"] > 0
+    assert result["after"]["physical_bytes"] < before["physical_bytes"]
+    with closing(index._connect()) as con:
+        remaining = con.execute("SELECT COUNT(*) FROM files WHERE root=?", (str(root),)).fetchone()[0]
+    assert remaining == 7
+    index.close()
+
+
 def test_code_index_budget_evicts_cold_rows_and_releases_sqlite_pages(tmp_path):
     index, root = _make_index(tmp_path)
     index.record_usage(

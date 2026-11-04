@@ -5443,20 +5443,14 @@ def test_{sym}_regression_edge_cases():
         code_index = self.code_index
         if code_index is None:
             # Direct DeterministicEngine callers may not receive the shared index
-            # that services inject. Build it lazily from RepositoryTools' bounded
-            # inventory so dependency traversal still selects transitive tests.
+            # that services inject. Open the existing index lazily; preprocessing
+            # owns demand-based admission and this query must not index the project.
             try:
                 from .code_index import CodeIndex
 
                 candidate_index = CodeIndex(self.config, self.repo_tools)
-                candidate_paths = [
-                    path.relative_to(resolved_root).as_posix()
-                    for path in self.repo_tools.iter_files(str(resolved_root))
-                ]
-                indexed = candidate_index.update_files_batch(str(resolved_root), candidate_paths)
-                if indexed.get("success"):
-                    self.code_index = candidate_index
-                    code_index = candidate_index
+                self.code_index = candidate_index
+                code_index = candidate_index
             except Exception:
                 code_index = None
         if code_index is not None:

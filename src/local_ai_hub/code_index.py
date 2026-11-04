@@ -2052,8 +2052,12 @@ class CodeIndex:
         except Exception:
             pass
 
-    def files_needing_reindex(self, root: str, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def files_needing_reindex(
+        self, root: str, items: list[tuple[str, str]], *, only_existing: bool = False,
+    ) -> list[tuple[str, str]]:
         """Select paths with changed content or stale parser analyzer versions."""
+        if type(only_existing) is not bool:
+            raise TypeError("only_existing must be a boolean")
         c_root = canonical_root(root)
         if not items:
             return []
@@ -2098,6 +2102,8 @@ class CodeIndex:
                     continue
             language = self._language_for_path(path, settings)
             ex = existing.get(path)
+            if ex is None and only_existing:
+                continue
             if ex is not None:
                 if (ex[0], ex[1], ex[2]) == (str(content_hash), _PARSER_ANALYZER_VERSION, language):
                     continue
@@ -3582,7 +3588,10 @@ class CodeIndex:
                 "LIMIT ?",
                 (max_files,),
             ).fetchall()
-            need = before["physical_bytes"] - limit
+            # Free SQLite pages already reclaimable by VACUUM/incremental_vacuum
+            # must not cause otherwise-live files to be evicted.
+            live_physical_bytes = max(0, before["physical_bytes"] - before["reusable_bytes"])
+            need = max(0, live_physical_bytes - limit)
             for row in candidates:
                 if len(selected) >= max_files or estimated >= need:
                     break
@@ -3610,18 +3619,19 @@ class CodeIndex:
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", selected)
                 con.commit()
 
-        if dry_run or not selected:
-            predicted_physical = max(0, before["physical_bytes"] - estimated)
+        if dry_run:
+            predicted_physical = max(0, live_physical_bytes - estimated)
             return {
                 "success": True, "dry_run": dry_run,
                 "within_budget": predicted_physical <= limit, "max_bytes": limit,
                 "before": before, "after": before,
                 "evicted_paths": selected,
-                "estimated_reclaimable_bytes": estimated,
+                "estimated_reclaimable_bytes": before["reusable_bytes"] + estimated,
                 "predicted_physical_bytes": predicted_physical,
             }
 
-        self._advance_query_cache_generation()
+        if selected:
+            self._advance_query_cache_generation()
         try:
             with closing(self._connect()) as con:
                 auto_vacuum = int(con.execute("PRAGMA auto_vacuum").fetchone()[0])
@@ -3670,7 +3680,7 @@ class CodeIndex:
             "before": before,
             "after": after,
             "evicted_paths": selected,
-            "estimated_reclaimable_bytes": estimated,
+            "estimated_reclaimable_bytes": before["reusable_bytes"] + estimated,
             "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
             "vacuum": vacuum,
         }

@@ -4174,8 +4174,16 @@ class LocalAIServices:
                 else:
                     missing.append(rel)
             if self.code_index is not None:
-                if existing and hasattr(self.code_index, "update_files_batch"):
-                    self.code_index.update_files_batch(str(base), existing)
+                # A changed source path is not evidence that the Hub used it.
+                # Refresh only paths already admitted by demand-driven
+                # preprocessing; new paths wait for actual evidence use.
+                reindex_existing = getattr(self.code_index, "files_needing_reindex", None)
+                indexed_changes = (
+                    reindex_existing(str(base), existing, only_existing=True)
+                    if existing and callable(reindex_existing) else []
+                )
+                if indexed_changes and hasattr(self.code_index, "update_files_batch"):
+                    self.code_index.update_files_batch(str(base), indexed_changes)
                 for rel in missing:
                     try:
                         self.code_index.update_file(str(base), rel)

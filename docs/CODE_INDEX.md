@@ -6,6 +6,11 @@ imports. It does not claim whole-project symbol coverage. Search responses must
 keep their coverage and freshness fields visible and use source-based fallback
 when the requested file is not indexed.
 
+Direct deterministic affected-test queries may open the existing code index, but
+they never admit every project file as a side effect. Only preprocessing admits
+files from actual Hub evidence use. An absent or partial dependency graph keeps
+`selection_complete=false`; heuristic test matches remain a fallback.
+
 `[code_index].max_index_bytes` sets the shared code-index SQLite budget. The
 default is 536,870,912 bytes (512 MiB), including the database and its WAL/SHM
 sidecars. When over budget, preprocessing evicts the lowest recorded-use files
@@ -23,7 +28,9 @@ the filesystem.
 `CodeIndex.enforce_size_limit(dry_run=True)` reports candidate paths and an
 estimate without changing the database. The normal result reports before/after
 page counts and physical bytes; `within_budget` is false when a bounded pass
-could not release enough space. A later preprocessing pass can continue cleanup.
+could not release enough space. Existing SQLite free pages count toward the
+reclaim estimate before live files are selected for eviction, so reusable pages
+alone do not evict indexed files. A later preprocessing pass can continue cleanup.
 
 This cap covers the code-index database only. RAG, deterministic facts,
 preprocessing metadata, and shared parse-cache storage have separate lifecycles.
