@@ -106,4 +106,23 @@ configured batch, then counts child rows only for selected files. Synthetic
 storage benchmark released 7,053,312 bytes (16 files before, six evicted,
 hot file retained); this does not measure live DB reclaim. Focused search,
 RAG, demand and size-budget tests pass (59); release check passes. No live
-code-index cleanup has been run by this patch.
+code-index cleanup had run at this checkpoint.
+
+## Live code-index inventory and cleanup (2026-11-04)
+
+Read-only inventory found 58 roots; all root directories exist. The
+`f36f\.local-ai-hub` directory is empty and is not a Git worktree, but its
+index held 1,663 file rows (26,086,393 source bytes). A dry-run found exactly
+those 1,663 stale paths, with no other stale roots. P23 is an active Git
+worktree and was skipped by cleanup.
+
+The bounded cleanup removed only those derived rows; it preserved shared parse
+blobs and is safe to repeat after interruption. The P23 root still has 1,772
+code-index file rows. SQLite incremental vacuum freed one page. After stopping
+the Hub, a single WAL truncate checkpoint released 659,250,200 physical bytes
+from sidecars; no database file was deleted. The main database remains about
+34.59 GB, with 1,263,160 free pages (about 5.17 GB) still inside it. Physical
+database compaction and enforcement of the 512 MiB configured limit remain
+unproven; full VACUUM was not run. Latest runtime check reports Hub 5.1.3
+online, VRAM nominal, but `active_model=null`; the last installer doctor had
+reported high profile, RTX 5070 Ti 15 GB, and no warnings.
