@@ -238,6 +238,61 @@ def test_lexical_search_skips_large_code_index_candidate_scan(tmp_path, monkeypa
     service._repo_search_lexical(str(tmp_path), "repo_search")
     assert calls == [("deterministic", "repo_search"), ("preprocess", "repo_search")]
 
+    class OversizedCodeIndex:
+        max_index_bytes = 512 * 1024 * 1024
+
+        def measure_storage(self):
+            return {"physical_bytes": 34_585_018_368}
+
+    service.code_index = OversizedCodeIndex()
+    calls.clear()
+    result = service._repo_search_lexical(str(tmp_path), "repo_search")
+
+    assert result["success"] is True
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 0
+    assert calls == [("preprocess", "repo_search")]
+
+    class InBudgetCodeIndex:
+        max_index_bytes = 512 * 1024 * 1024
+
+        def measure_storage(self):
+            return {"physical_bytes": 1024}
+
+    service.code_index = InBudgetCodeIndex()
+    calls.clear()
+    result = service._repo_search_lexical(str(tmp_path), "repo_search")
+
+    assert result["count_exact"] is True
+    assert calls == [("deterministic", "repo_search"), ("preprocess", "repo_search")]
+
+    class UnavailableCodeIndex:
+        max_index_bytes = 512 * 1024 * 1024
+
+        def measure_storage(self):
+            raise OSError("index storage unavailable")
+
+    service.code_index = UnavailableCodeIndex()
+    calls.clear()
+    result = service._repo_search_lexical(str(tmp_path), "repo_search")
+
+    assert result["success"] is True
+    assert result["count_exact"] is True
+    assert calls == [("preprocess", "repo_search")]
+
+    class NaturalQueryCodeIndex:
+        max_index_bytes = 512 * 1024 * 1024
+
+        def measure_storage(self):
+            raise AssertionError("natural language search must not inspect code-index size")
+
+    service.code_index = NaturalQueryCodeIndex()
+    calls.clear()
+    result = service._repo_search_lexical(str(tmp_path), "Local AI Hub installation")
+
+    assert result["success"] is True
+    assert calls == []
+
 
 def test_rag_mode_never_claims_exact_corpus_count(monkeypatch):
     service = _service(monkeypatch, [{"path": "src/a.py", "text": "meaning"}])

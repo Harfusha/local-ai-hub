@@ -3716,12 +3716,37 @@ class LocalAIServices:
         use_index_candidates = exact_count and symbol_like_query
         paths: list[str] = []
         if use_index_candidates and self.deterministic is not None:
-            try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
-            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
-                logger.debug(
-                    "Deterministic candidate search skipped (%s)",
-                    type(candidate_exc).__name__,
-                )
+            # Graph lookups are optional hints; avoid SQLite LIKE scans over an
+            # index that exceeds its budget. Current-source search stays complete.
+            code_index_hint_safe = True
+            code_index = getattr(self, "code_index", None)
+            measure_storage = getattr(code_index, "measure_storage", None)
+            if callable(measure_storage):
+                max_index_bytes = getattr(code_index, "max_index_bytes", None)
+                if type(max_index_bytes) is not int or max_index_bytes < 1:
+                    code_index_hint_safe = False
+                else:
+                    try:
+                        storage = measure_storage()
+                        physical_bytes = (
+                            storage.get("physical_bytes") if isinstance(storage, dict) else None
+                        )
+                        code_index_hint_safe = (
+                            type(physical_bytes) is int and physical_bytes <= max_index_bytes
+                        )
+                    except (OSError, sqlite3.Error, TypeError, ValueError) as storage_exc:
+                        logger.debug(
+                            "Code-index size unavailable; expensive symbol hints skipped (%s)",
+                            type(storage_exc).__name__,
+                        )
+                        code_index_hint_safe = False
+            if code_index_hint_safe:
+                try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
+                except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                    logger.debug(
+                        "Deterministic candidate search skipped (%s)",
+                        type(candidate_exc).__name__,
+                    )
         # Exact source search provides complete lexical counts. The partial
         # code index may exceed tens of GiB and is not worth opening as a hint.
         # Warm preprocessing maintains FTS + semantic cards specifically so agents do
