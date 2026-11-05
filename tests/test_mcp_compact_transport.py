@@ -590,6 +590,20 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
     assert all(call[0] in {"/api/search", "/api/telemetry/tool-accounting"} for call in calls)
 
 
+def test_local_ai_repo_review_diff_uses_adaptive_delivery_for_slow_calls(monkeypatch) -> None:
+    calls = _capture_client(monkeypatch, {"success": True, "findings": []})
+
+    local_ai_mcp.local_ai_repo(action="review_diff", root="C:/repo")
+
+    api_calls = [call for call in calls if call[0] != "/api/telemetry/tool-accounting"]
+    assert len(api_calls) == 1
+    path, payload, timeout, *_ = api_calls[0]
+    assert path == "/api/review/diff"
+    assert payload["delivery"] == "auto"
+    assert payload["latency_budget_ms"] == 30_000
+    assert timeout == 600.0
+
+
 def test_local_ai_repo_context_returns_bounded_deterministic_projection(monkeypatch) -> None:
     response = {
         "success": True,

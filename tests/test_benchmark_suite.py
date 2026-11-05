@@ -61,6 +61,85 @@ def test_benchmark_runner_metrics_and_persistence(tmp_path: Path) -> None:
     assert summary["tokens_per_second"] > 0
 
 
+def test_benchmark_records_verified_model_digest_and_exact_loaded_vram(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    runtime.generate_stream.side_effect = lambda *_args, **_kwargs: iter(["one ", "two ", "three"])
+    runtime.model_digest.return_value = "a" * 64
+    runtime.loaded_model_details.return_value = [
+        {"name": "selected-model", "vram_bytes": 1234},
+        {"name": "other-model", "vram_bytes": 9876},
+    ]
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(benchmarks_path=benchmarks_file, runtime=runtime)
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=3)
+
+    assert result["model_digest"] == "a" * 64
+    assert result["model_digest_status"] == "verified_installed"
+    assert result["loaded_model_vram_bytes"] == 1234
+    assert result["loaded_model_vram_status"] == "observed_loaded_model"
+    saved = json.loads(benchmarks_file.read_text(encoding="utf-8"))
+    assert saved[0]["model_digest"] == "a" * 64
+    assert saved[0]["loaded_model_vram_bytes"] == 1234
+
+
+def test_benchmark_marks_model_evidence_unavailable_without_exact_runtime_data(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    runtime.generate_stream.side_effect = lambda *_args, **_kwargs: iter(["one ", "two ", "three"])
+    runtime.model_digest.return_value = "invalid-digest"
+    runtime.loaded_model_details.return_value = [
+        {"name": "different-model", "vram_bytes": 1234},
+        {"name": "selected-model", "vram_bytes": 0},
+    ]
+    runner = HardwareBenchmarkRunner(benchmarks_path=tmp_path / "benchmarks.json", runtime=runtime)
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=3)
+
+    assert result["model_digest"] is None
+    assert result["model_digest_status"] == "unavailable"
+    assert result["loaded_model_vram_bytes"] is None
+    assert result["loaded_model_vram_status"] == "unavailable"
+
+
+def test_benchmark_measures_ttft_after_queue_and_vram_after_scheduler_preparation(tmp_path: Path) -> None:
+    class Scheduler:
+        inside_execution = False
+
+        def submit(self, _model, *, execute, **_kwargs):
+            time.sleep(0.1)
+            self.inside_execution = True
+            try:
+                result = execute()
+            finally:
+                self.inside_execution = False
+            return {**result, "_lah_scheduler_queue_wait_ms": 100.0}
+
+    scheduler = Scheduler()
+
+    class Runtime:
+        def loaded_model_details(self, *, force_refresh=False):
+            if scheduler.inside_execution:
+                return [{"name": "selected-model", "vram_bytes": 4321}]
+            return []
+
+        def generate_stream(self, *_args, **_kwargs):
+            time.sleep(0.02)
+            yield {"response": "one two", "eval_count": 2, "eval_duration": 20_000_000}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=scheduler,
+    )
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=2)
+
+    assert result["queue_wait_ms"] == 100.0
+    assert result["ttft_ms"] < result["queue_wait_ms"]
+    assert result["loaded_model_vram_bytes"] == 4321
+    assert result["loaded_model_vram_status"] == "observed_loaded_model"
+
+
 def test_benchmark_runner_handles_offline_runtime(tmp_path: Path) -> None:
     benchmarks_file = tmp_path / "benchmarks.json"
     mock_runtime = MagicMock()

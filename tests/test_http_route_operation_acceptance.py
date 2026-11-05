@@ -98,6 +98,33 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     assert result["content"] == "value"
 
 
+def test_http_git_diff_forwards_current_revision_contract(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    calls = []
+
+    def git_diff(root, *, path=None, staged=False, max_lines=1000, rev1=None, rev2=None):
+        calls.append((root, path, staged, max_lines, rev1, rev2))
+        return {"success": True, "diff": "bounded diff"}
+
+    monkeypatch.setattr(app.services, "git_diff", git_diff)
+    query = (
+        f"root={quote(str(tmp_path))}&path={quote('src/example.py')}"
+        "&staged=false&max_lines=25&base=HEAD"
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff?{query}",
+        headers={"X-LocalAI-Token": "acceptance-secret"},
+        method="GET",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert calls == [(str(tmp_path), "src/example.py", False, 25, None, None)]
+    assert result["success"] is True
+    assert result["diff"] == "bounded diff"
+
+
 def test_http_rag_search_cannot_bypass_reranker_capability_gate(
     running_http_hub, monkeypatch, tmp_path
 ):

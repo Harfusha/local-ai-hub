@@ -1,6 +1,6 @@
 # Local model GPU evaluation: fixed cases
 
-Version 1. This is a future benchmark protocol, not a completed benchmark.
+Version 2. This is a future benchmark protocol, not a completed benchmark.
 Give the model only the selected case and its allowed synthetic workspace. Keep
 the scoring key outside that workspace and outside the model's context.
 Use a fresh isolated fixture for every run; never run write cases on the Hub
@@ -229,6 +229,53 @@ solve with: “Propose a design for retry-safe invoice delivery that preserves
 IDs. Explain the crash/timeout window, the idempotency key, a durable outbox
 option, and one tradeoff of each. Do not claim an implementation or test pass.”
 The source flow is `src/dispatcher.py:1-4`; constraints are in `README.md:3-6`.
+
+## S1 — Summarize bounded search evidence
+
+Give the model only this synthetic search result and the prompt below. The
+coverage note is metadata, not a claim that any particular match was omitted.
+
+```text
+Coverage note: Index coverage is incomplete; additional matches may be omitted.
+Match E1: `src/clamp.py:10-12` contains `if value < lower or value > upper:`.
+Both comparisons are strict, so values equal to either bound are accepted.
+```
+
+Prompt: “Summarize the finding in at most 3 bullets and 80 words. Use only the
+supplied match. Cite code claims with its exact `[path:start-end]` citation.
+Preserve uncertainty in the coverage note; do not claim that matches were
+omitted, infer counts, or cite `E1`.”
+
+For the `local_ai_task(eval_suite)` mechanical rubric, pass this case object;
+replace `INSTALLED_TAG` with a model already verified as installed:
+
+```json
+{
+  "action": "eval_suite",
+  "task": "S1-search-summary",
+  "model": "INSTALLED_TAG",
+  "cases": [
+    {
+      "id": "S1",
+      "input": "Coverage note: Index coverage is incomplete; additional matches may be omitted. Match E1: `src/clamp.py:10-12` contains `if value < lower or value > upper:`. Both comparisons are strict, so values equal to either bound are accepted. Summarize in at most 3 bullets and 80 words. Cite code claims with exactly [src/clamp.py:10-12]. Preserve coverage uncertainty; do not state matches were omitted, infer counts, or cite E1.",
+      "expected": "equal to either bound",
+      "max_words": 80,
+      "allowed_citations": ["[src/clamp.py:10-12]"],
+      "required_citations": ["[src/clamp.py:10-12]"],
+      "forbidden_phrases": ["matches were omitted", "complete search", "exactly 1 result"]
+    }
+  ]
+}
+```
+
+The evaluator sends only `input` to the model. `expected` and rubric fields
+stay scorer-side. The mechanical pass still needs operator review against the
+semantic S1 criteria below.
+
+Compare the model output with the deterministic baseline consisting of the
+exact match and coverage note above. Record citation precision, supported
+facts, qualifier preservation, unsupported claims, output length, latency and
+VRAM. A model summary does not replace or modify search matches or pagination.
 
 For A1/A2, capture the exact fixture revision, root scope, output, evidence
 IDs, model digest, profile, context/output budgets, tool calls, elapsed time

@@ -820,7 +820,34 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "json_schema": {"type": "object"},
             "tasks": {"type": "array", "items": {"type": "object"}},
             "items": {"type": "array", "items": {"type": "object"}},
-            "cases": {"type": "array", "items": {"type": "object"}},
+            "cases": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string", "maxLength": 120},
+                        "input": {"type": "string", "maxLength": 4000},
+                        "expected": {"type": "string", "maxLength": 2000},
+                        "max_words": {"type": "integer", "minimum": 1, "maximum": 1000},
+                        "include_response_text": {"type": "boolean"},
+                        "allowed_citations": {
+                            "type": "array", "minItems": 1, "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": r"^\[[^\[\]\r\n]+:\d+-\d+\]$"},
+                        },
+                        "required_citations": {
+                            "type": "array", "minItems": 1, "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": r"^\[[^\[\]\r\n]+:\d+-\d+\]$"},
+                        },
+                        "forbidden_phrases": {
+                            "type": "array", "minItems": 1, "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 512},
+                        },
+                    },
+                },
+            },
             "format": {"type": ["string", "object"]},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },

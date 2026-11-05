@@ -729,7 +729,7 @@ class HardwareBenchmarkRunner:
             except Exception:
                 pass
 
-        t0 = time.perf_counter()
+        t0: float | None = None
         first_token_time: float | None = None
         tokens_count = 0
         token_count_estimated = True
@@ -742,6 +742,39 @@ class HardwareBenchmarkRunner:
         sampled_vram_lock = threading.Lock()
         sampler_stop = threading.Event()
         sampler_thread: threading.Thread | None = None
+        loaded_model_vram_bytes: int | None = None
+        loaded_model_vram_status = "unavailable"
+
+        def observe_loaded_model_vram() -> None:
+            nonlocal loaded_model_vram_bytes, loaded_model_vram_status
+            details_provider = getattr(self.runtime, "loaded_model_details", None)
+            if not callable(details_provider):
+                return
+            try:
+                loaded_details = details_provider(force_refresh=True)
+            except TypeError:
+                try:
+                    loaded_details = details_provider()
+                except Exception:
+                    return
+            except Exception:
+                return
+            if not isinstance(loaded_details, list):
+                return
+            matching_vram = [
+                int(round(float(row["vram_bytes"])))
+                for row in loaded_details
+                if isinstance(row, dict)
+                and str(row.get("name", row.get("model", ""))).strip().casefold()
+                == target_model.strip().casefold()
+                and isinstance(row.get("vram_bytes"), (int, float))
+                and not isinstance(row.get("vram_bytes"), bool)
+                and math.isfinite(row["vram_bytes"])
+                and row["vram_bytes"] > 0
+            ]
+            if matching_vram:
+                loaded_model_vram_bytes = sum(matching_vram)
+                loaded_model_vram_status = "observed_loaded_model"
 
         def sample_vram_once() -> None:
             callback = getattr(self.vram_balancer, "sample_vram", None)
@@ -771,10 +804,14 @@ class HardwareBenchmarkRunner:
                     return
 
         def execute_generation() -> dict[str, Any]:
+            nonlocal t0
             nonlocal sampler_thread
             nonlocal first_token_time, tokens_count, token_count_estimated, response_text
             nonlocal thinking_chars, generation_duration_ns, load_duration_ns, streaming
             try:
+                # Scheduler prepares the requested model before invoking this callback.
+                observe_loaded_model_vram()
+                t0 = time.perf_counter()
                 if callable(getattr(self.vram_balancer, "sample_vram", None)):
                     sampler_thread = threading.Thread(
                         target=sample_vram_loop, name="hardware-benchmark-vram-sampler", daemon=True,
@@ -928,8 +965,9 @@ class HardwareBenchmarkRunner:
 
         t_end = time.perf_counter()
 
-        ttft_ms = round((first_token_time - t0) * 1000, 2) if first_token_time else round((t_end - t0) * 1000, 2)
-        gen_duration = max(0.001, (generation_duration_ns / 1e9) if generation_duration_ns else t_end - (first_token_time or t0) if streaming else t_end - t0)
+        generation_start = t0 if t0 is not None else t_end
+        ttft_ms = round((first_token_time - generation_start) * 1000, 2) if first_token_time else round((t_end - generation_start) * 1000, 2)
+        gen_duration = max(0.001, (generation_duration_ns / 1e9) if generation_duration_ns else t_end - (first_token_time or generation_start) if streaming else t_end - generation_start)
         tps = round(tokens_count / gen_duration, 2) if tokens_count > 0 else 0.0
 
         # Composite score 0..100 based on TTFT and TPS
@@ -954,9 +992,32 @@ class HardwareBenchmarkRunner:
             except Exception:
                 pass
 
+        model_digest = None
+        model_digest_status = "unavailable"
+        digest_provider = getattr(self.runtime, "model_digest", None)
+        if callable(digest_provider):
+            try:
+                candidate_digest = digest_provider(target_model)
+            except Exception:
+                candidate_digest = None
+            if (
+                isinstance(candidate_digest, str)
+                and len(candidate_digest) == 64
+                and all(char in "0123456789abcdefABCDEF" for char in candidate_digest)
+            ):
+                model_digest = candidate_digest.lower()
+                model_digest_status = "verified_installed"
+
+        if loaded_model_vram_status != "observed_loaded_model":
+            observe_loaded_model_vram()
+
         record: dict[str, Any] = {
             "timestamp": time.time(),
             "model": target_model,
+            "model_digest": model_digest,
+            "model_digest_status": model_digest_status,
+            "loaded_model_vram_bytes": loaded_model_vram_bytes,
+            "loaded_model_vram_status": loaded_model_vram_status,
             "tokens_generated": tokens_count,
             "token_count_estimated": token_count_estimated,
             "whitespace_token_estimate": tokens_count if token_count_estimated else None,

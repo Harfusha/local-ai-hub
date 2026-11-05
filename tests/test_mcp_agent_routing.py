@@ -157,6 +157,12 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     import json
     summary_input = json.loads(calls[1][1]["text"])
     assert summary_input["root_fingerprint"] == result["ai_summary_root_fingerprint"]
+    assert summary_input["coverage_note"] == (
+        "Supplied excerpts: 1; this is not the total result count. "
+        "Do not infer total counts or unshown results."
+    )
+    assert "copy the full path verbatim" in calls[1][1]["instruction"]
+    assert "contained in that match" in calls[1][1]["instruction"]
     assert str(ROOT) not in calls[1][1]["text"]
     assert result["ai_summary_advisory"] is True
     assert [call[0] for call in calls] == ["/api/search", "/api/compress"]
@@ -167,6 +173,11 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert "[path:start-end]" in calls[1][1]["instruction"]
     assert "at most 3 bullets" in calls[1][1]["instruction"]
     assert "80 words total" in calls[1][1]["instruction"]
+    assert "Do not infer result counts or omitted findings." in calls[1][1]["instruction"]
+    assert "Do not cite evidence_id or E1/E2 labels." in calls[1][1]["instruction"]
+    assert "Use literal square brackets" in calls[1][1]["instruction"]
+    assert "Preserve qualifiers in the coverage note" in calls[1][1]["instruction"]
+    assert "If the note says may be omitted, never claim results were omitted." in calls[1][1]["instruction"]
 
 
 def test_search_ai_summary_failure_keeps_deterministic_results(monkeypatch) -> None:
@@ -1084,7 +1095,11 @@ def test_eval_suite_forwards_bounded_cases_and_model(monkeypatch) -> None:
 
     def fake_post(endpoint, payload, **kwargs):
         calls.update(endpoint=endpoint, payload=payload)
-        return {"success": True, "summary": {"total": 1, "passed": 1, "failed": 0}}
+        return {
+            "success": True,
+            "summary": {"total": 1, "passed": 1, "failed": 0},
+            "cases": [{"case_id": "grounded", "response_text": "facts", "response_text_truncated": False}],
+        }
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
 
@@ -1092,14 +1107,47 @@ def test_eval_suite_forwards_bounded_cases_and_model(monkeypatch) -> None:
         action="eval_suite",
         task="synthetic_quality",
         model="test-model",
-        cases=[{"id": "grounded", "input": "facts", "expected": "facts"}],
+        cases=[{
+            "id": "grounded", "input": "facts", "expected": "facts", "max_words": 80,
+            "include_response_text": True,
+            "allowed_citations": ["[src/a.py:1-3]"],
+            "required_citations": ["[src/a.py:1-3]"],
+            "forbidden_phrases": ["invented result count"],
+        }],
     )
 
     assert result["success"] is True
+    assert result["cases"][0]["response_text"] == "facts"
+    assert result["cases"][0]["response_text_truncated"] is False
     assert calls["endpoint"] == "/api/task/eval_suite"
     assert calls["payload"]["suite_name"] == "synthetic_quality"
     assert calls["payload"]["model"] == "test-model"
-    assert calls["payload"]["cases"] == [{"id": "grounded", "input": "facts", "expected": "facts"}]
+    assert calls["payload"]["cases"] == [{
+        "id": "grounded", "input": "facts", "expected": "facts", "max_words": 80,
+        "include_response_text": True,
+        "allowed_citations": ["[src/a.py:1-3]"],
+        "required_citations": ["[src/a.py:1-3]"],
+        "forbidden_phrases": ["invented result count"],
+    }]
+
+
+def test_eval_suite_rejects_invalid_rubric_before_dispatch(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: pytest.fail("must not dispatch"))
+
+    for case in (
+        {"id": "bad-limit", "input": "facts", "expected": "facts", "max_words": True},
+        {"id": "bad-response-opt-in", "input": "facts", "expected": "facts", "include_response_text": "yes"},
+        {"id": "bad-field", "input": "facts", "expected": "facts", "task_id": "not-a-case-field"},
+    ):
+        result = local_ai_mcp.local_ai_task(action="eval_suite", task="invalid_rubric", cases=[case])
+
+        assert result["success"] is False
+        assert result["error_code"] == "invalid_eval_case_rubric"
+    for cases in ([], [None], [{"id": str(index), "input": "x", "expected": "x"} for index in range(33)]):
+        result = local_ai_mcp.local_ai_task(action="eval_suite", task="invalid_cases", cases=cases)
+
+        assert result["success"] is False
+        assert result["error_code"] == "invalid_eval_suite_cases"
 
 
 def test_local_ai_task_exposes_named_profile_fields() -> None:

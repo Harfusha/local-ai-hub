@@ -341,6 +341,21 @@ class TestMcpSchemasGeneration:
 
         assert schemas["local_ai_repo"]["parameters"]["properties"]["summarize_results"]["type"] == "boolean"
 
+    def test_eval_suite_exposes_bounded_task_specific_case_rubric(self):
+        schemas = generate_mcp_tool_schemas({})
+        cases_schema = schemas["local_ai_task"]["parameters"]["properties"]["cases"]
+        case_schema = cases_schema["items"]
+        properties = case_schema["properties"]
+
+        assert cases_schema["minItems"] == 1
+        assert cases_schema["maxItems"] == 32
+        assert case_schema["additionalProperties"] is False
+        assert properties["max_words"] == {"type": "integer", "minimum": 1, "maximum": 1000}
+        assert properties["include_response_text"] == {"type": "boolean"}
+        assert properties["allowed_citations"]["maxItems"] == 32
+        assert properties["required_citations"]["items"]["pattern"] == r"^\[[^\[\]\r\n]+:\d+-\d+\]$"
+        assert properties["forbidden_phrases"]["items"]["maxLength"] == 512
+
     def test_task_schema_tiers_semantic_and_generation_actions(self):
         low = generate_mcp_tool_schemas({"hardware": {"profile": "low"}})["local_ai_task"]["parameters"]["properties"]["action"]["enum"]
         balanced = generate_mcp_tool_schemas({"features": {"local_semantic_analysis": True}, "hardware": {"profile": "balanced"}})["local_ai_task"]["parameters"]["properties"]["action"]["enum"]

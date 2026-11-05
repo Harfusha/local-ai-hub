@@ -7774,7 +7774,7 @@ class LocalAIServices:
         vram_free_mb = None
         try:
             if getattr(self, "vram_balancer", None):
-                vram_status = self.vram_balancer.status()
+                vram_status = self.vram_balancer.status(force=True)
                 if vram_status.get("available", "vram_available_mb" in vram_status):
                     vram_free_mb = vram_status.get("vram_available_mb")
         except Exception:
@@ -9263,10 +9263,74 @@ class LocalAIServices:
         suite_name = str(payload.get("suite_name", "default"))
         requested_model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         benchmark_kind = str(payload.get("benchmark_kind", "text") or "text").strip().lower()
-        cases = payload.get("cases") or [
-            {"id": "c1", "input": "def add(a, b):", "expected": "return a + b"},
-            {"id": "c2", "input": "def is_even(n):", "expected": "return n % 2 == 0"},
-        ]
+        raw_cases = payload.get("cases")
+        if raw_cases is None:
+            cases = [
+                {"id": "c1", "input": "def add(a, b):", "expected": "return a + b"},
+                {"id": "c2", "input": "def is_even(n):", "expected": "return n % 2 == 0"},
+            ]
+        elif not isinstance(raw_cases, list) or not 1 <= len(raw_cases) <= 32 or any(not isinstance(item, dict) for item in raw_cases):
+            return {
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error_code": "invalid_eval_suite_cases",
+                "message": "cases must contain 1 to 32 objects; omit cases to use the built-in suite",
+            }
+        else:
+            cases = raw_cases
+        for case in cases:
+            supported_case_fields = {
+                "id", "input", "expected", "max_words", "allowed_citations",
+                "required_citations", "forbidden_phrases", "include_response_text",
+            }
+            unknown_fields = set(case) - supported_case_fields
+            if unknown_fields:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric",
+                    "message": f"unsupported eval case fields: {', '.join(sorted(str(item) for item in unknown_fields))}",
+                }
+            max_words = case.get("max_words")
+            if "max_words" in case and (type(max_words) is not int or not 1 <= max_words <= 1000):
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric", "message": "max_words must be an integer from 1 to 1000",
+                }
+            if "include_response_text" in case and type(case["include_response_text"]) is not bool:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric",
+                    "message": "include_response_text must be a boolean",
+                }
+            rubric_lists: dict[str, list[str]] = {}
+            for field in ("allowed_citations", "required_citations", "forbidden_phrases"):
+                if field not in case:
+                    continue
+                value = case[field]
+                if (
+                    not isinstance(value, list) or not 1 <= len(value) <= 32
+                    or any(not isinstance(item, str) or not item.strip() or len(item) > 512 for item in value)
+                ):
+                    return {
+                        "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error_code": "invalid_eval_case_rubric", "message": f"{field} must contain 1 to 32 nonempty strings of at most 512 characters",
+                    }
+                rubric_lists[field] = value
+            citation_pattern = re.compile(r"\[[^\[\]\r\n]+:\d+-\d+\]")
+            allowed = rubric_lists.get("allowed_citations")
+            for field in ("allowed_citations", "required_citations"):
+                for citation in rubric_lists.get(field, []):
+                    if citation_pattern.fullmatch(citation) is None:
+                        return {
+                            "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                            "error_code": "invalid_eval_case_rubric", "message": f"{field} entries must use [path:start-end] form",
+                        }
+            if "required_citations" in rubric_lists and (
+                allowed is None or any(item not in allowed for item in rubric_lists["required_citations"])
+            ):
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric", "message": "required_citations must be included in allowed_citations",
+                }
         configured_roles = tuple(
             str(role)
             for role, model in (getattr(self, "config", {}).get("models", {}) or {}).items()
@@ -9310,6 +9374,17 @@ class LocalAIServices:
         results = []
         passed = 0
         execution_failures = 0
+        model_digest = None
+        digest_reader = getattr(getattr(self, "runtime", None), "model_digest", None)
+        if callable(digest_reader):
+            try:
+                candidate_digest = digest_reader(requested_model)
+                if isinstance(candidate_digest, str) and re.fullmatch(r"[0-9a-f]{64}", candidate_digest):
+                    model_digest = candidate_digest
+            except Exception:
+                # Installed-model identity is useful provenance, but must not
+                # turn an otherwise valid evaluation into an execution failure.
+                model_digest = None
         for case in cases:
             c_id = str(case.get("id", "case"))
             c_in = str(case.get("input", ""))
@@ -9362,20 +9437,46 @@ class LocalAIServices:
                 lowered_text = response_text.casefold()
                 generic_markers = ("certainly!", "below is", "here is", "this function", "hope this helps")
                 generic_filler = any(marker in lowered_text for marker in generic_markers)
-                concise_limit = max(240, len(c_exp) * 6)
+                response_words = len(response_text.split())
+                max_words = case.get("max_words")
+                concise = response_words <= max_words if type(max_words) is int else len(response_text.strip()) <= max(240, len(c_exp) * 6)
                 style_quality = {
                     "contains_expected": is_pass,
                     "exact_expected": response_text.strip() == c_exp.strip(),
                     "generic_filler": generic_filler,
-                    "concise": len(response_text.strip()) <= concise_limit,
-                    "quality_pass": bool(is_pass and not generic_filler and len(response_text.strip()) <= concise_limit),
+                    "concise": concise,
                 }
+                allowed_citations = case.get("allowed_citations")
+                required_citations = case.get("required_citations")
+                forbidden_phrases = case.get("forbidden_phrases")
+                quality_checks = [is_pass, not generic_filler, concise]
+                if isinstance(allowed_citations, list):
+                    found_citations = re.findall(r"\[[^\[\]\r\n]+:\d+-\d+\]", response_text)
+                    bracketed_items = re.findall(r"\[[^\[\]\r\n]*\]", response_text)
+                    citation_precision = (
+                        bool(found_citations) and len(found_citations) == len(bracketed_items)
+                        and all(item in allowed_citations for item in found_citations)
+                    )
+                    style_quality["citation_precision"] = citation_precision
+                    quality_checks.append(citation_precision)
+                if isinstance(required_citations, list):
+                    required_present = all(item in response_text for item in required_citations)
+                    style_quality["required_citations_present"] = required_present
+                    quality_checks.append(required_present)
+                if isinstance(forbidden_phrases, list):
+                    forbidden_absent = not any(item.casefold() in lowered_text for item in forbidden_phrases)
+                    style_quality["forbidden_phrases_absent"] = forbidden_absent
+                    quality_checks.append(forbidden_absent)
+                style_quality["quality_pass"] = bool(all(quality_checks))
                 result = {
                     "case_id": c_id,
                     "model": requested_model,
+                    "model_digest": model_digest,
+                    "model_digest_status": "verified_installed" if model_digest else "unavailable",
                     "passed": is_pass,
                     "status": status,
                     "response_chars": len(response_text),
+                    "response_words": response_words,
                     "response_tokens_est": estimate_tokens(response_text),
                     "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
                     "response_preview": response_text[:240],
@@ -9383,6 +9484,9 @@ class LocalAIServices:
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                     "style_quality": style_quality,
                 }
+                if case.get("include_response_text") is True:
+                    result["response_text"] = response_text[:4096]
+                    result["response_text_truncated"] = len(response_text) > 4096
                 if error:
                     result["error"] = error
                 for key in (

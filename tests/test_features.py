@@ -389,3 +389,66 @@ enabled = true
         finally:
             http_server.APP = old_app
 
+
+def test_nvidia_hardware_metrics_include_total_and_free_vram(monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub import hardware
+
+    monkeypatch.setattr(hardware.shutil, "which", lambda _: "nvidia-smi")
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="NVIDIA RTX 5070 Ti, 16376, 12000, 560.00\n",
+        )
+
+    monkeypatch.setattr(hardware, "_run", run)
+
+    assert hardware._nvidia() == [
+        {
+            "vendor": "nvidia",
+            "name": "NVIDIA RTX 5070 Ti",
+            "vram_mb": 16376,
+            "vram_free_mb": 12000,
+            "driver": "560.00",
+            "backend": "cuda",
+        }
+    ]
+    assert calls[0][1] == "--query-gpu=name,memory.total,memory.free,driver_version"
+
+
+def test_nvidia_hardware_metrics_keep_total_when_free_vram_query_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub import hardware
+
+    monkeypatch.setattr(hardware.shutil, "which", lambda _: "nvidia-smi")
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="NVIDIA RTX 5070 Ti, 16376, 560.00\n",
+        )
+
+    monkeypatch.setattr(hardware, "_run", run)
+
+    assert hardware._nvidia() == [
+        {
+            "vendor": "nvidia",
+            "name": "NVIDIA RTX 5070 Ti",
+            "vram_mb": 16376,
+            "vram_free_mb": None,
+            "driver": "560.00",
+            "backend": "cuda",
+        }
+    ]
+    assert calls[0][1] == "--query-gpu=name,memory.total,memory.free,driver_version"
+    assert calls[1][1] == "--query-gpu=name,memory.total,driver_version"
+

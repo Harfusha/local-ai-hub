@@ -432,8 +432,153 @@ def test_eval_suite_checks_model_output_instead_of_expected_text():
     result = services.eval_suite(payload)
     assert result["summary"]["passed"] == 1
     assert result["cases"][0]["response_chars"] == len("expected")
+    assert "response_text" not in result["cases"][0]
     assert result["summary"]["quality_pass_rate"] == 1.0
     assert len(result["cases"][0]["response_sha256"]) == 64
+    assert result["cases"][0]["model_digest"] is None
+    assert result["cases"][0]["model_digest_status"] == "unavailable"
+
+
+def test_eval_suite_records_installed_model_digest():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+    services.runtime.request.return_value = {"response": "expected"}
+    services.runtime.model_digest.return_value = "a" * 64
+
+    result = services.eval_suite({"cases": [{"id": "identity", "input": "prompt", "expected": "expected"}]})
+
+    assert result["cases"][0]["model_digest"] == "a" * 64
+    services.runtime.model_digest.assert_called_once_with("test-model")
+
+
+def test_eval_suite_can_return_bounded_full_response_on_request():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+    services.runtime.request.return_value = {"response": "x" * 5000}
+
+    result = services.eval_suite({"cases": [{
+        "id": "full-response", "input": "prompt", "expected": "x",
+        "include_response_text": True,
+    }]})
+
+    case = result["cases"][0]
+    assert case["response_text"] == "x" * 4096
+    assert case["response_text_truncated"] is True
+
+
+def test_eval_suite_rejects_non_boolean_response_text_opt_in_before_generation():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+
+    result = services.eval_suite({"cases": [{
+        "id": "invalid-response-opt-in", "input": "prompt", "expected": "x",
+        "include_response_text": "yes",
+    }]})
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_eval_case_rubric"
+    services.runtime.request.assert_not_called()
+
+
+def test_eval_suite_applies_explicit_word_and_citation_rubric():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+    services.runtime.request.side_effect = [
+        {"response": "Result [docs/search.md:10-13]."},
+        {"response": "Result [src/other.py:1-2]. Later results were omitted."},
+        {"response": "Result [docs/search.md:10-13]. [E2]"},
+    ]
+    citation = "[docs/search.md:10-13]"
+    result = services.eval_suite({"cases": [
+        {
+            "id": "valid-rubric", "input": "summary", "expected": "Result",
+            "max_words": 3, "allowed_citations": [citation],
+            "required_citations": [citation], "forbidden_phrases": ["results were omitted"],
+        },
+        {
+            "id": "invalid-rubric-output", "input": "summary", "expected": "Result",
+            "max_words": 3, "allowed_citations": [citation],
+            "required_citations": [citation], "forbidden_phrases": ["results were omitted"],
+        },
+        {
+            "id": "identifier-is-not-a-citation", "input": "summary", "expected": "Result",
+            "max_words": 3, "allowed_citations": [citation],
+            "required_citations": [citation], "forbidden_phrases": ["results were omitted"],
+        },
+    ]})
+
+    valid, invalid, identifier = result["cases"]
+    assert valid["response_words"] == 2
+    assert valid["style_quality"]["concise"] is True
+    assert valid["style_quality"]["citation_precision"] is True
+    assert valid["style_quality"]["required_citations_present"] is True
+    assert valid["style_quality"]["forbidden_phrases_absent"] is True
+    assert valid["style_quality"]["quality_pass"] is True
+    assert invalid["style_quality"]["citation_precision"] is False
+    assert invalid["style_quality"]["required_citations_present"] is False
+    assert invalid["style_quality"]["forbidden_phrases_absent"] is False
+    assert invalid["style_quality"]["quality_pass"] is False
+    assert identifier["style_quality"]["citation_precision"] is False
+    assert identifier["style_quality"]["quality_pass"] is False
+
+
+def test_eval_suite_rejects_malformed_case_rubric_before_inference():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+
+    result = services.eval_suite({"cases": [{
+        "id": "bad-rubric", "input": "summary", "expected": "Result",
+        "max_words": True,
+    }]})
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_eval_case_rubric"
+    services.runtime.request.assert_not_called()
+
+
+def test_eval_suite_rejects_unknown_case_fields_before_inference():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+
+    result = services.eval_suite({"cases": [{
+        "id": "bad-case", "input": "summary", "expected": "Result", "unexpected_alias": "ignored?",
+    }]})
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_eval_case_rubric"
+    services.runtime.request.assert_not_called()
+
+
+def test_eval_suite_rejects_explicit_empty_cases_before_inference():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+
+    result = services.eval_suite({"cases": []})
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_eval_suite_cases"
+    services.runtime.request.assert_not_called()
+
+
+def test_eval_suite_rejects_nonobject_and_overlimit_cases_before_inference():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+    malformed = services.eval_suite({"cases": [None]})
+    overlimit = services.eval_suite({"cases": [{"id": str(index), "input": "x", "expected": "x"} for index in range(33)]})
+
+    assert malformed["success"] is False
+    assert malformed["error_code"] == "invalid_eval_suite_cases"
+    assert overlimit["success"] is False
+    assert overlimit["error_code"] == "invalid_eval_suite_cases"
+    services.runtime.request.assert_not_called()
 
 
 def test_eval_suite_uses_scheduler_for_managed_inference():

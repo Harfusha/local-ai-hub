@@ -2196,4 +2196,37 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - Tightened the production prompt to at most 3 bullets and 80 words; reduced `target_tokens` from 500 to 180. Deterministic search rows and source-bound citation validation remain authoritative.
 - Focused regression `tests/test_mcp_agent_routing.py::test_search_ai_summary_preserves_deterministic_results_and_sources` passed (1 passed). The test first failed on the missing output bounds, then passed after the prompt change.
 - Existing tier guard `tests/test_generator.py -k search_summary_option_is_hidden_below_balanced` passed (1 passed, 47 deselected), confirming the parameter stays hidden on lower profiles.
-- No post-change inference or quality claim: the prior concise-prompt candidate was rejected before inference for insufficient VRAM (`req_a1b85d335989`). Current `search_summaries` capability remains feature-disabled; do not promote it based on this code change.
+- At the time of the prompt change, no post-change inference had run; the next section records a later 9B diagnostic, not a promotion. The prior 4B concise-prompt candidate was rejected before inference for insufficient VRAM (`req_a1b85d335989`). Current `search_summaries` capability remains feature-disabled.
+
+### 9B structured search-summary diagnostic — 2026-11-05
+
+- Active Hub status at evaluation time reported qwen3.5:9b-nvfp4; managed scheduler reported admission available, no queued work, and active parallel limit 1. This is transient status, not VRAM headroom or process attribution.
+- A one-case `eval_suite` using structured path/range evidence passed its expected-substring and style checks: request `req_f761b680eef9`, suite `gpu-5070ti-grounded-search-summary-structured-9b-20261105`, 2,710.38 ms, 92 estimated output tokens, 1/1 mechanical and heuristic quality pass. Preview showed two citations in the requested `[path:start-end]` form.
+- The preview was truncated at 310 response characters. The suite checks expected text, generic filler and a character limit; it does not validate citation membership, full word count or factuality. This diagnostic is not production-route or role qualification evidence. No VRAM, residency, TTFT or exact full output was returned; no promotion.
+- A separate prose-only E1 fixture returned `[E1:10-13]`, not a path citation. It is a malformed-fixture diagnostic and is not counted as a contract pass.
+
+### 4B no-inferred-count prompt diagnostic — 2026-11-05
+
+- With `active_model=null` before dispatch, a structured one-case evaluation of `qwen3.5:4b-nvfp4` ran successfully: request `req_8d02a6dcf330`, role `fast_code`, 556.9 ms, 88 estimated output tokens. The expected substring passed, but heuristic `quality_pass=0/1` because output length was 299 characters, above the evaluator's 240-character concise threshold.
+- The truncated preview preserved two source citations in `[path:start-end]` form and changed the earlier unsupported `only 2 of 8+ matches` statement to `later results may be…`, consistent with the supplied coverage note. Full response is unavailable; do not claim word-count or complete citation validation.
+- Prompt now says omissions must be explicit in the coverage note and forbids inferred counts/findings. This remains diagnostic text generation, not the disabled production search-summary route. No VRAM/residency measurement or capability promotion.
+- Persisted evaluation record `gpu-search-summary-4b-no-inferred-count-20261105`, cohort `hub_on`, request `req_c97d465ac9b5`: `test_pass=true`, `quality_pass=false`.
+
+### Search-summary instruction compliance probes — 2026-11-05
+
+- Three direct `local_ai_task(action="compress")` probes used the structured two-source fixture. The latest was request `req_42200969e3ad`; all returned `advisory_only=true`, `semantic_truth_verified=false`, `usable=false`, with `bypass_reason=unrelated_output`. These generic compression calls do not exercise the feature-gated `local_ai_repo` summary route.
+- The first probe was explicitly requested with 4B but returned `model=qwen3.5:9b-nvfp4`. Outputs initially cited `[E1]`; after clearer instructions, the latest used bracketed supplied paths but still changed `later results may be omitted` into `later results omitted`. This motivated the final instruction that forbids turning possible omissions into facts and the exact-format citation reminder.
+- The final modal-uncertainty instruction has a focused source-bound regression test, but no model evaluation after that last text change. Keep the capability disabled; direct compression output remains advisory and unusable.
+
+### Task-specific eval-suite rubrics — 2026-11-05
+
+- Extended `local_ai_task(action="eval_suite")` cases with optional `max_words`, `allowed_citations`, `required_citations` and `forbidden_phrases`. The evaluator reports response word count and grades these explicit criteria; cases without a rubric keep the prior character heuristic.
+- Citation precision requires at least one citation, every bracketed item must use the path/range form and belong to `allowed_citations`, and all `required_citations` must appear. Forbidden phrases are case-insensitive. Invalid rubric values reject before inference.
+- MCP forwards the bounded rubric fields and rejects malformed word limits before dispatch. Failure-first service and MCP tests confirmed the old path lacked the rubric. This makes evaluation more task-specific; it does not qualify any model.
+- The public MCP nested case schema now exposes these fields and bounds, caps suites at 32 cases, rejects extra case keys, and both canonical prompts document the rubric. Omitted cases select the built-in suite; explicit empty, non-object and over-limit suites reject before inference. Focused schema test passed (1 passed, 57 deselected).
+
+### Warm 4B benchmark and S1 fixed case — 2026-11-05
+
+- With Hub status reporting `qwen3.5:4b-nvfp4` active and the GPU reservation free, one scheduler-mediated warm benchmark completed: request `req_75e341d1ddcb`, verified installed digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506`, NVIDIA GeForce RTX 5070 Ti, 16 backend-counted tokens, 44 tokens/s, TTFT 363.6 ms, generation 363.6 ms, queue 5.95 ms. Device-wide sampled peak was 9,382,658,048 bytes; initial/final used VRAM was 8,948 MiB, available 7,048 MiB of 16,303 MiB, nominal pressure. `loaded_model_vram_status=unavailable`; peak is device-wide, not model-specific. Short single sample; no cold, concurrency, stable-throughput or quality claim.
+- One fixed S1 evaluation ran on the same verified model: request `req_135c795580e6`, 446.06 ms, 61 estimated output tokens, 28 words. Output cited `[src/clamp.py:10-12]`, stated equality at bounds is accepted, retained the incomplete-coverage qualifier, stayed within 3 bullets/80 words, and made no count claim or E1 citation. Manual semantic score: PASS. Mechanical `contains_expected` failed because it required literal `equal to either bound` while the output paraphrased `values equal to bounds`; mechanical suite result remains failed and is not overwritten.
+- Persisted the operator score with `evaluation_record` request `req_d76997e6d40c`: `quality_pass=true`, `test_pass=false`, cohort `hub_on`, task `S1-v2-qwen3.5-4b-nvfp4-56d8c805bbeb`. This single S1 sample does not meet paired-baseline or promotion gates.

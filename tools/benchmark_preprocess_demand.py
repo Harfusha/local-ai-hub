@@ -58,22 +58,29 @@ def run(files: int = 4096, batch_size: int = 64) -> dict:
             pre.learner = _Learner(enabled)
             samples = []
             batches = 0
+            batches_to_hot = None
             regular_first = 0
+            completed = set()
             while True:
                 start = time.perf_counter()
                 selected = [str(row["path"]) for row in pre._find_next_files(root, batch_size)]
                 samples.append((time.perf_counter() - start) * 1000)
+                if not selected:
+                    break
                 batches += 1
                 if batches == 1:
                     regular_first = sum(path != hot for path in selected)
                 if hot in selected:
-                    break
-                if not selected:
-                    raise RuntimeError("hot file was never selected")
+                    batches_to_hot = batches
+                completed.update(selected)
                 with closing(connect()) as con:
                     con.executemany("UPDATE file_refs SET card_key='done' WHERE root=? AND path=?", ((root, path) for path in selected))
                     con.commit()
-            output[name] = {"batches_to_hot": batches, "regular_files_in_first_batch": regular_first,
+            if hot not in completed:
+                raise RuntimeError("hot file was never selected")
+            output[name] = {"batches_to_hot": batches_to_hot, "batches_to_complete": batches,
+                            "completed_files": len(completed), "unprocessed_files": files - len(completed),
+                            "regular_files_in_first_batch": regular_first,
                             "selection_median_ms": statistics.median(samples), "selection_samples_ms": samples}
         return output
 

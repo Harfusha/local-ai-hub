@@ -5288,7 +5288,9 @@ class Handler(BaseHTTPRequestHandler):
                     revisions = {key: query[key][0] for key in ("rev1", "rev2") if key in query}
                     max_lines = int((query.get("max_lines") or [1000])[0])
                     base_val = (query.get("base") or ["HEAD"])[0]
-                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, base=base_val, **revisions))
+                    if not revisions and base_val != "HEAD":
+                        revisions = {"rev1": base_val, "rev2": "HEAD"}
+                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, **revisions))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return

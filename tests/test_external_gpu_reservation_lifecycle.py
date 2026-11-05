@@ -278,6 +278,36 @@ def test_consent_release_of_active_lease_waits_for_expiry(tmp_path):
     assert other.read() is None
 
 
+def test_consent_release_removes_active_reservation_when_owner_process_is_gone(tmp_path, monkeypatch):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: now[0])
+    lease = store.reserve(_digest("owner-token"), owner="reranker:424242:17")
+    assert lease is not None
+    assert store.renew(_digest("owner-token"), lease["generation"], state="active")
+    monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
+
+    assert store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="operator approved after owner process exited"
+    )
+    assert store.read() is None
+
+
+def test_consent_release_keeps_active_reservation_when_process_liveness_is_unknown(tmp_path, monkeypatch):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: now[0])
+    lease = store.reserve(_digest("owner-token"), owner="reranker:424242:17")
+    assert lease is not None
+    assert store.renew(_digest("owner-token"), lease["generation"], state="active")
+    monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: None)
+
+    assert not store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="owner status is unknown"
+    )
+    assert store.read() is not None
+
+
 def test_legacy_digest_record_stays_fail_closed(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     path.write_text(_digest("old-token"), encoding="ascii")

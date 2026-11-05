@@ -164,11 +164,21 @@ class ExternalGpuReservationStore:
                     return False
                 record = self._read_metadata_unlocked()
                 metadata_orphan = record is not None
-            if (record is None or record["generation"] != generation
-                    or record["expires_at"] > self._clock()):
+            if record is None or record["generation"] != generation:
+                return False
+            expired = record["expires_at"] <= self._clock()
+            dead_owner_release = (
+                not metadata_orphan and not expired
+                and self._owner_process_is_gone(record.get("owner"))
+            )
+            if not expired and not dead_owner_release:
                 return False
             event = {
-                "action": "consented_release_recovery" if metadata_orphan else "consented_release",
+                "action": (
+                    "consented_release_recovery" if metadata_orphan else
+                    "consented_release_dead_owner" if dead_owner_release else
+                    "consented_release"
+                ),
                 "generation": generation,
                 "owner": record["owner"],
                 "reason": audit_reason.strip(),
@@ -185,6 +195,27 @@ class ExternalGpuReservationStore:
                     return False
                 return True
             return self._remove_unlocked(generation)
+
+    @staticmethod
+    def _owner_process_is_gone(owner: Any) -> bool:
+        if not isinstance(owner, str):
+            return False
+        parts = owner.split(":")
+        if len(parts) != 3 or parts[0] != "reranker":
+            return False
+        try:
+            pid = int(parts[1])
+            thread_id = int(parts[2])
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0 or thread_id <= 0:
+            return False
+        try:
+            from .process_utils import process_is_alive
+
+            return process_is_alive(pid) is False
+        except Exception:
+            return False
 
     def _read_unlocked(self) -> dict[str, Any] | None:
         if self.path.is_symlink():

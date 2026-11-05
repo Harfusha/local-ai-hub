@@ -165,3 +165,41 @@ The latest Hub `git_status` (`req_ae3ee3b183df`) reported branch `master`, 13 mo
 The plan's continuation records a bounded full-suite run stopping at 81% with 11,907 passed, 116 skipped, and five failures. Isolated reruns passed two cases; three T10 assumptions were corrected, after which the focused RAG/search/live-search/T10 cohort passed 69/69 and release-check, compileall, selftest, and diff-check were reported passing. The same plan says full integrated validation of the then-current dirty set remains required. These are plan-recorded historical results, not a fresh run for this checkout. The plan copy also contains a continuation heading dated 2026-11-05, later than the client date for this audit; reconcile chronology before treating those entries as current.
 
 No tests, builds, fixture preparation, model pulls, provider switches, or service restarts were performed while the editor-owned checkout remained active. The latest live runtime sample above is status-only; GPU/runtime acceptance remains **NOT VERIFIED**.
+
+## Chat continuation evidence — 2026-11-05
+
+### Current checkout and validation
+
+The fresh Hub `git_status` (`req_20e50d1e8aca`) reports branch `master`, four modified paths, zero staged paths and zero untracked paths: `docs/agent-evaluation/results.md`, `docs/superpowers/plans/2026-11-03-gpu-capability-tiers-and-local-ai.md`, `src/local_ai_hub/mcp_server.py`, and `tests/test_mcp_agent_routing.py`. This is a point-in-time dirty-path snapshot, not ownership attribution. Those paths remain untouched here.
+
+A later `git_status` (`req_c63f0dae1f61`) reports seven modified paths: this audit, `docs/agent-evaluation/results.md`, the GPU plan, `src/local_ai_hub/external_gpu_reservation.py`, `src/local_ai_hub/mcp_server.py`, `tests/test_external_gpu_reservation_lifecycle.py`, and `tests/test_mcp_agent_routing.py`. This newer snapshot supersedes the four-path list above. It still does not identify owners; those source/test paths remain untouched here.
+
+The Hub readiness sample (`req_bf5b801e0df4`) reports version 5.1.3, Hub/Ollama online, `active_model=qwen3.5:9b-nvfp4`, `vram_pressure=unknown`, and `context_budget_factor=0.25`. It does not report installed tags, GPU residency, free VRAM, or reservation owner. No additional GPU workload was started from this status.
+
+Focused current-source validation ran `python -m pytest -q tests/test_prompt_contracts.py tests/test_opencode_hardware.py --tb=short`: **16 passed in 0.60 seconds**. The model capability registry contains the `qwen3.5:4b-nvfp4` advisory entry and no Q4/Gemma registry entry; the OpenCode 16 GB staging candidates are `qwen3.5:9b-nvfp4`, `qwen2.5-coder:7b`, and `qwen3.5:4b-nvfp4`. This does not establish a complete repository-wide stale-reference scan or current installed-model inventory.
+
+### Remaining work and gates
+
+- A1 source fix and focused failure tests are already recorded above; live GPU acceptance remains open.
+- A2 prompt/catalog source checks pass, but full active-reference coverage and a current installed-tag snapshot remain open.
+- A3–A5 require coordinated target-device evidence for context/concurrency, GPU embeddings/reranking, and live llama.cpp switching. Current VRAM pressure is unknown and the running model is 9B NVFP4; do not infer admission, residency, or a free device from Hub online status.
+- A6 demand-priority measurements and A7 labeled tool-calling evaluation remain open. Preserve their baseline/fixture and scoring protocols from the GPU plan.
+- The release/full-suite gate still needs one stable, integrated candidate after all working changes are reconciled.
+
+No source edits, model pulls, service restarts, or GPU benchmarks were performed in this continuation. These observations update the audit only; GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### Follow-up while checkout changes continue
+
+The latest Hub `git_status` (`req_19db4f0a564c`) now reports ten modified paths: this audit, `docs/agent-evaluation/results.md`, the GPU plan, `src/local_ai_hub/external_gpu_reservation.py`, `src/local_ai_hub/mcp_server.py`, `src/local_ai_hub/process_utils.py`, `src/local_ai_hub/services.py`, `tests/test_external_gpu_reservation_lifecycle.py`, `tests/test_mcp_agent_routing.py`, and `tests/test_new_capabilities_and_hardening.py`. This supersedes earlier dirty-path snapshots. The A1 source and lifecycle-test paths are now dirty, so the previously recorded 87-test run is historical until those changes stabilize and the cohort reruns. No ownership is inferred from status alone.
+
+The semantic compression request (`req_bb2e78a881de`) was rejected before inference with `target_vram_estimate_unavailable`. It produced no review output and is not a benchmark or model-quality result.
+
+## Chat continuation evidence — 2026-11-05, A2 active guidance
+
+The live `AGENTS.md` instruction that named `qwen3.5:4b-q4_K_M` and `gemma4:12b` as advisory prompt candidates was stale. It now names the current `qwen3.5:4b-nvfp4` and `qwen3-vl:4b` prompt scopes and retains the advisory-only warning. Exact source slice SHA-256 after the edit: `6fb6b772ec6ce7a607099cc5e95cf16ac7e12b90dc9ca11fb0ad63c968461cfc`. `git diff --check -- AGENTS.md` exited 0 with only the working-copy LF-to-CRLF warning.
+
+The paginated model-name search located remaining Q4/Gemma references in the dated 2026-11-01 adoption evaluation spec and plan, the 2026-11-02 Blackwell comparison plan, this audit, `AGENTS.md` before the correction, and tests that assert retired tags are absent or constrain candidate authority. The adoption spec calls the candidate config inactive; the plans keep measurements and promotion pending. Preserve these evaluation history and test fixtures. The Q4 search still has noisy lexical matches, so repository-wide absence is not claimed. Current installed-tag inventory is still missing.
+
+The latest Hub `git_status` (`req_2cdaeaf0adc3`) now reports 17 modified paths and two untracked tests. It includes this audit, `AGENTS.md`, both canonical prompts, the GPU plan, evaluation results, A1 reservation files, MCP/runtime files and related tests. This supersedes earlier snapshots; status does not attribute owners. No path outside this audit and the one AGENTS line was edited here.
+
+The fresh readiness request (`req_81b8c945cbaf`) still reports Hub/Ollama online, active `qwen3.5:9b-nvfp4`, `vram_pressure=unknown`, and context factor 0.25; optional debug-trace probe is degraded by `probe_timeout`. A3–A7 runtime and quality gates remain open. GPU/runtime acceptance remains **NOT VERIFIED**.

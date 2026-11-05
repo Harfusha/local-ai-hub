@@ -1087,6 +1087,9 @@ class ExternalCodeIntelligence:
         eff_soft_timeout = float(soft_timeout) if soft_timeout is not None else self.soft_timeout
         if timeout is not None and eff_soft_timeout is not None:
             eff_soft_timeout = min(eff_soft_timeout, float(timeout))
+        if action in {"search", "pattern"}:
+            # Serena is optional for indexed search; cap its wait before falling back.
+            eff_soft_timeout = min(eff_soft_timeout, 2.0)
         lock_wait = min(eff_soft_timeout, 8.0) if eff_soft_timeout > 0 else (float(timeout) if timeout is not None else 60.0)
         try:
             with self._backend_operation("serena", root, timeout=lock_wait):

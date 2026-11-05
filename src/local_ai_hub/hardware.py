@@ -96,8 +96,14 @@ def _nvidia() -> list[dict[str, Any]]:
     if not smi:
         return []
     cp = _run([
-        smi, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"
+        smi, "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits"
     ])
+    has_free_vram = True
+    if not cp or cp.returncode != 0:
+        cp = _run([
+            smi, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"
+        ])
+        has_free_vram = False
     if not cp or cp.returncode != 0:
         return []
     out: list[dict[str, Any]] = []
@@ -109,7 +115,13 @@ def _nvidia() -> list[dict[str, Any]]:
             vram = int(float(parts[1]))
         except Exception:
             vram = 0
-        out.append({"vendor": "nvidia", "name": parts[0], "vram_mb": vram, "driver": parts[2] if len(parts) > 2 else "", "backend": "cuda"})
+        free_index = 2 if has_free_vram else None
+        driver_index = 3 if has_free_vram else 2
+        try:
+            vram_free = int(float(parts[free_index])) if free_index is not None and len(parts) > free_index else None
+        except (TypeError, ValueError):
+            vram_free = None
+        out.append({"vendor": "nvidia", "name": parts[0], "vram_mb": vram, "vram_free_mb": vram_free, "driver": parts[driver_index] if len(parts) > driver_index else "", "backend": "cuda"})
     return out
 
 

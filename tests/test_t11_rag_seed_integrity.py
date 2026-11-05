@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.hardware import profile_overrides
@@ -152,6 +153,38 @@ def test_parent_seed_reuses_only_matching_file_cache_and_never_rag_hash(tmp_path
     assert source is not None
     assert source["content_hash"] == digest
     assert source["text"] == content
+
+
+def test_parent_seed_does_not_clone_whole_code_index_into_worktree(
+    tmp_path: Path, preprocessor_factory
+) -> None:
+    pre, repo_tools = preprocessor_factory(tmp_path / "state")
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+    code_index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}}, repo_tools
+    )
+    pre.code_index = code_index
+    try:
+        for number in range(4):
+            relative = f"module_{number}.py"
+            content = f"def function_{number}(): return {number}\n"
+            (parent / relative).write_text(content, encoding="utf-8")
+            (child / relative).write_text(content, encoding="utf-8")
+            assert code_index.update_file(str(parent), relative)["success"]
+
+        stats = pre._seed_from_parent(str(child), str(parent))
+
+        with closing(code_index._connect()) as con:
+            child_rows = con.execute(
+                "SELECT COUNT(*) FROM files WHERE root=?", (pre._root(str(child)),)
+            ).fetchone()[0]
+        assert stats["code_index"] == 0
+        assert child_rows == 0
+    finally:
+        code_index.close()
 
 
 def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child(

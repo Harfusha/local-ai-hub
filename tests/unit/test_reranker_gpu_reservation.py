@@ -70,6 +70,29 @@ def test_cuda_reranker_fails_closed_when_gpu_is_reserved(tmp_path, monkeypatch):
     assert reservation.read_text(encoding="ascii") == "a" * 64
 
 
+def test_cuda_reranker_releases_its_idle_reservation_when_activation_fails(tmp_path, monkeypatch):
+    reranker = _cuda_reranker(tmp_path, monkeypatch)
+    store = reranker._gpu_reservation_store
+    write_metadata = store._write_metadata
+    uncached_calls = []
+
+    def fail_activation(record):
+        if record.get("state") == "active":
+            return False
+        return write_metadata(record)
+
+    monkeypatch.setattr(store, "_write_metadata", fail_activation)
+    reranker._rerank_uncached = lambda *_args, **_kwargs: uncached_calls.append(True)
+
+    result = reranker.rerank("query", ["document"])
+
+    assert result["success"] is False
+    assert result["error_code"] == "gpu_reserved"
+    assert result["retryable"] is True
+    assert uncached_calls == []
+    assert store.read() is None
+
+
 def test_cuda_reranker_releases_reservation_after_completed_failure(tmp_path, monkeypatch):
     reranker = _cuda_reranker(tmp_path, monkeypatch)
     reranker._rerank_uncached = lambda *_args, **_kwargs: {"success": False, "error": "uncertain"}

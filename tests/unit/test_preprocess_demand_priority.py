@@ -96,6 +96,12 @@ def test_demand_benchmark_reports_actual_batch_selection():
     assert result["baseline"]["batches_to_hot"] == 8
     assert result["demand"]["batches_to_hot"] == 1
     assert result["demand"]["regular_files_in_first_batch"] >= 1
+    assert result["baseline"]["batches_to_complete"] == 8
+    assert result["demand"]["batches_to_complete"] == 8
+    assert result["baseline"]["completed_files"] == 32
+    assert result["demand"]["completed_files"] == 32
+    assert result["baseline"]["unprocessed_files"] == 0
+    assert result["demand"]["unprocessed_files"] == 0
 
 
 def test_real_search_recording_drives_preprocessing_priority(tmp_path):

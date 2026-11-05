@@ -9,8 +9,10 @@ class _Embeddings:
 
     def __init__(self):
         self.available = True
+        self.inputs = []
 
     def embed(self, texts, **kwargs):
+        self.inputs.append(list(texts))
         if not self.available:
             return {"success": False, "error": "offline"}
         return {"success": True, "embeddings": [[1.0, 0.0] for _ in texts],
@@ -69,3 +71,49 @@ def test_semantic_only_recovers_after_embedding_outage(tmp_path):
     recovered = store.search("example", workspace="test", use_reranker=False, semantic_only=True)
     assert unavailable["degraded"]
     assert recovered["success"] and recovered["results"]
+
+
+def test_semantic_only_expands_english_install_intent_for_embedding(tmp_path):
+    store, embeddings = _store(tmp_path)
+    embeddings.inputs.clear()
+
+    result = store.search(
+        "Local AI Hub installation", workspace="test", use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"]
+    assert embeddings.inputs == [["Local AI Hub installation setup bootstrap getting started"]]
+
+
+def test_semantic_only_expands_czech_install_intent_for_embedding(tmp_path):
+    store, embeddings = _store(tmp_path)
+    embeddings.inputs.clear()
+
+    result = store.search(
+        "Jak nainstalovat Local AI Hub?", workspace="test", use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"]
+    assert embeddings.inputs == [["Jak nainstalovat Local AI Hub install installation setup bootstrap getting started"]]
+
+
+def test_semantic_only_preserves_exact_identifier_query(tmp_path):
+    store, embeddings = _store(tmp_path)
+    embeddings.inputs.clear()
+
+    result = store.search(
+        "repo_search", workspace="test", use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"]
+    assert embeddings.inputs == [["repo_search"]]
+
+
+def test_hybrid_search_keeps_original_embedding_query(tmp_path):
+    store, embeddings = _store(tmp_path)
+    embeddings.inputs.clear()
+
+    result = store.search("Local AI Hub installation", workspace="test", use_reranker=False)
+
+    assert result["success"]
+    assert embeddings.inputs == [["Local AI Hub installation"]]

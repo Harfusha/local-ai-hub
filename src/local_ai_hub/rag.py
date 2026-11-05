@@ -40,6 +40,12 @@ from collections import OrderedDict
 
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
+_INSTALL_INTENT_RE = re.compile(
+    r"(?<!\w)(?:install(?:ation|ing)?|setup|set\s+up|bootstrap|getting\s+started|"
+    r"instal\w*|nainstal\w*|zprovozn\w*)(?!\w)",
+    re.IGNORECASE,
+)
+_INSTALL_SEMANTIC_TERMS = ("install", "installation", "setup", "bootstrap", "getting started")
 # Increment when chunk boundaries or chunk extraction semantics change.
 RAG_CHUNKER_VERSION = "python-ast-contiguous-gaps-v2"
 # Approximate pruning stays opt-in until representative recall is validated.
@@ -61,6 +67,26 @@ _REGEX_AST_BUDGET_SECONDS = 0.5
 _REGEX_AST_MAX_BLOCK_DEPTH = 4096
 _REGEX_AST_MAX_BLOCKS = 4096
 _RUST_LIFETIME_RE = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _semantic_embedding_query(query: str) -> str:
+    """Add bounded cross-language aliases for clear installation intent only."""
+    clean_query = normalize_query(query)
+    if not clean_query or not _INSTALL_INTENT_RE.search(clean_query):
+        return clean_query
+
+    words = set(re.findall(r"[^\W_]+", clean_query.casefold()))
+    has_english_install = any(word.startswith("install") for word in words)
+    terms = tuple(
+        term for term in _INSTALL_SEMANTIC_TERMS
+        if not (
+            (term in {"install", "installation"} and has_english_install)
+            or all(part in words for part in term.split())
+        )
+    )
+    if not terms:
+        return clean_query
+    return f"{clean_query} {' '.join(terms)}"
 
 
 def _centroid_threshold_reached(chunk_count: int) -> bool:
@@ -2732,6 +2758,11 @@ class RAGStore:
 
     def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, semantic_only: bool = False) -> dict[str, Any]:
         clean_query = normalize_query(query)
+        embedding_query = _semantic_embedding_query(clean_query) if semantic_only else clean_query
+        semantic_search_options = (
+            {"semantic_only": True, "embedding_query": embedding_query}
+            if semantic_only else {}
+        )
         from .opencode_boundary import generation_denial
 
         if generation_denial() is not None:
@@ -2769,6 +2800,7 @@ class RAGStore:
             return stable_hash({
                 "workspace": workspace, "revision": revision, "generation": index_generation,
                 "query": clean_query, "top_k": top_k, "reranker": use_reranker, "semantic_only": semantic_only,
+                "semantic_query": embedding_query,
                 "scope_path": scope_path,
                 "chunker_version": RAG_CHUNKER_VERSION,
                 "stored_chunker_version": stored_chunker_version,
@@ -2783,11 +2815,11 @@ class RAGStore:
             if deadline is not None or cancel_event is not None:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    deadline=deadline, cancel_event=cancel_event, **({"semantic_only": True} if semantic_only else {}),
+                    deadline=deadline, cancel_event=cancel_event, **semantic_search_options,
                 )
             else:
                 raw_result = self._search_uncached(
-                    clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}),
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path, **semantic_search_options,
                 )
             observed_identity["space"] = self._embedding_space_id()
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
@@ -2814,16 +2846,16 @@ class RAGStore:
             if deadline is not None or cancel_event is not None:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    deadline=deadline, cancel_event=cancel_event, **({"semantic_only": True} if semantic_only else {}),
+                    deadline=deadline, cancel_event=cancel_event, **semantic_search_options,
                 )
             else:
-                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}))
+                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **semantic_search_options)
             hit, coalesced = False, False
         with closing(self._connect()) as con:
             latest_generation = self._workspace_index_generation(con, workspace)
             latest_chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
         if latest_generation != generation:
-            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **({"semantic_only": True} if semantic_only else {}))
+            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **semantic_search_options)
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
         result["index_revision"] = revision
@@ -3088,7 +3120,7 @@ class RAGStore:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False) -> dict[str, Any]:
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False, embedding_query: str | None = None) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
             stored_embedding_space = (
@@ -3124,7 +3156,7 @@ class RAGStore:
             query_result = {"success": False, "error": "opencode_local_lexical_only"}
         else:
             try:
-                query_result = self.services.embed([query], priority=priority, query=True)
+                query_result = self.services.embed([embedding_query if embedding_query is not None else query], priority=priority, query=True)
             except Exception as exc:
                 query_result = {"success": False, "error": str(exc)}
         if query_result.get("success"):

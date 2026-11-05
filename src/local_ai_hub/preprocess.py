@@ -1267,34 +1267,10 @@ class ProjectPreprocessor:
             except (OSError, sqlite3.Error) as exc:
                 logger.warning("worktree deterministic cache seed skipped (%s)", type(exc).__name__)
 
-        # 3. Seed code-index.sqlite3 (files, symbols, refs, edges)
-        if self.code_index is not None:
-            try:
-                with closing(self.code_index._connect()) as ci_con:
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO files(root, path, content_hash, language, updated_at)
-                           SELECT ?, path, content_hash, language, ? FROM files WHERE root=?""",
-                        (resolved, now, parent_resolved),
-                    )
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring)
-                           SELECT ?, path, name, kind, line, end_line, container, name_path, signature, access, docstring FROM symbols WHERE root=?""",
-                        (resolved, parent_resolved),
-                    )
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO refs(root, path, name, line, kind)
-                           SELECT ?, path, name, line, kind FROM refs WHERE root=?""",
-                        (resolved, parent_resolved),
-                    )
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO edges(root, src, dst, kind, path, line)
-                           SELECT ?, src, dst, kind, path, line FROM edges WHERE root=?""",
-                        (resolved, parent_resolved),
-                    )
-                    ci_con.commit()
-                    stats["code_index"] = 1
-            except (OSError, sqlite3.Error) as exc:
-                logger.warning("worktree code-index cache seed skipped (%s)", type(exc).__name__)
+        # Code-index admission is demand-driven by actual source evidence in
+        # _step_code_index. Cloning the parent's full per-root index here makes
+        # every worktree multiply unrelated rows and overstates its coverage.
+        # Shared content-addressed parse blobs remain available to later indexing.
 
         return stats
 

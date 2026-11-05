@@ -216,3 +216,49 @@ def test_direct_search_keeps_lazy_gpu_reranking(tmp_path):
 
     assert reranker.calls == 1
     assert [item["path"] for item in result["results"]] == list(reversed([item["path"] for item in baseline["results"]]))
+
+
+def test_direct_rag_route_preserves_candidates_when_gpu_reservation_is_denied(tmp_path, monkeypatch):
+    store = _store_with_two_chunks(tmp_path / "rag")
+    reranker, attempts, cpu_predictions = _stub_openvino_reranker(
+        tmp_path / "reranker", monkeypatch, fail_gpu_load=False, fail_gpu_predict=False
+    )
+    reranker.active_device = "cuda:0"
+    monkeypatch.setattr(reranker, "_needs_cuda_admission", lambda: True)
+    monkeypatch.setattr(reranker, "_claim_gpu_reservation", lambda: False)
+    store.reranker = reranker
+
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
+
+    assert result["success"] is True
+    assert {item["path"] for item in result["results"]} == {item["path"] for item in baseline["results"]}
+    assert attempts == []
+    assert cpu_predictions == []
+
+
+def test_rag_embedding_gpu_reservation_denial_uses_lexical_candidates(tmp_path, monkeypatch):
+    store = _store_with_two_chunks(tmp_path / "rag")
+    calls = []
+
+    def deny_gpu_admission(texts, priority=3, query=False):
+        calls.append((texts, priority, query))
+        return {
+            "success": False,
+            "error_code": "gpu_reserved",
+            "error": "GPU admission is unavailable",
+            "retryable": True,
+        }
+
+    monkeypatch.setattr(store.services, "embed", deny_gpu_admission)
+    baseline = store._search_uncached(
+        "candidate", "workspace-a", top_k=2, use_reranker=False, lexical_only=True
+    )
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+
+    assert calls == [(["candidate"], 3, True)]
+    assert result["success"] is True
+    assert result["fallback"] == "bm25_fts"
+    assert result["retrieval_mode"] == "lexical_fallback"
+    assert result["reason"] == "GPU admission is unavailable"
+    assert {item["path"] for item in result["results"]} == {item["path"] for item in baseline["results"]}

@@ -35,6 +35,15 @@ def test_nominal_5070_ti_capacity_remains_an_unverified_16gb_candidate():
         inspect_opencode_hardware({"gpus": [gpu(16255)]}, requested="16gb")
 
 
+def test_free_vram_metric_flows_through_without_changing_unverified_admission():
+    result = inspect_opencode_hardware({"gpus": [gpu(16303, vram_free_mb=7471)]})
+
+    assert result["gpu"]["vram_mb"] == 16303
+    assert result["gpu"]["vram_free_mb"] == 7471
+    assert result["admission"] == "unverified"
+    assert result["runtime_verified"] is False
+
+
 def test_insufficient_unknown_and_integrated_gpus_fail_closed():
     for hardware in ({}, {"gpus": [gpu(8192)]}, {"gpus": [gpu(16376, integrated=True)]}, {"gpus": [gpu("16376")]}, {"gpus": [gpu(True)]}, {"gpus": [gpu(16376, vendor="unknown")]}, {"gpus": [gpu(16376, vendor=[])]}):
         assert inspect_opencode_hardware(hardware)["profile"] == "unsupported"

@@ -31,7 +31,7 @@ Bounded `continue` accepts a genuine clarification question, not a final review 
 Final bounded handoff requires a persisted artifact identifier; an unavailable artifact triggers failure and configured rollback or retained-workspace handling, not an accepted handoff.
 For bounded work, `local_exploration_status` reports the most conservative observed tool-inspection outcome; inspect the artifact for details. It is not task completion or model qualification.
 For routine bounded implementation delegation, require the relevant task-type cases and overall evaluation gate to pass; controlled evaluation runs follow `docs/agent-evaluation/local-model-gpu-scoring.md` in the Hub installation separately.
-The candidate `qwen3.5:4b-q4_K_M` and `gemma4:12b` prompt scopes are advisory only; they do not establish model quality, image or tool support, or permission to edit.
+The `qwen3.5:4b-nvfp4` and `qwen3-vl:4b` prompt scopes remain advisory; they do not establish model quality, image or tool support, or permission to edit.
 Quantized and unmatched heavy or vision prompt profiles exclude security decisions, direct edits and final verification; scoped authorization remains authoritative.
 If rollback fails and receipt freshness cannot be established, `receipt_status="unknown"` and `uncertain_verification_receipts` require reconciliation, not acceptance.
 

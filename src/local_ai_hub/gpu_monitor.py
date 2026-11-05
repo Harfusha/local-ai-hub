@@ -261,12 +261,19 @@ def get_gpu_telemetry() -> dict[str, Any]:
             gpu = dict(gpus[0])
             integrated = bool(gpu.get("integrated", False))
             reported_vram = int(gpu.get("vram_mb", 0) or 0)
+            reported_free = _safe_float(gpu.get("vram_free_mb"), default=float("nan"))
+            available_mb = (
+                reported_free
+                if not integrated and math.isfinite(reported_free) and 0 <= reported_free <= reported_vram
+                else None
+            )
             result = {
                 "available": True, "vendor": gpu.get("vendor", "unknown"), "backend": gpu.get("backend", "unknown"),
                 "gpu_name": gpu.get("name", "GPU"),
                 # Windows AdapterRAM on an iGPU is aperture metadata, not a safe
                 # dedicated-memory budget. Keep it diagnostic-only.
                 "vram_total_mb": 0 if integrated else reported_vram,
+                "vram_available_mb": available_mb,
                 "reported_adapter_memory_mb": reported_vram if integrated else 0,
                 "unified_memory_mb": int(gpu.get("unified_memory_mb", 0) or 0),
                 "integrated": integrated, "shared_memory": bool(gpu.get("shared_memory", integrated)),
@@ -280,8 +287,10 @@ def get_dynamic_token_budget(base_tokens: int = 32768, min_tokens: int = 8192, m
     """Choose a conservative context ceiling from currently known graphics memory."""
     telemetry = get_gpu_telemetry()
     total_mb = float(telemetry.get("vram_total_mb", 0) or telemetry.get("unified_memory_mb", 0) or 0)
-    used_mb = float(telemetry.get("vram_used_mb", 0) or 0)
-    available_mb = max(0.0, total_mb - used_mb) if total_mb else 0.0
+    available_mb = _safe_float(telemetry.get("vram_available_mb"), default=float("nan"))
+    if not math.isfinite(available_mb) or not 0 <= available_mb <= total_mb:
+        used_mb = float(telemetry.get("vram_used_mb", 0) or 0)
+        available_mb = max(0.0, total_mb - used_mb) if total_mb else 0.0
     if total_mb <= 0:
         profile = detect_hardware().get("profile", "balanced")
         return min(base_tokens, 12288) if profile == "integrated" else min(base_tokens, 16384) if profile in {"cpu", "low"} else base_tokens

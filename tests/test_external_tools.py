@@ -550,6 +550,39 @@ def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path, monkey
     assert res["symbols"][0]["name"] == "my_function"
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_soft_timeout"),
+    [("search", 2.0), ("pattern", 2.0), ("find_symbol", 4.0)],
+)
+def test_query_serena_bounds_optional_search_timeout(
+    tmp_path: Path, monkeypatch, action: str, expected_soft_timeout: float,
+):
+    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda self: None)
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {
+            "enabled": True,
+            "serena_enabled": True,
+            "soft_timeout_seconds": 4.0,
+        },
+    })
+    captured: list[float | None] = []
+
+    def capture_query(root, action, query, path, limit, *, timeout=None, soft_timeout=None):
+        captured.append(soft_timeout)
+        return {"success": True, "backend": "serena"}
+
+    monkeypatch.setattr(ext, "_query_serena_locked", capture_query)
+    try:
+        result = ext.query_serena(str(root), action, query="needle")
+        assert result["success"] is True
+        assert captured == [expected_soft_timeout]
+    finally:
+        ext.close()
+
+
 def test_serena_session_retained_for_one_hour(tmp_path: Path):
     from local_ai_hub.external_tools import ExternalCodeIntelligence
     import time

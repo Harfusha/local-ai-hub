@@ -281,6 +281,7 @@ class Reranker:
             if not isinstance(generation, str) or not generation:
                 return False
             if not store.renew(digest, generation, state="active"):
+                store.release(digest, generation)
                 return False
         except (OSError, ValueError):
             return False
