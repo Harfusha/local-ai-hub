@@ -1,8 +1,8 @@
-"""Compare live RAG ranking with an offline CPU reranker on judged queries.
+"""Compare active Hub reranking, baseline retrieval, and offline CPU reranking.
 
-The running Hub provides candidates without reranking. Reranking runs in this
-process with temporary state and downloads disabled. Labels name one verified
-relevant path per query; they are not exhaustive relevance judgments.
+The live endpoint is measured with reranking off and on. An isolated CPU
+cross-encoder runs with downloads disabled. Labels name one verified relevant
+path per query; they are not exhaustive relevance judgments.
 """
 from __future__ import annotations
 
@@ -56,6 +56,14 @@ def run(root: Path, config_path: Path) -> dict:
                     raise RuntimeError(f"RAG search failed: {source.get('error')}")
                 candidates = source.get("results", [])
                 started = time.perf_counter()
+                active_reranked = client.post(
+                    "/api/rag/search",
+                    {"root": str(root), "workspace": workspace, "query": query,
+                     "top_k": 8, "use_reranker": True},
+                    timeout=30,
+                )
+                active_reranker_ms = (time.perf_counter() - started) * 1000
+                started = time.perf_counter()
                 ranked = reranker.rerank(query, [str(item.get("text", "")) for item in candidates], top_k=len(candidates))
                 rerank_ms = (time.perf_counter() - started) * 1000
                 if ranked.get("success") is not True:
@@ -64,13 +72,19 @@ def run(root: Path, config_path: Path) -> dict:
                 rows.append({"query": query, "expected_path": expected,
                              "baseline_rank": rank_of_path(candidates, expected),
                              "reranked_rank": rank_of_path(reordered, expected),
+                             "active_hub_reranker_rank": rank_of_path(active_reranked.get("results", []), expected),
+                             "active_hub_reranker_ms": active_reranker_ms,
+                             "active_hub_reranked": active_reranked.get("reranked"),
+                             "active_hub_degraded": active_reranked.get("degraded"),
+                             "active_hub_fallbacks": active_reranked.get("fallbacks"),
+                             "active_hub_cache": active_reranked.get("search_cache"),
                              "retrieval_ms": retrieval_ms, "rerank_ms": rerank_ms,
                              "candidate_paths": [item.get("path") for item in candidates],
                              "reranked_paths": [item.get("path") for item in reordered],
                              "rag_degraded": source.get("degraded"), "rag_hybrid": source.get("hybrid")})
         finally:
             client.close()
-        return {"scope": "live RAG candidates plus isolated CPU cross-encoder; no downloads; labels not exhaustive",
+        return {"scope": "active Hub reranker plus isolated CPU cross-encoder; no downloads; labels not exhaustive",
                 "model": config["models"]["reranker"], "device": "cpu", "max_length": 512, "cases": rows}
 
 
