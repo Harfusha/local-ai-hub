@@ -64,12 +64,15 @@ def test_live_mcp_schemas_are_valid_without_empty_combinators(tool_name: str) ->
 
 def test_repository_search_defaults_to_lexical_and_allows_explicit_hybrid(monkeypatch) -> None:
     requests: list[dict[str, object]] = []
+    search_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters
 
     def capture_post(path, payload, **_kwargs):
         requests.append({"path": path, **payload})
         return {"success": True, "results": []}
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", capture_post)
+
+    assert search_schema["properties"]["search_mode"]["default"] == "lexical"
 
     default_result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle")
     hybrid_result = local_ai_mcp.local_ai_repo(
@@ -569,7 +572,7 @@ def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
     assert "security_audit" in descriptions
 
 
-def test_repo_review_diff_returns_foreground_result_by_default(monkeypatch, tmp_path: Path) -> None:
+def test_repo_review_diff_uses_adaptive_delivery_by_default(monkeypatch, tmp_path: Path) -> None:
     calls = {}
 
     class _Client:
@@ -583,7 +586,8 @@ def test_repo_review_diff_returns_foreground_result_by_default(monkeypatch, tmp_
 
     assert result["success"] is True
     assert calls["endpoint"] == "/api/review/diff"
-    assert calls["payload"]["delivery"] == "sync"
+    assert calls["payload"]["delivery"] == "auto"
+    assert calls["payload"]["latency_budget_ms"] == 30000
 
 
 def test_coord_verify_receipt_rejects_missing_identity_before_network(monkeypatch):

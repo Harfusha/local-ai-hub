@@ -261,3 +261,15 @@ Fresh `local_ai_status` request `req_e988eb661160` returned degraded status: Oll
 ## Readiness update — reservation free, VRAM telemetry pending
 
 On the next fresh check, `gpu_reservation_status` returned `reservation_present=false`, `state=free`, `manual_intervention_required=false`; `local_ai_status` request `req_70330e579184` returned Ollama online, active `qwen3.5:9b-nvfp4`, and `gpu_admission_state=available`. VRAM telemetry remains `sample_pending`/stale with pressure `unknown`. This current snapshot clears the previous unknown-reservation condition but does not establish how it cleared or provide a safe measured VRAM baseline. No GPU inference or benchmark was started; runtime acceptance remains open.
+
+## A1 — Current clean-path reservation cohort revalidation
+
+Fresh `git_status` (`req_399aef0d734d`) showed the A1 source and cohort test paths clean. Current checkout cohort `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py tests/test_opencode_gpu_reservation.py tests/unit/test_reranker_gpu_reservation.py tests/test_preprocess_status_scaling.py --tb=short` passed **98 passed in 6.69 s**. Post-run status (`req_75fe1d47ba6c`) still shows those paths clean; six unrelated prompt/HTTP/MCP paths are modified. This revalidates file-backed lifecycle, scheduler and fixture regressions in the current checkout; installed-process and physical GPU behavior remain unverified.
+
+## Readiness discrepancy — MCP status mismatch
+
+In the same fresh check set, `local_ai_status` request `req_b0019731c91d` reported `gpu_admission_state=external_reservation`, while `gpu_reservation_status` returned `reservation_present=false`, `state=free`, `manual_intervention_required=false`. VRAM telemetry remained `sample_pending`/stale with pressure `unknown`. No inference, service restart, or GPU benchmark was attempted. Treat runtime admission as unavailable until both APIs agree and telemetry is fresh.
+
+## A6 — Current clean-path demand-priority regression revalidation
+
+Fresh `git_status` before and after execution (`req_399aef0d734d`, `req_75fe1d47ba6c`) showed `src/local_ai_hub/preprocess.py`, `tests/unit/test_preprocess_demand_priority.py`, and `tools/benchmark_preprocess_demand.py` clean. Current focused test `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` passed **7 passed in 1.78 s**. This revalidates query/index invalidation and bounded queue fairness in SQLite fixtures. It does not establish real learned-query provenance, generated useful-context latency/quality, work saved, or sustained fairness under live preprocessing; A6 remains open for those gates. No model inference or GPU operation was used; no broker verification receipt was recorded.

@@ -486,7 +486,7 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
 
     assert captured == {
         "path": "/api/search",
-        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False, "search_mode": "hybrid"},
+        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False, "search_mode": "lexical"},
         "timeout": 120,
         "path_hints": None,
     }
@@ -1117,7 +1117,7 @@ def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.Monke
         ("local_ai_repo", {"action": "pipeline", "steps": [{"action": "profile"}]}),
         ("local_ai_repo", {"action": "preprocess", "is_worktree": True, "parent_root": "."}),
         ("local_ai_status", {"detail": "brief"}),
-        ("local_ai_task", {"action": "eval_suite", "task": "Evaluate Python cases", "cases": []}),
+        ("local_ai_task", {"action": "eval_suite", "task": "Evaluate Python cases", "cases": [{"id": "case-1", "prompt": "Evaluate Python cases"}]}),
         ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
     ],
 )
