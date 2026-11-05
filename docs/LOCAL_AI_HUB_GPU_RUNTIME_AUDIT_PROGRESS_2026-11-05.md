@@ -333,3 +333,32 @@ Read-only `local_ai_coord:gpu_reservation_status` after the resumed status repor
 ## A1 — reservation diagnostics projection gap
 
 A read-only `gpu_reservation_status` request with `extra_fields=[owner,generation,state,expires_at,manual_intervention_required]` still returned only `reservation_present=true`, `state=unknown`, and `manual_intervention_required=true`; owner, generation and expiry were omitted. No release action was attempted. The current MCP projection therefore cannot supply the exact generation/expiry needed for consented recovery; operator-side authoritative inspection is required. This is an observed response-contract gap, not proof that reservation metadata itself is malformed or expired.
+
+## A1 — classify `unknown` from current source
+
+Bounded source inspection after lexical search exceeded Hub response budget found the current read path. In dirty `src/local_ai_hub/mcp_server.py` SHA-256 `69a7896f5cd5f70dabcede416797ddb15ed899e49de65841f1c3f5231bba29f1` lines 5170–5178, status calls `store.reap_expired()`, then `store.read()`; `record is None` plus existing reservation path maps to `state=unknown`, `manual_intervention_required=true`. `src/local_ai_hub/external_gpu_reservation.py` lines 266–309 returns `None` for symlink, missing/invalid metadata, unreadable digest, digest mismatch, or invalid schema/fields. Therefore the live result is not merely a response-projection omission: runtime cannot authenticate a valid reservation record. Exact failure cause remains unknown without operator-side artifact inspection. Do not release, delete, recreate, or infer owner/expiry. The MCP source is actively modified by another editor and was not changed.
+
+### A1/A2/A7 — fresh reservation and focused routing evidence (2026-11-05)
+
+- The bounded status request `req_b84f4b2092eb` reported `gpu_admission_state=outcome_unknown`, `vram_pressure=unknown`, VRAM sampling pending/stale, and `active_model=null`.
+- The subsequent read-only `gpu_reservation_status` returned a valid active reservation: owner `embedding:22628:41680`, generation `4d5d35dceb7a46bd9ddbd87a74b73ec9`, expiry `1793904759.0376031`, `expired=false`. This is the latest reservation record; it does not explain the differing aggregate admission status. Treat it as owned and fail closed. No release, inference, or benchmark was run.
+- Focused mocked routing tests: `python -m pytest -q tests/test_mcp_agent_routing.py -k "test_status_exposes_profile_capability_reasons_without_model_inference or test_disabled_descriptions_omit_local_routing_without_models" --tb=short` → **5 passed, 113 deselected**. This checks profile capability reporting and omission of local routes when models are unavailable; it is not GPU/runtime acceptance.
+- Evidence IDs: status `req_b84f4b2092eb`; checkout status `req_7e9af55fed46`. The checkout had only this progress audit modified before this append. GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### A2 — exact-reference verification remains open (2026-11-05)
+
+- Bounded repository search `req_deaac685d246` for the retired tags returned a degraded lexical fallback, 276 lexical matches and only four unrelated code slices. A path-guided follow-up `req_7c7b785df706` was also degraded/partial (2 of 10 candidates, unknown index coverage, no exact count) and returned unrelated tests.
+- These results cannot establish whether retired tags remain in the six active/advisory files named in A2. Search returned successfully with degraded optional backends, so native broad search is not authorized by the fallback contract. No files were changed for A2. Keep its required closure open until bounded exact-source/index evidence is available.
+- Latest `git_status` `req_34add697fb06` reports this progress audit plus `src/local_ai_hub/llama_cpp_runtime.py` modified and `tests/unit/test_llama_cpp_runtime_startup_diagnostics.py` untracked. The latter two paths are concurrent work; they remain untouched.
+
+### A3 — classify scheduler uncertainty separately from external reservation (2026-11-05)
+
+- Current Hub status `req_ac1301bccc8a` reports `gpu_admission_state=outcome_unknown`, `active_model=null`, and `vram_pressure=nominal`; the separate reservation status still reports the unexpired active embedding lease recorded above.
+- Source confirms these are distinct layers. `AffinityScheduler.status()` reports `outcome_unknown` first when `_internal_gpu_uncertain` is true, before checking `_external_gpu_reserved()` (`src/local_ai_hub/scheduler.py`, lines 1970–1981; SHA-256 `cc3d0d8c456b8237577d8da947fd38e55519e2651bf2cfc1092f35b747d74cc5`). MCP status projects that scheduler field (`src/local_ai_hub/mcp_server.py`, lines 2677–2688; SHA-256 `69a7896f5cd5f70dabcede416797ddb15ed899e49de65841f1c3f5231bba29f1`).
+- Source sets `_internal_gpu_uncertain=True` when `_perform_switch()` raises after the operation may have started (`scheduler.py`, lines 1488–1494); an `operation_not_started` exception does not set it. This explains why a valid external lease can coexist with scheduler `outcome_unknown`; it does not identify the live triggering exception or establish that GPU use is safe.
+- Keep GPU admission fail-closed. No lease release, scheduler reset, model inference, or benchmark. The runtime cause and safe recovery remain open; collect an authentic runtime diagnostic or wait for owner-authorized recovery.
+
+### Ownership and reservation refresh (2026-11-05)
+
+- Fresh `git_status` `req_3a7b5c3137e5` shows concurrent edits in `src/local_ai_hub/llama_cpp_runtime.py`, `src/local_ai_hub/repo_tools.py`, `tests/unit/test_hybrid_expanded_lexical_candidates.py`, and untracked `tests/unit/test_llama_cpp_runtime_startup_diagnostics.py`, plus this audit. These paths remain untouched. The repo-search implementation is now also concurrently changing, so defer A2 indexed search follow-up until its owner finishes.
+- Fresh `gpu_reservation_status` still reports generation `4d5d35dceb7a46bd9ddbd87a74b73ec9`, owner `embedding:22628:41680`, `state=active`, `expired=false`. Keep it intact.

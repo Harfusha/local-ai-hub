@@ -537,13 +537,16 @@ class LlamaCppManagedRuntime:
             if self.is_online():
                 return True
             if self.llama_config.get("managed_with_ollama") is True:
+                port: int | None = None
                 try:
                     port, _ = self._port_and_url()
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
                         if os.name == "nt":
                             probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                         probe.bind(("127.0.0.1", port))
-                except (OSError, ValueError, TypeError):
+                except (OSError, ValueError, TypeError) as exc:
+                    port_label = str(port) if port is not None else "configured"
+                    self._last_error = f"llama-server port {port_label} is unavailable: {exc}"
                     return False
             if time.monotonic() < self._retry_after:
                 return False
@@ -577,6 +580,7 @@ class LlamaCppManagedRuntime:
             port, url = self._port_and_url()
             binary = self._find_server(self.runtime_dir)
             if binary is None:
+                self._last_error = f"llama-server binary not found in managed runtime: {self.runtime_dir}"
                 return False
             gpus = (self.config.get("_hardware", {}) or {}).get("gpus", [])
             gpu = os.name == "nt" and any(

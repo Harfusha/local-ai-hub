@@ -71,6 +71,49 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
         return default
 
 
+def _ensure_file_refs_revision_tracking(con: sqlite3.Connection) -> None:
+    """Track source-identity changes without rescanning file_refs per batch."""
+    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+    update_columns = [column for column in ("root", "path", "content_hash") if column in columns]
+    if not {"root", "path"}.issubset(columns):
+        return
+    update_fields = ", ".join(update_columns)
+    update_condition = " OR ".join(f"OLD.{column} IS NOT NEW.{column}" for column in update_columns)
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS file_refs_revision (
+            root TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TRIGGER IF NOT EXISTS file_refs_revision_insert
+        AFTER INSERT ON file_refs
+        BEGIN
+            INSERT INTO file_refs_revision(root, revision) VALUES(NEW.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS file_refs_revision_delete
+        AFTER DELETE ON file_refs
+        BEGIN
+            INSERT INTO file_refs_revision(root, revision) VALUES(OLD.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+        END;
+        """
+    )
+    con.executescript(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS file_refs_revision_update
+        AFTER UPDATE OF {update_fields} ON file_refs
+        WHEN {update_condition}
+        BEGIN
+            INSERT INTO file_refs_revision(root, revision) VALUES(OLD.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+            INSERT INTO file_refs_revision(root, revision) VALUES(NEW.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+        END;
+        """
+    )
+
+
 CARD_SCHEMA = {
     "type": "object",
     "properties": {
@@ -560,6 +603,7 @@ class ProjectPreprocessor:
                 CREATE VIRTUAL TABLE IF NOT EXISTS source_fts USING fts5(root UNINDEXED, path UNINDEXED, content);
                 """
             )
+            _ensure_file_refs_revision_tracking(con)
             columns = {
                 str(row[1])
                 for row in con.execute("PRAGMA table_info(external_index_state)").fetchall()
@@ -3661,19 +3705,29 @@ class ProjectPreprocessor:
         try:
             queries = tuple(learner.hot_queries(root, 4)[:4])
             with self._db_lock, closing(self._connect()) as con:
-                columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
-                aggregates = ["COUNT(*)"]
-                for column in ("generation", "updated_at", "size", "needs_hash", "last_accessed_at"):
-                    if column in columns:
-                        aggregates.append(f"COALESCE(SUM(CAST({column} AS REAL)), 0)")
-                for column in ("content_hash", "rag_hash", "card_key"):
-                    if column in columns:
-                        aggregates.append(f"COALESCE(SUM(LENGTH(COALESCE({column}, ''))), 0)")
-                        aggregates.append(f"COUNT(DISTINCT {column})")
-                generation = con.execute(
-                    f"SELECT {', '.join(aggregates)} FROM file_refs WHERE root=?", (root,)
-                ).fetchone()
-            index_signature = tuple(generation)
+                has_revision_tracking = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_refs_revision'"
+                ).fetchone() is not None
+                if has_revision_tracking:
+                    revision = con.execute(
+                        "SELECT revision FROM file_refs_revision WHERE root=?", (root,)
+                    ).fetchone()
+                    index_signature = (int(revision[0]) if revision else 0,)
+                else:
+                    # Minimal legacy/test schemas lack startup-installed triggers.
+                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+                    aggregates = ["COUNT(*)"]
+                    for column in ("generation", "updated_at", "size", "needs_hash", "last_accessed_at"):
+                        if column in columns:
+                            aggregates.append(f"COALESCE(SUM(CAST({column} AS REAL)), 0)")
+                    for column in ("content_hash", "rag_hash", "card_key"):
+                        if column in columns:
+                            aggregates.append(f"COALESCE(SUM(LENGTH(COALESCE({column}, ''))), 0)")
+                            aggregates.append(f"COUNT(DISTINCT {column})")
+                    revision = con.execute(
+                        f"SELECT {', '.join(aggregates)} FROM file_refs WHERE root=?", (root,)
+                    ).fetchone()
+                    index_signature = tuple(revision)
             if cache is not None and lock is not None:
                 with lock:
                     cached = cache.get(root)

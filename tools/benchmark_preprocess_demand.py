@@ -17,7 +17,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.preprocess import ProjectPreprocessor, _ensure_file_refs_revision_tracking
 from local_ai_hub.repo_tools import RepositoryTools
 
 
@@ -134,6 +134,7 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
             if root is None:
                 con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
                 con.executemany("INSERT INTO source_fts VALUES(?,?,?)", fts_rows)
+            _ensure_file_refs_revision_tracking(con)
             con.executemany("INSERT INTO file_refs VALUES(?,?,?,?,?)", file_rows)
             con.commit()
 
@@ -148,7 +149,8 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
         pre.cfg, pre.repo_tools = {}, RepositoryTools({})
         hot = sorted(hot_files)[0]
         output = {"scope": scope, "files": len(file_rows), "batch_size": batch_size,
-                  "query_match_count": len(hot_files), "useful_context_verified": False}
+                  "query_match_count": len(hot_files), "useful_context_verified": False,
+                  "cache_revision_tracking": True}
         if root is not None:
             output.update({"repository": Path(repo_root).name, "query": query,
                            "sampled_bytes": sum(row[2] for row in file_rows),

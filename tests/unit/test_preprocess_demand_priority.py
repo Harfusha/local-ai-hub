@@ -2,7 +2,7 @@ import sqlite3
 import threading
 from contextlib import closing
 
-from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.preprocess import ProjectPreprocessor, _ensure_file_refs_revision_tracking
 from local_ai_hub.learning import UsageLearner
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
@@ -146,6 +146,7 @@ def test_repository_benchmark_measures_real_hot_files_against_cold_queue(tmp_pat
     result = run(files=3, batch_size=2, root=str(root), query="rare_demand")
 
     assert result["scope"] == "repository text file-card queue selection, no model inference"
+    assert result["cache_revision_tracking"] is True
     assert result["query_match_count"] == 1
     assert result["baseline"]["batches_to_first_query_match"] == 2
     assert result["demand"]["batches_to_first_query_match"] == 1
@@ -164,6 +165,7 @@ def test_learned_priority_cache_invalidates_on_query_or_index_change(tmp_path, m
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED, path UNINDEXED, content)")
         con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, size INTEGER, generation INTEGER, updated_at REAL)")
+        _ensure_file_refs_revision_tracking(con)
         con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, "old.py", "old_demand"))
         con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?)", (root, "old.py", "old", 10, 1, 1.0))
         con.commit()
@@ -186,6 +188,16 @@ def test_learned_priority_cache_invalidates_on_query_or_index_change(tmp_path, m
     monkeypatch.setattr(preprocess_module.time, "monotonic", lambda: now[0])
 
     assert pre._learned_priority_paths(root) == ("old.py",)
+    # Rename the indexed file while preserving every aggregate statistic from
+    # the old signature. The cached mapping must follow the current FTS path.
+    with closing(connect()) as con:
+        con.execute("DELETE FROM source_fts WHERE root=?", (root,))
+        con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, "new.py", "old_demand"))
+        con.execute("DELETE FROM file_refs WHERE root=?", (root,))
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?)", (root, "new.py", "old", 10, 1, 1.0))
+        con.commit()
+    assert pre._learned_priority_paths(root) == ("new.py",)
+
     pre.learner.query = "new_demand"
     with closing(connect()) as con:
         con.execute("DELETE FROM source_fts WHERE root=?", (root,))

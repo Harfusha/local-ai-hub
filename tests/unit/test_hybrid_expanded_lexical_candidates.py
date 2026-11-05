@@ -206,3 +206,45 @@ def test_hybrid_empty_degraded_rag_uses_the_same_expanded_fallback(monkeypatch):
     assert result["degraded"] is True
     assert result["count_exact"] is False
     assert result["total_matches"] is None
+
+
+def test_expanded_candidate_search_prefers_matching_document_path(tmp_path: Path):
+    docs = tmp_path / "docs"
+    tests = tmp_path / "tests" / "unit"
+    docs.mkdir()
+    tests.mkdir(parents=True)
+    (docs / "INSTALLATION.md").write_text(
+        "Install and set up the Local AI Hub by following this guide.\n",
+        encoding="utf-8",
+    )
+    (tests / "test_rag_semantic_only.py").write_text(
+        '"Jak nainstalovat a spustit Local AI Hub? install installation setup '
+        'bootstrap getting started"\n',
+        encoding="utf-8",
+    )
+
+    result = RepositoryTools({}).search(
+        str(tmp_path),
+        "Jak nainstalovat a spustit Local AI Hub",
+        candidate_paths=["tests/unit/test_rag_semantic_only.py", "docs/INSTALLATION.md"],
+        candidate_query=(
+            "Jak nainstalovat a spustit Local AI Hub install installation "
+            "setup bootstrap getting started"
+        ),
+        limit=5,
+        exact_count=False,
+    )
+
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "docs/INSTALLATION.md"
+
+    lexical = RepositoryTools({}).search(
+        str(tmp_path),
+        "Jak nainstalovat a spustit Local AI Hub",
+        candidate_paths=["tests/unit/test_rag_semantic_only.py", "docs/INSTALLATION.md"],
+        limit=5,
+        exact_count=False,
+    )
+
+    assert lexical["success"] is True
+    assert lexical["results"][0]["path"] == "tests/unit/test_rag_semantic_only.py"

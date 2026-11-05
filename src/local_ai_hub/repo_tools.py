@@ -2273,6 +2273,7 @@ class RepositoryTools:
             git_inventory = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
         candidate_text = candidate_query if type(candidate_query) is str and candidate_query else query
         terms = self._terms(candidate_text)
+        expanded_terms = set(terms).difference(self._terms(query))
         phrase = query.strip().lower()
         if not terms and phrase:
             terms = [phrase]
@@ -2357,6 +2358,13 @@ class RepositoryTools:
                     matched = [t for t in terms if t in low]
                     path_matches = sum(1 for t in terms if t in path_lower)
                     score = float(len(matched) * 3 + path_matches * 2 + sum(min(low.count(t), 3) * 0.5 for t in matched))
+                    if expanded_terms:
+                        # Expansion terms matching a filename are strong intent
+                        # evidence in bounded hybrid candidates; keep exact lexical
+                        # ranking unchanged when no query expansion was applied.
+                        stem = Path(rel).stem.lower()
+                        title_matches = sum(1 for term in expanded_terms if term in stem)
+                        score += min(40.0, title_matches * 20.0)
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
