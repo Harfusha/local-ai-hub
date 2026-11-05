@@ -37,7 +37,7 @@ def _search_service(tmp_path: Path, settings: str) -> tuple[Path, LocalAIService
     service.learner = service.code_index = service.preprocessor = None
     service.deterministic = service.evidence_store = None
     service._repo_cache_state = lambda _root: {"fingerprint": "current", "stale": False}
-    service._repo_cached = lambda _operation, _root, _params, compute: compute()
+    service._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     return root, service
 
 
