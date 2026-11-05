@@ -1,5 +1,27 @@
 # Agent prompt evaluation results
 
+### A1 — post-fix live solve, 2026-11-05
+
+Fresh fixture: `C:\Users\Adam\Documents\lah-gpu-eval-A1-codex-2026-11-05-r2`, fixture SHA-256 `868c9a8685b5fce105814538c0551b54ac44edbe5f18a310e0c14b9b6e2d859f`, fixture HEAD `191d4b01b2919908fac672d1ee5ed15472ffac73`. Hub was restarted with `python tools/hubctl.py restart`; post-restart status reported v5.1.3, Hub and Ollama online, but VRAM telemetry remained unavailable (`sample_pending`, stale, sampling=true). `local_ai_repo(action="solve")` request `req_4189f900115a` returned only the general unit-mismatch statement. It omitted required file/line/evidence citations and the 22,000-cent versus 1,210-cent calculation; the response reported `truncated=true`. The call did not return a model digest or request-bound GPU telemetry. **A1 quality: FAIL / unqualified.** Do not use this run for model promotion or hardware performance claims.
+
+### 010 — live search summary citation rejection, 2026-11-05
+
+Request `req_58059befca76` asked for a summary of lexical repository results about hardware-profile constraints. The search returned three exact rows from eight requested, with more results available; the separate AI summary was rejected (`citation_validation.status=rejected`, `reason=missing_source_citation`). Deterministic results remained in the response. The envelope was truncated, and no model identity/digest was returned. **Summary quality: unqualified; no accepted summary or paired latency/VRAM comparison.** The revised prompt now requires one to three bullets and at least one valid source citation per bullet; focused route tests pass, but no post-change live result is conclusive.
+
+The live attempt `req_8c7c523c2443` after the initial citation requirement returned the same deterministic search rows, but its summary request `req_cf5b22156648` ended `outcome_unknown` after transport failure; citation validation was not run. It preceded the additional one-to-three-bullet constraint. Do not retry or count it as evidence for the current prompt.
+
+### D1 — NOT_RUN, 2026-11-05
+
+The fixed D1 prompt was not evaluated. Explicit qwen 4B override request `req_6d00907f77f7` was rejected by the configured quality-floor policy. The corrected default-route request `req_8ec8eee6d247` failed before transport write (`request_not_sent=true`, `outcome_unknown=false`). No model response, inference, or quality score exists; no retry was made.
+
+### 008 — post-restart RTX 5070 Ti smoke, 2026-11-05
+
+One `local_ai_task(action="hardware_benchmark")` run with the fixed prompt `Return exactly this text: GPU-BENCHMARK-OK`; not a quality case or cold/warm comparison. Request `req_35cc24db23f3`, model `qwen3.5:4b-nvfp4`, verified installed digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506`. Hub reported RTX 5070 Ti, 16,303 MB total, 5,483 MB used and 10,513 MB available; sampled device-wide peak was 5,749,342,208 bytes. TTFT 126.35 ms, generation 48.07 ms, call latency 174.42 ms, queue wait 172.5 ms, six backend-counted tokens and 124.82 tokens/s. Dynamic context reported 32,768 tokens. Loaded-model VRAM attribution was unavailable. Single-run smoke only; no promotion, capacity or quality claim.
+
+### 009 — fast 3B admission after restart, 2026-11-05
+
+`local_ai_task(action="hardware_benchmark")` for configured target `qwen2.5-coder:3b` was rejected before inference: request `req_4fbe871b9d28`, job `8`, `target_vram_estimate_unavailable`, `vram_estimate_source=unknown`, phase `post_unload`. Available budget was 11,023,679,488 bytes. No weights were pulled, no model ran, and no model-quality/performance evidence was produced. This is a fail-closed admission result; the target remains unqualified.
+
 ### 007 — RTX 5070 Ti hardware smoke, 2026-11-04
 
 Purpose: bounded inference and telemetry smoke through `local_ai_task(action="hardware_benchmark")`; not a paired task-quality evaluation. Exact prompt for accepted runs: `Return exactly this text: GPU-BENCHMARK-OK`. Fixture: not applicable. Hub reported v5.1.3, Ollama online. Model digests and effective profile were not returned. Do not infer task-quality, role qualification, or 9b readiness from these measurements.

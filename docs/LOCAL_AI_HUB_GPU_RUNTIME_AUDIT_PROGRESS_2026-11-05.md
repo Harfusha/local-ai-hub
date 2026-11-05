@@ -273,3 +273,63 @@ In the same fresh check set, `local_ai_status` request `req_b0019731c91d` report
 ## A6 — Current clean-path demand-priority regression revalidation
 
 Fresh `git_status` before and after execution (`req_399aef0d734d`, `req_75fe1d47ba6c`) showed `src/local_ai_hub/preprocess.py`, `tests/unit/test_preprocess_demand_priority.py`, and `tools/benchmark_preprocess_demand.py` clean. Current focused test `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` passed **7 passed in 1.78 s**. This revalidates query/index invalidation and bounded queue fairness in SQLite fixtures. It does not establish real learned-query provenance, generated useful-context latency/quality, work saved, or sustained fairness under live preprocessing; A6 remains open for those gates. No model inference or GPU operation was used; no broker verification receipt was recorded.
+
+## A6 — Actual learned-query provenance gap
+
+`UsageLearner.hot_queries(root, limit)` reads query labels for the resolved repository root from `learning.sqlite3` under `server.state_dir`, ordered by hit count and recency (`learning.py` SHA-256 `110204afa645ae9cdf90b51f62e1f78b1e005da7f68ac160ea40d5b693c17a9f`). The current repository benchmark accepts an explicit `--query` and includes that raw query in output (`tools/benchmark_preprocess_demand.py` SHA-256 `0956deb24207b0d47bc9e4dbfda7416c3779e2b910012a9e19aa66c10d1566c5`). Existing A6 runs used audit-derived queries, not verified learned-query provenance. Next bounded implementation should read the top query for the exact repository root through read-only SQLite and report only a query digest/length plus aggregate selection metrics; never print query text. No user learning database or query value was read in this turn. This can establish real hot-query provenance and queue selection only; useful generated-context quality/latency, work saved, invalidation and live fairness remain open.
+
+## A6 — learned-query provenance correction
+
+The prior provenance note was not present in the current audit log; the file ended at line 279 with the fixture-test revalidation. Source inspection established that `UsageLearner.hot_queries(root, limit)` selects queries from the resolved root's `learning.sqlite3` under `server.state_dir`, ordered by hits and recency (`src/local_ai_hub/learning.py`, SHA-256 `110204afa645ae9cdf90b51f62e1f78b1e005da7f68ac160ea40d5b693c17a9f`). `tools/benchmark_preprocess_demand.py` instead accepts explicit `--query` and emits it verbatim (SHA-256 `0956deb24207b0d47bc9e4dbfda7416c3779e2b910012a9e19aa66c10d1566c5`). Existing A6 runs used audit-derived queries, so learned-query provenance remains unverified. No user learning database or query value was read. Next safe implementation: read-only selection for the exact authorized root and report only a digest/length plus aggregate selection metrics; test with a synthetic isolated database. This proves provenance and selection only, not generated useful-context quality/latency, work saved, live invalidation, or fairness. Code edits deferred: current GPU telemetry is stale/unknown, so required semantic pre-edit review cannot be trusted. No model inference/GPU action or broker receipt.
+
+## A5 — mocked llama.cpp lifecycle regression cohort
+
+Fresh `local_ai_repo:git_status` (`req_2283d72c1db9`) showed `tests/test_llama_cpp_routing.py` clean. Source evidence (`src/test` file SHA-256 `d0a36bfd5234d82db9fab39aae785a34391ca7540a5a451d05ff7a140d8f31c3`) includes cancellation/unload coordination tests with fake sockets and managed-runtime doubles. Bounded native command `python -m pytest -q tests/test_llama_cpp_routing.py --tb=short` passed **37 passed, 20 subtests in 3.25 s**. This validates mocked routing and lifecycle behavior only; it does not prove a real llama.cpp load/inference/unload/switch, GPU residency, measured VRAM release, real cancellation or scheduler reservation behavior. A5 remains open. No model inference/GPU action; no broker receipt (`receipt_status=not_recorded`).
+
+## A2 — current status cannot establish installed-tag snapshot
+
+Fresh compact `local_ai_status` (`req_b72d390a96c1`) reports Hub/Ollama online, `active_model=null`, GPU admission `available`, and VRAM telemetry unavailable with `sample_pending`/stale state. This response contains no installed-model tag inventory, so it cannot close A2's required current installed-tag snapshot. No model list was inferred from configuration or historical inventory. GPU-bound A3-A5/A7 measurements remain deferred until telemetry is fresh; no inference or GPU operation was attempted.
+
+## A2 — current regression revalidation
+
+Fresh `local_ai_repo:git_status` (`req_fb0f8ecb56d5`) showed both A2 test files clean while other agents had edits in `docs/agent-evaluation/results.md` and `docs/superpowers/plans/2026-11-03-gpu-capability-tiers-and-local-ai.md`; those files were left untouched. Bounded native command `python -m pytest -q tests/test_opencode_future_stage.py tests/test_prompt_contracts.py --tb=short` passed **14 passed in 0.64 s**. The regression tests protect retired model names from active/future candidate lists; they do not establish current installed tags. A2's runtime inventory snapshot remains open. No inference/GPU operation; no broker receipt (`receipt_status=not_recorded`).
+
+## A4 — current deterministic CPU bypass cohort
+
+Fresh `local_ai_repo:git_status` (`req_00f82505da99`) showed `tests/unit/test_rag_direct_cpu_bypass.py` clean while `tests/unit/test_search_mode_fusion.py` was modified by another editor; the latter was not touched. Bounded native command `python -m pytest -q tests/unit/test_rag_direct_cpu_bypass.py --tb=short` passed **10 passed in 4.59 s**. This revalidates synthetic CPU bypass behavior only; no GPU embedding/reranking, relevance, throughput, or VRAM evidence. No model/GPU action and no broker receipt (`receipt_status=not_recorded`).
+
+## A2 — installed-tag inventory surface check
+
+Current `local_ai_status` (`req_02f5c2c5dc28`) reports `active_model=qwen3.5:4b-nvfp4`, admission free (`local_ai_coord:gpu_reservation_status`), but VRAM sampling remains stale/pending and no installed-tag list is returned. Requesting `installed_models`/`model_inventory` as status extra fields (`req_1e0eae931c97`) did not add inventory. Read-only source inspection of the current `src/local_ai_hub/services.py` snapshot (SHA-256 `f4b4c0161c66faa4f13167db6b8c404a11a204d0800a4faf62313c735b293ac2`, lines 9281–9294) shows that this health-check detail exposes only `len(runtime.installed_models())`, not tag names. This limits the compact status/health-check surfaces; it does not prove no other authorized inventory API exists. `services.py` is modified by another editor and was not changed. A2 current installed-tag inventory remains open; no model inference/pull or GPU operation.
+
+## Shared diff review — terminal unknown outcome
+
+A bounded `local_ai_repo:review_diff` request (`req_604e9cd0e52e`, job `885e8b76bd3d42d9a1893bd4e4d36415`, trace `0f8ea6d4258a4d939dc27c5dfa74e61e`) was durably queued, then one `local_ai_task:wait` returned terminal `outcome_unknown`: `Review segment 1/21 failed` (`req_ed2f467d3318`, `retryable=false`). The prescribed single `local_ai_task:result` inspection (`req_8428d9ea59c7`) returned the same unknown state and no artifact. This is not a review receipt and no findings are accepted. Do not retry or replay this job; independent source/test evidence remains authoritative. No source edits or GPU action occurred.
+
+## A1 — current external reservation lifecycle cohort
+
+Fresh `local_ai_repo:git_status` (`req_d1c1b0f004d9`) showed `tests/test_external_gpu_reservation_lifecycle.py` clean; concurrent edits remained confined to `src/local_ai_hub/services.py`, `tests/unit/test_search_mode_fusion.py`, and the plan/evaluation documents. Bounded native command `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py --tb=short` passed **30 passed in 0.83 s**. This covers file-backed reservation lifecycle fixtures only. It does not establish installed MCP action parity, simultaneous live-process admission, or physical GPU behavior. No GPU action; no broker receipt (`receipt_status=not_recorded`).
+
+## A1 — live MCP status action
+
+A current call to `local_ai_coord:gpu_reservation_status` succeeded and returned `reservation_present=false`, `state=free`, `manual_intervention_required=false`. This verifies the installed MCP status action and its free-state response only. No claim/release mutation was attempted, so installed mutation-action parity, cross-process admission and physical GPU behavior remain unverified. Concurrent `src/local_ai_hub/services.py` and `src/local_ai_hub/mcp_server.py` edits were preserved.
+
+## A2 — readiness instability and repo transport
+
+In this turn, `local_ai_status` first reported `active_model=qwen3.5:4b-nvfp4` (`req_9d922bfc36ce`) and after one Hub repo transport error reported `active_model=null` (`req_f59b2f310876`); both showed VRAM telemetry `sample_pending`/stale. A subsequent bounded `local_ai_repo:search` failed with HTTP transport error (no request ID returned); the single health check succeeded, so no native fallback was authorized. This confirms the active route is not a stable installed-model inventory or readiness receipt. No inference, GPU operation, or code edit.
+
+## A2 — overlapping capability-aware status work in progress
+
+Current `git_status` (`req_ef614ca4b412`) shows another editor changing `src/local_ai_hub/mcp_server.py`, `src/local_ai_hub/services.py`, `tests/test_mcp_agent_routing.py`, and the GPU capability plan/evaluation files. Read-only indexed/source inspection of the dirty MCP routing test (`tests/test_mcp_agent_routing.py`, SHA-256 `4ced52b287d7ff759da5ae3341e954e3c4413e79c8f4a3e0fc2aa9506ac525da`) found new draft cases for status capability reasons without inference and suppressing local routing descriptions when models are unavailable. This overlaps A2/A7 capability discoverability; it remains unvalidated draft evidence because those files are actively modified. They were not edited or tested in this turn.
+
+## Goal resume — GPU admission regressed to outcome_unknown
+
+After Local AI MCP tools returned, fresh `git_status` (`req_fc462ea50bab`) showed 18 modified paths and one untracked test; concurrent work now includes prompts, runtime/MCP services, search code and tests. Fresh `local_ai_status` (`req_28ef5fb016ba`) reports `active_model=null`, `gpu_admission_state=outcome_unknown`, and stale `sample_pending` VRAM. No GPU/model call or reservation mutation is safe. `plan_list` (`req_9c7a6c137525`) exposes no GPU-audit-specific Agent OS plan; the existing task contract was resumed and checkpointed as `task_c04ba331704e`. Relevant memory lookup returned only an unrelated orphan-intent record, explicitly excluded. Next: preserve the shared dirty paths, continue source/test work only when it does not require model inference, and resume semantic pre-edit review after readiness is known and admission is resolved. No verification receipt.
+
+## A1 — live reservation state requires manual intervention
+
+Read-only `local_ai_coord:gpu_reservation_status` after the resumed status reported `reservation_present=true`, `state=unknown`, `manual_intervention_required=true`. This is a current fail-closed reservation, not a free GPU. No release/claim was attempted; repo policy requires verified owner death or expiry and valid generation/consent for release, and unknown owner liveness remains fail-closed. Do not run model inference or GPU benchmarks until operator reconciliation and fresh VRAM telemetry. This supersedes earlier `state=free` snapshots for current readiness; historical results remain unchanged.
+
+## A1 — reservation diagnostics projection gap
+
+A read-only `gpu_reservation_status` request with `extra_fields=[owner,generation,state,expires_at,manual_intervention_required]` still returned only `reservation_present=true`, `state=unknown`, and `manual_intervention_required=true`; owner, generation and expiry were omitted. No release action was attempted. The current MCP projection therefore cannot supply the exact generation/expiry needed for consented recovery; operator-side authoritative inspection is required. This is an observed response-contract gap, not proof that reservation metadata itself is malformed or expired.
