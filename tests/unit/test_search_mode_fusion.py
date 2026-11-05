@@ -107,7 +107,7 @@ def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
     result = service.repo_search(".", "Local AI Hub installation", search_mode="hybrid")
 
     assert rag_calls == ["Local AI Hub installation install setup getting started bootstrap"]
-    assert lexical_calls == ["Local AI Hub installation install setup getting started bootstrap"]
+    assert lexical_calls == ["Local AI Hub installation"]
     assert result["query_expansion_applied"] is True
 
     lexical_calls.clear()
@@ -134,7 +134,7 @@ def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatc
     assert result["query_expansion_applied"] is True
 
 
-def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical_mode(monkeypatch):
+def test_hybrid_expands_rag_and_candidate_queries_but_keeps_lexical_source_query(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/CODE_INDEX.md", "text": "index budget"}])
     rag_calls = []
     lexical_calls = []
@@ -169,7 +169,7 @@ def test_hybrid_uses_expanded_terms_for_bounded_candidates_but_not_exact_lexical
     )
     assert rag_calls == [expanded]
     assert lexical_calls == [
-        (expanded, False, ("docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"))
+        ("Jak nastavit limit code indexu?", False, ("docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"))
     ]
     assert result["query_expansion_applied"] is True
     assert result["lexical_candidate_source"] == "preprocessed_index"

@@ -3353,13 +3353,13 @@ class LocalAIServices:
             return result
 
         lexical_limit = min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
-        lexical_candidate_query = semantic_query if query_expansion_applied else query
+        candidate_query = semantic_query if query_expansion_applied else query
         lexical_candidate_paths = None
         preprocessor = getattr(self, "preprocessor", None)
         if not prefers_lexical_precision(query) and preprocessor is not None:
             try:
                 candidates = preprocessor.candidate_paths(
-                    root, lexical_candidate_query, max(64, page_limit),
+                    root, candidate_query, max(64, page_limit),
                 )
                 if candidates:
                     lexical_candidate_paths = tuple(candidates[:64])
@@ -3369,7 +3369,7 @@ class LocalAIServices:
                     type(candidate_exc).__name__,
                 )
         lexical_result = self._repo_search_lexical(
-            root, lexical_candidate_query, top_k, context_lines, enrich, path_hints, scope,
+            root, query, top_k, context_lines, enrich, path_hints, scope,
             limit=lexical_limit, offset=0, exact_count=False,
             candidate_paths=lexical_candidate_paths,
         )
