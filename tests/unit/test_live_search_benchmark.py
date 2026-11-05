@@ -15,8 +15,31 @@ def test_live_query_set_is_independent_bilingual_and_source_anchored():
     assert any(case["language"] == "en" for case in cases)
     assert any(case["query"] == "repo_search" for case in cases)
     assert any(case["negative"] for case in cases)
-    negative = next(case for case in cases if case["id"] == "negative-unknown-symbol")
-    assert negative["query"] not in benchmark_live_search.CASE_FILE.read_text(encoding="utf-8")
+    fixture_text = benchmark_live_search.CASE_FILE.read_text(encoding="utf-8")
+    assert all(case["query"] not in fixture_text for case in cases if case["negative"])
+
+
+def test_live_query_set_has_broader_bilingual_and_negative_holdouts():
+    cases = load_cases()
+
+    assert len(cases) >= 23
+    assert sum(case["language"] == "en" for case in cases) >= 8
+    assert sum(case["language"] == "cs" for case in cases) >= 8
+    assert sum(case["negative"] for case in cases) >= 3
+    expected_ids = {
+        "english-hybrid-unavailable-rag",
+        "english-changed-file-incremental-rag",
+        "english-search-result-pagination",
+        "english-installation-guide-setup",
+        "czech-hybrid-unavailable-rag",
+        "czech-incremental-rag",
+        "czech-search-result-pagination",
+        "czech-code-index-one-hop",
+        "czech-search-worktree-scope",
+        "negative-unknown-hybrid-symbol",
+        "negative-unrelated-agent-task",
+    }
+    assert expected_ids <= {case["id"] for case in cases}
 
 
 def test_live_query_labels_reject_broken_source_anchors():
