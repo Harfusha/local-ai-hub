@@ -1786,13 +1786,16 @@ class RepositoryTools:
             # invocation uses case-insensitive globs for built-in ignores.
             if os.name == "nt" and isinstance(project_excludes, (list, tuple)):
                 for pattern in project_excludes:
-                    if not isinstance(pattern, str) or not re.fullmatch(
-                        r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/\*\*", pattern
-                    ):
+                    if not isinstance(pattern, str):
                         continue
-                    if any(part in {".", ".."} for part in pattern[:-3].split("/")):
-                        continue
-                    rg_cmd.extend(["-g", f"!{pattern}"])
+                    if re.fullmatch(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/\*\*", pattern):
+                        if any(part in {".", ".."} for part in pattern[:-3].split("/")):
+                            continue
+                        rg_cmd.extend(["-g", f"!{pattern}"])
+                    elif re.fullmatch(r"[A-Za-z0-9_.-]+\*?", pattern):
+                        # Safe basename-only file patterns can be applied before
+                        # rg reads ignored user config and backup files.
+                        rg_cmd.extend(["-g", f"!{pattern}"])
             if configured_state_relative and configured_state_relative.parts and all(
                 not any(char in part for char in "*?[]{}")
                 for part in configured_state_relative.parts

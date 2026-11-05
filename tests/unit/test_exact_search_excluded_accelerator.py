@@ -31,6 +31,29 @@ def test_ripgrep_skips_literal_excluded_tree_without_losing_results(tmp_path, mo
     assert [hit["path"] for hit in result["results"]] == ["ok.py"]
 
 
+def test_ripgrep_skips_simple_excluded_config_files(tmp_path, monkeypatch):
+    (tmp_path / "config.toml").write_text("needle secret\n", encoding="utf-8")
+    (tmp_path / "ok.py").write_text("needle\n", encoding="utf-8")
+    settings = ProjectSettings(exclude_paths=("config.toml", "config.toml.bak*"))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="config.toml\nok.py\n", stderr="")
+
+    monkeypatch.setattr(repo_tools.subprocess, "run", run)
+    tools = RepositoryTools({"rag": {"extensions": [".py", ".toml"]}})
+    tools._rg = "rg"
+
+    result = tools.search(str(tmp_path), "needle", exact_count=True, project_settings=settings)
+
+    assert ("!config.toml" in calls[0]) is (os.name == "nt")
+    assert ("!config.toml.bak*" in calls[0]) is (os.name == "nt")
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert [hit["path"] for hit in result["results"]] == ["ok.py"]
+
+
 def test_excluded_tree_acceleration_matches_complete_fallback(tmp_path, monkeypatch):
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "ignored.py").write_text("needle\n", encoding="utf-8")

@@ -21,8 +21,8 @@ from local_ai_hub.reranker import Reranker
 
 
 CASES = [
-    ("How to install the local AI hub on Windows", "docs/INSTALL_PROMPT.md"),
-    ("Jak nainstalovat a spustit Local AI Hub", "docs/INSTALL_PROMPT.md"),
+    ("How to install the local AI hub on Windows", "docs/INSTALLATION.md"),
+    ("Jak nainstalovat a spustit Local AI Hub", "docs/INSTALLATION.md"),
     ("How do I update an existing Local AI Hub installation?", "docs/UPDATE_PROMPT.md"),
 ]
 
