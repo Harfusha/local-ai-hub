@@ -35,6 +35,39 @@ def test_code_index_budget_configuration_is_bounded():
         validate_config({"code_index": {"max_index_bytes": 0}})
 
 
+def test_write_growth_estimate_covers_measured_trigram_heavy_file(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    state = tmp_path / "state"
+    index = CodeIndex(
+        {"server": {"state_dir": str(state)}, "code_index": {"max_index_bytes": 256 * 1024 * 1024}},
+        RepositoryTools({}),
+    )
+    source = "\n\n".join(
+        f'def semantic_lookup_component_{number:04d}():\n'
+        f'    """Resolve installation configuration path for component {number:04d} with validated metadata."""\n'
+        f'    return "installation/configuration/component_{number:04d}"'
+        for number in range(160)
+    ) + "\n"
+    (root / "components.py").write_text(source, encoding="utf-8")
+    original_reserve = index._reserve_write_budget
+    estimated_growth = []
+
+    def capture_growth(path, growth, **kwargs):
+        estimated_growth.append(growth)
+        return original_reserve(path, growth, **kwargs)
+
+    monkeypatch.setattr(index, "_reserve_write_budget", capture_growth)
+    before = index._physical_storage_bytes()
+    result = index.update_file(str(root), "components.py")
+    after = index._physical_storage_bytes()
+
+    assert result["success"] is True
+    assert len(estimated_growth) == 1
+    assert estimated_growth[0] >= after - before
+    index.close()
+
+
 def test_oversized_database_skips_startup_vacuum_conversion(tmp_path, monkeypatch):
     index, _root = _make_index(tmp_path)
     index.max_index_bytes = 1

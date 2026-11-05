@@ -1218,12 +1218,32 @@ class CodeIndex:
         if file_count <= 0:
             return 0
         payload_bytes = sum(len(str(row[3]).encode("utf-8")) for row in parse_blob_rows)
-        row_bytes = sum(
+        row_bytes = 0
+        trigram_rows = 0
+        for row in symbols:
+            row_bytes += sum(len(str(value).encode("utf-8")) + 32 for value in row[2:])
+            # symbol_trigrams is a table plus a multi-column index. Text bytes
+            # alone badly understate its growth for code with many long names,
+            # paths, containers, or docstrings. Match _replace_symbol_trigrams.
+            if len(row) >= 11:
+                for value in (row[2], row[7], row[6], row[1], row[10]):
+                    text_value = str(value or "").lower()
+                    if len(text_value) >= 3:
+                        trigram_rows += len({
+                            text_value[offset:offset + 3]
+                            for offset in range(len(text_value) - 2)
+                        })
+        row_bytes += sum(
             len(str(value).encode("utf-8")) + 32
-            for rows in (symbols, refs, edges) for row in rows for value in row[2:]
+            for rows in (refs, edges) for row in rows for value in row[2:]
         )
-        # Reserve headroom for file rows, secondary indexes, trigrams and page splits.
-        return max(65536 * file_count, (payload_bytes + row_bytes) * 2 + 32768 * file_count)
+        # Each distinct trigram is stored in both the table and its lookup
+        # index, with root/path/field and SQLite page overhead. The 384-byte
+        # allowance stayed above measured growth in the trigram-heavy fixture.
+        return max(
+            65536 * file_count,
+            (payload_bytes + row_bytes) * 2 + trigram_rows * 384 + 32768 * file_count,
+        )
 
     def _cache_generation(self) -> int:
         with self._cache_guard:
