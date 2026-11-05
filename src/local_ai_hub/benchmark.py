@@ -849,6 +849,44 @@ class HardwareBenchmarkRunner:
                     if not response_text and thinking_chars:
                         return {"success": False, "error": "benchmark produced thinking-only output",
                                 "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
+                elif callable(getattr(self.runtime, "request_stream", None)):
+                    streaming = True
+
+                    def record_stream_chunk(chunk: Any) -> None:
+                        nonlocal first_token_time, response_text
+                        visible = str(chunk or "")
+                        if visible:
+                            response_text += visible
+                            if first_token_time is None:
+                                first_token_time = time.perf_counter()
+
+                    result = self.runtime.request_stream(
+                        "/api/generate",
+                        {
+                            "model": target_model,
+                            "prompt": prompt,
+                            "stream": True,
+                            "think": False,
+                            "options": {"num_predict": max(1, int(num_tokens))},
+                        },
+                        record_stream_chunk,
+                    )
+                    if not isinstance(result, dict):
+                        return {"success": False, "error": "benchmark stream runtime returned a non-object response"}
+                    if result.get("error") or result.get("success") is False:
+                        return {"success": False, "error": str(result.get("error", "benchmark stream request failed"))}
+                    if not response_text:
+                        response_text = str(result.get("response", result.get("text", "")) or "")
+                    thinking_chars = len(str(result.get("thinking", "") or ""))
+                    tokens_count = int(result.get("eval_count", 0) or 0)
+                    token_count_estimated = tokens_count <= 0
+                    generation_duration_ns = int(result.get("eval_duration", 0) or 0) or None
+                    load_duration = result.get("load_duration")
+                    if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
+                        load_duration_ns = int(load_duration)
+                    if not response_text and thinking_chars:
+                        return {"success": False, "error": "benchmark produced thinking-only output",
+                                "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
                 elif callable(getattr(self.runtime, "generate", None)):
                     res = self.runtime.generate(
                         target_model,

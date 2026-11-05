@@ -140,6 +140,50 @@ def test_benchmark_measures_ttft_after_queue_and_vram_after_scheduler_preparatio
     assert result["loaded_model_vram_status"] == "observed_loaded_model"
 
 
+def test_benchmark_uses_callback_streaming_runtime_for_true_ttft(tmp_path: Path) -> None:
+    class Scheduler:
+        inside_execution = False
+
+        def submit(self, _model, *, execute, **_kwargs):
+            time.sleep(0.1)
+            self.inside_execution = True
+            try:
+                result = execute()
+            finally:
+                self.inside_execution = False
+            return {**result, "_lah_scheduler_queue_wait_ms": 100.0}
+
+    scheduler = Scheduler()
+
+    class Runtime:
+        def loaded_model_details(self, *, force_refresh=False):
+            if scheduler.inside_execution:
+                return [{"name": "selected-model", "vram_bytes": 4321}]
+            return []
+
+        def request_stream(self, endpoint, payload, on_chunk, timeout=None):
+            assert endpoint == "/api/generate"
+            assert payload["stream"] is True
+            assert payload["model"] == "selected-model"
+            time.sleep(0.02)
+            on_chunk("one two")
+            return {"eval_count": 2, "eval_duration": 20_000_000}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=scheduler,
+    )
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=2)
+
+    assert result["streaming"] is True
+    assert result["queue_wait_ms"] == 100.0
+    assert result["ttft_ms"] < result["queue_wait_ms"]
+    assert result["tokens_generated"] == 2
+    assert result["loaded_model_vram_bytes"] == 4321
+
+
 def test_benchmark_runner_handles_offline_runtime(tmp_path: Path) -> None:
     benchmarks_file = tmp_path / "benchmarks.json"
     mock_runtime = MagicMock()
