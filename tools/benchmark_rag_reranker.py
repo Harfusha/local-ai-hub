@@ -7,6 +7,7 @@ path per query; they are not exhaustive relevance judgments.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -21,17 +22,66 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 from local_ai_hub.client import HubClient
 from local_ai_hub.process_utils import canonical_workspace_id
 from local_ai_hub.reranker import Reranker
+from tools.benchmark_live_search import validate_cases
 
 
-CASES = [
-    ("How to install the local AI hub on Windows", "docs/INSTALLATION.md"),
-    ("Jak nainstalovat a spustit Local AI Hub", "docs/INSTALLATION.md"),
-    ("How do I update an existing Local AI Hub installation?", "docs/UPDATE_PROMPT.md"),
-]
+CASE_FILE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "search_benchmark_cases.json"
+
+
+def load_benchmark_dataset(root: Path) -> tuple[dict, list[dict]]:
+    """Load source-anchored labels and return positive cases for ranking."""
+    data = json.loads(CASE_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        raise ValueError("unsupported search benchmark case schema")
+    cases = data.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("benchmark cases must be a list")
+    for case in cases:
+        if isinstance(case, dict) and "query_b64" in case:
+            encoded = case.pop("query_b64")
+            if type(encoded) is not str:
+                raise ValueError("query_b64 must be a string")
+            try:
+                case["query"] = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("query_b64 must encode UTF-8 text") from exc
+    validate_cases(root, cases)
+    return data, [case for case in cases if case.get("negative") is not True]
+
+
+def load_benchmark_cases(root: Path) -> list[dict]:
+    return load_benchmark_dataset(root)[1]
 
 
 def rank_of_path(items: list[dict], path: str) -> int | None:
     return next((index for index, item in enumerate(items, 1) if item.get("path") == path), None)
+
+
+def rank_of_paths(items: list[dict], paths: list[str]) -> int | None:
+    relevant = set(paths)
+    seen: set[str] = set()
+    unique_rank = 0
+    for item in items:
+        path = item.get("path")
+        if type(path) is not str or path in seen:
+            continue
+        seen.add(path)
+        unique_rank += 1
+        if path in relevant:
+            return unique_rank
+    return None
+
+
+def rank_summary(ranks: list[int | None], *, k: int = 8) -> dict:
+    if type(k) is not int or k < 1:
+        raise ValueError("k must be a positive integer")
+    hits = [rank for rank in ranks if rank is not None]
+    return {
+        f"recall_at_{k}": sum(rank <= k for rank in hits) / len(ranks) if ranks else None,
+        "mrr": sum(1 / rank for rank in hits) / len(ranks) if ranks else None,
+        "cases": len(ranks),
+        "hits": len(hits),
+    }
 
 
 def latency_summary(samples: list[dict]) -> dict:
@@ -70,9 +120,7 @@ def run(root: Path, config_path: Path, *, repeats: int = 3) -> dict:
     if type(repeats) is not int or not 1 <= repeats <= 20:
         raise ValueError("repeats must be between 1 and 20")
     root = root.resolve(strict=True)
-    for _, expected in CASES:
-        if not (root / expected).is_file():
-            raise ValueError(f"labeled source missing: {expected}")
+    dataset, cases = load_benchmark_dataset(root)
     client = HubClient(config_path=str(config_path), auto_start=False)
     workspace = canonical_workspace_id(root)
     with tempfile.TemporaryDirectory(prefix="hub-reranker-eval-") as directory:
@@ -84,7 +132,9 @@ def run(root: Path, config_path: Path, *, repeats: int = 3) -> dict:
         reranker = Reranker(config)
         rows = []
         try:
-            for query, expected in CASES:
+            for case in cases:
+                query = case["query"]
+                expected_paths = case["expected_paths"]
                 source, baseline_samples = _search_variant(
                     client, root, workspace, query, use_reranker=False, repeats=repeats,
                 )
@@ -95,13 +145,15 @@ def run(root: Path, config_path: Path, *, repeats: int = 3) -> dict:
                 started = time.perf_counter()
                 ranked = reranker.rerank(query, [str(item.get("text", "")) for item in candidates], top_k=len(candidates))
                 rerank_ms = (time.perf_counter() - started) * 1000
-                if ranked.get("success") is not True:
-                    raise RuntimeError(f"offline reranker failed: {ranked.get('error')}")
-                reordered = [candidates[int(item["index"])] for item in ranked.get("results", [])]
-                rows.append({"query": query, "expected_path": expected,
-                             "baseline_rank": rank_of_path(candidates, expected),
-                             "reranked_rank": rank_of_path(reordered, expected),
-                             "active_hub_reranker_rank": rank_of_path(active_reranked.get("results", []), expected),
+                offline_reranker_available = ranked.get("success") is True
+                offline_error = None if offline_reranker_available else ranked.get("error")
+                reordered = ([candidates[int(item["index"])] for item in ranked.get("results", [])]
+                             if offline_reranker_available else [])
+                rows.append({"case_id": case["id"], "language": case.get("language"),
+                             "query": query, "expected_paths": expected_paths,
+                             "baseline_rank": rank_of_paths(candidates, expected_paths),
+                             "reranked_rank": rank_of_paths(reordered, expected_paths),
+                             "active_hub_reranker_rank": rank_of_paths(active_reranked.get("results", []), expected_paths),
                              "baseline_latency": latency_summary(baseline_samples),
                              "active_hub_latency": latency_summary(active_samples),
                              "baseline_samples": baseline_samples,
@@ -111,6 +163,8 @@ def run(root: Path, config_path: Path, *, repeats: int = 3) -> dict:
                              "active_hub_fallbacks": active_reranked.get("fallbacks"),
                              "active_hub_cache": active_reranked.get("search_cache"),
                              "offline_cpu_rerank_ms": rerank_ms,
+                             "offline_reranker_available": offline_reranker_available,
+                             "offline_reranker_error": offline_error,
                              "candidate_paths": [item.get("path") for item in candidates],
                              "reranked_paths": [item.get("path") for item in reordered],
                              "rag_degraded": source.get("degraded"), "rag_hybrid": source.get("hybrid")})
@@ -118,7 +172,15 @@ def run(root: Path, config_path: Path, *, repeats: int = 3) -> dict:
             client.close()
         return {"scope": "active Hub reranker plus isolated CPU cross-encoder; no downloads; labels not exhaustive",
                 "model": config["models"]["reranker"], "device": "cpu", "max_length": 512,
-                "repeats": repeats, "cases": rows}
+                "case_set": dataset.get("case_set"),
+                "negative_cases_excluded": sum(case.get("negative") is True for case in dataset["cases"]),
+                "repeats": repeats, "metrics": {
+                    "baseline": rank_summary([row["baseline_rank"] for row in rows]),
+                    "offline_reranked": rank_summary([
+                        row["reranked_rank"] for row in rows if row["offline_reranker_available"]
+                    ]),
+                    "active_hub_reranker": rank_summary([row["active_hub_reranker_rank"] for row in rows]),
+                }, "cases": rows}
 
 
 if __name__ == "__main__":
