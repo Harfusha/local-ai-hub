@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+import threading
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 
@@ -7,6 +9,7 @@ import pytest
 
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.code_index import CodeIndex
+from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
 
 
@@ -115,6 +118,95 @@ def test_code_index_budget_evicts_cold_rows_and_releases_sqlite_pages(tmp_path):
     assert "module_0.py" in indexed
     assert "module_1.py" not in indexed
     index.close()
+
+
+def test_size_limit_preserves_protected_roots_and_reports_remaining_overage(tmp_path):
+    index, protected_root = _make_index(tmp_path)
+    cold_root = tmp_path / "cold"
+    cold_root.mkdir()
+    for number in range(3):
+        path = f"cold_{number}.py"
+        (cold_root / path).write_text("def cold(): return 1\n", encoding="utf-8")
+        assert index.update_file(str(cold_root), path)["success"]
+
+    result = index.enforce_size_limit(
+        max_bytes=1,
+        protected_roots=(str(protected_root),),
+    )
+
+    assert result["success"] is True
+    assert result["evicted_paths"]
+    assert {root for root, _path in result["evicted_paths"]} == {str(cold_root)}
+    assert result["within_budget"] is False
+    with closing(index._connect()) as con:
+        protected_count = con.execute(
+            "SELECT COUNT(*) FROM files WHERE root=?", (str(protected_root),)
+        ).fetchone()[0]
+        cold_count = con.execute(
+            "SELECT COUNT(*) FROM files WHERE root=?", (str(cold_root),)
+        ).fetchone()[0]
+    assert protected_count == 8
+    assert cold_count == 0
+    index.close()
+
+
+def test_idle_maintenance_protects_running_roots_and_rechecks_over_budget(tmp_path, monkeypatch):
+    db_path = tmp_path / "preprocess.sqlite3"
+    registered_root = str(tmp_path / "active-worktree")
+    with closing(sqlite3.connect(db_path)) as con:
+        con.executescript(
+            "CREATE TABLE content_cards(card_key TEXT, accessed_at REAL);"
+            "CREATE TABLE file_refs(card_key TEXT);"
+            "CREATE TABLE projects(root TEXT, status TEXT);"
+        )
+        con.executemany(
+            "INSERT INTO projects(root,status) VALUES (?,?)",
+            [(registered_root, "running"), (str(tmp_path / "waiting-worktree"), "waiting")],
+        )
+        con.commit()
+
+    observed = {}
+    calls = []
+    clock = [10_000.0]
+    monkeypatch.setattr("local_ai_hub.preprocess.time.time", lambda: clock[0])
+
+    class RecordingIndex:
+        def enforce_size_limit(self, **kwargs):
+            observed.update(kwargs)
+            calls.append(kwargs)
+            return {"success": True, "within_budget": len(calls) > 1}
+
+    worker = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    worker.db_path = db_path
+    worker.state_dir = tmp_path
+    worker.cfg = {"db_maintenance_interval_seconds": 1800}
+    worker._db_lock = threading.RLock()
+    worker._stats_lock = threading.RLock()
+    worker._stats = {}
+    worker._last_db_maintenance = 0.0
+    worker._yield = lambda: False
+    worker._connect = lambda: sqlite3.connect(db_path)
+    worker.code_index = RecordingIndex()
+    worker.deterministic = None
+    worker.rag = None
+    worker.cleanup_deleted_projects = lambda: None
+    worker.cleanup_orphaned_indexes = lambda: None
+
+    assert worker._run_idle_database_maintenance() is True
+    assert observed["protected_roots"] == (registered_root,)
+    assert observed["max_files"] == 512
+    assert worker._last_db_maintenance == 10_000.0
+    clock[0] = 10_299.0
+    assert worker._run_idle_database_maintenance() is False
+    clock[0] = 10_300.0
+    assert worker._run_idle_database_maintenance() is True
+    assert len(calls) == 2
+    assert worker._db_maintenance_retry_interval is None
+    clock[0] = 12_099.0
+    assert worker._run_idle_database_maintenance() is False
+    clock[0] = 12_100.0
+    assert worker._run_idle_database_maintenance() is True
+    assert len(calls) == 3
 
 
 def test_size_limit_dry_run_bounds_candidate_inventory(tmp_path, monkeypatch):

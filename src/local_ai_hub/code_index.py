@@ -17,7 +17,7 @@ import weakref
 from contextlib import closing, contextmanager
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from . import __version__
 
@@ -3660,6 +3660,7 @@ class CodeIndex:
 
     def enforce_size_limit(
         self, *, max_bytes: int | None = None, dry_run: bool = False, max_files: int = 128,
+        protected_roots: Iterable[str] = (),
     ) -> dict[str, Any]:
         """Evict cold derived rows and reclaim SQLite pages in a bounded pass."""
         limit = self.max_index_bytes if max_bytes is None else max_bytes
@@ -3667,12 +3668,30 @@ class CodeIndex:
             return {"success": False, "error": "max_bytes must be a positive integer"}
         if type(max_files) is not int or not 1 <= max_files <= 512:
             return {"success": False, "error": "max_files must be between 1 and 512"}
+        if isinstance(protected_roots, (str, bytes)):
+            return {"success": False, "error": "protected_roots must be an iterable of absolute paths"}
+        try:
+            raw_protected_roots = tuple(protected_roots)
+        except TypeError:
+            return {"success": False, "error": "protected_roots must be an iterable of absolute paths"}
+        if len(raw_protected_roots) > 8192 or any(
+            type(root) is not str or not root.strip() or not Path(root).is_absolute()
+            for root in raw_protected_roots
+        ):
+            return {"success": False, "error": "protected_roots must contain at most 8192 absolute paths"}
+        try:
+            normalized_protected_roots = tuple(dict.fromkeys(
+                canonical_root(root) for root in raw_protected_roots
+            ))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"success": False, "error": f"invalid protected root: {type(exc).__name__}"}
         before = self.measure_storage()
         if before["physical_bytes"] <= limit:
             return {
                 "success": True, "dry_run": dry_run, "within_budget": True,
                 "max_bytes": limit, "before": before, "after": before,
                 "evicted_paths": [], "estimated_reclaimable_bytes": 0,
+                "protected_root_count": len(normalized_protected_roots),
             }
 
         live_physical_before = max(0, before["physical_bytes"] - before["reusable_bytes"])
@@ -3687,7 +3706,7 @@ class CodeIndex:
         }
         if cache_need:
             cache_cleanup = self.prune_unreferenced_parse_blobs(
-                dry_run=dry_run, max_blobs=2048, target_bytes=cache_need,
+                dry_run=dry_run, max_blobs=8192, target_bytes=cache_need,
             )
         cache_estimated = int(
             cache_cleanup.get(
@@ -3707,11 +3726,26 @@ class CodeIndex:
         with self._lock, closing(self._connect()) as con:
             if not dry_run and need:
                 con.execute("BEGIN IMMEDIATE")
+            if normalized_protected_roots:
+                con.execute(
+                    "CREATE TEMP TABLE protected_code_index_roots (root TEXT PRIMARY KEY) WITHOUT ROWID"
+                )
+                con.executemany(
+                    "INSERT INTO protected_code_index_roots(root) VALUES (?)",
+                    ((root,) for root in normalized_protected_roots),
+                )
+                candidate_filter = (
+                    "WHERE NOT EXISTS (SELECT 1 FROM protected_code_index_roots p "
+                    "WHERE p.root=f.root) "
+                )
+            else:
+                candidate_filter = ""
             candidates = con.execute(
                 "SELECT f.root,f.path,COALESCE(u.use_count,0) AS use_count, "
                 "COALESCE(u.last_used_at,f.updated_at,0) AS last_used_at "
                 "FROM files f LEFT JOIN file_usage u ON u.root=f.root AND u.path=f.path "
-                "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC "
+                + candidate_filter
+                + "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC "
                 "LIMIT ?",
                 (max_files,),
             ).fetchall()
@@ -3752,6 +3786,7 @@ class CodeIndex:
                 "estimated_reclaimable_bytes": before["reusable_bytes"] + cache_estimated + estimated,
                 "predicted_physical_bytes": predicted_physical,
                 "parse_cache_cleanup": cache_cleanup,
+                "protected_root_count": len(normalized_protected_roots),
             }
 
         if selected:
@@ -3808,6 +3843,7 @@ class CodeIndex:
             "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
             "parse_cache_cleanup": cache_cleanup,
             "vacuum": vacuum,
+            "protected_root_count": len(normalized_protected_roots),
         }
 
     def cleanup_stale_files(

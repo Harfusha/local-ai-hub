@@ -297,6 +297,7 @@ class ProjectPreprocessor:
         self._demand_priority_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
         self._stats_lock = threading.Lock()
         self._last_db_maintenance = time.time()
+        self._db_maintenance_retry_interval: int | None = None
         self._stats = {
             "loops": 0, "steps": 0, "yields": 0, "errors": 0, "file_card_hits": 0,
             "file_card_generations": 0, "module_generations": 0, "project_generations": 0,
@@ -4351,9 +4352,16 @@ class ProjectPreprocessor:
     def _run_idle_database_maintenance(self) -> bool:
         """Run coarse derived-index maintenance from an existing idle worker turn."""
         now = time.time()
-        maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
+        configured_maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
+        retry_interval = getattr(self, "_db_maintenance_retry_interval", None)
+        maintenance_interval = (
+            min(configured_maintenance_interval, retry_interval)
+            if type(retry_interval) is int and retry_interval >= 300
+            else configured_maintenance_interval
+        )
         if now - self._last_db_maintenance < maintenance_interval or self._yield():
             return False
+        next_maintenance_interval = configured_maintenance_interval
         try:
             with self._db_lock, closing(self._connect()) as con:
                 # Prune orphan content cards not referenced by any active file and older than 30 days
@@ -4386,8 +4394,15 @@ class ProjectPreprocessor:
         enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
         if callable(enforce_budget):
             try:
-                budget_result = enforce_budget()
+                with self._db_lock, closing(self._connect()) as con:
+                    protected_roots = tuple(sorted(
+                        str(row[0]) for row in con.execute(
+                            "SELECT root FROM projects WHERE status='running'"
+                        ).fetchall()
+                    ))
+                budget_result = enforce_budget(protected_roots=protected_roots, max_files=512)
                 if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
+                    next_maintenance_interval = min(maintenance_interval, 300)
                     logger.warning("Code-index size budget remains exceeded or could not be enforced")
             except Exception as maintenance_exc:
                 logger.warning("Code-index size maintenance skipped (%s)", type(maintenance_exc).__name__)
@@ -4400,6 +4415,11 @@ class ProjectPreprocessor:
         except Exception as clean_exc:
             logger.debug("Quarantined file cleanup skipped (%s)", type(clean_exc).__name__)
         self._last_db_maintenance = now
+        self._db_maintenance_retry_interval = (
+            next_maintenance_interval
+            if next_maintenance_interval < configured_maintenance_interval
+            else None
+        )
         with self._stats_lock:
             self._stats["db_maintenance_runs"] = self._stats.get("db_maintenance_runs", 0) + 1
         return True
