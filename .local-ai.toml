@@ -9,6 +9,9 @@ exclude_paths = [
     "state/**",
     "**/__pycache__/**",
     ".t*/**",
+    "config.toml",
+    "config.toml.bak*",
+    "config.toml.local-ai-hub-backup-*",
 ]
 
 [preprocess]

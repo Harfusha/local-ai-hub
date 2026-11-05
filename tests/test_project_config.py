@@ -99,6 +99,14 @@ def test_project_context_never_reads_hub_state_as_configuration(
     )
 
 
+def test_repository_excludes_ignored_user_config_from_index_paths(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    context = resolve_project_context(root, tmp_path / "state")
+
+    assert "config.toml" in context.settings.exclude_paths
+
+
 def test_project_configuration_merges_sources_in_documented_order(
     tmp_path: Path, monkeypatch
 ) -> None:
