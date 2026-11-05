@@ -530,6 +530,83 @@ def test_stale_cleanup_dry_run_reports_without_deleting_shared_parse_cache(tmp_p
     index.close()
 
 
+def test_orphan_trigram_cleanup_is_bounded_and_protects_active_roots(tmp_path):
+    index, active_root = _make_index(tmp_path)
+    retired_root = tmp_path / "retired-project"
+    retired_root.mkdir()
+    source = retired_root / "kept.py"
+    source.write_text("def still_here(): return 1\n", encoding="utf-8")
+    git_root = tmp_path / "git-root"
+    git_root.mkdir()
+    (git_root / ".git").mkdir()
+    with closing(index._connect()) as con:
+        con.execute("DELETE FROM symbols WHERE root=?", (str(active_root),))
+        con.execute("DELETE FROM symbol_trigrams")
+        con.executemany(
+            "INSERT INTO symbol_trigrams(root,path,symbol_rowid,field,gram) VALUES(?,?,?,?,?)",
+            [
+                (str(active_root), "module_0.py", 900001, "name", "act"),
+                (str(active_root), "module_0.py", 900002, "name", "ive"),
+                (str(retired_root), "kept.py", 900003, "name", "ret"),
+                (str(retired_root), "kept.py", 900004, "name", "ire"),
+                (str(retired_root), "kept.py", 900005, "name", "red"),
+                (str(git_root), "tracked.py", 900006, "name", "git"),
+            ],
+        )
+        con.commit()
+    index.set_active_roots_provider(lambda: (str(active_root),))
+    before = index.measure_storage()
+
+    dry_run = index.prune_orphaned_trigrams(dry_run=True, max_rows=2)
+
+    assert dry_run["success"] is True
+    assert dry_run["dry_run"] is True
+    assert dry_run["orphan_trigrams_available"] == 6
+    assert dry_run["eligible_trigrams"] == 3
+    assert dry_run["max_rows"] == 2
+    assert {row["reason"] for row in dry_run["skipped_roots"]} == {
+        "active_preprocessing_root", "active_git_root",
+    }
+    assert dry_run["storage_after"] == before
+
+    first = index.prune_orphaned_trigrams(dry_run=False, max_rows=2)
+    assert first["success"] is True
+    assert first["rows_pruned"] == 2
+    assert first["has_more"] is True
+    second = index.prune_orphaned_trigrams(dry_run=False, max_rows=2)
+    assert second["success"] is True
+    assert second["rows_pruned"] == 1
+    assert second["has_more"] is False
+    with closing(index._connect()) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM symbol_trigrams WHERE root=?", (str(active_root),)
+        ).fetchone()[0] == 2
+        assert con.execute(
+            "SELECT COUNT(*) FROM symbol_trigrams WHERE root=?", (str(retired_root),)
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM symbol_trigrams WHERE root=?", (str(git_root),)
+        ).fetchone()[0] == 1
+    assert source.is_file()
+    assert (active_root / "module_0.py").is_file()
+    index.close()
+
+
+def test_orphan_trigram_cleanup_fails_closed_without_active_root_snapshot(tmp_path):
+    index, root = _make_index(tmp_path)
+    with closing(index._connect()) as con:
+        con.execute("DELETE FROM symbols WHERE root=?", (str(root),))
+        con.commit()
+    before = index.measure_storage()
+
+    result = index.prune_orphaned_trigrams(dry_run=False, max_rows=1)
+
+    assert result["success"] is False
+    assert result["error"] == "active_roots_unavailable"
+    assert index.measure_storage() == before
+    index.close()
+
+
 def test_record_usage_uses_evidence_recency_not_preprocess_time(tmp_path):
     index, root = _make_index(tmp_path)
     indexed_path = "module_0.py"

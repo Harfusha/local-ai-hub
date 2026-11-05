@@ -4048,6 +4048,128 @@ class CodeIndex:
             "protected_root_count": len(normalized_protected_roots),
         }
 
+    def prune_orphaned_trigrams(
+        self,
+        *,
+        dry_run: bool = True,
+        max_rows: int = 100000,
+        max_roots: int = 64,
+    ) -> dict[str, Any]:
+        """Remove a bounded batch of trigram rows with no owning symbol.
+
+        A fresh active-root snapshot is required for both dry-run and mutation.
+        Active preprocessing roots and Git roots are protected. Source files,
+        symbols, parse blobs, and other roots are never changed.
+        """
+        if type(dry_run) is not bool:
+            return {"success": False, "error": "dry_run must be a boolean"}
+        if type(max_rows) is not int or not 1 <= max_rows <= 100000:
+            return {"success": False, "error": "max_rows must be between 1 and 100000"}
+        if type(max_roots) is not int or not 1 <= max_roots <= 128:
+            return {"success": False, "error": "max_roots must be between 1 and 128"}
+
+        provider = self._active_roots_provider
+        if not callable(provider):
+            return {"success": False, "error": "active_roots_unavailable"}
+        try:
+            active_values = provider()
+            if isinstance(active_values, (str, bytes)) or active_values is None:
+                return {"success": False, "error": "active_roots_unavailable"}
+            active_roots = set()
+            for value in active_values:
+                if not isinstance(value, str) or not value.strip() or not Path(value).is_absolute():
+                    return {"success": False, "error": "active_roots_unavailable"}
+                active_roots.add(canonical_root(value))
+        except Exception:
+            return {"success": False, "error": "active_roots_unavailable"}
+
+        before = self.measure_storage()
+        try:
+            with self._lock, closing(self._connect()) as con:
+                orphaned_total = int(con.execute(
+                    "SELECT COUNT(*) FROM symbol_trigrams t WHERE NOT EXISTS ("
+                    "SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "
+                    "AND s.root=t.root AND s.path=t.path)"
+                ).fetchone()[0])
+                root_rows = con.execute(
+                    "SELECT t.root,COUNT(*) AS orphan_count FROM symbol_trigrams t "
+                    "WHERE NOT EXISTS (SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "
+                    "AND s.root=t.root AND s.path=t.path) "
+                    "GROUP BY t.root ORDER BY t.root LIMIT ?",
+                    (max_roots + 1,),
+                ).fetchall()
+                has_more_roots = len(root_rows) > max_roots
+                root_rows = root_rows[:max_roots]
+                eligible_roots: list[str] = []
+                skipped_roots: list[dict[str, Any]] = []
+                eligible_total = 0
+                for row in root_rows:
+                    root = str(row["root"])
+                    try:
+                        base = Path(root).expanduser()
+                        if not base.is_absolute() or "\x00" in root or base.is_symlink():
+                            raise ValueError("unsafe_root_path")
+                        base = base.resolve(strict=False)
+                    except (OSError, RuntimeError, ValueError):
+                        skipped_roots.append({"root": root, "reason": "unsafe_root_path"})
+                        continue
+                    if root in active_roots:
+                        skipped_roots.append({"root": root, "reason": "active_preprocessing_root"})
+                        continue
+                    if any((ancestor / ".git").exists() for ancestor in (base, *base.parents)):
+                        skipped_roots.append({"root": root, "reason": "active_git_root"})
+                        continue
+                    eligible_roots.append(root)
+                    eligible_total += int(row["orphan_count"])
+
+                placeholders = ",".join("?" for _ in eligible_roots)
+                candidates = []
+                if eligible_roots:
+                    candidates = con.execute(
+                        "SELECT t.root,t.path,t.symbol_rowid,t.field,t.gram "
+                        "FROM symbol_trigrams t WHERE t.root IN (" + placeholders + ") "
+                        "AND NOT EXISTS (SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "
+                        "AND s.root=t.root AND s.path=t.path) "
+                        "ORDER BY t.root,t.path,t.symbol_rowid,t.field,t.gram LIMIT ?",
+                        (*eligible_roots, max_rows),
+                    ).fetchall()
+                if not dry_run and candidates:
+                    con.execute("BEGIN IMMEDIATE")
+                    con.executemany(
+                        "DELETE FROM symbol_trigrams WHERE root=? AND path=? AND symbol_rowid=? "
+                        "AND field=? AND gram=? AND NOT EXISTS ("
+                        "SELECT 1 FROM symbols s WHERE s.rowid=symbol_trigrams.symbol_rowid "
+                        "AND s.root=symbol_trigrams.root AND s.path=symbol_trigrams.path)",
+                        [tuple(row) for row in candidates],
+                    )
+                    con.commit()
+                rows_pruned = 0 if dry_run else int(con.total_changes)
+                after = self.measure_storage() if not dry_run else before
+        except sqlite3.DatabaseError as exc:
+            return {
+                "success": False, "dry_run": dry_run, "error": str(exc),
+                "busy": is_busy_error(exc), "storage_before": before,
+                "storage_after": self.measure_storage(), "interrupted_safe_to_repeat": True,
+            }
+
+        if rows_pruned:
+            self._advance_query_cache_generation()
+        remaining_eligible = max(0, eligible_total - rows_pruned)
+        return {
+            "success": True, "dry_run": dry_run,
+            "orphan_trigrams_available": orphaned_total,
+            "eligible_trigrams": eligible_total,
+            "rows_pruned": rows_pruned,
+            "max_rows": max_rows,
+            "has_more": remaining_eligible > 0 or has_more_roots,
+            "roots_scanned": len(root_rows), "has_more_roots": has_more_roots,
+            "skipped_roots": skipped_roots,
+            "storage_before": before, "storage_after": after,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "freelist_bytes_released": max(0, before["reusable_bytes"] - after["reusable_bytes"]),
+            "interrupted_safe_to_repeat": True,
+        }
+
     def cleanup_stale_files(
         self,
         *,
