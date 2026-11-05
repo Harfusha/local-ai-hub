@@ -54,6 +54,29 @@ def test_mixed_cuda_shutdown_never_stops_unowned_process():
     assert calls == []
 
 
+def test_mixed_cuda_false_start_result_is_logged_once():
+    supervisor = Supervisor.__new__(Supervisor)
+    supervisor.config = {"llama_cpp": {"managed_with_ollama": True}}
+    supervisor.stopping = False
+    supervisor._stop_event = threading.Event()
+    supervisor._mixed_cuda_worker = None
+    messages = []
+    owner = SimpleNamespace(
+        ensure_running=lambda **_kw: False,
+        _managed_process=None,
+        _last_error="port bind failed",
+    )
+    supervisor.runtime = SimpleNamespace(llama_cpp_managed=owner)
+    supervisor.log = messages.append
+
+    supervisor._start_mixed_cuda()
+    supervisor._mixed_cuda_worker.join(timeout=2)
+    supervisor._start_mixed_cuda()
+    supervisor._mixed_cuda_worker.join(timeout=2)
+
+    assert messages == ["managed CUDA startup incomplete: port bind failed"]
+
+
 def test_mixed_cuda_delayed_worker_releases_owned_process_after_shutdown():
     supervisor = Supervisor.__new__(Supervisor)
     supervisor.config = {"llama_cpp": {"managed_with_ollama": True}}

@@ -103,9 +103,18 @@ class Supervisor:
 
         def start_owned() -> None:
             try:
-                self.runtime.llama_cpp_managed.ensure_running(
+                started = self.runtime.llama_cpp_managed.ensure_running(
                     should_stop=lambda: self.stopping or self._stop_event.is_set()
                 )
+                if started:
+                    self._managed_cuda_last_report = ("ready", "")
+                elif not self.stopping and not self._stop_event.is_set():
+                    owner = self.runtime.llama_cpp_managed
+                    reason = str(getattr(owner, "_last_error", "") or "ensure_running_returned_false")
+                    report = ("incomplete", reason)
+                    if getattr(self, "_managed_cuda_last_report", None) != report:
+                        self.log(f"managed CUDA startup incomplete: {reason}")
+                        self._managed_cuda_last_report = report
             except Exception as exc:
                 self.log(f"managed CUDA startup failed: {type(exc).__name__}")
             finally:
