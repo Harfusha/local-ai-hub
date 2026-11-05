@@ -51,3 +51,20 @@ The same 25-case set ran once per case against the installed loopback HTTP endpo
 | Reranker used | 0 / 25 |
 
 There was one sample per query, so the maximum is not a stable p95 estimate. This run records current installed-service latency only; relevance metrics above belong to the separate 2026-11-05 two-repeat run. The Hub still reported `active_model=null` and `gpu_admission_state=outcome_unknown`, so no RAG, hybrid, or reranker comparison was attempted.
+
+## Live installed Hub: lexical repeated run — 2026-11-06
+
+The same 25 labeled cases ran three times against the installed loopback endpoint. All 75 requests succeeded with HTTP 200. In the first run, each query had one cache miss followed by two hits. Cold samples had a 3,365 ms median and 6,063 ms p95 (nearest-rank, 25 samples). A separate all-warm 75-request run measured a 201 ms median and 1,195 ms p95. The warm p95 includes service-load outliers; it is not a model-latency estimate.
+
+| Measure | Result |
+| --- | ---: |
+| Manually labeled cases / samples | 25 / 75 per run |
+| HTTP-successful requests | 75 / 75 per run |
+| Cold median / p95 | 3,365 / 6,063 ms, 25 samples |
+| All-warm median / p95 | 201 / 1,195 ms, 75 samples |
+| Macro recall@10 / precision@10 | 0.432 / 0.085 |
+| Macro MRR / NDCG@10 | 0.330 / 0.331 |
+| Negative cases correct | 2 / 3 |
+| Reranker configured / used | yes / 0 cases |
+
+The cold and all-warm latency figures come from separate runs and are not combined. Quality values are macro averages over the 25 labeled cases. The endpoint reported `index_state=current_sources` for lexical results. This benchmark does not establish RAG or hybrid quality; those modes remain unmeasured against the live service while GPU admission is unresolved.
