@@ -37,3 +37,17 @@ The five installation cases all missed `docs/INSTALLATION.md` in the returned to
 ## Scope limits
 
 This is one small, manually labeled set on one real repository and one installed-service mode. It is not evidence of general search quality. RAG, hybrid, reranker on/off, MCP boundaries, active preprocessing load, and current-source changes/removals still need independent measurements. The live GPU reservation must be reconciled through a supported Hub action before inference benchmarks can run.
+
+## Live installed Hub: lexical latency recheck — 2026-11-06
+
+The same 25-case set ran once per case against the installed loopback HTTP endpoint and the real repository. All 25 requests returned HTTP 200 with `success=true`; all reported `cache_hit=false`, so this sample has no warm-cache measurements. The configured profile was `high`; reranking was configured but used by zero lexical requests. No response was marked degraded.
+
+| Measure | Result |
+| --- | ---: |
+| Cases / successful requests | 25 / 25 |
+| Median of per-case latencies | 3,447 ms |
+| Maximum observed latency | 7,835 ms |
+| Negative cases correct | 2 / 3 |
+| Reranker used | 0 / 25 |
+
+There was one sample per query, so the maximum is not a stable p95 estimate. This run records current installed-service latency only; relevance metrics above belong to the separate 2026-11-05 two-repeat run. The Hub still reported `active_model=null` and `gpu_admission_state=outcome_unknown`, so no RAG, hybrid, or reranker comparison was attempted.
