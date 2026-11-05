@@ -41,6 +41,8 @@ from .sqlite_counts import global_row_counts, initialize_row_counts
 
 _CODE_INDEX_INIT_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _CODE_INDEX_INIT_LOCKS_GUARD = threading.Lock()
+_CODE_INDEX_WRITE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+_CODE_INDEX_WRITE_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
@@ -100,6 +102,17 @@ def _code_index_initialization_lock(db_path: Path) -> Iterator[None]:
                     msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _code_index_write_lock(db_path: Path) -> threading.RLock:
+    """Share write-admission fencing across instances targeting the same SQLite file."""
+    key = os.path.normcase(str(db_path.resolve()))
+    with _CODE_INDEX_WRITE_LOCKS_GUARD:
+        lock = _CODE_INDEX_WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _CODE_INDEX_WRITE_LOCKS[key] = lock
+        return lock
 
 
 def _root_archive_path_sql(path_expression: str = "path") -> str:
@@ -1083,6 +1096,7 @@ class CodeIndex:
         self.parse_blob_max = int(config.get("code_index", {}).get("parse_blob_max_entries", 100000))
         self.max_index_bytes = max(1, int(config.get("code_index", {}).get("max_index_bytes", 512 * 1024 * 1024)))
         self._lock = threading.RLock()
+        self._write_lock = _code_index_write_lock(self.db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._status_cache: dict[str, Any] = {}
         self._rev_cache = {}
@@ -1101,11 +1115,115 @@ class CodeIndex:
         self._observed_data_version: int | None = None
         self._reindex_callback: Any = None
         self._reindex_notifications = MemoryLRUCache(max_entries=512, ttl_seconds=30)
+        self._active_roots_provider: Any = None
 
     def set_reindex_callback(self, callback: Any) -> None:
         if callback is not None and not callable(callback):
             raise TypeError("reindex callback must be callable or None")
         self._reindex_callback = callback
+
+    def set_active_roots_provider(self, callback: Any) -> None:
+        if callback is not None and not callable(callback):
+            raise TypeError("active roots provider must be callable or None")
+        self._active_roots_provider = callback
+
+    def _write_budget_roots(self, root: str, protected_roots: Iterable[str] = ()) -> tuple[str, ...] | None:
+        roots = {canonical_root(root)}
+        if isinstance(protected_roots, (str, bytes)):
+            return None
+        try:
+            supplied = tuple(protected_roots)
+        except TypeError:
+            return None
+        for item in supplied:
+            if not isinstance(item, str) or not item.strip() or not Path(item).is_absolute():
+                return None
+            try:
+                roots.add(canonical_root(item))
+            except (OSError, RuntimeError, ValueError):
+                return None
+        provider = self._active_roots_provider
+        if callable(provider):
+            try:
+                active = provider()
+                if isinstance(active, (str, bytes)) or active is None:
+                    return None
+                for item in active:
+                    if not isinstance(item, str) or not item.strip() or not Path(item).is_absolute():
+                        return None
+                    try:
+                        roots.add(canonical_root(item))
+                    except (OSError, RuntimeError, ValueError):
+                        return None
+            except Exception:
+                # Without the active-root snapshot, refuse eviction rather than
+                # risk removing another worker's in-flight worktree.
+                return None
+        return tuple(sorted(roots))
+
+    def _physical_storage_bytes(self) -> int:
+        total = 0
+        for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm")):
+            try:
+                total += path.stat().st_size
+            except FileNotFoundError:
+                continue
+        return total
+
+    def _reserve_write_budget(
+        self, root: str, expected_growth_bytes: int, *, protected_roots: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Make room before a write; refuse indexing when the bounded eviction pass cannot."""
+        if type(expected_growth_bytes) is not int or expected_growth_bytes < 0:
+            return {"success": False, "budget_limited": True, "error": "invalid growth estimate"}
+        physical_bytes = self._physical_storage_bytes()
+        if physical_bytes + expected_growth_bytes <= self.max_index_bytes:
+            return {
+                "success": True, "budget_limited": False, "estimated_growth_bytes": expected_growth_bytes,
+                "before": {"physical_bytes": physical_bytes}, "after": {"physical_bytes": physical_bytes},
+                "eviction": None,
+            }
+        before = self.measure_storage()
+        target = self.max_index_bytes - expected_growth_bytes
+        if target < 1:
+            return {
+                "success": False, "budget_limited": True, "estimated_growth_bytes": expected_growth_bytes,
+                "before": before, "after": before, "eviction": None,
+            }
+        protected = self._write_budget_roots(root, protected_roots)
+        if protected is None:
+            return {
+                "success": False, "budget_limited": True, "reason": "active_roots_unavailable",
+                "estimated_growth_bytes": expected_growth_bytes, "before": before, "after": before,
+                "eviction": None,
+            }
+        eviction = self.enforce_size_limit(
+            max_bytes=target, max_files=512,
+            protected_roots=protected,
+        )
+        after = self.measure_storage()
+        admitted = bool(eviction.get("success") is True and after["physical_bytes"] + expected_growth_bytes <= self.max_index_bytes)
+        return {
+            "success": admitted, "budget_limited": not admitted,
+            "estimated_growth_bytes": expected_growth_bytes, "before": before, "after": after,
+            "eviction": eviction,
+        }
+
+    @staticmethod
+    def _estimate_write_growth(
+        file_count: int, parse_blob_rows: Iterable[tuple[Any, ...]],
+        symbols: Iterable[tuple[Any, ...]], refs: Iterable[tuple[Any, ...]], edges: Iterable[tuple[Any, ...]],
+    ) -> int:
+        """Conservative page-growth estimate for serialized rows and SQLite indexes."""
+        if file_count <= 0:
+            return 0
+        payload_bytes = sum(len(str(row[3]).encode("utf-8")) for row in parse_blob_rows)
+        row_bytes = sum(
+            len(str(value).encode("utf-8")) + 32
+            for rows in (symbols, refs, edges) for row in rows for value in row[2:]
+        )
+        # Reserve headroom for file rows, secondary indexes, trigrams and page splits.
+        return max(65536 * file_count, (payload_bytes + row_bytes) * 2 + 32768 * file_count)
 
     def _cache_generation(self) -> int:
         with self._cache_guard:
@@ -2227,46 +2345,72 @@ class CodeIndex:
 
         parsed_with_report = self._parse_blob_get_with_report(content_hash, lang)
         parsed = parsed_with_report[0] if parsed_with_report is not None else None
+        parse_blob_rows: list[tuple[Any, ...]] = []
         if parsed is None:
             text = "\n".join(lines)
             syms, refs, edges = self._parse_file_content(text, lang, source_key=self._tree_source_key(str(base), path))
             parse_outcome = dict(getattr(self._parse_diagnostic, "value", {}))
-            self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
+            payload = json_dumps(
+                {"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": parse_outcome},
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            parse_blob_rows.append((content_hash, _PARSER_ANALYZER_VERSION, lang, payload, time.time()))
         else:
             syms, refs, edges = parsed
             parse_outcome = parsed_with_report[1]
 
-        with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
-            con.execute(
-                "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(),
-                    target_stat.st_mtime_ns if stat_is_current else None,
-                    target_stat.st_size if stat_is_current else None,
-                ),
-            )
-            metadata_update = {
-                "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
-                    (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
-                     x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
-                     x.get("docstring", "")) for x in syms]),
-                "refs": self._sync_file_rows(con, "refs", str(base), path, [
-                    (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
-                "edges": self._sync_file_rows(con, "edges", str(base), path, [
-                    (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
-                     x.get("kind", "reference"), x["line"]) for x in edges]),
-            }
-            self._replace_symbol_trigrams(con, str(base), [path])
-            con.commit()
+        budget_symbols = [
+            (str(base), path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
+             x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", ""))
+            for x in syms
+        ]
+        budget_refs = [(str(base), path, x["name"], x["line"], x.get("kind", "call")) for x in refs]
+        budget_edges = [
+            (str(base), x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
+             x.get("kind", "reference"), path, x["line"])
+            for x in edges
+        ]
+        growth = self._estimate_write_growth(1, parse_blob_rows, budget_symbols, budget_refs, budget_edges)
+        with self._write_lock, self._lock:
+            budget = self._reserve_write_budget(str(base), growth)
+            if not budget["success"]:
+                return {
+                    "success": False, "budget_limited": True, "coverage_complete": False,
+                    "reason": "code index size limit", "budget": budget,
+                }
+            if parse_blob_rows:
+                self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute(
+                    "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(),
+                        target_stat.st_mtime_ns if stat_is_current else None,
+                        target_stat.st_size if stat_is_current else None,
+                    ),
+                )
+                metadata_update = {
+                    "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
+                        (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
+                         x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
+                         x.get("docstring", "")) for x in syms]),
+                    "refs": self._sync_file_rows(con, "refs", str(base), path, [
+                        (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
+                    "edges": self._sync_file_rows(con, "edges", str(base), path, [
+                        (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
+                         x.get("kind", "reference"), x["line"]) for x in edges]),
+                }
+                self._replace_symbol_trigrams(con, str(base), [path])
+                con.commit()
 
         self._advance_query_cache_generation()
         self._status_cache.pop(str(base), None)
         return {
             "success": True, "cached": False, "path": path,
             "symbols": len(syms), "refs": len(refs), "edges": len(edges),
-            "parse_outcome": dict(parse_outcome),
+            "parse_outcome": dict(parse_outcome), "budget": budget,
             "metadata_update": metadata_update,
         }
 
@@ -2471,50 +2615,63 @@ class CodeIndex:
         single_delta = len(files_to_insert) == 1 and not deleted_paths
         metadata_update: dict[str, Any] = {}
         if files_to_insert or deleted_paths:
-            with self._lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                if parse_blob_rows:
-                    con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
-                _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
-                if deleted_paths:
-                    con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
-                    con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
-                    for table in ("symbols", "refs", "edges"):
-                        assert table in _IDX_TABLES
-                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
-                if not single_delta:
-                    for table in ("symbols", "refs", "edges"):
-                        assert table in _IDX_TABLES
-                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
-                con.executemany(
-                    "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    files_to_insert,
-                )
-                if single_delta:
-                    changed_path = str(files_to_insert[0][1])
-                    metadata_update = {
-                        "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
-                                                        [tuple(row[2:]) for row in syms_to_insert]),
-                        "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
-                                                     [tuple(row[2:]) for row in refs_to_insert]),
-                        "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
-                                                      [(row[1], row[2], row[3], row[4], row[5], row[7])
-                                                       for row in edges_to_insert]),
+            growth = self._estimate_write_growth(
+                len(files_to_insert), parse_blob_rows, syms_to_insert, refs_to_insert, edges_to_insert,
+            )
+            with self._write_lock, self._lock:
+                budget = self._reserve_write_budget(c_root, growth)
+                if not budget["success"]:
+                    if deleted_paths:
+                        self._remove_indexed_paths(c_root, [path for _root, path in deleted_paths])
+                    return {
+                        "success": False, "budget_limited": True, "coverage_complete": False,
+                        "files_processed": 0, "cached": cached, "reason": "code index size limit",
+                        "budget": budget,
                     }
-                else:
-                    con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
-                    con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                with closing(self._connect()) as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    if parse_blob_rows:
+                        con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
+                    _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
+                    if deleted_paths:
+                        con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                        con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
+                        for table in ("symbols", "refs", "edges"):
+                            assert table in _IDX_TABLES
+                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
+                    if not single_delta:
+                        for table in ("symbols", "refs", "edges"):
+                            assert table in _IDX_TABLES
+                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
                     con.executemany(
-                        "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
-                        edges_to_insert,
+                        "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        files_to_insert,
                     )
-                self._replace_symbol_trigrams(
-                    con,
-                    c_root,
-                    [str(item[1]) for item in files_to_insert],
-                )
-                con.commit()
+                    if single_delta:
+                        changed_path = str(files_to_insert[0][1])
+                        metadata_update = {
+                            "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
+                                                            [tuple(row[2:]) for row in syms_to_insert]),
+                            "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
+                                                         [tuple(row[2:]) for row in refs_to_insert]),
+                            "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
+                                                          [(row[1], row[2], row[3], row[4], row[5], row[7])
+                                                           for row in edges_to_insert]),
+                        }
+                    else:
+                        con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
+                        con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                        con.executemany(
+                            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
+                            edges_to_insert,
+                        )
+                    self._replace_symbol_trigrams(
+                        con,
+                        c_root,
+                        [str(item[1]) for item in files_to_insert],
+                    )
+                    con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
         indexed_paths = [str(item[1]) for item in files_to_insert]
@@ -2523,7 +2680,7 @@ class CodeIndex:
             "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
             "parse_blob_hits": len(candidates) - len(parse_blob_rows),
             "parse_outcomes": self._parse_outcomes_for_paths(c_root, indexed_paths),
-            "metadata_update": metadata_update,
+            "metadata_update": metadata_update, "budget": budget if files_to_insert else None,
         }
 
     @staticmethod

@@ -37,6 +37,22 @@ def run() -> dict[str, object]:
             limit = max(1, int(before["physical_bytes"] * 0.7))
             result = index.enforce_size_limit(max_bytes=limit, max_files=128)
             after = index.measure_storage()
+            cold_root = base / "cold-repository"
+            cold_root.mkdir()
+            for number in range(6):
+                path = f"cold_{number}.py"
+                (cold_root / path).write_text("\n".join(
+                    f"def cold_{number}_{row}(): return {row}" for row in range(160)
+                ) + "\n", encoding="utf-8")
+                index.update_file(str(cold_root), path)
+            admission_before = index.measure_storage()
+            admission_limit = admission_before["physical_bytes"] + 65535
+            index.max_index_bytes = admission_limit
+            (root / "admitted_after_eviction.py").write_text(
+                "def admitted_after_eviction(): return True\n", encoding="utf-8"
+            )
+            admission = index.update_file(str(root), "admitted_after_eviction.py")
+            admission_after = index.measure_storage()
             return {
                 "kind": "synthetic_code_index_storage",
                 "indexed_files_before": 16,
@@ -52,6 +68,18 @@ def run() -> dict[str, object]:
                 "retained_hot_file": (str(root), "module_0.py")
                 not in result.get("evicted_paths", []),
                 "within_budget": result.get("within_budget") is True,
+                "write_admission": {
+                    "budget_limited": admission.get("budget_limited") is True,
+                    "success": admission.get("success") is True,
+                    "estimated_growth_bytes": admission.get("budget", {}).get("estimated_growth_bytes"),
+                    "evicted_file_count": len(
+                        (admission.get("budget", {}).get("eviction") or {}).get("evicted_paths", [])
+                    ),
+                    "max_bytes": admission_limit,
+                    "before_physical_bytes": admission_before["physical_bytes"],
+                    "after_physical_bytes": admission_after["physical_bytes"],
+                    "within_budget": admission_after["physical_bytes"] <= admission_limit,
+                },
             }
         finally:
             index.close()

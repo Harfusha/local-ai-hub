@@ -14,8 +14,8 @@ files from actual Hub evidence use. An absent or partial dependency graph keeps
 `[code_index].max_index_bytes` sets the shared code-index SQLite budget. The
 default is 536,870,912 bytes (512 MiB), including the database and its WAL/SHM
 sidecars. When over budget, preprocessing evicts the lowest recorded-use files
-first, then the oldest files. Shared parser blobs are stored separately and are
-not deleted by code-index eviction.
+first, then the oldest files. Parse blobs share this database; eviction removes
+only blobs no indexed file references, preserving shared parse-cache entries.
 
 Eviction removes derived rows in one bounded transaction and invalidates query
 generations. Small databases use a five-second bounded `VACUUM`; larger databases
@@ -32,5 +32,20 @@ could not release enough space. Existing SQLite free pages count toward the
 reclaim estimate before live files are selected for eviction, so reusable pages
 alone do not evict indexed files. A later preprocessing pass can continue cleanup.
 
-This cap covers the code-index database only. RAG, deterministic facts,
-preprocessing metadata, and shared parse-cache storage have separate lifecycles.
+This cap covers the code-index database only. RAG, deterministic facts and
+preprocessing metadata have separate lifecycles.
+
+Admission is checked before each new single-file or batch write. The writer
+reserves conservative space for parse payloads, symbols, references, edges, and
+SQLite indexes. Near the cap, one bounded eviction pass runs before the write.
+Current and other running preprocessing roots are protected; if their active
+root snapshot is unavailable, eviction is refused. If the database still cannot
+fit the estimate, the write is deferred and reports `budget_limited=true` with
+`coverage_complete=false`. Removed source files are still pruned. The project
+waits five minutes before retrying, so it does not spin while the cap is full.
+
+Preprocessing status exposes the actual `code_index_files` count and marks its
+coverage as incomplete by contract. A completed preprocessing project therefore
+does not imply complete code-index coverage. Search continues to verify indexed
+candidates against current source and falls back to source search when coverage
+is partial or a candidate is stale.

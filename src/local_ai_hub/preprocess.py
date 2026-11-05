@@ -317,6 +317,9 @@ class ProjectPreprocessor:
         if bool(getattr(self.rag, "index_reset", False)):
             self._invalidate_rag_sync_state()
         self._repair_registry()
+        set_active_roots_provider = getattr(self.code_index, "set_active_roots_provider", None)
+        if callable(set_active_roots_provider):
+            set_active_roots_provider(self._active_code_index_roots)
         self._requeue_available_external_indexes()
         self._cpu_thread: threading.Thread | None = None
         self._gpu_thread: threading.Thread | None = None
@@ -427,6 +430,17 @@ class ProjectPreprocessor:
         self._missing_refs_checked_generations = {
             key for key in self._missing_refs_checked_generations if key[0] != root
         }
+
+    def _active_code_index_roots(self) -> tuple[str, ...] | None:
+        """Snapshot roots currently owned by preprocessing workers for safe eviction."""
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                roots = [str(row[0]) for row in con.execute(
+                    "SELECT root FROM projects WHERE status='running' ORDER BY root"
+                ).fetchall()]
+        except sqlite3.Error:
+            return None
+        return tuple(root for root in roots if root and Path(root).is_absolute())
 
     def _init_db(self) -> None:
         with self._db_lock, closing(self._connect()) as con:
@@ -1774,7 +1788,9 @@ class ProjectPreprocessor:
                         "updated_at": float(external_row[4] or 0),
                     }
 
-            for batch in root_batches(incomplete_roots):
+            # Report true derived-index coverage even after preprocessing completes.
+            # The code index is demand-driven and intentionally partial.
+            for batch in root_batches(roots):
                 placeholders = ",".join("?" for _ in batch)
                 for table, target in (
                     ("source_index", source_counts),
@@ -1787,13 +1803,16 @@ class ProjectPreprocessor:
                     ).fetchall()
                     target.update({str(count_row[0]): int(count_row[1] or 0) for count_row in count_rows})
 
-            def index_file_counts(index: Any | None, label: str) -> dict[str, int]:
+            def index_file_counts(
+                index: Any | None, label: str, requested_roots: list[str] | None = None,
+            ) -> dict[str, int]:
                 result: dict[str, int] = {}
-                if index is None or not incomplete_roots:
+                scope_roots = incomplete_roots if requested_roots is None else requested_roots
+                if index is None or not scope_roots:
                     return result
                 try:
                     with closing(index._connect()) as index_con:
-                        for batch in root_batches(incomplete_roots):
+                        for batch in root_batches(scope_roots):
                             placeholders = ",".join("?" for _ in batch)
                             count_rows = index_con.execute(
                                 f"SELECT root, COUNT(*) FROM files WHERE root IN ({placeholders}) GROUP BY root",
@@ -1804,7 +1823,7 @@ class ProjectPreprocessor:
                     logger.warning("%s status unavailable (%s)", label, type(exc).__name__)
                 return result
 
-            code_index_counts = index_file_counts(self.code_index, "Code-index")
+            code_index_counts = index_file_counts(self.code_index, "Code-index", roots)
             deterministic_counts = index_file_counts(self.deterministic, "Deterministic-index")
 
             projects: list[dict[str, Any]] = []
@@ -1830,8 +1849,8 @@ class ProjectPreprocessor:
                 module_count = 0
                 project_card_count = 0
                 external_indexes = external_by_root.get(str(row["root"]), {})
+                ci_count = code_index_counts.get(str(row["root"]), 0)
                 if status_str != "complete" and phase_str != "complete":
-                    ci_count = code_index_counts.get(str(row["root"]), 0)
                     det_count = deterministic_counts.get(str(row["root"]), 0)
                     module_count = module_counts.get(str(row["root"]), 0)
                     project_card_count = project_card_counts.get(str(row["root"]), 0)
@@ -2042,6 +2061,11 @@ class ProjectPreprocessor:
                     "speed_str": speed_str, "eta_str": eta_str, "last_complete_at": row["last_complete_at"],
                     "progress_age_seconds": round(progress_age_seconds, 1),
                     "files": total_files, "file_cards": file_cards, "hashed_files": hashed_files, "rag_files": rag_files,
+                    "code_index_files": ci_count,
+                    "code_index_coverage": {
+                        "complete": False, "scope": "demand_indexed_files",
+                        "indexed_files": ci_count, "project_files": total_files,
+                    },
                     "stats": project_stats, "external_indexes": external_indexes,
                 })
         bg_allowed = self.scheduler.background_allowed()
@@ -3318,6 +3342,13 @@ class ProjectPreprocessor:
 
         try:
             result = self.code_index.update_files_batch(root, pending)
+            if isinstance(result, dict) and result.get("budget_limited") is True:
+                retry_at = time.time() + 300.0
+                self._set_project(
+                    root, phase="code_index", status="waiting",
+                    last_error="code_index_budget_limited", retry_after=retry_at, next_check_at=retry_at,
+                )
+                return True
             files_processed = int(result.get("files_processed", 0))
             progressed = files_processed + int(result.get("cached", 0))
         except Exception as batch_exc:

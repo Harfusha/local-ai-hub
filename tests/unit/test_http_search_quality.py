@@ -15,7 +15,7 @@ def test_http_search_preserves_literal_query_and_returns_current_source(tmp_path
     service.repo_tools = RepositoryTools({"rag": {"extensions": [".py"]}})
     service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
     service._repo_cache_state = lambda _root: {}
-    service._repo_cached = lambda _name, _root, _params, compute: compute()
+    service._repo_cached = lambda _name, _root, _params, compute, **_kwargs: compute()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config=service.config, recovery=None, services=service))
 
     handler = http_server.Handler.__new__(http_server.Handler)
@@ -52,7 +52,7 @@ def test_service_keeps_engine_order_when_a_path_has_multiple_hits(tmp_path):
     service.repo_tools = Tools({"rag": {"extensions": [".py"]}})
     service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
     service._repo_cache_state = lambda _root: {}
-    service._repo_cached = lambda _name, _root, _params, compute: compute()
+    service._repo_cached = lambda _name, _root, _params, compute, **_kwargs: compute()
 
     result = service.repo_search(str(root), "needle", limit=10)
 
@@ -71,7 +71,7 @@ def test_service_pages_match_full_ranked_result(tmp_path):
     service.repo_tools = RepositoryTools({"rag": {"extensions": [".py"]}})
     service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
     service._repo_cache_state = lambda _root: {}
-    service._repo_cached = lambda _name, _root, _params, compute: compute()
+    service._repo_cached = lambda _name, _root, _params, compute, **_kwargs: compute()
 
     full = service.repo_search(str(root), "needle", limit=10)
     first = service.repo_search(str(root), "needle", limit=2, offset=0)
