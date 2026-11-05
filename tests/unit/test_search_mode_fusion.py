@@ -72,8 +72,7 @@ def test_czech_semantic_query_gets_bounded_english_terms_without_changing_lexica
 
     assert applied is True
     assert expanded == (
-        original + " how configure size index code_index max_index_bytes "
-        "database storage eviction maximum bytes"
+        original + " code_index max_index_bytes eviction byte budget"
     )
     assert expand_semantic_query("repo_search") == ("repo_search", False)
     english, english_applied = expand_semantic_query("Local AI Hub installation")
@@ -128,8 +127,7 @@ def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatc
     result = service.repo_search(".", "Jak nastavit limit code indexu?", search_mode="rag")
 
     assert calls == [
-        "Jak nastavit limit code indexu? how configure size index code_index max_index_bytes "
-        "database storage eviction maximum bytes"
+        "Jak nastavit limit code indexu? code_index max_index_bytes eviction byte budget"
     ]
     assert result["query_expansion_applied"] is True
 
@@ -141,7 +139,7 @@ def test_hybrid_expands_rag_and_candidate_queries_but_keeps_lexical_source_query
     class Preprocessor:
         def candidate_paths(self, root, query, limit):
             assert root == "."
-            assert query.endswith("database storage eviction maximum bytes")
+            assert query.endswith("code_index max_index_bytes eviction byte budget")
             assert limit >= 64
             return ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"]
 
@@ -164,8 +162,7 @@ def test_hybrid_expands_rag_and_candidate_queries_but_keeps_lexical_source_query
     result = service.repo_search(".", "Jak nastavit limit code indexu?", search_mode="hybrid")
 
     expanded = (
-        "Jak nastavit limit code indexu? how configure size index code_index max_index_bytes "
-        "database storage eviction maximum bytes"
+        "Jak nastavit limit code indexu? code_index max_index_bytes eviction byte budget"
     )
     assert rag_calls == [expanded]
     assert lexical_calls == [
@@ -515,13 +512,16 @@ def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):
     assert calls[0]["offset"] == 2
 
 
-def test_hybrid_degraded_empty_rag_candidates_use_exact_lexical_page(monkeypatch):
+def test_hybrid_degraded_empty_rag_candidates_use_inexact_expanded_page(monkeypatch):
     service = _service(monkeypatch, rag_rows=[], rag_meta={
         "success": True, "degraded": True, "degradation_reason": "embedding_space_mismatch",
         "index_state": "stale", "reranker": {"requested": True, "used": False, "degraded": True},
     })
     monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: {
-        "success": True, "results": [{"path": "docs/install.md"}],
+        "success": True, "results": [
+            {"path": "docs/install.md"}, {"path": "docs/other.md"},
+            {"path": "src/install.py"}, {"path": "src/setup.py"},
+        ],
         "total_matches": 14, "count_exact": True, "has_more": True,
         "offset": kwargs["offset"], "limit": kwargs["limit"],
     })
@@ -530,8 +530,10 @@ def test_hybrid_degraded_empty_rag_candidates_use_exact_lexical_page(monkeypatch
 
     assert result["result_source"] == "lexical_fallback"
     assert result["degradation_reason"] == "embedding_space_mismatch"
-    assert result["total_matches"] == result["lexical_total_matches"] == 14
-    assert result["count_exact"] is True
+    assert result["total_matches"] is None
+    assert result["lexical_total_matches"] is None
+    assert result["count_exact"] is False
+    assert result["query_expansion_applied"] is True
     assert result["results"][0]["sources"] == ["lexical"]
 
 

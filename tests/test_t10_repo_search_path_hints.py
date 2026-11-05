@@ -38,7 +38,7 @@ def _search_service(tmp_path: Path, preprocessor: object) -> LocalAIServices:
     services.repo_tools = RepositoryTools(config)
     services.evidence_store = None
     services._repo_cache_state = lambda _root: {"fingerprint": "rev-1", "kind": "test"}
-    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+    services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     return services
 
 

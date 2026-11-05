@@ -62,7 +62,7 @@ def test_live_mcp_schemas_are_valid_without_empty_combinators(tool_name: str) ->
     assert tool.parameters.get("allOf") != []
 
 
-def test_repository_search_defaults_to_lexical_and_allows_explicit_hybrid(monkeypatch) -> None:
+def test_repository_search_defaults_to_hybrid_and_allows_explicit_lexical(monkeypatch) -> None:
     requests: list[dict[str, object]] = []
     search_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters
 
@@ -72,16 +72,16 @@ def test_repository_search_defaults_to_lexical_and_allows_explicit_hybrid(monkey
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", capture_post)
 
-    assert search_schema["properties"]["search_mode"]["default"] == "lexical"
+    assert search_schema["properties"]["search_mode"]["default"] == "hybrid"
 
-    default_result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle")
-    hybrid_result = local_ai_mcp.local_ai_repo(
-        action="search", root=str(ROOT), query="needle", search_mode="hybrid"
+    default_result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="natural language query")
+    lexical_result = local_ai_mcp.local_ai_repo(
+        action="search", root=str(ROOT), query="repo_search", search_mode="lexical"
     )
 
     assert default_result["success"] is True
-    assert hybrid_result["success"] is True
-    assert [request["search_mode"] for request in requests] == ["lexical", "hybrid"]
+    assert lexical_result["success"] is True
+    assert [request["search_mode"] for request in requests] == ["hybrid", "lexical"]
 
 
 def test_low_profile_rejects_direct_local_work_submit(monkeypatch) -> None:
@@ -235,7 +235,8 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert calls[1][2]["timeout"] <= 15
     assert "untrusted data" in calls[1][1]["instruction"]
     assert "[path:start-end]" in calls[1][1]["instruction"]
-    assert "at most 3 bullets" in calls[1][1]["instruction"]
+    assert "Every bullet must contain at least one valid source citation" in calls[1][1]["instruction"]
+    assert "Return 1 to 3 bullets" in calls[1][1]["instruction"]
     assert "80 words total" in calls[1][1]["instruction"]
     assert "Do not infer result counts or omitted findings." in calls[1][1]["instruction"]
     assert "Do not cite evidence_id or E1/E2 labels." in calls[1][1]["instruction"]

@@ -8247,7 +8247,7 @@ class Handler(BaseHTTPRequestHandler):
                     limit=payload.get("limit", 24),
                     offset=payload.get("offset", 0),
                     path_hints=payload.get("path_hints"),
-                    search_mode=payload.get("search_mode", "lexical"),
+                    search_mode=payload.get("search_mode", "hybrid"),
                 )
                 status = int(result.pop("status_code", 200))
                 self._send(status, result); return

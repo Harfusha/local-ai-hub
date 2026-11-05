@@ -100,11 +100,7 @@ def expand_semantic_query(query: str) -> tuple[str, bool]:
         "velikost", "velikosti",
     } & token_set)
     if has_index and has_size_limit:
-        translated.extend((
-            "code_index", "max_index_bytes", "database", "storage",
-            "eviction", "maximum bytes",
-        ))
-        translated = list(dict.fromkeys(translated))
+        return f"{query.strip()} code_index max_index_bytes eviction byte budget", True
     if not translated:
         return query, False
     return f"{query.strip()} {' '.join(translated)}", True
@@ -126,6 +122,23 @@ def _path_key(item: Mapping[str, Any]) -> tuple[str, str] | None:
         return None
     display = str(PurePosixPath(raw))
     return display.casefold(), display
+
+
+def deduplicate_search_files(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first ranked result per safe relative file path."""
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        identity = _path_key(row)
+        if identity is None or identity[0] in seen:
+            continue
+        seen.add(identity[0])
+        item = dict(row)
+        item["path"] = identity[1]
+        results.append(item)
+    return results
 
 
 def fuse_search_results(

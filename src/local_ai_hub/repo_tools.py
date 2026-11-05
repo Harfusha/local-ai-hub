@@ -2227,6 +2227,7 @@ class RepositoryTools:
         *, project_settings: Any | None = None,
         git_inventory: Any = _UNSET_GIT_INVENTORY,
         candidate_paths: list[str] | tuple[str, ...] | None = None,
+        candidate_query: str | None = None,
         offset: int = 0,
         exact_count: bool = False,
         force_include_paths: list[str] | tuple[str, ...] = (),
@@ -2270,7 +2271,8 @@ class RepositoryTools:
                         "error": "candidate_paths must contain 1 to 64 safe relative paths",
                         "root": str(base), "results": []}
             git_inventory = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
-        terms = self._terms(query)
+        candidate_text = candidate_query if type(candidate_query) is str and candidate_query else query
+        terms = self._terms(candidate_text)
         phrase = query.strip().lower()
         if not terms and phrase:
             terms = [phrase]
