@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import repo_tools
+from local_ai_hub import project_config
 from local_ai_hub.project_config import ProjectSettings
 from local_ai_hub.repo_tools import RepositoryTools
 
@@ -52,6 +53,31 @@ def test_ripgrep_skips_simple_excluded_config_files(tmp_path, monkeypatch):
     assert result["success"] is True
     assert result["total_matches"] == 1
     assert [hit["path"] for hit in result["results"]] == ["ok.py"]
+
+
+def test_exact_search_reuses_project_path_policy_for_one_request(tmp_path, monkeypatch):
+    (tmp_path / "first.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "second.py").write_text("needle\n", encoding="utf-8")
+    settings = ProjectSettings()
+    instances = []
+    base_policy = project_config.ProjectPathPolicy
+
+    class CountingProjectPathPolicy(base_policy):
+        def __init__(self, root, project_settings):
+            instances.append(root)
+            super().__init__(root, project_settings)
+
+    monkeypatch.setattr(project_config, "ProjectPathPolicy", CountingProjectPathPolicy)
+    monkeypatch.setattr(repo_tools.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        returncode=0, stdout="first.py\nsecond.py\n", stderr=""))
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    tools._rg = "rg"
+
+    result = tools.search(str(tmp_path), "needle", exact_count=True, project_settings=settings)
+
+    assert result["success"] is True
+    assert result["total_matches"] == 2
+    assert len(instances) == 1
 
 
 def test_excluded_tree_acceleration_matches_complete_fallback(tmp_path, monkeypatch):

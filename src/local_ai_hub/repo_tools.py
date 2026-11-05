@@ -1484,6 +1484,7 @@ class RepositoryTools:
 
     def _project_file_allowed(
         self, base: Path, path: Path, project_settings: Any, *, force_include: bool = False,
+        project_path_policy: Any | None = None,
     ) -> bool:
         try:
             if not self._inventory_path_safe(base, path):
@@ -1514,12 +1515,19 @@ class RepositoryTools:
             soft_ignored = any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1])
             if soft_ignored and not force_include:
                 return False
-            from .project_config import path_is_allowed
+            if project_path_policy is None:
+                from .project_config import path_is_allowed
 
-            if not path_is_allowed(
-                base, resolved, project_settings, phase="search",
-                soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
-            ):
+                allowed = path_is_allowed(
+                    base, resolved, project_settings, phase="search",
+                    soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
+                )
+            else:
+                allowed = project_path_policy.allows(
+                    resolved, phase="search",
+                    soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
+                )
+            if not allowed:
                 return False
             return self._path_extension_is_searchable(resolved, project_settings=project_settings)
         except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -1738,6 +1746,11 @@ class RepositoryTools:
             }
 
         snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
+        project_path_policy = None
+        if project_settings is not None:
+            from .project_config import ProjectPathPolicy
+
+            project_path_policy = ProjectPathPolicy(base, project_settings)
         retain_count = offset + limit
         file_cap = max(1, min(int(self.max_files), MAX_EXACT_SEARCH_FILES))
         deadline = time.monotonic() + 60.0
@@ -2039,6 +2052,7 @@ class RepositoryTools:
                     elif not self._project_file_allowed(
                         base, path, project_settings,
                         force_include=forced,
+                        project_path_policy=project_path_policy,
                     ):
                         continue
                     if callable(extension_check) and not extension_check(
