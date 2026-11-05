@@ -1,4 +1,6 @@
-from tools.benchmark_rag_reranker import CASES, rank_of_path
+from pathlib import Path
+
+from tools.benchmark_rag_reranker import load_benchmark_cases, rank_of_path
 
 
 def test_rank_of_path_handles_missing_and_duplicate_paths():
@@ -8,7 +10,11 @@ def test_rank_of_path_handles_missing_and_duplicate_paths():
 
 
 def test_installation_reranker_cases_label_the_installation_document():
-    assert [expected for _, expected in CASES[:2]] == [
-        "docs/INSTALLATION.md",
-        "docs/INSTALLATION.md",
+    cases = load_benchmark_cases(Path.cwd())
+    installation_cases = [
+        case for case in cases
+        if case.get("id") in {"english-installation", "english-install-without-ollama"}
+    ]
+    assert [case["expected_paths"][0] for case in installation_cases] == [
+        "docs/INSTALLATION.md", "docs/INSTALLATION.md",
     ]

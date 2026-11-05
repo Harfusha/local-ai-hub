@@ -46,6 +46,7 @@ def test_hybrid_uses_expanded_query_for_bounded_lexical_candidates(monkeypatch):
     assert lexical_calls[0][1]["candidate_query"] == (
         "code_index max_index_bytes eviction byte budget"
     )
+    assert lexical_calls[0][1]["installation_intent_priority"] is True
     assert result["query_expansion_applied"] is True
     assert result["lexical_count_exact"] is False
     assert result["results"][0]["path"] == "docs/CODE_INDEX.md"
@@ -244,7 +245,20 @@ def test_expanded_candidate_search_prefers_matching_document_path(tmp_path: Path
         candidate_paths=["tests/unit/test_rag_semantic_only.py", "docs/INSTALLATION.md"],
         limit=5,
         exact_count=False,
+        installation_intent_priority=False,
     )
 
     assert lexical["success"] is True
     assert lexical["results"][0]["path"] == "tests/unit/test_rag_semantic_only.py"
+
+    hybrid_lexical_candidates = RepositoryTools({}).search(
+        str(tmp_path),
+        "Jak nainstalovat a spustit Local AI Hub",
+        candidate_paths=["tests/unit/test_rag_semantic_only.py", "docs/INSTALLATION.md"],
+        limit=5,
+        exact_count=False,
+        installation_intent_priority=True,
+    )
+
+    assert hybrid_lexical_candidates["success"] is True
+    assert hybrid_lexical_candidates["results"][0]["path"] == "docs/INSTALLATION.md"

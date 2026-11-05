@@ -2273,8 +2273,13 @@ class RepositoryTools:
         exact_count: bool = False,
         force_include_paths: list[str] | tuple[str, ...] = (),
         path_priority: Callable[[str], tuple[int, int, int]] | None = None,
+        installation_intent_priority: bool = True,
     ) -> dict[str, Any]:
         base = self._root(root)
+        if type(installation_intent_priority) is not bool:
+            return {"success": False, "status_code": 400, "terminal": True,
+                    "retryable": False, "error": "installation_intent_priority must be a boolean",
+                    "root": str(base), "results": []}
         if exact_count:
             if candidate_paths is not None:
                 return {
@@ -2407,7 +2412,8 @@ class RepositoryTools:
                         title_matches = sum(1 for term in expanded_terms if term in stem)
                         score += min(40.0, title_matches * 20.0)
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
-                    score += _intent_path_adjustment(query, rel)
+                    if installation_intent_priority:
+                        score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
@@ -2463,7 +2469,8 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
                     score += sum(min(low.count(t), 3) * 0.5 for t in matched)
-                    score += _intent_path_adjustment(query, rel)
+                    if installation_intent_priority:
+                        score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines)
                     end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)

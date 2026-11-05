@@ -3306,6 +3306,9 @@ class LocalAIServices:
                     exact_count=not expanded_fallback,
                     candidate_paths=fallback_candidate_paths,
                     candidate_query=candidate_query if expanded_fallback else None,
+                    installation_intent_priority=(
+                        mode == "hybrid" and not prefers_lexical_precision(query)
+                    ),
                 )
                 fallback_page = result.get("results", [])
                 if bounded_candidate_page and isinstance(fallback_page, list):
@@ -3411,6 +3414,9 @@ class LocalAIServices:
                 exact_count=not expanded_fallback,
                 candidate_paths=fallback_candidate_paths,
                 candidate_query=candidate_query if expanded_fallback else None,
+                installation_intent_priority=(
+                    mode == "hybrid" and not prefers_lexical_precision(query)
+                ),
             )
             fallback_page = result.get("results", [])
             if bounded_candidate_page and isinstance(fallback_page, list):
@@ -3482,6 +3488,9 @@ class LocalAIServices:
             limit=lexical_limit, offset=0, exact_count=False,
             candidate_paths=lexical_candidate_paths,
             candidate_query=lexical_candidate_query if lexical_candidate_paths and query_expansion_applied else None,
+            installation_intent_priority=(
+                mode == "hybrid" and not prefers_lexical_precision(query)
+            ),
         )
         if lexical_result.get("success") is not True:
             return {
@@ -3695,6 +3704,7 @@ class LocalAIServices:
         exact_count: bool = True,
         candidate_paths: list[str] | tuple[str, ...] | None = None,
         candidate_query: str | None = None,
+        installation_intent_priority: bool = False,
     ) -> dict[str, Any]:
         page_limit = max(1, int(top_k)) if limit is None else limit
         bounds_error = pagination_bounds_error(page_limit, offset)
@@ -4053,6 +4063,7 @@ class LocalAIServices:
                 "exact_count": exact_count,
                 "force_include_paths": list(force_include_patterns),
                 "path_priority": path_priority,
+                "installation_intent_priority": installation_intent_priority,
             }
             if candidate_query and candidate_query != query:
                 search_options["candidate_query"] = normalize_query(
