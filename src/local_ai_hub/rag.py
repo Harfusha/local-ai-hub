@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import bisect
 import hashlib
 import importlib
 import heapq
@@ -246,6 +247,7 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
 
     deadline = time.monotonic() + _REGEX_AST_BUDGET_SECONDS
     spans: list[tuple[int, int]] = []
+    safe_newlines: list[int] = []
     braces: list[int] = []
     segment_start = 0
     index = 0
@@ -284,6 +286,8 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
 
         if text.startswith("//", index):
             newline = text.find("\n", index + 2)
+            if newline >= 0:
+                safe_newlines.append(newline + 1)
             index = text_length if newline < 0 else newline + 1
             continue
         if text.startswith("/*", index):
@@ -412,6 +416,9 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                     continue
                 return [text] if text.strip() else []
 
+        if text[index] == "\n":
+            safe_newlines.append(index + 1)
+
         if text[index] == "{":
             if language == "typescript" and not braces:
                 # A typed function can contain a structural return type before
@@ -447,6 +454,7 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                 if cursor < text_length and text[cursor] == "\n":
                     cursor += 1
                     index = cursor
+                    safe_newlines.append(cursor)
                 spans.append((segment_start, index))
                 segment_start = index
             continue
@@ -460,6 +468,23 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
         return [text] if text.strip() else []
 
     chunks: list[str] = []
+
+    def split_at_safe_newlines(start: int, end: int) -> list[str]:
+        parts: list[str] = []
+        cursor = start
+        while end - cursor > size:
+            break_index = bisect.bisect_right(safe_newlines, cursor + size) - 1
+            if break_index < 0 or safe_newlines[break_index] <= cursor:
+                break_index = bisect.bisect_right(safe_newlines, cursor)
+                if break_index >= len(safe_newlines) or safe_newlines[break_index] >= end:
+                    break
+            boundary = safe_newlines[break_index]
+            parts.append(text[cursor:boundary])
+            cursor = boundary
+        if cursor < end:
+            parts.append(text[cursor:end])
+        return parts
+
     pending_parts: list[str] = []
     pending_chars = 0
     for start, end in spans:
@@ -475,7 +500,7 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                 chunks.append("".join(pending_parts))
                 pending_parts = []
                 pending_chars = 0
-            chunks.append(block)
+            chunks.extend(split_at_safe_newlines(start, end))
         else:
             pending_parts.append(block)
             pending_chars += len(block)
