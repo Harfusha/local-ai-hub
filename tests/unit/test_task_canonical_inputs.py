@@ -222,11 +222,15 @@ def test_task_action_contract_accepts_canonical_task_inputs_and_rejects_aliases(
 
 def test_benchmark_ignores_tool_schema_defaults_but_rejects_overrides():
     assert validate_operation_arguments("local_ai_task", "benchmark", {}) is None
+    assert validate_operation_arguments("local_ai_task", "benchmark", {"path": ""}) is None
     assert validate_operation_arguments("local_ai_task", "benchmark", {"audio_path": ""}) is None
     assert validate_operation_arguments("local_ai_task", "benchmark", {"cloud_fallback": False}) is None
     assert validate_operation_arguments("local_ai_task", "benchmark", {"complexity": "auto"}) is None
     assert validate_operation_arguments(
         "local_ai_task", "benchmark", {"audio_path": "clip.wav"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "benchmark", {"path": "clip.wav"},
     ) is not None
     assert validate_operation_arguments(
         "local_ai_task", "benchmark", {"cloud_fallback": True},

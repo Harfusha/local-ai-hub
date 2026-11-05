@@ -2739,6 +2739,7 @@ class RAGStore:
                 result = {
                     "success": True, "workspace": workspace, "results": [], "degraded": True,
                     "fallback": "embedding_backend", "reason": "generation_denied",
+                    "retrieval_mode": "semantic_only_unavailable",
                     "search_cache": {"hit": False, "coalesced": False},
                 }
             else:

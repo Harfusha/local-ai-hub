@@ -271,10 +271,14 @@ class AffinityScheduler:
         self._external_gpu_token = _read_external_reservation(self._external_gpu_path) if self._external_gpu_path else None
         self._external_gpu_owned = False
         self._external_gpu_generation: str | None = None
+        self._external_gpu_expiry_monotonic: float | None = None
         if self._external_gpu_store is not None:
             reservation = self._external_gpu_store.read()
             if reservation is not None and reservation.get("token_digest") == self._external_gpu_token:
                 self._external_gpu_generation = reservation.get("generation")
+                self._external_gpu_expiry_monotonic = time.monotonic() + max(
+                    0.0, float(reservation["expires_at"]) - time.time()
+                )
         self._internal_gpu_digest: str | None = None
         self._internal_gpu_uncertain = False
         self._gpu_prepare_in_progress = False
@@ -1030,21 +1034,31 @@ class AffinityScheduler:
             return True
         store = getattr(self, "_external_gpu_store", None)
         reaped = False
+        record = None
         if store is not None:
             try:
                 reaped = store.reap_expired()
+                record = store.read()
             except OSError:
                 return True
+            if (record is not None
+                    and record.get("generation") == getattr(self, "_external_gpu_generation", None)):
+                self._external_gpu_expiry_monotonic = time.monotonic() + max(
+                    0.0, float(record["expires_at"]) - time.time()
+                )
         path = getattr(self, "_external_gpu_path", None)
         current = _read_external_reservation(path) if path else None
         if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
             if current is not None:
                 return True
-            if not reaped:
+            expiry = getattr(self, "_external_gpu_expiry_monotonic", None)
+            expired_in_memory = expiry is not None and time.monotonic() >= expiry
+            if not reaped and not expired_in_memory:
                 return True
             self._external_gpu_token = None
             self._external_gpu_generation = None
             self._external_gpu_owned = False
+            self._external_gpu_expiry_monotonic = None
         if getattr(self, "_external_gpu_token", None):
             self._external_gpu_token = current
         owned = getattr(self, "_internal_gpu_digest", None)
@@ -1215,6 +1229,9 @@ class AffinityScheduler:
                 self._external_gpu_token = digest
                 self._external_gpu_generation = record["generation"]
                 self._external_gpu_owned = True
+                self._external_gpu_expiry_monotonic = time.monotonic() + float(
+                    getattr(store, "ttl_seconds", 900.0)
+                )
                 self._cond.notify_all()
                 return token
             try:
@@ -1231,6 +1248,7 @@ class AffinityScheduler:
                 return None
             self._external_gpu_token = digest
             self._external_gpu_owned = True
+            self._external_gpu_expiry_monotonic = time.monotonic() + 900.0
             self._cond.notify_all()
             return token
 
@@ -1256,6 +1274,7 @@ class AffinityScheduler:
                 self._external_gpu_token = None
                 self._external_gpu_generation = None
                 self._external_gpu_owned = False
+                self._external_gpu_expiry_monotonic = None
                 self._last_foreground_activity = time.monotonic()
                 self._cond.notify_all()
                 return True
@@ -1273,6 +1292,7 @@ class AffinityScheduler:
                         return False
             self._external_gpu_token = None
             self._external_gpu_owned = False
+            self._external_gpu_expiry_monotonic = None
             self._last_foreground_activity = time.monotonic()
             self._cond.notify_all()
             return True

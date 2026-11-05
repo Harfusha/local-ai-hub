@@ -54,7 +54,7 @@ class ExternalGpuReservationStore:
     def reap_expired(self) -> bool:
         with self._locked():
             record = self._read_unlocked()
-            if record is None or record["state"] != "idle" or record["expires_at"] > self._clock():
+            if record is None or record["expires_at"] > self._clock():
                 return False
             return self._remove_unlocked(record["generation"])
 
@@ -62,7 +62,7 @@ class ExternalGpuReservationStore:
         _validate_digest(digest)
         with self._locked():
             record = self._read_unlocked()
-            if record is not None and record["state"] == "idle" and record["expires_at"] <= self._clock():
+            if record is not None and record["expires_at"] <= self._clock():
                 self._remove_unlocked(record["generation"])
             if self.path.exists() or self.metadata_path.exists():
                 return False
@@ -96,9 +96,10 @@ class ExternalGpuReservationStore:
         with self._locked():
             current = self._read_unlocked()
             if current is not None:
-                if current["state"] != "idle" or current["expires_at"] > self._clock():
+                if current["expires_at"] > self._clock():
                     return None
-                self._remove_unlocked(current["generation"])
+                if not self._remove_unlocked(current["generation"]):
+                    return None
             elif self.path.exists() or self.metadata_path.exists():
                 # Legacy, malformed, symlinked, or partially committed state.
                 # Never infer that it is safe to erase.

@@ -2078,3 +2078,56 @@ Přesné disposable cesty, merge ancestry a hashe jsou v `docs/agent-evaluation/
 - Zdrojová diagnostika ukazuje cache hybridního kontextu v `services.py` přes `_repo_cached` a fingerprint `_repo_cache_state`. První pokus nárokovat lease skončil transportní chybou před odesláním (`req_272bfed2cc0f`), bez mutace; v následném kroku byla lease získána a připravena oprava níže.
 - Kandidátní oprava `services.py` ověřuje aktuálnost skutečných evidence ID před vrácením cachovaného kontextu; při zjištěném zastarání provede jeden nový výpočet a při nadále neověřitelné evidenci vrátí explicitní chybu `stale`. V prvním čerstvém sandboxu `...change-20261102-b` GPT-6 Luna zaznamenala `req_1ca351770c7c` a `req_4ca4c7f6c482`: změněný kontext obsahoval `revision=2` a změněná evidence nový souborový hash `ef11e25da0020bcea0a641d1ffe9768831670db3407ca2e3db0bd1485c89a94d`. Hash tří sledovaných zdrojů před/po zůstal shodný. Jedná se o živý izolovaný MCP průchod, nikoli celý Hub. Přesný request ID se však objevil jen uvnitř `delta.changed`, nikoli nahoře.
 - Navazující kandidátní oprava `mcp_server.py` vrací aktuální `request_id` na nejvyšší úrovni a nezahrnuje ho do obsahové delty. Cílená sada cache, retrieval a delta kontraktů: **51 passed**. Review `req_b7fc6a42f80a` mělo nesouvisející a neověřitelné výstupy. Nový izolovaný MCP běh `...change-20261102-c`: `req_c926cc7e8039`, `req_8a20293bdf1e`; změněný kontext obsahoval `revision=2`, `delta.changed.evidence` skutečný hash `ef11e25da0020bcea0a641d1ffe9768831670db3407ca2e3db0bd1485c89a94d` a druhý request ID byl nahoře mimo obsahovou deltu. Bez truncation, 1278 a 1258 tokenů. Hashe před/po shodné: `mcp_server.py` `153cc2d43424acc0fd1ba0d1558dbb119373cf4f417caa7b5db84f15dc752705`, `response_budget.py` `9abfd263524ddb8e903093bae2580022c8ffec21532af08afbc338ee8fb7dac8`, `services.py` `2c151a58738a4eaf9a4cc71f52cd6b4786635119d3e6f37ec5221fb5715a7e93`. **PASS pro tuto izolovanou změnu**, nikoli pro celou instalaci. Procesy sandboxů b a c byly zastaveny po kontrole identity.
+
+### GPU R1 sample — qwen3.5:9b-nvfp4, 2026-11-05
+
+- Run ID: `req_a318eb7e1277`
+- Agent host/model/reasoning: Local AI Hub `compress`; `qwen3.5:9b-nvfp4`; reasoning mode not reported
+- Hub build/process/config/state: Hub v5.1.3; supervisor PID 13008, Hub PID 35436; active profile and model digest not returned
+- Instructions revision: fixed R1 prompt from `docs/agent-evaluation/local-model-gpu-cases.md`; bounded task requested a cited regression and concrete example
+- Fixture revision/seed: N/A; synthetic diff only
+- Root, HEAD and initial dirty baseline: `C:\Users\Adam\.local-ai-hub`; no workspace files supplied to inference
+- Scope and allowed side effects: one read-only text review; no edits or tests
+- Start/end time and wall time: 2026-11-05; 4.2 s tool wall time
+- Tool calls and result identities: `local_ai_task(action="compress")`, request `req_a318eb7e1277`; success, 114 estimated input tokens, 43 output tokens
+- Evidence/artifact/receipt IDs: request `req_a318eb7e1277`; model digest unavailable
+- Agent result: **FAIL** — cited the changed line and noticed upper-bound exclusion, but gave `(0, 5, 5)` as `True` instead of the changed function's actual `False`; it did not correctly establish the regression with a valid before/after example
+- Hub result: PASS — inference returned successfully; semantic output remains advisory and unverified
+- Environment result: NOT_RUN — this compress call returned no GPU residency, VRAM, or latency telemetry
+- Unexpected or redundant calls: one preflight rejected `max_tokens=120` without starting inference; valid bounded call used 160
+- Critical safety issue: None; no edits or execution
+- Reproduction notes / follow-up: Repeat only in a paired, digest-bound fixed-case evaluation. Do not promote review or search-summary capability from this sample.
+
+### GPU fixed cases — qwen3.5:9b-nvfp4, 2026-11-05
+
+All three are single advisory `local_ai_task(action="compress")` samples. Hub v5.1.3 reported `qwen3.5:9b-nvfp4`; profile, digest, GPU counters and effective context were unavailable. These are qualitative samples only, not paired or promotion-grade evidence.
+
+- **R2 — PASS**, request `req_03b041fd4d9a`: no actionable regression found; accurately described the temporary variable replacement as behavior-preserving. No edits/tests.
+- **T1 — FAIL**, request `req_b46bd13acdb3`: summarized the clamp behavior but returned no input/expected-output pairs, which are required by the case. No edits/tests.
+- **D1 — FAIL**, request `req_2083487f3e67`: cited the three supplied evidence items but invented unsupported causes (missing `cache_dir` schema and required mount validation) and proposed inspecting a service manifest not grounded in the synthetic evidence. No edits/tests.
+
+Do not promote review, test suggestion, or failure diagnosis from these samples. Model digest, paired baseline and target GPU telemetry remain unavailable.
+
+### GPU warm sample and model identity — qwen3.5:9b-nvfp4, 2026-11-05
+
+- Installed tag identity: Ollama ID `646b3c2dbeba`; `ollama show --modelfile` reported blob SHA-256 `0db703913b6a1b057d423e9815095e9dc16499596a986446918314a48c4d9bad` and configured `num_ctx=32768`. The inference response named the tag but did not return its digest, so this local registry identity is not a request-bound digest receipt.
+- One warm `local_ai_task(action="hardware_benchmark")` sample completed on the reported RTX 5070 Ti: request `req_219f57899078`; load 2.66 ms; queue 5.79 ms; 6 generated tokens; generation 78.21 ms / 76.72 tokens/s; response field `ttft_ms=153.08` with `streaming=false` (full-call latency, not first-token latency); device-wide sampled peak 10,819,207,168 bytes; reported context 32,768; nominal VRAM pressure with 5,678 MiB headroom. Single sample only.
+- Nearby `nvidia-smi` snapshot: driver 621.01; 16,303 MiB total, 4,657 MiB used and 11,339 MiB free before the benchmark. Per-process memory was unavailable (`[N/A]`), so this snapshot does not attribute residency to the Hub or model.
+- Nineteen same-prompt follow-up requests returned `success=true` (IDs: `req_d725eb12bac9`, `req_da541bd865c4`, `req_c95f95c82d37`, `req_570d7b8bbc86`, `req_91bd9eec76d2`, `req_d4f392dfd719`, `req_f7f86c80e8bc`, `req_8aec58b3c58e`, `req_9b7492af4e84`, `req_1a1e3ec7d55d`, `req_ae6af42a678c`, `req_2c76053ed7e9`, `req_7ea11ed8e7f1`, `req_f8a416e70b60`, `req_6dd1176cd7f3`, `req_0f550faa9c35`, `req_9a2c567cde16`, `req_f62e8aa77770`, `req_c7225d5b5e7a`). The bounded result projection exposed only success and request IDs for these calls; their measurements are excluded. Therefore no 20-run 9B latency distribution is claimed.
+
+### RTX 5070 Ti warm repetition cohort — qwen3.5:9b-nvfp4, 2026-11-05
+
+- Prompt: `Return exactly this text: GPU-BENCHMARK-OK`; `max_tokens=40`; 20 sequential warm calls; Hub v5.1.3; model tag `qwen3.5:9b-nvfp4`; model blob SHA-256 resolved from local Ollama registry as `0db703913b6a1b057d423e9815095e9dc16499596a986446918314a48c4d9bad`, not included in the request response.
+- All 20 calls succeeded and reported 6 generated tokens. Nearest-rank P95: generation throughput min/median/P95/max **74.71/105.86/136.32/139.20 tokens/s**; full-call latency min/median/P95/max **86.94/117.15/216.39/323.09 ms**; queue wait **6.12/7.45/38.33/80.49 ms**; load duration **2.57/3.69/9.53/75.48 ms**. Responses were non-streaming, so the Hub's `ttft_ms` field is treated as full-call latency here.
+- Peak device-wide sampled VRAM ranged from 11,121,197,056 to 11,124,342,784 bytes; dynamic context stayed 32,768; pressure stayed nominal; reported headroom was 5,387–5,390 MiB. This measures a short 6-token prompt only; it does not establish long-context, concurrent, cold-start or attributable per-process residency behavior.
+- Request IDs: `req_25ad76b611d9`, `req_81554df8d598`, `req_d5779252bdef`, `req_006cfb028ccc`, `req_eca0b88ca9fe`, `req_33d680199ba3`, `req_0613ac30de65`, `req_97197368196b`, `req_7f42d909e04a`, `req_06fc1aa1f66f`, `req_2dc4104ccb4c`, `req_507834880162`, `req_1b9034155ee7`, `req_788ab247a325`, `req_8ac310b7fcff`, `req_0246b2158681`, `req_9b9a8b10b46a`, `req_a45b6532cec0`, `req_4cf7b912ff42`, `req_e7ceb3b36929`.
+- This is one short-prompt performance cohort, not a paired baseline or task-quality gate. It does not qualify 9B for a role or justify changing the high profile.
+
+### A1/A2 fixture preparation — 2026-11-05 — NOT_RUN
+
+- Created clean isolated fixtures outside the Hub checkout: A1 at `C:\Users\Adam\Documents\LocalAIHub-Eval-20261105\A1` (HEAD `aad38c580fd5851f4a7f9f951a99927ea32048fd`, fixture SHA-256 `868c9a8685b5fce105814538c0551b54ac44edbe5f18a310e0c14b9b6e2d859f`) and A2 at `C:\Users\Adam\Documents\LocalAIHub-Eval-20261105\A2` (HEAD `6e6482a04a3b319b47c2a62fa11dd7779527aea4`, fixture SHA-256 `9a99d2ce40d0106c0df8ba217cdda72db322e5e0f58979baad79591cda267ded`). Both started clean; neither contains `.local-ai.toml` or `.local-ai.worktree.toml`.
+- One preprocess registration per fixture succeeded but both were queued at inventory with zero files (`req_8211d3bb904c`, `req_1ba34d8ea539`). Do not poll asynchronous preprocessing.
+- Bounded `local_ai_repo search` returned terminal 413 with no result rows on both fixture roots, including limit 1 (`total_matches` was 2 for A1 and 3 for A2). No evidence IDs were produced. Exact source slices were available through `local_ai_artifact`, but that does not supply the indexed evidence IDs required by the fixed-case solve protocol.
+- A1 and A2 solve were **NOT_RUN**. No model output, quality score, or promotion claim. Resume only when the registered fixture has completed preprocessing and a fresh indexed search can supply authentic evidence IDs; do not retry or poll the current in-progress preprocessing calls.
+
+- Cleanup of the two unused initial `%TEMP%` fixture directories partially removed their generated source files but left hidden `.git\objects` directories. The explicit recursive `-Force` cleanup request was rejected by automatic approval review, so no further deletion or permission change was attempted. The two persistent Documents fixtures listed above remain clean and are the only fixtures retained for any future A1/A2 run.

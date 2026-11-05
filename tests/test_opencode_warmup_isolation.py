@@ -134,8 +134,11 @@ console.log(JSON.stringify(created));
         assert callers.get("callers"), callers
         with post("/api/rag/search", {"root": str(project.resolve()), "workspace": app.rag.workspace_id(str(project)), "query": "rare_symbol_abc"}, "opencode-local") as response:
             rag_result = json.load(response)
-        assert rag_result.get("retrieval_mode") == "lexical_fallback", rag_result
-        assert any(item.get("path") == "example.py" for item in rag_result.get("results", []))
+        assert rag_result.get("retrieval_mode") == "semantic_only_unavailable", rag_result
+        assert rag_result.get("degraded") is True
+        assert rag_result.get("fallback") == "embedding_backend"
+        assert rag_result.get("reason") == "generation_denied"
+        assert rag_result.get("results") == []
         with post("/api/agent-state/memory", {"action": "record", "root": str(project.resolve()), "scope": "repository", "key": "probe-key", "value": "probe-value"}, "opencode-local") as response:
             assert json.load(response).get("success") is True
         with post("/api/agent-state/memory", {"action": "find", "root": str(project.resolve()), "query": "probe-value", "limit": 5}, "opencode-local") as response:

@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check`.
-<!-- coverage-task-id:  -->
+Reproduce with `python tools/surface_inventory.py --check --task-id task_524dd92de739`.
+<!-- coverage-task-id: task_524dd92de739 -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -11,8 +11,8 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP tool | local_ai_rag | confirmed | src/local_ai_hub/mcp_server.py | op-df42c60cdaf5 |
 | MCP tool | local_ai_repo | confirmed | src/local_ai_hub/mcp_server.py | op-17700f5f21fd |
 | MCP tool | local_ai_status | confirmed | src/local_ai_hub/mcp_server.py | op-0faf51b51ecf |
-| MCP tool | local_ai_task | conditional | src/local_ai_hub/mcp_server.py | op-7a23fcfac359 |
-| MCP tool | local_ai_work | conditional | src/local_ai_hub/mcp_server.py | op-03c0d96ee7cf |
+| MCP tool | local_ai_task | confirmed | src/local_ai_hub/mcp_server.py | op-7a23fcfac359 |
+| MCP tool | local_ai_work | confirmed | src/local_ai_hub/mcp_server.py | op-03c0d96ee7cf |
 | HTTP GET | / | conditional | src/local_ai_hub/http_server.py | op-800251923dac |
 | HTTP GET | /api/adoption | confirmed | src/local_ai_hub/http_server.py | op-d7a085a0f07e |
 | HTTP GET | /api/agent-state/ | confirmed | src/local_ai_hub/http_server.py | op-d736c2ec2b2e |
@@ -75,6 +75,7 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP GET | /api/security_audit | conditional | src/local_ai_hub/http_server.py | op-6480e3fe705e |
 | HTTP GET | /api/status | confirmed | src/local_ai_hub/http_server.py | op-8a8e65599b16 |
 | HTTP GET | /api/symbol_callgraph | conditional | src/local_ai_hub/http_server.py | op-0af87238df50 |
+| HTTP GET | /api/telemetry/endpoint-stats | confirmed | src/local_ai_hub/http_server.py | op-3150bec23369 |
 | HTTP GET | /api/telemetry/report | confirmed | src/local_ai_hub/http_server.py | op-ff27e5f93735 |
 | HTTP GET | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-d7ed59a7d1a4 |
 | HTTP GET | /api/test_matrix | conditional | src/local_ai_hub/http_server.py | op-7e21dfa39869 |
@@ -144,6 +145,20 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP POST | /api/coord/board_summary | confirmed | src/local_ai_hub/http_server.py | op-5a61848f0a31 |
 | HTTP POST | /api/coord/milestone_create | confirmed | src/local_ai_hub/http_server.py | op-7c145ce4d429 |
 | HTTP POST | /api/coord/milestone_status | confirmed | src/local_ai_hub/http_server.py | op-165b4dd1e233 |
+| HTTP POST | /api/coord/plan_ | confirmed | src/local_ai_hub/http_server.py | op-0be3b71c9a73 |
+| HTTP POST | /api/coord/plan_adopt_legacy_board | confirmed | src/local_ai_hub/http_server.py | op-45c9226f9570 |
+| HTTP POST | /api/coord/plan_archive | confirmed | src/local_ai_hub/http_server.py | op-bb950955847d |
+| HTTP POST | /api/coord/plan_bind_task | confirmed | src/local_ai_hub/http_server.py | op-592b47089a48 |
+| HTTP POST | /api/coord/plan_board_view | confirmed | src/local_ai_hub/http_server.py | op-cc4751eaaedc |
+| HTTP POST | /api/coord/plan_create | confirmed | src/local_ai_hub/http_server.py | op-080832b609b3 |
+| HTTP POST | /api/coord/plan_get | confirmed | src/local_ai_hub/http_server.py | op-7fa47e6cac96 |
+| HTTP POST | /api/coord/plan_init | confirmed | src/local_ai_hub/http_server.py | op-695322fff611 |
+| HTTP POST | /api/coord/plan_list | confirmed | src/local_ai_hub/http_server.py | op-21eff1981008 |
+| HTTP POST | /api/coord/plan_reconcile_steering | confirmed | src/local_ai_hub/http_server.py | op-f96eea8919d1 |
+| HTTP POST | /api/coord/plan_task_delete | confirmed | src/local_ai_hub/http_server.py | op-49f2741f45b9 |
+| HTTP POST | /api/coord/plan_task_edit | confirmed | src/local_ai_hub/http_server.py | op-b36d3fa9b58a |
+| HTTP POST | /api/coord/plan_update | confirmed | src/local_ai_hub/http_server.py | op-916717d1c007 |
+| HTTP POST | /api/coord/plan_validate | confirmed | src/local_ai_hub/http_server.py | op-2ae25d8b8299 |
 | HTTP POST | /api/coord/pubsub_poll | confirmed | src/local_ai_hub/http_server.py | op-db9bf332043e |
 | HTTP POST | /api/coord/pubsub_publish | confirmed | src/local_ai_hub/http_server.py | op-746da2e62465 |
 | HTTP POST | /api/coord/semaphore_acquire | confirmed | src/local_ai_hub/http_server.py | op-2d36eca70e8b |
@@ -187,6 +202,10 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP POST | /api/memory/put | confirmed | src/local_ai_hub/http_server.py | op-44a091a9353f |
 | HTTP POST | /api/memory/search | confirmed | src/local_ai_hub/http_server.py | op-30f4c47cd58f |
 | HTTP POST | /api/models/manage | confirmed | src/local_ai_hub/http_server.py | op-5b6baefe1fcd |
+| HTTP POST | /api/opencode/provider/start | confirmed | src/local_ai_hub/http_server.py | op-d24afa083b27 |
+| HTTP POST | /api/opencode/provider/status | confirmed | src/local_ai_hub/http_server.py | op-346ee1ffcc57 |
+| HTTP POST | /api/opencode/provider/stop | confirmed | src/local_ai_hub/http_server.py | op-0a0726f09405 |
+| HTTP POST | /api/opencode/provider/wait | confirmed | src/local_ai_hub/http_server.py | op-19c4cbf0a78f |
 | HTTP POST | /api/patch/validate | confirmed | src/local_ai_hub/http_server.py | op-032c78505fe5 |
 | HTTP POST | /api/preprocess | confirmed | src/local_ai_hub/http_server.py | op-4318c2dfdc9c |
 | HTTP POST | /api/query/expand | confirmed | src/local_ai_hub/http_server.py | op-f2e4b1cd8a58 |
@@ -264,6 +283,7 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP POST | /api/task/speculative_draft | confirmed | src/local_ai_hub/http_server.py | op-63d4015d6f27 |
 | HTTP POST | /api/task/transcribe | confirmed | src/local_ai_hub/http_server.py | op-65970ac00a0a |
 | HTTP POST | /api/task/vision | confirmed | src/local_ai_hub/http_server.py | op-27447492b0ba |
+| HTTP POST | /api/telemetry/endpoint-stats/reset | confirmed | src/local_ai_hub/http_server.py | op-58d8b1b6a190 |
 | HTTP POST | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-e7c38a4c7425 |
 | HTTP POST | /api/telemetry/tool-accounting | confirmed | src/local_ai_hub/http_server.py | op-04438ec90d60 |
 | HTTP POST | /api/test_matrix | confirmed | src/local_ai_hub/http_server.py | op-1321702d7984 |
@@ -290,18 +310,32 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_coord | claim | confirmed | src/local_ai_hub/generator.py | op-d75292991551 |
 | MCP action local_ai_coord | context_compile | confirmed | src/local_ai_hub/generator.py | op-145b6332056b |
 | MCP action local_ai_coord | curate_dataset | confirmed | src/local_ai_hub/generator.py | op-26aa09a9ccbf |
+| MCP action local_ai_coord | gpu_reservation_release | confirmed | src/local_ai_hub/generator.py | op-1fdbae158826 |
+| MCP action local_ai_coord | gpu_reservation_status | confirmed | src/local_ai_hub/generator.py | op-d5a8988b2135 |
 | MCP action local_ai_coord | incident_decision | confirmed | src/local_ai_hub/generator.py | op-0d8149da9907 |
 | MCP action local_ai_coord | leases | confirmed | src/local_ai_hub/generator.py | op-10fac56595f4 |
 | MCP action local_ai_coord | memory_delete | confirmed | src/local_ai_hub/generator.py | op-ffe070fa4b4c |
 | MCP action local_ai_coord | memory_find | confirmed | src/local_ai_hub/generator.py | op-0a673cc2e7e9 |
 | MCP action local_ai_coord | memory_get | confirmed | src/local_ai_hub/generator.py | op-4c0cbfa154c1 |
-| MCP action local_ai_coord | memory_list | confirmed | src/local_ai_hub/generator.py | op-bef493764945 |
 | MCP action local_ai_coord | memory_promote | confirmed | src/local_ai_hub/generator.py | op-b0904bf92e19 |
 | MCP action local_ai_coord | memory_record | confirmed | src/local_ai_hub/generator.py | op-90b617e52e5c |
 | MCP action local_ai_coord | milestone_create | confirmed | src/local_ai_hub/generator.py | op-3454b306aef2 |
 | MCP action local_ai_coord | milestone_status | confirmed | src/local_ai_hub/generator.py | op-4b39a57d88d3 |
 | MCP action local_ai_coord | negative_knowledge_find | confirmed | src/local_ai_hub/generator.py | op-d40ecfa5c1c9 |
 | MCP action local_ai_coord | negative_knowledge_record | confirmed | src/local_ai_hub/generator.py | op-e7f297ebbc4d |
+| MCP action local_ai_coord | plan_adopt_legacy_board | confirmed | src/local_ai_hub/generator.py | op-14bb9ab09b15 |
+| MCP action local_ai_coord | plan_archive | confirmed | src/local_ai_hub/generator.py | op-cab729821b3e |
+| MCP action local_ai_coord | plan_bind_task | confirmed | src/local_ai_hub/generator.py | op-f722d32ece3d |
+| MCP action local_ai_coord | plan_board_view | confirmed | src/local_ai_hub/generator.py | op-89489a592e6d |
+| MCP action local_ai_coord | plan_create | confirmed | src/local_ai_hub/generator.py | op-2f4983dc9637 |
+| MCP action local_ai_coord | plan_get | confirmed | src/local_ai_hub/generator.py | op-4f7daec25a36 |
+| MCP action local_ai_coord | plan_init | confirmed | src/local_ai_hub/generator.py | op-dcca572eda5f |
+| MCP action local_ai_coord | plan_list | confirmed | src/local_ai_hub/generator.py | op-472cd3883c92 |
+| MCP action local_ai_coord | plan_reconcile_steering | confirmed | src/local_ai_hub/generator.py | op-7f1dd1dc3bb0 |
+| MCP action local_ai_coord | plan_task_delete | confirmed | src/local_ai_hub/generator.py | op-2bc96d0f58e6 |
+| MCP action local_ai_coord | plan_task_edit | confirmed | src/local_ai_hub/generator.py | op-d3994e4c1104 |
+| MCP action local_ai_coord | plan_update | confirmed | src/local_ai_hub/generator.py | op-a8f296f7c117 |
+| MCP action local_ai_coord | plan_validate | confirmed | src/local_ai_hub/generator.py | op-c195f364fed0 |
 | MCP action local_ai_coord | pubsub_poll | confirmed | src/local_ai_hub/generator.py | op-2a393f87a6eb |
 | MCP action local_ai_coord | pubsub_publish | confirmed | src/local_ai_hub/generator.py | op-436f8605eb22 |
 | MCP action local_ai_coord | record_native_receipt | confirmed | src/local_ai_hub/generator.py | op-0dec4fbceef6 |
@@ -327,11 +361,11 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_coord | task_get | confirmed | src/local_ai_hub/generator.py | op-bd20e27acd1a |
 | MCP action local_ai_coord | task_heartbeat | confirmed | src/local_ai_hub/generator.py | op-a0abff80393c |
 | MCP action local_ai_coord | task_list | confirmed | src/local_ai_hub/generator.py | op-8151f0572cf1 |
+| MCP action local_ai_coord | task_repair_session | confirmed | src/local_ai_hub/generator.py | op-bc5de5026a21 |
 | MCP action local_ai_coord | task_resume | confirmed | src/local_ai_hub/generator.py | op-58eeef28cc8a |
 | MCP action local_ai_coord | task_rollback | confirmed | src/local_ai_hub/generator.py | op-28d63e90525c |
 | MCP action local_ai_coord | task_sync | confirmed | src/local_ai_hub/generator.py | op-2369ca3978a2 |
 | MCP action local_ai_coord | task_transition | confirmed | src/local_ai_hub/generator.py | op-40714898d9dc |
-| MCP action local_ai_coord | task_update | confirmed | src/local_ai_hub/generator.py | op-96fc7a9807dd |
 | MCP action local_ai_coord | task_zombie_reap | confirmed | src/local_ai_hub/generator.py | op-12f589687cee |
 | MCP action local_ai_coord | verify_completion | confirmed | src/local_ai_hub/generator.py | op-ce3412a5a09a |
 | MCP action local_ai_coord | verify_export | confirmed | src/local_ai_hub/generator.py | op-5b7da10041a2 |
@@ -342,15 +376,10 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_rag | docset_index | confirmed | src/local_ai_hub/generator.py | op-56fa3d2b5426 |
 | MCP action local_ai_rag | docset_search | confirmed | src/local_ai_hub/generator.py | op-296b3132f53e |
 | MCP action local_ai_rag | index | confirmed | src/local_ai_hub/generator.py | op-4744c4d9beff |
-| MCP action local_ai_rag | index_docset | confirmed | src/local_ai_hub/generator.py | op-19d8ca7678fe |
-| MCP action local_ai_rag | ingest | confirmed | src/local_ai_hub/generator.py | op-a472d2a4125d |
 | MCP action local_ai_rag | ingest_diagram | confirmed | src/local_ai_hub/generator.py | op-a498de320401 |
-| MCP action local_ai_rag | ingest_doc | confirmed | src/local_ai_hub/generator.py | op-730366b8d9da |
 | MCP action local_ai_rag | ingest_document | confirmed | src/local_ai_hub/generator.py | op-16a7dbf63dba |
 | MCP action local_ai_rag | list | confirmed | src/local_ai_hub/generator.py | op-b2b613c22314 |
-| MCP action local_ai_rag | query | confirmed | src/local_ai_hub/generator.py | op-2b08b6884979 |
 | MCP action local_ai_rag | search | confirmed | src/local_ai_hub/generator.py | op-d2a8a2919302 |
-| MCP action local_ai_rag | search_docset | confirmed | src/local_ai_hub/generator.py | op-1ad6f5f89b71 |
 | MCP action local_ai_repo | affected_tests | confirmed | src/local_ai_hub/generator.py | op-2ba38125ca09 |
 | MCP action local_ai_repo | api_spec | confirmed | src/local_ai_hub/generator.py | op-ce603c89ab68 |
 | MCP action local_ai_repo | ast_outline | confirmed | src/local_ai_hub/generator.py | op-7cd8d96208cc |
@@ -375,7 +404,6 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_repo | dead_code | confirmed | src/local_ai_hub/generator.py | op-ad77f70411ee |
 | MCP action local_ai_repo | declaration | confirmed | src/local_ai_hub/generator.py | op-30232bb73a3f |
 | MCP action local_ai_repo | definition | confirmed | src/local_ai_hub/generator.py | op-a1eeb3d901a1 |
-| MCP action local_ai_repo | delegate | confirmed | src/local_ai_hub/generator.py | op-45794746f756 |
 | MCP action local_ai_repo | dependency_slice | confirmed | src/local_ai_hub/generator.py | op-e630a70c8f9f |
 | MCP action local_ai_repo | deterministic | confirmed | src/local_ai_hub/generator.py | op-8deb0567f819 |
 | MCP action local_ai_repo | diagnose | confirmed | src/local_ai_hub/generator.py | op-655fc75fc2bb |
@@ -423,7 +451,6 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_repo | repo_state | confirmed | src/local_ai_hub/generator.py | op-01cf5e21142a |
 | MCP action local_ai_repo | resolve_imports | confirmed | src/local_ai_hub/generator.py | op-c05e4e00c6b6 |
 | MCP action local_ai_repo | revert | confirmed | src/local_ai_hub/generator.py | op-819b235e2895 |
-| MCP action local_ai_repo | review_diff | confirmed | src/local_ai_hub/generator.py | op-44ef3f8ca9f6 |
 | MCP action local_ai_repo | route | confirmed | src/local_ai_hub/generator.py | op-7708e75ee0b4 |
 | MCP action local_ai_repo | schema_inspect | confirmed | src/local_ai_hub/generator.py | op-0da69bc2fc91 |
 | MCP action local_ai_repo | search | confirmed | src/local_ai_hub/generator.py | op-e496067d5e8b |
@@ -432,7 +459,6 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_repo | semantic | confirmed | src/local_ai_hub/generator.py | op-b90bf404c7ba |
 | MCP action local_ai_repo | semantic_diff | confirmed | src/local_ai_hub/generator.py | op-9744eeb7c3cb |
 | MCP action local_ai_repo | skeletonize | confirmed | src/local_ai_hub/generator.py | op-0a444fa448c5 |
-| MCP action local_ai_repo | solve | confirmed | src/local_ai_hub/generator.py | op-df1164507eed |
 | MCP action local_ai_repo | source | confirmed | src/local_ai_hub/generator.py | op-6e23a8795056 |
 | MCP action local_ai_repo | split_changes | confirmed | src/local_ai_hub/generator.py | op-929bf5e6106e |
 | MCP action local_ai_repo | stat | confirmed | src/local_ai_hub/generator.py | op-60b4c5d10ca7 |
@@ -445,11 +471,34 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action local_ai_repo | validate_patch | confirmed | src/local_ai_hub/generator.py | op-76faf5a7f4dd |
 | MCP action local_ai_repo | verify | confirmed | src/local_ai_hub/generator.py | op-e0622f29d5f6 |
 | MCP action local_ai_status | brief | confirmed | src/local_ai_hub/generator.py | op-1f98c119cb01 |
-| MCP action local_ai_status | models | confirmed | src/local_ai_hub/generator.py | op-5c90871547f6 |
+| MCP action local_ai_task | benchmark | confirmed | src/local_ai_hub/generator.py | op-0d9ce8635659 |
+| MCP action local_ai_task | browser | confirmed | src/local_ai_hub/generator.py | op-a7500c19b6e6 |
+| MCP action local_ai_task | cancel | confirmed | src/local_ai_hub/generator.py | op-fa58799428e7 |
+| MCP action local_ai_task | candidate_create | confirmed | src/local_ai_hub/generator.py | op-5f0b50b0f4a9 |
+| MCP action local_ai_task | candidate_promote | confirmed | src/local_ai_hub/generator.py | op-4646d94d6e07 |
+| MCP action local_ai_task | compress | confirmed | src/local_ai_hub/generator.py | op-209b5b5b584d |
+| MCP action local_ai_task | eval_drift | confirmed | src/local_ai_hub/generator.py | op-833e41bdc8f0 |
+| MCP action local_ai_task | eval_suite | confirmed | src/local_ai_hub/generator.py | op-011366011a98 |
+| MCP action local_ai_task | evaluation_record | confirmed | src/local_ai_hub/generator.py | op-932088270157 |
+| MCP action local_ai_task | evaluation_report | confirmed | src/local_ai_hub/generator.py | op-3d10ee801ee9 |
+| MCP action local_ai_task | hardware_benchmark | confirmed | src/local_ai_hub/generator.py | op-b84c26a2ea94 |
+| MCP action local_ai_task | prompt_eval | confirmed | src/local_ai_hub/generator.py | op-13c56e3873a6 |
+| MCP action local_ai_task | result | confirmed | src/local_ai_hub/generator.py | op-3740af3ef793 |
+| MCP action local_ai_task | route | confirmed | src/local_ai_hub/generator.py | op-005760305b61 |
+| MCP action local_ai_task | status | confirmed | src/local_ai_hub/generator.py | op-0b9eb652b3a7 |
+| MCP action local_ai_task | transcribe | confirmed | src/local_ai_hub/generator.py | op-a8ba8677d958 |
+| MCP action local_ai_task | wait | confirmed | src/local_ai_hub/generator.py | op-5fe390a066fe |
+| MCP action local_ai_work | cancel | confirmed | src/local_ai_hub/generator.py | op-de07a6a58a3f |
+| MCP action local_ai_work | continue | confirmed | src/local_ai_hub/generator.py | op-5de5d71ae275 |
+| MCP action local_ai_work | get | confirmed | src/local_ai_hub/generator.py | op-1efe4aa90938 |
+| MCP action local_ai_work | status | confirmed | src/local_ai_hub/generator.py | op-3acb31e4fc5b |
+| MCP action local_ai_work | wait | confirmed | src/local_ai_hub/generator.py | op-ca22142c0f79 |
+| MCP action schema gap local_ai_coord |  | confirmed | src/local_ai_hub/mcp_server.py | op-6d567ad7dccd |
 | MCP action schema gap local_ai_coord | delete | confirmed | src/local_ai_hub/mcp_server.py | op-b0d3c8bd69ad |
 | MCP action schema gap local_ai_coord | get | confirmed | src/local_ai_hub/mcp_server.py | op-9205ce46f2ca |
 | MCP action schema gap local_ai_coord | list | confirmed | src/local_ai_hub/mcp_server.py | op-b1cb625a2e0c |
 | MCP action schema gap local_ai_coord | local_ai_coord | confirmed | src/local_ai_hub/mcp_server.py | op-34677482e869 |
+| MCP action schema gap local_ai_coord | markdown | confirmed | src/local_ai_hub/mcp_server.py | op-980db1e41c65 |
 | MCP action schema gap local_ai_coord | memory_reap | confirmed | src/local_ai_hub/mcp_server.py | op-6b44ba5235e0 |
 | MCP action schema gap local_ai_coord | merge | confirmed | src/local_ai_hub/mcp_server.py | op-4ae1b9fe51e3 |
 | MCP action schema gap local_ai_coord | relation_find | confirmed | src/local_ai_hub/mcp_server.py | op-b1cf01dbfd56 |
@@ -457,19 +506,29 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | MCP action schema gap local_ai_coord | relation_traverse | confirmed | src/local_ai_hub/mcp_server.py | op-4788e51bcd53 |
 | MCP action schema gap local_ai_coord | task_adopt | confirmed | src/local_ai_hub/mcp_server.py | op-0d77dc6fe2ff |
 | MCP action schema gap local_ai_coord | update | confirmed | src/local_ai_hub/mcp_server.py | op-7895aef1d660 |
-| MCP action schema gap local_ai_rag | find | confirmed | src/local_ai_hub/mcp_server.py | op-6f206f353cb8 |
-| MCP action schema gap local_ai_rag | lookup | confirmed | src/local_ai_hub/mcp_server.py | op-4d748ff7eb12 |
-| MCP action schema gap local_ai_rag | retrieve | confirmed | src/local_ai_hub/mcp_server.py | op-2bc8a4f550e6 |
+| MCP action schema gap local_ai_repo | delegate | confirmed | src/local_ai_hub/mcp_server.py | op-f4fd3aad1a27 |
 | MCP action schema gap local_ai_repo | local_ai_repo | confirmed | src/local_ai_hub/mcp_server.py | op-4ba9ed44d182 |
+| MCP action schema gap local_ai_repo | review_diff | confirmed | src/local_ai_hub/mcp_server.py | op-cfb8fcdce2fc |
 | MCP action schema gap local_ai_repo | serena | confirmed | src/local_ai_hub/mcp_server.py | op-dcd134194c84 |
+| MCP action schema gap local_ai_repo | solve | confirmed | src/local_ai_hub/mcp_server.py | op-ebcea62af0a0 |
 | MCP action schema gap local_ai_repo | status | confirmed | src/local_ai_hub/mcp_server.py | op-c549366190ee |
 | MCP action schema gap local_ai_repo | symbol | confirmed | src/local_ai_hub/mcp_server.py | op-9338a25b094f |
-| MCP action schema gap local_ai_status | check | confirmed | src/local_ai_hub/mcp_server.py | op-bb70a1d9c30b |
-| MCP action schema gap local_ai_status | health | confirmed | src/local_ai_hub/mcp_server.py | op-fef1ba551941 |
-| MCP action schema gap local_ai_status | ping | confirmed | src/local_ai_hub/mcp_server.py | op-efafadc222f1 |
-| MCP action schema gap local_ai_status | status | confirmed | src/local_ai_hub/mcp_server.py | op-f47ee1714a32 |
+| MCP action schema gap local_ai_task | automation | confirmed | src/local_ai_hub/mcp_server.py | op-854485be6312 |
+| MCP action schema gap local_ai_task | batch | confirmed | src/local_ai_hub/mcp_server.py | op-27b3cb5c8155 |
+| MCP action schema gap local_ai_task | complete_code | confirmed | src/local_ai_hub/mcp_server.py | op-d0639a668760 |
+| MCP action schema gap local_ai_task | continue | confirmed | src/local_ai_hub/mcp_server.py | op-d55c46959daf |
+| MCP action schema gap local_ai_task | delegate | confirmed | src/local_ai_hub/mcp_server.py | op-ae67c7526dac |
+| MCP action schema gap local_ai_task | explore | confirmed | src/local_ai_hub/mcp_server.py | op-cb0f82c16107 |
+| MCP action schema gap local_ai_task | local_ai_task | confirmed | src/local_ai_hub/mcp_server.py | op-68d58d64538a |
+| MCP action schema gap local_ai_task | reason | confirmed | src/local_ai_hub/mcp_server.py | op-b0e080d20eb5 |
+| MCP action schema gap local_ai_task | review | confirmed | src/local_ai_hub/mcp_server.py | op-09c9bcb73f36 |
+| MCP action schema gap local_ai_task | scaffold | confirmed | src/local_ai_hub/mcp_server.py | op-be740230a7ce |
+| MCP action schema gap local_ai_task | second_opinion | confirmed | src/local_ai_hub/mcp_server.py | op-ef1b030e51a7 |
+| MCP action schema gap local_ai_task | speculative_draft | confirmed | src/local_ai_hub/mcp_server.py | op-0daa8dd4907a |
+| MCP action schema gap local_ai_task | submit | confirmed | src/local_ai_hub/mcp_server.py | op-d502c94998f0 |
+| MCP action schema gap local_ai_task | vision | confirmed | src/local_ai_hub/mcp_server.py | op-c9f3461fa162 |
+| MCP action schema gap local_ai_work | submit | confirmed | src/local_ai_hub/mcp_server.py | op-3ad3e3e98395 |
 | MCP detail local_ai_status | brief | confirmed | src/local_ai_hub/generator.py | op-54d83bfd1ae2 |
-| MCP detail local_ai_status | models | confirmed | src/local_ai_hub/generator.py | op-8fd283193e39 |
 | HubClient method | __init__ | confirmed | src/local_ai_hub/client.py | op-d7a30147c276 |
 | HubClient method | _drop_connection | confirmed | src/local_ai_hub/client.py | op-cf96fd285a5f |
 | HubClient method | close | confirmed | src/local_ai_hub/client.py | op-13bba1f972b1 |
@@ -497,6 +556,19 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HubClient method | callers | confirmed | src/local_ai_hub/client.py | op-2b384e8007ab |
 | HubClient method | context_pack | confirmed | src/local_ai_hub/client.py | op-aaed12ba09d3 |
 | HubClient method | coord | confirmed | src/local_ai_hub/client.py | op-0306eebe19d1 |
+| HubClient method | plan_init | confirmed | src/local_ai_hub/client.py | op-c135bb6ce807 |
+| HubClient method | list_plans | confirmed | src/local_ai_hub/client.py | op-97f89e302338 |
+| HubClient method | get_plan | confirmed | src/local_ai_hub/client.py | op-99ed4f9715d3 |
+| HubClient method | create_plan | confirmed | src/local_ai_hub/client.py | op-31f5fbac98f9 |
+| HubClient method | update_plan | confirmed | src/local_ai_hub/client.py | op-3ee2df93dba7 |
+| HubClient method | edit_plan_task | confirmed | src/local_ai_hub/client.py | op-f6a37846f091 |
+| HubClient method | delete_plan_task | confirmed | src/local_ai_hub/client.py | op-51948ffd4c00 |
+| HubClient method | validate_plan | confirmed | src/local_ai_hub/client.py | op-c97b42877aa6 |
+| HubClient method | archive_plan | confirmed | src/local_ai_hub/client.py | op-6d04ed7d5f3e |
+| HubClient method | get_plan_board_view | confirmed | src/local_ai_hub/client.py | op-800a3ce9f149 |
+| HubClient method | adopt_legacy_board | confirmed | src/local_ai_hub/client.py | op-5571ff121b64 |
+| HubClient method | bind_plan_task | confirmed | src/local_ai_hub/client.py | op-9b3b7aa206a0 |
+| HubClient method | reconcile_plan_steering | confirmed | src/local_ai_hub/client.py | op-92f52f234946 |
 | HubClient method | context_compile | confirmed | src/local_ai_hub/client.py | op-8d57b4edf360 |
 | HubClient method | get_evidence | confirmed | src/local_ai_hub/client.py | op-0acbe06866f5 |
 | HubClient method | verify_receipt | confirmed | src/local_ai_hub/client.py | op-25d7b33175c7 |
@@ -574,6 +646,7 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HubClient target | POST /api/coord/milestone_create | confirmed | src/local_ai_hub/client.py | op-2770a5aec493 |
 | HubClient target | POST /api/coord/milestone_status | confirmed | src/local_ai_hub/client.py | op-66bc6db59be6 |
 | HubClient target | POST /api/coord/session_briefing | confirmed | src/local_ai_hub/client.py | op-9d43851f7ed3 |
+| HubClient target | POST /api/coord/{act} | conditional | src/local_ai_hub/client.py | op-8111a56ae0d5 |
 | HubClient target | POST /api/agent-state/context | confirmed | src/local_ai_hub/client.py | op-78996094a2da |
 | HubClient target | POST /api/evidence/get | confirmed | src/local_ai_hub/client.py | op-e2cfd2b35745 |
 | HubClient target | POST /api/agent-state/verification | confirmed | src/local_ai_hub/client.py | op-601c61cd374a |
@@ -621,7 +694,9 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | CLI operation | logs | confirmed | tools/hubctl.py | op-7a6e42f71891 |
 | CLI operation | memory | confirmed | tools/hubctl.py | op-ee8a4e3836f2 |
 | CLI operation | mode | confirmed | tools/hubctl.py | op-9dc37e51eae5 |
+| CLI operation | opencode | confirmed | tools/hubctl.py | op-a17bf057f2c5 |
 | CLI operation | pause | confirmed | tools/hubctl.py | op-ad185fd1da6f |
+| CLI operation | plans | confirmed | tools/hubctl.py | op-432acf5a87c8 |
 | CLI operation | restart | confirmed | tools/hubctl.py | op-ce45818ace8e |
 | CLI operation | resume | confirmed | tools/hubctl.py | op-647c5bcf0f71 |
 | CLI operation | service-status | confirmed | tools/hubctl.py | op-533e550f0c3e |

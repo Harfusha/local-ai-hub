@@ -444,6 +444,7 @@ def test_graph_edge_found_requires_true_positive_edges() -> None:
 
 
 def test_synthetic_repository_declares_pytest_for_affected_test_selection(tmp_path: Path) -> None:
+    from local_ai_hub.code_index import CodeIndex
     from local_ai_hub.deterministic import DeterministicEngine
     from local_ai_hub.repo_tools import RepositoryTools
 
@@ -451,8 +452,17 @@ def test_synthetic_repository_declares_pytest_for_affected_test_selection(tmp_pa
         tmp_path, file_count=1, rag_chunks=1,
     )
     config = {"server": {"state_dir": str(tmp_path / "state")}}
-    engine = DeterministicEngine(config, RepositoryTools(config))
     root = tmp_path / "repo"
+    repo_tools = RepositoryTools(config)
+    code_index = CodeIndex(config, repo_tools)
+    indexed = code_index.update_files_batch(str(root), [
+        *[path.relative_to(root).as_posix() for path in files],
+        test_path.relative_to(root).as_posix(),
+        "pytest.ini",
+    ])
+    assert indexed["success"] is True
+    engine = DeterministicEngine(config, repo_tools)
+    engine.code_index = code_index
     result = engine.affected_tests(
         str(root), changed_paths=[files[0].relative_to(root).as_posix()],
     )

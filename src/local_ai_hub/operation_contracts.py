@@ -363,6 +363,7 @@ _REPO_CONDITIONS = {
 _ACTION_SCOPED_FIELDS = {
     "local_ai_status": {},
     "local_ai_task": {
+        "path": frozenset(),
         "automation": frozenset({"automation"}),
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),

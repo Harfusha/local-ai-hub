@@ -1756,9 +1756,18 @@ class RepositoryTools:
                 configured_state_relative = None
 
         matching_relpaths: set[str] | None = None
-        if self.use_ripgrep and self._rg and terms:
+        # Ripgrep's command below has a fixed 16-term limit and uses its own
+        # Unicode case folding. Only trust it as an exhaustive candidate source
+        # when Python's exact matcher will inspect the same bounded ASCII terms.
+        ripgrep_candidates_complete = (
+            bool(terms)
+            and len(terms) <= 16
+            and phrase.isascii()
+            and all(term.isascii() for term in terms)
+        )
+        if self.use_ripgrep and self._rg and ripgrep_candidates_complete:
             rg_cmd = [
-                self._rg, "--glob-case-insensitive", "--files-with-matches",
+                self._rg, "--glob-case-insensitive", "--files-with-matches", "--text",
                 "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore",
                 "--no-messages", "-g", "!.git/**",
             ]
@@ -1928,6 +1937,9 @@ class RepositoryTools:
             def raise_walk_error(error: OSError) -> None:
                 raise error
 
+            # Without a Git inventory, a successful complete ripgrep pass is
+            # authoritative for file contents. Git roots keep their inventory
+            # contract above; this accelerator only avoids a filesystem walk.
             if matching_relpaths is not None:
                 forced_inventory: set[str] = set()
                 for forced_path in self._expand_project_force_paths(
@@ -1967,9 +1979,13 @@ class RepositoryTools:
                     cached_priority = path_priority(relative) if path_priority else (0, 0, 0)
                     priority_path = relative
                 priority = cached_priority
-                self.rank = (
+                score_rank = (
                     *priority, -float(item["score"]),
                     str(item["path"]), int(item["start_line"]),
+                )
+                self.rank = (
+                    (int(item.get("path_hit_ordinal", 0)), *score_rank)
+                    if phrase.isidentifier() else score_rank
                 )
 
             def __lt__(self, other: Any) -> bool:
@@ -2113,13 +2129,17 @@ class RepositoryTools:
                 finish_bucket()
                 total_matches += len(file_best)
                 coverage_bonus = max(0, len(file_matched_terms) - 1) * 2.0
-                for entry in file_best:
+                ranked_file_best = sorted(file_best, key=lambda entry: entry.rank)
+                for path_hit_ordinal, entry in enumerate(ranked_file_best):
                     hit = entry.item
                     hit["score"] += coverage_bonus
-                    retain(global_best, {
+                    global_hit = {
                         key: hit[key]
                         for key in ("path", "start_line", "end_line", "score", "file_sha256")
-                    }, retain_count)
+                    }
+                    if phrase.isidentifier():
+                        global_hit["path_hit_ordinal"] = path_hit_ordinal
+                    retain(global_best, global_hit, retain_count)
         except TimeoutError as exc:
             return {
                 "success": False, "root": str(base), "results": [],
@@ -2140,6 +2160,8 @@ class RepositoryTools:
             }
 
         ranked = [entry.item for entry in sorted(global_best, key=lambda entry: entry.rank)]
+        for reference in ranked:
+            reference.pop("path_hit_ordinal", None)
         page_refs = ranked[offset:offset + limit]
         page_by_path: dict[str, list[dict[str, Any]]] = {}
         for reference in page_refs:

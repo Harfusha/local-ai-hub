@@ -1298,6 +1298,10 @@ def _matches_route(target: dict[str, Any], routes: list[dict[str, Any]]) -> bool
             pattern = "^" + re.sub(r"\\\{[^{}]+\\\}", r"[^/]+", re.escape(template)) + "$"
             if re.match(pattern, path):
                 return True
+        if "{" in path and "}" in path:
+            pattern = "^" + re.sub(r"\\\{[^{}]+\\\}", r"[^/]+", re.escape(path)) + "$"
+            if re.match(pattern, template):
+                return True
         if route.get("match") == "prefix":
             prefix = route.get("prefix")
             if prefix and path.startswith(prefix):

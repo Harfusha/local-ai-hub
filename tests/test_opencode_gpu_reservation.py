@@ -12,6 +12,29 @@ import pytest
 from local_ai_hub.scheduler import AffinityScheduler
 
 
+def test_owned_external_reservation_expires_in_memory_after_files_disappear(tmp_path, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        reservation_path = tmp_path / "external-gpu-reservation"
+        metadata_path = tmp_path / "external-gpu-reservation.lease.json"
+        reservation_path.unlink()
+        metadata_path.unlink()
+
+        assert scheduler._external_gpu_reserved()
+        now[0] = 901.0
+        assert not scheduler._external_gpu_reserved()
+        assert scheduler.reserve_external_gpu()
+    finally:
+        scheduler.close()
+
+
 def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp_path):
     from local_ai_hub.embeddings import EmbeddingModel
 

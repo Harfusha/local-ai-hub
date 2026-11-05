@@ -3572,7 +3572,9 @@ class ProjectPreprocessor:
         exponent = min(5, max(0, int(retry_count) - 1))
         return min(900.0, 30.0 * (2 ** exponent))
 
-    def candidate_paths(self, root: str, query: str, limit: int = 32) -> list[str]:
+    def candidate_paths(
+        self, root: str, query: str, limit: int = 32, *, include_semantic: bool = True,
+    ) -> list[str]:
         """Fast deterministic candidate selection; exact source verification happens later."""
         resolved = self._root(root)
         limit = max(0, min(int(limit), 64))
@@ -3593,13 +3595,14 @@ class ProjectPreprocessor:
             except sqlite3.OperationalError as fts_exc:
                 logger.debug("Preprocessing FTS candidate search unavailable (%s)", type(fts_exc).__name__)
                 pass
-        # Semantic cards cover vocabulary mismatch and FTS-unavailable builds.
-        try:
-            cards = self.lookup(resolved, query, limit=max(5, min(int(limit), 16)))
-            paths.extend(str(x.get("path")) for x in cards.get("files", []) if x.get("path"))
-        except Exception as lookup_exc:
-            logger.debug("Semantic card candidate lookup unavailable (%s)", type(lookup_exc).__name__)
-            pass
+        if include_semantic:
+            # Semantic cards cover vocabulary mismatch and FTS-unavailable builds.
+            try:
+                cards = self.lookup(resolved, query, limit=max(5, min(int(limit), 16)))
+                paths.extend(str(x.get("path")) for x in cards.get("files", []) if x.get("path"))
+            except Exception as lookup_exc:
+                logger.debug("Semantic card candidate lookup unavailable (%s)", type(lookup_exc).__name__)
+                pass
         out: list[str] = []
         seen: set[str] = set()
         for path in paths:
@@ -3632,6 +3635,10 @@ class ProjectPreprocessor:
         except (OSError, RuntimeError, TypeError, ValueError):
             pass
         return out[:limit]
+
+    def candidate_paths_lexical(self, root: str, query: str, limit: int = 32) -> list[str]:
+        """Return FTS-only candidates when exact source search makes semantics redundant."""
+        return self.candidate_paths(root, query, limit, include_semantic=False)
 
     def _content_card_key(self, content_hash: str) -> str:
         return stable_hash({

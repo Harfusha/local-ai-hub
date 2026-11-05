@@ -3754,7 +3754,10 @@ class LocalAIServices:
         # remains the fallback when a card/FTS hint produces no matches.
         if use_index_candidates and self.preprocessor is not None:
             try:
-                for p in self.preprocessor.candidate_paths(root, query, max(16, top_k * 3)):
+                candidate_search = getattr(self.preprocessor, "candidate_paths_lexical", None)
+                if not callable(candidate_search):
+                    candidate_search = self.preprocessor.candidate_paths
+                for p in candidate_search(root, query, max(16, top_k * 3)):
                     if p not in paths:
                         paths.append(p)
             except (OSError, sqlite3.Error, ValueError) as candidate_exc:

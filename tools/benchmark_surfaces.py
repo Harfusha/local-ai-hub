@@ -3838,6 +3838,7 @@ def run_benchmark(
             def verify_rag_search_cache_case(regime: str, index: int) -> dict[str, Any]:
                 from local_ai_hub.cache import stable_hash as cache_stable_hash
                 from local_ai_hub.normalizer import normalize_query
+                from local_ai_hub.rag import RAG_CHUNKER_VERSION
 
                 case = rag_search_cases[index]
                 workspace = rag_search_workspaces[regime]
@@ -3845,6 +3846,7 @@ def run_benchmark(
                 revision = app.rag.revision(workspace=workspace)
                 with closing(app.rag._connect()) as con:
                     generation = app.rag._workspace_index_generation(con, workspace)
+                    stored_chunker_version = app.rag._stored_workspace_chunker_version(con, workspace)
                 cache_identity_known = app.rag._embedding_space_cache_identity_known()
                 embedding_space = app.rag._embedding_space_id()
                 embedding_dimension = app.rag._embedding_dimension_cache_identity()
@@ -3857,6 +3859,8 @@ def run_benchmark(
                     "reranker": False,
                     "semantic_only": False,
                     "scope_path": None,
+                    "chunker_version": RAG_CHUNKER_VERSION,
+                    "stored_chunker_version": stored_chunker_version,
                     "embedding_space": embedding_space if cache_identity_known else None,
                     "embedding_dimension": embedding_dimension,
                 })

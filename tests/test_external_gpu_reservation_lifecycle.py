@@ -45,7 +45,7 @@ def test_idle_expiration_reaps_before_new_owner_reserves(tmp_path):
     assert replacement["owner"] == "second"
 
 
-def test_active_reservation_does_not_auto_expire(tmp_path):
+def test_expired_active_reservation_reaps_before_new_owner_reserves(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
@@ -53,10 +53,31 @@ def test_active_reservation_does_not_auto_expire(tmp_path):
     assert lease is not None
     assert store.renew(_digest("active-token"), lease["generation"], state="active")
 
-    now[0] = 1000.0
+    now[0] = 111.0
     other = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    assert other.reserve(_digest("other-token"), owner="other") is None
-    assert other.read()["generation"] == lease["generation"]
+    assert other.reap_expired()
+    assert other.read() is None
+    replacement = other.reserve(_digest("other-token"), owner="other")
+    assert replacement is not None
+    assert replacement["generation"] != lease["generation"]
+    assert replacement["owner"] == "other"
+
+
+def test_expired_active_reservation_allows_internal_gpu_claim(tmp_path):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    external = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
+    lease = external.reserve(_digest("active-token"), owner="active-owner")
+    assert lease is not None
+    assert external.renew(_digest("active-token"), lease["generation"], state="active")
+
+    now[0] = 111.0
+    internal = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
+    internal_digest = _digest("internal-token")
+    assert internal.claim_internal(internal_digest)
+    assert not internal.metadata_path.exists()
+    assert internal.path.read_text(encoding="ascii") == internal_digest
+    assert internal.release_internal(internal_digest)
 
 
 def test_owner_renewal_extends_lease_without_changing_generation(tmp_path):
@@ -121,6 +142,107 @@ def test_consent_release_recovers_metadata_orphan_after_partial_cleanup(tmp_path
         lease["generation"], consent=True, audit_reason="recover interrupted release"
     )
     assert not store.metadata_path.exists()
+
+
+def test_reserve_does_not_replace_metadata_orphan_after_cleanup_failure(tmp_path, monkeypatch):
+    now = [100.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
+    )
+    old_lease = store.reserve(_digest("old-owner-token"), owner="old-session")
+    assert old_lease is not None
+    now[0] = 111.0
+
+    original_unlink = Path.unlink
+    failed = [False]
+
+    def fail_metadata_unlink_once(path, *args, **kwargs):
+        if path == store.metadata_path and not failed[0]:
+            failed[0] = True
+            raise OSError("simulated metadata cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_metadata_unlink_once)
+    assert store.reserve(_digest("new-owner-token"), owner="new-session") is None
+    assert not store.path.exists()
+    assert store.metadata_path.exists()
+    assert store.read() is None
+    assert not store.claim_internal(_digest("internal-owner-token"))
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    assert store.release_with_consent(
+        old_lease["generation"], consent=True, audit_reason="recover interrupted reserve cleanup"
+    )
+    assert not store.path.exists()
+    assert not store.metadata_path.exists()
+    assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None
+
+
+def test_reserve_keeps_expired_generation_when_digest_cleanup_fails(tmp_path, monkeypatch):
+    now = [100.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
+    )
+    old_lease = store.reserve(_digest("old-owner-token"), owner="old-session")
+    assert old_lease is not None
+    now[0] = 111.0
+
+    original_unlink = Path.unlink
+
+    def fail_digest_unlink(path, *args, **kwargs):
+        if path == store.path:
+            raise OSError("simulated digest cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_digest_unlink)
+    assert store.reserve(_digest("new-owner-token"), owner="new-session") is None
+    assert store.path.exists()
+    assert store.metadata_path.exists()
+    assert store.read()["generation"] == old_lease["generation"]
+    assert not store.claim_internal(_digest("internal-owner-token"))
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    assert store.release_with_consent(
+        old_lease["generation"], consent=True, audit_reason="recover failed digest cleanup"
+    )
+    assert not store.path.exists()
+    assert not store.metadata_path.exists()
+    assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None
+
+
+def test_consent_release_recovers_metadata_orphan_after_unlink_failure(tmp_path, monkeypatch):
+    now = [100.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
+    )
+    lease = store.reserve(_digest("owner-token"), owner="session")
+    assert lease is not None
+    now[0] = 111.0
+
+    original_unlink = Path.unlink
+    failed = False
+
+    def fail_first_metadata_unlink(path, *args, **kwargs):
+        nonlocal failed
+        if path == store.metadata_path and not failed:
+            failed = True
+            raise OSError("simulated metadata cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_first_metadata_unlink)
+    assert not store.reap_expired()
+    assert not store.path.exists()
+    assert store.metadata_path.exists()
+    assert store.read() is None
+
+    assert store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="recover metadata cleanup"
+    )
+    assert not store.path.exists()
+    assert not store.metadata_path.exists()
+    audit = [json.loads(line) for line in store.audit_path.read_text(encoding="utf-8").splitlines()]
+    assert audit[-1]["action"] == "consented_release_recovery"
+    assert audit[-1]["generation"] == lease["generation"]
 
 
 def test_consent_release_keeps_malformed_metadata_orphan_fail_closed(tmp_path):

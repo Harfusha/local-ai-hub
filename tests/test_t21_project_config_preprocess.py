@@ -190,6 +190,25 @@ def test_candidate_paths_filter_exclusions_and_prioritize_configured_entry_point
         pre.close()
 
 
+def test_lexical_candidate_paths_skip_semantic_card_lookup(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    pre = _preprocessor(tmp_path)
+    lookups = []
+
+    def unexpected_lookup(*_args, **_kwargs):
+        lookups.append(True)
+        raise AssertionError("exact lexical hints must not run semantic card ranking")
+
+    pre.lookup = unexpected_lookup
+    try:
+        paths = pre.candidate_paths_lexical(str(root), "repo_search")
+        assert paths == []
+        assert lookups == []
+    finally:
+        pre.close()
+
+
 def test_python_search_fallback_has_independent_file_cap_and_metric(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
