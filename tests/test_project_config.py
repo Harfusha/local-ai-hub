@@ -105,6 +105,7 @@ def test_repository_excludes_ignored_user_config_from_index_paths(tmp_path: Path
     context = resolve_project_context(root, tmp_path / "state")
 
     assert "config.toml" in context.settings.exclude_paths
+    assert "backups/**" in context.settings.exclude_paths
 
 
 def test_project_configuration_merges_sources_in_documented_order(
