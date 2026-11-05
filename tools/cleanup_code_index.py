@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             state_dir,
         )
         database = state_dir / "code-index.sqlite3"
-        if online is not False:
+        if args.apply and online is not False:
             error = "hub_online" if online is True else "hub_state_unknown"
             print(json.dumps({"success": False, "error": error, "path": str(database)}))
             return 2
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"success": False, "error": "--compact requires --apply"}))
             return 2
 
-        index = CodeIndex(config, RepositoryTools(config))
+        index = CodeIndex(config, RepositoryTools(config), read_only=not args.apply)
         index.set_active_roots_provider(
             lambda: _active_preprocessing_roots(state_dir / "preprocess.sqlite3")
         )
@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         result = {
             "success": bool(batches) and all(item.get("success") is True for item in batches),
             "dry_run": not args.apply,
+            "hub_online": online,
             "path": str(database),
             "batches": batches,
             "rows_pruned": sum(int(item.get("rows_pruned", 0)) for item in batches),

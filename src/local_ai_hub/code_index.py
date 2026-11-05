@@ -1089,15 +1089,22 @@ def _resolve_code_index_path_policy(api: Any | None, root: Any, settings: Any | 
 
 
 class CodeIndex:
-    def __init__(self, config: dict[str, Any], repo_tools: Any):
+    def __init__(self, config: dict[str, Any], repo_tools: Any, *, read_only: bool = False):
+        if type(read_only) is not bool:
+            raise TypeError("read_only must be a boolean")
         self.config = config
         self.repo_tools = repo_tools
         self.db_path = Path(config["server"]["state_dir"]) / "code-index.sqlite3"
+        self._read_only = read_only
         self.parse_blob_max = int(config.get("code_index", {}).get("parse_blob_max_entries", 100000))
         self.max_index_bytes = max(1, int(config.get("code_index", {}).get("max_index_bytes", 512 * 1024 * 1024)))
         self._lock = threading.RLock()
         self._write_lock = _code_index_write_lock(self.db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if read_only:
+            if self.db_path.is_symlink() or not self.db_path.is_file():
+                raise FileNotFoundError("read-only code-index database is missing or unsafe")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._status_cache: dict[str, Any] = {}
         self._rev_cache = {}
         self._rev_lock = threading.Lock()
@@ -1109,8 +1116,9 @@ class CodeIndex:
         self._impact_path_format_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._impact_candidate_count_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._query_cache_generation_key = str(self.db_path.resolve())
-        self._init_db()
-        self._cache_observer = SQLiteChangeObserver(self.db_path)
+        if not read_only:
+            self._init_db()
+        self._cache_observer = None if read_only else SQLiteChangeObserver(self.db_path)
         self._cache_guard = threading.RLock()
         self._observed_data_version: int | None = None
         self._reindex_callback: Any = None
@@ -1276,7 +1284,14 @@ class CodeIndex:
         _advance_query_cache_generation(self._query_cache_generation_key)
 
     def _connect(self, *, register_archive_function: bool = True) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
+        if self._read_only:
+            uri = self.db_path.resolve(strict=True).as_uri() + "?mode=ro"
+            con = sqlite3.connect(uri, uri=True, timeout=5.0)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA busy_timeout=5000")
+            con.execute("PRAGMA query_only=ON")
+        else:
+            con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
             con.execute("PRAGMA recursive_triggers=ON")
             if register_archive_function:
@@ -3798,6 +3813,8 @@ class CodeIndex:
         """Evict a bounded oldest-first batch of parse blobs unused by any indexed file."""
         if type(dry_run) is not bool:
             return {"success": False, "error": "dry_run must be a boolean"}
+        if self._read_only and not dry_run:
+            return {"success": False, "dry_run": False, "error": "read_only_index"}
         if type(max_blobs) is not int or not 1 <= max_blobs <= 8192:
             return {"success": False, "error": "max_blobs must be between 1 and 8192"}
         if target_bytes is not None and (type(target_bytes) is not int or target_bytes < 0):
@@ -4083,6 +4100,8 @@ class CodeIndex:
         """
         if type(dry_run) is not bool:
             return {"success": False, "error": "dry_run must be a boolean"}
+        if self._read_only and not dry_run:
+            return {"success": False, "dry_run": False, "error": "read_only_index"}
         if type(max_rows) is not int or not 1 <= max_rows <= 100000:
             return {"success": False, "error": "max_rows must be between 1 and 100000"}
         if type(max_roots) is not int or not 1 <= max_roots <= 128:
@@ -4106,6 +4125,8 @@ class CodeIndex:
         before = self.measure_storage()
         try:
             with self._lock, closing(self._connect()) as con:
+                if self._read_only:
+                    con.execute("BEGIN")
                 orphaned_total = int(con.execute(
                     "SELECT COUNT(*) FROM symbol_trigrams t WHERE NOT EXISTS ("
                     "SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "

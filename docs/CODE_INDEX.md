@@ -32,6 +32,20 @@ could not release enough space. Existing SQLite free pages count toward the
 reclaim estimate before live files are selected for eviction, so reusable pages
 alone do not evict indexed files. A later preprocessing pass can continue cleanup.
 
+`python tools/cleanup_code_index.py --dry-run` opens the existing database in
+SQLite read-only/query-only mode and skips schema initialization. It can measure
+while the Hub is online; `hub_online` reports whether that state was confirmed.
+The dry-run holds a read snapshot and reports orphan-trigram candidates,
+protected roots, and before/after storage. `--apply` still requires the Hub to
+be confirmed offline. Apply deletes only bounded orphan trigram rows; it never
+removes roots, files, symbols, parse blobs, or source files.
+
+Live dry-run on 2026-11-05 (`--max-rows 1000 --max-roots 16`) found 6,904 orphan
+trigram rows, but zero eligible rows across three scanned roots: all three roots
+were active Git roots and stayed protected. It reported 317,538,408 physical
+bytes before and after, zero reusable pages, and zero bytes released. This is a
+live-install measurement, not a cleanup or compaction run.
+
 This cap covers the code-index database only. RAG, deterministic facts and
 preprocessing metadata have separate lifecycles.
 
