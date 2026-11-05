@@ -1,0 +1,39 @@
+# Search benchmark results — 2026-11-05
+
+## Live installed Hub: lexical baseline
+
+Measured against the configured loopback HTTP `/api/search` endpoint in the real `C:\Users\Adam\.local-ai-hub` checkout. The runner used manually labeled case set `agent-search-manual-2026-11-05-v2`, 25 cases, and two requests per case (50 requests). Labels are source-anchored and manually judged; they are not exhaustive corpus truth.
+
+Reproduce with:
+
+```powershell
+python tools/benchmark_live_search.py --modes lexical --repeats 2
+```
+
+| Measure | Result |
+| --- | ---: |
+| Cases with successful result | 25 / 25 |
+| Requests | 50 (2 per case) |
+| Positive cases | 22 |
+| Mean recall@10 | 0.432 |
+| Mean precision@10 | 0.085 |
+| Mean reciprocal rank | 0.330 |
+| Mean NDCG@10 | 0.331 |
+| Negative cases correct | 2 / 3 |
+| Request median latency | 771.9 ms |
+| Request p95 latency | 8,891.7 ms |
+| Cold-cache median / p95 | 6,275.3 / 9,502.6 ms |
+| Warm-cache median / p95 | 228.5 / 957.1 ms |
+
+The five installation cases all missed `docs/INSTALLATION.md` in the returned top 10. Results frequently repeated paths such as `src/local_ai_hub/generator.py`; the benchmark computes ranking metrics over unique paths, but duplicate snippets still consume result slots. These are concrete lexical relevance and latency targets for the next iteration.
+
+## Runtime boundary
+
+- Hub reported version `5.1.3`, profile `high`, reranking enabled in configuration, and `active_model=null`.
+- The lexical benchmark did not request or use reranking. `reranker_configured=true` is configuration evidence only.
+- Runtime reported `gpu_admission_state=outcome_unknown`, stale VRAM telemetry, and reranker `provider_readiness=not_checked`. Therefore this run does not establish RAG/hybrid quality, reranker quality, or GPU inference capacity.
+- Read-only device inventory found an NVIDIA GeForce RTX 5070 Ti with 16,303 MiB total and 9,247 MiB used at sampling time. Ollama listed `qwen3-embedding:0.6b`; this does not establish that the Hub's embedding request succeeded. No models were downloaded.
+
+## Scope limits
+
+This is one small, manually labeled set on one real repository and one installed-service mode. It is not evidence of general search quality. RAG, hybrid, reranker on/off, MCP boundaries, active preprocessing load, and current-source changes/removals still need independent measurements. The live GPU reservation must be reconciled through a supported Hub action before inference benchmarks can run.
