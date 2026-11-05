@@ -161,10 +161,12 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert result["ai_summary_advisory"] is True
     assert [call[0] for call in calls] == ["/api/search", "/api/compress"]
     assert len(calls[1][1]["text"]) <= 12000
-    assert calls[1][1]["target_tokens"] == 500
+    assert calls[1][1]["target_tokens"] == 180
     assert calls[1][2]["timeout"] <= 15
     assert "untrusted data" in calls[1][1]["instruction"]
     assert "[path:start-end]" in calls[1][1]["instruction"]
+    assert "at most 3 bullets" in calls[1][1]["instruction"]
+    assert "80 words total" in calls[1][1]["instruction"]
 
 
 def test_search_ai_summary_failure_keeps_deterministic_results(monkeypatch) -> None:

@@ -99,7 +99,7 @@ def test_preprocessing_indexes_used_files_and_one_hop_only(tmp_path):
     assert pre._step_code_index({"root": str(root), "generation": 1})
     assert {path for path, _ in pre.code_index.pending} == {"pkg/a.py", "pkg/b.py"}
     assert [(root, item["path"]) for root, item in pre.code_index.usage] == [(str(root), "pkg/a.py")]
-    assert pre.code_index.budget_checks == 1
+    assert pre.code_index.budget_checks == 0
 
 
 def test_existing_only_reindex_selection_does_not_admit_new_paths(tmp_path):

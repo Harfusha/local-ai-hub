@@ -2178,3 +2178,22 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - First post-restart 4B attempt (`req_2d2bd11d4153`) returned generic `QueueFullError`; no inference metrics. Queue was empty on the following status read, but the rejection cause was not exposed by the then-running code. A distinct request succeeded after the diagnostic code change and Hub restart.
 - Successful sample `req_557984ebe349`: `qwen3.5:4b-nvfp4`, 6 generated tokens, 27.75 tokens/s, 216.2 ms full-call latency (`streaming=false`, not TTFT), queue wait 5.49 ms, device-wide sampled peak 8,900,313,088 bytes. Initial/final VRAM sample: 8,488 MiB used, 7,508 MiB available of 16,303 MiB; dynamic context 32,768, nominal pressure. `policy_measurement_basis=dedicated_observed`.
 - Treat residency as unknown for this sample: scheduler reported one prewarm and llama.cpp model online, so this is not classified as cold. Single short-output performance sample, not model-quality or context-capacity evidence.
+
+### 4B concurrent-request probe — 2026-11-05
+
+- Submitted two distinct `qwen3.5:4b-nvfp4` `hardware_benchmark` requests together through MCP. Both succeeded with six backend-counted tokens and 32,768 dynamic context.
+- Sample A `req_a64fa771534a`: 32.75 tokens/s, 183.22 ms generation, 6.78 ms queue wait. Sample B `req_a29931c604d1`: 36.67 tokens/s, 163.63 ms generation, 6.65 ms queue wait. Both reported the same device-wide peak of 9,102,688,256 bytes and 7,315 MiB available of 16,303 MiB.
+- Reconstructed generation intervals from each result's end timestamp and `generation_duration_ms` do not overlap. This probe does not establish parallel model execution or the configured limit of two; cause of serialization is unknown. No concurrency promotion.
+
+### 4B grounded search-summary quality case — 2026-11-05
+
+- One-case `local_ai_task(action="eval_suite")`, suite `gpu-5070ti-grounded-search-summary-one-case-20261105`, request `req_8034f595b878`, model `qwen3.5:4b-nvfp4`, role `fast_code`. Input contained the documented search-summary contract from `docs/MODEL_CAPABILITIES.md:148-154`; expected phrase: `Exact result rows and pagination remain authoritative`.
+- Mechanical expected-substring check passed, but `quality_pass_rate=0/1`; `style_quality.concise=false`, `exact_expected=false`. The 388-character model response preview was truncated, so citations and remaining claims could not be reviewed. No capability promotion. Evaluation record persisted as `gpu-search-summary-4b-20261105`, cohort `hub_on`, request `req_9162affc3608`, with quality false and mechanical test true.
+- A live `local_ai_repo(action="search", summarize_results=true)` request returned terminal 400 `unexpected argument for local_ai_repo: summarize_results`; no model inference. The same happened after Hub restart. Live capability status reports `search_summaries.available=false`, `state=feature_disabled`, gate `search_summaries`, minimum profile `balanced`; this active gate keeps the optional parameter unavailable. Generic `argument_help` listing does not establish that a gated parameter is advertised. No flag change was made.
+
+### Search-summary prompt bound — 2026-11-05
+
+- Tightened the production prompt to at most 3 bullets and 80 words; reduced `target_tokens` from 500 to 180. Deterministic search rows and source-bound citation validation remain authoritative.
+- Focused regression `tests/test_mcp_agent_routing.py::test_search_ai_summary_preserves_deterministic_results_and_sources` passed (1 passed). The test first failed on the missing output bounds, then passed after the prompt change.
+- Existing tier guard `tests/test_generator.py -k search_summary_option_is_hidden_below_balanced` passed (1 passed, 47 deselected), confirming the parameter stays hidden on lower profiles.
+- No post-change inference or quality claim: the prior concise-prompt candidate was rejected before inference for insufficient VRAM (`req_a1b85d335989`). Current `search_summaries` capability remains feature-disabled; do not promote it based on this code change.

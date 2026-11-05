@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -224,4 +225,116 @@ def test_record_usage_uses_evidence_recency_not_preprocess_time(tmp_path):
             (str(root), "module_1.py"),
         ).fetchone()
     assert tuple(absent) == (30, 0.0)
+    index.close()
+
+
+def test_unreferenced_parse_blob_cleanup_is_bounded_and_preserves_shared_cache(tmp_path):
+    index, root = _make_index(tmp_path)
+    orphan_payload = "x" * 100_000
+    with closing(index._connect()) as con:
+        con.executemany(
+            "INSERT INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) "
+            "VALUES(?,?,?,?,?)",
+            [
+                ("orphan-old", "old-analyzer", "python", orphan_payload, 1.0),
+                ("orphan-current", "current-analyzer", "python", orphan_payload, 2.0),
+            ],
+        )
+        shared = con.execute(
+            "SELECT content_hash,analyzer_version,language FROM files WHERE root=? AND path=?",
+            (str(root), "module_0.py"),
+        ).fetchone()
+        con.commit()
+    before = index.measure_storage()
+
+    dry_run = index.prune_unreferenced_parse_blobs(dry_run=True, max_blobs=1)
+
+    assert dry_run["success"] is True
+    assert dry_run["candidate_blob_count"] == 2
+    assert dry_run["selected_blob_count"] == 1
+    assert dry_run["selected_payload_bytes"] == len(orphan_payload)
+    assert index.measure_storage() == before
+
+    first = index.prune_unreferenced_parse_blobs(dry_run=False, max_blobs=1)
+    assert first["deleted_blob_count"] == 1
+    assert first["logical_bytes_released"] == len(orphan_payload)
+    assert first["remaining_unreferenced_blob_count"] == 1
+    second = index.prune_unreferenced_parse_blobs(dry_run=False, max_blobs=1)
+    assert second["deleted_blob_count"] == 1
+    assert second["remaining_unreferenced_blob_count"] == 0
+    with closing(index._connect()) as con:
+        assert con.execute(
+            "SELECT 1 FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?",
+            tuple(shared),
+        ).fetchone() is not None
+    index.close()
+
+
+def test_size_limit_dry_run_includes_unreferenced_parse_cache_without_mutating(tmp_path):
+    index, _root = _make_index(tmp_path)
+    orphan_payload = "x" * 100_000
+    with closing(index._connect()) as con:
+        con.execute(
+            "INSERT INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) "
+            "VALUES(?,?,?,?,?)",
+            ("orphan", "old-analyzer", "python", orphan_payload, 1.0),
+        )
+        con.commit()
+    before = index.measure_storage()
+    live_bytes = before["physical_bytes"] - before["reusable_bytes"]
+
+    result = index.enforce_size_limit(max_bytes=live_bytes - 50_000, dry_run=True)
+
+    assert result["success"] is True
+    assert result["parse_cache_cleanup"]["selected_blob_count"] == 1
+    assert result["parse_cache_cleanup"]["selected_payload_bytes"] == len(orphan_payload)
+    assert result["evicted_paths"] == []
+    assert result["within_budget"] is True
+    assert index.measure_storage() == before
+    with closing(index._connect()) as con:
+        assert con.execute(
+            "SELECT 1 FROM parse_blobs WHERE content_hash='orphan'"
+        ).fetchone() is not None
+    index.close()
+
+
+def test_unreferenced_parse_blob_cleanup_serializes_independent_connections(tmp_path):
+    index, root = _make_index(tmp_path)
+    second = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}, "code_index": {"max_index_bytes": 64 * 1024 * 1024}},
+        RepositoryTools({}),
+    )
+    with closing(index._connect()) as con:
+        con.executemany(
+            "INSERT INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) "
+            "VALUES(?,?,?,?,?)",
+            [
+                (f"orphan-{n}", "old-analyzer", "python", "x" * 1000, float(n))
+                for n in range(4)
+            ],
+        )
+        shared = con.execute(
+            "SELECT content_hash,analyzer_version,language FROM files WHERE root=? AND path=?",
+            (str(root), "module_0.py"),
+        ).fetchone()
+        con.commit()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda worker: worker.prune_unreferenced_parse_blobs(dry_run=False, max_blobs=2),
+            (index, second),
+        ))
+
+    assert all(result["success"] is True for result in results)
+    assert sum(result["deleted_blob_count"] for result in results) == 4
+    assert sorted(result["remaining_unreferenced_blob_count"] for result in results) == [0, 2]
+    with closing(index._connect()) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM parse_blobs WHERE content_hash LIKE 'orphan-%'"
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT 1 FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?",
+            tuple(shared),
+        ).fetchone() is not None
+    second.close()
     index.close()

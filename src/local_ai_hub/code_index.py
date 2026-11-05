@@ -1190,6 +1190,8 @@ class CodeIndex:
             size_bytes INTEGER,
             PRIMARY KEY(root, path)
         );
+        CREATE INDEX IF NOT EXISTS idx_files_parse_blob_ref
+            ON files(content_hash, analyzer_version, language);
         CREATE TABLE IF NOT EXISTS file_usage(
             root TEXT NOT NULL,
             path TEXT NOT NULL,
@@ -3564,6 +3566,98 @@ class CodeIndex:
             "physical_bytes": physical_bytes,
         }
 
+    def prune_unreferenced_parse_blobs(
+        self,
+        *,
+        dry_run: bool = True,
+        max_blobs: int = 2048,
+        target_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        """Evict a bounded oldest-first batch of parse blobs unused by any indexed file."""
+        if type(dry_run) is not bool:
+            return {"success": False, "error": "dry_run must be a boolean"}
+        if type(max_blobs) is not int or not 1 <= max_blobs <= 8192:
+            return {"success": False, "error": "max_blobs must be between 1 and 8192"}
+        if target_bytes is not None and (type(target_bytes) is not int or target_bytes < 0):
+            return {"success": False, "error": "target_bytes must be a nonnegative integer"}
+
+        before = self.measure_storage()
+        deleted_count = 0
+        deleted_payload_bytes = 0
+        try:
+            with self._lock, closing(self._connect()) as con:
+                if not dry_run:
+                    con.execute("BEGIN IMMEDIATE")
+                totals = con.execute(
+                    "SELECT COUNT(*) AS blob_count, "
+                    "COALESCE(SUM(length(p.payload_json)),0) AS payload_bytes "
+                    "FROM parse_blobs p WHERE NOT EXISTS ("
+                    "SELECT 1 FROM files f WHERE f.content_hash=p.content_hash "
+                    "AND f.analyzer_version=p.analyzer_version AND f.language=p.language)"
+                ).fetchone()
+                candidates = con.execute(
+                    "SELECT p.rowid,length(p.payload_json) AS payload_bytes "
+                    "FROM parse_blobs p WHERE NOT EXISTS ("
+                    "SELECT 1 FROM files f WHERE f.content_hash=p.content_hash "
+                    "AND f.analyzer_version=p.analyzer_version AND f.language=p.language) "
+                    "ORDER BY p.updated_at ASC,p.rowid ASC LIMIT ?",
+                    (max_blobs,),
+                ).fetchall()
+                selected: list[tuple[int, int]] = []
+                selected_payload_bytes = 0
+                for row in candidates:
+                    if target_bytes == 0 or (
+                        target_bytes is not None and selected_payload_bytes >= target_bytes
+                    ):
+                        break
+                    selected.append((int(row[0]), max(0, int(row[1] or 0))))
+                    selected_payload_bytes += selected[-1][1]
+                if not dry_run and selected:
+                    before_changes = con.total_changes
+                    con.executemany(
+                        "DELETE FROM parse_blobs WHERE rowid=? AND NOT EXISTS ("
+                        "SELECT 1 FROM files f WHERE f.content_hash=parse_blobs.content_hash "
+                        "AND f.analyzer_version=parse_blobs.analyzer_version "
+                        "AND f.language=parse_blobs.language)",
+                        [(rowid,) for rowid, _ in selected],
+                    )
+                    deleted_count = con.total_changes - before_changes
+                    deleted_payload_bytes = sum(payload_bytes for _, payload_bytes in selected[:deleted_count])
+                if not dry_run:
+                    con.commit()
+        except sqlite3.DatabaseError as exc:
+            return {
+                "success": False,
+                "dry_run": dry_run,
+                "error": type(exc).__name__,
+                "before": before,
+                "after": self.measure_storage(),
+            }
+
+        candidate_count = int(totals["blob_count"])
+        candidate_payload_bytes = int(totals["payload_bytes"])
+        removed_count = deleted_count if not dry_run else len(selected)
+        removed_payload_bytes = deleted_payload_bytes if not dry_run else selected_payload_bytes
+        remaining_count = max(0, candidate_count - removed_count)
+        remaining_payload_bytes = max(0, candidate_payload_bytes - removed_payload_bytes)
+        after = self.measure_storage()
+        return {
+            "success": True,
+            "dry_run": dry_run,
+            "max_blobs": max_blobs,
+            "candidate_blob_count": candidate_count,
+            "candidate_payload_bytes": candidate_payload_bytes,
+            "selected_blob_count": len(selected),
+            "selected_payload_bytes": selected_payload_bytes,
+            "deleted_blob_count": deleted_count,
+            "logical_bytes_released": deleted_payload_bytes,
+            "remaining_unreferenced_blob_count": remaining_count,
+            "remaining_unreferenced_payload_bytes": remaining_payload_bytes,
+            "before": before,
+            "after": after,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+        }
+
     def enforce_size_limit(
         self, *, max_bytes: int | None = None, dry_run: bool = False, max_files: int = 128,
     ) -> dict[str, Any]:
@@ -3581,22 +3675,46 @@ class CodeIndex:
                 "evicted_paths": [], "estimated_reclaimable_bytes": 0,
             }
 
+        live_physical_before = max(0, before["physical_bytes"] - before["reusable_bytes"])
+        cache_need = max(0, live_physical_before - limit)
+        cache_cleanup = {
+            "success": True,
+            "dry_run": dry_run,
+            "selected_blob_count": 0,
+            "selected_payload_bytes": 0,
+            "deleted_blob_count": 0,
+            "logical_bytes_released": 0,
+        }
+        if cache_need:
+            cache_cleanup = self.prune_unreferenced_parse_blobs(
+                dry_run=dry_run, max_blobs=2048, target_bytes=cache_need,
+            )
+        cache_estimated = int(
+            cache_cleanup.get(
+                "selected_payload_bytes" if dry_run else "logical_bytes_released", 0
+            ) or 0
+        )
+        if dry_run:
+            live_physical_bytes = max(0, live_physical_before - cache_estimated)
+        else:
+            cache_after = cache_cleanup.get("after", before)
+            live_physical_bytes = max(
+                0, int(cache_after["physical_bytes"]) - int(cache_after["reusable_bytes"])
+            )
+        need = max(0, live_physical_bytes - limit)
         selected: list[tuple[str, str]] = []
         estimated = 0
         with self._lock, closing(self._connect()) as con:
+            if not dry_run and need:
+                con.execute("BEGIN IMMEDIATE")
             candidates = con.execute(
-                "SELECT f.root,f.path,COALESCE(f.size_bytes,0) AS size_bytes, "
-                "COALESCE(u.use_count,0) AS use_count, "
+                "SELECT f.root,f.path,COALESCE(u.use_count,0) AS use_count, "
                 "COALESCE(u.last_used_at,f.updated_at,0) AS last_used_at "
                 "FROM files f LEFT JOIN file_usage u ON u.root=f.root AND u.path=f.path "
                 "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC "
                 "LIMIT ?",
                 (max_files,),
             ).fetchall()
-            # Free SQLite pages already reclaimable by VACUUM/incremental_vacuum
-            # must not cause otherwise-live files to be evicted.
-            live_physical_bytes = max(0, before["physical_bytes"] - before["reusable_bytes"])
-            need = max(0, live_physical_bytes - limit)
             for row in candidates:
                 if len(selected) >= max_files or estimated >= need:
                     break
@@ -3610,18 +3728,18 @@ class CodeIndex:
                     for table in ("symbols", "refs", "edges", "symbol_trigrams")
                 }
                 selected.append((root_path, file_path))
+                # Source size_bytes is metadata only; source content is not stored here.
                 estimated += (
-                    max(1, int(row["size_bytes"]))
-                    + counts["symbols"] * 1024
+                    counts["symbols"] * 1024
                     + counts["refs"] * 384
                     + counts["edges"] * 384
                     + counts["symbol_trigrams"] * 192
                     + 65536
                 )
             if not dry_run and selected:
-                con.execute("BEGIN IMMEDIATE")
                 for table in ("symbol_trigrams", "symbols", "refs", "edges", "file_usage", "files"):
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", selected)
+            if not dry_run and need:
                 con.commit()
 
         if dry_run:
@@ -3631,8 +3749,9 @@ class CodeIndex:
                 "within_budget": predicted_physical <= limit, "max_bytes": limit,
                 "before": before, "after": before,
                 "evicted_paths": selected,
-                "estimated_reclaimable_bytes": before["reusable_bytes"] + estimated,
+                "estimated_reclaimable_bytes": before["reusable_bytes"] + cache_estimated + estimated,
                 "predicted_physical_bytes": predicted_physical,
+                "parse_cache_cleanup": cache_cleanup,
             }
 
         if selected:
@@ -3685,8 +3804,9 @@ class CodeIndex:
             "before": before,
             "after": after,
             "evicted_paths": selected,
-            "estimated_reclaimable_bytes": before["reusable_bytes"] + estimated,
+            "estimated_reclaimable_bytes": before["reusable_bytes"] + cache_estimated + estimated,
             "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "parse_cache_cleanup": cache_cleanup,
             "vacuum": vacuum,
         }
 

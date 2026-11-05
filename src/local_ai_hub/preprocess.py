@@ -3336,11 +3336,6 @@ class ProjectPreprocessor:
         except Exception:
             pending = refs[:limit]
         if not pending:
-            enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
-            if callable(enforce_budget):
-                budget_result = enforce_budget()
-                if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
-                    logger.warning("Code-index size budget remains exceeded or could not be enforced")
             self._set_project(root, phase="deterministic")
             return True
 
@@ -3370,11 +3365,6 @@ class ProjectPreprocessor:
         with self._stats_lock:
             self._stats["code_index_files"] += progressed
         self._record_progress(root, len(pending))
-        enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
-        if callable(enforce_budget):
-            budget_result = enforce_budget()
-            if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
-                logger.warning("Code-index size budget remains exceeded or could not be enforced")
         if len(pending) < limit or files_processed == 0:
             self._set_project(root, phase="deterministic")
         return True
@@ -4415,6 +4405,16 @@ class ProjectPreprocessor:
                     component.optimize()
             except Exception as maintenance_exc:
                 logger.debug("Derived-index optimization skipped (%s)", type(maintenance_exc).__name__)
+        # Incremental vacuum can hold the code-index writer lock for seconds.
+        # Keep it off the indexing path and run it only from this idle maintenance turn.
+        enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
+        if callable(enforce_budget):
+            try:
+                budget_result = enforce_budget()
+                if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
+                    logger.warning("Code-index size budget remains exceeded or could not be enforced")
+            except Exception as maintenance_exc:
+                logger.warning("Code-index size maintenance skipped (%s)", type(maintenance_exc).__name__)
         # cleanup_deleted_projects also performs the same bounded incremental vacuum.
         self.cleanup_deleted_projects()
         self.cleanup_orphaned_indexes()
