@@ -1,4 +1,4 @@
-"""Dry-run or remove orphaned derived code-index trigrams in bounded batches."""
+"""Dry-run or remove stale files and orphaned trigrams in bounded batches."""
 
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true", help="delete bounded batches of orphan rows")
     parser.add_argument("--max-rows", type=int, default=100000)
     parser.add_argument("--max-roots", type=int, default=64)
+    parser.add_argument("--max-paths-per-root", type=int, default=20000)
+    parser.add_argument("--after-root", help="resume stale-file root scan after this absolute root")
     parser.add_argument("--batches", type=int, default=1, help="apply up to this many bounded batches")
     parser.add_argument("--compact", action="store_true", help="VACUUM after apply; requires --apply")
     args = parser.parse_args(argv)
@@ -63,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             error = "hub_online" if online is True else "hub_state_unknown"
             print(json.dumps({"success": False, "error": error, "path": str(database)}))
             return 2
-        if not 1 <= args.batches <= 32 or not 1 <= args.max_rows <= 100000 or not 1 <= args.max_roots <= 128:
+        if (not 1 <= args.batches <= 32 or not 1 <= args.max_rows <= 100000
+                or not 1 <= args.max_roots <= 128 or not 1 <= args.max_paths_per_root <= 100000):
             print(json.dumps({"success": False, "error": "batch limits out of range"}))
             return 2
         if args.compact and not args.apply:
@@ -87,16 +90,28 @@ def main(argv: list[str] | None = None) -> int:
                     break
                 if not result.get("has_more") or result.get("rows_pruned", 0) == 0:
                     break
+            stale_file_cleanup = index.cleanup_stale_files(
+                dry_run=not args.apply,
+                max_roots=args.max_roots,
+                max_paths_per_root=args.max_paths_per_root,
+                after_root=args.after_root,
+            )
         finally:
             index.close()
         result = {
-            "success": bool(batches) and all(item.get("success") is True for item in batches),
+            "success": (bool(batches) and all(item.get("success") is True for item in batches)
+                        and stale_file_cleanup.get("success") is True),
             "dry_run": not args.apply,
             "hub_online": online,
             "path": str(database),
             "batches": batches,
+            "stale_file_cleanup": stale_file_cleanup,
             "rows_pruned": sum(int(item.get("rows_pruned", 0)) for item in batches),
-            "has_more": bool(batches and batches[-1].get("has_more")),
+            "files_pruned": int(stale_file_cleanup.get("files_pruned", 0)),
+            "logical_source_bytes": int(stale_file_cleanup.get("logical_source_bytes", 0)),
+            "next_stale_root": stale_file_cleanup.get("next_root"),
+            "has_more": (bool(batches and batches[-1].get("has_more"))
+                         or bool(stale_file_cleanup.get("has_more_roots"))),
         }
         if args.compact and result["success"]:
             result["compaction"] = compact_sqlite_database(

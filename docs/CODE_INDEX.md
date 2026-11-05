@@ -36,9 +36,17 @@ alone do not evict indexed files. A later preprocessing pass can continue cleanu
 SQLite read-only/query-only mode and skips schema initialization. It can measure
 while the Hub is online; `hub_online` reports whether that state was confirmed.
 The dry-run holds a read snapshot and reports orphan-trigram candidates,
-protected roots, and before/after storage. `--apply` still requires the Hub to
-be confirmed offline. Apply deletes only bounded orphan trigram rows; it never
-removes roots, files, symbols, parse blobs, or source files.
+protected roots, and stale file rows whose source paths no longer exist. Stale
+file scans are bounded by `--max-roots` and `--max-paths-per-root` (20,000 by
+default); oversized roots are skipped and reported. Active Git roots stay
+protected. When more roots remain, `next_stale_root` is a keyset cursor for the
+next bounded run; pass it with `--after-root`. Dry-run output shows at most 20
+stale path examples per root. `--apply` still requires the Hub to be confirmed
+offline. Apply deletes bounded orphan trigram rows and derived rows for missing
+source files; it preserves shared parse blobs and never removes roots or source
+files. The report separates logical source bytes from SQLite physical bytes
+and reusable pages. Use `--compact` only for a confirmed-offline apply when
+returning pages to the filesystem is needed.
 
 Live dry-run on 2026-11-05 (`--max-rows 1000 --max-roots 16`) found 6,904 orphan
 trigram rows, but zero eligible rows across three scanned roots: all three roots

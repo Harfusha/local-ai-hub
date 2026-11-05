@@ -4218,6 +4218,7 @@ class CodeIndex:
         max_roots: int = 64,
         max_paths_per_root: int = 20000,
         compact: bool = False,
+        after_root: str | None = None,
     ) -> dict[str, Any]:
         """Prune derived rows for missing source paths and empty inactive roots.
 
@@ -4228,6 +4229,13 @@ class CodeIndex:
         """
         if type(dry_run) is not bool or type(compact) is not bool:
             return {"success": False, "error": "dry_run and compact must be booleans"}
+        if self._read_only and not dry_run:
+            return {"success": False, "dry_run": False, "error": "read_only_index"}
+        if after_root is not None and (
+            not isinstance(after_root, str) or not after_root or "\x00" in after_root
+            or len(after_root) > 32768 or not Path(after_root).is_absolute()
+        ):
+            return {"success": False, "error": "after_root must be an absolute path"}
         if type(max_roots) is not int or not 1 <= max_roots <= 128:
             return {"success": False, "error": "max_roots must be between 1 and 128"}
         if type(max_paths_per_root) is not int or not 1 <= max_paths_per_root <= 100000:
@@ -4235,12 +4243,16 @@ class CodeIndex:
 
         before = self.measure_storage()
         with self._lock, closing(self._connect()) as con:
-            root_rows = con.execute(
-                "SELECT root,COUNT(*) AS file_count FROM files GROUP BY root ORDER BY root LIMIT ?",
-                (max_roots + 1,),
-            ).fetchall()
+            query = "SELECT root,COUNT(*) AS file_count FROM files"
+            params: tuple[Any, ...] = ()
+            if after_root is not None:
+                query += " WHERE root > ?"
+                params = (after_root,)
+            query += " GROUP BY root ORDER BY root LIMIT ?"
+            root_rows = con.execute(query, (*params, max_roots + 1)).fetchall()
         has_more_roots = len(root_rows) > max_roots
         root_rows = root_rows[:max_roots]
+        next_root = str(root_rows[-1]["root"]) if has_more_roots and root_rows else None
         plans: list[dict[str, Any]] = []
         for root_row in root_rows:
             root = str(root_row["root"])
@@ -4302,8 +4314,9 @@ class CodeIndex:
         if dry_run:
             return {
                 "success": True, "dry_run": True, "roots_scanned": len(root_rows),
-                "has_more_roots": has_more_roots, "roots": [
-                    {key: value for key, value in item.items() if key != "current_paths"}
+                "has_more_roots": has_more_roots, "next_root": next_root, "roots": [
+                    {key: value for key, value in item.items() if key not in {"current_paths", "stale_paths"}}
+                    | {"stale_path_preview": item.get("stale_paths", [])[:20]}
                     for item in plans
                 ],
                 "stale_root_count": len(target_plans),
@@ -4343,7 +4356,7 @@ class CodeIndex:
         return {
             "success": all(bool(item.get("success")) for item in (compaction,)),
             "dry_run": False, "roots_scanned": len(root_rows),
-            "has_more_roots": has_more_roots, "roots_pruned": pruned_roots,
+            "has_more_roots": has_more_roots, "next_root": next_root, "roots_pruned": pruned_roots,
             "files_pruned": sum(int(item["pruned"]) for item in pruned_roots),
             "logical_source_bytes": sum(item["logical_source_bytes"] for item in target_plans),
             "storage_before": before, "storage_after": after,
