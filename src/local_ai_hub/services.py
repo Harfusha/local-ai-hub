@@ -3082,7 +3082,10 @@ class LocalAIServices:
         except Exception:
             return False
 
-    def _repo_cached(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
+    def _repo_cached(
+        self, operation: str, root: str, params: dict[str, Any], compute: Any,
+        *, state_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
         # coalesced background computation. Treat that as a stale input, not a hub 500.
         try:
@@ -3092,7 +3095,10 @@ class LocalAIServices:
                 # Exact counts cover the whole repository, including files not
                 # present in the previous page. A TTL-cached fingerprint cannot
                 # prove that no new match appeared since the previous request.
-                state = tracker.fingerprint(root, force=True) or {}
+                state = (
+                    state_override if isinstance(state_override, dict)
+                    else tracker.fingerprint(root, force=True) or {}
+                )
             else:
                 state = self._repo_cache_state(root) or {}
             fingerprint = state.get("fingerprint")
@@ -3680,7 +3686,13 @@ class LocalAIServices:
                 ):
                     request_hints.append(hint)
         try:
-            workspace_state = self._repo_cache_state(root) or {}
+            tracker = getattr(self, "repo_state", None)
+            fingerprint = getattr(tracker, "fingerprint", None)
+            workspace_state = (
+                fingerprint(root, force=True) or {}
+                if callable(fingerprint)
+                else self._repo_cache_state(root) or {}
+            )
         except Exception:
             workspace_state = {}
         repository_revision = (
@@ -4151,6 +4163,7 @@ class LocalAIServices:
                 "force_include_patterns": list(force_include_patterns),
             },
             compute,
+            state_override=workspace_state,
         )
 
     def _refresh_changed_intelligence(self, root: str) -> None:

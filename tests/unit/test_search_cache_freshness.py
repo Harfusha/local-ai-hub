@@ -36,6 +36,39 @@ def test_cached_search_observes_file_change_before_fingerprint_ttl(tmp_path):
     assert [hit["path"] for hit in third["results"]] == ["new.py"]
 
 
+def test_lexical_search_reuses_one_fresh_workspace_fingerprint(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "source.py").write_text("needle = 1\n", encoding="utf-8")
+    calls = []
+
+    class Tracker:
+        max_changed_paths = 100
+
+        def fingerprint(self, _root, force=False):
+            calls.append(force)
+            return {
+                "fingerprint": "fresh-revision",
+                "changed_files": 0,
+                "degraded": False,
+                "stale": False,
+                "truncated": False,
+            }
+
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"server": {"state_dir": str(tmp_path / "state")}}
+    service.repo_state = Tracker()
+    service.repo_tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    service.repo_flight = SingleFlightCache(MemoryLRUCache())
+    service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
+
+    result = service.repo_search(str(root), "needle", limit=10)
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert calls == [True]
+
+
 @pytest.mark.parametrize("state", [
     {"degraded": True, "stale": True},
     {"truncated": True},

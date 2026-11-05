@@ -58,7 +58,7 @@ def _service_for_repo_search(
     service.learner = None
     service.evidence_store = None
     service._repo_cache_state = lambda _root: {"fingerprint": "revision-1"}
-    service._repo_cached = lambda _operation, _root, _params, compute: compute()
+    service._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     return root, service, context
 
 
@@ -97,7 +97,7 @@ def test_service_repo_search_cache_identity_includes_page_hints_and_config(
     (root / "hint.py").write_text("needle\n", encoding="utf-8")
     cache_params: list[dict[str, object]] = []
 
-    def run_cached(_operation, _root, params, compute):
+    def run_cached(_operation, _root, params, compute, **_kwargs):
         cache_params.append(dict(params))
         return compute()
 

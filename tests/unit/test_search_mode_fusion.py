@@ -221,7 +221,7 @@ def test_lexical_search_skips_large_code_index_candidate_scan(tmp_path, monkeypa
     service.learner = None
     service.evidence_store = None
     monkeypatch.setattr(service, "_repo_cache_state", lambda _root: {})
-    monkeypatch.setattr(service, "_repo_cached", lambda _op, _root, _params, compute: compute())
+    monkeypatch.setattr(service, "_repo_cached", lambda _op, _root, _params, compute, **_kwargs: compute())
 
     bounded = service._repo_search_lexical(
         str(tmp_path), "Local AI Hub installation", exact_count=False

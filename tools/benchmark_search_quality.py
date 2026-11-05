@@ -107,7 +107,7 @@ def run(repeats: int, noise_files: int, mode: str = "service", suite: str = "dev
         service.repo_tools = tools
         service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
         service._repo_cache_state = lambda _root: {}
-        service._repo_cached = lambda _name, _root, _params, compute: compute()
+        service._repo_cached = lambda _name, _root, _params, compute, **_kwargs: compute()
         rows = []
         for case in cases:
             durations = []
