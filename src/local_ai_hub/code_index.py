@@ -2246,24 +2246,39 @@ class CodeIndex:
             pending.append((path, str(content_hash)))
         return pending
 
-    def _mark_file_unindexable(self, root: str, path: str, language: str) -> None:
+    def _mark_file_unindexable(self, root: str, path: str, language: str) -> dict[str, Any]:
         """Retain authorized path metadata while removing stale parsed data."""
         updated_at = time.time()
-        with self._lock, closing(self._connect()) as con:
-            con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
-            for table in ("symbols", "refs", "edges"):
-                con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
-            con.execute(
-                "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                "VALUES(?,?,NULL,NULL,?,?,NULL,NULL) "
-                "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
-                "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at, "
-                "mtime_ns=NULL, size_bytes=NULL",
-                (root, path, language, updated_at),
-            )
-            con.commit()
+        with self._write_lock, self._lock:
+            with closing(self._connect()) as con:
+                existing = con.execute(
+                    "SELECT 1 FROM files WHERE root=? AND path=?", (root, path),
+                ).fetchone() is not None
+            budget: dict[str, Any] | None = None
+            if not existing:
+                budget = self._reserve_write_budget(root, 8192)
+                if not budget["success"]:
+                    return {
+                        "success": False, "budget_limited": True, "coverage_complete": False,
+                        "reason": "code index size limit", "budget": budget,
+                    }
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
+                for table in ("symbols", "refs", "edges"):
+                    con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
+                con.execute(
+                    "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                    "VALUES(?,?,NULL,NULL,?,?,NULL,NULL) "
+                    "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
+                    "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at, "
+                    "mtime_ns=NULL, size_bytes=NULL",
+                    (root, path, language, updated_at),
+                )
+                con.commit()
         self._advance_query_cache_generation()
         self._status_cache.pop(root, None)
+        return {"success": True, "budget_limited": False, "budget": budget}
 
     @staticmethod
     def _file_stat_is_current(path: Path, expected_stat: Any) -> bool:
@@ -2314,7 +2329,9 @@ class CodeIndex:
             return {"success": False, "error": "file unavailable"}
         lang = self._language_for_path(path, settings)
         if target_stat.st_size > self.repo_tools.max_file_bytes:
-            self._mark_file_unindexable(str(base), path, lang)
+            marked = self._mark_file_unindexable(str(base), path, lang)
+            if not marked["success"]:
+                return {"path": path, **marked}
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
 
         # Unchanged size/mtime does not establish unchanged content. Reuse the
@@ -2324,7 +2341,9 @@ class CodeIndex:
                 target, stat=target_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
             )
         except FileTooLargeError:
-            self._mark_file_unindexable(str(base), path, lang)
+            marked = self._mark_file_unindexable(str(base), path, lang)
+            if not marked["success"]:
+                return {"path": path, **marked}
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
         content_hash = digest
         stat_is_current = self._file_stat_is_current(target, target_stat)
@@ -2510,6 +2529,7 @@ class CodeIndex:
         cached = 0
         denied_paths: list[str] = []
         deleted_paths: list[tuple[str, str]] = []
+        budget_limited_paths: list[str] = []
         for path, supplied_hash in normalized:
             file_path = (base / path).resolve(strict=False)
             try:
@@ -2534,7 +2554,9 @@ class CodeIndex:
                     continue
             lang = self._language_for_path(path, settings)
             if file_stat.st_size > self.repo_tools.max_file_bytes:
-                self._mark_file_unindexable(c_root, path, lang)
+                marked = self._mark_file_unindexable(c_root, path, lang)
+                if marked.get("budget_limited") is True:
+                    budget_limited_paths.append(path)
                 continue
             file_stats[path] = file_stat
             if supplied_hash and path not in existing:
@@ -2546,7 +2568,9 @@ class CodeIndex:
                     file_path, stat=file_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
                 )
             except FileTooLargeError:
-                self._mark_file_unindexable(c_root, path, lang)
+                marked = self._mark_file_unindexable(c_root, path, lang)
+                if marked.get("budget_limited") is True:
+                    budget_limited_paths.append(path)
                 continue
             except OSError:
                 continue
@@ -2681,6 +2705,9 @@ class CodeIndex:
             "parse_blob_hits": len(candidates) - len(parse_blob_rows),
             "parse_outcomes": self._parse_outcomes_for_paths(c_root, indexed_paths),
             "metadata_update": metadata_update, "budget": budget if files_to_insert else None,
+            "budget_limited": bool(budget_limited_paths),
+            "budget_limited_paths": budget_limited_paths,
+            "coverage_complete": not budget_limited_paths,
         }
 
     @staticmethod
@@ -3682,15 +3709,33 @@ class CodeIndex:
             if not math.isfinite(last_used_at) or last_used_at <= 0:
                 last_used_at = 0.0
             rows.append((resolved_root, path, uses, last_used_at))
-        with self._lock, closing(self._connect()) as con:
-            placeholders = ",".join("?" for _ in rows)
-            retain_paths = f" AND path NOT IN ({placeholders})" if rows else ""
-            con.execute(
-                "UPDATE file_usage SET last_used_at=0 WHERE root=? "
-                f"AND last_used_at<>0{retain_paths}",
-                (resolved_root, *(row[1] for row in rows)),
-            )
-            if rows:
+        if not rows:
+            return 0
+        with self._write_lock, self._lock:
+            unique_paths = sorted({row[1] for row in rows})
+            with closing(self._connect()) as con:
+                placeholders = ",".join("?" for _ in unique_paths)
+                existing = {
+                    str(row[0]) for row in con.execute(
+                        f"SELECT path FROM file_usage WHERE root=? AND path IN ({placeholders})",
+                        (resolved_root, *unique_paths),
+                    ).fetchall()
+                }
+            missing_count = len(unique_paths) - len(existing)
+            if missing_count:
+                # Reserve conservative page and index headroom before metadata
+                # writes too; otherwise usage-only paths can bypass the cap.
+                budget = self._reserve_write_budget(resolved_root, missing_count * 1024)
+                if not budget["success"]:
+                    return 0
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                placeholders = ",".join("?" for _ in unique_paths)
+                con.execute(
+                    "UPDATE file_usage SET last_used_at=0 WHERE root=? "
+                    f"AND last_used_at<>0 AND path NOT IN ({placeholders})",
+                    (resolved_root, *unique_paths),
+                )
                 con.executemany(
                     "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
                     "ON CONFLICT(root,path) DO UPDATE SET "
@@ -3700,7 +3745,7 @@ class CodeIndex:
                     "OR excluded.last_used_at<>file_usage.last_used_at",
                     rows,
                 )
-            con.commit()
+                con.commit()
         return len(rows)
 
     def measure_storage(self) -> dict[str, int]:

@@ -429,6 +429,58 @@ def test_write_budget_refuses_eviction_when_active_root_snapshot_fails(tmp_path,
     index.close()
 
 
+def test_unindexable_single_file_metadata_respects_code_index_budget(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "large.py").write_text("# too large for this test budget\n", encoding="utf-8")
+    index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}, "code_index": {"max_index_bytes": 1}},
+        RepositoryTools({}),
+    )
+    index.repo_tools.max_file_bytes = 8
+
+    result = index.update_file(str(root), "large.py")
+
+    assert result["budget_limited"] is True
+    with closing(index._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+    index.close()
+
+
+def test_unindexable_batch_metadata_respects_code_index_budget(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "large.py").write_text("# too large for this test budget\n", encoding="utf-8")
+    index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}, "code_index": {"max_index_bytes": 1}},
+        RepositoryTools({}),
+    )
+    index.repo_tools.max_file_bytes = 8
+
+    result = index.update_files_batch(str(root), ["large.py"])
+
+    assert result["budget_limited"] is True
+    with closing(index._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+    index.close()
+
+
+def test_usage_metadata_respects_code_index_budget(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}, "code_index": {"max_index_bytes": 1}},
+        RepositoryTools({}),
+    )
+
+    stored = index.record_usage(str(root), [{"path": "src/new.py", "uses": 1, "last_used_at": time.time()}])
+
+    assert stored == 0
+    with closing(index._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM file_usage").fetchone()[0] == 0
+    index.close()
+
+
 def test_stale_cleanup_only_prunes_paths_confirmed_stale_at_scan_time(tmp_path, monkeypatch):
     index, root = _make_index(tmp_path)
     (root / "module_7.py").unlink()
