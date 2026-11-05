@@ -192,3 +192,36 @@ def test_stale_cleanup_dry_run_reports_without_deleting_shared_parse_cache(tmp_p
             "SELECT 1 FROM files WHERE root=? AND path=?", (str(root), "module_6.py")
         ).fetchone() is not None
     index.close()
+
+
+def test_record_usage_uses_evidence_recency_not_preprocess_time(tmp_path):
+    index, root = _make_index(tmp_path)
+    indexed_path = "module_0.py"
+    with closing(index._connect()) as con:
+        con.execute(
+            "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?)",
+            (str(root), indexed_path, 40, 2_000.0),
+        )
+        con.execute(
+            "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?)",
+            (str(root), "module_1.py", 30, 2_000.0),
+        )
+        con.commit()
+
+    index.record_usage(
+        str(root), [{"path": indexed_path, "uses": 41, "last_used": 1_000.0}]
+    )
+
+    with closing(index._connect()) as con:
+        row = con.execute(
+            "SELECT use_count,last_used_at FROM file_usage WHERE root=? AND path=?",
+            (str(root), indexed_path),
+        ).fetchone()
+    assert tuple(row) == (41, 1_000.0)
+    with closing(index._connect()) as con:
+        absent = con.execute(
+            "SELECT use_count,last_used_at FROM file_usage WHERE root=? AND path=?",
+            (str(root), "module_1.py"),
+        ).fetchone()
+    assert tuple(absent) == (30, 0.0)
+    index.close()

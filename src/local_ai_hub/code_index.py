@@ -3503,9 +3503,8 @@ class CodeIndex:
             return {"success": False, "root": resolved_root, "pruned": 0, "error": str(exc), "busy": is_busy_error(exc)}
 
     def record_usage(self, root: str, paths: list[dict[str, Any]]) -> int:
-        """Persist bounded real-use counters supplied by the evidence store."""
+        """Reconcile bounded usage evidence, keeping missing timestamps cold."""
         resolved_root = canonical_root(root)
-        now = time.time()
         rows: list[tuple[str, str, int, float]] = []
         for item in paths[:256]:
             if not isinstance(item, dict):
@@ -3518,24 +3517,30 @@ class CodeIndex:
             except (TypeError, ValueError, OverflowError):
                 uses = 1
             try:
-                last_used_at = float(item.get("last_used_at", now))
+                last_used_at = float(item.get("last_used_at", item.get("last_used", 0.0)))
             except (TypeError, ValueError, OverflowError):
-                last_used_at = now
+                last_used_at = 0.0
             if not math.isfinite(last_used_at) or last_used_at <= 0:
-                last_used_at = now
+                last_used_at = 0.0
             rows.append((resolved_root, path, uses, last_used_at))
-        if not rows:
-            return 0
         with self._lock, closing(self._connect()) as con:
-            con.executemany(
-                "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
-                "ON CONFLICT(root,path) DO UPDATE SET "
-                "use_count=MAX(file_usage.use_count,excluded.use_count), "
-                "last_used_at=MAX(file_usage.last_used_at,excluded.last_used_at) "
-                "WHERE excluded.use_count>file_usage.use_count "
-                "OR excluded.last_used_at>file_usage.last_used_at",
-                rows,
+            placeholders = ",".join("?" for _ in rows)
+            retain_paths = f" AND path NOT IN ({placeholders})" if rows else ""
+            con.execute(
+                "UPDATE file_usage SET last_used_at=0 WHERE root=? "
+                f"AND last_used_at<>0{retain_paths}",
+                (resolved_root, *(row[1] for row in rows)),
             )
+            if rows:
+                con.executemany(
+                    "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(root,path) DO UPDATE SET "
+                    "use_count=MAX(file_usage.use_count,excluded.use_count), "
+                    "last_used_at=excluded.last_used_at "
+                    "WHERE excluded.use_count>file_usage.use_count "
+                    "OR excluded.last_used_at<>file_usage.last_used_at",
+                    rows,
+                )
             con.commit()
         return len(rows)
 
