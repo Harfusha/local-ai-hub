@@ -4,12 +4,13 @@ import logging
 import math
 import random
 import re
+import shutil
 import sqlite3
 import stat
 import time
 import threading
 import weakref
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence, TypeVar
 
@@ -685,6 +686,144 @@ def incremental_vacuum(
             con.close()
     except Exception as exc:
         return {"success": False, "error": str(exc), "path": str(p)}
+
+
+def compact_sqlite_database(
+    path: Path | str,
+    *,
+    dry_run: bool = True,
+    timeout_seconds: float = 300.0,
+    offline_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Safely compact an offline SQLite database and verify logical row counts.
+
+    The caller must independently confirm that the owning service is offline.
+    Dry-run mode is read-only and reports the freelist size as an upper bound.
+    """
+    if type(dry_run) is not bool or type(offline_confirmed) is not bool:
+        return {"success": False, "error": "dry_run and offline_confirmed must be booleans"}
+    if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds) or not 1 <= timeout_seconds <= 3600):
+        return {"success": False, "error": "timeout_seconds must be between 1 and 3600"}
+    database = Path(path)
+    if database.is_symlink() or not database.is_file():
+        return {"success": False, "error": "database must be an existing regular file"}
+    if not dry_run and not offline_confirmed:
+        return {"success": False, "error": "offline_confirmation_required"}
+
+    def physical_bytes() -> int:
+        return sum(
+            candidate.stat().st_size for candidate in (
+                database, Path(str(database) + "-wal"), Path(str(database) + "-shm"),
+            ) if candidate.exists() and not candidate.is_symlink()
+        )
+
+    def open_read_only() -> sqlite3.Connection:
+        uri = database.resolve(strict=True).as_uri() + "?mode=ro"
+        return sqlite3.connect(uri, uri=True, timeout=5.0)
+
+    def measure() -> dict[str, int]:
+        with closing(open_read_only()) as connection:
+            page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+            page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+            freelist_pages = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+        return {
+            "page_count": page_count,
+            "page_size": page_size,
+            "freelist_pages": freelist_pages,
+            "physical_bytes": physical_bytes(),
+        }
+
+    try:
+        before = measure()
+    except sqlite3.DatabaseError as exc:
+        return {"success": False, "error": type(exc).__name__, "path": str(database)}
+    estimated_reclaimable = before["freelist_pages"] * before["page_size"]
+    estimated_compacted = max(0, before["page_count"] - before["freelist_pages"]) * before["page_size"]
+    free_disk_bytes = shutil.disk_usage(database.parent).free
+    result: dict[str, Any] = {
+        "success": True,
+        "dry_run": dry_run,
+        "path": str(database),
+        "before": before,
+        "estimated_reclaimable_bytes": estimated_reclaimable,
+        "estimated_compacted_bytes": estimated_compacted,
+        "free_disk_bytes": free_disk_bytes,
+    }
+    if dry_run:
+        return result
+
+    required_free_bytes = estimated_compacted * 2 + 64 * 1024 * 1024
+    if free_disk_bytes < required_free_bytes:
+        return {
+            **result, "success": False, "error": "insufficient_disk_space",
+            "required_free_bytes": required_free_bytes,
+        }
+
+    row_counts_before: dict[str, int] = {}
+    connection: sqlite3.Connection | None = None
+    deadline = time.monotonic() + float(timeout_seconds)
+    try:
+        connection = sqlite3.connect(database, timeout=5.0)
+        connection.execute("PRAGMA busy_timeout=5000")
+        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint and int(checkpoint[0]) != 0:
+            return {**result, "success": False, "error": "database_busy", "checkpoint": list(checkpoint)}
+        table_names = [str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )]
+        for name in table_names:
+            quoted = '"' + name.replace('"', '""') + '"'
+            row_counts_before[name] = int(connection.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
+        connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+        connection.execute("VACUUM")
+        connection.set_progress_handler(None, 0)
+        checkpoint_after = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint_after and int(checkpoint_after[0]) != 0:
+            return {
+                **result, "success": False, "error": "post_vacuum_checkpoint_busy",
+                "checkpoint": list(checkpoint_after), "row_counts_before": row_counts_before,
+            }
+    except (sqlite3.DatabaseError, OSError, RuntimeError) as exc:
+        if connection is not None:
+            try:
+                connection.set_progress_handler(None, 0)
+            except sqlite3.DatabaseError:
+                pass
+        return {
+            **result, "success": False, "error": type(exc).__name__,
+            "row_counts_before": row_counts_before,
+            "after": measure() if database.exists() else None,
+        }
+    finally:
+        if connection is not None:
+            connection.close()
+
+    try:
+        with closing(open_read_only()) as verify:
+            integrity = str(verify.execute("PRAGMA integrity_check").fetchone()[0])
+            row_counts_after = {
+                name: int(verify.execute('SELECT COUNT(*) FROM "' + name.replace('"', '""') + '"').fetchone()[0])
+                for name in table_names
+            }
+        after = measure()
+    except sqlite3.DatabaseError as exc:
+        return {
+            **result, "success": False, "error": type(exc).__name__,
+            "row_counts_before": row_counts_before,
+            "after": measure() if database.exists() else None,
+        }
+    verified = integrity == "ok" and row_counts_before == row_counts_after
+    return {
+        **result,
+        "success": verified,
+        "verified": verified,
+        "integrity_check": integrity,
+        "row_counts_before": row_counts_before,
+        "row_counts_after": row_counts_after,
+        "after": after,
+        "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+    }
 
 
 def optimize_db(
