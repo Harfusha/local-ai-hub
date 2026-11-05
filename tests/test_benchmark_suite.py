@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.benchmark import HardwareBenchmarkRunner
+from local_ai_hub.scheduler import QueueFullError
 
 
 def test_benchmark_runner_metrics_and_persistence(tmp_path: Path) -> None:
@@ -187,6 +188,43 @@ def test_hardware_benchmark_preserves_scheduler_admission_failure(tmp_path: Path
     assert result["success"] is False
     assert result["error_code"] == "model_preparation_required"
     assert result["operation_not_started"] is True
+    assert not benchmarks_file.exists()
+
+
+def test_hardware_benchmark_preserves_scheduler_queue_rejection_reason(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("rejected benchmark must not reach inference")
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            raise QueueFullError(
+                "insufficient VRAM for model admission",
+                admission={
+                    "state": "rejected",
+                    "reason": "vram_budget",
+                    "vram_admission": "rejected",
+                    "retryable": False,
+                },
+                retryable=False,
+            )
+
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=benchmarks_file,
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is False
+    assert result["error"] == "insufficient VRAM for model admission"
+    assert result["error_code"] == "vram_budget"
+    assert result["admission_state"] == "rejected"
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert result["vram_admission"] == "rejected"
     assert not benchmarks_file.exists()
 
 

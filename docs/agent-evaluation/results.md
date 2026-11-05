@@ -2128,6 +2128,53 @@ Do not promote review, test suggestion, or failure diagnosis from these samples.
 - Created clean isolated fixtures outside the Hub checkout: A1 at `C:\Users\Adam\Documents\LocalAIHub-Eval-20261105\A1` (HEAD `aad38c580fd5851f4a7f9f951a99927ea32048fd`, fixture SHA-256 `868c9a8685b5fce105814538c0551b54ac44edbe5f18a310e0c14b9b6e2d859f`) and A2 at `C:\Users\Adam\Documents\LocalAIHub-Eval-20261105\A2` (HEAD `6e6482a04a3b319b47c2a62fa11dd7779527aea4`, fixture SHA-256 `9a99d2ce40d0106c0df8ba217cdda72db322e5e0f58979baad79591cda267ded`). Both started clean; neither contains `.local-ai.toml` or `.local-ai.worktree.toml`.
 - One preprocess registration per fixture succeeded but both were queued at inventory with zero files (`req_8211d3bb904c`, `req_1ba34d8ea539`). Do not poll asynchronous preprocessing.
 - Bounded `local_ai_repo search` returned terminal 413 with no result rows on both fixture roots, including limit 1 (`total_matches` was 2 for A1 and 3 for A2). No evidence IDs were produced. Exact source slices were available through `local_ai_artifact`, but that does not supply the indexed evidence IDs required by the fixed-case solve protocol.
-- A1 and A2 solve were **NOT_RUN**. No model output, quality score, or promotion claim. Resume only when the registered fixture has completed preprocessing and a fresh indexed search can supply authentic evidence IDs; do not retry or poll the current in-progress preprocessing calls.
+- The live `local_ai_repo(action="solve")` attempt returned terminal 400 because the active MCP schema did not expose `solve`; source policy gates it behind `local_semantic_analysis`, high profile and task qualification. No model call occurred. A1/A2 solve remain **NOT_RUN**; the flag was not enabled. A2 also lacks dispatcher evidence after MCP transport failed.
 
 - Cleanup of the two unused initial `%TEMP%` fixture directories partially removed their generated source files but left hidden `.git\objects` directories. The explicit recursive `-Force` cleanup request was rejected by automatic approval review, so no further deletion or permission change was attempted. The two persistent Documents fixtures listed above remain clean and are the only fixtures retained for any future A1/A2 run.
+
+### Runtime/status and focused regression update — 2026-11-05
+
+- Current `hubctl status --json` reports RTX 5070 Ti, CUDA, driver 621.01, and effective hardware profile `high`; managed Ollama profile is verifiable, with `num_parallel=2` and `max_loaded_models=1`. Current loaded-model list is empty. Managed llama.cpp reports CUDA0, online, selected, with `qwen3.5:4b-nvfp4`; model execution targets remain configuration, not a measured profile qualification. Current `local_ai_status` reported Hub/Ollama online but active model and VRAM pressure unknown.
+- Targeted resource/scheduler validation: `python -m pytest -q --tb=short tests/test_resource_backpressure.py tests/test_t12_runtime_scenarios.py` — **51 passed**. This is unit/runtime-contract evidence, not a physical low-memory or provider-failure GPU run.
+- Fresh A1 fixture search succeeded through lexical fallback despite `rag_index_missing`: caller evidence `E1741e12069a7687ef510` (`src/checkout.py:1-6`) and callee evidence `E31b3f3977510e1f60231` (`src/pricing.py:1-4`). Solve remains NOT_RUN because the action is gated off in the active MCP schema; no model inference occurred.
+- Fresh A2 fixture search returned constraint evidence `E2e662c1610a9f3fac5f5` (`README.md:1-6`). The next dispatcher page and model solve were not obtained after MCP transport failure; A2 remains NOT_RUN.
+- After the MCP transport failure, one `local_ai_status` call also failed to send. Native `hubctl service-status` then confirmed the Hub service ready, current supervisor PID 11772 / Hub PID 35336, Ollama online, no service error. No further restart was performed. Full suite remains NOT_RUN.
+- Targeted capability-gate tests: four `tests/test_features.py` cases for tier actions, high-profile non-promotion and capability reasons passed; two MCP cases for disabled `repo.solve` admission and status projection passed (**6 passed** total). `local_semantic_analysis` remains off; high hardware profile alone does not expose unqualified semantic actions.
+
+### A1/A2 compression diagnostics — qwen3.5:9b-nvfp4, 2026-11-05
+
+These were advisory `local_ai_task(action="compress")` calls using the authentic lexical evidence IDs. They are diagnostics only; they do not invoke the gated `local_ai_repo.solve` action.
+
+- **A1 — FAIL diagnostic**, request `req_098371c30342`: cited caller/callee evidence and recognized whole-percent versus decimal-fraction mismatch, but omitted the required 22,000-cent and 1,210-cent comparison. No edits/tests.
+- **A2 — FAIL diagnostic**, request `req_b544c1f761f2`: repeated source facts but proposed no crash-window handling, provider idempotency key, durable outbox, or tradeoffs. Hub semantic quality guard returned `bypass_reason=unrelated_output`, `usable=false`. No edits/tests.
+- Model identity was reported as `qwen3.5:9b-nvfp4`; no request-bound digest, task-quality pass, or GPU telemetry was returned. Neither capability is qualified.
+
+### A1/A2 direct eval_suite diagnostic — qwen3.5:9b-nvfp4, 2026-11-05
+
+- Suite `gpu-fixed-cases-A1-A2-20261105-9b`, request `req_76aa3f54e959`; Hub v5.1.3 returned model `qwen3.5:9b-nvfp4`, roles `reasoning` and `general`. This direct eval-suite diagnostic does not invoke the gated repository `solve` action.
+- **A1 — FAIL:** output claimed 2,200 cents current and 210 cents intended; correct values from the supplied formula are 22,000 and 1,210 cents. The returned full preview confirms arithmetic failure.
+- **A2 — FAIL quality gate:** substring `outbox` matched, but the quality checker reports `quality_pass=false`; its 258-character output preview is truncated, so the full crash-window and tradeoff rubric cannot be confirmed. The suite summary reports 1/2 substring passes and **0/2 quality passes**.
+- No model digest was bound to the request; local registry hash is documented above. No GPU telemetry or paired baseline. No role promotion.
+- A separate six-case 4B suite request (`req_c5b0ad9bfb7a`) returned `response_budget.truncated=true` and no case results; it is unscorable, not a pass or fail. It was not retried.
+
+### qwen2.5-coder:7b A1/A2 direct eval_suite diagnostic — 2026-11-05
+
+- Suite `gpu-fixed-cases-A1-A2-20261105-7b`, request `req_76dc7768daba`; model role `heavy_code`.
+- **A1 — UNAVAILABLE:** preparation admission rejected with `target_vram_estimate_unavailable`; no model output. No fallback or retry.
+- **A2 — FAIL quality gate:** expected substring `outbox` matched, but `style_quality.quality_pass=false`; 385-character output preview was truncated and full design/tradeoffs could not be checked. The suite reports 1/2 substring passes, 0/2 quality passes, and one execution failure.
+- This is an observed provider-admission refusal, not proof of low-memory behavior or a measured GPU stress case. No model digest, VRAM telemetry, or role qualification.
+
+### Hub restart and focused admission regression — 2026-11-05
+
+- User-requested `python tools/hubctl.py restart` returned `restarted`. `hubctl service-status --json` then reported `state=running`, `hub_ready=true`, Ollama online, no last error; supervisor PID 34852 and Hub PID 23224. `local_ai_status` also confirmed Hub/Ollama online, with `qwen3.5:4b-nvfp4` active.
+- Post-restart `hubctl status --json`: effective profile `high`, NVIDIA RTX 5070 Ti, CUDA, driver 621.01, 16,303 MiB VRAM; managed Ollama verifiable, parallel limit 2, max loaded models 1; managed llama.cpp CUDA0 online/selected with `qwen3.5:4b-nvfp4`. Configured model routes do not prove installed availability or task quality.
+- Focused scheduler admission regression: `python -m pytest -q tests/test_scheduler_post_unload_telemetry.py tests/test_t12_scheduler_scenarios.py -k "post_unload or vram_admission or vram_estimate" --tb=short` — **13 passed, 19 deselected**. Existing unknown-estimate path remains fail-closed; the prior 7B refusal is not a low-memory stress result.
+- No full suite or release suite run, per user instruction. Cold-start, long-context/concurrency, per-process VRAM attribution, paired baseline and capability quality gates remain open.
+- Advisory `local_ai_task(action="compress")` review request `req_f43540469139` was rejected before inference: `qwen3.5:9b-nvfp4` admission returned `target_vram_estimate_unavailable`. No output and no retry; this does not alter the test result.
+
+### Post-restart 4B hardware sample — 2026-11-05
+
+- Current source HEAD: `e9358c3b6b794f5391422d54dff5e6f1a9fa4f1e`. Hub 5.1.3 ready; RTX 5070 Ti/CUDA, driver 621.01, effective profile `high`. Installed tags: `qwen3.5:9b-nvfp4`, `qwen3.5:4b-nvfp4`, `qwen3.5:9b`, `qwen2.5-coder:7b`, `qwen2.5-coder:3b`, `qwen2.5-coder:1.5b`, `qwen3-embedding:0.6b`. Managed llama.cpp CUDA0 selected, model `qwen3.5:4b-nvfp4` online. Scheduler model estimate configured for 4B only; no 7B/9B estimates.
+- First post-restart 4B attempt (`req_2d2bd11d4153`) returned generic `QueueFullError`; no inference metrics. Queue was empty on the following status read, but the rejection cause was not exposed by the then-running code. A distinct request succeeded after the diagnostic code change and Hub restart.
+- Successful sample `req_557984ebe349`: `qwen3.5:4b-nvfp4`, 6 generated tokens, 27.75 tokens/s, 216.2 ms full-call latency (`streaming=false`, not TTFT), queue wait 5.49 ms, device-wide sampled peak 8,900,313,088 bytes. Initial/final VRAM sample: 8,488 MiB used, 7,508 MiB available of 16,303 MiB; dynamic context 32,768, nominal pressure. `policy_measurement_basis=dedicated_observed`.
+- Treat residency as unknown for this sample: scheduler reported one prewarm and llama.cpp model online, so this is not classified as cold. Single short-output performance sample, not model-quality or context-capacity evidence.

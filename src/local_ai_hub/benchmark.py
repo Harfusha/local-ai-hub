@@ -866,9 +866,21 @@ class HardwareBenchmarkRunner:
                     wait_timeout=wait_timeout,
                 )
             except Exception as exc:
-                from .scheduler import SchedulerTimeoutError
+                from .scheduler import QueueFullError, SchedulerTimeoutError
 
                 result: dict[str, Any] = {"success": False, "model": target_model, "error": type(exc).__name__}
+                if isinstance(exc, QueueFullError):
+                    admission = exc.admission if isinstance(exc.admission, Mapping) else {}
+                    reason = admission.get("reason")
+                    result["error"] = str(exc)
+                    if isinstance(reason, str) and reason:
+                        result["error_code"] = reason
+                    result["admission_state"] = exc.admission_state
+                    result["retryable"] = exc.retryable
+                    result["terminal"] = exc.terminal
+                    vram_admission = admission.get("vram_admission")
+                    if isinstance(vram_admission, str):
+                        result["vram_admission"] = vram_admission
                 if isinstance(exc, TimeoutError):
                     result.update(timed_out=True, outcome_unknown=True, retryable=False)
                     if isinstance(exc, SchedulerTimeoutError):

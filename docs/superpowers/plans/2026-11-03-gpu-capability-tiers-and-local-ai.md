@@ -94,7 +94,7 @@ Profiles are ceilings, not proof of readiness. Resolve effective profile from ex
 
 ## Workstream 6 — RTX 5070 Ti and hardware evaluation
 
-- [ ] Inspect active effective profile, installed model tags, device/backend selection and memory availability through approved status and benchmark interfaces. Record observed revision, driver/backend versions, context, quantization and model identity. Do not pull models or change providers without explicit authorization.
+- [x] Inspect active effective profile, installed model tags, device/backend selection and memory availability through approved status and benchmark interfaces. Recorded source revision, driver/backend, model tags, context, quantization, model identity and VRAM sample in `docs/agent-evaluation/results.md`. No model pull or provider change.
 - [ ] Benchmark representative available models and capability workloads on RTX 5070 Ti; collect real GPU residency/offload, peak VRAM, prompt and generation throughput, latency, concurrency, context length and errors. Measure warm and cold cases separately and preserve artifacts.
 - [ ] Evaluate quality against task-specific labeled cases and baseline: grounded search summary, cross-file analysis, review, vision where supported and bounded edits. Report passes, failures and sample limitations; benchmark-runner success alone is not quality success.
 - [ ] Use measurements to propose `high` model routes and context/concurrency limits. Define promotion thresholds and regression checks before claiming readiness. Candidate models, missing weights and unmeasured hardware remain explicitly unqualified.
@@ -331,3 +331,38 @@ Still open before this plan can be accepted:
 ### Cleanup note — unused temporary fixture residue
 
 - The initial `%TEMP%` A1/A2 copies were unused. A non-forced removal hit hidden `.git` contents and partially removed them. After checking the remaining exact paths and confirming the ACL, automatic approval review rejected the targeted recursive `-Force` cleanup. The residue is limited to two hidden `.git\objects` directories. No permission change or bypass was made; the persistent Documents fixtures remain clean.
+
+### Checkpoint addendum — 2026-11-05, current status and regression evidence
+
+- Effective hardware profile is now confirmed as `high`; driver 621.01, RTX 5070 Ti/CUDA. Managed Ollama is verifiable, parallel limit 2, max loaded models 1; current status had no loaded model and VRAM pressure unknown. This closes inventory only, not GPU qualification.
+- `tests/test_resource_backpressure.py` plus `tests/test_t12_runtime_scenarios.py`: 51 passed. Physical low-memory/provider-failure behavior remains unmeasured.
+- A1 lexical fallback supplied caller and callee evidence IDs, but MCP transport failure prevented solve. A2 has README constraint evidence only; dispatcher source and solve remain unavailable. No async preprocessing was polled.
+- Current native service status is ready (supervisor 11772, Hub 35336, Ollama online); MCP transport still failed during the A2 evidence request and status retry. No restart. Keep the objective active and the remaining plan gates open.
+- The live MCP schema rejected `local_ai_repo.solve` as unavailable. Source registry and focused tests confirm this action requires high profile, the default-off `local_semantic_analysis` flag, and task-specific qualification. Tests: four focused `tests/test_features.py` tier/capability cases plus two MCP gate/status cases — 6 passed. High profile alone does not promote the action. No flag/config change was made; A1/A2 remain NOT_RUN pending a permitted, qualified evaluation path.
+
+### Checkpoint addendum — 2026-11-05, A1/A2 compression diagnostics
+
+- With authentic A1/A2 lexical evidence IDs, `local_ai_task.compress` produced only diagnostics because `local_ai_repo.solve` remains gated off. A1 omitted required numbers; A2 gave no retry-safe design and was rejected by semantic quality guard (`unrelated_output`). Both fail the requested quality criteria; no role promotion.
+- Keep `local_semantic_analysis` disabled. The 4B/9B runtime selection and A1/A2 `solve` quality remain unqualified; do not substitute these compression outputs for repository solve evidence.
+
+### Checkpoint addendum — 2026-11-05, A1/A2 direct evaluation
+
+- Direct `eval_suite` for qwen3.5:9b-nvfp4 produced A1 arithmetic failure (2,200/210 cents instead of 22,000/1,210) and A2 quality failure. Overall 0/2 quality passes; no promotion. This tests text generation only, not the gated repository solve path.
+- The six-case 4B suite was response-truncated and unscorable; it was not retried. No paired quality comparison exists. Keep all high-risk semantic actions gated.
+
+### Checkpoint addendum — 2026-11-05, 7B admission and quality
+
+- `qwen2.5-coder:7b` A1/A2 eval suite had one real admission refusal (`target_vram_estimate_unavailable`) and one incomplete A2 response with quality gate false. No retry or fallback. This verifies a fail-closed admission path, but does not establish low-memory recovery or heavy-code quality. Keep route unqualified.
+
+### Checkpoint addendum — 2026-11-05, Hub restart and focused admission regression
+
+- User-requested `python tools/hubctl.py restart` succeeded. Service status confirmed ready Hub and online Ollama; MCP status confirmed `qwen3.5:4b-nvfp4` active. Post-restart inventory: RTX 5070 Ti/CUDA, driver 621.01, 16,303 MiB VRAM, effective profile `high`, managed llama.cpp CUDA0 online/selected. Routes remain unqualified by this inventory.
+- Targeted scheduler admission tests passed: 13 passed, 19 deselected. Unknown model VRAM estimate remains fail-closed; the prior 7B refusal is not a low-memory stress result.
+- Full/release suites not run, per user instruction. Cold-start, long-context/concurrency, per-process VRAM attribution, paired baseline and task-quality gates remain open.
+- Optional semantic compression review was unavailable: request `req_f43540469139` hit `target_vram_estimate_unavailable` for `qwen3.5:9b-nvfp4`; no retry. Diff and claims checked manually.
+
+### Checkpoint addendum — 2026-11-05, post-restart 4B admission and measurement
+
+- Confirmed current installed model tags and effective `high` profile on RTX 5070 Ti/CUDA, driver 621.01. Active installation has a 6 GiB estimate for 4B; 7B/9B estimates are absent. The first post-restart 4B benchmark returned generic `QueueFullError`; after scheduler telemetry settled, a distinct 4B request succeeded.
+- Successful 4B sample: 27.75 tokens/s, 216.2 ms full-call latency, 5.49 ms queue wait, device-wide peak 8,900,313,088 bytes, 32,768 dynamic context. Residency class remains unknown; this is not cold-start or quality evidence. Full sample and request identity are in `docs/agent-evaluation/results.md`.
+- Fixed benchmark admission failures to preserve scheduler error text, reason code, retryability and safe admission state. Focused regression test passed; no full suite run.
