@@ -5,6 +5,8 @@ pinned_context = ["README.md", "defaults.toml"]
 entry_points = ["src", "tools"]
 exclude_paths = [
     ".pytest_cache/**",
+    ".merge-checks/**",
+    "**/*.egg-info/**",
     ".handoff/**",
     "state/**",
     "**/__pycache__/**",
@@ -18,6 +20,8 @@ exclude_paths = [
 [preprocess]
 exclude_paths = [
     "state/**",
+    ".merge-checks/**",
+    "**/*.egg-info/**",
     ".handoff/**",
     "generated-artifact-archive/**",
     "logs/**",
