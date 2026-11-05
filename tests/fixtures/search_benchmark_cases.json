@@ -102,6 +102,14 @@
       "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "lexical_fallback"}]
     },
     {
+      "id": "english-install-without-ollama",
+      "query": "How do I set up Local AI Hub on Windows without running Ollama?",
+      "language": "en",
+      "expected_paths": ["docs/INSTALLATION.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "do not install or start Ollama"}]
+    },
+    {
       "id": "negative-unknown-symbol",
       "query_b64": "bm9uZXhpc3RlbnRfYWdlbnRfc3ltYm9sXzIwMjYxMTA0",
       "language": "symbol",
