@@ -26,12 +26,53 @@ from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root, hidden_run_kwargs, popen_managed, terminate_tree
 from .retrieval import is_source_context_query, source_context_path_tier
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
+from .search_modes import prefers_lexical_precision
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 MAX_EXACT_SEARCH_FILES = 8000
 MAX_EXACT_GIT_PATHS = 128_000
 MAX_EXACT_GIT_PATH_BYTES = 32 * 1024 * 1024
+_INSTALLATION_INTENT_TERMS = frozenset({
+    "install", "installation", "setup", "configure", "configuration", "quickstart",
+    "nainstalovat", "instalovat", "instalace", "nastavit", "nastavení", "spustit",
+})
+
+
+@lru_cache(maxsize=1024)
+def _intent_query_terms(query: str) -> frozenset[str]:
+    return frozenset(term.casefold() for term in tokenize_query_terms(query))
+
+
+@lru_cache(maxsize=8192)
+def _intent_path_adjustment(query: str, relative_path: str) -> float:
+    """Prefer user-facing install guides over tests for natural how-to queries."""
+    if prefers_lexical_precision(query):
+        return 0.0
+    query_terms = _intent_query_terms(query)
+    if not query_terms.intersection(_INSTALLATION_INTENT_TERMS):
+        return 0.0
+    path = relative_path.casefold().replace("\\", "/").strip("/")
+    if not path or any(part in {"plans", "specs", "superpowers"} for part in path.split("/")):
+        return 0.0
+    name = path.rsplit("/", 1)[-1]
+    if path.startswith("tests/") or "/tests/" in path:
+        return -8.0
+    if path in {"readme.md", "docs/readme.md"}:
+        return 24.0
+    install_intent = query_terms.intersection({
+        "install", "installation", "nainstalovat", "instalovat", "instalace",
+    })
+    setup_intent = query_terms.intersection({"setup", "quickstart", "spustit"})
+    configuration_intent = query_terms.intersection({"configure", "configuration", "nastavit", "nastavení"})
+    documentation_entrypoint = (
+        (install_intent and name.startswith(("install", "setup", "getting_started", "getting-started", "quickstart")))
+        or (setup_intent and name.startswith(("setup", "getting_started", "getting-started", "quickstart")))
+        or (configuration_intent and name.startswith(("configure", "configuration", "setup")))
+    )
+    if path.startswith("docs/") and name.endswith(".md") and documentation_entrypoint:
+        return 56.0
+    return 0.0
 
 
 class GitFileInventory(list[Path]):
@@ -2366,6 +2407,7 @@ class RepositoryTools:
                         title_matches = sum(1 for term in expanded_terms if term in stem)
                         score += min(40.0, title_matches * 20.0)
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
+                    score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
@@ -2421,6 +2463,7 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
                     score += sum(min(low.count(t), 3) * 0.5 for t in matched)
+                    score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines)
                     end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)

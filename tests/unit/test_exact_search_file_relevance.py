@@ -1,4 +1,4 @@
-from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.repo_tools import RepositoryTools, _intent_path_adjustment
 
 
 def test_search_prioritizes_distinct_terms_across_file_over_repetition(tmp_path):
@@ -22,3 +22,48 @@ def test_identifier_search_prioritizes_definition_over_import(tmp_path):
 
     assert result["success"] is True
     assert [item["path"] for item in result["results"]] == ["z_definition.py", "a_import.py"]
+
+
+def test_installation_intent_prefers_user_documentation_over_tests(tmp_path):
+    docs = tmp_path / "docs"
+    tests = tmp_path / "tests"
+    docs.mkdir()
+    tests.mkdir()
+    (docs / "INSTALLATION.md").write_text(
+        "# Local AI Hub installation\n\nInstall and run the Hub on Windows.\n"
+        "Jak nainstalovat a spustit Local AI Hub ve Windows.\n",
+        encoding="utf-8",
+    )
+    (tests / "test_installation.py").write_text(
+        "\n".join(
+            f'def test_install_local_ai_hub_windows_{index}(): '
+            'assert "how to install the local AI hub on windows"; '
+            'assert "jak nainstalovat a spustit local ai hub ve windows"'
+            for index in range(8)
+        ) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "install.ps1").write_text(
+        "\n".join("# How to install the local AI Hub on Windows" for _ in range(8)) + "\n",
+        encoding="utf-8",
+    )
+    tools = RepositoryTools({"rag": {"extensions": [".md", ".py"]}})
+
+    for query in (
+        "How to install the local AI Hub on Windows",
+        "Jak nainstalovat a spustit Local AI Hub ve Windows",
+    ):
+        result = tools.search(str(tmp_path), query, exact_count=False)
+
+        assert result["success"] is True
+        assert result["results"][0]["path"] == "docs/INSTALLATION.md"
+
+
+def test_installation_intent_boost_targets_docs_not_install_scripts():
+    query = "How to install the local AI Hub on Windows"
+
+    assert _intent_path_adjustment(query, "docs/INSTALLATION.md") > 0
+    assert _intent_path_adjustment(query, "install.ps1") == 0
+    assert _intent_path_adjustment(query, "docs/CONFIGURATION.md") == 0
+    assert _intent_path_adjustment("How to configure the Hub", "docs/CONFIGURATION.md") > 0
+    assert _intent_path_adjustment("INSTALL Local AI Hub", "docs/INSTALLATION.md") > 0

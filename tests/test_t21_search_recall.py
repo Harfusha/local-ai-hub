@@ -63,7 +63,7 @@ def test_root_search_hint_preserves_broad_recall_and_project_excludes(
     services._repo_cache_state = lambda _root: {
         "fingerprint": "workspace-1", "stale": False, "degraded": False,
     }
-    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+    services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
 
     result = services.repo_search(str(tmp_path), "needle", top_k=10)
 
