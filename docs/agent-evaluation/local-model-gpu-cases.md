@@ -16,8 +16,11 @@ RTX 4060. Target-GPU behavior remains untested.
 
 To prepare a case, run
 `python tools/prepare_local_model_eval_fixture.py --case I1 --destination ABS_NEW_PATH`.
-Choose an absolute, non-existing path outside any Git checkout with an existing
-parent. The tool creates a disposable Git repository and baseline commit and
+Choose an absolute, non-existing path outside any existing Git checkout with
+an existing parent in a stable, user-controlled directory. Avoid system and
+temporary directories: Local AI Hub may deliberately ignore them during
+preprocessing, leaving cross-file evaluation without indexed evidence. The tool
+creates a disposable Git repository and baseline commit and
 prints its fixture digest and HEAD; it does not run the case. If preparation
 fails, it can leave that new fixture directory for operator inspection.
 

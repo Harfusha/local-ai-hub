@@ -1004,11 +1004,18 @@ class HardwareBenchmarkRunner:
         t_end = time.perf_counter()
 
         generation_start = t0 if t0 is not None else t_end
-        ttft_ms = round((first_token_time - generation_start) * 1000, 2) if first_token_time else round((t_end - generation_start) * 1000, 2)
+        call_latency_ms = round(max(0.0, (t_end - generation_start) * 1000), 2)
+        ttft_ms = (
+            round(max(0.0, (first_token_time - generation_start) * 1000), 2)
+            if streaming and first_token_time is not None
+            else None
+        )
+        latency_basis = "ttft" if ttft_ms is not None else "full_call"
+        score_latency_ms = ttft_ms if ttft_ms is not None else call_latency_ms
         gen_duration = max(0.001, (generation_duration_ns / 1e9) if generation_duration_ns else t_end - (first_token_time or generation_start) if streaming else t_end - generation_start)
         tps = round(tokens_count / gen_duration, 2) if tokens_count > 0 else 0.0
 
-        # Composite score 0..100 based on TTFT and TPS
+        # Composite score 0..100 based on the available latency measurement and TPS.
         score: float | None
         measurement_warning = ""
         if tokens_count < 2:
@@ -1020,8 +1027,8 @@ class HardwareBenchmarkRunner:
             # above the cutoff.  This keeps 0..100 bounded while preserving
             # meaningful separation for routing and benchmark history.
             tps_part = min(60.0, (tps / 100.0) * 60.0)
-            ttft_part = min(40.0, 40.0 * math.exp(-max(0.0, ttft_ms) / 3000.0))
-            score = round(tps_part + ttft_part, 1)
+            latency_part = min(40.0, 40.0 * math.exp(-max(0.0, score_latency_ms) / 3000.0))
+            score = round(tps_part + latency_part, 1)
 
         final_vram = {}
         if self.vram_balancer and hasattr(self.vram_balancer, "sample_vram"):
@@ -1065,6 +1072,8 @@ class HardwareBenchmarkRunner:
                 else "backend_eval_count"
             ),
             "ttft_ms": ttft_ms,
+            "call_latency_ms": call_latency_ms,
+            "latency_basis": latency_basis,
             "tokens_per_second": tps,
             "hardware_score": score,
             "generation_duration_ms": round(gen_duration * 1000, 2),
@@ -1126,10 +1135,20 @@ class HardwareBenchmarkRunner:
             )
             if latest is None:
                 return {"available": False}
+            ttft_ms = latest.get("ttft_ms")
+            call_latency_ms = latest.get("call_latency_ms")
+            latency_basis = latest.get("latency_basis")
+            if call_latency_ms is None and latest.get("streaming") is False and isinstance(ttft_ms, (int, float)):
+                # Older non-streaming records stored full-call latency in ttft_ms.
+                call_latency_ms = ttft_ms
+                ttft_ms = None
+                latency_basis = latency_basis or "full_call"
             return {
                 "available": True,
                 "model": latest.get("model", ""),
-                "ttft_ms": latest.get("ttft_ms", 0.0),
+                "ttft_ms": ttft_ms,
+                "call_latency_ms": call_latency_ms,
+                "latency_basis": latency_basis,
                 "tokens_per_second": latest.get("tokens_per_second", 0.0),
                 "hardware_score": latest.get("hardware_score", 0.0),
                 "timestamp": latest.get("timestamp", 0.0),

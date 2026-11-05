@@ -2236,3 +2236,66 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - Twenty sequential samples used the same prompt, 40-token cap, device and verified digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506`. Each generated 16 backend-counted tokens. Device-wide sampled peak ranged 9,291,431,936–9,382,658,048 bytes; pressure stayed nominal with 7,048–7,135 MiB available of 16,303 MiB. Exact per-model VRAM was unavailable in every record.
 - Runner reported `streaming=false` on all twenty: its `ttft_ms` is full-call latency, not true TTFT. Full-call latency p50 178.93 ms, nearest-rank p95 384.64 ms, range 150.23–444.20 ms. Backend throughput p50 89.42 tokens/s, nearest-rank p95 103.64, range 36.02–106.50. Queue wait p50 6.11 ms, nearest-rank p95 34.07 ms, max 123.50 ms. Treat as one short warm scenario; not cold, context, concurrency or stable model VRAM qualification.
 - Request IDs: `req_75e341d1ddcb`, `req_0b892a4ed1e2`, `req_e8d31997c21d`, `req_fc740fb8f578`, `req_60a4579aa6a6`, `req_b7ba8c983f53`, `req_5c3b9f7a9f98`, `req_06637b2131dc`, `req_f57f900f04f6`, `req_04370987e509`, `req_619fcc3835d2`, `req_f5f733484783`, `req_c87266071773`, `req_7b129d1f93f0`, `req_6c4604c9f0b9`, `req_fe7d3e086e40`, `req_cabe989cccf5`, `req_2407305c9b22`, `req_10adad7afc16`, `req_b1cee597c288`.
+
+### Streaming TTFT confirmation — 2026-11-05
+
+- Added a `request_stream` callback path to `HardwareBenchmarkRunner`; the previous installed `TieredOllamaRuntime` exposed callback streaming but no iterator-based `generate_stream`, so live benchmarks fell back to non-streaming `generate` and mislabeled full-call latency as TTFT.
+- After Hub restart, one live callback-stream benchmark succeeded: request `req_4f6cfdaa8ceb`, `streaming=true`, 16 backend tokens, TTFT 100.88 ms, generation 153.12 ms, 104.49 tokens/s, queue 5.96 ms. RTX 5070 Ti device-wide peak 6,229,590,016 bytes; pressure nominal; model digest verified as above. This is one sample; warmth is unknown.
+- Exact model VRAM remained unavailable. Source tracing found `TieredOllamaRuntime.loaded_model_details` dropped `force_refresh`, allowing pre-load cache data. Added forwarding plus focused coverage; live post-fix verification remains pending because post-restart status (`req_a0e06de3e4f1`) returned unknown VRAM and context factor 0.25. No further GPU inference was started.
+
+### Benchmark latency field semantics — 2026-11-05
+
+- Corrected non-streaming benchmark records: `ttft_ms` is now null unless a visible first streamed token was observed. `call_latency_ms` carries the full generation call duration, and `latency_basis` identifies `ttft` or `full_call`. The composite score uses the recorded latency basis and throughput.
+- The summary endpoint exposes both latency fields. Legacy records explicitly marked `streaming=false` are interpreted as full-call latency at read time; stored rows remain unchanged.
+- Failure-first regressions reproduced the false TTFT and missing summary fields, then the focused non-streaming/legacy-summary, persistence/metrics and callback-stream TTFT tests passed (3 passed).
+- Post-change Hub status (`req_bcb609adcb6a`) is online with 4B active but VRAM pressure unknown. No GPU benchmark was started.
+
+### Low-memory admission and provider failure checks — 2026-11-06
+
+- With the Hub online but VRAM pressure unknown (`req_65945454b05c`), no model inference was attempted. Targeted local integration cases with 256 MB available passed across runtime, benchmark and eval-suite admission (4 passed, 11 deselected); rejected cases did not reach generation.
+- Explicitly unavailable post-unload telemetry and benchmark model-error behavior passed (5 cases). These tests establish fail-closed software behavior only; they do not measure the RTX 5070 Ti.
+
+### Compact GPU readiness diagnostics — 2026-11-06
+
+- Added `gpu_admission_state` and sanitized `vram_telemetry` to `local_ai_status`, so agents can distinguish a pending probe from stale, timed-out or unavailable telemetry while retaining fail-closed semantics. The fixed error-code allowlist excludes raw provider details; reservation owners are never exposed.
+- A failure-first case caught a missing-pressure default that showed `nominal`; the field now defaults to `unknown`. The valid, malformed and missing-field focused status cases passed (2).
+- `py_compile`, `git diff --check` and `release_check --allow-installed` passed. Live MCP verification still needs the Hub process restarted to load the source; no inference or hardware claim is made.
+
+### Live compact readiness projection — 2026-11-06
+
+- Live status request `req_940bdeee7414` returned `gpu_admission_state=available` and the new VRAM telemetry fields, proving the projection is loaded. Telemetry remained `available=false`, `error=sample_pending`, `sampling=true`, `stale=true`, `wait_timed_out=false`; pressure stayed `unknown` with context factor `0.25` and 4B active.
+- Scheduler availability alone does not establish measured VRAM headroom. No inference was started and no GPU performance or quality claim is added.
+
+### S1 search-summary quality check — 2026-11-05
+
+- Fixed case `S1` run through `local_ai_task(action="eval_suite")`: request `req_08f2fc006195`, model `qwen3.5:4b-nvfp4`, role `fast_code`, verified installed digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506`, duration 560.76 ms. One case; mechanical result **FAIL** (0/1). Context request, effective context, VRAM and paired baseline were not returned; do not treat as GPU quality qualification.
+- Exact output: `- Code at [src/clamp.py:10-12] uses strict comparisons, accepting values equal to bounds.\n- Index coverage is incomplete; additional matches may be omitted.\n- Uncertainty remains regarding omitted matches.`
+- Mechanical evaluator failed its expected-substring check (`equal to either bound`) and returned `quality_pass=false`. Operator review against the semantic S1 scoring key: **PASS**. “values equal to bounds” states acceptance at both bounds; citation is exact; output has 3 bullets/28 words; coverage uncertainty remains qualified; no count, E1 citation, or asserted omission appears. Fixed case unchanged. Keep the mechanical failure visible. This single case does not qualify the live search-summary route: that endpoint returned truncated output, and no paired baseline or promotion gate exists.
+- A separate fixed S1 attempt on `qwen2.5-coder:7b` (`req_9676e4a7fecc`) verified installed digest `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`, role `heavy_code`, but ended **NOT_RUN** before inference: `model preparation admission rejected: target_vram_estimate_unavailable`. No output or quality score. Scheduler post-unload admission requires a measured or configured target estimate; unknown remains rejected. No estimate was invented or admission bypassed.
+
+### RTX 5070 Ti hardware smoke — 2026-11-05
+
+- Hardware benchmark request `req_86818471a3d1` ran `qwen3.5:4b-nvfp4`, installed digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506`; success, 4 generated tokens, TTFT 232.82 ms, generation 109.91 ms, 36.39 tokens/s, call latency 342.73 ms.
+- Device-wide telemetry: RTX 5070 Ti, 16,303 MiB total, 15,002 MiB used, 994 MiB available, critical pressure (policy pressure 93.903%); sampled peak 15,730,737,152 bytes. Loaded-model VRAM status unavailable; sampling was device-wide, not model-attributed.
+- First short smoke began with `active_model=null`, but cold model residency was not independently confirmed. It provides no route qualification. At that point telemetry was critical, so inference stopped until fresh capacity was observed.
+- Warm follow-up request `req_db02d5fc3e01` used the same verified digest after the model was resident: 28 generated tokens, TTFT 116.22 ms, generation 264.38 ms, 105.91 tokens/s, call latency 380.60 ms. Device-wide VRAM was 8,445 MiB used / 7,551 MiB available; sampled peak 8,855,224,320 bytes. Loaded-model VRAM attribution remains unavailable.
+- This is one initial attempt and one warm follow-up after a separate local review loaded the model, not a controlled or repeatable cold/warm distribution. Peak sampling is device-wide; latency and throughput are single samples. No context-length sweep, concurrency test, prompt-throughput measurement, quality conclusion or route promotion follows.
+
+### A1 cross-file analysis — 2026-11-05
+
+- Prepared isolated fixture `C:\Users\Adam\AppData\Local\Temp\lah-gpu-eval-A1-codex-2026-11-05`, digest `868c9a8685b5fce105814538c0551b54ac44edbe5f18a310e0c14b9b6e2d859f`, HEAD `a7b0cab1e6deebf09023e9262548452d0f07e475`.
+- `local_ai_repo(action="solve", mode="fast")` request `req_c6404de6ff43` returned `qwen3.5:4b-nvfp4` as explorer model, but `semantic_used=false`, no model digest or GPU telemetry, one scanned file, and only checkout evidence `E468df61729cdf5d4640f`. Treat execution and hardware attribution as unverified.
+- Output omitted required file/line/evidence citations and the numeric comparison. It claimed the helper multiplies by the whole percentage, while also reporting the helper as missing evidence. Direct fixture source confirms `checkout.py:3-6` documents whole-percent input and delegates unchanged; `pricing.py:1-4` documents decimal-fraction input and multiplies by `1 + tax_rate`. Quality result: **FAIL** for evidence completeness and unsupported assertion, despite the diagnosis matching the fixture.
+- No changes made to the isolated fixture. This result does not qualify cross-file analysis or GPU performance.
+
+### A1 result summary review — 2026-11-05
+
+- `local_ai_task(action="review")` request `req_4e419f11f89a` reviewed the inventory statement using the A1 request and fixture evidence. `qwen3.5:4b-nvfp4` was admitted on `llama.cpp-cuda`; configured incremental estimate 6,442,450,944 bytes, observed free budget 7,685,013,504 bytes, nominal pressure. Model digest was not returned.
+- Response envelope was truncated; text contained only `{"verdict":"fail"}`. Semantic quality was `usable=false`, `bypass_reason=unrelated_output`; review consistency was `usable=false`, `citation_scope=not_verified`, `invalid_citation_indices=[0,1,2,3,4]`. Treat this review as **UNUSABLE**, not as approval or a complete quality score.
+
+### A1 sparse-context retrieval regression — 2026-11-05
+
+- Stable fixture `C:\Users\Adam\Documents\lah-gpu-eval-A1-codex-2026-11-05` (fixture digest `868c9a8685b5fce105814538c0551b54ac44edbe5f18a310e0c14b9b6e2d859f`) still failed live `solve` request `req_a2d7c2acb9fd`: only `checkout.py` was packed, and `pricing.py` was explicitly missing. A direct lexical search returned both files. This confirmed the gap was not limited to the earlier temporary fixture.
+- Root cause: sparse lexical completion in `_hybrid_context_uncached` ran only when path controls were present. Unhinted `solve` with one indexed candidate skipped its bounded lexical completion pass.
+- Kept sparse lexical completion limited to explicit path controls or `quality_first`; `local_ai_repo:solve` now requests `quality_first`, while ordinary unhinted context retains its single-candidate path. Added a regression proving a one-file index candidate is supplemented by the second lexically relevant file only on the quality-first path, and that the search receives the configured candidate limit. The initial regression failed before the fix. `python -m pytest -q tests/test_context_path_hints_skip_unbounded_scan.py tests/test_pipeline_tool_evidence.py`: **11 passed**.
+- `git diff --check` passed for implementation, focused tests and plan/evaluation notes. A post-fix live model rerun and GPU/model attribution have not been performed; A1 quality and route promotion remain **NOT VERIFIED**. Review request `req_41c80e76dbb7` was queued asynchronously; its returned job ID was not a `local_ai_work` order, so no review result is available.

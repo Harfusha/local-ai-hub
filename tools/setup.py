@@ -241,6 +241,7 @@ def install_skill(source_skill: Path, target: Path) -> None:
 COMPANION_SKILLS: list[str] = [
     "token-economizer",
     "caveman",
+    "plan-led-work",
     "tool-orchestration",
     "ollama-quality-routing",
 ]
@@ -361,7 +362,7 @@ def merge_antigravity_skill_policy(path: Path, backup_enabled: bool) -> None:
     policy = f"""{ANTIGRAVITY_POLICY_BEGIN}
 ## Antigravity automatic skill activation
 
-At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
+At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
 If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.
 {ANTIGRAVITY_POLICY_END}"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -839,11 +840,13 @@ def generate_autosetup_policy(skills_dir: Path) -> str:
     orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
     tok_skill_path = skills_dir / "token-economizer" / "SKILL.md"
     tok_skill = tok_skill_path.as_posix()
+    plan_skill = (skills_dir / "plan-led-work" / "SKILL.md").as_posix()
     return (
         f"{AUTOSETUP_BEGIN}\n"
-        "## Local AI Hub and Token-economizer automatic setup\n\n"
+        "## Local AI Hub, plan-led work, and Token-economizer automatic setup\n\n"
         f"- For every coding or repository task, load and follow `{orch_skill}` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.\n"
         f"- Load and follow `{tok_skill}` before repository discovery for bounded output limits.\n"
+        f"- For substantial multi-step work, load and follow `{plan_skill}`: use Superpowers for specifications; use Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and authentic receipts for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. Report `Done / Next / Blocked` updates at milestones.\n"
         "- Use tools already available in the environment; missing optional setup helpers do not block repository discovery or validation.\n"
         f"{AUTOSETUP_END}"
     )

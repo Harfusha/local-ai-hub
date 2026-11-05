@@ -7096,7 +7096,11 @@ class LocalAIServices:
             lexical_candidate_limit = max(1, min(64, int(search_cfg.get("context_top_k", 14))))
         except (TypeError, ValueError, OverflowError):
             lexical_candidate_limit = 14
-        if path_controls_active and path_inventory_state != "used" and len(candidate_paths) < lexical_candidate_limit:
+        if (
+            (path_controls_active or quality_first)
+            and path_inventory_state != "used"
+            and len(candidate_paths) < lexical_candidate_limit
+        ):
             # Hints bias candidate ordering; they must not turn a bounded adaptive
             # lookup into a search restricted to hinted paths. Fill sparse indexed
             # candidates with a bounded lexical pass, then apply explicit excludes.
@@ -7835,6 +7839,8 @@ class LocalAIServices:
             return {
                 "success": False,
                 "error": "The selected model's prompt budget is too small for a safe diff review.",
+                "terminal": True,
+                "retryable": False,
                 "changed_files": diff.get("changed_files", []),
                 "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
             }
@@ -7848,6 +7854,8 @@ class LocalAIServices:
                     f"A diff fragment exceeds the {review_chunk_token_budget}-token review budget and cannot be split safely. "
                     "Narrow the diff or exclude generated/minified files."
                 ),
+                "terminal": True,
+                "retryable": False,
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),
                 "largest_review_chunk_tokens": largest_review_chunk_tokens,
@@ -7866,6 +7874,8 @@ class LocalAIServices:
                     f"Review requires {len(review_chunks)} segments; the safe limit is "
                     f"{max_review_chunks}. Narrow the diff or lower diff_tokens."
                 ),
+                "terminal": True,
+                "retryable": False,
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),
                 "review_chunks": len(review_chunks),
@@ -8138,7 +8148,41 @@ class LocalAIServices:
         chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
         summaries: list[str] = []
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
-        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")))
+        models = self.config.get("models", {})
+        models = models if isinstance(models, dict) else {}
+        general_model = str(models.get("general", models.get("fast_code", "qwen2.5-coder:7b")))
+        requested_role = args.get("model_role")
+        requested_model = args.get("model")
+        if requested_role is not None and requested_model not in (None, ""):
+            return {
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "compress accepts only one of model_role or model",
+            }
+        if requested_role is not None:
+            if type(requested_role) is not str or requested_role not in {"fast_code", "general"}:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "compress model_role must be fast_code or general",
+                }
+            selected_model = models.get(requested_role)
+            if type(selected_model) is not str or not selected_model.strip():
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": f"compress model_role {requested_role!r} is not configured",
+                }
+            general_model = selected_model
+        elif requested_model not in (None, ""):
+            configured_models = {
+                configured
+                for configured in models.values()
+                if type(configured) is str and configured.strip()
+            }
+            if type(requested_model) is not str or requested_model not in configured_models:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "compress model must match a configured model",
+                }
+            general_model = requested_model
         for index, chunk in enumerate(chunks):
             if cancel_event is not None and cancel_event.is_set():
                 return cancelled()

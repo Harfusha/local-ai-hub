@@ -84,7 +84,7 @@ Profiles are ceilings, not proof of readiness. Resolve effective profile from ex
 
 **Likely owners:** `local_ai_task`, `local_ai_work`, existing bounded executor, broker and evaluation tests. Extend existing work rather than adding an unscoped agent.
 
-- [x] Define read-only cross-file analysis/design through `local_ai_repo: solve`: authorized repository root, deterministic/context evidence, confidence, bounded tool loop and output, cancellation, `high` profile plus default-off semantic-analysis flag, and advisory output. Documented in `docs/LOCAL_MODEL_CAPABILITY_INVENTORY.md`; verification: `tests/unit/test_single_owner_tool_agent.py` and `tests/unit/test_tool_agent_and_trace_context_edge_cases.py` (11 passed). Role-specific quality remains unqualified until evaluation passes.
+- [x] Define read-only cross-file analysis/design through `local_ai_repo: solve`: authorized repository root, deterministic/context evidence, confidence, bounded tool loop and output, cancellation, `high` profile plus default-off semantic-analysis flag, and advisory output. Documented in `docs/LOCAL_MODEL_CAPABILITY_INVENTORY.md`; verification: `tests/unit/test_single_owner_tool_agent.py` and `tests/unit/test_tool_agent_and_trace_context_edge_cases.py` (11 passed). A1 follow-up fixed sparse unhinted context omission by requesting quality-first hybrid retrieval in `solve`; focused context and pipeline tests: 11 passed. Live A1 quality remains unqualified until a post-fix evaluation passes.
 - [x] Audit current work executor: planning, tool calls, file/command limits, write authorization, leases, patch/rollback, receipts, deadline, cancellation, handoff and primary review. Verified limits: caller scope is 1–8 exact paths and 1–8 approved commands; effective plan limit is at most 16 steps; LLM-step config defaults to 24 and caps at 32; deadline accepts 30–7,200 seconds (config default 3,600); validation-command config defaults to 5 and caps at 8; patch files default to 64 and cap at 128; patch bytes default to 2 MiB and cap at 4 MiB; retries default to 2 and cap at 4. Executor revalidates persisted permissions and bounded scope, requires read permission and test+build permissions for execute/bounded, applies patch path/create/delete checks, claims a work-id writer lease and attempt fence, persists exact verification receipts, rejects stale mutation generations, and prevents completion after cancellation. Rollback/recovery, ambiguous outcomes, handoff and ownership/barrier behavior are covered by the focused executor suites above; primary-agent review remains the final acceptance owner.
 - [x] Define benchmark tasks for small fixes/tests (`I1`), related files and runtime behavior (`I2`), cross-file analysis (`A1`) and design (`A2`) in `docs/agent-evaluation/local-model-gpu-cases.md`, with scoring in `local-model-gpu-scoring.md`. Fixture tests verify A1/A2 structure; target-model evaluation remains NOT_RUN until hardware admission and model identity are available. Require task-specific evaluation before bounded editing; preserve current executor fences.
 - [x] Test executor scope, path/command rejection, rollback/recovery, receipts, ambiguous outcomes and ownership/barrier handling. Focused run: 293 passed, 1 skipped across `test_work_orchestrator.py`, `test_bounded_work_scope.py`, `test_bounded_work_recovery_phase.py` and `test_bounded_broker_receipts.py`; symlink case skipped because creation is unavailable. A handoff or model assertion never establishes completion. Further per-model qualification remains separate.
@@ -98,7 +98,7 @@ Profiles are ceilings, not proof of readiness. Resolve effective profile from ex
 - [ ] Benchmark representative available models and capability workloads on RTX 5070 Ti; collect real GPU residency/offload, peak VRAM, prompt and generation throughput, latency, concurrency, context length and errors. Measure warm and cold cases separately and preserve artifacts.
 - [ ] Evaluate quality against task-specific labeled cases and baseline: grounded search summary, cross-file analysis, review, vision where supported and bounded edits. Report passes, failures and sample limitations; benchmark-runner success alone is not quality success.
 - [ ] Use measurements to propose `high` model routes and context/concurrency limits. Define promotion thresholds and regression checks before claiming readiness. Candidate models, missing weights and unmeasured hardware remain explicitly unqualified.
-- [ ] Test low-memory and provider failure behavior without synthetic success. Do not claim full 5070 Ti utilization from model size or theoretical GPU specifications.
+- [x] Test low-memory and provider failure behavior without synthetic success. Targeted checks: 256 MB admission rejects in runtime, benchmark and eval-suite paths (4 passed across selected parameterized cases); explicitly unavailable VRAM and benchmark model-error paths (5 passed). These are mocked/local integration safeguards, not physical GPU measurements.
 
 **Acceptance:** Reproducible evidence supports each recommended route and capability; unknowns remain visible. GPU evaluation does not authorize deployment, model downloads or edits beyond the task scope.
 
@@ -463,3 +463,81 @@ Still open before this plan can be accepted:
 - Post-run reservation status was free. Full results are recorded in `docs/agent-evaluation/results.md`. No cold, concurrency, vision, bounded-edit or 20-repeat performance gate was covered.
 - This same turn then completed 19 more scheduler-mediated warm samples (20 total). Full-call latency p50/p95 was 178.93/384.64 ms; backend throughput p50/p95 89.42/103.64 tokens/s; device-wide peak range 9,291,431,936–9,382,658,048 bytes; exact model VRAM unavailable. All returned `streaming=false`, so their `ttft_ms` fields were full-call latency, not TTFT.
 - Added failure-first coverage for callback-based `request_stream` runtimes; it failed before implementation and then passed. Six focused benchmark tests now pass. The runner uses actual callbacks for TTFT when only the existing `request_stream` interface is available; post-restart live confirmation remains pending.
+
+### Continuation checkpoint — 2026-11-05, true TTFT and refreshed tiered VRAM
+
+- Added and passed a callback-stream regression test (first failed because no `streaming` record existed), then restarted Hub. Live sample `req_4f6cfdaa8ceb` confirms `streaming=true`: TTFT 100.88 ms, generation 153.12 ms, 16 backend tokens, 104.49 tokens/s, queue 5.96 ms; RTX 5070 Ti device-wide peak 6,229,590,016 bytes, nominal pressure. Digest verified. One sample only; warmth unknown.
+- Twenty earlier warm samples remain valid as full-call latency and backend throughput, not TTFT; all were non-streaming. Results and all request IDs are preserved in `docs/agent-evaluation/results.md`.
+- Traced unavailable per-model VRAM to `TieredOllamaRuntime.loaded_model_details` dropping `force_refresh`. Added keyword-only propagation through both tiers and a failure-first test; 4 targeted tests passed across streaming benchmark and tiered VRAM refresh. `git diff --check` and `python tools/release_check.py --allow-installed` passed.
+- Restarted Hub again to load the tiered refresh fix. Post-restart status `req_a0e06de3e4f1` reports online but pressure unknown and context factor 0.25; reservation was free before restart. No inference followed. Exact per-model VRAM confirmation, repeated true-TTFT series, cold start, context/concurrency, other models and task-quality gates remain open.
+
+### Continuation checkpoint — 2026-11-05, non-streaming latency semantics
+
+- Added failure-first assertions for non-streaming records and summary output; the old path exposed a fabricated `0.01 ms` TTFT and omitted full-call latency. The runner now reports `ttft_ms=null`, full call latency separately, and an explicit latency basis. The summary also interprets legacy `streaming=false` records without modifying stored rows. Composite scoring uses the available latency measurement.
+- Focused non-streaming/legacy-summary, benchmark persistence/metrics and callback-stream TTFT tests passed (3). Existing historical non-streaming samples remain labeled in the results document as full-call latency.
+- Hub status `req_bcb609adcb6a` is online, but active 4B VRAM pressure is unknown. No further model call was made. Exact per-model VRAM, refreshed live telemetry, repeated true TTFT and remaining cold/context/concurrency/model-quality gates remain open.
+
+### Continuation checkpoint — 2026-11-06, low-memory and provider failure gate
+
+- Fresh Hub status (`req_65945454b05c`) is online with no active model, but VRAM pressure remains unknown. No inference was started.
+- Re-ran low-memory scheduler integration for 256 MB capacity across runtime, benchmark and eval-suite paths: 4 selected cases passed, 11 deselected. The CUDA fallback was rejected before generation on the constrained cases.
+- Explicitly unavailable post-unload telemetry and benchmark model-error handling passed (5 parameterized/focused cases). The plan's low-memory/provider-failure safety item is closed; physical GPU measurements, task-quality gates and `high` route promotion remain open.
+
+### Continuation checkpoint — 2026-11-06, compact GPU readiness diagnostics
+
+- Source tracing found that compact status reported only `vram_pressure`; it discarded the scheduler admission state and VRAM sampler state/error already present in the live status payload. A pending asynchronous telemetry probe was therefore indistinguishable from a timed-out or unavailable probe.
+- `local_ai_status` now returns a validated `gpu_admission_state` and allowlisted `vram_telemetry` fields (`available`, error category, sampling, staleness and timeout). Private provider details and reservation owners are excluded; both fields are protected from response-budget projection. Updated the capability inventory.
+- Missing VRAM pressure was previously defaulted to `nominal`; a failure-first test caught this and the missing-field fallback is now `unknown`.
+- Focused valid/malformed and missing-field status tests passed (2). `py_compile`, `git diff --check` and `release_check --allow-installed` passed. Live verification still needs the Hub process to load the source change. The repository broker rejects a generic `command` action and returned no native-fallback authorization; no direct restart command was issued. Current live VRAM remains unknown; hardware and quality workstreams remain open.
+
+### Continuation checkpoint — 2026-11-06, live readiness projection
+
+- Live `local_ai_status` request `req_940bdeee7414` returned the new fields from the running Hub: `gpu_admission_state=available`; VRAM `available=false`, `error=sample_pending`, `sampling=true`, `stale=true`, `wait_timed_out=false`; pressure `unknown`, context factor `0.25`, active model `qwen3.5:4b-nvfp4`.
+- This verifies the status projection is live. It does not establish fresh VRAM capacity: the sampler is still pending and the conservative unknown pressure remains. No inference was started; 5070 Ti measurements, paired task-quality gates and route promotion remain open.
+
+### Continuation checkpoint — 2026-11-06, operator-requested Hub restart
+
+- Ran `python tools/hubctl.py restart`; the command returned `restarted`.
+- Post-restart `local_ai_status` request `req_3a5a03988696` reports Hub and Ollama online, VRAM telemetry available, `gpu_admission_state=preparing_model`, and no active model. Pressure reports nominal, but model and admission readiness are not established while preparation is active.
+- Restart restored telemetry sampling, but it does not establish a safely reserved inference endpoint, measured 5070 Ti performance, or task quality. Keep the hardware benchmark and paired quality gates open until readiness is verified.
+
+### Continuation checkpoint — 2026-11-06, fast local search-summary routing
+
+- Hardware smoke benchmark request `req_d671357233ff` used verified installed model `qwen3.5:4b-nvfp4` on RTX 5070 Ti: 212.44 ms TTFT, 73.99 ms generation, 286.43 ms total, 54.06 tokens/s, 4 output tokens; sampled device-wide peak VRAM 9,178,185,728 bytes. Loaded-model VRAM unavailable; one short smoke sample is not a performance or quality qualification.
+- A live `summarize_results=true` search summary did not run: the previous implementation routed compression to `qwen3.5:9b-nvfp4` despite the fast summary use case, and scheduler admission rejected it because target VRAM estimate was unavailable. Source fix adds configured `model_role` selection to `/api/compress` and routes repository search summaries to `fast_code`; explicit roles/models must match configured routes. Default compression remains on the general role.
+- Focused regression suite `tests/unit/test_compress_model_role.py`: 4 passed. `py_compile` and targeted `git diff --check` passed.
+- Restarted updated Hub with `python tools/hubctl.py restart` (`restarted`). Post-restart status request `req_604075e2e0ed`: Hub/Ollama online, telemetry available, `gpu_admission_state=preparing_model`, `active_model=null`.
+- One live `summarize_results=true` attempt (`req_c996a45fed05`) returned search results but rejected its AI summary with `output_truncated=true`; summary remains unavailable. Do not count this as route acceptance or repeat the same request. Index state was stale and one candidate fragment mismatched.
+- Broad GPU performance, task-quality matrix, route promotion, and live summary acceptance remain open. Earlier local semantic diff review job ended in terminal failure; no review result is claimed.
+- After restart, hardware smoke request `req_87a03a08dc12` verified the installed `qwen3.5:4b-nvfp4` digest `56d8c805…`; RTX 5070 Ti dedicated-observed VRAM 16,303 MiB total / 7,042 MiB available, device-wide sampled peak 9,388,949,504 bytes, 136.82 ms TTFT, 100.38 ms generation, 237.2 ms total, 79.7 tokens/s, 8 tokens. `loaded_model_vram_status=unavailable`; `hardware_score=86` is the benchmark tool's smoke score, not task quality. This remains one short sample without cold/warm pair, concurrency, context sweep or task evaluation.
+
+### Continuation checkpoint — 2026-11-05, fixed S1 search-summary evaluation
+
+- Ran only fixed case S1 through `local_ai_task(action="eval_suite")`: request `req_08f2fc006195`, `qwen3.5:4b-nvfp4`, role `fast_code`, digest verified installed. Mechanical evaluator result **FAIL, 0/1**, `quality_pass=false`; exact output and limitations recorded in `docs/agent-evaluation/results.md`.
+- This fails the role-specific search-summary gate. Keep `fast_code` search summaries unqualified pending a passing fixed S1 run after a legitimate model or implementation improvement. Prior live summary also returned truncated output; it remains unavailable.
+- Hub status request `req_d097a9082033` stayed online/admission-available, but active model was null and VRAM sampling pending. Repository search transport failed once; no retry loop. No model promotion or tier change.
+- A one-case S1 attempt on installed `qwen2.5-coder:7b` (`req_9676e4a7fecc`) was NOT_RUN before inference: post-unload admission rejected missing target VRAM estimate. Source confirms admission accepts a measured or configured estimate and fails closed when both are absent (`scheduler.py:560-610`). No guessed estimate or bypass added. Inventory and dated results now reflect the 4B S1 failure and 7B admission gap.
+
+### Continuation checkpoint — 2026-11-05, S1 semantic adjudication
+
+- Operator re-read the fixed S1 scoring key and exact 4B output. The direct S1 case **passes semantic scoring**: both bounds accepted, exact citation, 3 bullets/28 words, qualified coverage uncertainty, no count or E1 citation. The mechanical evaluator still reports `quality_pass=false` because it requires the exact substring `equal to either bound`; preserve that diagnostic. Case fixture remains unchanged.
+- This adjudication does not qualify the live search-summary route: its actual long-search generation was rejected as truncated. The 7B model remains NOT_RUN under unknown post-unload memory estimate, and there is no paired baseline. Keep route promotion open.
+
+### Continuation checkpoint — 2026-11-05, fast-role route regression guard
+
+- Extended `test_search_ai_summary_preserves_deterministic_results_and_sources` to assert the `/api/compress` request carries `model_role="fast_code"`. Focused test: 1 passed. This verifies route selection wiring; it does not qualify model quality or live summary completion.
+
+### Continuation checkpoint — 2026-11-05, truncation trace and current admission
+
+- Source confirms `local_ai_repo:search` sends `model_role="fast_code"` to `/api/compress`, and `http_server.py` forwards the raw JSON payload directly to `LocalAIServices.compress`; the selector is not lost at the HTTP boundary. Search-summary code rejects explicit output truncation and leaves deterministic matches intact.
+- Current status `req_4777d9ffeb96`: Hub/Ollama online, active model `qwen3.5:4b-nvfp4`, VRAM telemetry pending/unknown, `gpu_admission_state=outcome_unknown`. No further inference or repeated live search attempted. Exact generation cause remains unknown because the compact search response intentionally exposes only the truncation outcome.
+- Continue with source/test work until admission and telemetry provide a safe evidence window; do not guess at a VRAM estimate or raise output limits without evidence.
+
+### Continuation checkpoint — 2026-11-05, warm GPU sample and A1 evaluation
+
+- After `gpu_reservation_status` reported `free` and a fresh model admission observed 11.8 GiB headroom, one warm follow-up benchmark ran on `qwen3.5:4b-nvfp4`: request `req_db02d5fc3e01`, verified digest `56d8c805…`, 28 tokens, TTFT 116.22 ms, 264.38 ms generation, 105.91 tokens/s, 7,551 MiB available. Device-wide peak 8,855,224,320 bytes; loaded-model attribution unavailable. Single sample; no route qualification.
+- A1 run `req_c6404de6ff43` on isolated fixture returned no pricing-file evidence, no citations or numeric comparison, and an unsupported assertion; quality **FAIL**. Model tag appeared as `qwen3.5:4b-nvfp4`, but `semantic_used=false`, with no digest or GPU telemetry, so execution/device attribution remains unverified. Full evidence is in `docs/agent-evaluation/results.md`.
+- The first fixture under `%TEMP%` was ignored by preprocessing as an ephemeral/system directory (`req_37df72255136`). A fresh fixture at `C:\Users\Adam\Documents\lah-gpu-eval-A1-codex-2026-11-05` is now registered; preprocessing is queued (`req_12ef02f69d51`). Do not poll it. Once a later independent status/action shows indexing complete, perform one A1 solve on this distinct fixture; do not retry the unchanged temporary-fixture solve.
+- Updated the case protocol to require stable user-controlled non-system paths. `git diff --check -- docs/agent-evaluation/results.md` passed before this checkpoint; rerun focused whitespace validation for both changed docs.
+- A bounded `code_index` lookup against the stable fixture found no indexed candidates (`req_0fd13a1b652e`). A direct lexical search then returned both exact source slices (`req_81db351be733`), confirming fixture content but not preprocessing/index completion. Do not poll the preprocess job. The exact solve call rejected unsupported `evidence_ids`; no retry with changed task text.
+- A1 inventory review request `req_4e419f11f89a` was admitted, but its output envelope was truncated and semantic/review checks marked it unusable (`unrelated_output`, unverified citations). Do not treat it as approval; review evidence is recorded in `docs/agent-evaluation/results.md`.

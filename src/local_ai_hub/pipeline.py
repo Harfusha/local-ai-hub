@@ -261,7 +261,10 @@ class LocalAgentPipeline:
             )
             packed["context_source"] = "deterministic"
         else:
-            packed = self.services._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=budget)
+            packed = self.services._hybrid_context(
+                root, task, workspace=args.get("workspace"), max_tokens=budget,
+                quality_first=True,
+            )
             if isinstance(packed, dict): packed["context_source"] = "hybrid"
         if not packed.get("success"):
             return packed

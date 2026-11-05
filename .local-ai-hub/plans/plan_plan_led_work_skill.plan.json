@@ -1,0 +1,76 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Wire the global plan-led skill to existing Local AI Hub plan reconciliation, checkpoints, resumption, and completion verification; verify source/runtime alignment. Specifications remain owned by Superpowers.",
+  "id": "plan_plan_led_work_skill",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_continuity_protocol": {
+      "acceptance_criteria": [
+        "New user clarifications are recorded into the Hub plan before dependent work continues.",
+        "Resume procedure reloads plan, specification, current diff, and latest user direction.",
+        "Agent reports concise Done/Next/Blocked updates at phase changes, long waits, and blockers.",
+        "Global copy, generated instructions, and Hub install/update prompts stay aligned."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Skill now records clarifications/decisions before dependent work, resumes from latest direction plus Hub plan/spec/diff, sends concise progress updates, and checkpoints explicit phase/next_action/affected_paths/evidence_ids/blockers/state_data. Global skill, generated policy, and both prompts aligned; whitespace, copy hash, and guidance marker checks passed. Local AI review remains unavailable because retained GPU state is unknown; no retry/release.",
+      "kind": "code",
+      "next_action": "No remaining implementation work.",
+      "title": "Add clarification, continuity, and progress protocol",
+      "work_status": "done"
+    },
+    "task_global_skill": {
+      "acceptance_criteria": [
+        "Global skill exists under C:/Users/Adam/.codex/skills with plan/spec/checklist/blocker guidance.",
+        "Skill routes specifications through Superpowers and canonical project plans through Local AI Hub.",
+        "Hub installer copies and activates the skill for configured agent roots.",
+        "Install/update prompts recommend the skill; scoped diff check and global-copy identity passed; Local AI review limitation is recorded."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Global skill created and installed. Hub companion installation, generated Codex/Antigravity activation, and both canonical prompts updated. Primary diff and global-copy checks passed. Local AI semantic review could not start: GPU outcome unknown and reservation requires manual intervention; do not retry or release.",
+      "kind": "code",
+      "next_action": "Requested install is complete; resolve retained GPU state before any future semantic review.",
+      "title": "Create and install plan-led-work skill",
+      "work_status": "done"
+    },
+    "task_ledger_and_done_reuse": {
+      "acceptance_criteria": [
+        "Every request and refinement maps to an open task or an explicit decision/deferred item.",
+        "Done entries cite evidence and the revision/scope they establish.",
+        "Resume checks only new user input, changed relevant files, invalidated evidence, blockers, and remaining acceptance items; stable done items are not reanalyzed.",
+        "If plan persistence is unavailable, agent reports the blocker and does not claim durable tracking."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Skill now maps accepted requests, clarifications, decisions, open questions, and deferred scope to plan tasks/criteria before acting. Completion records verification evidence and revision/scope. Resume reuses valid evidence and rechecks only invalidated/changed items. Failed persistence is reported honestly. Global copy, Hub activation, and prompts are aligned; whitespace/copy/marker checks passed. Semantic review remains unavailable due earlier unknown GPU outcome; no retry made.",
+      "kind": "code",
+      "next_action": "No remaining code or prompt updates.",
+      "title": "Add requirement ledger and verified-done reuse",
+      "work_status": "done"
+    },
+    "task_wire_existing_hub_actions": {
+      "acceptance_criteria": [
+        "New user clarification explicitly routes through plan_reconcile_steering or the active equivalent before dependent work proceeds.",
+        "Resumption directs agents to plan/session briefing/context compilation and checkpoint sync recovery without duplicating completed tasks.",
+        "Completion uses the Hub verification receipt gate; distinguish Agent OS completion from merely setting a project plan lifecycle.",
+        "The active MCP surface and setup-generated Codex/Antigravity instructions reference only supported operations.",
+        "Focused tests cover the routed workflow, and source/global installed skill copies match."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Routed the global skill, generated Hub planner guidance, and install/update prompts through existing Hub operations: plan reconciliation, task/plan binding, checkpoint sync/recovery, briefing/resumption, and authentic receipt-gated completion. All named actions are conditional on the active MCP schema; missing actions use the supported plan interface or surface a blocker, never direct plan-file edits. Focused tests: 58 passed, 1 skipped (POSIX FIFO only). Global skill SHA256 matches repository copy. Semantic review not rerun because retained GPU outcome is unknown.",
+      "kind": "code",
+      "next_action": "Implementation and focused verification complete. Keep the project plan active until an exposed Hub receipt-gate action can close its Agent OS task; do not infer completion from plan status.",
+      "title": "Wire skill to existing Hub operations and verify",
+      "work_status": "done"
+    }
+  },
+  "title": "Plan-led work skill and Hub installation"
+}

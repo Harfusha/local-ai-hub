@@ -40,7 +40,7 @@ class VRAMBalancer:
             if not force:
                 if not self._sampling:
                     self._start_sampling_locked()
-                result = self._sampling_timeout_fallback_locked()
+                result = self._sampling_pending_status_locked()
                 result["telemetry_wait_timed_out"] = False
                 result["telemetry_error"] = "sample_pending" if self._sampling else "sample_start_failed"
                 result["telemetry_sampling"] = self._sampling
@@ -106,6 +106,25 @@ class VRAMBalancer:
             with self._condition:
                 self._sampling = False
                 self._condition.notify_all()
+
+    def _sampling_pending_status_locked(self) -> dict[str, Any]:
+        """Keep a recent valid sample available during its bounded refresh window."""
+        now = time.monotonic()
+        sample_age = max(0.0, now - self._last_check_time)
+        if (
+            self._last_status
+            and self._last_status.get("available") is True
+            and self._last_status.get("pressure_level") != "unknown"
+            and sample_age <= self._sample_wait_timeout_seconds
+        ):
+            result = dict(self._last_status)
+            result["telemetry_stale"] = True
+            result["telemetry_wait_timed_out"] = False
+            result["telemetry_sampling"] = self._sampling
+            result["telemetry_error"] = "sample_pending"
+            result["sample_age_seconds"] = sample_age
+            return result
+        return self._sampling_timeout_fallback_locked()
 
     def _sampling_timeout_fallback_locked(self) -> dict[str, Any]:
         """Return conservative status when another telemetry probe stalls.

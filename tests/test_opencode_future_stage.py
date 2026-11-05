@@ -14,6 +14,12 @@ def test_future_profile_candidates_do_not_change_hardware_admission():
         future_profile_candidates("16gb", model="../../model")
 
 
+def test_retired_model_tags_are_absent_from_future_profile_candidates():
+    retired = {"qwen3.5:4b-q4_K_M", "gemma4:12b", "qwen2.5-coder:14b"}
+    candidates = future_profile_candidates("16gb")
+    assert retired.isdisjoint(candidates)
+
+
 def test_future_staging_is_explicitly_unverified(monkeypatch, tmp_path):
     import tools.setup as setup
     import local_ai_hub.opencode_models as models

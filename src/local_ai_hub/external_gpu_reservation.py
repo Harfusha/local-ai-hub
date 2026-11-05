@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import threading
 import time
@@ -27,7 +28,7 @@ class ExternalGpuReservationStore:
 
     The digest file remains the scheduler's exclusive fence. Metadata updates
     are serialized with a persistent sidecar lock and compare the generation
-    before changing either file. Invalid and legacy records fail closed.
+    before changing either file. Invalid metadata and unexpired legacy fences fail closed.
     """
 
     def __init__(
@@ -54,9 +55,51 @@ class ExternalGpuReservationStore:
     def reap_expired(self) -> bool:
         with self._locked():
             record = self._read_unlocked()
-            if record is None or record["expires_at"] > self._clock():
+            if record is None:
+                return self._reap_expired_legacy_fence_unlocked()
+            if record["expires_at"] > self._clock():
                 return False
             return self._remove_unlocked(record["generation"])
+
+    def _reap_expired_legacy_fence_unlocked(self) -> bool:
+        """Clear only a valid digest-only fence after one full lease TTL."""
+        if self.metadata_path.exists() or self.path.is_symlink():
+            return False
+        try:
+            with self.path.open("rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
+                    return False
+                raw_digest = stream.read(65)
+                after = os.fstat(stream.fileno())
+            current = self.path.stat(follow_symlinks=False)
+            if (
+                not os.path.samestat(before, after)
+                or not os.path.samestat(after, current)
+                or len(raw_digest) != 64
+            ):
+                return False
+            _validate_digest(raw_digest.decode("ascii"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False
+
+        expires_at = after.st_mtime + self.ttl_seconds
+        now = self._clock()
+        if not math.isfinite(expires_at) or expires_at > now:
+            return False
+        event = {
+            "action": "legacy_fence_expired",
+            "owner": "unknown",
+            "reason": "valid digest-only legacy fence exceeded the configured lease TTL",
+            "expires_at": expires_at,
+            "released_at": now,
+        }
+        try:
+            self._append_audit(event)
+            self.path.unlink()
+        except OSError:
+            return False
+        return True
 
     def claim_internal(self, digest: str) -> bool:
         _validate_digest(digest)
@@ -64,6 +107,8 @@ class ExternalGpuReservationStore:
             record = self._read_unlocked()
             if record is not None and record["expires_at"] <= self._clock():
                 self._remove_unlocked(record["generation"])
+            elif record is None:
+                self._reap_expired_legacy_fence_unlocked()
             if self.path.exists() or self.metadata_path.exists():
                 return False
             try:
@@ -101,9 +146,10 @@ class ExternalGpuReservationStore:
                 if not self._remove_unlocked(current["generation"]):
                     return None
             elif self.path.exists() or self.metadata_path.exists():
-                # Legacy, malformed, symlinked, or partially committed state.
-                # Never infer that it is safe to erase.
-                return None
+                # Legacy, malformed, symlinked, or partially committed state
+                # stays fenced unless a valid digest-only lease has expired.
+                if not self._reap_expired_legacy_fence_unlocked():
+                    return None
             record = {
                 "schema_version": 1,
                 "generation": uuid.uuid4().hex,

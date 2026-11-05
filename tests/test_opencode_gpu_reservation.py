@@ -12,6 +12,13 @@ import pytest
 from local_ai_hub.scheduler import AffinityScheduler
 
 
+def _set_embedding_reservation_store(model, reservation_path):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    model._gpu_reservation_path = reservation_path
+    model._gpu_reservation_store = ExternalGpuReservationStore(reservation_path)
+
+
 def test_owned_external_reservation_expires_in_memory_after_files_disappear(tmp_path, monkeypatch):
     now = [0.0]
     monkeypatch.setattr(time, "monotonic", lambda: now[0])
@@ -41,7 +48,7 @@ def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp
     scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []),
                                   {"server": {"state_dir": str(tmp_path)}})
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model.backend = "sentence-transformers"
     model.device = "cuda:0"
@@ -76,7 +83,7 @@ def test_cuda_auto_embedding_reuses_fence_and_retains_uncertain_ollama(tmp_path,
     scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []),
                                   {"server": {"state_dir": str(tmp_path)}})
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model._ollama_model_name = "embedding-model"
     model.ollama_url = "http://127.0.0.1:11434"
@@ -132,7 +139,7 @@ finally:
         return result.stdout.strip()
 
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model._ollama_model_name = "embedding-model"
     model.ollama_url = "http://127.0.0.1:11434"
@@ -155,8 +162,10 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys, urllib.request
 from local_ai_hub.embeddings import EmbeddingModel
+from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 m = EmbeddingModel.__new__(EmbeddingModel)
 m._gpu_reservation_path = Path(sys.argv[1]) / "external-gpu-reservation"
+m._gpu_reservation_store = ExternalGpuReservationStore(m._gpu_reservation_path)
 m._execution_local = SimpleNamespace()
 m._ollama_model_name = "embedding-model"
 m.ollama_url = "http://127.0.0.1:11434"
@@ -196,7 +205,7 @@ def test_ollama_embeddings_exclude_external_session_and_keep_unknown_fence(tmp_p
     config = {"server": {"state_dir": str(tmp_path)}}
     scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model._ollama_model_name = "embedding-model"
     model.ollama_url = "http://127.0.0.1:11434"

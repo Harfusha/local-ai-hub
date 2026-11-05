@@ -294,7 +294,9 @@ class ProjectPreprocessor:
         self._lookup_cache: dict[str, tuple[float, str, dict[str, Any]]] = {}
         self._lookup_cache_ttl = max(1.0, _safe_float(self.cfg.get("lookup_l1_ttl_seconds"), 30.0))
         self._demand_priority_lock = threading.Lock()
-        self._demand_priority_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
+        self._demand_priority_cache: dict[
+            str, tuple[float, tuple[str, ...], tuple[Any, ...], tuple[str, ...]]
+        ] = {}
         self._stats_lock = threading.Lock()
         self._last_db_maintenance = time.time()
         self._db_maintenance_retry_interval: int | None = None
@@ -3342,15 +3344,19 @@ class ProjectPreprocessor:
 
         try:
             result = self.code_index.update_files_batch(root, pending)
+            files_processed = int(result.get("files_processed", 0))
+            progressed = files_processed + int(result.get("cached", 0))
             if isinstance(result, dict) and result.get("budget_limited") is True:
+                if progressed:
+                    with self._stats_lock:
+                        self._stats["code_index_files"] += progressed
+                self._record_progress(root, len(pending))
                 retry_at = time.time() + 300.0
                 self._set_project(
                     root, phase="code_index", status="waiting",
                     last_error="code_index_budget_limited", retry_after=retry_at, next_check_at=retry_at,
                 )
                 return True
-            files_processed = int(result.get("files_processed", 0))
-            progressed = files_processed + int(result.get("cached", 0))
         except Exception as batch_exc:
             from .project_config import ProjectConfigError
             if isinstance(batch_exc, ProjectConfigError):
@@ -3652,13 +3658,28 @@ class ProjectPreprocessor:
         cache = getattr(self, "_demand_priority_cache", None)
         lock = getattr(self, "_demand_priority_lock", None)
         now = time.monotonic()
-        if cache is not None and lock is not None:
-            with lock:
-                cached = cache.get(root)
-                if cached is not None and cached[0] > now:
-                    return cached[1]
         try:
-            queries = learner.hot_queries(root, 4)
+            queries = tuple(learner.hot_queries(root, 4)[:4])
+            with self._db_lock, closing(self._connect()) as con:
+                columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+                aggregates = ["COUNT(*)"]
+                for column in ("generation", "updated_at", "size", "needs_hash", "last_accessed_at"):
+                    if column in columns:
+                        aggregates.append(f"COALESCE(SUM(CAST({column} AS REAL)), 0)")
+                for column in ("content_hash", "rag_hash", "card_key"):
+                    if column in columns:
+                        aggregates.append(f"COALESCE(SUM(LENGTH(COALESCE({column}, ''))), 0)")
+                        aggregates.append(f"COUNT(DISTINCT {column})")
+                generation = con.execute(
+                    f"SELECT {', '.join(aggregates)} FROM file_refs WHERE root=?", (root,)
+                ).fetchone()
+            index_signature = tuple(generation)
+            if cache is not None and lock is not None:
+                with lock:
+                    cached = cache.get(root)
+                    if (cached is not None and cached[0] > now
+                            and cached[1] == queries and cached[2] == index_signature):
+                        return cached[3]
             paths: list[str] = []
             with self._db_lock, closing(self._connect()) as con:
                 for query in queries[:4]:
@@ -3680,7 +3701,7 @@ class ProjectPreprocessor:
             with lock:
                 if len(cache) >= 128 and root not in cache:
                     cache.pop(min(cache, key=lambda key: cache[key][0]), None)
-                cache[root] = (now + 15.0, result)
+                cache[root] = (now + 15.0, queries, index_signature, result)
         return result
 
     def _find_next_files(self, root: str, limit: int) -> list[sqlite3.Row]:

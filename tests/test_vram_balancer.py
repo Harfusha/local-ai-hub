@@ -272,6 +272,45 @@ def test_status_wait_timeout_returns_conservative_unavailable_without_second_sam
         assert not sampler.is_alive()
 
 
+def test_nonblocking_status_keeps_recent_sample_while_refresh_is_pending():
+    balancer = VRAMBalancer()
+    gpu = {
+        "available": True,
+        "vendor": "nvidia",
+        "gpu_name": "NVIDIA test GPU",
+        "vram_total_mb": 16384.0,
+        "vram_used_mb": 4096.0,
+        "vram_available_mb": 12288.0,
+        "vram_used_pct": 25.0,
+    }
+    with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", return_value=gpu):
+        cached = balancer.status(force=True)
+
+    with balancer._condition:
+        balancer._last_check_time -= 2.1
+
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+
+    def blocked_probe():
+        probe_entered.set()
+        release_probe.wait(timeout=2.0)
+        return gpu
+
+    with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", side_effect=blocked_probe):
+        try:
+            pending = balancer.status()
+            assert probe_entered.wait(timeout=1.0)
+            assert pending["available"] is True
+            assert pending["context_budget_factor"] == cached["context_budget_factor"]
+            assert pending["telemetry_error"] == "sample_pending"
+            assert pending["telemetry_stale"] is True
+            assert pending["telemetry_wait_timed_out"] is False
+            assert pending["telemetry_sampling"] is True
+        finally:
+            release_probe.set()
+
+
 def test_first_status_times_out_to_unavailable_without_cache():
     balancer = VRAMBalancer()
     balancer._sample_wait_timeout_seconds = 0.01

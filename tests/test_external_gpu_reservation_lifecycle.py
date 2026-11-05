@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -29,6 +30,45 @@ def test_reservation_has_generation_expiry_and_idle_state(tmp_path):
     assert lease["expires_at"] == 160.0
 
 
+def test_reserve_reaps_expired_legacy_fence_before_new_owner_claims(tmp_path):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    path.write_text(_digest("legacy-owner"), encoding="ascii")
+    os.utime(path, (80.0, 80.0))
+    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
+    now[0] = 111.0
+
+    replacement = store.reserve(_digest("new-owner"), owner="new-owner")
+
+    assert replacement is not None
+    assert replacement["owner"] == "new-owner"
+    assert store.read() == replacement
+
+
+def test_internal_claim_reaps_expired_legacy_fence(tmp_path):
+    now = [111.0]
+    path = tmp_path / "external-gpu-reservation"
+    path.write_text(_digest("legacy-owner"), encoding="ascii")
+    os.utime(path, (80.0, 80.0))
+    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
+    current_digest = _digest("internal-owner")
+
+    assert store.claim_internal(current_digest) is True
+    assert path.read_text(encoding="ascii") == current_digest
+
+
+@pytest.mark.parametrize("contents", ["not-a-digest", "g" * 64])
+def test_malformed_legacy_fence_never_reaps_by_age(tmp_path, contents):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    path.write_text(contents, encoding="ascii")
+    os.utime(path, (80.0, 80.0))
+    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
+
+    assert store.reap_expired() is False
+    assert path.exists()
+
+
 def test_idle_expiration_reaps_before_new_owner_reserves(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
@@ -43,6 +83,27 @@ def test_idle_expiration_reaps_before_new_owner_reserves(tmp_path):
     assert replacement is not None
     assert replacement["generation"] != old["generation"]
     assert replacement["owner"] == "second"
+
+
+def test_expired_legacy_digest_fence_reaps_by_mtime_and_audits(tmp_path):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    path.write_text(_digest("legacy-owner"), encoding="ascii")
+    os.utime(path, (95.0, 95.0))
+    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
+
+    assert store.reap_expired() is False
+    assert path.exists()
+
+    now[0] = 111.0
+    assert store.reap_expired() is True
+    assert not path.exists()
+    events = [
+        json.loads(line)
+        for line in store.audit_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["action"] == "legacy_fence_expired"
+    assert events[-1]["owner"] == "unknown"
 
 
 def test_expired_active_reservation_reaps_before_new_owner_reserves(tmp_path):

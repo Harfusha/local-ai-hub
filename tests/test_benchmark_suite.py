@@ -215,6 +215,22 @@ def test_benchmark_runner_supports_non_streaming_runtime(tmp_path: Path) -> None
     result = runner.run(model="qwen2.5-coder:7b", prompt="return 42", num_tokens=4)
 
     assert result["success"] is True
+    assert result["streaming"] is False
+    assert result["ttft_ms"] is None
+    assert result["latency_basis"] == "full_call"
+    assert result["call_latency_ms"] > 0
+    latest = runner.get_latest_summary()
+    assert latest["ttft_ms"] is None
+    assert latest["call_latency_ms"] == result["call_latency_ms"]
+    assert latest["latency_basis"] == "full_call"
+    runner.benchmarks_path.write_text(
+        json.dumps([{"model": "legacy", "streaming": False, "ttft_ms": 12.5}]),
+        encoding="utf-8",
+    )
+    legacy_latest = runner.get_latest_summary()
+    assert legacy_latest["ttft_ms"] is None
+    assert legacy_latest["call_latency_ms"] == 12.5
+    assert legacy_latest["latency_basis"] == "full_call"
     assert result["tokens_generated"] == 1
     assert result["whitespace_token_estimate"] == 1
     assert result["token_count_method"] == "whitespace_token_estimate_not_model_tokenization"

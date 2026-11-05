@@ -68,6 +68,11 @@ class EmbeddingModel:
         self._gpu_reservation_path = (state_dir / "external-gpu-reservation"
                                       if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip()
                                       else None)
+        self._gpu_reservation_store = None
+        if self._gpu_reservation_path is not None:
+            from .external_gpu_reservation import ExternalGpuReservationStore
+
+            self._gpu_reservation_store = ExternalGpuReservationStore(self._gpu_reservation_path)
         self.cache = TieredCache(
             SQLiteCache(
                 state_dir / "cache.sqlite",
@@ -637,36 +642,40 @@ class EmbeddingModel:
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
         return embeddings.detach().cpu().numpy()
 
-    def _claim_embedding_gpu(self) -> str | bool | None:
-        path = getattr(self, "_gpu_reservation_path", None)
-        if path is None:
+    def _claim_embedding_gpu(self) -> tuple[str, str] | bool | None:
+        store = getattr(self, "_gpu_reservation_store", None)
+        if store is None:
+            if getattr(self, "_gpu_reservation_path", None) is not None:
+                return False
             return None
         digest = hashlib.sha256(os.urandom(32)).hexdigest()
         try:
-            with path.open("xb") as stream:
-                stream.write(digest.encode("ascii"))
-                stream.flush()
-                os.fsync(stream.fileno())
-        except OSError:
-            # A partial write is deliberately left behind as an uncertain fence.
-            return False
-        return digest
-
-    def _release_embedding_gpu(self, digest: str) -> bool:
-        from .scheduler import _read_external_reservation
-
-        path = getattr(self, "_gpu_reservation_path", None)
-        for attempt in range(6):
-            if path is None or _read_external_reservation(path) != digest:
+            record = store.reserve(
+                digest,
+                owner=f"embedding:{os.getpid()}:{threading.get_ident()}",
+            )
+            generation = record.get("generation") if isinstance(record, dict) else None
+            if not isinstance(generation, str) or not generation:
                 return False
-            try:
-                path.unlink()
-                return True
-            except OSError as exc:
-                if getattr(exc, "winerror", None) != 32 or attempt == 5:
-                    return False
-                time.sleep(0.01)
-        return False
+            if not store.renew(digest, generation, state="active"):
+                store.release(digest, generation)
+                return False
+        except (OSError, ValueError):
+            return False
+        return digest, generation
+
+    def _release_embedding_gpu(self, reservation: tuple[str, str]) -> bool:
+        store = getattr(self, "_gpu_reservation_store", None)
+        if store is None:
+            return False
+        digest, generation = reservation
+        try:
+            return bool(
+                store.renew(digest, generation, state="idle")
+                and store.release(digest, generation)
+            )
+        except (OSError, ValueError):
+            return False
 
     def _encode_ollama(self, texts: list[str]) -> list[list[float]] | None:
         """Call Ollama /api/embed on GPU."""
@@ -675,8 +684,21 @@ class EmbeddingModel:
         path = getattr(self, "_gpu_reservation_path", None)
         local = getattr(self, "_execution_local", None)
         inherited = getattr(local, "gpu_fence_digest", None) if local is not None else None
-        digest = inherited if inherited is not None else self._claim_embedding_gpu()
-        if digest is False or (inherited is not None and _read_external_reservation(path) != inherited):
+        owned_reservation = None
+        if inherited is None:
+            claim = self._claim_embedding_gpu()
+            if claim is False:
+                if local is not None:
+                    local.ollama_gpu_fenced = True
+                return None
+            if isinstance(claim, tuple):
+                owned_reservation = claim
+                digest = claim[0]
+            else:
+                digest = None
+        else:
+            digest = inherited
+        if inherited is not None and _read_external_reservation(path) != inherited:
             if local is not None:
                 local.ollama_gpu_fenced = True
             return None
@@ -699,8 +721,8 @@ class EmbeddingModel:
             if not confirmed and path is not None:
                 if local is not None:
                     local.ollama_gpu_fenced = True
-            if confirmed and isinstance(digest, str) and inherited is None:
-                self._release_embedding_gpu(digest)
+            if confirmed and owned_reservation is not None:
+                self._release_embedding_gpu(owned_reservation)
         return None
 
     def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
@@ -716,9 +738,10 @@ class EmbeddingModel:
         device = getattr(self, "device", None)
         cuda_candidate = (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
         cuda_loaded = uses_torch_cuda(getattr(self, "active_backend", None), getattr(self, "active_device", None))
-        digest = self._claim_embedding_gpu() if texts and (cuda_candidate or cuda_loaded) else None
-        if digest is False:
+        reservation = self._claim_embedding_gpu() if texts and (cuda_candidate or cuda_loaded) else None
+        if reservation is False:
             return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
+        digest = reservation[0] if isinstance(reservation, tuple) else None
         self._execution_local.gpu_fence_digest = digest
         confirmed = False
         try:
@@ -734,8 +757,8 @@ class EmbeddingModel:
             return output
         finally:
             self._execution_local.gpu_fence_digest = None
-            if confirmed and isinstance(digest, str):
-                self._release_embedding_gpu(digest)
+            if confirmed and isinstance(reservation, tuple):
+                self._release_embedding_gpu(reservation)
 
     def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
         if not texts:

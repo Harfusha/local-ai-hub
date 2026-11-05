@@ -62,6 +62,25 @@ def test_live_mcp_schemas_are_valid_without_empty_combinators(tool_name: str) ->
     assert tool.parameters.get("allOf") != []
 
 
+def test_repository_search_defaults_to_lexical_and_allows_explicit_hybrid(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+
+    def capture_post(path, payload, **_kwargs):
+        requests.append({"path": path, **payload})
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", capture_post)
+
+    default_result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle")
+    hybrid_result = local_ai_mcp.local_ai_repo(
+        action="search", root=str(ROOT), query="needle", search_mode="hybrid"
+    )
+
+    assert default_result["success"] is True
+    assert hybrid_result["success"] is True
+    assert [request["search_mode"] for request in requests] == ["lexical", "hybrid"]
+
+
 def test_low_profile_rejects_direct_local_work_submit(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "work_orchestrator", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "bounded_work_tier", False)
@@ -116,7 +135,13 @@ def test_status_exposes_profile_capability_reasons_without_model_inference(monke
     monkeypatch.setattr(local_ai_mcp.FEATURES, "search_summaries_opt_in", True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "get", lambda path, **kwargs: {
         "hub_online": True, "version": "test", "ollama_online": True,
-        "scheduler": {"active_model": None}, "degraded": False,
+        "scheduler": {"active_model": None, "gpu_admission_state": "external_reservation"},
+        "vram_balancer": {
+            "available": False, "pressure_level": "unknown", "context_budget_factor": 0.25,
+            "telemetry_error": "sample_pending", "telemetry_sampling": True,
+            "telemetry_stale": True, "telemetry_wait_timed_out": False,
+        },
+        "degraded": False,
     })
 
     result = local_ai_mcp.local_ai_status()
@@ -125,6 +150,41 @@ def test_status_exposes_profile_capability_reasons_without_model_inference(monke
     assert result["capabilities"]["search_summaries"]["available"] is False
     assert result["capabilities"]["search_summaries"]["reason"] == "requires_balanced_profile"
     assert result["capabilities"]["bounded_local_work"]["available"] is False
+    assert result["gpu_admission_state"] == "external_reservation"
+    assert result["vram_telemetry"] == {
+        "available": False,
+        "error": "sample_pending",
+        "sampling": True,
+        "stale": True,
+        "wait_timed_out": False,
+    }
+    assert {"gpu_admission_state", "vram_telemetry"} <= set(local_ai_mcp._STATUS_PROTECTED_KEYS)
+
+
+def test_status_hides_unrecognized_gpu_diagnostics(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", lambda path, **kwargs: {
+        "hub_online": True,
+        "scheduler": {"gpu_admission_state": {"owner": "private"}},
+        "vram_balancer": {
+            "available": "false",
+            "telemetry_error": "private provider detail",
+            "telemetry_sampling": 1,
+            "telemetry_stale": None,
+            "telemetry_wait_timed_out": "false",
+        },
+    })
+
+    result = local_ai_mcp.local_ai_status()
+
+    assert result["gpu_admission_state"] == "unknown"
+    assert result["vram_pressure"] == "unknown"
+    assert result["vram_telemetry"] == {
+        "available": None,
+        "error": None,
+        "sampling": None,
+        "stale": None,
+        "wait_timed_out": None,
+    }
 
 
 def test_search_ai_summary_is_rejected_below_balanced(monkeypatch) -> None:
@@ -163,6 +223,7 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     )
     assert "copy the full path verbatim" in calls[1][1]["instruction"]
     assert "contained in that match" in calls[1][1]["instruction"]
+    assert calls[1][1]["model_role"] == "fast_code"
     assert str(ROOT) not in calls[1][1]["text"]
     assert result["ai_summary_advisory"] is True
     assert [call[0] for call in calls] == ["/api/search", "/api/compress"]
@@ -373,6 +434,21 @@ def test_low_profile_rejects_direct_semantic_reasoning(monkeypatch) -> None:
     assert result["success"] is False
     assert result["status_code"] == 400
     assert "Unknown local_ai_task action" in result["error"]
+
+
+def test_coord_description_and_prompts_expose_plan_workflow() -> None:
+    description = local_ai_mcp._desc_coord()
+    assert "plan_list" in description
+    assert "plan_get" in description
+    assert "plan_board_view" in description
+    assert "plan_task_edit" in description
+    assert "current expected_revision" in description
+
+    expected_prompt = "For an existing project plan, list/get/view it with those read actions; edit a task with `plan_task_edit` and the current `expected_revision`."
+    prompt_paths = [ROOT / "docs" / name for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md")]
+    prompt_paths.append(ROOT / "AGENTS.md")
+    for path in prompt_paths:
+        assert expected_prompt in path.read_text(encoding="utf-8")
 
 
 def test_public_action_parameters_are_explicit_literals() -> None:

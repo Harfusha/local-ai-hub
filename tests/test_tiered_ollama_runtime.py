@@ -128,6 +128,29 @@ def _config(tmp_path: Path) -> dict:
     }
 
 
+def test_loaded_model_details_forwards_force_refresh_to_each_tier(tmp_path: Path) -> None:
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    fast = FakeRuntime()
+    smart = FakeRuntime()
+    calls: list[tuple[str, bool]] = []
+
+    def details_for(tier: str, model: str):
+        def load(*, force_refresh: bool = False):
+            calls.append((tier, force_refresh))
+            return [{"name": model, "vram_bytes": 4096}]
+        return load
+
+    fast.loaded_model_details = details_for("fast", "qwen2.5-coder:7b")
+    smart.loaded_model_details = details_for("smart", "qwen3.5:9b")
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
+
+    rows = runtime.loaded_model_details(force_refresh=True)
+
+    assert calls == [("fast", True), ("smart", True)]
+    assert [(row["endpoint"], row["vram_bytes"]) for row in rows] == [("fast", 4096), ("smart", 4096)]
+
+
 def test_smart_request_unloads_fast_runner_before_dispatch(tmp_path: Path):
     from local_ai_hub.tiered_ollama import TieredOllamaRuntime
 

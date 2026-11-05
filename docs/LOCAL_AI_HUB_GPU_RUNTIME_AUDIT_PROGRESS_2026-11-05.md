@@ -127,6 +127,137 @@ Current source has advanced since the earlier telemetry checkpoint: `hardware._n
 
 ## A2 — Current installed-model inventory
 
-Read-only `ollama list` succeeded in the current checkout environment. It reports seven installed tags: `qwen3.5:9b-nvfp4`, `qwen3.5:4b-nvfp4`, `qwen3.5:9b`, `qwen2.5-coder:7b`, `qwen2.5-coder:3b`, `qwen2.5-coder:1.5b`, and `qwen3-embedding:0.6b`. The removed `qwen3.5:4b-q4_K_M`, `gemma4:12b`, and `qwen2.5-coder:14b` are absent from this installed inventory. This closes only the current installed-tag snapshot; a bounded scan of all active prompt/advisory surfaces is still required, while dated evaluation evidence must remain historical.
+Read-only `ollama list` succeeded in the current checkout environment. It reports seven installed tags: `qwen3.5:9b-nvfp4`, `qwen3.5:4b-nvfp4`, `qwen3.5:9b`, `qwen2.5-coder:7b`, `qwen2.5-coder:3b`, `qwen2.5-coder:1.5b`, and `qwen3-embedding:0.6b`. The removed `qwen3.5:4b-q4_K_M`, `gemma4:12b`, and `qwen2.5-coder:14b` are absent from this installed inventory. This closes the current installed-tag snapshot; scoped active-reference coverage is recorded below, while dated evaluation evidence remains historical.
 
-Fresh `python -m pytest -q tests/test_prompt_contracts.py tests/test_opencode_hardware.py --tb=short` passed `17 passed in 0.62s`. Bounded native fallback after exact artifact slices exceeded the Hub response cap found no retired model names in `src/local_ai_hub/generator.py`. This adds current evidence for the capability/OpenCode files and generator only; canonical prompt and full active-reference coverage remain open.
+Fresh `python -m pytest -q tests/test_prompt_contracts.py tests/test_opencode_hardware.py --tb=short` passed `17 passed in 0.62s`. Bounded native fallback after exact artifact slices exceeded the Hub response cap found no retired model names in `src/local_ai_hub/generator.py`. These focused tests cover capability/OpenCode behavior; they do not alone establish prompt text coverage.
+
+### A2 scoped active-surface scan complete
+
+Fresh exact-source inspection covered the full `src/local_ai_hub/prompt_contracts.py` capability map (SHA-256 `f56f374fe2a051a0f90da23cb1ee548f478177aad5bd9dd2cf83cc0da407efd4`), all of `docs/MODEL_CAPABILITIES.md` (`a7bafe23423082597e7955a560b21ea251477220f590d09086c364080927142e`), and all of `src/local_ai_hub/opencode_hardware.py` (`42b5faf2dc3f9c8e33e803c153f89b96e513a7c32cce2d662929c0f2800761ef`). The targeted removed tags are absent from those sources. Bounded exact scans found no `qwen3.5:4b-q4_K_M`, `gemma4:12b`, or `qwen2.5-coder:14b` references in `src/local_ai_hub/generator.py`, `docs/INSTALL_PROMPT.md`, or `docs/UPDATE_PROMPT.md`; the latter two prompts have identical model-routing paragraphs at lines 265 and 263 respectively. Historical audit, evaluation and dated comparison records remain preserved. Together with the fresh seven-tag `ollama list` and 17 focused tests above, the specified A2 active-surface removal and prompt-sync check is complete; this is not a claim that every repository text occurrence is absent.
+## A4 — Deterministic CPU bypass regression
+
+Current `tests/unit/test_rag_direct_cpu_bypass.py` (SHA-256 `56115841ade1531c5746cfa70501e99ed047188d048346695a1c859409b1f309`) passed `10 passed in 4.27s`. This is CPU bypass/fallback source-test evidence only; no GPU execution, embedding/reranker benchmark, relevance or device parity is proven. Current Hub status `req_2519e32342bb` reports `vram_pressure=unknown`, so GPU performance acceptance remains open. Recorded in the main audit's 2026-11-05 continuation.
+
+## A6 — Synthetic demand-priority measurement
+
+Ran `python tools/benchmark_preprocess_demand.py --files 4096 --batch-size 64`: one synthetic temporary-SQLite queue-selection run, no model inference or checkout fixture. Demand priority put the hot file in batch 1 versus baseline batch 64. Both drained 4,096 files in 64 batches, with 0 unprocessed; the first demand batch retained 63 ordinary files. Median selection was 2.33 ms with demand priority versus 2.13 ms baseline (~9.3% overhead in this single run). `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` passed 4 tests in 1.12 s (test SHA-256 `773b53417b8b3b513e1049c2785a994ee48a8ce303cb826492199959926163fd`; benchmark SHA-256 `ea475e5f54714a0b043348920395510d86e975d3455bbc735ee675819099e42b`). This does not measure useful-context latency, work saved, freshness/invalidation or representative-repository behavior. A6 remains NOT VERIFIED pending those measurements and the plan's starvation/invalidation protocol.
+
+Fresh `git_status` (`req_b2737283243b`) reports 11 modified paths: this audit and progress note plus nine shared paths (`docs/agent-evaluation/results.md`, `docs/superpowers/plans/2026-11-03-gpu-capability-tiers-and-local-ai.md`, `src/local_ai_hub/benchmark.py`, `src/local_ai_hub/code_index.py`, `src/local_ai_hub/preprocess.py`, `src/local_ai_hub/tiered_ollama.py`, `tests/test_benchmark_suite.py`, `tests/test_tiered_ollama_runtime.py`, `tests/unit/test_code_index_size_budget.py`). No shared implementation paths were edited for A6.
+
+## A5 — Current-source lifecycle review
+
+Fresh exact source slices of `src/local_ai_hub/llama_cpp.py` (SHA-256 `b9b68aa4773a411fa22ed0180906412835abd5c7320b369d17397ba70aa92e51`) confirm `ensure_model()` and `unload_model()` acquire `_managed_slot`; ensure forwards stop/deadline controls, while unload bounds the slot window and clears recovery/detail state only after successful unload. This is source evidence only. The indexed symbol candidate was stale/unknown for the path, so exact slices were used. No live load, inference, cancellation, model switch or GPU operation was started; those remain required for A5 runtime acceptance, which is NOT VERIFIED.
+
+## A6 — Repository-sampled queue measurement
+
+Added optional `--root`/`--query` support to `tools/benchmark_preprocess_demand.py`; synthetic mode remains intact. Repository sampling is bounded to 180 KB per file, 64 MiB total, and 50,000 filesystem entries, skips symlinks/junctions and common generated/vendor directories, and writes its SQLite fixture under a temporary directory outside the checkout. It measures scheduling and simulated completion, not generated/useful context. Tool SHA-256 `0956DEB24207B0D47BC9E4DBFDA7416C3779E2B910012A9E19AA66C10D1566C5`; test SHA-256 `1CB119A97B18C1A34788EB8F382B985580E261EF9CE39107D90809A4288B36AC`.
+
+Test-first proof: new test failed on the missing `root` argument before implementation; focused module then passed **5 tests in 1.13 s**. Current-repository run (`ProjectPreprocessor`) sampled 4,096 files / 40,787,219 bytes after 5,867 filesystem entries; file cap reached. There were 712 query matches. First match was batch 1 in both baseline and demand modes; batch 1 contained 9 versus 24 query matches. Both drained all 4,096 sampled files in 64 batches, 0 unprocessed. Per-batch selector median/p95: 2.78/4.70 ms baseline, 3.52/5.09 ms demand, one run only. Repeated one-shot runs varied while shared files changed, so no performance claim. Query breadth is high and it is not proven to be a real learned query. `useful_context_verified=false`; A6 remains NOT VERIFIED for useful-context quality/latency, work saved, freshness/invalidation, and starvation.
+
+Fresh Hub status `req_ca72349b3b0c` lists 19 modified paths: the two audit records and these benchmark/test files plus 15 other paths outside this work scope. Status does not identify their owners; no shared implementation path was edited. Hub status `req_26584f481876` showed active `qwen3.5:4b-nvfp4`, VRAM unknown. No GPU or model inference ran.
+
+Review limitation: semantic `review_diff` job `173a825697114756932f14196b5c7ded` ended `outcome_unknown` on its single wait, with no usable review output. Indexed impact request `req_ca31ac26c5f4` reflected the broader 19-path checkout and omitted the benchmark tool/test from its changed-file list; it is not exact impact evidence. Primary agent reviewed the exact two-file Git diff. Focused module: 5 passed in 1.13 s; scoped `git diff --check`: exit 0.
+
+## A6 — Narrow-query and cache-age checks
+
+Four audit-derived queries were tested against separate bounded 4,096-file repository samples: `ensure_model` first-match batch 25→1 (26 matches); `external_gpu_reservation` 14→1 (33); `vram_free_mb` 36→1 (11); `hot_queries` 31→1 (9). Priority selected 16, 16, 11, and 9 matching files in batch 1. Each baseline and demand queue drained 4,096 sampled files in 64 batches, 0 remaining. These are audit-derived lexical queries, not verified user-learned queries; metric is first matching file selected, not useful context generated.
+
+A new characterization test confirms the 15-second `_learned_priority_paths` cache: stale mapping persists at 14.999 seconds, refreshes at expiry. Current source SHA-256 `ccc3134ec5fa567ce418d5e7dc93809662cbb25c620ce21355beebb1b19887a5`. Focused module: **6 passed in 1.17 s**; scoped `git diff --check`: exit 0. Test SHA-256 `DE70C068D303E9FAB6A8C8E314B3308E7B78BA61630739D10F0970D51F2B62F4`.
+
+This proves bounded cache age only; immediate invalidation and generated file-card freshness remain open. Both queue modes process the same work; work saved is unmeasured. A6 stays NOT VERIFIED pending real learned-query provenance, useful-context latency/quality, work saved, generation invalidation, and sustained fairness.
+
+Current Hub `git_status` (`req_1ba4198177bf`) lists 23 modified paths; four are this audit, progress note, benchmark and focused test. Nineteen other changed paths are outside this task scope; the status does not assign owners. No shared runtime or preprocessing implementation was edited.
+
+## Current revision check — 2026-11-06
+
+Current `HEAD` is `616e84095b8b51ef503fc5e8144f59f4d217980f` on `master`. Fresh `git diff --check HEAD^ HEAD` exits 0. This clears the earlier EOF whitespace finding for `tests/test_external_gpu_reservation_lifecycle.py`; that report applied to audited revision `f08d7c9c919962216c719f8fb37c9d962aee9d61` only. Commit check does not validate the dirty worktree: Hub status `req_d7f011938b10` lists 19 modified paths. No shared paths changed here.
+
+## A1 — Current-source focused regression revalidation
+
+Fresh focused cohort `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py tests/test_opencode_gpu_reservation.py tests/unit/test_reranker_gpu_reservation.py tests/test_preprocess_status_scaling.py --tb=short`: **93 passed in 4.93 s**. Current `HEAD=e1c02efbd3660a8c66c491f0ac1f2cf94ebc6c92`; its commit diff does not change these source/test paths. Current SHA-256: `external_gpu_reservation.py` `d096dd2cbdfee3e43dc7ef9fa28ad4cc61753d9187bb70fe4480767cf1d6b64e`; lifecycle test `8e647af03a8f7a46c7174bfc0ca17adab31877c7e5832d7814223901a44fa59b`; OpenCode test `a371fc3b078827aba5d99b111494949a6124655611de361fa06a60dac2a3498a`; reranker test `c2ce12a099a55d92619dded422a806ab07d57ab2ea8608706fd540caa1b906ef`; status test `a8d054556a483866377417d65edc9e496a13193062fda02ba7ba252ba850d264`. `git diff --check HEAD^ HEAD` passes. Source-test coverage only; live cross-process/GPU behavior remains unverified. Hub status `req_1ab361702e9a` lists 19 modified paths; A1 paths are clean.
+
+## A6 — Demand-priority cache invalidation
+
+Updated `_learned_priority_paths()` so a cached path list is reused only while its 15-second TTL, current learned-query tuple, and file-card index signature still match. Signature uses available `file_refs` generation, update, size/access, and content metadata fields; this supports the repository's full schema and bounded test fixtures. Regression changes the learned query and then the indexed file generation before TTL expiry. `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short`: **6 passed in 1.19 s**; scoped `git diff --check`: exit 0. SHA-256: `preprocess.py` `49D956F15BB7D16FA768F6B94F1C3157DD5395CC9A0C179126DABD6B63C643E9`; test at that revision `770756B05C6FBECC785191E1B8C8993B8952D258EF31FE19EB9213EE5F08754D`.
+
+This is source-level cache invalidation and queue-selection coverage. It does not prove generated context freshness/usefulness, real user-query provenance, work saved, or sustained fairness. A6 remains **NOT VERIFIED** for those acceptance gates.
+
+## A6 — Repeated-batch fairness regression
+
+Added a sustained selection fixture with 8 persistent hot-query matches and 12 ordinary files. Across four consecutive 4-file batches, each batch selects one hot file and three ordinary files; all 12 ordinary files advance. Full focused module `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short`: **7 passed in 1.22 s**; scoped `git diff --check`: exit 0. Test SHA-256: `B78332D88468C10B46EA3C6CDBCA70918E6BC4F3869928821C6F254E40D531B9`.
+
+This proves repeated queue-selection fairness in a bounded SQLite fixture. It does not prove sustained fairness under real preprocessing load, time-to-useful-context, or generated-context quality; A6 remains **NOT VERIFIED** for those gates.
+
+## A3/A5 — One hardware smoke and retained uncertainty
+
+One `local_ai_task(action="hardware_benchmark")` smoke on installed `qwen3.5:4b-nvfp4` (`model_digest_status=verified_installed`, digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506`, request `req_733fab95b850`) succeeded on NVIDIA GeForce RTX 5070 Ti. Prompt requested `ready`, maximum 4 tokens; backend generated 2. TTFT 110.71 ms, generation 49.17 ms, 40.68 tokens/s, queue wait 39.86 ms, call latency 159.88 ms. Sampled device VRAM: 16,303 MB total, 8,731 MB used, 7,265 MB available; device-wide sampled peak `9,155,117,056` bytes. `loaded_model_vram_status=unavailable`; peak scope is device-wide. `ollama ps` was empty immediately before and after. One tiny sample; no cold/warm, residency, quality or capacity claim.
+
+A different 128-token attempt was admitted but ended with `model output repetition loop detected` (`req_8cd44dec35f8`), so it yielded no performance result. The following distinct request was refused with `gpu_outcome_unknown`, `outcome_unknown=true`, reservation retained (`req_ec451fd7b5f2`). Fresh status `req_56a8fddc3b78`: `gpu_admission_state=outcome_unknown`, telemetry `sample_pending`/stale, pressure `unknown`. No further inference or restart attempted. Do not clear or bypass the fence without explicit scheduler/operator reconciliation. A3/A5 remain **NOT VERIFIED** for long-context/concurrency and managed llama.cpp lifecycle; A4/A7 remain open for device and task-quality evidence.
+
+## A6 — CPU cache timing attempt outcome
+
+A later CPU/SQLite-only cache-hit timing invocation did not yield an inspectable command result; the orchestration response reported output truncation. Execution and measurement outcome are **unknown**. No timing claim is recorded, and this attempt is not validation evidence. The invocation did not request model inference; the separate GPU `outcome_unknown` fence remains unchanged. Do not repeat this identical measurement without first establishing whether the original process completed.
+
+## A1 — Focused recheck and embedding fixture diagnosis
+
+Focused cohort `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py tests/test_opencode_gpu_reservation.py tests/unit/test_reranker_gpu_reservation.py tests/test_preprocess_status_scaling.py --tb=short`: **88 passed, 5 failed in 4.54 s**. The first failing OpenCode embedding case also failed alone (**1 failed in 0.35 s**), so failure is not caused only by suite ordering.
+
+Source diagnosis for that case: the test constructs `EmbeddingModel` with `__new__`, sets `_gpu_reservation_path`, but omits `_gpu_reservation_store`. Production initialization creates `ExternalGpuReservationStore`; `_claim_embedding_gpu()` returns `False` when a path exists without a store, so `encode()` rejects before the mocked inference callback. This explains the isolated case as a fixture setup defect; the other four failing fixtures still need individual confirmation before applying a shared repair. No real model inference was requested.
+
+During this recheck, `local_ai_status` changed from `gpu_admission_state=outcome_unknown` (`req_fd586aa16af3`) to `external_reservation` (`req_ab8a06c4c555`); VRAM telemetry remains stale/unknown. Preserve the active reservation. Test-fixture repair waits until the required bounded solve/review can run without submitting work against the reserved GPU.
+
+## A1 — Shared cause confirmed across failed fixtures
+
+Bounded source review of all five failed cases in `tests/test_opencode_gpu_reservation.py` confirms each bypasses `EmbeddingModel.__init__` with `__new__`, sets `_gpu_reservation_path`, and omits `_gpu_reservation_store`. The process-exit child does the same before `_encode_ollama()`. Production initialization creates a store for that path, and the reservation claim explicitly fails closed when a path is configured without its store. This explains the five fixture failures; it does not indicate a production reservation defect. Repair should create an independent `ExternalGpuReservationStore` for each model at the same temp path used by its scheduler, including the child fixture, so the tests exercise file-backed cross-instance exclusion. Patch remains pending while `gpu_admission_state=external_reservation` prevents the required bounded semantic solve/review.
+
+## A1 — Embedding reservation fixture repair
+
+Updated only `tests/test_opencode_gpu_reservation.py`: four in-process fixtures and the process-exit child now create their own `ExternalGpuReservationStore` at the same temporary reservation path as the scheduler. Product code unchanged. Focused module `python -m pytest -q tests/test_opencode_gpu_reservation.py --tb=short`: **58 passed in 4.56 s**. Targeted `git diff --check -- tests/test_opencode_gpu_reservation.py`: exit 0.
+
+The semantic review response (`req_64bdc3bfe105`) was unusable (`invalid_citation`, `usable=false`); the broader `review_diff` job failed because the shared workspace diff exceeded its 12,000-token limit. No semantic review claim is made. Manual review confirms each model gets a separate store instance sharing the scheduler's temp file path. The full A1 cohort remains pending because its reservation source and lifecycle test are currently modified by another editor.
+
+## A1 — Current-source regression cohort
+
+Fresh direct `local_ai_coord(action="gpu_reservation_status")` reported `state=free`, `reservation_present=false` before validation. Full focused cohort against current dirty checkout: `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py tests/test_opencode_gpu_reservation.py tests/unit/test_reranker_gpu_reservation.py tests/test_preprocess_status_scaling.py --tb=short` — **98 passed in 5.82 s**. This includes 58 OpenCode reservation tests and 40 reservation lifecycle, reranker, and preprocessing-status tests. The five previous failures were test fixtures created with `EmbeddingModel.__new__` that omitted `_gpu_reservation_store`; adding an independent `ExternalGpuReservationStore` at each fixture's shared temporary path resolved them. Product code unchanged by this fixture repair. Bounded A1 source regression cohort passes; live cross-process/GPU and installed-process behavior remain unverified. `local_ai_task(action="review")` (`req_64bdc3bfe105`) returned `usable=false` with `invalid_citation`; it is not semantic review evidence. The broad repo `review_diff` job failed because the workspace diff exceeded 12,000 tokens. Primary review was limited to the exact test diff.
+
+## A6 — Fresh current-source test
+
+`python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short`: **7 passed in 1.99 s** against current dirty checkout. Current `_learned_priority_paths()` source SHA-256 `6ebc2a10495b027b179d94f5359b9984272f66846c2f8627c3ba87c41961e0b3`; cache key checks the current hot-query tuple, aggregate `file_refs` signature and 15-second TTL. Focused tests cover query/index-generation invalidation and four-batch fairness. This remains bounded source/SQLite evidence only. Real learned-query provenance, generated-context quality/latency, work saved and sustained fairness under actual preprocessing load remain **NOT VERIFIED**. Current Hub status (`req_ff2d97ad4e7c`) reported `gpu_admission_state=preparing_model`; no model-backed review or inference was started after that status.
+
+## Review gate — bounded local review unavailable
+
+A second, fixture-only `local_ai_task(action="review")` request included the exact changed helper, fixture call sites and file citations (`req_0cb4d73b887c`) but terminated with `local model output reached its token limit`. It produced no usable review. The earlier response (`req_64bdc3bfe105`) had `invalid_citation` and `usable=false`. Neither is accepted as semantic review; retain primary code review plus passing tests, and do not claim model approval.
+
+## A4 — Current deterministic CPU bypass cohort
+
+Fresh `python -m pytest -q tests/unit/test_rag_direct_cpu_bypass.py --tb=short`: **10 passed in 2.98 s** against the current checkout. This validates the deterministic direct CPU bypass regression only; no CUDA, model inference, retrieval quality, or CPU/GPU parity is measured.
+
+## Readiness discrepancy — 2026-11-06
+
+At the start of this continuation, `local_ai_coord(action="gpu_reservation_status")` returned `reservation_present=false`, `state=free`; in the same check set, `local_ai_status` (`req_dbf28b27de28`) returned `gpu_admission_state=external_reservation`, `ollama_online=null`, and degraded dependency probes (`runtime.online` and `ollama_profile`, each `probe_timeout`). VRAM telemetry was stale/unknown. Treat runtime admission as unavailable; no inference or model-backed review was started. The reservation/status disagreement needs scheduler/operator reconciliation before GPU qualification.
+
+## A5 — Fresh mocked lifecycle cohort
+
+Four focused `llama.cpp` routing/runtime regressions passed against current checkout: managed load/unload serialization; unload exclusion during inference; cancellation releases the slot; partial CUDA output is not replayed through fallback. Command result: **4 passed in 0.82 s**. No live model or GPU was exercised. Runtime load/inference/unload, real cancellation, VRAM release and admission remain **NOT VERIFIED**. The first pytest invocation used an incorrect class nodeid and collected no tests; corrected class-qualified nodeids then passed.
+
+## A2 — Future profile retired-tag regression guard
+
+`src/local_ai_hub/opencode_hardware.py` currently lists only `qwen3.5:9b-nvfp4`, `qwen2.5-coder:7b`, and `qwen3.5:4b-nvfp4` for the future 16 GB profile. Added `test_retired_model_tags_are_absent_from_future_profile_candidates` to `tests/test_opencode_future_stage.py`, covering retired `qwen3.5:4b-q4_K_M`, `gemma4:12b`, and `qwen2.5-coder:14b`. Targeted validation passed: **2 passed in 0.29 s**; scoped `git diff --check` exited 0. Git reported the file's LF-to-CRLF normalization warning. This supplements the completed scoped A2 scan above by independently guarding the future 16 GB candidate list; the prior scan and installed-tag snapshot cover the named active/advisory surfaces, while historical evaluation records intentionally retain tested tags.
+
+The fresh readiness sample (`req_a10a195e21ef`) reports Ollama online but scheduler `probe_timeout`, `gpu_admission_state=unknown`, and stale `sample_pending` VRAM telemetry; reservation status (`req_3823c1b3d8c9`) is free. No model inference or GPU benchmark was run. The diff-review job (`e4b4c95a12d644efa163406fcf96db21`) failed terminally because the broker included a shared diff fragment exceeding its 512-token review budget; no semantic approval is claimed.
+
+## A4 — Current-checkout CPU bypass revalidation
+
+After the shared checkout's embedding changes, `python -m pytest -q tests/unit/test_rag_direct_cpu_bypass.py --tb=short` passed **10 passed in 1.71 s**. The unchanged focused test file SHA-256 is `56115841ade1531c5746cfa70501e99ed047188d048346695a1c859409b1f309`; current Git status (`req_23e5ff79887a`) lists `src/local_ai_hub/embeddings.py` as modified. This confirms deterministic CPU bypass behavior in the current checkout's synthetic fixture only. GPU execution, CPU/GPU parity, retrieval quality and performance remain unverified; no broker verification receipt was recorded.
+
+## A2 — Capability-registry retired-tag regression guard
+
+Expanded `test_retired_model_tags_are_not_in_the_prompt_capability_registry` to reject `qwen2.5-coder:14b` alongside the retired Qwen Q4 and Gemma tags. The focused test passed (**1 passed in 0.34 s**); `git diff --check -- tests/test_prompt_contracts.py` exited 0. Updated test-file SHA-256: `05fb16e2eac8fce5a462f9d3f357ebd8e87b4d65a79a15c69da4e83e84955023`. This adds a regression guard for the capability registry; prompt-surface and installed-tag evidence remains as recorded in the completed scoped A2 scan above.
+
+## Readiness discrepancy — current continuation
+
+Fresh `local_ai_status` request `req_e988eb661160` returned degraded status: Ollama online, active model empty, `gpu_admission_state=unknown`, scheduler `probe_timeout`, and stale `sample_pending` VRAM telemetry. The paired `gpu_reservation_status` response reports `reservation_present=true`, `state=unknown`, and `manual_intervention_required=true`. No inference, GPU test, or reservation release was attempted. Owner, generation, expiry, and confirmed liveness were not available in the returned status fields; the fail-closed release rule therefore prohibits mutation. GPU runtime acceptance remains blocked pending authoritative reservation reconciliation and fresh telemetry.
+
+## Readiness update — reservation free, VRAM telemetry pending
+
+On the next fresh check, `gpu_reservation_status` returned `reservation_present=false`, `state=free`, `manual_intervention_required=false`; `local_ai_status` request `req_70330e579184` returned Ollama online, active `qwen3.5:9b-nvfp4`, and `gpu_admission_state=available`. VRAM telemetry remains `sample_pending`/stale with pressure `unknown`. This current snapshot clears the previous unknown-reservation condition but does not establish how it cleared or provide a safe measured VRAM baseline. No GPU inference or benchmark was started; runtime acceptance remains open.

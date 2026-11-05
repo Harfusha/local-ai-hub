@@ -24,11 +24,11 @@ MANAGED_PLANNER_INSTRUCTIONS = f"""{PLANNER_BLOCK_START}
 - **Authoritative Plans**: All project goals, tasks, dependencies, and deliverables are stored in `.local-ai-hub/plans/<plan-id>.plan.json`.
 - **Single Source of Truth**: NEVER create secondary or competing Markdown plans (e.g., `PLAN.md`, `TODO.md`, `tasks.md`) for repository work. Always use the file-backed planner via `local_ai_coord(action="plan_*")`.
 - **Pre-execution Resolution**: Always resolve the repository root before starting work. Adopt or reuse an existing plan and task rather than duplicating goals.
-- **Contract & Clarifications**: If project requirements or acceptance criteria change, update the specification, record a clarification on the task, and reconcile the contract revision before editing code.
+- **Contract & Clarifications**: Create or update the specification through Superpowers. For changed requirements, record the clarification on the task and call `plan_reconcile_steering` with a stable steering ID, current plan revision, current spec revision, spec path/content, summary, and acceptance criteria before dependent edits when exposed by the active MCP schema. If unavailable, use the Hub's supported project-plan interface or report the precise blocker; never edit plan storage directly.
 - **Agent OS Checkpoint Sync**: Checkpoint progress through `local_ai_coord(action="task_checkpoint")`. Bound tasks automatically synchronize progress, phase, next action, and blockers to the plan file.
 - **Checkpoint Recovery**: If a checkpoint persisted but plan sync failed, resolve the error, reread the plan revision, and call `plan_bind_task` again with the same task and session. `checkpoint_sync="reconciled"` confirms the pending projection was applied; `not_pending` does not prove the task and plan agree. Do not overwrite conflicting plan edits or repeat the persisted task mutation.
 - **Kanban & Briefings**: Board views (`board_summary`, `board_item_list`) and `session_briefing` reflect the authoritative plan files.
-- **Authentic Verification**: Deliveries and tasks can only be completed when verified by authentic command receipts from native test/lint runs.
+- **Authentic Verification**: Use `plan_validate` for plan validity; it does not replace authentic per-criterion command receipts. Complete bound tasks through the receipt-gated Agent OS workflow.
 - **Interruption & Resumption**: On interruption, preserve explicit blockers and next actions in the checkpoint rather than restarting with a blank plan.
 {PLANNER_BLOCK_END}"""
 
