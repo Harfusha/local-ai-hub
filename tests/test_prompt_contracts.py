@@ -34,8 +34,8 @@ def test_retired_model_tags_are_not_in_the_prompt_capability_registry():
     assert "qwen2.5-coder:14b" not in supported
 
 
-def test_candidate_code_models_preserve_security_and_write_boundaries():
-    for model in ("qwen3.5:9b-q4_K_M", "qwen2.5-coder:14b"):
+def test_heavy_model_names_preserve_security_and_write_boundaries():
+    for model in ("qwen3.5:9b-q4_K_M", "unregistered-coder:14b"):
         candidate = capability_for(model)
         assert candidate.model == model
         assert "security_decision" in candidate.cannot

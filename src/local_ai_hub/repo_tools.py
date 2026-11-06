@@ -1240,6 +1240,12 @@ class RepositoryTools:
         "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it",
         "of", "on", "or", "the", "to", "with", "implement", "implementation", "implementing", "missing",
         "change", "changes", "fix", "fixing", "add", "added", "update", "updated", "make", "ensure", "support",
+        # Common Czech request glue. Keep this list conservative: lexical symbol
+        # and literal matching still uses the untouched query separately.
+        "jak", "kde", "kdy", "pro", "přes", "proc", "proč", "do", "od", "jako", "zda", "zde",
+        "který", "která", "které", "kterou", "kterým", "kterých", "kterými", "je", "jsou", "byl",
+        "byla", "bylo", "byli", "být", "může", "mohou", "mám", "máme", "chci", "potřebuji",
+        "najdu", "najít", "hledat", "funguje", "fungovat",
     })
 
     def search_terms(self, query: str) -> list[str]:
@@ -2339,7 +2345,14 @@ class RepositoryTools:
         truncation_reasons: list[str] = []
         # Keep candidate scanning bounded independently of caller pagination.
         # Pages beyond this ranked working set remain explicitly truncated.
-        candidate_limit = max(1, self.max_hits * 4)
+        # Installation queries often fan out over setup scripts and old plans.
+        # Give that intent a larger bounded recall window so one noisy path
+        # cannot hide the actual user guide. Other queries retain the smaller
+        # default window; response size stays controlled by pagination.
+        install_intent = installation_intent_priority and bool(
+            _intent_query_terms(query).intersection(_INSTALLATION_INTENT_TERMS)
+        )
+        candidate_limit = max(1, self.max_hits * (8 if install_intent else 4))
         candidate_engine = "python"
         project_candidates = None
         if project_settings is not None:

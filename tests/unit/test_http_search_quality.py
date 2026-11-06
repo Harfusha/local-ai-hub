@@ -31,7 +31,7 @@ def test_http_search_preserves_literal_query_and_returns_current_source(tmp_path
     handler.do_POST()
 
     assert responses[0][0] == 200
-    assert responses[0][1]["search_mode"] == "hybrid"
+    assert responses[0][1]["search_mode"] == "lexical"
     assert [hit["path"] for hit in responses[0][1]["results"]] == ["bridge.py"]
 
 

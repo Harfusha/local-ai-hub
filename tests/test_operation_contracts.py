@@ -552,6 +552,7 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
     context_schema = operation_input_schema("local_ai_repo", "context")
     search_schema = operation_input_schema("local_ai_repo", "search")
     assert search_schema["properties"]["search_mode"]["enum"] == ["lexical", "rag", "hybrid"]
+    assert search_schema["properties"]["search_mode"]["default"] == "lexical"
     context_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
     assert all(field in context_schema["properties"] for field in context_fields)
     assert all(field not in search_schema["properties"] for field in context_fields[1:])

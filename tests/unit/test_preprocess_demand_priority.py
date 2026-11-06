@@ -142,10 +142,26 @@ def test_repository_benchmark_measures_real_hot_files_against_cold_queue(tmp_pat
     (root / "a_cold.py").write_text("ordinary code path", encoding="utf-8")
     (root / "b_cold.py").write_text("another ordinary code path", encoding="utf-8")
     (root / "z_hot.py").write_text("rare_demand occurs in this real source file", encoding="utf-8")
+    runtime = root / ".local-ai-hub" / "local" / "intents"
+    runtime.mkdir(parents=True)
+    (runtime / "intent.json").write_text("rare_demand runtime state", encoding="utf-8")
+    skills = root / ".local-ai-hub-superpowers" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "installed.md").write_text("rare_demand installed tool payload", encoding="utf-8")
+    merge_artifacts = root / ".merge-checks" / "pytest" / "fixture"
+    merge_artifacts.mkdir(parents=True)
+    (merge_artifacts / "artifact.txt").write_text("rare_demand generated test state", encoding="utf-8")
+    workflows = root / ".superpowers" / "coordination"
+    workflows.mkdir(parents=True)
+    (workflows / "plan.py").write_text("rare_demand workflow script", encoding="utf-8")
+    t03_artifacts = root / ".t03-sync-checks" / "pytest-temp"
+    t03_artifacts.mkdir(parents=True)
+    (t03_artifacts / "output.txt").write_text("rare_demand validation output", encoding="utf-8")
 
-    result = run(files=3, batch_size=2, root=str(root), query="rare_demand")
+    result = run(files=4, batch_size=2, root=str(root), query="rare_demand")
 
-    assert result["scope"] == "repository text file-card queue selection, no model inference"
+    assert result["scope"] == "repository queue selection and deterministic context_pack_paths, no model inference"
+    assert result["sampled_files"] == 3
     assert result["cache_revision_tracking"] is True
     assert result["query_match_count"] == 1
     assert result["baseline"]["batches_to_first_query_match"] == 2
@@ -154,7 +170,42 @@ def test_repository_benchmark_measures_real_hot_files_against_cold_queue(tmp_pat
     assert result["demand"]["completed_files"] == 3
     assert result["demand"]["unprocessed_files"] == 0
     assert result["demand"]["selection_p95_ms"] >= 0
+    assert result["useful_context_verified"] is True
+    assert result["baseline"]["batches_to_first_useful_context"] == 2
+    assert result["demand"]["batches_to_first_useful_context"] == 1
+    assert result["baseline"]["files_processed_to_useful_context"] == 3
+    assert result["demand"]["files_processed_to_useful_context"] == 2
+    assert result["baseline"]["useful_context_evidence_count"] > 0
+    assert result["demand"]["useful_context_evidence_count"] > 0
+    assert result["demand"]["useful_context_chars"] > 0
+    assert result["useful_context_work_saved"] == {"batches": 1, "files": 1}
+
+
+def test_repository_benchmark_treats_invalid_context_pack_as_unverified(tmp_path, monkeypatch):
+    class InvalidContextRepositoryTools:
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def _terms(query):
+            return query.split()
+
+        @staticmethod
+        def context_pack_paths(*_args, **_kwargs):
+            return None
+
+    monkeypatch.setitem(run.__globals__, "RepositoryTools", InvalidContextRepositoryTools)
+    root = tmp_path / "invalid-context-repo"
+    root.mkdir()
+    (root / "a.py").write_text("rare_demand", encoding="utf-8")
+    (root / "b.py").write_text("ordinary", encoding="utf-8")
+
+    result = run(files=2, batch_size=2, root=str(root), query="rare_demand")
+
     assert result["useful_context_verified"] is False
+    assert result["useful_context_work_saved"] is None
+    assert result["baseline"]["useful_context_evidence_count"] is None
+    assert result["demand"]["useful_context_evidence_count"] is None
 
 
 def test_learned_priority_cache_invalidates_on_query_or_index_change(tmp_path, monkeypatch):
@@ -218,6 +269,33 @@ def test_learned_priority_cache_invalidates_on_query_or_index_change(tmp_path, m
 
     now[0] = 115.0
     assert pre._learned_priority_paths(root) == ("newer.py",)
+
+
+def test_file_ref_revision_tracks_source_identity_not_card_state(tmp_path):
+    db = tmp_path / "pre.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute(
+            "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, card_key TEXT)"
+        )
+        _ensure_file_refs_revision_tracking(con)
+        con.execute("INSERT INTO file_refs VALUES('repo','a.py','hash-a',NULL)")
+
+        def revision(root):
+            row = con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
+            return int(row[0]) if row else 0
+
+        assert revision("repo") == 1
+        con.execute("UPDATE file_refs SET card_key='card' WHERE root='repo'")
+        assert revision("repo") == 1
+        con.execute("UPDATE file_refs SET content_hash='hash-b' WHERE root='repo'")
+        assert revision("repo") == 2
+        con.execute("UPDATE file_refs SET path='b.py' WHERE root='repo'")
+        assert revision("repo") == 3
+        con.execute("UPDATE file_refs SET root='other' WHERE root='repo'")
+        assert revision("repo") == 4
+        assert revision("other") == 1
+        con.execute("DELETE FROM file_refs WHERE root='other'")
+        assert revision("other") == 2
 
 
 def test_sustained_hot_queries_do_not_starve_regular_file_cards(tmp_path):

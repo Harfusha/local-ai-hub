@@ -256,6 +256,16 @@ class ModelPreparationCancelled(InterruptedError):
 
     preparation_cancelled = True
 
+    def __init__(self, message: str, *, operation_not_started: bool = False) -> None:
+        super().__init__(message)
+        self.operation_not_started = operation_not_started
+
+
+class ModelPreparationNotStarted(TimeoutError):
+    """Provider admission expired before model preparation began."""
+
+    operation_not_started = True
+
 
 class ModelPreparationAdmissionRejected(RuntimeError):
     """A fresh resource check rejected loading after existing models were unloaded."""
@@ -2283,10 +2293,15 @@ class OllamaRuntime:
             try:
                 while not acquired:
                     if _stop_requested(should_stop):
-                        raise ModelPreparationCancelled("model preparation cancelled during provider admission")
+                        raise ModelPreparationCancelled(
+                            "model preparation cancelled during provider admission",
+                            operation_not_started=True,
+                        )
                     remaining = limit - time.monotonic()
                     if remaining <= 0:
-                        raise TimeoutError("model preparation deadline expired during provider admission")
+                        raise ModelPreparationNotStarted(
+                            "model preparation deadline expired during provider admission"
+                        )
                     acquired = self._mixed_provider_lock.acquire(timeout=min(0.1, remaining))
                 return self._prepare_model_impl(model, unload_others=unload_others, post_unload_admission=post_unload_admission,
                                                 should_stop=should_stop, deadline=limit)

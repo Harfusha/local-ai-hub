@@ -646,8 +646,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},
             "search_mode": {
-                "type": "string", "enum": ["lexical", "rag", "hybrid"], "default": "hybrid",
-                "description": "hybrid is the agent default for natural-language queries; lexical searches exact current source text; rag searches semantic candidates; hybrid fuses both without claiming an exact mixed total",
+                "type": "string", "enum": ["lexical", "rag", "hybrid"], "default": "lexical",
+                "description": "lexical is the default and searches exact current source text; hybrid explicitly fuses bounded lexical and semantic candidates without claiming an exact mixed total; rag searches semantic candidates",
             },
             "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 24},
             "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},

@@ -42,6 +42,29 @@ def test_owned_external_reservation_expires_in_memory_after_files_disappear(tmp_
         scheduler.close()
 
 
+def test_unknown_internal_outcome_still_reaps_expired_external_fence(tmp_path):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    now = [100.0]
+    reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(reservation_path, ttl_seconds=10, clock=lambda: now[0])
+    assert store.claim_internal("a" * 64)
+    os.utime(reservation_path, (80.0, 80.0))
+
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    scheduler._external_gpu_store = store
+    scheduler._internal_gpu_uncertain = True
+    try:
+        assert scheduler._external_gpu_reserved() is True
+        assert scheduler._claim_internal_gpu() is False
+        assert not reservation_path.exists()
+    finally:
+        scheduler.close()
+
+
 def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp_path):
     from local_ai_hub.embeddings import EmbeddingModel
 

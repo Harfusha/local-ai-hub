@@ -247,7 +247,7 @@ class ExternalGpuReservationStore:
         if not isinstance(owner, str):
             return False
         parts = owner.split(":")
-        if len(parts) != 3 or parts[0] != "reranker":
+        if len(parts) != 3 or parts[0] not in {"embedding", "reranker"}:
             return False
         try:
             pid = int(parts[1])

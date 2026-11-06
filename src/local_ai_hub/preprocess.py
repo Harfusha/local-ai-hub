@@ -105,9 +105,10 @@ def _ensure_file_refs_revision_tracking(con: sqlite3.Connection) -> None:
         AFTER UPDATE OF {update_fields} ON file_refs
         WHEN {update_condition}
         BEGIN
-            INSERT INTO file_refs_revision(root, revision) VALUES(OLD.root, 1)
-            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
             INSERT INTO file_refs_revision(root, revision) VALUES(NEW.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+            INSERT INTO file_refs_revision(root, revision)
+            SELECT OLD.root, 1 WHERE OLD.root IS NOT NEW.root
             ON CONFLICT(root) DO UPDATE SET revision=revision+1;
         END;
         """

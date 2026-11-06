@@ -397,12 +397,18 @@ def test_http_code_index_route_returns_bounded_400_for_upper_bound(
 def test_http_search_route_maps_service_503_to_transport_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = SimpleNamespace(
-        recovery=None,
-        services=SimpleNamespace(repo_search=lambda *_args, **_kwargs: {
+    service_calls: list[dict[str, object]] = []
+
+    def repo_search(*_args, **kwargs):
+        service_calls.append(kwargs)
+        return {
             "success": False, "status_code": 503, "error": "exact scan incomplete",
             "results": [], "total_matches": 0, "has_more": False,
-        }),
+        }
+
+    app = SimpleNamespace(
+        recovery=None,
+        services=SimpleNamespace(repo_search=repo_search),
         debug_traces=None,
         logger=SimpleNamespace(error=lambda *_args, **_kwargs: None),
     )
@@ -430,6 +436,7 @@ def test_http_search_route_maps_service_503_to_transport_status(
     assert responses[0][1]["success"] is False
     assert responses[0][1]["total_matches"] == 0
     assert responses[0][1]["has_more"] is False
+    assert service_calls[0]["search_mode"] == "lexical"
 
 
 def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(

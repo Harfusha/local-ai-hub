@@ -542,3 +542,86 @@ Still open before this plan can be accepted:
 - Updated the case protocol to require stable user-controlled non-system paths. `git diff --check -- docs/agent-evaluation/results.md` passed before this checkpoint; rerun focused whitespace validation for both changed docs.
 - A bounded `code_index` lookup against the stable fixture found no indexed candidates (`req_0fd13a1b652e`). A direct lexical search then returned both exact source slices (`req_81db351be733`), confirming fixture content but not preprocessing/index completion. Do not poll the preprocess job. The exact solve call rejected unsupported `evidence_ids`; no retry with changed task text.
 - A1 inventory review request `req_4e419f11f89a` was admitted, but its output envelope was truncated and semantic/review checks marked it unusable (`unrelated_output`, unverified citations). Do not treat it as approval; review evidence is recorded in `docs/agent-evaluation/results.md`.
+
+### Continuation checkpoint — 2026-11-05, post-restart lease contention
+
+- Restarted the Hub from the repository virtual environment after the prior reservation expired and the live request/scheduler queues were empty. Hub 5.1.3 came online from `src/local_ai_hub`; dashboard health is healthy.
+- The restarted process immediately acquired GPU reservation generation `56914ffadd50444a9aa59df116013993` (`embedding:17208:21204`), expiring at `1793914325.926`. At 21:24 UTC the owner process was still live; `gpu_admission_state=external_reservation`, active model null and VRAM telemetry pending/stale. Do not release while the owner is alive.
+- No benchmark or inference was run under this reservation. The search-summary quality gate and RTX 5070 Ti performance/quality gates remain open; recheck after lease expiry before attempting a focused evaluation.
+
+### Continuation checkpoint — 2026-11-05, embedding reservation renewed
+
+- After the recorded lease expiry, GPU admission immediately showed a new active embedding reservation, generation `cef450e3a3174f87acc3d97cec996a95`, owner `embedding:17208:28388`, expiring at `1793915230.906`. The previous lease cannot be treated as free capacity.
+- User approved releasing the reservation, but the owner is active and the current lease is unexpired. Keep the release fail-closed; do not interrupt the embedding worker. No benchmark or model inference ran.
+- Search-summary quality and RTX 5070 Ti performance/quality gates remain open. Recheck only after the active owner stops or the lease expires without renewal.
+
+### Continuation checkpoint — 2026-11-05, expired fence requires intervention
+
+- At 21:47:25 UTC the recorded reservation had passed expiry, but `gpu_reservation_status` returned `state=unknown` and `manual_intervention_required=true`; the known owner PID 17208 was still alive. One consented Hub release attempt for generation `cef450e3a3174f87acc3d97cec996a95` returned `success=false`, `mutation_applied=false`. Do not unlink or rewrite the fence manually.
+- The targeted prewarm regression module passed (9 tests); `tests/unit/test_mcp_gpu_reservation_release_contract.py` passed (1 test); `python tools/release_check.py --allow-installed` passed. No broad suites, GPU benchmark, or model inference ran.
+- Live search-summary and RTX 5070 Ti measurements, task-quality matrix, route recommendations, full review, and broader release validation remain open. Hardware evaluation cannot proceed until the reservation state is repaired through an authorized recovery path and GPU admission is verified free.
+
+### Continuation checkpoint — 2026-11-05, reservation state readable again
+
+- At 22:53 UTC the Hub returned a valid active reservation again: generation `3ea5f04242174aeea71e4b27d8f0ad50`, owner `embedding:17208:28108`, expiry `1793919854.9008765`. PID 17208 was live with increasing CPU. The prior `unknown/manual_intervention_required` snapshot is historical; the current GPU is still reserved.
+- Hub status reports `vram_pressure=nominal`, but `gpu_admission_state=outcome_unknown`, `active_model=null`; this does not authorize an inference or benchmark. Wait for the current owner/lease to stop or expire, then verify a fresh free state before GPU work.
+- Targeted regressions and `release_check --allow-installed` remain passed; no broad suites or GPU inference ran. All live quality/performance gates remain open.
+- Re-ran the isolated reservation lifecycle module after resume: `tests/test_external_gpu_reservation_lifecycle.py` passed 33 tests using temporary reservation paths. This does not verify or repair the live server fence.
+- Re-ran targeted profile and search-summary regressions: `tests/test_config_hardware.py` passed 28 tests; `tests/test_mcp_agent_routing.py -k search_ai_summary` passed 12 tests (108 deselected). These are source-level checks, not live model quality or performance evidence.
+
+### Continuation checkpoint — 2026-11-05, consented lease released but GPU not free
+
+- Confirmed owner PID 17208 was absent while generation `3ea5f04242174aeea71e4b27d8f0ad50` was still reported active. The user-approved `gpu_reservation_release` call succeeded with `mutation_applied=true` for that exact generation.
+- Fresh status immediately after release returned `reservation_present=true`, `state=unknown`, `manual_intervention_required=true`; Hub status reported `gpu_admission_state=preparing_model`, `active_model=null`, and pending/stale VRAM telemetry. A later bounded recheck showed the same state. Do not infer free GPU or start inference/benchmark.
+- Targeted source regressions and release check remain passed. Live model quality, 5070 Ti measurements, route recommendations, integrated review and broader release gates remain open.
+
+### Continuation checkpoint — 2026-11-06, internal GPU preparation after release
+
+- The external generation-bound lease release succeeded. Fresh status then stayed `reservation_present=true`, `state=unknown`, `manual_intervention_required=true`; `local_ai_status` reported `gpu_admission_state=preparing_model` followed by `outcome_unknown`, with no active model and stale/pending telemetry.
+- Current scheduler source shows internal GPU work uses a digest-only fence (`_claim_internal_gpu` in `src/local_ai_hub/scheduler.py`), which the external status endpoint cannot identify as an external owner. The current fence may therefore be an internal operation, but that identity is not proven. Treat the GPU as occupied until status and scheduler admission provide fresh usable evidence.
+- Do not retry the successful release, remove fence files, or run inference/benchmark under the unknown state. Continue with safe source-level validation; then recheck admission after preparation resolves.
+
+### Continuation checkpoint — 2026-11-06, focused validation and recovery inspection
+
+- Fresh `local_ai_status` request `req_83decbb27b2c` still reports `gpu_admission_state=outcome_unknown`, `active_model=null`, and pending/stale VRAM telemetry. The active MCP coordination schema does not expose reservation status or release actions.
+- Current scheduler source confirms that a model-switch exception after a potentially started operation sets `_internal_gpu_uncertain`; subsequent internal claims fail closed. No inference, benchmark, or fence-file mutation is justified by this state.
+- `python -m pytest -q tests/test_prewarm_reliability.py`: 9 passed. `python tools/release_check.py --allow-installed`: OK. Targeted `git diff --check`: exit 0; Git noted the existing prewarm test file may be converted from LF to CRLF on a future Git write.
+- Live search-summary baseline, RTX 5070 Ti cold/warm measurements, labeled capability-quality matrix, route recommendations, independent review, and pre-release validation remain open.
+
+### Continuation checkpoint — 2026-11-06, reconcile lexical search default
+
+- A current-source audit found the checked lexical-default deliverable had drifted: MCP discovery/wrapper, the HTTP omission fallback, `LocalAIServices.repo_search`, and both canonical prompts still selected or promoted `hybrid` by default. Updated each to default to `lexical`; `hybrid` and `rag` remain explicit options.
+- Added focused regressions for the generated operation schema, MCP default/forwarding, HTTP request forwarding, and service behavior. Red checks reproduced the old `hybrid` defaults; after the fix, the selected checks passed: MCP 1, operation contract 1, HTTP 1, prompt contract 9; the full focused search-mode module passed 26 and the MCP search/summary subset passed 13, confirming explicit hybrid and AI summaries remain available.
+- `python tools/release_check.py --allow-installed`: OK. Targeted `git diff --check`: exit 0; Git emitted only existing LF-to-CRLF warnings for two test files. The full test suite was not run.
+- GPU admission remains `outcome_unknown`; live model quality/performance, route recommendations, independent review, and the remaining release gates are still open.
+
+### Continuation checkpoint — 2026-11-06, Hub restart and reservation gate
+
+- The operator-approved `python tools/hubctl.py restart` completed with exit code 0 (`restarted`). Post-restart readiness request `req_d8a26f0974d0` reports `gpu_admission_state=external_reservation`; active model is null and VRAM telemetry is pending/stale. Follow-up request `req_a8c40722121e` confirms hardware profile `high`, but does not expose reservation owner, generation, expiry, or process liveness.
+- The active `local_ai_coord` MCP schema exposes `claim`, `release`, memory/task/plan actions, but not `gpu_reservation_status` or `gpu_reservation_release`. The user authorized release, but no generation-bound status is available through the active interface; do not infer owner death, delete reservation state, or run GPU inference/benchmarks.
+- The source tree contains GPU reservation status/release contracts and a focused release-contract test. `python -m pytest -q tests/unit/test_mcp_gpu_reservation_release_contract.py`: 1 passed. This source test does not prove the installed Hub exposes the new actions.
+- The Codex MCP server constructs `HubClient(auto_start=True)`. The real-child cold-start integration check `tests/test_t04_real_child_startup_acceptance.py::test_autostart_launches_real_hub_child_and_returns_http_search_result` passed (1 test), verifying daemon-off startup and an HTTP search response.
+- The Hub task checkpoint is `req_979fc5b295c3`. Remaining GPU quality, cold/warm, concurrency and route recommendation gates stay open. Continue safe targeted source work; run only specific tests, not the full suite.
+
+### Continuation checkpoint — 2026-11-06, active schema regression
+
+- Fresh Hub readiness request `req_927bd1293c69` reports `gpu_admission_state=preparing_model`, `active_model=null`, and VRAM sample pending/stale. This is not GPU availability, residency, or benchmark evidence; do not repeat status polling or admit inference based on it.
+- Source-index request `req_7bd55b65a32c` located the GPU status/release contract and MCP description. Focused test `tests/test_mcp_agent_routing.py::test_coord_description_and_prompts_expose_plan_workflow` passed (1 test), confirming source-generated action documentation and prompt parity. The currently attached MCP tool schema still omits these actions, so installed/runtime exposure remains unresolved.
+- Exact-source artifact slices exceeded their requested response budgets and were not retried. No source change or broad test run was made; the reservation and physical evaluation gates remain open.
+
+### Continuation checkpoint — 2026-11-06, generation-fenced release regression
+
+- Focused safety tests passed: `test_consent_release_requires_expired_idle_generation_and_audit_reason` and `test_consent_release_allows_confirmed_dead_embedding_owner` (2 passed). These prove source-level release conditions only; they do not authorize release of the live reservation.
+- The active runtime still reports `preparing_model` with no active model and stale VRAM telemetry, while the attached MCP schema lacks the tested reservation actions. No live reservation was changed and no GPU inference was started.
+
+### Continuation checkpoint — 2026-11-06, source MCP schema coverage
+
+- `tests/test_mcp_agent_routing.py::test_public_action_parameters_are_explicit_literals` passed (1 test), confirming `gpu_reservation_status` and `gpu_reservation_release` remain in the source `local_ai_coord` Literal action contract. `tests/test_mcp_agent_routing.py::test_live_mcp_schemas_are_valid_without_empty_combinators -k local_ai_coord` passed (1 passed, 1 deselected), confirming source MCP schema validity.
+- An initial parameterized-test selector escaped incorrectly and collected no tests; the two corrected exact selections above ran and passed. No broad suite was run.
+- The active Codex tool metadata still omits the reservation actions despite source coverage. Fresh readiness `req_faa99e3790d9` reports `external_reservation`, no active model and stale VRAM telemetry. Do not release or benchmark without the live generation-fenced status interface.
+
+### Continuation checkpoint — 2026-11-06, prewarm retry safety review
+
+- Reviewed `_prewarm_should_retry` and its bounded retry loop. It stops when scheduler status is unavailable, malformed, or `outcome_unknown`; it retries only an allowlisted admission state, with a 120-attempt default cap and bounded waits.
+- Focused checks passed: `test_prewarm_stops_retrying_after_unknown_gpu_outcome`, `test_prewarm_retries_while_gpu_is_temporarily_busy`, and `test_prewarm_stops_when_scheduler_status_is_unavailable_or_unknown` (3 passed). This validates retry policy, not physical GPU readiness.
+- Fresh Hub readiness `req_d4bb195456c1` reports `gpu_admission_state=outcome_unknown`, active model null and stale VRAM telemetry. The fast-model comparison, 5070 Ti benchmark, labeled quality matrix, and route recommendations remain open.

@@ -1,7 +1,7 @@
 """Measure synthetic or repository-sampled file-card scheduling.
 
-Only queue selection and simulated completion are measured; no model inference runs.
-Repository mode reads a bounded set of small text files and stores the fixture outside the checkout.
+Repository mode also measures deterministic useful-context packing; no model inference runs.
+It reads a bounded set of small source files and stores the fixture outside the checkout.
 """
 from __future__ import annotations
 
@@ -23,7 +23,9 @@ from local_ai_hub.repo_tools import RepositoryTools
 
 _TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".jsx", ".md", ".ps1", ".py", ".rst",
                   ".sh", ".sql", ".toml", ".ts", ".tsx", ".txt", ".yaml", ".yml"}
-_SKIP_DIRS = {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".serena", ".venv",
+_SKIP_DIRS = {
+    ".git", ".local-ai-hub", ".local-ai-hub-superpowers", ".merge-checks", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", ".serena", ".superpowers", ".t03-sync-checks", ".venv",
               "__pycache__", "build", "dist", "node_modules", "target", "venv"}
 _MAX_REPOSITORY_BYTES = 64 * 1024 * 1024
 _MAX_REPOSITORY_ENTRIES = 50_000
@@ -128,7 +130,7 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
                 con.commit()
             if not hot_files:
                 raise ValueError("query matched no files in the bounded repository sample")
-            scope = "repository text file-card queue selection, no model inference"
+            scope = "repository queue selection and deterministic context_pack_paths, no model inference"
         with closing(sqlite3.connect(db)) as con:
             con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, card_key TEXT, last_accessed_at REAL, PRIMARY KEY(root,path))")
             if root is None:
@@ -150,7 +152,7 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
         hot = sorted(hot_files)[0]
         output = {"scope": scope, "files": len(file_rows), "batch_size": batch_size,
                   "query_match_count": len(hot_files), "useful_context_verified": False,
-                  "cache_revision_tracking": True}
+                  "cache_revision_tracking": True, "useful_context_work_saved": None}
         if root is not None:
             output.update({"repository": Path(repo_root).name, "query": query,
                            "sampled_bytes": sum(row[2] for row in file_rows),
@@ -167,6 +169,14 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
             regular_first = 0
             hot_first = 0
             completed = set()
+            batches_to_useful_context = None
+            files_to_useful_context = None
+            useful_context_evidence_count = None
+            useful_context_chars = None
+            elapsed_to_useful_context_ms = None
+            context_pack_elapsed_ms = 0.0
+            context_pack_ms_to_useful_context = None
+            run_started = time.perf_counter()
             while True:
                 start = time.perf_counter()
                 selected = [str(row["path"]) for row in pre._find_next_files(repo_root, batch_size)]
@@ -181,6 +191,24 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
                     batches_to_first_hot = batches
                 if hot in selected:
                     batches_to_hot = batches
+                if root is not None and batches_to_useful_context is None:
+                    context_started = time.perf_counter()
+                    context_result = pre.repo_tools.context_pack_paths(
+                        repo_root, query, selected, max_tokens=1800, top_k=min(10, len(selected)),
+                    )
+                    context_pack_elapsed_ms += (time.perf_counter() - context_started) * 1000
+                    if not isinstance(context_result, dict):
+                        context_result = {}
+                    evidence = context_result.get("evidence")
+                    context = context_result.get("context")
+                    if (context_result.get("success") is True and isinstance(evidence, list)
+                            and evidence and isinstance(context, str) and context.strip()):
+                        batches_to_useful_context = batches
+                        files_to_useful_context = len(completed) + len(selected)
+                        useful_context_evidence_count = len(evidence)
+                        useful_context_chars = len(context)
+                        elapsed_to_useful_context_ms = (time.perf_counter() - run_started) * 1000
+                        context_pack_ms_to_useful_context = context_pack_elapsed_ms
                 completed.update(selected)
                 with closing(connect()) as con:
                     con.executemany("UPDATE file_refs SET card_key='done' WHERE root=? AND path=?", ((repo_root, path) for path in selected))
@@ -195,6 +223,29 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
                             "regular_files_in_first_batch": regular_first,
                             "selection_median_ms": statistics.median(samples),
                             "selection_p95_ms": _p95(samples), "selection_samples_ms": samples}
+            if root is not None:
+                output[name].update({
+                    "batches_to_first_useful_context": batches_to_useful_context,
+                    "files_processed_to_useful_context": files_to_useful_context,
+                    "useful_context_evidence_count": useful_context_evidence_count,
+                    "useful_context_chars": useful_context_chars,
+                    "elapsed_ms_to_useful_context": elapsed_to_useful_context_ms,
+                    "context_pack_ms_to_useful_context": context_pack_ms_to_useful_context,
+                })
+        if root is not None:
+            baseline_context = output["baseline"]["batches_to_first_useful_context"]
+            demand_context = output["demand"]["batches_to_first_useful_context"]
+            baseline_files = output["baseline"]["files_processed_to_useful_context"]
+            demand_files = output["demand"]["files_processed_to_useful_context"]
+            output["useful_context_verified"] = all(
+                value is not None
+                for value in (baseline_context, demand_context, baseline_files, demand_files)
+            )
+            if output["useful_context_verified"]:
+                output["useful_context_work_saved"] = {
+                    "batches": baseline_context - demand_context,
+                    "files": baseline_files - demand_files,
+                }
         return output
 
 

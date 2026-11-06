@@ -782,10 +782,15 @@ def _desc_coord() -> str:
     if LEAN_SCHEMAS:
         supported = set(FEATURES.supported_coord_actions())
         actions = [name for name in (
-            "claim", "release", "memory_record",
+            "gpu_reservation_status", "gpu_reservation_release", "claim", "release", "memory_record",
             "memory_find", "context_compile", "task_create", "task_checkpoint", "ask", "answer",
             "plan_list", "plan_get", "plan_board_view", "plan_task_edit",
         ) if name in supported]
+        reservation_note = (
+            " GPU reservation status is owner-global and takes no root; release requires consent=true, generation, audit_reason, and expiry or confirmed owner death."
+            if {"gpu_reservation_status", "gpu_reservation_release"}.issubset(actions)
+            else ""
+        )
         purpose = (
             "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts"
             if FEATURES.agent_os else "Coordination for leases"
@@ -793,6 +798,7 @@ def _desc_coord() -> str:
         return (
             f"{purpose} with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
             f"{_actions_note(actions)}"
+            f"{reservation_note}"
             f"{_plan_coord_note()}"
             " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
             " Skip when: task is a trivial one-step lookup with no shared state to preserve."
@@ -965,7 +971,7 @@ _STATUS_PROTECTED_KEYS = (
     "success", "status_code", "error", "warning", "version", "hub_online", "ollama_online",
     "active_model", "queued", "inflight", "cache_hits", "coalesced_waiters",
     "net_cloud_token_delta_est", "vram_pressure", "context_budget_factor",
-    "gpu_admission_state", "vram_telemetry",
+    "gpu_admission_state", "vram_telemetry", "endpoint_stats",
     "summary", "window", "queue", "hotspots", "by_operation", "error_fingerprints",
     "job_id", "trace_id", "task_id", "state", "artifact_id", "cancel_requested",
     "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
@@ -2645,6 +2651,42 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
         pass
 
 
+def _compact_endpoint_stats(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("success") is not True:
+        return {"available": False, "error": "endpoint_stats_unavailable", "items": []}
+    raw_items = value.get("items")
+    if not isinstance(raw_items, list):
+        return {"available": False, "error": "endpoint_stats_unavailable", "items": []}
+
+    items: list[dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        kind = raw.get("type")
+        name = raw.get("name")
+        calls = raw.get("calls")
+        if (not isinstance(kind, str) or kind not in {"http", "mcp"} or not isinstance(name, str)
+                or isinstance(calls, bool) or not isinstance(calls, int) or calls <= 0):
+            continue
+        item: dict[str, Any] = {"type": kind, "name": name[:160], "calls": calls}
+        for key in ("success_rate", "p50_ms", "p95_ms", "p99_ms"):
+            metric = raw.get(key)
+            if metric is None and key == "success_rate":
+                item[key] = None
+            elif isinstance(metric, (int, float)) and not isinstance(metric, bool) and math.isfinite(metric):
+                item[key] = round(float(metric), 1)
+        status = raw.get("status")
+        item["status"] = status if isinstance(status, str) and status in {"failing", "slow", "active"} else "unknown"
+        items.append(item)
+
+    priority = {"failing": 0, "slow": 1, "active": 2, "unknown": 3}
+    items.sort(key=lambda item: (
+        priority[item["status"]],
+        -(item.get("p95_ms") if isinstance(item.get("p95_ms"), (int, float)) else 0.0),
+    ))
+    return {"available": True, "items": items[:8], "truncated": len(items) > 8}
+
+
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_status(
@@ -2718,6 +2760,14 @@ def local_ai_status(
         }
         if failed:
             result["dependency_status"] = _bound_context_json(failed)
+    if isinstance(extra_fields, list) and "endpoint_stats" in extra_fields:
+        try:
+            raw_endpoint_stats = CLIENT.get(
+                "/api/telemetry/endpoint-stats?scope=active&buckets=0", timeout=2.0
+            )
+        except Exception:
+            raw_endpoint_stats = None
+        result["endpoint_stats"] = _compact_endpoint_stats(raw_endpoint_stats)
     return _preserve_contract_state(status, result)
 
 
@@ -3695,7 +3745,7 @@ def _local_ai_repo_impl(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
-    search_mode: str = "hybrid",
+    search_mode: str = "lexical",
     old_symbol: str | None = None,
     new_symbol: str | None = None,
     old_code: str | None = None,
@@ -4694,7 +4744,7 @@ def local_ai_repo(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
-    search_mode: str = "hybrid",
+    search_mode: str = "lexical",
     old_symbol: str | None = None,
     new_symbol: str | None = None,
     old_code: str | None = None,
@@ -5183,8 +5233,10 @@ def local_ai_coord(
             return {"success": False, "operation_not_started": True,
                     "error": "gpu reservation release requires consent=true, generation, and audit_reason"}
         released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
-        return {"success": released, "mutation_applied": released,
-                "generation": generation, "error": None if released else "lease is missing, active, unexpired, or changed"}
+        result = {"success": released, "mutation_applied": released, "generation": generation}
+        if not released:
+            result["error"] = "lease is missing, active, unexpired, or changed"
+        return result
     if isinstance(action, str) and action.startswith("plan_"):
         # Preserve omission versus explicit null; do not inject other actions' defaults.
         options = _CURRENT_RESPONSE_OPTIONS.get() or {}

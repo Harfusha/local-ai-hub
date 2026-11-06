@@ -152,3 +152,17 @@ def test_security_validation_rejects_host_and_origin_overrides(tmp_path: Path, k
 def test_security_validation_rejects_alternate_loopback_bind(tmp_path: Path):
     with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
         _config(tmp_path, server_bind="localhost")
+
+
+def test_high_profile_background_ollama_avoids_mcp_http_port(tmp_path: Path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        '[hardware]\nprofile = "high"\nauto_tune = false\n'
+        '[mcp_http]\nenabled = true\nport = 11436\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(str(path), probe_hardware=False)
+
+    background_port = cfg["background_gpu"]["ollama_url"].rsplit(":", 1)[-1]
+    assert background_port != str(cfg["mcp_http"]["port"])

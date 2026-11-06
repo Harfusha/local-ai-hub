@@ -316,6 +316,24 @@ def _prewarm_route_is_eligible(runtime: Any, model: str) -> bool:
     return True
 
 
+def _prewarm_should_retry(scheduler: Any) -> bool:
+    """Retry prewarm only when scheduler admission reports a recoverable state."""
+    retryable_states = {
+        "available",
+        "external_reservation",
+        "background_lease",
+        "preparing_model",
+        "inference_active",
+    }
+    try:
+        status = scheduler.status()
+    except Exception:
+        return False
+    if not isinstance(status, dict):
+        return False
+    return status.get("gpu_admission_state") in retryable_states
+
+
 def _wait_for_prewarm_backend(runtime: Any, shutdown: threading.Event, max_wait_seconds: float) -> bool:
     """Give a managed backend a short startup grace period without blocking requests."""
     deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
@@ -577,6 +595,10 @@ class LocalAIApp:
                     except Exception as exc:
                         self.telemetry.record_error("prewarm", "startup_model", exc, recovered=True)
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
+                    if not _prewarm_should_retry(self.scheduler):
+                        self.logger.warning("prewarm stopped: GPU admission is unavailable or outcome is unknown")
+                        self.telemetry.record_system("prewarm_stopped_gpu_admission_unavailable", model=str(model))
+                        return
                     self._shutdown.wait(min(15.0, 1.5 + attempts * 0.5))
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
             self._prewarm_thread.start()

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import tempfile
 import time
@@ -23,6 +24,10 @@ CASES = [
     {"query": "_step_" "rag", "path": "src/local_ai_hub/preprocess.py", "source_text": "def _step_" "rag"},
     {"query": "pagination_" "bounds_error", "path": "src/local_ai_hub/search_pagination.py", "source_text": "def pagination_" "bounds_error"},
     {"query": "repo_" "search", "path": "src/local_ai_hub/services.py", "source_text": "def repo_" "search"},
+    {"query": "Local AI Hub installation", "path": "docs/INSTALLATION.md", "source_text": "# Installation"},
+    {"query": "Jak nainstalovat a spustit Local AI Hub", "path": "docs/INSTALLATION.md", "source_text": "Bootstrap & One-Command Setup"},
+    {"query": "Jak omezit velikost code indexu?", "path": "docs/CODE_INDEX.md", "source_text": "max_index_bytes"},
+    {"query": "Jak nastavit limit code indexu?", "path": "src/local_ai_hub/code_index.py", "source_text": "def enforce_size_limit"},
 ]
 
 
@@ -37,9 +42,9 @@ def validate_cases(root: Path, cases: list[dict]) -> None:
             raise ValueError(f"case source_text absent from {relative}")
 
 
-def run(root: Path, repeats: int, use_cache: bool = False) -> dict:
-    if repeats < 1:
-        raise ValueError("repeats must be positive")
+def run(root: Path, repeats: int, use_cache: bool = False, search_mode: str = "lexical") -> dict:
+    if repeats < 1 or search_mode not in {"lexical", "rag", "hybrid"}:
+        raise ValueError("repeats must be positive and search_mode must be lexical, rag, or hybrid")
     root = root.resolve(strict=True)
     validate_cases(root, CASES)
     with tempfile.TemporaryDirectory(prefix="hub-real-search-state-") as directory:
@@ -52,26 +57,38 @@ def run(root: Path, repeats: int, use_cache: bool = False) -> dict:
             service.repo_flight = SingleFlightCache(MemoryLRUCache())
         else:
             service._repo_cache_state = lambda _root: {}
-            service._repo_cached = lambda _name, _root, _params, compute: compute()
+            service._repo_cached = lambda _name, _root, _params, compute, *args, **kwargs: compute()
         rows = []
         for case in CASES:
             durations = []
             cache_hits = []
             for _ in range(repeats):
                 start = time.perf_counter()
-                result = service.repo_search(str(root), case["query"], limit=10)
+                result = service.repo_search(str(root), case["query"], limit=10, search_mode=search_mode)
                 durations.append((time.perf_counter() - start) * 1000)
                 cache_hits.append(result.get("cache_hit"))
                 if not result.get("success"):
                     raise RuntimeError(f"search failed: {result.get('error')}")
             paths = list(dict.fromkeys(item["path"] for item in result["results"]))
             rank = next((i for i, path in enumerate(paths, 1) if path == case["path"]), None)
+            ordered = sorted(durations)
+            p95_index = max(0, math.ceil(0.95 * len(ordered)) - 1)
             rows.append({"query": case["query"], "expected_path": case["path"], "rank": rank,
-                         "paths": paths, "median_ms": statistics.median(durations), "samples_ms": durations,
-                         "cache_hits": cache_hits})
+                         "paths": paths, "median_ms": statistics.median(durations), "p95_ms": ordered[p95_index], "samples_ms": durations,
+                         "cache_hits": cache_hits, "terms": result.get("terms"),
+                         "engine": result.get("engine"), "scanned_files": result.get("scanned_files"),
+                         "total_matches": result.get("total_matches"), "truncated": result.get("truncated"),
+                         "result_source": result.get("result_source"), "degraded": result.get("degraded"),
+                         "degradation_reason": result.get("degradation_reason"),
+                         "search_mode": result.get("search_mode"),
+                         "top_results": [
+                             {"path": item.get("path"), "score": item.get("score")}
+                             for item in result.get("results", [])[:10]
+                             if isinstance(item, dict)
+                         ]})
         return {"scope": "real repository; isolated LocalAIServices.repo_search; optional backends disabled; labels are not exhaustive",
                 "cache_enabled": use_cache,
-                "root": str(root), "repeats": repeats, "cases": rows,
+                "search_mode": search_mode, "root": str(root), "repeats": repeats, "cases": rows,
                 "hit_rate_at_10": sum(row["rank"] is not None for row in rows) / len(rows),
                 "mean_reciprocal_rank": statistics.mean(1 / row["rank"] if row["rank"] else 0 for row in rows)}
 
@@ -81,8 +98,9 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cache", action="store_true", help="measure cold then warm service cache with real repository fingerprinting")
+    parser.add_argument("--search-mode", choices=("lexical", "rag", "hybrid"), default="lexical")
     args = parser.parse_args()
-    print(json.dumps(run(args.root, args.repeats, args.cache), indent=2))
+    print(json.dumps(run(args.root, args.repeats, args.cache, args.search_mode), indent=2))
 
 
 if __name__ == "__main__":

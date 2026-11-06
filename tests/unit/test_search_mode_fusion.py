@@ -18,6 +18,31 @@ def _service(monkeypatch, rag_rows=None, rag_meta=None):
     return service
 
 
+def test_repository_search_defaults_to_lexical(monkeypatch):
+    service = _service(monkeypatch, [{"path": "docs/semantic-only.md", "text": "semantic"}])
+    rag_calls = []
+    lexical_calls = []
+    monkeypatch.setattr(
+        service,
+        "_repo_rag_search",
+        lambda root, query, top_k: (rag_calls.append(query) or [], {"success": True}),
+    )
+    monkeypatch.setattr(
+        service,
+        "_repo_search_lexical",
+        lambda root, query, *args, **kwargs: (
+            lexical_calls.append(query)
+            or {"success": True, "results": [], "count_exact": True, "total_matches": 0}
+        ),
+    )
+
+    result = service.repo_search(".", "natural language query")
+
+    assert result["search_mode"] == "lexical"
+    assert lexical_calls == ["natural language query"]
+    assert rag_calls == []
+
+
 def test_hybrid_fusion_deduplicates_files_and_rewards_backend_agreement():
     lexical = [
         {"path": "src/setup.py", "start_line": 10, "score": 9.0, "text": "setup"},

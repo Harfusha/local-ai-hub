@@ -199,7 +199,7 @@ reasoning_resident_fallback = false
 # process-global in Ollama. The foreground runner is unloaded before lease.
 enabled = true
 process_priority = "idle"
-ollama_url = "http://127.0.0.1:11436"
+ollama_url = "http://127.0.0.1:11438"
 # Optional serial CPU lane used while the GPU worker is not eligible. It is a
 # separate Ollama process, so it cannot alter the foreground GPU profile.
 cpu_fallback_enabled = false

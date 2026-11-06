@@ -233,6 +233,18 @@ def test_terms_keep_compounds_and_drop_generic_request_words(tmp_path: Path) -> 
     assert "route" not in terms
 
 
+def test_terms_drop_czech_request_fillers_but_keep_identifiers(tmp_path: Path) -> None:
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "search": {"max_terms": 12},
+    }
+    tools = RepositoryTools(cfg)
+
+    terms = tools.search_terms("Jak najdu instalaci Local AI Hub přes repo_search v C++?")
+
+    assert terms == ["instalaci", "local", "hub", "repo_search"]
+
+
 def test_lexical_command_is_path_bounded(tmp_path: Path) -> None:
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},

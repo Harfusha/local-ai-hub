@@ -62,7 +62,7 @@ def test_live_mcp_schemas_are_valid_without_empty_combinators(tool_name: str) ->
     assert tool.parameters.get("allOf") != []
 
 
-def test_repository_search_defaults_to_hybrid_and_allows_explicit_lexical(monkeypatch) -> None:
+def test_repository_search_defaults_to_lexical_and_allows_explicit_hybrid(monkeypatch) -> None:
     requests: list[dict[str, object]] = []
     search_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters
 
@@ -72,16 +72,16 @@ def test_repository_search_defaults_to_hybrid_and_allows_explicit_lexical(monkey
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", capture_post)
 
-    assert search_schema["properties"]["search_mode"]["default"] == "hybrid"
+    assert search_schema["properties"]["search_mode"]["default"] == "lexical"
 
     default_result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="natural language query")
-    lexical_result = local_ai_mcp.local_ai_repo(
-        action="search", root=str(ROOT), query="repo_search", search_mode="lexical"
+    hybrid_result = local_ai_mcp.local_ai_repo(
+        action="search", root=str(ROOT), query="repo_search", search_mode="hybrid"
     )
 
     assert default_result["success"] is True
-    assert lexical_result["success"] is True
-    assert [request["search_mode"] for request in requests] == ["hybrid", "lexical"]
+    assert hybrid_result["success"] is True
+    assert [request["search_mode"] for request in requests] == ["lexical", "hybrid"]
 
 
 def test_low_profile_rejects_direct_local_work_submit(monkeypatch) -> None:
@@ -188,6 +188,50 @@ def test_status_hides_unrecognized_gpu_diagnostics(monkeypatch) -> None:
         "stale": None,
         "wait_timed_out": None,
     }
+
+
+def test_status_can_expose_compact_endpoint_stats_on_request(monkeypatch) -> None:
+    calls = []
+
+    def get(path, **kwargs):
+        calls.append(path)
+        if path.startswith("/api/telemetry/endpoint-stats"):
+            return {
+                "success": True,
+                "projects": [{"root": "private-root"}],
+                "items": [
+                    {"type": "http", "name": f"/api/slow/{i}", "calls": 4,
+                     "success_rate": 75.0, "p50_ms": 1200.0 + i, "p95_ms": 5000.0 - i,
+                     "p99_ms": 7000.0, "status": "failing"}
+                    for i in range(10)
+                ],
+            }
+        return {"hub_online": True, "scheduler": {"gpu_admission_state": "available"}}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", get)
+
+    result = local_ai_mcp.local_ai_status(extra_fields=["endpoint_stats"])
+
+    assert calls == ["/api/live/status?light=1", "/api/telemetry/endpoint-stats?scope=active&buckets=0"]
+    assert len(result["endpoint_stats"]["items"]) == 8
+    assert result["endpoint_stats"]["items"][0]["name"] == "/api/slow/0"
+    assert "projects" not in result["endpoint_stats"]
+    assert "private-root" not in repr(result)
+    assert "endpoint_stats" in local_ai_mcp._STATUS_PROTECTED_KEYS
+
+
+def test_status_reports_endpoint_stats_unavailable_without_raw_error(monkeypatch) -> None:
+    def get(path, **kwargs):
+        if path.startswith("/api/telemetry/endpoint-stats"):
+            return {"success": False, "error": "database path and internal details"}
+        return {"hub_online": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", get)
+
+    result = local_ai_mcp.local_ai_status(extra_fields=["endpoint_stats"])
+
+    assert result["endpoint_stats"] == {"available": False, "error": "endpoint_stats_unavailable", "items": []}
+    assert "database path" not in repr(result)
 
 
 def test_search_ai_summary_is_rejected_below_balanced(monkeypatch) -> None:
@@ -442,6 +486,9 @@ def test_low_profile_rejects_direct_semantic_reasoning(monkeypatch) -> None:
 
 def test_coord_description_and_prompts_expose_plan_workflow() -> None:
     description = local_ai_mcp._desc_coord()
+    assert "gpu_reservation_status" in description
+    assert "gpu_reservation_release" in description
+    assert "confirmed owner death" in description
     assert "plan_list" in description
     assert "plan_get" in description
     assert "plan_board_view" in description
@@ -453,6 +500,12 @@ def test_coord_description_and_prompts_expose_plan_workflow() -> None:
     prompt_paths.append(ROOT / "AGENTS.md")
     for path in prompt_paths:
         assert expected_prompt in path.read_text(encoding="utf-8")
+    for path in prompt_paths[:2]:
+        prompt = path.read_text(encoding="utf-8")
+        assert "gpu_reservation_status" in prompt
+        assert "gpu_reservation_release" in prompt
+        assert "consent=true" in prompt
+        assert "confirmed gone" in prompt
 
 
 def test_public_action_parameters_are_explicit_literals() -> None:

@@ -43,7 +43,10 @@ def test_hybrid_uses_expanded_query_for_bounded_lexical_candidates(monkeypatch):
     assert lexical_calls[0][0] == "Jak omezit velikost code indexu?"
     assert lexical_calls[0][1]["exact_count"] is False
     assert lexical_calls[0][1]["candidate_paths"] == ("docs/CODE_INDEX.md",)
-    assert lexical_calls[0][1]["candidate_query"] == (
+    assert lexical_calls[0][1]["candidate_query"].startswith(
+        "Jak omezit velikost code indexu? "
+    )
+    assert lexical_calls[0][1]["candidate_query"].endswith(
         "code_index max_index_bytes eviction byte budget"
     )
     assert lexical_calls[0][1]["installation_intent_priority"] is True
@@ -118,6 +121,9 @@ def test_hybrid_degrades_to_bounded_expanded_candidates_when_rag_is_stale(monkey
     )
 
     assert lexical_calls[0][0] == "Jak omezit velikost code indexu?"
+    assert lexical_calls[0][1]["candidate_query"].startswith(
+        "Jak omezit velikost code indexu? "
+    )
     assert lexical_calls[0][1]["candidate_query"].endswith(
         "code_index max_index_bytes eviction byte budget"
     )
@@ -161,6 +167,7 @@ def test_hybrid_stale_rag_uses_expanded_current_source_scan_without_index_paths(
     )
 
     assert lexical_calls[0][0] == "Local AI Hub installation"
+    assert lexical_calls[0][1]["candidate_query"].startswith("Local AI Hub installation ")
     assert lexical_calls[0][1]["candidate_query"].endswith("install setup getting started bootstrap")
     assert lexical_calls[0][1]["candidate_paths"] is None
     assert lexical_calls[0][1]["exact_count"] is False
@@ -200,6 +207,7 @@ def test_hybrid_empty_degraded_rag_uses_the_same_expanded_fallback(monkeypatch):
         "C:/repo", "Local AI Hub installation", search_mode="hybrid", limit=5,
     )
 
+    assert lexical_calls[0][1]["candidate_query"].startswith("Local AI Hub installation ")
     assert lexical_calls[0][1]["candidate_query"].endswith("install setup getting started bootstrap")
     assert lexical_calls[0][1]["exact_count"] is False
     assert result["result_source"] == "lexical_fallback"
@@ -262,3 +270,43 @@ def test_expanded_candidate_search_prefers_matching_document_path(tmp_path: Path
 
     assert hybrid_lexical_candidates["success"] is True
     assert hybrid_lexical_candidates["results"][0]["path"] == "docs/INSTALLATION.md"
+
+
+def test_bounded_hybrid_candidates_do_not_let_many_early_lines_hide_install_docs(tmp_path: Path, monkeypatch):
+    noise = tmp_path / "a_noise"
+    docs = tmp_path / "docs"
+    noise.mkdir()
+    docs.mkdir()
+    noise_lines = "Local AI Hub install setup getting started bootstrap\n" * 9
+    candidate_rows = []
+    for index in range(40):
+        relative = f"a_noise/{index:02}.txt"
+        (tmp_path / relative).write_text(noise_lines, encoding="utf-8")
+        candidate_rows.extend((relative, line_no) for line_no in range(1, 10))
+    target = docs / "INSTALLATION.md"
+    target.write_text(
+        "# Installation\nInstall and set up the Local AI Hub with this guide.\n",
+        encoding="utf-8",
+    )
+    candidate_rows.extend([
+        ("docs/INSTALLATION.md", 1),
+        ("docs/INSTALLATION.md", 2),
+    ])
+    tools = RepositoryTools({})
+    monkeypatch.setattr(
+        tools, "_ripgrep_candidates",
+        lambda _base, _terms, max_matches, **_kwargs: (candidate_rows[:max_matches], False),
+    )
+
+    result = tools.search(
+        str(tmp_path),
+        "Local AI Hub installation",
+        candidate_query="Local AI Hub installation install setup getting started bootstrap",
+        limit=10,
+        exact_count=False,
+        installation_intent_priority=True,
+    )
+
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "docs/INSTALLATION.md"
+    assert result["scanned_files"] == 41

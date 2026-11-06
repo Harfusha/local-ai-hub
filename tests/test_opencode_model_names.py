@@ -31,7 +31,7 @@ def test_local_profile_rejects_explicit_cloud_names_before_any_external_action(t
         inspect_opencode_hardware({"gpus": [{"vendor": "nvidia", "vram_mb": 12282}]}, model=model)
 
 
-@pytest.mark.parametrize("model", ["qwen3.5:9b", "qwen2.5-coder:14b", "example/large:latest"])
+@pytest.mark.parametrize("model", ["qwen3.5:9b", "unregistered-coder:14b", "example/large:latest"])
 def test_local_model_names_remain_available(model):
     result = ensure_model(model, inventory=lambda: {model}, pull=lambda _: pytest.fail("pulled"))
     assert result["installed"] is True

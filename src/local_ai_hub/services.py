@@ -279,6 +279,35 @@ def _review_text_error(value: Any) -> str | None:
     return None
 
 
+def _review_failure_details(response: Any) -> dict[str, Any]:
+    """Preserve bounded execution state when a chunked review fails."""
+    if not isinstance(response, dict):
+        return {}
+    details: dict[str, Any] = {}
+    error_code = response.get("error_code")
+    if isinstance(error_code, str):
+        error_code = error_code.strip()
+        if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", error_code):
+            details["error_code"] = error_code
+    for key in (
+        "retryable",
+        "operation_not_started",
+        "timed_out",
+        "outcome_unknown",
+        "cancelled",
+        "cleanup_unconfirmed",
+        "output_truncated",
+        "terminal",
+    ):
+        value = response.get(key)
+        if isinstance(value, bool):
+            details[key] = value
+    model = response.get("model")
+    if isinstance(model, str) and model.strip():
+        details["model"] = model.strip()[:120]
+    return details
+
+
 def _review_model_identity(value: Any) -> str:
     """Normalize Ollama quantization/instruct tags for tier comparisons."""
     model = str(value or "").strip().casefold()
@@ -3180,7 +3209,7 @@ class LocalAIServices:
         *,
         limit: int | None = None,
         offset: int = 0,
-        search_mode: str = "hybrid",
+        search_mode: str = "lexical",
     ) -> dict[str, Any]:
         mode = canonical_search_mode(search_mode)
         if mode is None:
@@ -3253,11 +3282,11 @@ class LocalAIServices:
             return result
 
         semantic_query, query_expansion_applied = expand_semantic_query(query)
+        # Search fallback needs both the user's original lexical anchors and
+        # the expansion terms. RepoTools separates added terms for ranking, so
+        # passing only the suffix can hide exact source wording (for example
+        # "installation" when expansion contains only "install").
         candidate_query = semantic_query
-        if query_expansion_applied:
-            original_query = query.strip()
-            if semantic_query.casefold().startswith(original_query.casefold()):
-                candidate_query = semantic_query[len(original_query):].strip() or semantic_query
         rag_rows, rag_meta = self._repo_rag_search(
             root,
             semantic_query,
@@ -8058,12 +8087,14 @@ class LocalAIServices:
             if not isinstance(response, dict) or response.get("success") is False:
                 if len(review_chunks) == 1 and isinstance(response, dict):
                     return response
-                return {
+                failure = {
                     "success": False,
                     "error": f"Review segment {index}/{len(review_chunks)} failed.",
                     "failed_segment": index,
                     "partial_reviews": [str(item.get("text", "")) for item in primary_results],
                 }
+                failure.update(_review_failure_details(response))
+                return failure
             output_error = _review_text_error(response.get("text"))
             if output_error:
                 if format_recovery_used:

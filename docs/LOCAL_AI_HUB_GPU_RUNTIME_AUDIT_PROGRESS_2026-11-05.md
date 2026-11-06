@@ -362,3 +362,246 @@ Bounded source inspection after lexical search exceeded Hub response budget foun
 
 - Fresh `git_status` `req_3a7b5c3137e5` shows concurrent edits in `src/local_ai_hub/llama_cpp_runtime.py`, `src/local_ai_hub/repo_tools.py`, `tests/unit/test_hybrid_expanded_lexical_candidates.py`, and untracked `tests/unit/test_llama_cpp_runtime_startup_diagnostics.py`, plus this audit. These paths remain untouched. The repo-search implementation is now also concurrently changing, so defer A2 indexed search follow-up until its owner finishes.
 - Fresh `gpu_reservation_status` still reports generation `4d5d35dceb7a46bd9ddbd87a74b73ec9`, owner `embedding:22628:41680`, `state=active`, `expired=false`. Keep it intact.
+
+## A6 — exact source-identity revision for learned-priority cache (2026-11-05)
+
+- Added derived `file_refs_revision` state with SQLite insert/delete triggers and an update trigger on `root`, `path`, and `content_hash`. `_init_db()` installs the table/triggers. `_learned_priority_paths()` uses the per-root revision as an O(1) cache signature; card status changes such as `card_key` do not invalidate learned-query-to-path mappings. Minimal legacy/test schemas without startup tracking keep the prior aggregate fallback.
+- Regression test first failed: after renaming the matching `file_refs`/FTS path while preserving the old aggregate signature, `_learned_priority_paths()` returned stale `old.py` instead of `new.py`. Added trigger coverage proving source identity changes increment revisions, card-state updates do not, and root moves update both roots.
+- Updated the bounded synthetic benchmark to install revision tracking and report `cache_revision_tracking=true`, so selection measurements exercise the production cache path.
+- Focused suite: `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` — **8 passed**. `git diff --check` — no whitespace errors; Git emitted LF-to-CRLF warnings for the test and benchmark files.
+- Same 4,096-file/64-batch synthetic queue run: baseline reached the hot file in 64 batches; demand reached it in 1. Both completed 4,096 files with 0 unprocessed. Selection median/p95: baseline **2.28/3.14 ms**, demand **2.68/3.45 ms**. This is queue-selection evidence only; `useful_context_verified=false`, with no model inference or GPU work.
+- An intermediate per-row Python hash signature measured **15.35/16.85 ms** demand selection median/p95 in the untracked benchmark schema. Replaced it with the trigger-maintained revision to avoid the repeated row serialization cost.
+- Semantic review unavailable: `local_ai_repo:review_diff` job `651b386458a043ac845ff3775ee9c181` could not be retrieved (`req_80ce165fc0e7`, work order not found); `local_ai_task:review` `req_9e1d78409d50` was terminally rejected by scheduler `gpu_outcome_unknown`. `local_ai_repo:impact` `req_ef6e35f2d339` used heuristic scan fallback and is not accepted as exact impact evidence. Primary review inspected the bounded diff and source slices.
+- GPU status remains fail-closed (`req_b73909ff22ad`: scheduler `outcome_unknown`, VRAM sample pending/stale); active embedding lease remains unexpired. No inference, reservation release, or scheduler reset.
+- Source snapshot IDs: `preprocess.py` SHA-256 `b4747b41ab1db92dd6a14facf6a393558972457424711e7154ca159aeadd1a9c`; focused test SHA-256 `ab583e92d0108fec9c36190ada2ce65980272b84c768d8c17d02cf39f6761565`; benchmark SHA-256 `d550585759f4d0aacd10b4d4161cd76dec7fea8fa044c62d3002306a98e184fe`.
+
+### Fresh GPU/ownership snapshot after A6 validation (2026-11-05)
+
+- `local_ai_status` `req_927e6a6f2594` still reports scheduler `gpu_admission_state=outcome_unknown`, `vram_pressure=unknown`, and stale/pending VRAM sampling.
+- Fresh `gpu_reservation_status` now reports generation `1a169eeeff194f2f85ac8936a1c69e62`, owner `embedding:22628:44996`, `state=active`, expiry `1793905793.3707826`, `expired=false`. This differs from the earlier generation/owner; do not infer continuity or release either record.
+- Fresh `git_status` `req_2ba76ae13626` shows concurrent edits to both canonical prompts (`docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`). They remain untouched. Current A6 paths are the only other code/test changes besides this progress log.
+
+### A5 — managed startup diagnostics evidence (2026-11-05)
+
+- Current `tests/unit/test_llama_cpp_runtime_startup_diagnostics.py` (SHA-256 `255c23f4bea5e7d98844e311cbc72428457de9a93a4ca89a813a417e6629e7ed`) covers a managed port conflict and missing `llama-server` binary, asserting actionable `_last_error` text and the expected provisioning call behavior.
+- `python -m pytest -q tests/unit/test_llama_cpp_runtime_startup_diagnostics.py --tb=short` — **2 passed**. This is mocked startup-diagnostic coverage only; no model was loaded and A5 live load/infer/unload, cancellation, residency, and scheduler-reservation acceptance remain open.
+- Fresh checkout status `req_97ebd08abe21` no longer lists the runtime file or diagnostic test as dirty/untracked. Treat these tests as current checkout evidence; do not infer ownership or live-runtime qualification from that status.
+
+### Resume snapshot — bounded follow-up (2026-11-05)
+
+- Fresh `local_ai_repo:git_status` `req_067d7c937663`: modified paths are `.local-ai-hub/plans/plan_lah_5_1_0_release_finalization.plan.json`, both canonical prompts, this progress report, `src/local_ai_hub/external_gpu_reservation.py`, `src/local_ai_hub/preprocess.py`, `tests/test_external_gpu_reservation_lifecycle.py`, and `tests/unit/test_preprocess_demand_priority.py`; no staged or untracked files. Keep prompt and reservation work within their current owners. A6 source/test and this report remain the current task's paths.
+- Fresh `local_ai_status` `req_c6dd864ad06a`: Hub 5.1.3 online; `active_model=null`, `gpu_admission_state=external_reservation`, `vram_pressure=unknown`; VRAM telemetry unavailable, sampling, and stale. A live GPU measurement is not authorized by this evidence.
+- A6 fairness source review: `_find_next_files()` reserves at least one regular slot when demand paths exist (`quota = min(limit - 1, max(1, limit // 4))`), then fills remaining slots from the ordinary ordered queue. The current focused tests assert regular work remains in the first hot batch and both demand/baseline queues complete with zero unprocessed files. The 2026-11-05 recorded focused run was 8 passed. The representative temporary-repository benchmark measures queue selection only and explicitly reports `useful_context_verified=false`; time-to-useful-context and deeper analysis quality remain unverified. No A6 fairness code change was justified by current source/tests; no test was rerun in this continuation.
+- `local_ai_repo:solve` `req_8abee5fed446` terminated with `gpu_outcome_unknown` and `reservation retained`; no retry. A2 exact searches did not return usable candidate locations for the generated guidance, and canonical prompt files remain modified by another editor. A2 current installed-tag confirmation and cross-file closure remain open.
+- Next safe work: resume A2 once prompt ownership releases and exact source candidates are available; keep A3/A4/A5/A7 live hardware/model acceptance `NOT VERIFIED` while GPU admission or required labeled runs remain unavailable.
+
+## A2 — remove a retired tag from safety-test fixture (2026-11-05)
+
+- Current source evidence: `src/local_ai_hub/prompt_contracts.py` registry includes `qwen3.5:4b-nvfp4` and has no registry entries for `qwen3.5:4b-q4_K_M`, `gemma4:12b`, or `qwen2.5-coder:14b`. `src/local_ai_hub/opencode_hardware.py` future candidates are Qwen 9B NVFP4, Coder 7B, and Qwen 4B NVFP4 for 16 GB. `docs/MODEL_CAPABILITIES.md` names Qwen 4B NVFP4 and omits the three retired recommendations in the inspected section.
+- `generator._model_capability_guidance()` derives guidance from configured `cfg["models"]` and `capability_for()`; it contains no hard-coded model candidate list. Current configured model values and exact canonical prompt content still need a fresh cross-file check before A2 closure.
+- Changed `tests/test_prompt_contracts.py`: replaced the removed `qwen2.5-coder:14b` input in the conservative unknown-heavy-model safety test with `unregistered-coder:14b`, and renamed the test to describe the exercised behavior. Negative assertions that retired tags are absent remain.
+- Focused validation: `python -m pytest -q tests/test_prompt_contracts.py tests/test_opencode_future_stage.py --tb=short` — **14 passed**. Exact native diff review confirmed only the fixture name and test name changed. The Hub indexed current source at `req_b17a76aa490b` (`Ec3a6cca36ae8c2a49d7d`).
+- `local_ai_repo:review_diff` `req_208170d33603` could not split a concurrent diff fragment above its 512-token review cap; scoped native review and the focused tests cover this small fixture-only edit. No production behavior changed.
+- Fresh `git_status` `req_bf4b2a15be0f`: prompt documents are no longer modified; other agents still have reservation/MCP changes and the untracked reservation contract test. Preserve those paths. Fresh `local_ai_status` `req_16a4974ec5a6`: admission remains `external_reservation`; `active_model=null`, VRAM unknown/stale. GPU/runtime acceptance remains open.
+
+### A2 — current configured-route evidence (2026-11-05)
+
+- Current `src/local_ai_hub/hardware.py` high/max profile slices (SHA-256 `f0ec55b3d5004bc6f01afc5e564eb2d4a3ca272a1a8521b7af5d282cfa5212c0`, lines 506–575) route background/fast to `qwen2.5-coder:3b`, heavy/reasoning/general/vision to `qwen3.5:9b` in high; max routes background/fast to Coder 3B and heavy/reasoning/general/vision to Qwen 9B. No removed A2 tags appear in these profiles. This is source configuration, not installed-model or live-route evidence.
+- Current canonical prompt files are no longer in `git_status` modified paths (`req_da00b506c97d`). Exact inspected initial slices are current hashes INSTALL `431476997f2c8be22956f7d2c5fa7bfbf28cf386c5a5d3fe09786d301432fb78` and UPDATE `c1e3ed56f476c7552979f1c64972b3d29675674f092cb6c81b1eb2603a04461d`; those slices contain contracts and caution against assuming runtime model availability. The complete model-guidance sections were not exhaustively fetched, so this does not close prompt synchronization.
+- No current installed-tag inventory was retrieved. `local_ai_status` `req_0de194955102` reports only `active_model=null`, `gpu_admission_state=external_reservation`, and VRAM telemetry `sample_pending`/stale/unknown. Keep current installed-tag and GPU/runtime acceptance open; do not infer absence or residency from `active_model=null`.
+- Remaining A2 closure: inspect complete model-guidance sections and obtain a current installed-tag snapshot through a read-only supported inventory path. Do not run inference while reservation is held by another process.
+
+### A2 — current retired-tag reference audit (2026-11-05)
+
+- Replaced the remaining positive-name fixture `qwen2.5-coder:14b` in `tests/test_opencode_model_names.py` with `unregistered-coder:14b`; arbitrary local model-name coverage remains. Focused tests `python -m pytest -q tests/test_opencode_model_names.py tests/test_prompt_contracts.py tests/test_opencode_future_stage.py --tb=short` — **23 passed**. Current source SHA-256: `2bfb81535b72c698a0109e72e90be1c36328e672a60f2e3dd28e770075438646`.
+- Exact indexed reference set for `qwen2.5-coder:14b` now totals 14 current-source hits and paginated to `has_more=false` (`req_fa18b622b51a` plus offsets 1–13). Hits are in the audit/progress/historical plan/spec records and negative retirement/future-candidate assertions; there is no remaining positive model candidate in the source hits. The prior positive arbitrary-name test is gone.
+- Exact indexed reference set for `gemma4:12b` totals 16 hits and paginated through offset 15; results were historical audit/progress/plan/spec records and negative assertions, not active registry, hardware candidate, or prompt recommendation. Historical records remain intact.
+- Fresh source slices confirm the prompt capability registry (`prompt_contracts.py`, SHA-256 `f56f374fe2a051a0f90da23cb1ee548f478177aad5bd9dd2cf83cc0da407efd4`), 16 GB future candidate list (`opencode_hardware.py`, SHA-256 `42b5faf2dc3f9c8e33e803c153f89b96e513a7c32cce2d662929c0f2800761ef`), and full model capability matrix (`MODEL_CAPABILITIES.md`, SHA-256 `a7bafe23423082597e7955a560b21ea251477220f590d09086c364080927142e`) use Qwen 4B NVFP4 instead of the retired Q4 candidate. `generator.py` emits model guidance from active `cfg["models"]` and `capability_for()`; it does not keep a static candidate registry.
+- `qwen3.5:4b-q4_K_M` search has low precision (272 lexical matches and unrelated top results); this did not prove a complete current-reference set. The canonical prompt full model sections and a current installed-tag snapshot also remain unverified. A2 therefore remains **partially verified**, not closed. No inference or pulls were run; Hub still reports external GPU reservation and unknown/stale VRAM.
+
+### Resumed after MCP transport outage — A2 prompt section checked (2026-11-05)
+
+- Fresh `local_ai_status` `req_24cc888d8e63` succeeds: Hub 5.1.3, `hub_online=true`, `gpu_admission_state=outcome_unknown`, `active_model=null`, VRAM pressure `unknown`, telemetry sample pending/stale. Transport availability returned; cause of the previous MCP transport outage is not established and no restart was performed.
+- Current ownership snapshot `local_ai_repo:git_status` `req_ec71cd8287da` shows both canonical prompts dirty again alongside multiple editor-owned source/tests and audit progress. All prompt/source edits deferred to their current owners.
+- Exact current hardware-tiered model-policy slices were read with SHA-bound artifact pages: `docs/INSTALL_PROMPT.md` SHA-256 `10d43a0a3d666352956dc21f455daa370d7614c10ced94195138a055de9b1133`, lines 795–827; `docs/UPDATE_PROMPT.md` SHA-256 `9b4a9c8faf06070da6e72ed45a57665c77c5c2eaa8739631cd7684ebae8b465e`, lines 767–819. Both sections describe profile/feature ceilings, independent provider-readiness, and GPU acceptance limits; neither lists stale model candidates. The policy says two-request high/max configuration is not capacity proof.
+- Exact retired-tag lexical search for `qwen3.5:4b-q4_K_M` still yields 272 fragments including unrelated files; it cannot establish whole-repo absence. The inspected prompt policy sections and complete `MODEL_CAPABILITIES.md` do not contain the retired recommendation. Keep broad reference closure and installed-model inventory unverified.
+- Current action: continue only on unowned files. No service restart, model inference, model pull, or prompt edit.
+
+### Fresh status after resumed work (2026-11-05)
+
+- `local_ai_status` `req_d5fe42bdab68`: Hub online, version 5.1.3, `degraded=false`; GPU admission `outcome_unknown`, active model null, VRAM pressure unknown, and VRAM telemetry pending/stale. Optional `agent_state` probe is degraded with `probe_timeout` at 250 ms. This is a separate status signal; no evidence ties it to the earlier MCP transport outage.
+- `local_ai_repo:git_status` `req_3e9b2f308db6`: 12 modified paths and one untracked test; INSTALL/UPDATE prompts, reservation/MCP/preprocess source and tests remain editor-owned/dirty. No staged files. This task changed only the progress audit in this continuation.
+- No live model or GPU operation attempted. Keep runtime acceptance open; continue source-only on unowned work.
+
+### A6 — useful-context benchmark extension (2026-11-05)
+
+- Extended `tools/benchmark_preprocess_demand.py` and `tests/unit/test_preprocess_demand_priority.py` so repository mode measures deterministic `RepositoryTools.context_pack_paths` output for each strategy's first selected batch. It requires `success=true`, nonempty evidence, and nonempty context; synthetic mode remains explicitly unverified. No model, inference, GPU, or runtime behavior is involved.
+- Focused validation: `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` — **8 passed**.
+- Bounded repository run: `python tools/benchmark_preprocess_demand.py --root . --files 64 --batch-size 16 --query ProjectPreprocessor` — 64 sampled files, 12 lexical matches, deterministic useful context confirmed for both strategies at batch 1 / 16 files; each returned 5 evidence items and 2,320 context characters. Work saved: **0 batches / 0 files** for this query. Both strategies completed all 64 files.
+- The benchmark emits elapsed selection/context measurements for observation only. This single sequential baseline-then-demand run is cache/order sensitive; do not interpret its timing difference as a speedup or quality result. No paired repeated performance study was run.
+- A separate bounded `file_refs_revision` query found no matching file in its sample and exited before measurement; this is a query/sample mismatch, not a benchmark defect. Representative-query selection remains open.
+- A6 remains partial: useful context is now measured for repository mode, but demand-priority savings are query-dependent and this case demonstrated no savings. GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### A6 — benchmark sample correction and demand-work measurement (2026-11-05)
+
+- The earlier 64-file `ProjectPreprocessor` run above is superseded as a representative-repository measurement: inspection showed the sampler had admitted `.local-ai-hub/local/intents`, installed `.local-ai-hub-superpowers`, and `.merge-checks/pytest` artifacts before repository source. The fixture now skips these three tool/runtime directories; the regression test includes matching generated files and confirms they are excluded.
+- Failure-first regression: `python -m pytest -q tests/unit/test_preprocess_demand_priority.py::test_repository_benchmark_measures_real_hot_files_against_cold_queue --tb=short` failed because 4 files were sampled instead of the 3 source files; after the sampler exclusion fix, the full focused module passed **8 tests**.
+- Corrected bounded measurement: `python tools/benchmark_preprocess_demand.py --root . --files 512 --batch-size 64 --query get_dynamic_token_budget` — 512 files / 3,880,289 bytes sampled, one query match; baseline reached useful context after 8 batches / 512 files, demand after 1 batch / 64 files. Both returned one evidence item and 1,608 context characters. Deterministic work-count difference: **7 batches / 448 files**. Both completed the full sample.
+- This result is preliminary, not a performance or quality claim: timing is cache/order sensitive, and the bounded sample still includes `.superpowers` workflow material. A6 remains open until source-oriented representative queries and repeatable measurements are established. No model inference or GPU operation ran; GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### A4 — deterministic retrieval fallback verified; hardware gate remains open (2026-11-05)
+
+- Current `src/local_ai_hub/reranker.py` SHA-256 `abc9653511a082bb93a00739e7d1b7b975de289d6917a988e25b14213d6d3883`: when CUDA admission is denied, the standalone reranker fails closed with `gpu_reserved` and no fabricated scores. The direct RAG route disables CPU rerank fallback and preserves baseline retrieval results if reranking cannot run.
+- Existing regression cases in `tests/unit/test_rag_direct_cpu_bypass.py` SHA-256 `56115841ade1531c5746cfa70501e99ed047188d048346695a1c859409b1f309` cover GPU load and prediction failure; both assert no CPU rerank attempt in direct RAG and unchanged baseline result paths. `python -m pytest -q tests/unit/test_rag_direct_cpu_bypass.py --tb=short` passed **10 tests**.
+- This verifies deterministic retrieval/fail-closed behavior under mocked failures only. It does not prove CUDA backend activation, GPU residency, GPU/CPU latency or quality, or runtime fallback on the installed hardware. A4 remains open for paired GPU/CPU benchmark evidence; no GPU inference was run.
+
+### A6 — source-sample refinement and second measurement (2026-11-05)
+
+- The benchmark exclusion set now also skips `.superpowers` and `.t03-sync-checks`, observed local workflow/validation trees that displaced source in the prior bounded sample. The existing regression fixture now contains all five generated directories; it confirms only the three intended source files enter its four-file cap.
+- Focused test module: `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` — **8 passed**.
+- New bounded run: `python tools/benchmark_preprocess_demand.py --root . --files 512 --batch-size 64 --query get_dynamic_token_budget` — 512 files / 8,152,460 bytes, two query-matching files. Baseline first useful context: 7 batches / 448 files, one evidence item / 710 chars. Demand: 1 batch / 64 files, three evidence items / 4,561 chars. Both completed all 512 files. Deterministic work-count difference: **6 batches / 384 files**.
+- This supersedes the earlier 512-file measurement, which included `.superpowers` material. Evidence counts and context lengths differ between batches, so work saved is not a relevance or quality score. Single sequential timings remain cache/order sensitive; no repeated performance study or GPU/model run was performed. A6 remains open for broader representative repositories and paired quality evaluation; GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### A6 — source-only subtree measurement and malformed pack guard (2026-11-05)
+
+- The checkout-root benchmark can include documentation that mentions its own query. A source-only run therefore used `--root src`, avoiding audit and local workflow files while retaining all 196 source files in that subtree.
+- `python tools/benchmark_preprocess_demand.py --root src --files 512 --batch-size 16 --query get_dynamic_token_budget` — 196 files / 4,698,484 bytes; one matching source file. Baseline reached useful context after 8 batches / 128 files; demand after 1 batch / 16 files. Both returned one evidence item and 706 context characters. Work-count difference: **7 batches / 112 files**. Both completed all 196 files. Timing remains advisory and order/cache sensitive.
+- Added a malformed `context_pack_paths` regression: a non-dict result must stay unverified and must not crash or claim work saved. The failure-first run reproduced `AttributeError`; after a type guard, `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` passed **9 tests**.
+- This source-subtree measurement is stronger for the named code path but does not represent every repository workload or establish relevance/quality gains. A6 remains open for additional representative query cases and quality/depth policy. No GPU/model inference ran; GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### A6 — three-query source-subtree comparison (2026-11-05)
+
+- Three bounded runs used the same complete `src` subtree (196 files, batch size 16), deterministic context packing, and no model/GPU. Results show demand benefit depends on query placement/popularity:
+  - `get_dynamic_token_budget` (1 matching file): baseline useful context at 8 batches / 128 files; demand at 1 / 16; **112 files / 7 batches saved**. Both produced one evidence item and 706 context chars.
+  - `hot_queries` (2 matching files): baseline at 5 / 80; demand at 1 / 16; **64 files / 4 batches saved**. Baseline returned one item / 508 chars; demand returned four / 2,122. Different payload sizes are not a quality score.
+  - `ExternalGpuReservationStore` (69 lexical matches): both reached useful context at batch 1 / 16; **0 work saved**. Evidence counts were 3 vs. 10, so content size is not directly comparable.
+- All successful cases completed the full 196-file sample. Two exploratory terms did not occur in that sample and produced no measurement; they are excluded from the comparison.
+- The focused suite remains **9 passed**. A6 confirms freshness/invalidation and starvation tests exist in that suite, while broader repositories and paired quality/depth evaluation remain open. The operator confirmed scheduling-only; no deeper-analysis behavior was added. GPU/runtime acceptance remains **NOT VERIFIED**.
+
+### A6 — explicit analysis-depth decision and current runtime gate (2026-11-05)
+
+- Decision: this A6 work remains scheduling-only. Frequently used paths should reach useful deterministic context sooner; they do not receive deeper analysis or extra model work. The audit and current accepted behavior define no depth metric, quality rubric, or resource budget for such work. Any future depth expansion needs a separate requirement and paired quality/resource evaluation.
+- Current `local_ai_status` `req_eb5e5cd89035`: Hub/Ollama online, active model null, `gpu_admission_state=outcome_unknown`, VRAM unknown with sampling pending/stale. No live GPU qualification is authorized by this status; A3/A4/A5/A7 runtime gates remain open.
+
+### A2 — current OpenCode future-candidate metadata rechecked (2026-11-05)
+
+- Clean `src/local_ai_hub/opencode_hardware.py` SHA-256 `42b5faf2dc3f9c8e33e803c153f89b96e513a7c32cce2d662929c0f2800761ef` lists only Qwen 3.5 9B / Qwen Coder 7B for 12 GB, and Qwen 3.5 9B NVFP4 / Qwen Coder 7B / Qwen 3.5 4B NVFP4 for 16 GB. Its contract explicitly says capacity labels do not establish inference admission or benchmark results.
+- `python -m pytest -q tests/test_opencode_hardware.py --tb=short` passed **8 tests**. This verifies advisory candidate logic only.
+- Fresh status `req_eb5e5cd89035` has `active_model=null`, `gpu_admission_state=outcome_unknown`, and unknown/stale VRAM; it returned no installed-model inventory. Do not infer installed-model absence from null active model. Canonical INSTALL/UPDATE prompts and several related tests remain dirty under concurrent editors (`req_46df7a408caa`); they were left untouched. A2 remains open for current installed-tag evidence and prompt-section synchronization.
+
+### A2 — canonical prompt route parity rechecked (2026-11-05)
+
+- Fresh exact source slices show the route maps match: `docs/INSTALL_PROMPT.md` line 265 (file SHA-256 `10d43a0a3d666352956dc21f455daa370d7614c10ced94195138a055de9b1133`) and `docs/UPDATE_PROMPT.md` line 263 (SHA-256 `9b4a9c8faf06070da6e72ed45a57665c77c5c2eaa8739631cd7684ebae8b465e`). Both list the same role/profile mapping and state routes are not proof of installed models.
+- A bounded exact-tag scan over both whole canonical prompt files found no `qwen3.5:4b-q4_K_M`, `gemma4:12b`, or `qwen2.5-coder:14b` references. This is scoped to those two files; it does not establish repository-wide absence or cover every advisory surface.
+- Both prompt files remain dirty under concurrent editing (`req_6e1b84a69fe7`) and were read only. Installed-tag inventory is still unavailable (`active_model=null` is not an inventory). A2 remains partial pending installed-model evidence and final owner synchronization.
+
+### Fresh runtime gate after resumed audit (2026-11-05)
+
+- Current `local_ai_status` `req_35867bb5676e` reports Hub/Ollama online, `active_model=null`, `gpu_admission_state=outcome_unknown`, and VRAM telemetry unavailable with `sample_pending`/stale state. The response envelope was truncated, but these status fields were present. This is not installed-model inventory or runtime qualification.
+- Do not infer GPU readiness or model absence, trigger inference, or release/reset reservation from this status. A3/A4/A5/A7 runtime acceptance remains **NOT VERIFIED** pending owner-authorized recovery and fresh live evidence.
+- Later fresh status `req_208f89953e15` changed admission to `external_reservation`; Hub/Ollama remain online, `active_model=null`, VRAM telemetry remains `sample_pending`/stale. This supersedes the prior `outcome_unknown` snapshot as the current status, but does not identify reservation owner or prove runtime readiness. Preserve the reservation; A3/A4/A5/A7 remain **NOT VERIFIED**.
+
+### A5 — fresh startup-diagnostics regression validation (2026-11-06)
+
+- Current `src/local_ai_hub/llama_cpp_runtime.py` SHA-256 `78aa9dcafd38bb6246aaa93c0a738247540fb7f61eec7e0641bd00bf39ed6322`; current `tests/unit/test_llama_cpp_runtime_startup_diagnostics.py` SHA-256 `255c23f4bea5e7d98844e311cbc72428457de9a93a4ca89a813a417e6629e7ed`.
+- `python -m pytest -q tests/unit/test_llama_cpp_runtime_startup_diagnostics.py --tb=short` — **2 passed in 0.47 s**. Mocked startup diagnostics only: no model load, inference, unload, CUDA residency, cancellation, or scheduler-release behavior was exercised. A5 runtime acceptance remains **NOT VERIFIED**.
+
+### Fresh GPU admission status (2026-11-06)
+
+- Subsequent `local_ai_status` `req_73a46c151212` reports `gpu_admission_state=outcome_unknown`, `active_model=null`, and VRAM telemetry `sample_pending`/stale. This conflicts with the immediately preceding `external_reservation` status `req_208f89953e15`; neither response identifies reservation owner or generation. A `gpu_reservation` extra-field request returned no reservation detail.
+- Treat admission as **unknown** and fail closed. No GPU action, reservation release, or runtime acceptance claim. A3/A4/A5/A7 remain **NOT VERIFIED**.
+
+### A2 — fresh exact-source catalog review (2026-11-06)
+
+- `docs/MODEL_CAPABILITIES.md` SHA-256 `a7bafe23423082597e7955a560b21ea251477220f590d09086c364080927142e`, lines 28–48: the advisory table now lists `qwen3.5:4b-nvfp4`; the retired Q4 4B, Gemma 12B and Coder 14B tags are absent from this table. Its profile routing table keeps Qwen Coder 3B/7B and Qwen 3.5 9B.
+- `src/local_ai_hub/prompt_contracts.py` SHA-256 `f56f374fe2a051a0f90da23cb1ee548f478177aad5bd9dd2cf83cc0da407efd4`, lines 26–62: the complete capability registry lists `qwen3.5:4b-nvfp4` and does not contain those retired tags.
+- `src/local_ai_hub/opencode_hardware.py` SHA-256 `42b5faf2dc3f9c8e33e803c153f89b96e513a7c32cce2d662929c0f2800761ef`, lines 17–18: 12 GB/16 GB future candidates use the current 9B, Coder 7B and NVFP4 4B choices; the source labels these as candidates, not inference admission.
+- After Hub adaptive context `req_e2f1be780535` failed terminally with stale source evidence, bounded native fallback `rg -n -F -e 'qwen3.5:4b-q4_K_M' -e 'gemma4:12b' -e 'qwen2.5-coder:14b' src/local_ai_hub/generator.py` exited **1** (no matches). Current file SHA-256 `8557102D14CA9F4A4BA37433AF2FADBCFB5D20C1A1CB78FE3062956FE2D63F`; file is clean. This verifies only the three exact strings in this one file, not generated artifacts or repository-wide absence. Canonical prompt owner synchronization and a fresh installed-tag inventory remain unverified; A2 remains partial.
+
+### A4 — fresh deterministic retrieval fallback revalidation (2026-11-06)
+
+- Current `src/local_ai_hub/reranker.py` SHA-256 `abc9653511a082bb93a00739e7d1b7b975de289d6917a988e25b14213d6d3883`; current `tests/unit/test_rag_direct_cpu_bypass.py` SHA-256 `56115841ade1531c5746cfa70501e99ed047188d048346695a1c859409b1f309`.
+- `python -m pytest -q tests/unit/test_rag_direct_cpu_bypass.py --tb=short` — **10 passed in 1.64 s**. Mocked failure-path evidence confirms deterministic retrieval fallback only; no GPU backend, CUDA residency, quality or latency measurement. A4 remains open for paired GPU/CPU evaluation.
+
+### A6 — fresh useful-context scheduling comparison (2026-11-06)
+
+- Current benchmark SHA-256 `6e1bfec2f2627a6f59569d83dab43192849276dff8e09d9763ab4d3813ab85fd`, focused test SHA-256 `5dbd437a2c133bc241bb4059007db86c7a6328a4c48c59154be742c9d2fc9d07`, and shared preprocessor source SHA-256 `b4747b41ab1db92dd6a14facf6a393558972457424711e7154ca159aeadd1a9c`.
+- Fresh run `python tools/benchmark_preprocess_demand.py --root src --files 512 --batch-size 16 --query get_dynamic_token_budget`: 196 source files / 4,699,348 bytes; one seeded learned-query match. Deterministic `context_pack_paths` returned one evidence item and 706 context characters in both modes; `useful_context_verified=true`.
+- Baseline reached useful context at batch 8 / 128 processed files / 341.55 ms elapsed; demand priority at batch 1 / 16 files / 30.32 ms. Seeded workload difference: **7 batches / 112 files**. Both modes completed all 196 sampled files with zero unprocessed.
+- This measures scheduling with a seeded query and nonempty deterministic context, not real user-history learning or semantic quality. One sequential run is cache/order sensitive; selection p95 was 0.67 ms baseline vs 2.23 ms demand. No model/GPU workload. Focused module `python -m pytest -q tests/unit/test_preprocess_demand_priority.py --tb=short` — **9 passed in 1.58 s**. Broader repositories and paired context-quality evaluation remain open; user decision remains scheduling-only.
+
+### A2 — fresh canonical routing-map parity (2026-11-06)
+
+- Read-only source slices show identical role maps in `docs/INSTALL_PROMPT.md` SHA-256 `10d43a0a3d666352956dc21f455daa370d7614c10ced94195138a055de9b1133`, lines 265–266, and `docs/UPDATE_PROMPT.md` SHA-256 `9b4a9c8faf06070da6e72ed45a57665c77c5c2eaa8739631cd7684ebae8b465e`, lines 263–264. Both map `background_code/fast_code/heavy_code/reasoning/general/vision` across the six profiles and state routes do not prove installation.
+- Surrounding policy wording differs slightly, while the canonical route maps match. Both prompt files remain modified by a concurrent editor and were not changed. A2 remains partial pending owner synchronization and current installed-tag inventory.
+
+### A2 — future-candidate regression revalidated (2026-11-06)
+
+- Current `tests/test_opencode_future_stage.py` SHA-256 `6e2124f19f685d9ed5d8d536e82817906cd228d21014962a27591140c95d18bf`; it explicitly asserts all three retired tags are disjoint from 16 GB future candidates.
+- `python -m pytest -q tests/test_opencode_future_stage.py -k retired_model_tags --tb=short` — **1 passed, 4 deselected in 0.24 s**. This validates candidate metadata only; installed-model inventory and inference admission remain separate and unverified.
+
+### A6 — scheduling result repeatability check (2026-11-06)
+
+- Repeated the same seeded, bounded command three times in separate Python processes: `python tools/benchmark_preprocess_demand.py --root src --files 512 --batch-size 16 --query get_dynamic_token_budget`.
+- All three runs verified nonempty useful context and identical work counts: baseline reached it at batch 8 / 128 files; demand priority at batch 1 / 16 files. Each run therefore saved 7 batches / 112 files in this fixture, and both modes completed their sample.
+- Baseline elapsed time ranged 332.49–381.98 ms; demand elapsed time ranged 29.25–30.79 ms. Selection p95 ranged 0.71–0.90 ms baseline and 1.91–2.14 ms demand. Timing remains a small, cache/order-sensitive synthetic scheduling measurement; it does not establish broad-repository performance or context-quality equivalence.
+- This follows the user's A6 scope choice: scheduling only, with no deeper hot-file analysis. No model or GPU workload ran. Runtime changes in the shared checkout remain untouched.
+
+### A6 — whole-repository scheduling sample (2026-11-06)
+
+- Ran `python tools/benchmark_preprocess_demand.py --root . --files 512 --batch-size 16 --query get_dynamic_token_budget`; the bounded fixture sampled and completed 512 files.
+- Baseline reached useful context at batch 25 / 400 files; demand priority reached it at batch 1 / 16 files, saving 24 batches / 384 files for this seeded query. Both modes produced verified nonempty deterministic context.
+- Elapsed time was 3027.46 ms baseline and 83.49 ms demand; selection p95 was 1.52 ms and 2.20 ms respectively. One whole-repository run is preliminary and cache/order sensitive; it does not establish general latency or semantic context quality. No model/GPU workload ran.
+
+### GPU readiness gate — fresh status (2026-11-06)
+
+- `local_ai_status(detail="brief")` request `req_b4d7e204d5af`: Hub 5.1.3 and Ollama online; `active_model=null`, `gpu_admission_state=outcome_unknown`, `vram_pressure=unknown`; VRAM telemetry is unavailable with `sample_pending`, `sampling=true`, and `stale=true`.
+- This status does not establish installed-model inventory, device residency, reservation owner, or safe admission. Keep A3/A4 GPU runs, A5 live load/infer/unload, and A7 model tool-use evaluation unverified until fresh reservation and VRAM evidence is available.
+
+### A1 follow-up — metadata-write failure reports a false reservation (2026-11-06)
+
+- Current `src/local_ai_hub/external_gpu_reservation.py` SHA-256 `24ed1f8cf11efafa23481b762222b31218d9787fea37e0c36adbb32cc8b5939a`: `reserve()` at lines 135–163 calls `_write_metadata(record)` but ignores its boolean result; `_write_metadata()` at lines 347–361 returns `False` for symlink or `OSError` failures instead of raising.
+- Isolated, temporary-directory reproduction monkeypatched `_write_metadata` to return `False`: `reserve()` returned a lease while metadata was absent, `read()` returned no record, and the digest fence remained. This is fail-closed for admission, but the caller receives a reservation that cannot be read or safely released through the normal generation path.
+- Fix required: treat a false metadata-write result as reservation failure and preserve the digest fence for explicit recovery; add a regression case. The active shared reservation source and lifecycle test are editor-owned, so this finding is recorded for the isolated implementation step rather than edited in the shared checkout.
+
+### A1 — isolated fix candidate and regression proof (2026-11-06)
+
+- Created managed worktree `C:\Users\Adam\.codex\worktrees\gpu-reserve-a1-fix\.local-ai-hub` from `master`; current shared checkout was not changed. The bug is present in `master` source SHA-256 `cccc3ac286b4c140e4bcf49d9d990e7f969b7b515255823e4a1b1ce9c5f18789`.
+- Added `test_reserve_returns_none_when_metadata_write_fails`: confirmed RED before the fix (`reserve()` returned a lease when `_write_metadata()` returned `False`). Minimal fix now returns `None` while leaving the digest fence in place for recovery.
+- Worktree source SHA-256 `b7714552717647eebd8d153e894fcefb26bebe618022255125d8a59ae3eaa7be`; regression test SHA-256 `47d6415a1c0ca8d89f902293220adc127dada543584861ea6675cebd91fd45dc`.
+- `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py --tb=short` — **31 passed in 0.77 s**. `git diff --check -- src/local_ai_hub/external_gpu_reservation.py tests/test_external_gpu_reservation_lifecycle.py` — clean. Candidate remains isolated; integration into the shared checkout awaits editor ownership release.
+- Post-edit `local_ai_repo(action="impact")` request `req_4f7055c82d73` reports the changed code and test files, recommends the lifecycle module, and lists scheduler/HTTP server as likely dependents. The result labels its relationship method `scan-fallback`, so this is heuristic impact evidence, not exact Serena symbol proof. Semantic local review remains unavailable: current Hub status has no active model and reports external GPU reservation with stale VRAM telemetry.
+- Shared-checkout recheck `local_ai_repo(action="git_status")` request `req_c23c5d1241df`: `master`, 31 modified paths, 0 staged, 1 untracked. The owned reservation source remains SHA-256 `24ed1f8cf11efafa23481b762222b31218d9787fea37e0c36adbb32cc8b5939a` and still ignores `_write_metadata()`'s false result. No release signal for the shared source/test paths; keep the candidate isolated.
+
+### A2 — current model-catalog and canonical prompt recheck (2026-11-06)
+
+- `docs/MODEL_CAPABILITIES.md` SHA-256 `a7bafe23423082597e7955a560b21ea251477220f590d09086c364080927142e`: the inspected table has the requested `qwen3.5:4b-nvfp4` candidate and no `qwen3.5:4b-q4_K_M`, `gemma4:12b`, or `qwen2.5-coder:14b` entries. It still has `qwen3.5:9b-q4_K_M` as a separate advisory candidate (line 37).
+- Current `src/local_ai_hub/prompt_contracts.py` SHA-256 `f56f374fe2a051a0f90da23cb1ee548f478177aad5bd9dd2cf83cc0da407efd4` registry and `src/local_ai_hub/opencode_hardware.py` SHA-256 `42b5faf2dc3f9c8e33e803c153f89b96e513a7c32cce2d662929c0f2800761ef` future list use generic `qwen3.5:9b` / `qwen3.5:9b-nvfp4`; the inspected slices do not list `qwen3.5:9b-q4_K_M`.
+- Canonical prompt role-map slices remain aligned: INSTALL SHA-256 `2e6f5a7771bfa13507750a81485fd7d70806bfc177f89939153880a6dbcea1dd` lines 265–266 and UPDATE SHA-256 `8a4f89204a3855b016bcbe39181fe89154d9d6f478f50cbd30390763eca14c19` lines 263–264. These slices route to generic `qwen3.5:9b` and do not establish installation or model quality.
+- `qwen3.5:9b-q4_K_M` was not in the audit's explicit retired-tag set. Leave it classified as an unqualified advisory reference pending model-owner direction; do not treat it as an active route. Current status request `req_f4616bd6cfbf` has no active model, unknown VRAM, and `gpu_admission_state=preparing_model`, so installed-tag inventory remains unverified and A2 remains partial.
+
+### A6 — user scope decision (2026-11-06)
+
+- User selected **scheduling only** for deeper hot-file treatment. Keep A6 work on prioritization, queue progress, starvation/fairness, and scheduling latency. Do not expand this item into deeper content/model analysis of hot files.
+- Existing synthetic measurements show hot-file scheduling moves selection from batch 8/128 files to batch 1/16 files on the seeded source runs, with the same 7 batches/112 files ultimately processed. The 512-file whole-repository sample selected the hot file in batch 1/16 versus baseline batch 25/400; it is a single cache-order-sensitive sample. These results are preliminary scheduler evidence only, not useful-context or model-quality evidence.
+- A6 remains open for representative production scheduling/fairness evidence; no model inference or GPU claim follows from this decision.
+- Repeated the bounded repository-sample scheduler benchmark three times from the isolated worktree with `python -B`; each run sampled and completed 1,991 files in 32 batches, with 0 unprocessed. Baseline selected the hot file at batch 28; demand priority selected it at batch 1. Baseline per-run median selection latency was 1.793/1.716/2.170 ms; demand was 2.383/2.303/3.022 ms. No model inference ran. This is a bounded local sample, with likely filesystem-cache effects across repetitions; it shows faster hot-file selection at a modestly higher selection cost, not representative production throughput or useful-context latency.
+- Isolated scheduler source SHA-256 `0fecfdb68a1cd17eac4968933c7a1de640bc4b93327dd7b566f121de653e9473` caps preferred paths at `min(limit - 1, max(1, limit // 4))` and fills remaining slots from the regular ordered queue, leaving at least one regular slot when `limit >= 2`. Existing regression test SHA-256 `0b686102ac815e13a9671896773a40b254988472f33c89ff5da4b37d50d7dc8c` checks a regular file appears in the first demand batch and both modes process all 32 files in eight batches. Fresh focused run: `7 passed in 1.82 s`. This verifies bounded scheduler fairness in the fixture, not production-wide fairness.
+
+### A1 — isolated candidate revalidation (2026-11-06)
+
+- Current isolated source SHA-256 `b7714552717647eebd8d153e894fcefb26bebe618022255125d8a59ae3eaa7be` checks the metadata writer's boolean result and returns no lease on failure, leaving the digest fence for fail-closed recovery. Lifecycle test SHA-256 `258c6f969489f739fb16a9516183e6ebba5e764282303cd7e9fe579f61e5f773` covers no lease on false metadata write, retained digest fence, absent metadata, unreadable reservation, and retry after the digest-only fence expires.
+- Revalidation: `python -B -m pytest -p no:cacheprovider -q tests/test_external_gpu_reservation_lifecycle.py --tb=short` — **32 passed in 0.78 s**; scoped `git diff --check` clean. Primary review of the exact working-tree diff confirms one production guard plus the two failure/recovery regressions. The indexed diff response omitted the newest test hunk; bounded native `git diff -- tests/test_external_gpu_reservation_lifecycle.py` confirmed the complete two-test addition. Impact request `req_b89041e98731` was heuristic fallback, not exact Serena proof.
+- The candidate remains isolated. Shared checkout ownership for these source/test paths has not been released, so this is not an integration or runtime acceptance claim.
+- Fresh shared-checkout source slice remains SHA-256 `24ed1f8cf11efafa23481b762222b31218d9787fea37e0c36adbb32cc8b5939a` and still ignores the metadata writer's boolean result at lines 160–170. The current lifecycle-test slice SHA-256 is `32b8c75d3a78773ae24124b1b30e591ea6320c1255513ba0cd82ed6c69771d8a`; lines 30–49 proceed directly to the legacy-fence test, with no A1 false-write regression at that insertion point. Keep the isolated candidate unapplied until explicit ownership release.
+
+### Shared checkout and runtime recheck (2026-11-06)
+
+- Fresh `local_ai_repo:git_status` request `req_1b5691cd90cf`: `master`, 31 modified paths, 0 staged, and one untracked test. This records a dirty shared checkout, not path ownership. No explicit editor release was received; keep shared source/test edits off limits.
+- Fresh `local_ai_status` request `req_2b29038494a1`: Hub 5.1.3 and Ollama online, `active_model=null`, `gpu_admission_state=preparing_model`, `vram_pressure=unknown`, telemetry `sample_pending` and stale. This does not authorize model inference or establish GPU admission/capacity; A3–A5 and A7 runtime gates remain open.
+
+### Read-only review — scheduler uncertainty and expiry order (2026-11-06)
+
+- Current shared `src/local_ai_hub/scheduler.py` SHA-256 `f4af1ed1ae88f99c52e13a5a5903a33830e8648d1d39edea762c172af25f6046` moves `store.reap_expired()` / `store.read()` before `_internal_gpu_uncertain` returns fail-closed. The same source still makes `_claim_internal_gpu()` return `False` while uncertain, and delegates new internal admission to the atomic `ExternalGpuReservationStore.claim_internal()` path.
+- The paired `test_unknown_internal_outcome_still_reaps_expired_external_fence` asserts expired digest cleanup while uncertainty continues to deny a new internal claim (`tests/test_opencode_gpu_reservation.py`, diff request `req_073d1f8f6b61`). Primary source review found the ordering consistent with the lease-expiry contract; this is not execution evidence. Shared-checkout tests were not run while editor-owned changes remain active.
+- Reviewed scheduler diff SHA-256 `5e538325322e314975e03c63c3f4f0835e03d55d7b94b3a2a578e40a21be64cf`; no shared source edits made. Expiry-based stale-fence cleanup does not resolve live admission, startup-race or target-GPU qualification gates.

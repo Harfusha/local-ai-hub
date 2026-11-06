@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import threading
 
-from local_ai_hub.app import _prewarm_route_is_eligible, _runtime_is_available, _wait_for_prewarm_backend
+from local_ai_hub.app import (
+    _prewarm_route_is_eligible,
+    _prewarm_should_retry,
+    _runtime_is_available,
+    _wait_for_prewarm_backend,
+)
 
 
 class _OfflineRuntime:
@@ -51,3 +56,32 @@ def test_prewarm_backend_wait_accepts_online_runtime() -> None:
             return True
 
     assert _wait_for_prewarm_backend(_OnlineRuntime(), threading.Event(), 1.0) is True
+
+
+def test_prewarm_stops_retrying_after_unknown_gpu_outcome() -> None:
+    class _UnknownScheduler:
+        def status(self) -> dict[str, str]:
+            return {"gpu_admission_state": "outcome_unknown"}
+
+    assert _prewarm_should_retry(_UnknownScheduler()) is False
+
+
+def test_prewarm_retries_while_gpu_is_temporarily_busy() -> None:
+    class _BusyScheduler:
+        def status(self) -> dict[str, str]:
+            return {"gpu_admission_state": "external_reservation"}
+
+    assert _prewarm_should_retry(_BusyScheduler()) is True
+
+
+def test_prewarm_stops_when_scheduler_status_is_unavailable_or_unknown() -> None:
+    class _UnavailableScheduler:
+        def status(self) -> dict[str, str]:
+            raise RuntimeError("status unavailable")
+
+    class _UnknownStateScheduler:
+        def status(self) -> dict[str, str]:
+            return {"gpu_admission_state": "unexpected"}
+
+    assert _prewarm_should_retry(_UnavailableScheduler()) is False
+    assert _prewarm_should_retry(_UnknownStateScheduler()) is False

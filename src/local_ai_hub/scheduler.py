@@ -1030,8 +1030,6 @@ class AffinityScheduler:
 
     def _external_gpu_reserved(self) -> bool:
         """Observe an external reservation created by another scheduler instance."""
-        if getattr(self, "_internal_gpu_uncertain", False):
-            return True
         store = getattr(self, "_external_gpu_store", None)
         reaped = False
         record = None
@@ -1046,6 +1044,8 @@ class AffinityScheduler:
                 self._external_gpu_expiry_monotonic = time.monotonic() + max(
                     0.0, float(record["expires_at"]) - time.time()
                 )
+        if getattr(self, "_internal_gpu_uncertain", False):
+            return True
         path = getattr(self, "_external_gpu_path", None)
         current = _read_external_reservation(path) if path else None
         if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):

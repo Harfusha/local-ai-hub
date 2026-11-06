@@ -173,6 +173,26 @@ def test_consent_release_requires_expired_idle_generation_and_audit_reason(tmp_p
     assert other.read() is None
 
 
+def test_consent_release_allows_confirmed_dead_embedding_owner(tmp_path, monkeypatch):
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=60, clock=lambda: 100.0
+    )
+    lease = store.reserve(_digest("embedding-token"), owner="embedding:12345:67890")
+    assert lease is not None
+    monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
+
+    assert store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="confirmed owner process exited"
+    )
+    assert store.read() is None
+    events = [
+        json.loads(line)
+        for line in store.audit_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["action"] == "consented_release_dead_owner"
+    assert events[-1]["owner"] == "embedding:12345:67890"
+
+
 def test_consent_release_recovers_metadata_orphan_after_partial_cleanup(tmp_path, monkeypatch):
     now = [100.0]
     store = ExternalGpuReservationStore(
@@ -352,6 +372,34 @@ def test_consent_release_removes_active_reservation_when_owner_process_is_gone(t
         lease["generation"], consent=True, audit_reason="operator approved after owner process exited"
     )
     assert store.read() is None
+
+
+def test_consent_release_removes_active_embedding_reservation_when_owner_process_is_gone(tmp_path, monkeypatch):
+    now = [100.0]
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: now[0])
+    lease = store.reserve(_digest("embedding-owner-token"), owner="embedding:424242:17")
+    assert lease is not None
+    assert store.renew(_digest("embedding-owner-token"), lease["generation"], state="active")
+    monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
+
+    assert store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="operator approved after embedding owner exited"
+    )
+    assert store.read() is None
+
+
+def test_consent_release_keeps_unknown_owner_type_fail_closed(tmp_path, monkeypatch):
+    store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", ttl_seconds=900, clock=lambda: 100.0)
+    lease = store.reserve(_digest("unknown-owner-token"), owner="unknown-worker:424242:17")
+    assert lease is not None
+    assert store.renew(_digest("unknown-owner-token"), lease["generation"], state="active")
+    monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
+
+    assert not store.release_with_consent(
+        lease["generation"], consent=True, audit_reason="unknown owner type remains fail-closed"
+    )
+    assert store.read() is not None
 
 
 def test_consent_release_keeps_active_reservation_when_process_liveness_is_unknown(tmp_path, monkeypatch):

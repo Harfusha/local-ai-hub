@@ -159,10 +159,15 @@ def tokenize_query_terms(
                 add(part)
         
         # Structural case transition split (camelCase / PascalCase)
-        sub_tokens = re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?=[A-Z][a-z0-9]|\b)|[\w]+", token, re.UNICODE)
-        if len(sub_tokens) > 1:
-            for st in sub_tokens:
-                add(st)
+        # Only run the ASCII CamelCase splitter when an actual case boundary
+        # exists. Otherwise it splits Unicode sentence words at accented chars
+        # (for example ``přes`` into ``p`` and ``řes``).
+        has_camel_boundary = re.search(r"[a-z0-9][A-Z]|[A-Z]{2,}[A-Z][a-z]", token) is not None
+        if has_camel_boundary:
+            sub_tokens = re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?=[A-Z][a-z0-9]|\b)|[\w]+", token, re.UNICODE)
+            if len(sub_tokens) > 1:
+                for st in sub_tokens:
+                    add(st)
         if len(terms) >= clean_max_terms:
             break
 

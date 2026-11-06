@@ -68,3 +68,20 @@ The same 25 labeled cases ran three times against the installed loopback endpoin
 | Reranker configured / used | yes / 0 cases |
 
 The cold and all-warm latency figures come from separate runs and are not combined. Quality values are macro averages over the 25 labeled cases. The endpoint reported `index_state=current_sources` for lexical results. This benchmark does not establish RAG or hybrid quality; those modes remain unmeasured against the live service while GPU admission is unresolved.
+
+## Current-source benchmark: lexical and degraded hybrid — 2026-11-06
+
+Expanded `tools/benchmark_real_search.py` with four exact-symbol cases and four manually source-anchored natural-language cases, including English/Czech installation and code-index requests. The benchmark runs isolated `LocalAIServices.repo_search` against this checkout with optional semantic backends disabled; it does not exercise HTTP/MCP or active preprocessing. Cold/warm lexical results below use two requests per case and the service cache.
+
+| Measure | Lexical result |
+| --- | ---: |
+| Cases / requests | 8 / 16 |
+| Expected file in top 10 | 5 / 8 |
+| Mean reciprocal rank | 0.563 |
+| Cold median / p95 | 1,840 / 4,535 ms (8 samples) |
+| Warm median / p95 | 93 / 105 ms (8 samples) |
+| Exact symbol targets at rank 1 | 4 / 4 |
+
+Both installation queries and `Jak omezit velikost code indexu?` missed their labeled files; `Jak nastavit limit code indexu?` ranked its expected source second. A separate one-repeat hybrid run over those four natural queries, with RAG disabled in this isolated harness, returned `result_source=lexical_fallback`, `degraded=true`, and `degradation_reason=rag_disabled` for all four; all four labeled files were missed (0/4 top-10, MRR 0). Latency was 1.43–1.82 seconds. This is evidence about the degraded current-source fallback only, not a live RAG/hybrid or reranker comparison.
+
+The holdout synthetic benchmark (`python tools/benchmark_search_quality.py --repeats 3 --noise-files 100 --suite holdout`) scored recall@10 1.0 and MRR 1.0 over seven cases. Its precision@10 was 0.5 on two broad positive cases and 1.0 on the remaining positives and negative case; per-case median latencies were 37–44 ms and nearest-rank p95 values 42–96 ms. This synthetic result is separate from the real-repository failures above and does not establish general quality.
