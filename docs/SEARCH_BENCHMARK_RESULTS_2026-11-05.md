@@ -163,3 +163,26 @@ run. Seven samples make p95 equal to the nearest-rank maximum and expose noisy
 timings; no batch-size change is justified by this result. The live
 preprocessor currently fetches 256 references at a time. This microbenchmark
 does not establish end-to-end speedup or general scaling.
+
+## Live Hub repository-search diagnostic — 2026-11-06
+
+A live `local_ai_repo` hybrid query returned `candidate_count=39` with
+`candidate_count_exact=false`, `index_coverage=unknown_or_partial`, and
+`coverage_complete=false`. The lexical and RAG candidate counts were also
+explicitly inexact (64 and 11). Reranking was requested but not used; the
+response reported `sentence-transformers` and `heuristic_rerank` degradation.
+The final results were freshness-checked against current sources. This is a
+runtime degradation record, not a labeled relevance or latency benchmark; it
+does not measure the public HTTP search endpoint.
+
+## Live HTTP lexical spot check after Hub restart — 2026-11-06
+
+The configured loopback `/api/search` was measured with
+`tools/benchmark_live_search.py --modes lexical --repeats 1 --timeout-seconds 15 --case exact-repo-search`
+against this real repository. The installed Hub reported profile `high` and a
+configured reranker (`BAAI/bge-reranker-v2-m3`); lexical mode did not invoke it.
+The cold request returned HTTP 200 in 6,027 ms, `count_exact=true`,
+`total_matches=165`, and `index_state=current_sources`. On this single manually
+labeled case, recall@10 was 1.0 but precision@10 was 0.2; the two expected
+files appeared at ranks 1 and 3. This is a spot check, not a stable latency
+estimate or a general relevance claim.
