@@ -782,11 +782,7 @@ def _desc_rag() -> str:
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
         supported = set(FEATURES.supported_coord_actions())
-        actions = [name for name in (
-            "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "claim", "release", "memory_record",
-            "memory_find", "context_compile", "task_create", "task_checkpoint", "ask", "answer",
-            "plan_list", "plan_get", "plan_board_view", "plan_task_edit",
-        ) if name in supported]
+        actions = sorted(supported)
         reservation_note = (
             " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized requires explicit consent=true and audit_reason, without a generation or owner-liveness preflight. It releases a valid reservation or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Malformed metadata and symlinks remain fail-closed."
             if {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}.issubset(actions)
