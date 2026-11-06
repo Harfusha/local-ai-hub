@@ -261,7 +261,7 @@ replace `INSTALLED_TAG` with a model already verified as installed:
     {
       "id": "S1",
       "input": "Coverage note: Index coverage is incomplete; additional matches may be omitted. Match E1: `src/clamp.py:10-12` contains `if value < lower or value > upper:`. Both comparisons are strict, so values equal to either bound are accepted. Summarize in at most 3 bullets and 80 words. Cite code claims with exactly [src/clamp.py:10-12]. Preserve coverage uncertainty; do not state matches were omitted, infer counts, or cite E1.",
-      "expected": "equal to either bound",
+      "expected": "equal to bounds",
       "max_words": 80,
       "allowed_citations": ["[src/clamp.py:10-12]"],
       "required_citations": ["[src/clamp.py:10-12]"],

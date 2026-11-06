@@ -1665,6 +1665,12 @@ def _compact(
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    search_summary_fields = (
+        "ai_summary", "ai_summary_citation_validation", "ai_summary_sources",
+        "ai_summary_advisory", "ai_summary_root_fingerprint",
+    )
+    if task_kind == "search" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+        compacted.update({key: raw_value[key] for key in search_summary_fields if key in raw_value})
     if task_kind == "coord" and isinstance(raw_value, dict) and isinstance(compacted, dict):
         if "checkpoint_sync" in raw_value:
             compacted["checkpoint_sync"] = raw_value["checkpoint_sync"]
@@ -1738,7 +1744,7 @@ def _compact(
                'candidate_freshness', 'stale_candidate_count', 'index_revision',
                'lexical_total_matches', 'lexical_count_exact', 'lexical_priority', 'candidate_count', 'candidate_count_exact',
                'rag_candidate_count', 'rag_candidate_count_exact', 'degraded', 'degradation_reason', 'reranker',
-               'sources') if task_kind == "search" else ()),
+               'sources', *search_summary_fields) if task_kind == "search" else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),

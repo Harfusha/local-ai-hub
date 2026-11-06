@@ -43,6 +43,7 @@ from .search_modes import (
     deduplicate_search_files,
     expand_semantic_query,
     fuse_search_results,
+    lexical_precision_query,
     prefers_lexical_precision,
 )
 from .scheduler import SchedulerCancelledError, SchedulerTimeoutError
@@ -3231,8 +3232,12 @@ class LocalAIServices:
                 "search_mode": mode,
             }
         if mode == "lexical":
+            lexical_query = (
+                lexical_precision_query(query)
+                if prefers_lexical_precision(query) else query
+            )
             result = self._repo_search_lexical(
-                root, query, top_k, context_lines, enrich, path_hints, scope,
+                root, lexical_query, top_k, context_lines, enrich, path_hints, scope,
                 limit=page_limit, offset=offset,
                 installation_intent_priority=not prefers_lexical_precision(query),
             )
@@ -3249,8 +3254,9 @@ class LocalAIServices:
             return result
 
         if mode == "hybrid" and prefers_lexical_precision(query):
+            lexical_query = lexical_precision_query(query)
             result = self._repo_search_lexical(
-                root, query, top_k, context_lines, enrich, path_hints, scope,
+                root, lexical_query, top_k, context_lines, enrich, path_hints, scope,
                 limit=page_limit, offset=offset,
             )
             succeeded = result.get("success") is True

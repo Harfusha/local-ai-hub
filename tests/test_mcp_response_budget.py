@@ -396,3 +396,45 @@ def test_delta_pointer_keeps_unchanged_marker_with_tight_budget(monkeypatch) -> 
     assert repeated["artifact_id"] == "artifact-1"
     public = {key: value for key, value in repeated.items() if key != "_token_accounting"}
     assert json_tokens(public) <= 260
+
+
+def test_search_budget_preserves_verified_advisory_summary(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(
+        max_response_tokens=1024, reuse_key="search-summary-budget", tool="local_ai_repo",
+    ))
+    value = {
+        "success": True,
+        "search_mode": "lexical",
+        "result_source": "lexical",
+        "count_exact": True,
+        "coverage_complete": True,
+        "offset": 0,
+        "limit": 12,
+        "total_matches": 30,
+        "has_more": True,
+        "results": [
+            {"path": f"src/module_{index}.py", "start_line": 1, "end_line": 80,
+             "score": 1.0, "evidence_id": f"E{index}", "text": "match " * 120}
+            for index in range(12)
+        ],
+        "ai_summary_root_fingerprint": "a" * 64,
+        "ai_summary": {"success": True, "text": "Finding [src/module_0.py:1-80]."},
+        "ai_summary_citation_validation": {"status": "source_bound", "reference_count": 1},
+        "ai_summary_sources": [{
+            "path": "src/module_0.py", "start_line": 1, "end_line": 80, "evidence_id": "E0",
+        }],
+        "ai_summary_advisory": True,
+    }
+    try:
+        result = mcp_server._compact(value, "search")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["ai_summary"]["text"] == "Finding [src/module_0.py:1-80]."
+    assert result["ai_summary_citation_validation"]["status"] == "source_bound"
+    assert result["ai_summary_sources"][0]["path"] == "src/module_0.py"
+    assert result["ai_summary_advisory"] is True
+    assert result["ai_summary_root_fingerprint"] == "a" * 64
+    assert result["truncated"] is True
+    assert result["has_more"] is True

@@ -19,16 +19,41 @@ def canonical_search_mode(value: Any) -> str | None:
 
 
 def prefers_lexical_precision(query: str) -> bool:
-    """Recognize compact symbol-like queries where exact hits must lead."""
+    """Recognize symbol-bearing queries where exact hits must lead."""
     if type(query) is not str:
         return False
     value = query.strip()
-    if not value or len(value) > 256 or any(ch.isspace() for ch in value):
+    if not value or len(value) > 256:
         return False
-    return (
-        any(ch in value for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":"))
-        or any(ch.islower() for ch in value) and any(ch.isupper() for ch in value)
-    )
+    for raw_token in value.split():
+        token = raw_token.strip(".,!?;()[]{}<>\"'`")
+        if not token:
+            continue
+        if any(ch in token for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":")):
+            return True
+        if re.search(r"[a-z][A-Z]", token):
+            return True
+    return False
+
+
+def lexical_precision_query(query: str) -> str:
+    """Use a single embedded symbol as the exact lexical anchor for prose queries."""
+    if type(query) is not str:
+        return ""
+    value = query.strip()
+    if not value or len(value) > 256:
+        return value
+    anchors: list[str] = []
+    for raw_token in value.split():
+        token = raw_token.strip(".,!?;()[]{}<>\"'`")
+        if not token:
+            continue
+        if any(ch in token for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":")):
+            anchors.append(token)
+        elif re.search(r"[a-z][A-Z]", token):
+            anchors.append(token)
+    unique_anchors = list(dict.fromkeys(anchors))
+    return unique_anchors[0] if len(unique_anchors) == 1 else value
 
 
 def default_search_mode(query: str) -> str:

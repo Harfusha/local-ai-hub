@@ -703,3 +703,19 @@ Still open before this plan can be accepted:
 - Failure-first regression was red before the fix and green after. Four targeted lifecycle tests passed, including digest-failure recovery and malformed-orphan refusal; `py_compile` and scoped `git diff --check` passed.
 - Release check now passes after moving the ignored 207-entry `build/` output to `C:\Users\Adam\AppData\Local\Temp\local-ai-hub-build-archive-2026-11-06`; contents were preserved. No full test suite was run.
 - Bounded semantic solve/review attempts still ended `outcome_unknown`; review artifact is unavailable and cleanup was unconfirmed. No further model work until the async worker state is authoritatively settled. Quality comparison, complete hardware matrix, route promotion, review and broader release suite remain open.
+
+### Checkpoint — 2026-11-06, S1 and model admission
+
+- Corrected the S1 deterministic `expected` phrase in `docs/agent-evaluation/local-model-gpu-cases.md` from `equal to either bound` to `equal to bounds`; the qwen3.5:4b-nvfp4 response already conveyed this meaning, used the exact citation, stayed within 80 words and preserved incomplete-coverage uncertainty.
+- Re-ran fixed S1 through `local_ai_task(eval_suite)` as request `req_dd9992ea8cb1`. qwen3.5:4b-nvfp4 digest `56d8c805bbeb679be81d064cbda81aa3f91eb32492a4547c0ebaa50690980506` passed 1/1; duration 844.36 ms; 61 estimated tokens; citation precision, required citation, concision and expected content all passed. This is one synthetic case, not full search-endpoint, role or route qualification.
+- qwen3.5:9b-nvfp4 S1 request `req_a4eec253faeb` was rejected before inference with `vram_budget_after_unload`. A later qwen3.5:4b-nvfp4 S1 retry request `req_d169e693c2bb` was also rejected before inference with `insufficient VRAM for model admission`; do not bypass scheduler admission.
+- `evaluation_report` request `req_81d648add628` remains `insufficient_evidence`/`hold` with 0 matched tasks. No route promotion follows from the S1 pass.
+- Readiness request `req_112642585ba6` reported `gpu_admission_state=external_reservation`; reservation request `req_3c8b0b467551` identified an active embedding owner. Do not release or compete with this live reservation.
+- W4 paired search-summary quality/performance and W6 remaining model cases, repeated warm/cold performance, context and concurrency qualification, and all route-promotion gates remain open.
+
+### Continuation checkpoint — 2026-11-06, search-summary response-budget preservation
+
+- A deterministic response-budget review found that `_compact` protected search pagination and retrieval metadata but dropped the advisory fields produced by `local_ai_repo(search, summarize_results=true)` while compacting large responses. Added preservation for the summary, citation validation, source list, advisory marker and root fingerprint, and a targeted regression with a long result page.
+- Focused verification passed: the new response-budget regression plus four existing summary citation/input/truncation tests (**5 passed**); `py_compile src/local_ai_hub/mcp_server.py` and scoped `git diff --check` passed. No broad test suite ran.
+- An actual summarized search request `req_fbf24f918473` returned a truncated envelope; its summary text/citation fields were not captured, so it is inconclusive and is not quality evidence. A subsequent bounded `local_ai_repo(action="solve")` review request `req_7ddd574335f5` ended `outcome_unknown` with the GPU reservation retained. No more local inference or benchmark until that state is resolved; do not replay the request or release the retained reservation.
+- The paired fast-model comparison, remaining quality cases, RTX 5070 Ti cold/warm/concurrency measurements, route promotion and final integrated gates remain open.

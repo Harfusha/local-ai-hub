@@ -1785,7 +1785,17 @@ class RepositoryTools:
     ) -> dict[str, Any]:
         """Count every eligible result while retaining only the requested prefix."""
         terms = self._terms(query)
-        phrase = query.strip().lower()
+        raw_phrase = query.strip()
+        phrase = raw_phrase.lower()
+        symbol_query = (
+            bool(raw_phrase)
+            and not any(ch.isspace() for ch in raw_phrase)
+            and (
+                any(ch in raw_phrase for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":"))
+                or re.search(r"[a-z][A-Z]", raw_phrase) is not None
+            )
+        )
+        case_sensitive_symbol_query = symbol_query and raw_phrase.isascii()
         if not terms and phrase:
             terms = [phrase]
         declaration_pattern = (
@@ -1844,7 +1854,7 @@ class RepositoryTools:
         # lowercase mapping could match inside or across that expansion (for
         # example ``i`` inside ``İstanbul``), so it cannot bound candidates.
         lower_expansion_characters = _lower_expansion_characters()
-        lower_complete_query = not any(
+        lower_complete_query = case_sensitive_symbol_query or not any(
             char in lower_expansion_characters
             for char in phrase
         )
@@ -1854,12 +1864,86 @@ class RepositoryTools:
             and lower_complete_query
             and (phrase.isascii() or simple_casefold_query)
         )
-        if self.use_ripgrep and self._rg and ripgrep_candidates_complete:
+        if (
+            self.use_git_grep
+            and self.prefer_git
+            and (base / ".git").exists()
+            and ripgrep_candidates_complete
+        ):
+            git_grep_cmd = [
+                "git", "-C", str(base), "grep", "--files-with-matches",
+                "--fixed-strings", "--text", "--null",
+                "--untracked", "--exclude-standard",
+            ]
+            if not case_sensitive_symbol_query:
+                git_grep_cmd.append("--ignore-case")
+            candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
+            for term in candidate_terms:
+                git_grep_cmd.extend(["-e", term])
+            if (
+                not case_sensitive_symbol_query
+                and phrase and len(phrase) <= 120 and phrase not in terms
+            ):
+                git_grep_cmd.extend(["-e", phrase])
+            pathspecs: list[str] = ["."]
+            for directory_name in sorted(self.ignore_dirs):
+                pathspecs.append(f":(exclude,glob)**/{directory_name}/**")
+            project_excludes = getattr(project_settings, "exclude_paths", ())
+            if isinstance(project_excludes, (list, tuple)):
+                for pattern in project_excludes:
+                    if not isinstance(pattern, str):
+                        continue
+                    if re.fullmatch(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/\*\*", pattern):
+                        if not any(part in {".", ".."} for part in pattern[:-3].split("/")):
+                            pathspecs.append(f":(exclude,glob){pattern}")
+                    elif re.fullmatch(r"[A-Za-z0-9_.-]+\*?", pattern):
+                        pathspecs.append(f":(exclude,glob){pattern}")
+            if configured_state_relative and configured_state_relative.parts and all(
+                not any(char in part for char in "*?[]{}")
+                for part in configured_state_relative.parts
+            ):
+                pathspecs.append(
+                    f":(exclude,glob){configured_state_relative.as_posix()}/**"
+                )
+            git_grep_cmd.extend(["--", *pathspecs])
+            try:
+                proc = subprocess.run(
+                    git_grep_cmd,
+                    capture_output=True,
+                    text=False,
+                    timeout=min(self.git_grep_timeout, 10.0),
+                    check=False,
+                    cwd=str(base),
+                    **hidden_run_kwargs(),
+                )
+                if proc.returncode in (0, 1):
+                    matching_relpaths = set()
+                    for raw_path in proc.stdout.split(b"\0"):
+                        if not raw_path:
+                            continue
+                        try:
+                            relative = raw_path.decode("utf-8", errors="surrogateescape")
+                            p = Path(relative)
+                            if p.is_absolute():
+                                rel_path = p.resolve(strict=False).relative_to(base).as_posix()
+                            else:
+                                rel_path = p.as_posix()
+                                if rel_path.startswith("./"):
+                                    rel_path = rel_path[2:]
+                            matching_relpaths.add(rel_path)
+                        except (OSError, RuntimeError, TypeError, ValueError):
+                            continue
+            except Exception:
+                matching_relpaths = None
+
+        if matching_relpaths is None and self.use_ripgrep and self._rg and ripgrep_candidates_complete:
             rg_cmd = [
                 self._rg, "--glob-case-insensitive", "--files-with-matches", "--text",
-                "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore",
+                "--fixed-strings", "--hidden", "--no-ignore",
                 "--no-messages", "-g", "!.git/**",
             ]
+            if not case_sensitive_symbol_query:
+                rg_cmd.append("--ignore-case")
             # Exact search applies the project's ignore policy after candidate
             # discovery, so mirror those directory exclusions in ripgrep too.
             # Otherwise --no-ignore scans large ignored environments/state
@@ -1890,9 +1974,13 @@ class RepositoryTools:
                 for part in configured_state_relative.parts
             ):
                 rg_cmd.extend(["-g", f"!{configured_state_relative.as_posix()}/**"])
-            for term in terms[:16]:
+            candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
+            for term in candidate_terms:
                 rg_cmd.extend(["-e", term])
-            if phrase and len(phrase) <= 120 and phrase not in terms:
+            if (
+                not case_sensitive_symbol_query
+                and phrase and len(phrase) <= 120 and phrase not in terms
+            ):
                 rg_cmd.extend(["-e", phrase])
             rg_cmd.append(".")
             try:

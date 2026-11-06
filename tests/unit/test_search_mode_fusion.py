@@ -7,6 +7,7 @@ from local_ai_hub.search_modes import (
     expand_lexical_fallback_query,
     expand_semantic_query,
     fuse_search_results,
+    lexical_precision_query,
     prefers_lexical_precision,
 )
 from local_ai_hub.services import LocalAIServices
@@ -158,9 +159,59 @@ def test_repository_search_defaults_to_lexical_for_exact_identifiers(monkeypatch
     ("Local AI Hub installation", "hybrid"),
     ("repo_search", "lexical"),
     ("C++", "lexical"),
+    ("How do I find repo_search?", "lexical"),
+    ("How do I train a dragon to parse violet_heron_20261106?", "lexical"),
 ])
 def test_default_search_mode_selects_agent_safe_mode(query, expected):
     assert default_search_mode(query) == expected
+
+
+@pytest.mark.parametrize(("query", "expected"), [
+    ("How do I find repo_search?", "repo_search"),
+    ("How do I install C++?", "C++"),
+    ("Local AI Hub installation", "Local AI Hub installation"),
+])
+def test_lexical_precision_query_extracts_only_embedded_symbol(query, expected):
+    assert lexical_precision_query(query) == expected
+
+
+def test_hybrid_query_with_embedded_identifier_uses_exact_lexical_path(monkeypatch):
+    service = _service(monkeypatch, rag_rows=[{"path": "unrelated.md", "text": "unrelated"}])
+    lexical_calls = []
+    rag_calls = []
+
+    def lexical(root, query, *args, **kwargs):
+        lexical_calls.append(query)
+        return {
+            "success": True,
+            "root": root,
+            "results": [],
+            "total_matches": 0,
+            "count_exact": True,
+            "has_more": False,
+        }
+
+    def rag(root, query, top_k):
+        rag_calls.append(query)
+        return [{"path": "unrelated.md", "text": "unrelated"}], {
+            "success": True,
+            "index_state": "current",
+        }
+
+    monkeypatch.setattr(service, "_repo_search_lexical", lexical)
+    monkeypatch.setattr(service, "_repo_rag_search", rag)
+
+    result = service.repo_search(
+        ".",
+        "How do I train a dragon to parse violet_heron_20261106?",
+        search_mode="hybrid",
+    )
+
+    assert lexical_calls == ["violet_heron_20261106"]
+    assert rag_calls == []
+    assert result["result_source"] == "lexical"
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 0
 
 
 def test_lexical_mode_prioritizes_intent_docs_but_keeps_symbol_queries_exact(monkeypatch):
