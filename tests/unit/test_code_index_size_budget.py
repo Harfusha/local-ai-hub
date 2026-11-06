@@ -783,3 +783,33 @@ def test_unreferenced_parse_blob_cleanup_serializes_independent_connections(tmp_
         ).fetchone() is not None
     second.close()
     index.close()
+
+
+@pytest.mark.parametrize("write_kind", ["single", "batch"])
+def test_normal_index_writes_never_commit_past_physical_cap(tmp_path, monkeypatch, write_kind):
+    index, root = _make_index(tmp_path)
+    path = f"new_{write_kind}.py"
+    source = "\n".join(
+        f"def cap_probe_{write_kind}_{number:04d}(): return {number}"
+        for number in range(240)
+    ) + "\n"
+    target = root / path
+    target.write_text(source, encoding="utf-8")
+    cap_bytes = index.measure_storage()["physical_bytes"]
+    index.max_index_bytes = cap_bytes
+    # Simulate SQLite/WAL write amplification beyond the row-growth estimate.
+    monkeypatch.setattr(index, "_estimate_write_growth", lambda *_args: 0)
+
+    if write_kind == "single":
+        result = index.update_file(str(root), path)
+    else:
+        result = index.update_files_batch(str(root), [path])
+
+    after = index.measure_storage()
+    assert result.get("success") is True or result.get("budget_limited") is True
+    assert after["physical_bytes"] <= cap_bytes
+    assert target.is_file()
+    assert result.get("coverage_complete") is result.get("success")
+    if not result["success"] and write_kind == "batch":
+        assert path in result["budget_limited_paths"]
+    index.close()

@@ -1121,6 +1121,7 @@ class LocalAIServices:
         models = self.config["models"]
         desired = route["model"]
         reason = None
+        resident_execution_role = None
         if route["task_type"] in {"code", "review"}:
             if desired == models.get("fast_code") and active == models.get("heavy_code"):
                 # Heavy meets the fast tier quality gate. Once benchmark history exists,
@@ -1143,16 +1144,24 @@ class LocalAIServices:
             route["task_type"] == "reasoning"
             and cfg.get("reasoning_resident_fallback", False)
             and task_type_override == "auto"
-            and active == models.get("heavy_code")
+            and active in {models.get("heavy_code"), models.get("fast_code")}
         ):
             desired = active
-            reason = "resident-heavy-reasoning-fallback"
+            reason = (
+                "resident-heavy-reasoning-fallback"
+                if active == models.get("heavy_code")
+                else "resident-fast-reasoning-fallback"
+            )
+            if active == models.get("fast_code"):
+                resident_execution_role = "fast_code"
 
         if desired != route["model"]:
             route = dict(route)
             route["original_model"] = route["model"]
             route["model"] = desired
             route["resident_optimization"] = reason
+            if resident_execution_role is not None:
+                route["resident_execution_role"] = resident_execution_role
         return route
 
     def _fallback_models(self, requested: str) -> list[str]:
@@ -1434,11 +1443,16 @@ class LocalAIServices:
                         }
                     if cancel_event is not None and cancel_event.is_set():
                         return cancelled_result()
+                    candidate_role = (
+                        str(route.get("resident_execution_role") or role)
+                        if candidate_model == str(route.get("model") or "")
+                        else role
+                    )
                     # A smart->fast resilience fallback may have a smaller context window
                     # than the originally requested model. Re-fit locally instead of
                     # relying on implicit server truncation or turning an outage into OOM.
                     candidate_hint = self.model_policy.profile(
-                        candidate_model, role=role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
+                        candidate_model, role=candidate_role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"),
                         vram_free_mb=vram_free,
                     )
@@ -1448,7 +1462,7 @@ class LocalAIServices:
                         {"model": candidate_model, "prompt": candidate_prepared.text, "system": system, "stream": False,
                          "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"),
                          "options": {"num_predict": max_tokens, "temperature": float(temperature)}},
-                        role=role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
+                        role=candidate_role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
                         vram_free_mb=vram_free,
                     )

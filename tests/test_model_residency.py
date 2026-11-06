@@ -59,3 +59,18 @@ def test_resident_router_never_promotes_general_work_to_smart_model():
 
     assert route["model"] == "qwen2.5-coder:7b"
     assert "resident_optimization" not in route
+
+
+def test_auto_reasoning_may_reuse_resident_fast_model_with_fast_execution_role():
+    service = _service(_Tuner(ready=False, prefer_resident=True))
+    service.config["routing"]["reasoning_resident_fallback"] = True
+    service.scheduler = _Scheduler("qwen2.5-coder:7b")
+
+    route = service._resident_optimize(
+        {"task_type": "reasoning", "complexity_score": 4, "model": "qwen3.5:9b"},
+        "auto", "auto",
+    )
+
+    assert route["model"] == "qwen2.5-coder:7b"
+    assert route["resident_optimization"] == "resident-fast-reasoning-fallback"
+    assert route["resident_execution_role"] == "fast_code"

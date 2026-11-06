@@ -1217,6 +1217,70 @@ class CodeIndex:
             "eviction": eviction,
         }
 
+    def _reconcile_post_write_budget(self, paths: Iterable[tuple[str, str]]) -> dict[str, Any]:
+        """Enforce the physical cap after SQLite/WAL write amplification is known."""
+        requested = list(dict.fromkeys((str(root), str(path)) for root, path in paths))
+        before = self.measure_storage()
+        if before["physical_bytes"] <= self.max_index_bytes:
+            return {"success": True, "within_budget": True, "before": before, "after": before,
+                    "evicted_paths": [], "missing_paths": []}
+
+        # Do not evict a project that another active preprocessor may be using.
+        # A malformed/incomplete active-root snapshot fails closed.
+        protected_roots: tuple[str, ...] = ()
+        provider = self._active_roots_provider
+        if callable(provider):
+            try:
+                active = provider()
+                if isinstance(active, (str, bytes)) or active is None:
+                    raise ValueError("invalid active roots")
+                normalized_active: set[str] = set()
+                for item in active:
+                    if not isinstance(item, str) or not item.strip() or not Path(item).is_absolute():
+                        raise ValueError("invalid active root")
+                    normalized_active.add(canonical_root(item))
+                protected_roots = tuple(sorted(normalized_active))
+            except Exception:
+                return {"success": False, "within_budget": False, "before": before,
+                        "after": before, "evicted_paths": [], "missing_paths": [],
+                        "reason": "active_roots_unavailable"}
+
+        eviction = self.enforce_size_limit(
+            max_bytes=self.max_index_bytes, max_files=512, protected_roots=protected_roots,
+        )
+        after = self.measure_storage()
+        recovery_vacuum: dict[str, Any] | None = None
+        # The regular maintenance path deliberately avoids VACUUM on oversized
+        # legacy databases. A single write can cross the cap after WAL/page
+        # amplification, though; permit one bounded recovery only when the
+        # entire physical store is at most twice the configured cap.
+        if after["physical_bytes"] > self.max_index_bytes and after["physical_bytes"] <= self.max_index_bytes * 2:
+            deadline = time.monotonic() + 5.0
+            try:
+                with closing(self._connect()) as con:
+                    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 2000)
+                    con.execute("VACUUM")
+                recovery_vacuum = {"success": True, "method": "bounded_overshoot_vacuum"}
+            except sqlite3.DatabaseError as exc:
+                recovery_vacuum = {"success": False, "method": "bounded_overshoot_vacuum",
+                                   "error": type(exc).__name__}
+            after = self.measure_storage()
+        surviving: set[tuple[str, str]] = set()
+        for root in sorted({root for root, _path in requested}):
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute("SELECT path FROM files WHERE root=?", (root,)).fetchall()
+            surviving.update((root, str(row[0])) for row in rows)
+        missing = [item for item in requested if item not in surviving]
+        within_budget = after["physical_bytes"] <= self.max_index_bytes
+        return {
+            "success": bool(within_budget and not missing),
+            "within_budget": within_budget, "before": before, "after": after,
+            "evicted_paths": eviction.get("evicted_paths", []), "missing_paths": missing,
+            "eviction_success": eviction.get("success") is True,
+            "eviction": eviction, "recovery_vacuum": recovery_vacuum,
+        }
+
     @staticmethod
     def _estimate_write_growth(
         file_count: int, parse_blob_rows: Iterable[tuple[Any, ...]],
@@ -2483,13 +2547,17 @@ class CodeIndex:
                 }
                 self._replace_symbol_trigrams(con, str(base), [path])
                 con.commit()
+            post_write_budget = self._reconcile_post_write_budget([(str(base), path)])
 
         self._advance_query_cache_generation()
         self._status_cache.pop(str(base), None)
         return {
-            "success": True, "cached": False, "path": path,
+            "success": post_write_budget["success"], "cached": False, "path": path,
+            "budget_limited": not post_write_budget["success"],
+            "coverage_complete": post_write_budget["success"],
             "symbols": len(syms), "refs": len(refs), "edges": len(edges),
             "parse_outcome": dict(parse_outcome), "budget": budget,
+            "post_write_budget": post_write_budget,
             "metadata_update": metadata_update,
         }
 
@@ -2756,18 +2824,32 @@ class CodeIndex:
                         [str(item[1]) for item in files_to_insert],
                     )
                     con.commit()
+                post_write_budget = self._reconcile_post_write_budget(
+                    [(c_root, str(item[1])) for item in files_to_insert],
+                )
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
         indexed_paths = [str(item[1]) for item in files_to_insert]
+        if files_to_insert and not post_write_budget["success"]:
+            budget_limited_paths.extend(
+                path for _root, path in post_write_budget.get("missing_paths", [])
+                if path not in budget_limited_paths
+            )
+            budget_limited_paths.extend(
+                str(item[1]) for item in files_to_insert
+                if str(item[1]) not in budget_limited_paths
+            )
         return {
-            "success": True, "files_processed": len(files_to_insert), "cached": cached,
+            "success": not (files_to_insert and not post_write_budget["success"]),
+            "files_processed": len(files_to_insert), "cached": cached,
             "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
             "parse_blob_hits": len(candidates) - len(parse_blob_rows),
             "parse_outcomes": self._parse_outcomes_for_paths(c_root, indexed_paths),
             "metadata_update": metadata_update, "budget": budget if files_to_insert else None,
-            "budget_limited": bool(budget_limited_paths),
+            "budget_limited": bool(budget_limited_paths) or bool(files_to_insert and not post_write_budget["success"]),
             "budget_limited_paths": budget_limited_paths,
-            "coverage_complete": not budget_limited_paths,
+            "coverage_complete": not budget_limited_paths and (not files_to_insert or post_write_budget["success"]),
+            "post_write_budget": post_write_budget if files_to_insert else None,
         }
 
     @staticmethod

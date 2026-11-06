@@ -1048,24 +1048,46 @@ class AffinityScheduler:
                 self._external_gpu_expiry_monotonic = time.monotonic() + max(
                     0.0, float(record["expires_at"]) - time.time()
                 )
-        if getattr(self, "_internal_gpu_uncertain", False):
-            return True
         path = getattr(self, "_external_gpu_path", None)
         current = _read_external_reservation(path) if path else None
         previous_release_marker = getattr(self, "_external_gpu_operator_release_marker", None)
         if store is not None and release_marker is not None and release_marker != previous_release_marker:
-            self._external_gpu_operator_release_marker = release_marker
-            if (
+            no_reservation_file = bool(
                 current is None
                 and path is not None
                 and not path.exists()
                 and not path.is_symlink()
-                and not getattr(self, "_internal_gpu_digest", None)
-            ):
-                self._external_gpu_token = None
-                self._external_gpu_generation = None
-                self._external_gpu_owned = False
-                self._external_gpu_expiry_monotonic = None
+                and not store.metadata_path.exists()
+                and not store.metadata_path.is_symlink()
+            )
+            if no_reservation_file:
+                with self._cond:
+                    scheduler_idle = not (
+                        self._pending
+                        or self._inflight
+                        or self._switching
+                        or self._gpu_prepare_in_progress
+                        or self._background_gpu_lease
+                    )
+                    if scheduler_idle:
+                        # Explicit operator consent may clear a stale in-memory fence,
+                        # but never while this scheduler still owns active GPU work.
+                        self._external_gpu_operator_release_marker = release_marker
+                        self._external_gpu_token = None
+                        self._external_gpu_generation = None
+                        self._external_gpu_owned = False
+                        self._external_gpu_expiry_monotonic = None
+                        self._internal_gpu_digest = None
+                        self._internal_gpu_uncertain = False
+                        self._cond.notify_all()
+                    else:
+                        return True
+            else:
+                # Consume the marker when another or malformed reservation remains;
+                # it must not authorize clearing a later, unrelated lease.
+                self._external_gpu_operator_release_marker = release_marker
+        if getattr(self, "_internal_gpu_uncertain", False):
+            return True
         if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
             if current is not None:
                 return True
