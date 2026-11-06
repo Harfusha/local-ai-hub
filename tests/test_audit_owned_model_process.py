@@ -60,6 +60,28 @@ def test_real_owned_worker_loads_and_runs_isolated_fake_model(tmp_path, monkeypa
     assert model._transport.process.poll() is not None
 
 
+def test_owned_worker_returns_protocol_error_for_nonfinite_model_output(tmp_path, monkeypatch):
+    from local_ai_hub.owned_model import OwnedNLPModel
+
+    (tmp_path / "sentence_transformers.py").write_text(
+        "from types import SimpleNamespace\n"
+        "class SentenceTransformer:\n"
+        " def __init__(self,*args,**kwargs):\n"
+        "  self.max_seq_length=128;self.prompts={};self.config=SimpleNamespace(_commit_hash='c'*40)\n"
+        "class CrossEncoder(SentenceTransformer):\n"
+        " def predict(self,items,**kwargs):return [float('nan') for item in items]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    model = OwnedNLPModel("reranker", "fake", {"device": "cuda"}, max_length=64)
+    try:
+        with pytest.raises(RuntimeError, match="model response is not valid JSON"):
+            model.predict([["query", "document"]])
+        assert model._transport.process.poll() is not None
+    finally:
+        model.close()
+
+
 def test_owned_model_release_avoids_parent_cuda_driver(monkeypatch):
     from local_ai_hub import model_lifecycle
     class Owner:
@@ -164,6 +186,19 @@ def test_owned_model_rejects_bad_worker_response_and_reaps_child(response, messa
         with pytest.raises(RuntimeError, match=message):
             process.request({"operation": "load"}, timeout=5)
         assert process.process.poll() is not None
+    finally:
+        process.close()
+
+
+def test_owned_model_reports_worker_exit_code_and_bounded_stderr():
+    from local_ai_hub.owned_model import _ModelProcess
+
+    script = "import sys;sys.stdin.readline();sys.stderr.write('fatal model worker error\\n');sys.stderr.flush();sys.exit(17)"
+    process = _ModelProcess([sys.executable, "-u", "-c", script])
+    try:
+        with pytest.raises(RuntimeError, match="worker exit code: 17") as raised:
+            process.request({"operation": "load"}, timeout=5)
+        assert "fatal model worker error" in str(raised.value)
     finally:
         process.close()
 

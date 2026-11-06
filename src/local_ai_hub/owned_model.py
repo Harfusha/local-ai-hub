@@ -21,21 +21,55 @@ _OUTPUT_LIMIT = 32 * 1024 * 1024
 
 class _ModelProcess:
     def __init__(self, argv):
-        self.process = popen_managed(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.process = popen_managed(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self._responses = queue.Queue(maxsize=2)
         self._lock = threading.Lock()
         self._close_lock = threading.Lock()
         self._sequence = 0
         self._closed = False
         self._writers = []
+        self._stderr_tail = bytearray()
+        self._stderr_lock = threading.Lock()
         self._reader = threading.Thread(target=self._read, daemon=True, name="model-response")
+        self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True, name="model-stderr")
         self._reader.start()
+        self._stderr_reader.start()
+
+    def _read_stderr(self):
+        try:
+            while True:
+                chunk = self.process.stderr.read(4096)
+                if not chunk:
+                    return
+                with self._stderr_lock:
+                    self._stderr_tail.extend(chunk)
+                    if len(self._stderr_tail) > 8192:
+                        del self._stderr_tail[:-8192]
+        except (OSError, ValueError):
+            return
+
+    def _worker_failure_context(self):
+        details = []
+        exit_code = self.process.poll()
+        if exit_code is None:
+            try:
+                exit_code = self.process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+        if exit_code is not None:
+            details.append(f"worker exit code: {exit_code}")
+        with self._stderr_lock:
+            stderr = bytes(self._stderr_tail).decode("utf-8", "replace").strip()
+        if stderr:
+            details.append(f"worker stderr: {stderr[-2000:]}")
+        return f" ({'; '.join(details)})" if details else ""
 
     def _read(self):
         try:
             while True:
                 raw = self.process.stdout.readline(_OUTPUT_LIMIT + 1)
                 if not raw:
+                    self._stderr_reader.join(timeout=0.2)
                     item = None
                 elif len(raw) > _OUTPUT_LIMIT or not raw.endswith(b"\n"):
                     item = ValueError("model response exceeds byte limit")
@@ -92,7 +126,10 @@ class _ModelProcess:
             if isinstance(response, Exception):
                 raise response
             if not isinstance(response, dict) or response.get("request_id") != self._sequence:
-                raise RuntimeError("model response identity mismatch or unexpected EOF")
+                raise RuntimeError(
+                    "model response identity mismatch or unexpected EOF"
+                    + self._worker_failure_context()
+                )
             if response.get("success") is not True:
                 raise RuntimeError(str(response.get("error", "model operation failed"))[:2000])
             return response
@@ -111,13 +148,14 @@ class _ModelProcess:
                 self.process.wait(timeout=1.5)
             except subprocess.TimeoutExpired:
                 raise RuntimeError("model process cleanup unconfirmed") from None
-            for thread in [self._reader, *self._writers]:
+            for thread in [self._reader, self._stderr_reader, *self._writers]:
                 if thread is not threading.current_thread():
                     thread.join(timeout=0.5)
-            if any(thread.is_alive() for thread in [self._reader, *self._writers]):
+            if any(thread.is_alive() for thread in [self._reader, self._stderr_reader, *self._writers]):
                 raise RuntimeError("model pipe cleanup unconfirmed")
             self.process.stdin.close()
             self.process.stdout.close()
+            self.process.stderr.close()
             finalizer = getattr(self.process, "_local_ai_job_finalizer", None)
             if finalizer is not None:
                 finalizer()
@@ -227,7 +265,18 @@ def worker_main():
             response = {**value, "success": True, "request_id": request_id}
         except Exception as exc:
             response = {"success": False, "request_id": request_id, "error": f"{type(exc).__name__}: {exc}"[:2000]}
-        encoded = json.dumps(response, allow_nan=False, separators=(",", ":"))
+        try:
+            encoded = json.dumps(response, allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            # Model output can contain non-finite scores or unsupported scalar
+            # objects. Report a request-bound protocol failure instead of
+            # letting the worker exit and making the parent see an unexplained EOF.
+            response = {
+                "success": False,
+                "request_id": request_id,
+                "error": f"model response is not valid JSON: {type(exc).__name__}: {str(exc)[:1000]}",
+            }
+            encoded = json.dumps(response, allow_nan=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > _OUTPUT_LIMIT - 1:
             encoded = json.dumps({"success": False, "request_id": request_id, "error": "model response exceeds byte limit"}, separators=(",", ":"))
         output.write(encoded + "\n")
